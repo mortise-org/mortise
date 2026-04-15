@@ -1,4 +1,4 @@
-# Capybara — Architecture & System Diagrams
+# Mortise — Architecture & System Diagrams
 
 > Companion to [`SPEC.md`](./SPEC.md). Diagrams render natively on GitHub via
 > Mermaid. For each diagram: the picture first, then a short "how to read it."
@@ -7,7 +7,7 @@
 
 ## 1. System Component Architecture
 
-The full orchestration layer: external systems, the Capybara operator, the
+The full orchestration layer: external systems, the Mortise operator, the
 platform components it manages, and the user workloads it reconciles.
 
 ```mermaid
@@ -24,9 +24,9 @@ flowchart TB
     subgraph Cluster["Kubernetes Cluster"]
         direction TB
 
-        subgraph SysNS["capybara-system namespace"]
+        subgraph SysNS["mortise-system namespace"]
             direction TB
-            Operator["Capybara Operator<br/>(controllers + API + UI)"]
+            Operator["Mortise Operator<br/>(controllers + API + UI)"]
             DB[(operator datastore<br/>sqlite on PVC)]
             Traefik[Traefik<br/>ingress controller]
             CertMgr[cert-manager]
@@ -34,7 +34,7 @@ flowchart TB
             Zot[Zot OCI Registry]
         end
 
-        subgraph BuildNS["capybara-builds namespace"]
+        subgraph BuildNS["mortise-builds namespace"]
             BuildKit[BuildKit<br/>rootless Deployment<br/>+ layer-cache PVC]
         end
 
@@ -83,8 +83,8 @@ flowchart TB
 - **Named arrows** (`GitProvider iface`, `BuildClient iface`, etc.) cross one of
   the outward interface seams defined in SPEC §11. Everything the operator does
   *outside* the Kubernetes API goes through one of these contracts.
-- **Namespaces** are the ownership boundary. `capybara-system` is the platform
-  itself; `capybara-builds` is isolated so build pods can't interfere with user
+- **Namespaces** are the ownership boundary. `mortise-system` is the platform
+  itself; `mortise-builds` is isolated so build pods can't interfere with user
   workloads; each user App gets its own namespace with its own Deployments,
   Services, Ingresses, and PVCs.
 - **Bindings** (bottom dotted arrow): purely an env-var injection at pod-start
@@ -94,14 +94,14 @@ flowchart TB
 
 | Component | Namespace | Role | Scope boundary |
 |---|---|---|---|
-| **Capybara Operator** | `capybara-system` | Reconciles CRDs (`App`, `PreviewEnvironment`, `PlatformConfig`, `GitProvider`). Serves the REST API and UI. Handles webhooks. Owns everything the platform creates. | Never touches resources outside what it created; coexists with Argo CD, manual kubectl, other tools. |
-| **Operator datastore** | `capybara-system` | Stores deploy history, users (v1 native auth), audit logs, session tokens. v1 = sqlite on PVC; v2 = Postgres for HA. | Never stores user app data — only Capybara metadata. |
-| **Traefik** | `capybara-system` | Ingress controller. Routes external HTTPS traffic to user Apps and the Capybara API/UI. | Installed and managed by core chart. Addon pack may add forward-auth middleware for per-App SSO. |
-| **cert-manager** | `capybara-system` | Issues TLS certs via ACME (or self-signed in dev/test). Triggered by annotations on Ingress resources. | Core chart dependency; not touched by user. |
-| **ExternalDNS** | `capybara-system` | Watches Ingress resources and creates matching DNS records at the configured provider. | Core chart dependency; configured once during install. |
-| **Zot** | `capybara-system` | OCI image registry. Default target for builds unless external registry configured. | Installed conditionally (omitted if user picks GHCR/Docker Hub/custom). |
-| **BuildKit** | `capybara-builds` | Builds container images from git sources. Consumes LLB or Dockerfile input; pushes to registry. | Installed lazily on first git App. Addon pack later adds pooling. |
-| **User App pods** | `<app-ns>` | The actual workloads Capybara deploys. | Pure 12-factor; no Capybara SDK or sidecar required. |
+| **Mortise Operator** | `mortise-system` | Reconciles CRDs (`App`, `PreviewEnvironment`, `PlatformConfig`, `GitProvider`). Serves the REST API and UI. Handles webhooks. Owns everything the platform creates. | Never touches resources outside what it created; coexists with Argo CD, manual kubectl, other tools. |
+| **Operator datastore** | `mortise-system` | Stores deploy history, users (v1 native auth), audit logs, session tokens. v1 = sqlite on PVC; v2 = Postgres for HA. | Never stores user app data — only Mortise metadata. |
+| **Traefik** | `mortise-system` | Ingress controller. Routes external HTTPS traffic to user Apps and the Mortise API/UI. | Installed and managed by core chart. Addon pack may add forward-auth middleware for per-App SSO. |
+| **cert-manager** | `mortise-system` | Issues TLS certs via ACME (or self-signed in dev/test). Triggered by annotations on Ingress resources. | Core chart dependency; not touched by user. |
+| **ExternalDNS** | `mortise-system` | Watches Ingress resources and creates matching DNS records at the configured provider. | Core chart dependency; configured once during install. |
+| **Zot** | `mortise-system` | OCI image registry. Default target for builds unless external registry configured. | Installed conditionally (omitted if user picks GHCR/Docker Hub/custom). |
+| **BuildKit** | `mortise-builds` | Builds container images from git sources. Consumes LLB or Dockerfile input; pushes to registry. | Installed lazily on first git App. Addon pack later adds pooling. |
+| **User App pods** | `<app-ns>` | The actual workloads Mortise deploys. | Pure 12-factor; no Mortise SDK or sidecar required. |
 | **Backing service pods** | `<app-ns>` | Apps with `credentials:` declared — typically stateful (Postgres, Redis). Other Apps bind to them. | v1 = `image` source + PVC + manual credentials. Addon pack adds operator-backed `catalog` source for HA/PITR. |
 
 ---
@@ -115,7 +115,7 @@ skips the build phase entirely.
 sequenceDiagram
     actor Dev as Developer
     participant Git as GitHub / GitLab / Gitea
-    participant Op as Capybara Operator
+    participant Op as Mortise Operator
     participant BK as BuildKit
     participant Reg as Zot Registry
     participant K8s as kube-apiserver
@@ -182,13 +182,13 @@ flowchart TB
 
     Public --> Business
 
-    subgraph Business["Capybara business logic"]
+    subgraph Business["Mortise business logic"]
         Ctrl["Controllers / Reconcilers / HTTP handlers"]
     end
 
     Ctrl --> Outward
 
-    subgraph Outward["Outward Contracts — Capybara's code agrees to this"]
+    subgraph Outward["Outward Contracts — Mortise's code agrees to this"]
         direction LR
         SB["SecretBackend"]
         GP["GitProvider"]
@@ -214,8 +214,8 @@ flowchart TB
 
 - **Top block (Inward)** = what the outside world sees. Versioned carefully;
   breaking changes require CRD version bumps and migrations.
-- **Middle block (Business logic)** = Capybara's controllers. Imports only
-  Capybara's own types. Never imports third-party SDKs.
+- **Middle block (Business logic)** = Mortise's controllers. Imports only
+  Mortise's own types. Never imports third-party SDKs.
 - **Bottom two blocks (Outward + Impls)** = internal plumbing. Completely
   invisible from outside the codebase. The controllers call an interface; the
   concrete implementation behind it can change without touching controller
@@ -231,11 +231,11 @@ attaches later.
 
 ```mermaid
 flowchart TB
-    Umbrella["capybara<br/>(umbrella Helm chart)"]
+    Umbrella["mortise<br/>(umbrella Helm chart)"]
 
-    Core["capybara-core subchart<br/>— v1 always installs this"]
+    Core["mortise-core subchart<br/>— v1 always installs this"]
 
-    subgraph CoreContents["Contents of capybara-core"]
+    subgraph CoreContents["Contents of mortise-core"]
         direction TB
         OP["Operator binary<br/>(controllers + REST API + embedded UI)"]
         CRDs["CRDs: App, PreviewEnvironment,<br/>PlatformConfig, GitProvider"]
@@ -271,7 +271,7 @@ flowchart TB
 **How to read it:**
 
 - **Solid arrows** = always installed when the umbrella chart is installed.
-  The `capybara-core` subchart is the v1 footprint.
+  The `mortise-core` subchart is the v1 footprint.
 - **Dotted arrows** = opt-in. Each addon is its own subchart with its own
   values; the umbrella chart declares them as disabled-by-default dependencies
   so users can turn them on with a values flag (or via the CLI picker later).
@@ -290,16 +290,16 @@ sequenceDiagram
     actor Admin as Cluster Admin
     participant Helm as Helm
     participant K8s as kube-apiserver
-    participant Op as Capybara Operator
+    participant Op as Mortise Operator
     actor User as First User
 
-    Admin->>Helm: helm install capybara ... --set domain=... --set dns.provider=...
+    Admin->>Helm: helm install mortise ... --set domain=... --set dns.provider=...
     Helm->>K8s: apply CRDs
-    Helm->>K8s: apply capybara-system namespace resources
+    Helm->>K8s: apply mortise-system namespace resources
     K8s->>Op: Operator pod starts
     Op->>Op: apply default PlatformConfig from Helm values
     Op->>K8s: reconcile Traefik, cert-manager, ExternalDNS
-    Admin->>Op: open https://capybara.domain.com (first-run wizard)
+    Admin->>Op: open https://mortise.domain.com (first-run wizard)
     Op-->>Admin: wizard: domain, DNS, git provider, admin user
     Admin->>Op: complete wizard
     Op->>K8s: persist platform config + admin user
@@ -317,9 +317,9 @@ when reading the code or debugging a specific interaction.
 
 | From | To | Via | Purpose |
 |---|---|---|---|
-| User browser | Traefik | HTTPS | User traffic to deployed apps + Capybara UI/API |
+| User browser | Traefik | HTTPS | User traffic to deployed apps + Mortise UI/API |
 | Git provider | Operator | HTTPS webhook | Push / PR events trigger build + preview lifecycle |
-| External CI | Operator | HTTPS + bearer token | Deploy pre-built image without Capybara building it |
+| External CI | Operator | HTTPS + bearer token | Deploy pre-built image without Mortise building it |
 | Operator | Git provider | `GitProvider` iface | Webhook registration, clone, commit status |
 | Operator | BuildKit | `BuildClient` iface (gRPC) | Submit build; receive streaming events |
 | Operator | SecretBackend | `SecretBackend` iface | Read/write secret values |
@@ -340,7 +340,7 @@ when reading the code or debugging a specific interaction.
   picture.
 - **Addon pack detailed internals** — each addon subchart has its own
   component diagram; will be drawn when those land.
-- **CI pipeline for Capybara itself** — GitHub Actions running `make test`
+- **CI pipeline for Mortise itself** — GitHub Actions running `make test`
   and `make test-integration`; covered in SPEC §7.
 - **RBAC and service account details** — operator has cluster-wide read
   across CRDs + write within namespaces it creates; detailed RBAC manifest

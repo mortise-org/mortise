@@ -1,6 +1,8 @@
-# Capybara — Product & Engineering Spec
+# Mortise — Product & Engineering Spec
 
-> Codename: **Capybara** (repo placeholder; product name TBD)
+> Name: **Mortise** — the core platform. Addons are called **tenons**
+> (joinery metaphor: the mortise is the slot that holds everything together;
+> tenons slot into it).
 > Status: Draft for engineering kickoff
 > Audience: engineers building v1
 > Companion: [`ARCHITECTURE.md`](./ARCHITECTURE.md) — system diagrams
@@ -11,7 +13,7 @@
 
 A self-hosted, Railway-style developer platform that runs on top of an existing
 Kubernetes cluster. Developers connect a git repo (or point at a pre-built image),
-and Capybara handles builds, deploys, domains, TLS, environment variables,
+and Mortise handles builds, deploys, domains, TLS, environment variables,
 volumes, preview environments, and service-to-service bindings. The user-facing
 experience abstracts Kubernetes away entirely — users think in "apps," not
 Deployments, Services, Ingresses, or Helm charts.
@@ -20,7 +22,7 @@ The product ships in two layers:
 
 1. **Core (v1)** — the minimum Railway clone. Installable on any k3s/k8s cluster
    via a single Helm chart. Zero addons required. This is what we build first.
-2. **Addon pack (post-v1)** — optional subcharts that bolt onto core to provide
+2. **Tenons (post-v1 addon pack)** — optional subcharts that bolt onto core to provide
    SSO (Authentik), secret management (OpenBao), monitoring (Prometheus/Grafana),
    platform health UI, backup/restore, Helm-source deployments, curated service
    catalog, storage wizard, and more. Each addon is independently installable.
@@ -33,16 +35,16 @@ never see or pay for the platform ambition.
 
 ## 2. Positioning
 
-Capybara is what a developer installs when there is no platform team. It produces
+Mortise is what a developer installs when there is no platform team. It produces
 the Kubernetes manifests (internally, via CRD reconciliation) and runs the CD
-itself. The user writes an `App` (or clicks through the UI) and Capybara handles
+itself. The user writes an `App` (or clicks through the UI) and Mortise handles
 everything downstream — build, push, deploy, domain, TLS, metrics, secrets,
 bindings.
 
 **Not competing with** Argo CD / Flux CD (GitOps CD engines for platform teams
-managing manifests-as-code). Capybara coexists with them: platform teams can
-GitOps-manage the cluster infra and Capybara itself; developers deploy apps
-through Capybara without touching manifest repos.
+managing manifests-as-code). Mortise coexists with them: platform teams can
+GitOps-manage the cluster infra and Mortise itself; developers deploy apps
+through Mortise without touching manifest repos.
 
 **Differentiated from:**
 - **Kubero** — closest existing product, but manual webhook setup, manual
@@ -50,7 +52,7 @@ through Capybara without touching manifest repos.
 - **Coolify** — excellent UX on Docker/VPS, no Kubernetes mode.
 - **Gimlet** — archived March 2025. The niche needs a sustainable plan from day one.
 - **Otomi** — dead May 2024; tried to be a batteries-included platform first and
-  added developer UX second. Capybara does the opposite: ship the Railway UX
+  added developer UX second. Mortise does the opposite: ship the Railway UX
   first, layer the platform on top.
 - **Railway / Render** — SaaS only, not self-hostable.
 
@@ -65,7 +67,7 @@ through Capybara without touching manifest repos.
 - **Regulated industries** that need Railway-quality UX but cannot send code or
   data through third-party infra
 
-**Assumption:** a Kubernetes cluster already exists. Capybara installs as a Helm
+**Assumption:** a Kubernetes cluster already exists. Mortise installs as a Helm
 chart onto it. Cluster provisioning (k3s bootstrap, RKE2 HA, cloud k8s) is
 explicitly out of scope for v1 — "not the problem we're solving." It may return
 as an addon or CLI wrapper later.
@@ -113,7 +115,7 @@ types.
 ### 5.2 App CRD (v1 surface)
 
 ```yaml
-apiVersion: capybara.dev/v1alpha1
+apiVersion: mortise.dev/v1alpha1
 kind: App
 metadata:
   name: my-app
@@ -187,7 +189,7 @@ spec:
 
 Override via `source.build.mode: dockerfile | railpack` (default `auto`).
 
-**BuildKit:** runs as a single rootless Deployment in the `capybara-builds`
+**BuildKit:** runs as a single rootless Deployment in the `mortise-builds`
 namespace with a PVC for `/var/lib/buildkit` layer cache. Installed on-demand
 the first time a `git` App is created (not part of base install). Operator
 serializes submissions through an internal queue and talks to BuildKit via the
@@ -215,7 +217,7 @@ touching `services/api/` creates a preview for the `api` App only; PR touching
 First-class from v1. Any CI that can `curl` can deploy:
 
 ```bash
-curl -X POST https://capybara.yourdomain.com/api/deploy \
+curl -X POST https://mortise.yourdomain.com/api/deploy \
   -H "Authorization: Bearer $DEPLOY_TOKEN" \
   -d '{"app":"my-app","environment":"production","image":"registry/org/my-app:abc123"}'
 ```
@@ -227,7 +229,7 @@ curl -X POST https://capybara.yourdomain.com/api/deploy \
 - CI snippet shown alongside on creation
 
 This is the extensibility seam for any CI system. Users keep GitHub Actions,
-GitLab CI, Woodpecker, Jenkins, bash — Capybara just handles build (if git
+GitLab CI, Woodpecker, Jenkins, bash — Mortise just handles build (if git
 source) and deploy. No CI integration needed in v1.
 
 ### 5.5 Bindings — The Magic
@@ -269,7 +271,7 @@ added by operator.
 
 ### 5.7 Storage (v1)
 
-Capybara is deliberately unopinionated about CSI backends. The App CRD accepts
+Mortise is deliberately unopinionated about CSI backends. The App CRD accepts
 a list of named volumes; each references a StorageClass (defaulting to the
 cluster's default SC). For v1:
 
@@ -337,7 +339,7 @@ degrades gracefully — charts show what's available.
   store
 
 **Relay-mode Cloudflare Worker is addon-pack.** Self-registered is the v1 path —
-no third-party infrastructure required to install Capybara.
+no third-party infrastructure required to install Mortise.
 
 ### 5.13 Web UI (v1)
 
@@ -356,22 +358,22 @@ Railway-style: short commands, positional args, interactive prompts when
 ambiguous. Full flags for scripting/CI.
 
 ```bash
-capybara app list
-capybara app create --source git --repo github.com/org/my-app
-capybara app create --source image --image ghcr.io/paperless-ngx/paperless-ngx:latest
-capybara deploy my-app --env production --image registry/org/my-app:abc123
-capybara promote my-app
-capybara rollback my-app
-capybara logs my-app
-capybara secret set my-app API_KEY=xxx
-capybara secret rotate my-app API_KEY
-capybara env set my-app PORT=3000
-capybara domain add my-app api.customer.com
-capybara token create my-app production
-capybara preview list my-app
+mortise app list
+mortise app create --source git --repo github.com/org/my-app
+mortise app create --source image --image ghcr.io/paperless-ngx/paperless-ngx:latest
+mortise deploy my-app --env production --image registry/org/my-app:abc123
+mortise promote my-app
+mortise rollback my-app
+mortise logs my-app
+mortise secret set my-app API_KEY=xxx
+mortise secret rotate my-app API_KEY
+mortise env set my-app PORT=3000
+mortise domain add my-app api.customer.com
+mortise token create my-app production
+mortise preview list my-app
 ```
 
-Config at `~/.config/capybara/config.yaml`.
+Config at `~/.config/mortise/config.yaml`.
 
 ### 5.15 CRDs (v1)
 
@@ -396,7 +398,7 @@ feature, installable independently after core is live.
 - **Loki** log aggregation
 - **Platform Health** page (per-component cards with curated fixes)
 - **Backup / restore** to S3 or NFS (CRD export + Velero + secret snapshots)
-- **`helm` source type** — install arbitrary Helm charts through Capybara UI
+- **`helm` source type** — install arbitrary Helm charts through Mortise UI
 - **`external` source type** — wrap already-running services with domain/TLS/auth
 - **`catalog` source type** — operator-backed backing services (CloudNativePG
   for Postgres, redis-operator for Redis, MinIO, etc.) with per-entry credential
@@ -455,7 +457,7 @@ run builds and bind volumes.
 │   ├── fixtures/                    # canonical App CRDs
 │   └── helpers/                     # namespace lifecycle, assertion helpers
 ├── charts/
-│   └── capybara/                    # umbrella Helm chart (v1 = core only)
+│   └── mortise/                    # umbrella Helm chart (v1 = core only)
 ├── ui/                              # React app
 ├── Makefile
 └── README.md
@@ -475,25 +477,25 @@ integration-run:
 	go test ./test/integration/... -tags=integration
 
 cluster-up:
-	k3d cluster create capybara-test --wait --registry-create capybara-registry
+	k3d cluster create mortise-test --wait --registry-create mortise-registry
 	kubectl wait --for=condition=Ready nodes --all --timeout=60s
 
 cluster-down:
-	k3d cluster delete capybara-test
+	k3d cluster delete mortise-test
 
 chart-install:
-	helm upgrade --install capybara ./charts/capybara \
-	  --namespace capybara-system --create-namespace \
+	helm upgrade --install mortise ./charts/mortise \
+	  --namespace mortise-system --create-namespace \
 	  --set image.tag=dev --wait
 
 # Persistent dev loop
 dev-up:
-	k3d cluster create capybara-dev --registry-create capybara-registry
+	k3d cluster create mortise-dev --registry-create mortise-registry
 	$(MAKE) chart-install
 	tilt up
 
 dev-down:
-	k3d cluster delete capybara-dev
+	k3d cluster delete mortise-dev
 
 # Fast integration against already-running dev cluster
 test-integration-fast:
@@ -551,14 +553,14 @@ test-all: test test-integration
 - **Registry:** real Zot running in the k3d cluster, backed by the k3d
   registry volume.
 
-### 7.8 CI (for Capybara itself)
+### 7.8 CI (for Mortise itself)
 
 GitHub Actions, hosted runners. Not self-hosted. Workflows:
 - `test.yml` — `make test` on every PR (fast)
 - `test-integration.yml` — `make test-integration` on every PR (k3d in GH Actions runner)
 - `nightly.yml` — `make test-e2e` against the dogfooding cluster
 
-Self-hosting the Capybara project's own CI is out of scope.
+Self-hosting the Mortise project's own CI is out of scope.
 
 ---
 
@@ -568,15 +570,15 @@ Self-hosting the Capybara project's own CI is out of scope.
 
 ```
 charts/
-└── capybara/               # umbrella
+└── mortise/               # umbrella
     ├── Chart.yaml          # lists subcharts
     ├── values.yaml         # top-level toggles
     └── charts/
-        ├── capybara-core/  # always-on: operator, API, UI, CRDs, Traefik, cert-manager, ExternalDNS
+        ├── mortise-core/  # always-on: operator, API, UI, CRDs, Traefik, cert-manager, ExternalDNS
         └── (addons in future: authentik, openbao, monitoring, catalog, ...)
 ```
 
-**v1 ships with `capybara-core` only.** Addon subcharts land over time, each
+**v1 ships with `mortise-core` only.** Addon subcharts land over time, each
 independently installable. The umbrella chart exists so addons can declare
 dependencies and inherit shared values (domain, DNS provider, etc.).
 
@@ -584,8 +586,8 @@ dependencies and inherit shared values (domain, DNS provider, etc.).
 
 ```bash
 # Fast path (core only)
-helm install capybara oci://ghcr.io/capybara/capybara \
-  --namespace capybara-system --create-namespace \
+helm install mortise oci://ghcr.io/mortise/mortise \
+  --namespace mortise-system --create-namespace \
   --set domain=yourdomain.com \
   --set dns.provider=cloudflare \
   --set dns.apiToken=xxx
@@ -595,8 +597,8 @@ Later (addon pack available):
 
 ```bash
 # Pick addons; CLI walks through them interactively
-capybara platform install            # interactive picker (authentik? monitoring? ...)
-capybara platform install --addons=authentik,monitoring
+mortise platform install            # interactive picker (authentik? monitoring? ...)
+mortise platform install --addons=authentik,monitoring
 ```
 
 The CLI wraps `helm upgrade` on the umbrella chart with the selected subchart
@@ -615,7 +617,7 @@ in a shippable state — nothing half-done carried over.
 - Go module layout (`cmd/`, `api/`, `controllers/`, `internal/`)
 - kubebuilder scaffolding for the `App`, `PreviewEnvironment`,
   `PlatformConfig`, `GitProvider` CRDs (skeleton, no reconcile yet)
-- Umbrella Helm chart with `capybara-core` subchart (operator Deployment,
+- Umbrella Helm chart with `mortise-core` subchart (operator Deployment,
   CRDs, RBAC; Traefik/cert-manager/ExternalDNS declared as chart dependencies)
 - Makefile with all test-bench targets (may be stubs at first)
 - CI: `test.yml` (unit + envtest) and `test-integration.yml` (k3d)
@@ -639,7 +641,7 @@ path from CRD to running pod.
 - `network.public` flag toggles Ingress
 - `storage` list produces PVCs; single-volume RWO first, then multi-volume, then RWX
 - `resources`, `replicas`, `env` respected
-- `valueFrom.secretRef` reads from the Capybara secret store and projects as
+- `valueFrom.secretRef` reads from the Mortise secret store and projects as
   env vars
 - Rolling updates on spec change
 - Rollback via deploy history (stored in operator DB or CR status)
@@ -657,7 +659,7 @@ change replicas → scales; change image → rolls; delete → namespace cleaned
 - WebSocket endpoint for log streaming
 - React UI skeleton: login, dashboard (list Apps), new-app form for `image`
   source only, App detail page with env / secrets / domains
-- CLI (`capybara app create --source image`, `capybara logs`, `capybara status`)
+- CLI (`mortise app create --source image`, `mortise logs`, `mortise status`)
 
 **Exit criteria:** deploy Paperless-ngx entirely through the UI or CLI; no
 YAML visible to the user.
@@ -684,7 +686,7 @@ without builds yet.
 - Railpack mode: library integration (`GenerateBuildPlan` →
   `ConvertPlanToLLB` → submit)
 - BuildKit as a single rootless Deployment + PVC (installed on first git App)
-- Registry: Zot (default, bundled in `capybara-core`) or external (GHCR,
+- Registry: Zot (default, bundled in `mortise-core`) or external (GHCR,
   Docker Hub, custom); Helm values-driven
 - Build cache: OCI artifacts, keyed per app/branch
 - Operator submission queue serializes builds
@@ -757,14 +759,14 @@ block the others; order depends on user demand after v1 ships.
 - **Storage wizard** — Longhorn and NFS install flows, tier detection
 - **`perReplica` volumes** — StatefulSet support
 - **Multi-cluster** — Cluster CRD, bearer-token trust, aggregated UI
-- **Cluster provisioning** — `capybara bootstrap` wrapping k3s install
+- **Cluster provisioning** — `mortise bootstrap` wrapping k3s install
 
 ---
 
 ## 10. Open Questions
 
-1. **Product name.** `[NAME]` / Capybara is a placeholder. The name gets baked
-   into CRD apiVersions (`capybara.dev/v1alpha1`), Helm chart, CLI binary,
+1. **Product name.** `[NAME]` / Mortise is a placeholder. The name gets baked
+   into CRD apiVersions (`mortise.dev/v1alpha1`), Helm chart, CLI binary,
    config path, and the domain for any hosted assets (relay Worker later).
    Pick before tagging v1.
 2. **Operator datastore.** The operator needs somewhere to store deploy
@@ -789,17 +791,17 @@ the project.
 
 ### 11.1 Outward Contracts (Seams / Interfaces)
 
-Contracts that **Capybara's own code agrees to** when it talks to external
+Contracts that **Mortise's own code agrees to** when it talks to external
 systems. Nobody outside the codebase sees these — they are internal plumbing.
 
 ```
-Capybara controller  →  SecretBackend interface  →  k8s Secrets / OpenBao / AWS
-Capybara controller  →  GitProvider interface    →  GitHub / GitLab / Gitea
-Capybara controller  →  BuildClient interface    →  BuildKit
-Capybara controller  →  DNSProvider interface    →  ExternalDNS / Cloudflare
+Mortise controller  →  SecretBackend interface  →  k8s Secrets / OpenBao / AWS
+Mortise controller  →  GitProvider interface    →  GitHub / GitLab / Gitea
+Mortise controller  →  BuildClient interface    →  BuildKit
+Mortise controller  →  DNSProvider interface    →  ExternalDNS / Cloudflare
 ```
 
-Controllers import only Capybara's own types. They never import
+Controllers import only Mortise's own types. They never import
 `github.com/google/go-github`, `moby/buildkit/client`, or any other third-party
 SDK directly. Every external dependency is wrapped behind an interface that
 lives in `internal/<name>/`.
@@ -854,12 +856,12 @@ third-party SDKs directly, ever.**
 
 ### 11.2 Inward Contracts (CRD + REST API)
 
-Contracts that **external callers agree to** when they talk to Capybara.
+Contracts that **external callers agree to** when they talk to Mortise.
 These are the public surface — versioned with semver, documented, and not
 broken lightly.
 
 - **`App` CRD and related CRDs** — the YAML shape users write (directly or
-  via UI/CLI that writes it for them). Versioned as `capybara.dev/v1alpha1`
+  via UI/CLI that writes it for them). Versioned as `mortise.dev/v1alpha1`
   today, moving to `v1beta1` and `v1` over time.
 - **REST API** — `POST /api/deploy`, `POST /api/secrets`, etc. Used by the
   UI, the CLI, and external CI systems via the deploy webhook. Full OpenAPI
@@ -867,9 +869,9 @@ broken lightly.
 
 **What external callers need to agree to, in practice:**
 
-1. If they want to be managed by Capybara → the `App` CRD schema (or use UI/CLI).
+1. If they want to be managed by Mortise → the `App` CRD schema (or use UI/CLI).
 2. If they want to deploy from external CI → the deploy webhook API + a token.
-3. If they want to consume bindings → nothing. Capybara injects env vars at
+3. If they want to consume bindings → nothing. Mortise injects env vars at
    pod-start time. Apps read `process.env.DATABASE_URL` like any 12-factor app.
    No SDK, no sidecar, no agent.
 
@@ -882,7 +884,7 @@ broken lightly.
                               │
                               ▼
                  ┌─────────────────────────────────────────┐
-                 │   Capybara controllers / business logic │
+                 │   Mortise controllers / business logic │
                  └─────────────────────────────────────────┘
                               │
                               ▼
@@ -896,7 +898,7 @@ Two layers, two directions, two sets of rules:
 | Layer | Who sees it | Freedom to change |
 |---|---|---|
 | Inward (CRD + REST API) | External users, pods, CI | Low — breaking changes require version bumps and migration |
-| Outward (interfaces) | Capybara's own code only | High — refactor freely; implementations can be swapped without touching controllers |
+| Outward (interfaces) | Mortise's own code only | High — refactor freely; implementations can be swapped without touching controllers |
 
 ---
 
