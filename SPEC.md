@@ -3,6 +3,7 @@
 > Codename: **Capybara** (repo placeholder; product name TBD)
 > Status: Draft for engineering kickoff
 > Audience: engineers building v1
+> Companion: [`ARCHITECTURE.md`](./ARCHITECTURE.md) — system diagrams
 
 ---
 

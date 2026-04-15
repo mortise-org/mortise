@@ -12,7 +12,9 @@ away from the user.
 - **Post-v1:** optional addon subcharts (Authentik SSO, OpenBao secrets,
   Prometheus/Grafana, Helm/external/catalog sources, backup/restore, etc.)
 
-See [`SPEC.md`](./SPEC.md) for the full product and engineering plan.
+See [`SPEC.md`](./SPEC.md) for the full product and engineering plan, and
+[`ARCHITECTURE.md`](./ARCHITECTURE.md) for system diagrams (component layout,
+deploy flow, interface contracts, chart/install topology).
 
 ## Status
 
