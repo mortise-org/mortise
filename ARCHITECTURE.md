@@ -14,11 +14,11 @@ platform components it manages, and the user workloads it reconciles.
 flowchart TB
     subgraph External["External Systems"]
         direction TB
-        User[User Browser]
-        GitHub[Git Provider<br/>GitHub / GitLab / Gitea]
-        DNSProv[DNS Provider<br/>Cloudflare / Route53 / etc]
-        ACME[Let's Encrypt / ACME]
-        CI[External CI<br/>GH Actions, Jenkins, etc]
+        User["User Browser"]
+        GitHub["Git Provider<br/>GitHub / GitLab / Gitea"]
+        DNSProv["DNS Provider<br/>Cloudflare / Route53 / etc"]
+        ACME["Let's Encrypt / ACME"]
+        CI["External CI<br/>GH Actions / Jenkins / etc"]
     end
 
     subgraph Cluster["Kubernetes Cluster"]
@@ -26,24 +26,24 @@ flowchart TB
 
         subgraph SysNS["mortise-system namespace"]
             direction TB
-            Operator["Mortise Operator<br/>(controllers + API + UI)"]
-            MetaDB[(operator metadata<br/>sqlite on PVC:<br/>deploys, users, audit)]
-            SecretStore[(user secrets<br/>k8s Secrets in v1)]
-            Traefik["Traefik<br/>ingress controller<br/>(optional — byo supported)"]
-            CertMgr["cert-manager<br/>(optional — byo supported)"]
-            ExtDNS["ExternalDNS<br/>(optional — byo supported)"]
-            Zot["Zot OCI Registry<br/>(optional — external registry supported)"]
+            Operator["Mortise Operator<br/>controllers + API + UI"]
+            MetaDB[("operator metadata<br/>sqlite on PVC<br/>deploys / users / audit")]
+            SecretStore[("user secrets<br/>k8s Secrets in v1")]
+            Traefik["Traefik<br/>ingress controller<br/>optional - byo supported"]
+            CertMgr["cert-manager<br/>optional - byo supported"]
+            ExtDNS["ExternalDNS<br/>optional - byo supported"]
+            Zot["Zot OCI Registry<br/>optional - external registry supported"]
         end
 
         subgraph BuildNS["mortise-builds namespace"]
-            BuildKit[BuildKit<br/>rootless Deployment<br/>+ layer-cache PVC]
+            BuildKit["BuildKit<br/>rootless Deployment<br/>+ layer-cache PVC"]
         end
 
-        subgraph UserNS["user namespaces (per App)"]
+        subgraph UserNS["user namespaces - one per App"]
             direction TB
-            AppPod["User App Pod<br/>(Deployment)"]
-            BackingPod["Backing Service Pod<br/>e.g. postgres:16<br/>(Deployment + PVC)"]
-            Ing[Ingress resources]
+            AppPod["User App Pod<br/>Deployment"]
+            BackingPod["Backing Service Pod<br/>e.g. postgres 16<br/>Deployment + PVC"]
+            Ing["Ingress resources"]
         end
     end
 
@@ -142,8 +142,8 @@ sequenceDiagram
     Dev->>Git: git push
     Git->>Op: webhook: push event (HMAC-signed)
     Op->>Op: resolve GitProvider + verify HMAC (GitAPI iface)
-    Op->>Op: list Apps on this repo;<br/>for each, compare changed paths<br/>to watchPaths prefixes
-    Note over Op: one webhook → N concurrent<br/>per-App build pipelines
+    Op->>Op: list Apps on this repo,<br/>for each compare changed paths<br/>to watchPaths prefixes
+    Note over Op: one webhook fans out to<br/>N per-App build pipelines
 
     loop per matched App
         Op->>Git: clone repo (GitClient iface)
@@ -194,56 +194,40 @@ The two-layer contract model as a picture. Read top to bottom.
 
 ```mermaid
 flowchart TB
-    subgraph Inward["Inward Contract — external callers agree to this"]
-        direction TB
-        Callers["users / CI / pods / UI"]
-        Public["CRDs (App, PreviewEnvironment, PlatformConfig, GitProvider)<br/>REST API + WebSocket (OpenAPI spec)"]
-        Callers --> Public
-    end
+    Callers["users / CI / pods / UI"]
 
-    Public --> Business
+    subgraph Inward["Inward Contract - external callers agree to this"]
+        Public["CRDs: App, PreviewEnvironment, PlatformConfig, GitProvider<br/>REST API + WebSocket with OpenAPI spec"]
+    end
 
     subgraph Business["Mortise business logic"]
         Ctrl["Controllers / Reconcilers / HTTP handlers"]
     end
 
-    Ctrl --> Outward
-
-    subgraph Outward["Outward Contracts — Mortise's code agrees to this"]
-        direction LR
-        SB["SecretBackend"]
-        AU["AuthProvider"]
-        PE["PolicyEngine"]
-        FA["ForwardAuthProvider"]
-        GA["GitAPI + GitClient"]
-        BC["BuildClient"]
-        RB["RegistryBackend"]
-        IP["IngressProvider"]
-        DP["DNSProvider"]
+    subgraph Outward["Outward Contracts - Mortise code agrees to these"]
+        direction TB
+        SB["SecretBackend"] --> SBImpl["k8s Secrets v1<br/>OpenBao addon<br/>AWS / GCP / Vault addon"]
+        AU["AuthProvider"] --> AUImpl["native DB v1<br/>OIDC early addon<br/>Authentik / LDAP / SAML addon"]
+        PE["PolicyEngine"] --> PEImpl["admin/member v1<br/>teams + per-app v2<br/>OPA / Casbin addon"]
+        FA["ForwardAuthProvider"] --> FAImpl["none in v1<br/>Authentik addon<br/>oauth2-proxy addon"]
+        GA["GitAPI + GitClient"] --> GAImpl["GitHub / GitLab / Gitea<br/>shared GitClient impl"]
+        BC["BuildClient"] --> BCImpl["BuildKit client"]
+        RB["RegistryBackend"] --> RBImpl["Zot v1 default<br/>GHCR / Harbor / ECR<br/>any OCI registry"]
+        IP["IngressProvider"] --> IPImpl["Traefik v1 default<br/>NGINX / Contour / Gateway API"]
+        DP["DNSProvider"] --> DPImpl["ExternalDNS annotations v1<br/>Cloudflare direct addon"]
     end
 
-    subgraph Impls["Implementations (swappable)"]
-        direction LR
-        SBImpl["k8s Secrets (v1)<br/>OpenBao (addon)<br/>AWS/GCP/Vault (addon)"]
-        AUImpl["native DB (v1)<br/>OIDC (early addon)<br/>Authentik / LDAP / SAML (addon)"]
-        PEImpl["admin/member (v1)<br/>teams + per-app (v2)<br/>OPA / Casbin (addon)"]
-        FAImpl["none (v1)<br/>Authentik (addon)<br/>oauth2-proxy (addon)"]
-        GAImpl["GitHub / GitLab / Gitea<br/>(shared GitClient impl)"]
-        BCImpl["BuildKit client"]
-        RBImpl["Zot (v1 default)<br/>GHCR / Harbor / ECR<br/>(any OCI registry)"]
-        IPImpl["Traefik (v1 default)<br/>NGINX / Contour / Gateway API<br/>(via annotations)"]
-        DPImpl["ExternalDNS annotations (v1)<br/>Cloudflare direct (addon)"]
-    end
-
-    SB --> SBImpl
-    AU --> AUImpl
-    PE --> PEImpl
-    FA --> FAImpl
-    GA --> GAImpl
-    BC --> BCImpl
-    RB --> RBImpl
-    IP --> IPImpl
-    DP --> DPImpl
+    Callers --> Public
+    Public --> Ctrl
+    Ctrl --> SB
+    Ctrl --> AU
+    Ctrl --> PE
+    Ctrl --> FA
+    Ctrl --> GA
+    Ctrl --> BC
+    Ctrl --> RB
+    Ctrl --> IP
+    Ctrl --> DP
 ```
 
 **How to read it:**
@@ -267,21 +251,20 @@ attaches later.
 
 ```mermaid
 flowchart TB
-    Umbrella["mortise<br/>(umbrella Helm chart)"]
-
-    Core["mortise-core subchart<br/>— v1 always installs this"]
+    Umbrella["mortise<br/>umbrella Helm chart"]
+    Core["mortise-core subchart<br/>v1 always installs this"]
 
     subgraph CoreContents["Contents of mortise-core"]
         direction TB
-        OP["Operator binary<br/>(controllers + REST API + embedded UI)"]
-        CRDs["CRDs: App, PreviewEnvironment,<br/>PlatformConfig, GitProvider"]
-        TFc["Traefik (dep)"]
-        CMc["cert-manager (dep)"]
-        EDc["ExternalDNS (dep)"]
-        ZOc["Zot (conditional: registry.type=builtin)"]
+        OP["Operator binary<br/>controllers + REST API + embedded UI"]
+        CRDs["CRDs: App / PreviewEnvironment<br/>PlatformConfig / GitProvider"]
+        TFc["Traefik dep"]
+        CMc["cert-manager dep"]
+        EDc["ExternalDNS dep"]
+        ZOc["Zot conditional on registry.type=builtin"]
     end
 
-    subgraph Addons["Addon subcharts (post-v1, all optional)"]
+    subgraph Addons["Addon subcharts - post-v1, all optional"]
         direction TB
         Auth["authentik<br/>SSO + forward-auth"]
         Bao["openbao<br/>secret backend"]
@@ -293,7 +276,12 @@ flowchart TB
     end
 
     Umbrella --> Core
-    Core --> CoreContents
+    Core --> OP
+    Core --> CRDs
+    Core --> TFc
+    Core --> CMc
+    Core --> EDc
+    Core --> ZOc
 
     Umbrella -.opt-in.-> Auth
     Umbrella -.opt-in.-> Bao
