@@ -1,8 +1,6 @@
 # Mortise — Product & Engineering Spec
 
-> Name: **Mortise** — the core platform. Addons are called **tenons**
-> (joinery metaphor: the mortise is the slot that holds everything together;
-> tenons slot into it).
+> Name: **Mortise** — a self-hosted Railway-style deploy target for Kubernetes.
 > Status: Draft for engineering kickoff
 > Audience: engineers building v1
 > Companion: [`ARCHITECTURE.md`](./ARCHITECTURE.md) — system diagrams
@@ -18,43 +16,45 @@ volumes, preview environments, and service-to-service bindings. The user-facing
 experience abstracts Kubernetes away entirely — users think in "apps," not
 Deployments, Services, Ingresses, or Helm charts.
 
-The product ships in two layers:
-
-1. **Core (v1)** — the minimum Railway clone. Installable on any k3s/k8s cluster
-   via a single Helm chart. Zero addons required. This is what we build first.
-2. **Tenons (post-v1 addon pack)** — optional subcharts that bolt onto core to provide
-   SSO (Authentik), secret management (OpenBao), monitoring (Prometheus/Grafana),
-   backup/restore, Helm-source deployments, a bounded service catalog, and
-   community-contributed app presets. Each addon is an independent product
-   with its own lifecycle (see §6.1).
-
-The split matters: core stands on its own as a Coolify-for-Kubernetes. Addons
-let users assemble a richer self-hosted stack on top of core by selecting
-only what they want. Users who only want the Railway UX never see or pay for
-anything beyond core.
+**Mortise is a single product, not a platform with optional layers.** The
+Helm chart installs one operator that delivers the complete Railway UX. No
+addons, no plug-in protocol, no multi-tier product. Everything Mortise does,
+Mortise does in core. Users who want capabilities beyond Mortise's scope —
+SSO, centralized monitoring, log aggregation, backups, external secret
+managers — install those projects directly (Authentik, Prometheus, Loki,
+Velero, ExternalSecrets Operator, etc.) and Mortise coexists with them via
+standard Kubernetes primitives. See §6 for the scope boundary.
 
 ---
 
 ## 2. Positioning
 
-**Mortise is a deploy target, not a platform.** Core is a Railway-equivalent
-product that users install and use; addons are independently-maintained
-extensions, not bundled platform features. We never ship "the platform" as
-a single thing — users assemble what they want from core plus à la carte
-addons. This distinction is load-bearing: see §6.1 for the discipline that
-keeps addons from congealing into a platform (which is how every previous
-attempt in this space has died).
+**Mortise is a deploy target, not a platform.** It does the Railway UX —
+git-to-URL, bindings, previews, domains, TLS, environment variables — on
+top of a Kubernetes cluster the user already has. It does not try to be the
+"batteries-included internal developer platform" (SSO for every service,
+monitoring stack, log aggregation, policy engine, cost allocation, secrets
+vault, backup orchestrator). Users who want those capabilities install the
+upstream projects directly — Mortise is a polite Kubernetes citizen and
+coexists with whatever else runs in the cluster. See §6 for what's out of
+scope and why.
 
-Mortise is what a developer installs when there is no platform team. It produces
-the Kubernetes manifests (internally, via CRD reconciliation) and runs the CD
-itself. The user writes an `App` (or clicks through the UI) and Mortise handles
-everything downstream — build, push, deploy, domain, TLS, metrics, secrets,
-bindings.
+This distinction is load-bearing. Every previous attempt in this space
+(Otomi, Gimlet, Kubeapps) died because scope accreted into a platform shape
+that couldn't be maintained by a small team. Mortise's survival depends on
+refusing that shape regardless of how useful the extra features would be
+in isolation. See §6.1 for the scope invariants.
 
-**Not competing with** Argo CD / Flux CD (GitOps CD engines for platform teams
-managing manifests-as-code). Mortise coexists with them: platform teams can
-GitOps-manage the cluster infra and Mortise itself; developers deploy apps
-through Mortise without touching manifest repos.
+Mortise is what a developer installs when there is no platform team. It
+produces the Kubernetes manifests (internally, via CRD reconciliation) and
+runs the CD itself. The user writes an `App` (or clicks through the UI)
+and Mortise handles everything downstream — build, push, deploy, domain,
+TLS, metrics, secrets, bindings.
+
+**Not competing with** Argo CD / Flux CD (GitOps CD engines for platform
+teams managing manifests-as-code). Mortise coexists with them: platform
+teams can GitOps-manage the cluster infra and Mortise itself; developers
+deploy apps through Mortise without touching manifest repos.
 
 **Differentiated from:**
 - **Kubero** — closest existing product, but manual webhook setup, manual
@@ -62,8 +62,8 @@ through Mortise without touching manifest repos.
 - **Coolify** — excellent UX on Docker/VPS, no Kubernetes mode.
 - **Gimlet** — archived March 2025. The niche needs a sustainable plan from day one.
 - **Otomi** — dead May 2024; tried to be a batteries-included platform first and
-  added developer UX second. Mortise does the opposite: ship the Railway UX
-  first, layer the platform on top.
+  added developer UX second. Mortise commits to the opposite discipline: ship
+  the Railway UX as the whole product, never accrete a platform around it.
 - **Railway / Render** — SaaS only, not self-hostable.
 
 ---
@@ -81,8 +81,8 @@ through Mortise without touching manifest repos.
 
 **Assumption:** a Kubernetes cluster already exists. Mortise installs as a Helm
 chart onto it. Cluster provisioning (k3s bootstrap, RKE2 HA, cloud k8s) is
-explicitly out of scope for v1 — "not the problem we're solving." It may return
-as an addon or CLI wrapper later.
+explicitly out of scope for v1 — "not the problem we're solving." A CLI
+wrapper for bootstrap may return later.
 
 ---
 
@@ -94,9 +94,11 @@ as an addon or CLI wrapper later.
 2. **Everything is an App.** One unified concept. Source type (`git` | `image`
    in v1) determines how it deploys; bindings and network flags handle
    backing-service cases.
-3. **Extensibility via Helm subcharts, not feature flags.** Core is its own
-   chart. Each addon (Authentik, OpenBao, monitoring, catalog, etc.) is a
-   separate subchart under an umbrella. Fast-path install gives core only.
+3. **Integration through Kubernetes, not plug-in protocols.** Mortise is one
+   operator shipped as one Helm chart. Users who want adjacent capabilities
+   (OIDC, monitoring, backups, external secret managers) install the upstream
+   projects themselves; Mortise coexists with them through standard
+   Kubernetes primitives. No addon subcharts, no plug-in SDK.
 4. **API-first.** REST + WebSocket, full OpenAPI spec, externally accessible.
    Multi-cluster, custom UIs, and any future orchestration layer become thin
    wrappers over this API.
@@ -121,8 +123,8 @@ pipeline, preview environments, deploy history. Monorepo-aware via
 (Paperless-ngx, Vaultwarden, etc.) and the v1 Postgres/Redis path
 (image + PVC + manual credentials block).
 
-Explicitly **deferred to addon pack**: `helm`, `external`, `catalog` source
-types.
+Explicitly **deferred post-v1** (see §6): `helm`, `external`, `catalog`
+source types.
 
 ### 5.2 App CRD (v1 surface)
 
@@ -287,7 +289,8 @@ and collapsing them would force duplication elsewhere.
 
 A "New Postgres" template button in the UI pre-fills this form. Looks like
 Railway; under the hood it's just an image source plus bindings. Operator-backed
-catalog with HA/PITR/backups is addon-pack territory.
+catalog with HA/PITR/backups is post-v1 (see §6.3 — the recommended path is
+to install CNPG / a Redis operator directly and point Apps at them).
 
 ### 5.6 Network, Domains, TLS
 
@@ -308,14 +311,15 @@ cluster's default SC). For v1:
   Fine for most apps.
 - **Multi-node or cloud:** use the cluster's default SC.
 - **RWX volumes:** supported if the user picks a StorageClass that provides it
-  (NFS, EFS, Longhorn-over-NFS). No storage wizard in v1 — that's addon-pack.
+  (NFS, EFS, Longhorn-over-NFS). No storage wizard in v1 — sizing guidance
+  is docs (see §6.3).
 
 **v1 simplifications:**
 - `accessMode: auto` infers RWO for replicas=1, otherwise reads the SC's capability
-- `perReplica` / StatefulSet-per-volume is **deferred to addon pack** — v1
-  supports single volume per App with RWO or RWX
-- Multi-volume is supported (list of volumes) but the fancy tier-detection
-  (fast / shared / default) is addon-pack
+- `perReplica` / StatefulSet-per-volume is **deferred post-v1** (§6.2) —
+  v1 supports single volume per App with RWO or RWX
+- Multi-volume is supported (list of volumes) but automatic tier-detection
+  (fast / shared / default) is not in v1
 
 ### 5.8 Environments & Deploy Model
 
@@ -392,15 +396,15 @@ Railway's is: hand users env vars and a URL. A user who wants their Gitea
 to "Login with Authentik" installs Authentik themselves, creates the OIDC
 client in Authentik's UI, and pastes the client ID + secret into Mortise's
 secrets editor — same flow as on Railway. Forward-auth middleware and
-automated OIDC/SAML client provisioning for user apps are an addon-pack
-topic to be specced if and when real demand shows up; they are not a v1
-contract.
+automated OIDC/SAML client provisioning for user apps are post-v1 topics
+to be specced if and when real demand shows up; they are not a v1 contract.
 
 ### 5.11 In-UI Metrics (v1)
 
 `metrics-server` baseline: CPU/memory per pod/environment surfaced in UI. No
-Prometheus installed by core. Grafana + Prometheus stack is addon-pack. UI
-degrades gracefully — charts show what's available.
+Prometheus installed by core. Users who want deeper observability install
+kube-prometheus-stack themselves (see §6.3). UI degrades gracefully — charts
+show what's available.
 
 ### 5.12 Git Providers (v1)
 
@@ -411,8 +415,8 @@ degrades gracefully — charts show what's available.
 - GitProvider CRD, one per configured provider; credentials reference secret
   store
 
-**Relay-mode Cloudflare Worker is addon-pack.** Self-registered is the v1 path —
-no third-party infrastructure required to install Mortise.
+**Relay-mode Cloudflare Worker is deferred** (§6.4). Self-registered is the
+v1 path — no third-party infrastructure required to install Mortise.
 
 ### 5.13 Web UI (v1)
 
@@ -459,76 +463,121 @@ Config at `~/.config/mortise/config.yaml`.
 
 ---
 
-## 6. Explicitly Deferred (Addon Pack)
+## 6. Explicitly Deferred (Post-v1 Scope)
 
-Everything below is **not in v1**. Each maps to an optional subchart or CLI
-feature, installable independently after core is live. Read §6.1 for the
-rules that constrain what gets added here.
+**There are no first-party Mortise addons.** Everything below is either a
+post-v1 operator feature in core, a documentation recipe, or a user-installs-
+upstream pattern. Mortise ships one product — the operator + its CRDs + the
+UI — and that product is the complete deliverable. This is the structural
+commitment that keeps §2's positioning honest.
 
-- **Authentik convenience chart** — installs Authentik and pre-configures
-  it as an OIDC provider for Mortise's own login. Mortise itself doesn't
-  integrate with Authentik beyond standard OIDC (§5.10), so this addon
-  is purely installation sugar — a user could install Authentik by hand
-  and configure OIDC manually with identical results. Archiving this
-  addon at any point would not affect Mortise core.
-- **Prometheus + Grafana** stack — installs kube-prometheus-stack with
-  opinionated defaults and wires Grafana OAuth through `AuthProvider`.
-  Ships the standard upstream dashboards that come with
-  kube-prometheus-stack; Mortise does not maintain its own dashboard set.
-- **Loki** log aggregation
-- **Installed-addon health panel** — shows status of addons that are
-  currently installed (up / degraded / down). Does not ship remediation
-  content; errors link to upstream docs.
-- **Backup / restore** to S3 or NFS (CRD export + Velero + secret snapshots)
-- **`helm` source type** — install arbitrary Helm charts through Mortise UI
-- **`external` source type** — wrap already-running services with domain/TLS/auth
-- **`catalog` source type** — operator-backed backing services. **Bounded
-  list**: CloudNativePG for Postgres, redis-operator for Redis. The
-  catalog is extensible — users can add their own entries — but Mortise
-  itself maintains only this short list.
-- **Community app presets** — a separate, community-contributed repository
+### 6.1 Scope Invariants
+
+Any feature proposal, now or in future, gets checked against these invariants
+before scope-in. If it violates any, it doesn't ship — regardless of how
+useful it would be in isolation.
+
+1. **Core is the whole product.** Mortise has one install: `helm install
+   mortise`. There is no two-tier product, no addon pack, no plug-in
+   ecosystem. Every feature that exists in Mortise exists in core.
+2. **Integration happens through Kubernetes primitives.** When users want
+   capabilities beyond Mortise (SSO, monitoring, logs, backup, external
+   secret managers), they install the upstream project directly. Mortise
+   consumes standard Kubernetes objects (Secrets, Ingresses, CRDs,
+   metrics endpoints) those projects produce. Mortise does not define a
+   Mortise-specific plug-in protocol to sit in front of them.
+3. **We don't take on long-term upstream-tracking relationships
+   speculatively.** Shipping a convenience wrapper for a third-party
+   project commits us to tracking its API, schema, and breaking changes
+   forever. That commitment is only made when real demand justifies the
+   permanent maintenance cost, and it's made sparingly.
+4. **Interfaces are for testability, not for extension.** Go interfaces
+   inside the operator exist to keep third-party SDKs out of controller
+   code and to enable fast unit tests. They are not a plug-in API. Third
+   parties do not implement them; there are ~11 total in-tree
+   implementations across all interfaces (§11.1).
+5. **When an upstream project we rely on becomes unmaintained, we swap,
+   document a workaround, or scope the feature out — we do not fork.** We
+   are not in the business of maintaining abandoned third-party software.
+
+### 6.2 Post-v1 Operator Features
+
+Capabilities that stay in the core operator but are deliberately deferred
+from the v1 cut. Each lands as a core feature flag or CRD extension, not
+as a separate chart.
+
+- **`external` source type** — wrap an already-running service (a DB on a
+  VM, a cloud API, a Redis outside the cluster) as a Mortise object with
+  domain/TLS/credentials that other Apps can bind to.
+- **Cloudflare Tunnel automation** — creates a CF Tunnel via API and wires
+  cloudflared into the cluster; enables Mortise to be reachable from the
+  internet without a public IP. Operator feature, not an install chart for
+  `cloudflared` (users who want a generic tunnel chart use the upstream).
+- **`perReplica` volumes / StatefulSet workloads** — extend the App CRD to
+  support StatefulSet-shaped workloads with per-replica PVCs.
+- **Multi-cluster** — `Cluster` CRD, bearer-token trust model, aggregated
+  UI. Single-cluster remains the primary deployment shape; multi-cluster
+  is purely additive.
+- **`mortise export` CLI** — export all App / PlatformConfig / GitProvider
+  CRs as portable YAML for backup and migration. Pairs with Velero for
+  full DR (Velero handles PVCs; `mortise export` handles configuration).
+- **Log UI integration** — PlatformConfig field pointing at the user's log
+  backend (Loki, CloudWatch, Splunk, Elastic, GCP Logging); Mortise UI
+  embeds/links to it per App. Backend-agnostic — no Loki install required.
+
+### 6.3 Integration Recipes (Documentation, not code)
+
+Things users want that Mortise supports by being well-behaved, not by
+shipping code. Each is a documentation page with copy-pasteable YAML; none
+is a Mortise-maintained artifact.
+
+- **OIDC login via any IdP.** Install Authentik / Keycloak / Zitadel /
+  Okta / Google / GitHub (the user's choice) and point `PlatformConfig.auth`
+  at its issuer URL. Recipe page per common IdP.
+- **Prometheus monitoring.** Install kube-prometheus-stack; apply the
+  ServiceMonitor example that targets Mortise's `/metrics` endpoint.
+- **Log aggregation.** Install Loki (or any log backend) the standard way;
+  its shipper scrapes Mortise and user pods automatically from labels.
+- **External secret managers.** Install ExternalSecrets Operator, point it
+  at Vault / AWS SM / GCP SM / Azure KV / 1Password / etc., and set
+  `PlatformConfig.secrets.externalStore` on Mortise. See §5.9 for the flow.
+- **Backup and disaster recovery.** Install Velero with a backup target;
+  apply the Schedule example that includes Mortise's namespaces. Pair with
+  `mortise export` for configuration portability.
+- **Backing services (Postgres, Redis).** Three working paths: (a) `image`
+  source with `postgres:16` + PVC for homelab simplicity, (b) install
+  CloudNativePG or redis-operator directly and bind via `external` source,
+  (c) use managed services (RDS, Upstash) via `external` source. No
+  Mortise-maintained catalog.
+- **Storage guidance.** Documentation on picking a StorageClass (local-path,
+  Longhorn, Ceph, NFS, cloud CSI). Mortise does not install storage
+  providers; it detects missing RWX and links to the docs.
+
+### 6.4 Deferred Until Real Demand
+
+Things that could conceivably exist but won't be built speculatively.
+Scoped in only when users with that specific need show up.
+
+- **Cloudflare Worker relay for GitHub App OAuth** — infrastructure we'd
+  have to host and maintain forever to support GitHub App mode. PAT and
+  OAuth-app modes cover 95%+ of git-provider users; this stays off the
+  roadmap until there's concrete demand.
+- **Cloudflare for SaaS custom hostnames** — genuinely useful for users
+  building SaaS on Mortise where end-customers want custom domains. A real
+  feature for a narrow audience; specced and built when that audience
+  shows up.
+- **`helm` source type** — deploying arbitrary Helm charts through the
+  Mortise UI. Scope expansion into "generic Helm dashboard" territory
+  where other tools (Lens, k9s, Argo CD) already serve users better. Not
+  shipped unless the Mortise-specific angle becomes clear.
+
+### 6.5 Community-Maintained (Not Mortise's Scope)
+
+- **App preset repository** — a separate, community-contributed collection
   of App CRD templates for common self-hosted software (Paperless,
-  Vaultwarden, etc.). Shipped as data, not code; not maintained by the
-  Mortise core team. Users get a library; breakage of a preset is an
-  upstream/community concern.
-- **Cloudflare Worker relay** for GitHub App mode
-- **Cloudflare for SaaS** custom hostname automation
-- **Cloudflare Tunnel** deployment automation
-- **Storage guidance** — detection ("your cluster has no RWX-capable
-  StorageClass") and documentation links (Longhorn, NFS). Mortise does
-  **not** install Longhorn or NFS for you; that's the cluster admin's job.
-- **`perReplica` volumes** / StatefulSet workloads
-- **Multi-cluster** (Cluster CRD, bearer-token trust, aggregated UI)
-
-### 6.1 Addon Pack Discipline
-
-The addon pack exists because users want platform-shaped capabilities
-layered onto the deploy target. The project's long-term survival depends
-on never letting the addons congeal *into* a platform. The invariants
-that prevent that:
-
-1. **Core never depends on any addon.** `helm install mortise` with zero
-   addons is a complete Railway clone, always. If any feature in core
-   requires an addon to function, the feature belongs in core or doesn't
-   ship.
-2. **Addons never depend on each other.** Installing Authentik does not
-   require monitoring; installing monitoring does not require Loki.
-   Cross-addon assumptions get rejected at review.
-3. **Each addon has its own lifecycle.** Added, upgraded, removed, or
-   archived independently. No "we released v2 of the platform" — only
-   "we released v2 of the monitoring addon."
-4. **Addons whose value depends on tracking upstream API or schema churn
-   get extra scrutiny at scope-in time.** A curated catalog of 40 apps
-   means 40 upstream relationships forever; that's the trap. Prefer
-   shapes where breakage is distributed (community presets, user-extended
-   catalog) over shapes where Mortise owns every integration point.
-5. **When an addon's upstream becomes unmaintained, the addon gets
-   archived, not forked.** We do not become the maintainers of abandoned
-   third-party software to keep an addon alive.
-
-These rules turn scope decisions into rule-application rather than
-judgment calls. A proposal that violates any of them doesn't ship —
-regardless of how useful the feature would be in isolation.
+  Vaultwarden, etc.). Data, not code. Not maintained by the Mortise team.
+  Mortise's side of the integration is a small UI feature that can import
+  an App from a URL. Breakage of any preset is a community concern.
 
 ---
 
@@ -684,26 +733,28 @@ Self-hosting the Mortise project's own CI is out of scope.
 
 ## 8. Packaging
 
-### 8.1 Umbrella Helm Chart
+### 8.1 Helm Chart
 
 ```
 charts/
-└── mortise/               # umbrella
-    ├── Chart.yaml          # lists subcharts
-    ├── values.yaml         # top-level toggles
-    └── charts/
-        ├── mortise-core/  # always-on: operator, API, UI, CRDs, Traefik, cert-manager, ExternalDNS
-        └── (addons in future: authentik, openbao, monitoring, catalog, ...)
+└── mortise/               # single chart — not an umbrella
+    ├── Chart.yaml          # depends on traefik, cert-manager, external-dns (bundled), zot (conditional)
+    ├── values.yaml
+    └── templates/          # operator Deployment, RBAC, CRDs, Service, etc.
 ```
 
-**v1 ships with `mortise-core` only.** Addon subcharts land over time, each
-independently installable. The umbrella chart exists so addons can declare
-dependencies and inherit shared values (domain, DNS provider, etc.).
+Mortise is one chart. It declares a handful of well-known upstream charts as
+dependencies (Traefik, cert-manager, ExternalDNS, Zot) so a single
+`helm install` gives a working cluster out of the box. Those dependencies
+can be turned off (§8.3) when the cluster already has equivalents.
+
+There is no umbrella chart, no addon subchart directory, no preset system
+to maintain. §6.1 invariant #1 guarantees the chart alone is the whole
+product.
 
 ### 8.2 Install UX
 
 ```bash
-# Fast path (core only)
 helm install mortise oci://ghcr.io/mortise/mortise \
   --namespace mortise-system --create-namespace \
   --set domain=yourdomain.com \
@@ -711,19 +762,9 @@ helm install mortise oci://ghcr.io/mortise/mortise \
   --set dns.apiToken=xxx
 ```
 
-**The fast path is not a stripped-down install.** Core alone is the entire
-Railway-equivalent product: deploy apps from git or image, bindings,
-previews, TLS, domains, native auth. §6.1 invariant #1 guarantees this
-forever — no core feature will ever require an addon to function. A user
-who never installs a single addon is using Mortise as intended.
-
-**Presets are sugar over flags, not bundles.** A future `--preset=homelab`
-resolves to a named list of `<addon>.enabled=true` flags and nothing more.
-Presets do not create cross-addon coupling, introduce new lifecycles, or
-gate features behind a preset choice. Disabling any addon inside a preset
-after the fact must leave the rest working unchanged. If a proposed preset
-needs glue code beyond flag-flipping, it's a §6.1 violation and doesn't
-ship.
+One command. The result is the full Railway-equivalent product: deploy from
+git or image, bindings, previews, TLS, domains, native auth. No second
+install step, no addon picker, no "did you remember to enable X?"
 
 ### 8.3 Bring-Your-Own Platform Components
 
@@ -777,18 +818,7 @@ webhooks only — not for cloning, since no `git` source), internal ACME via
 
 What Mortise does *not* provide in an airgap: source-to-image builds. Git
 source is effectively disabled. This is a deliberate scope boundary, not a
-limitation to be lifted in an addon.
-
-Later (addon pack available):
-
-```bash
-# Pick addons; CLI walks through them interactively
-mortise platform install            # interactive picker (authentik? monitoring? ...)
-mortise platform install --addons=authentik,monitoring
-```
-
-The CLI wraps `helm upgrade` on the umbrella chart with the selected subchart
-values — users don't write Helm commands themselves.
+limitation to be lifted later.
 
 ---
 
@@ -925,31 +955,38 @@ the PR, preview disappears.
 **Exit criteria:** a new user goes from "empty k3s cluster" to "deployed app
 with preview envs" in under 15 minutes using only the UI and CLI.
 
-### Post-v1 — Addon Pack (order TBD)
+### Post-v1
 
-Each of these is an independent subchart and an independent work stream. None
-block the others; order depends on user demand after v1 ships.
+Organized by §6's taxonomy — operator features, integration recipes, deferred
+items, and community-maintained data. None of these are "addons"; none add a
+new install surface. Order depends on user demand after v1 ships.
 
-- **Authentik convenience chart** — installs Authentik, pre-configures it
-  as an OIDC provider for Mortise's own login. No Mortise code beyond
-  the existing generic-OIDC impl (§5.10).
-- **kube-prometheus-stack** subchart + Grafana OAuth + pre-loaded dashboards
-- **Loki** subchart + log aggregation in UI
-- **Installed-addon health panel** — status of currently-installed addons in
-  the UI (up / degraded / down), errors link to upstream docs
-- **Backup/restore** to S3/NFS (CRD export + k8s Secret snapshots + Velero)
-- **`helm` source type** — arbitrary Helm chart deploys through UI
+**Operator features** (§6.2) — code changes inside the single binary:
 - **`external` source type** — wrap external services with domain/TLS
-- **`catalog` source type** — bounded to CNPG Postgres and redis-operator
-  Redis; user-extensible but not curated beyond that pair
-- **Community app presets** — data-only repository of App CRD templates
-  for common self-hosted software; not maintained by the core team
-- **Cloudflare Worker relay** for GitHub App OAuth
-- **Cloudflare for SaaS** custom hostname automation
-- **Storage guidance** — detection of missing RWX StorageClass + docs links;
-  Mortise does not install Longhorn/NFS for the user
-- **`perReplica` volumes** — StatefulSet support
+- **`perReplica` volumes / StatefulSet support**
 - **Multi-cluster** — Cluster CRD, bearer-token trust, aggregated UI
+- **`mortise export` CLI** — render the managed resources for airgap inspection
+- **Log UI integration** — if a Loki endpoint is configured, surface logs
+  in the App view (no bundling of Loki itself)
+- **Cloudflare Tunnel automation** — operator manages Tunnel + DNS for users
+  who opt in
+
+**Integration recipes** (§6.3) — documentation only, no code:
+- OIDC setup against Authentik / Keycloak / Okta / Google / etc.
+- Monitoring via kube-prometheus-stack
+- Log aggregation via Loki
+- External secret managers via ExternalSecrets Operator
+- Backup/restore via Velero
+- Backing services via CNPG / redis-operator
+- Storage sizing guidance (RWX StorageClass options)
+
+**Deferred until real demand** (§6.4):
+- Cloudflare Worker relay for GitHub App OAuth
+- Cloudflare for SaaS custom hostname automation
+- `helm` source type
+
+**Community-maintained** (§6.5):
+- App preset repository — data-only CRD templates, not core-team owned
 
 ---
 
@@ -1191,7 +1228,6 @@ pattern; anything beyond it is user-at-own-risk.
 | Mortise Helm release (operator version, chart values) | **Yes, recommended** | Declarative platform config |
 | `PlatformConfig` CRD (domain, DNS, default SC) | **Yes, recommended** | Cluster-wide, rarely changes |
 | `GitProvider` CRDs | **Yes, recommended** | Credentials via ESO / sealed-secrets / SOPS |
-| Addon subchart enable/disable (post-v1) | **Yes, recommended** | Just more chart values |
 | `App` CRDs | **No** | Authored through Mortise; live in etcd |
 | `PreviewEnvironment` CRDs | **No — operator-created** | Lifecycle is PR-driven |
 | Deployments / Services / Ingresses | **No — operator-created** | Mortise owns these |
@@ -1228,12 +1264,12 @@ handling, read-only UI mode); for now, pick one tool or the other per App.
   network for Railpack metadata, BuildKit base images, and language
   toolchains. Airgapped clusters use the image source + deploy webhook
   path with their own internal CI; see §8.5.
-- Not optimized for sub-16GB cluster footprints once the addon pack is
-  installed; core alone is much lighter and fits comfortably in 4–8GB
+- Optimized for 4–8GB clusters as a baseline; much heavier once the user
+  also runs monitoring / log aggregation / etc. alongside (which they install
+  themselves — see §6.3)
 - **Not a workload-kind platform.** v1 deploys long-running HTTP/TCP services
   as Kubernetes Deployments. Jobs, CronJobs, StatefulSets, DaemonSets are not
-  supported. `perReplica` volumes and StatefulSet-per-App land in the addon
-  pack.
+  supported. `perReplica` volumes and StatefulSet-per-App are post-v1 (§6.2).
 - **Not a GPU / specialized-scheduling platform.** App CRD has no
   `nodeSelector`, `tolerations`, `affinity`, `runtimeClassName`, or
   `resourceClaims`. Teams with GPU, specialty hardware, or

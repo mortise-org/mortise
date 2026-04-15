@@ -112,13 +112,13 @@ flowchart TB
 |---|---|---|---|
 | **Mortise Operator** | `mortise-system` | Reconciles CRDs (`App`, `PreviewEnvironment`, `PlatformConfig`, `GitProvider`). Serves the REST API and UI. Handles webhooks. Owns everything the platform creates. | Never touches resources outside what it created; coexists with Argo CD, manual kubectl, other tools. |
 | **Operator datastore** | `mortise-system` | Stores deploy history, users (v1 native auth), audit logs, session tokens. v1 = sqlite on PVC; v2 = Postgres for HA. | Never stores user app data — only Mortise metadata. |
-| **Traefik** | `mortise-system` | Ingress controller. Routes external HTTPS traffic to user Apps and the Mortise API/UI. | Installed and managed by core chart. Addon pack may add forward-auth middleware for per-App SSO. |
+| **Traefik** | `mortise-system` | Ingress controller. Routes external HTTPS traffic to user Apps and the Mortise API/UI. | Installed and managed by the Mortise chart; can be disabled when the cluster has an existing controller (SPEC §8.3). |
 | **cert-manager** | `mortise-system` | Issues TLS certs via ACME (or self-signed in dev/test). Triggered by annotations on Ingress resources. | Core chart dependency; not touched by user. |
 | **ExternalDNS** | `mortise-system` | Watches Ingress resources and creates matching DNS records at the configured provider. | Core chart dependency; configured once during install. |
 | **Zot** | `mortise-system` | OCI image registry. Default target for builds unless external registry configured. | Installed conditionally (omitted if user picks GHCR/Docker Hub/custom). |
-| **BuildKit** | `mortise-builds` | Builds container images from git sources. Consumes LLB or Dockerfile input; pushes to registry. | Installed lazily on first git App. Addon pack later adds pooling. |
+| **BuildKit** | `mortise-builds` | Builds container images from git sources. Consumes LLB or Dockerfile input; pushes to registry. | Installed lazily on first git App. Pooling / scale-out is post-v1 operator work if queue wait becomes a problem. |
 | **User App pods** | `<app-ns>` | The actual workloads Mortise deploys. | Pure 12-factor; no Mortise SDK or sidecar required. |
-| **Backing service pods** | `<app-ns>` | Apps with `credentials:` declared — typically stateful (Postgres, Redis). Other Apps bind to them. | v1 = `image` source + PVC + manual credentials. Addon pack adds operator-backed `catalog` source for HA/PITR. |
+| **Backing service pods** | `<app-ns>` | Apps with `credentials:` declared — typically stateful (Postgres, Redis). Other Apps bind to them. | v1 = `image` source + PVC + manual credentials. Users who need HA/PITR install CNPG or redis-operator directly and point Apps at them (SPEC §6.3). |
 
 ---
 
@@ -256,65 +256,56 @@ flowchart TB
 
 ## 4. Install & Chart Layout
 
-What actually lands on a cluster during install, and where the addon pack
-attaches later.
+What lands on a cluster during install. One chart, no addon subcharts, no
+umbrella. Adjacent capabilities (OIDC, monitoring, logs, backups, external
+secret managers) are upstream projects the user installs themselves — they
+do not go through this chart.
 
 ```mermaid
 flowchart TB
-    Umbrella["mortise umbrella Helm chart"]
-    Core["mortise-core subchart - v1 always installs"]
+    Chart["mortise Helm chart - single chart"]
 
     OP["Operator binary - controllers plus REST plus embedded UI"]
     CRDs["CRDs - App PreviewEnvironment PlatformConfig GitProvider"]
-    TFc["Traefik dep"]
-    CMc["cert-manager dep"]
-    EDc["ExternalDNS dep"]
+    TFc["Traefik dep (disable-able)"]
+    CMc["cert-manager dep (disable-able)"]
+    EDc["ExternalDNS dep (disable-able)"]
     ZOc["Zot (conditional on registry.type=builtin)"]
 
-    Auth["authentik - convenience chart for OIDC"]
-    Mon["monitoring - kube-prometheus-stack"]
-    Log["loki - log aggregation"]
-    Cat["catalog - CNPG plus redis-operator"]
-    Bak["backup - Velero plus snapshots"]
-    Health["addon-health - installed-addon status panel"]
+    Chart --> OP
+    Chart --> CRDs
+    Chart --> TFc
+    Chart --> CMc
+    Chart --> EDc
+    Chart --> ZOc
 
-    Umbrella --> Core
-    Core --> OP
-    Core --> CRDs
-    Core --> TFc
-    Core --> CMc
-    Core --> EDc
-    Core --> ZOc
-
-    Umbrella -.opt-in.-> Auth
-    Umbrella -.opt-in.-> Mon
-    Umbrella -.opt-in.-> Log
-    Umbrella -.opt-in.-> Cat
-    Umbrella -.opt-in.-> Bak
-    Umbrella -.opt-in.-> Health
+    Upstream["Upstream projects the user may install separately - Authentik Keycloak kube-prometheus-stack Loki Velero ExternalSecrets Operator CNPG redis-operator etc."]
+    Chart -.coexists with.-> Upstream
 ```
 
 **How to read it:**
 
-- **Solid arrows** = always installed when the umbrella chart is installed.
-  The `mortise-core` subchart is the v1 footprint.
-- **Dotted arrows** = opt-in. Each addon is its own subchart with its own
-  values and its own lifecycle (SPEC §6.1); the umbrella chart declares
-  them as disabled-by-default dependencies so users can turn them on with
-  a values flag (or via the CLI picker later). Addons never depend on
-  each other — enabling Authentik doesn't pull in monitoring, enabling
-  monitoring doesn't pull in Loki.
-- **Not subcharts, despite appearing in SPEC §6:** the `helm` / `external`
-  / `catalog` source types are operator features gated by feature flag,
-  not separate charts. Community app presets are a data repository, not
-  code. Storage guidance is documentation. Cloudflare integrations are
-  either operator features (Tunnel automation) or external relays.
-- **BuildKit is intentionally absent** from the core subchart. It's installed
-  on-demand by the operator the first time a `git` App is created — not at
-  chart install time. Keeps the base install lean for users who only deploy
-  images.
-- **User app namespaces** are not in this diagram because they're not part of
-  the chart. They're created dynamically by the operator when an App is
+- **Solid arrows** = always installed when the Mortise chart is installed.
+  This is the whole product — §6.1 invariant #1.
+- **"disable-able" deps** = Traefik, cert-manager, ExternalDNS are bundled
+  for a one-command install but can each be turned off when the cluster
+  already has them (SPEC §8.3). Disabling swaps the implementation; the
+  feature stays.
+- **Dotted "coexists with" edge** = everything off to the right is an
+  upstream project the user installs themselves using its own chart.
+  Mortise does not package, vendor, or wrap them. Integration is through
+  standard Kubernetes primitives: ESO writes k8s Secrets; Prometheus
+  scrapes pods; Velero snapshots namespaces; an OIDC provider exposes an
+  `issuerURL`. None of these require code in Mortise.
+- **Not in the chart either:** the `external` / `helm` source types and
+  Cloudflare Tunnel automation are post-v1 operator features (SPEC §6.2) —
+  they add code to the same operator binary, not new subcharts. App preset
+  repositories are data, not code (SPEC §6.5).
+- **BuildKit is intentionally absent.** It's installed on-demand by the
+  operator the first time a `git` App is created — not at chart install
+  time. Keeps the base install lean for image-only users.
+- **User app namespaces** are not in this diagram because they're not part
+  of the chart. They're created dynamically by the operator when an App is
   deployed.
 
 ### Install Flow (v1)
@@ -377,8 +368,10 @@ when reading the code or debugging a specific interaction.
 - **Multi-cluster topology** — out of scope for v1; a future Cluster CRD
   layers on top of this diagram with zero changes to the single-cluster
   picture.
-- **Addon pack detailed internals** — each addon subchart has its own
-  component diagram; will be drawn when those land.
+- **Upstream projects users install alongside Mortise** (Authentik,
+  Prometheus, Loki, Velero, ESO, CNPG, etc.) — those each have their own
+  docs and architecture; Mortise coexists with them through standard
+  Kubernetes primitives (see SPEC §6.3) and does not wrap them.
 - **CI pipeline for Mortise itself** — GitHub Actions running `make test`
   and `make test-integration`; covered in SPEC §7.
 - **RBAC and service account details** — operator has cluster-wide read
