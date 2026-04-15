@@ -780,7 +780,126 @@ block the others; order depends on user demand after v1 ships.
 
 ---
 
-## 11. Non-Goals for v1
+## 11. Interface Contracts — Two Layers
+
+There are two contract layers in the codebase, pointing in opposite directions.
+Keeping them straight is the single most important architectural discipline in
+the project.
+
+### 11.1 Outward Contracts (Seams / Interfaces)
+
+Contracts that **Capybara's own code agrees to** when it talks to external
+systems. Nobody outside the codebase sees these — they are internal plumbing.
+
+```
+Capybara controller  →  SecretBackend interface  →  k8s Secrets / OpenBao / AWS
+Capybara controller  →  GitProvider interface    →  GitHub / GitLab / Gitea
+Capybara controller  →  BuildClient interface    →  BuildKit
+Capybara controller  →  DNSProvider interface    →  ExternalDNS / Cloudflare
+```
+
+Controllers import only Capybara's own types. They never import
+`github.com/google/go-github`, `moby/buildkit/client`, or any other third-party
+SDK directly. Every external dependency is wrapped behind an interface that
+lives in `internal/<name>/`.
+
+**v1 interfaces:**
+
+```go
+// internal/secrets/backend.go
+type SecretBackend interface {
+    Get(ctx context.Context, scope, key string) (string, error)
+    Set(ctx context.Context, scope, key, value string) error
+    Delete(ctx context.Context, scope, key string) error
+    List(ctx context.Context, scope string) ([]string, error)
+}
+
+// internal/build/client.go
+type BuildClient interface {
+    Submit(ctx context.Context, req BuildRequest) (<-chan BuildEvent, error)
+}
+
+// internal/git/provider.go
+type GitProvider interface {
+    RegisterWebhook(ctx context.Context, repo string) error
+    PostCommitStatus(ctx context.Context, repo, sha, state, url string) error
+    CloneRepo(ctx context.Context, repo, ref, dest string) error
+    VerifyWebhookSignature(body []byte, header http.Header) error
+}
+
+// internal/dns/provider.go
+type DNSProvider interface {
+    UpsertRecord(ctx context.Context, record DNSRecord) error
+    DeleteRecord(ctx context.Context, record DNSRecord) error
+}
+```
+
+**Why these exist** — three reasons, in order of importance:
+
+1. **Swap points for the addon pack.** `SecretBackend` is how v1 (k8s Secrets)
+   becomes OpenBao (addon) becomes AWS Secrets Manager (addon) without
+   rewriting controllers. The addon pack is a real product boundary because
+   these interfaces make it one.
+2. **Version-bump firewall.** A BuildKit or Authentik major version bump
+   touches one file (the implementation behind the interface), not fifty.
+   This is what solves the "we're glue for 8 services, every upgrade is
+   terrifying" problem.
+3. **Test seams.** Controllers take these interfaces via constructor
+   injection; unit tests pass in in-memory fakes. No network, no flake, no
+   credentials, millisecond test runs.
+
+All three wins come from the same discipline: **no controller code talks to
+third-party SDKs directly, ever.**
+
+### 11.2 Inward Contracts (CRD + REST API)
+
+Contracts that **external callers agree to** when they talk to Capybara.
+These are the public surface — versioned with semver, documented, and not
+broken lightly.
+
+- **`App` CRD and related CRDs** — the YAML shape users write (directly or
+  via UI/CLI that writes it for them). Versioned as `capybara.dev/v1alpha1`
+  today, moving to `v1beta1` and `v1` over time.
+- **REST API** — `POST /api/deploy`, `POST /api/secrets`, etc. Used by the
+  UI, the CLI, and external CI systems via the deploy webhook. Full OpenAPI
+  spec published.
+
+**What external callers need to agree to, in practice:**
+
+1. If they want to be managed by Capybara → the `App` CRD schema (or use UI/CLI).
+2. If they want to deploy from external CI → the deploy webhook API + a token.
+3. If they want to consume bindings → nothing. Capybara injects env vars at
+   pod-start time. Apps read `process.env.DATABASE_URL` like any 12-factor app.
+   No SDK, no sidecar, no agent.
+
+### 11.3 Direction Diagram
+
+```
+                 ┌─────────────────────────────────────────┐
+  users, CI,  →  │   CRDs + REST API    (inward contract)  │
+  pods, UI       └─────────────────────────────────────────┘
+                              │
+                              ▼
+                 ┌─────────────────────────────────────────┐
+                 │   Capybara controllers / business logic │
+                 └─────────────────────────────────────────┘
+                              │
+                              ▼
+                 ┌─────────────────────────────────────────┐  →  real GitHub
+                 │   Interfaces        (outward contract)  │  →  real BuildKit
+                 └─────────────────────────────────────────┘  →  real OpenBao
+```
+
+Two layers, two directions, two sets of rules:
+
+| Layer | Who sees it | Freedom to change |
+|---|---|---|
+| Inward (CRD + REST API) | External users, pods, CI | Low — breaking changes require version bumps and migration |
+| Outward (interfaces) | Capybara's own code only | High — refactor freely; implementations can be swapped without touching controllers |
+
+---
+
+## 12. Non-Goals for v1
 
 - Not a cluster provisioner
 - Not multi-cluster
