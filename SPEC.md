@@ -24,16 +24,26 @@ The product ships in two layers:
    via a single Helm chart. Zero addons required. This is what we build first.
 2. **Tenons (post-v1 addon pack)** — optional subcharts that bolt onto core to provide
    SSO (Authentik), secret management (OpenBao), monitoring (Prometheus/Grafana),
-   platform health UI, backup/restore, Helm-source deployments, curated service
-   catalog, storage wizard, and more. Each addon is independently installable.
+   backup/restore, Helm-source deployments, a bounded service catalog, and
+   community-contributed app presets. Each addon is an independent product
+   with its own lifecycle (see §6.1).
 
-The split matters: core stands on its own as a Coolify-for-Kubernetes. The addon
-pack turns it into a full homelab platform. Users who only want the Railway UX
-never see or pay for the platform ambition.
+The split matters: core stands on its own as a Coolify-for-Kubernetes. Addons
+let users assemble a richer self-hosted stack on top of core by selecting
+only what they want. Users who only want the Railway UX never see or pay for
+anything beyond core.
 
 ---
 
 ## 2. Positioning
+
+**Mortise is a deploy target, not a platform.** Core is a Railway-equivalent
+product that users install and use; addons are independently-maintained
+extensions, not bundled platform features. We never ship "the platform" as
+a single thing — users assemble what they want from core plus à la carte
+addons. This distinction is load-bearing: see §6.1 for the discipline that
+keeps addons from congealing into a platform (which is how every previous
+attempt in this space has died).
 
 Mortise is what a developer installs when there is no platform team. It produces
 the Kubernetes manifests (internally, via CRD reconciliation) and runs the CD
@@ -318,45 +328,73 @@ cluster's default SC). For v1:
   bindings live-resolved through staging (no credential copy). PR closes or TTL
   expires → everything deleted. URL posted as PR comment.
 
-### 5.9 Secrets (v1 — no OpenBao)
+### 5.9 Secrets
 
-v1 uses Kubernetes Secrets directly as the backend. The user-facing API is
-identical to what OpenBao will provide later — the storage backend is an
-interface the operator writes against.
+Mortise uses **Kubernetes Secrets directly** as the storage and runtime
+backend. There is no `SecretBackend` abstraction inside Mortise; the pod
+consumes env vars the normal way (`secretKeyRef`), and the operator's job
+is to write the right k8s Secret at reconcile time.
 
 - Write-only editor in UI (values never displayed after save)
 - Rotation: `secret rotate` writes a new value, rolling-restarts every App
   referencing it
-- Scoped as `<app>/<environment>/<key>`
+- Scoped as `<app>/<environment>/<key>`; stored as a k8s Secret in the
+  App's namespace
 
-OpenBao wiring is addon-pack. The `SecretBackend` interface is designed for swap.
+**External secret managers (Vault, AWS Secrets Manager, GCP SM, Azure KV,
+1Password, etc.) integrate via ExternalSecrets Operator**, which is a
+separately-installed project Mortise does not own. The pattern:
 
-### 5.10 Auth (v1 — native, interface-backed)
+1. User installs ESO (`helm install external-secrets ...`) and a
+   `ClusterSecretStore` pointing at their backend.
+2. User sets `secrets.mode: external` on their App and references a
+   path in the backend via the Mortise UI/CRD.
+3. Mortise writes an `ExternalSecret` CR in the App's namespace; ESO
+   reconciles it and produces a regular k8s Secret.
+4. Mortise consumes that Secret the same way it would consume a
+   natively-managed one.
 
-Auth is two separate concerns, each behind its own interface (§11.1):
+Mortise never imports ESO's Go types or talks to the backend directly.
+The integration is two CRs passing k8s Secrets between them. If ESO is
+not installed, Mortise falls back to native k8s Secrets — nothing breaks,
+users just don't have the external-backend option. See §11.1 for why
+this is not a "plug-in protocol."
 
-- **Platform auth** (`AuthProvider` + `PolicyEngine`) — who can log into
-  Mortise's UI/API, and what they can do there.
-- **App forward-auth** (`ForwardAuthProvider`) — SSO middleware placed in
-  front of user Apps' Ingresses. Entirely distinct from platform auth; a
-  user may keep GitHub OAuth on Mortise itself while running Authentik
-  forward-auth in front of their workloads, or vice versa.
+### 5.10 Auth (login for Mortise itself)
 
-v1 ships with a **native `AuthProvider`** (password + invite link, accounts
-in the operator DB, one admin created during first-run wizard) and a **native
-`PolicyEngine`** (admin/member roles, hardcoded policy). `ForwardAuthProvider`
-has no v1 implementation — Apps get no middleware until the forward-auth addon
-is installed.
+Auth is scoped to **Mortise's own UI and API** — logging developers and
+admins into Mortise. User apps' authentication is the user's problem,
+out of scope (see note below).
 
-Because these are interfaces from day one, a small OIDC `AuthProvider` impl
-can ship as an early addon without touching controllers — unblocking Okta,
-Keycloak, Google Workspace, Authentik, and Tailscale auth users who can't
-wait for the full Authentik addon.
+**Two in-tree implementations cover the realistic space:**
 
-- v1 roles: admin / member
+- **Native** (default): username/password accounts stored in the operator's
+  database. One admin created during first-run wizard; invites via
+  generated link.
+- **Generic OIDC**: configured with `issuerURL + clientID + clientSecret`.
+  Covers every mainstream IdP via the OIDC standard — Authentik, Keycloak,
+  Okta, Auth0, Google, GitHub, GitLab, Microsoft Entra, Zitadel, etc.
+  One code path, one set of tests.
+
+Selection is per-deployment via `PlatformConfig.auth.mode: {native, oidc}`.
+Not pluggable at runtime — if you want OIDC, set the flag and restart the
+operator. That's enough flexibility for 90%+ of real users. SAML and LDAP
+are out of scope for v1 and can be added in-tree later as separate modes if
+demand appears.
+
+- Roles: admin / member
 - Admin can manage users, providers, DNS, platform settings, all apps
 - Member can create/manage own apps, view shared apps
-- Teams + per-app grants are v2 (PolicyEngine swap)
+- Teams + per-app grants are v2
+
+**SSO for user apps is not a Mortise concern.** Mortise-v1's job is what
+Railway's is: hand users env vars and a URL. A user who wants their Gitea
+to "Login with Authentik" installs Authentik themselves, creates the OIDC
+client in Authentik's UI, and pastes the client ID + secret into Mortise's
+secrets editor — same flow as on Railway. Forward-auth middleware and
+automated OIDC/SAML client provisioning for user apps are an addon-pack
+topic to be specced if and when real demand shows up; they are not a v1
+contract.
 
 ### 5.11 In-UI Metrics (v1)
 
@@ -424,28 +462,73 @@ Config at `~/.config/mortise/config.yaml`.
 ## 6. Explicitly Deferred (Addon Pack)
 
 Everything below is **not in v1**. Each maps to an optional subchart or CLI
-feature, installable independently after core is live.
+feature, installable independently after core is live. Read §6.1 for the
+rules that constrain what gets added here.
 
-- **Authentik** SSO + forward auth per App
-- **OpenBao** secret backend (v1 uses k8s Secrets; interface is swap-ready)
-- **External Secrets Operator** integration for AWS/GCP/Vault backends
-- **Prometheus + Grafana** stack with auto-wired OAuth and pre-loaded dashboards
+- **Authentik convenience chart** — installs Authentik and pre-configures
+  it as an OIDC provider for Mortise's own login. Mortise itself doesn't
+  integrate with Authentik beyond standard OIDC (§5.10), so this addon
+  is purely installation sugar — a user could install Authentik by hand
+  and configure OIDC manually with identical results. Archiving this
+  addon at any point would not affect Mortise core.
+- **Prometheus + Grafana** stack — installs kube-prometheus-stack with
+  opinionated defaults and wires Grafana OAuth through `AuthProvider`.
+  Ships the standard upstream dashboards that come with
+  kube-prometheus-stack; Mortise does not maintain its own dashboard set.
 - **Loki** log aggregation
-- **Platform Health** page (per-component cards with curated fixes)
+- **Installed-addon health panel** — shows status of addons that are
+  currently installed (up / degraded / down). Does not ship remediation
+  content; errors link to upstream docs.
 - **Backup / restore** to S3 or NFS (CRD export + Velero + secret snapshots)
 - **`helm` source type** — install arbitrary Helm charts through Mortise UI
 - **`external` source type** — wrap already-running services with domain/TLS/auth
-- **`catalog` source type** — operator-backed backing services (CloudNativePG
-  for Postgres, redis-operator for Redis, MinIO, etc.) with per-entry credential
-  extractors
-- **Self-hosted app catalog** — curated presets for Paperless, Vaultwarden, etc.
+- **`catalog` source type** — operator-backed backing services. **Bounded
+  list**: CloudNativePG for Postgres, redis-operator for Redis. The
+  catalog is extensible — users can add their own entries — but Mortise
+  itself maintains only this short list.
+- **Community app presets** — a separate, community-contributed repository
+  of App CRD templates for common self-hosted software (Paperless,
+  Vaultwarden, etc.). Shipped as data, not code; not maintained by the
+  Mortise core team. Users get a library; breakage of a preset is an
+  upstream/community concern.
 - **Cloudflare Worker relay** for GitHub App mode
 - **Cloudflare for SaaS** custom hostname automation
 - **Cloudflare Tunnel** deployment automation
-- **Storage wizard** with Longhorn/NFS install flows and tier detection
+- **Storage guidance** — detection ("your cluster has no RWX-capable
+  StorageClass") and documentation links (Longhorn, NFS). Mortise does
+  **not** install Longhorn or NFS for you; that's the cluster admin's job.
 - **`perReplica` volumes** / StatefulSet workloads
 - **Multi-cluster** (Cluster CRD, bearer-token trust, aggregated UI)
-- **Cluster provisioning** (k3s bootstrap CLI, RKE2 HA installer)
+
+### 6.1 Addon Pack Discipline
+
+The addon pack exists because users want platform-shaped capabilities
+layered onto the deploy target. The project's long-term survival depends
+on never letting the addons congeal *into* a platform. The invariants
+that prevent that:
+
+1. **Core never depends on any addon.** `helm install mortise` with zero
+   addons is a complete Railway clone, always. If any feature in core
+   requires an addon to function, the feature belongs in core or doesn't
+   ship.
+2. **Addons never depend on each other.** Installing Authentik does not
+   require monitoring; installing monitoring does not require Loki.
+   Cross-addon assumptions get rejected at review.
+3. **Each addon has its own lifecycle.** Added, upgraded, removed, or
+   archived independently. No "we released v2 of the platform" — only
+   "we released v2 of the monitoring addon."
+4. **Addons whose value depends on tracking upstream API or schema churn
+   get extra scrutiny at scope-in time.** A curated catalog of 40 apps
+   means 40 upstream relationships forever; that's the trap. Prefer
+   shapes where breakage is distributed (community presets, user-extended
+   catalog) over shapes where Mortise owns every integration point.
+5. **When an addon's upstream becomes unmaintained, the addon gets
+   archived, not forked.** We do not become the maintainers of abandoned
+   third-party software to keep an addon alive.
+
+These rules turn scope decisions into rule-application rather than
+judgment calls. A proposal that violates any of them doesn't ship —
+regardless of how useful the feature would be in isolation.
 
 ---
 
@@ -627,6 +710,20 @@ helm install mortise oci://ghcr.io/mortise/mortise \
   --set dns.provider=cloudflare \
   --set dns.apiToken=xxx
 ```
+
+**The fast path is not a stripped-down install.** Core alone is the entire
+Railway-equivalent product: deploy apps from git or image, bindings,
+previews, TLS, domains, native auth. §6.1 invariant #1 guarantees this
+forever — no core feature will ever require an addon to function. A user
+who never installs a single addon is using Mortise as intended.
+
+**Presets are sugar over flags, not bundles.** A future `--preset=homelab`
+resolves to a named list of `<addon>.enabled=true` flags and nothing more.
+Presets do not create cross-addon coupling, introduce new lifecycles, or
+gate features behind a preset choice. Disabling any addon inside a preset
+after the fact must leave the rest working unchanged. If a proposed preset
+needs glue code beyond flag-flipping, it's a §6.1 violation and doesn't
+ship.
 
 ### 8.3 Bring-Your-Own Platform Components
 
@@ -833,25 +930,26 @@ with preview envs" in under 15 minutes using only the UI and CLI.
 Each of these is an independent subchart and an independent work stream. None
 block the others; order depends on user demand after v1 ships.
 
-- **Authentik** subchart + OIDC wiring into core + forward-auth middleware
-  for Apps
-- **OpenBao** subchart + swap from k8s-Secrets backend
-- **ESO integration** for AWS/GCP/Vault external backends
+- **Authentik convenience chart** — installs Authentik, pre-configures it
+  as an OIDC provider for Mortise's own login. No Mortise code beyond
+  the existing generic-OIDC impl (§5.10).
 - **kube-prometheus-stack** subchart + Grafana OAuth + pre-loaded dashboards
 - **Loki** subchart + log aggregation in UI
-- **Platform Health** page + per-component status API
-- **Backup/restore** to S3/NFS (CRD export + OpenBao snapshots + Velero)
+- **Installed-addon health panel** — status of currently-installed addons in
+  the UI (up / degraded / down), errors link to upstream docs
+- **Backup/restore** to S3/NFS (CRD export + k8s Secret snapshots + Velero)
 - **`helm` source type** — arbitrary Helm chart deploys through UI
 - **`external` source type** — wrap external services with domain/TLS
-- **`catalog` source type** — CNPG Postgres, redis-operator Redis, MinIO,
-  per-entry credential extractors
-- **Self-hosted app catalog** — curated presets around the `image` source
+- **`catalog` source type** — bounded to CNPG Postgres and redis-operator
+  Redis; user-extensible but not curated beyond that pair
+- **Community app presets** — data-only repository of App CRD templates
+  for common self-hosted software; not maintained by the core team
 - **Cloudflare Worker relay** for GitHub App OAuth
 - **Cloudflare for SaaS** custom hostname automation
-- **Storage wizard** — Longhorn and NFS install flows, tier detection
+- **Storage guidance** — detection of missing RWX StorageClass + docs links;
+  Mortise does not install Longhorn/NFS for the user
 - **`perReplica` volumes** — StatefulSet support
 - **Multi-cluster** — Cluster CRD, bearer-token trust, aggregated UI
-- **Cluster provisioning** — `mortise bootstrap` wrapping k3s install
 
 ---
 
@@ -881,41 +979,44 @@ There are two contract layers in the codebase, pointing in opposite directions.
 Keeping them straight is the single most important architectural discipline in
 the project.
 
-### 11.1 Outward Contracts (Seams / Interfaces)
+### 11.1 Internal Abstractions (Seams / Interfaces)
 
-Contracts that **Mortise's own code agrees to** when it talks to external
-systems. Nobody outside the codebase sees these — they are internal plumbing.
-
-```
-Mortise controller  →  SecretBackend        →  k8s Secrets / OpenBao / AWS SM
-Mortise controller  →  AuthProvider         →  native DB / OIDC / LDAP / SAML
-Mortise controller  →  PolicyEngine         →  native RBAC / OPA / Casbin
-Mortise controller  →  ForwardAuthProvider  →  (none in v1) / Authentik / oauth2-proxy
-Mortise controller  →  GitAPI               →  GitHub / GitLab / Gitea forge APIs
-Mortise controller  →  GitClient            →  single impl: go-git / shell git
-Mortise controller  →  BuildClient          →  BuildKit
-Mortise controller  →  RegistryBackend      →  Zot / GHCR / Harbor / ECR
-Mortise controller  →  IngressProvider      →  Traefik / NGINX / Contour / Gateway API
-Mortise controller  →  DNSProvider          →  ExternalDNS / Cloudflare direct
-```
+Go interfaces that **Mortise's own code agrees to** when it talks to
+external systems or configurable capabilities. These are **internal
+plumbing, not plug-in APIs** — they exist for testability, for code
+clarity, and to keep third-party SDKs from leaking into controller code.
+They are not an extension surface for outside implementers; third-party
+integration happens via Kubernetes primitives (see below), not by
+implementing these interfaces.
 
 Controllers import only Mortise's own types. They never import
-`github.com/google/go-github`, `moby/buildkit/client`, or any other third-party
-SDK directly. Every external dependency is wrapped behind an interface that
-lives in `internal/<name>/`.
+`github.com/google/go-github`, `moby/buildkit/client`, or any other
+third-party SDK directly. Every external dependency is wrapped behind an
+interface in `internal/<name>/`.
+
+```
+Mortise controller  →  AuthProvider     →  native DB | generic OIDC
+Mortise controller  →  PolicyEngine     →  native (admin/member)
+Mortise controller  →  GitAPI           →  GitHub | GitLab | Gitea
+Mortise controller  →  GitClient        →  go-git (single impl, all forges)
+Mortise controller  →  BuildClient      →  BuildKit (single impl)
+Mortise controller  →  RegistryBackend  →  generic OCI (config-driven)
+Mortise controller  →  IngressProvider  →  generic annotation-driven
+Mortise controller  →  DNSProvider      →  ExternalDNS annotation-driven
+```
+
+Notably **absent**: `SecretBackend`. Mortise uses k8s Secrets natively.
+External secret managers (Vault, AWS SM, etc.) are integrated via
+ExternalSecrets Operator — ESO writes a k8s Secret, Mortise reads it.
+No Mortise-side contract is crossed. See §5.9.
+
+Also absent: user-app SSO (forward-auth, OIDC client provisioning). Out of
+scope for v1 and not a v1 contract.
 
 **v1 interfaces:**
 
 ```go
-// internal/secrets/backend.go — user-visible secret values
-type SecretBackend interface {
-    Get(ctx context.Context, scope, key string) (string, error)
-    Set(ctx context.Context, scope, key, value string) error
-    Delete(ctx context.Context, scope, key string) error
-    List(ctx context.Context, scope string) ([]string, error)
-}
-
-// internal/auth/provider.go — platform authentication
+// internal/auth/provider.go — login for Mortise itself
 type AuthProvider interface {
     Authenticate(ctx context.Context, creds Credentials) (Principal, error)
     Principal(ctx context.Context, session SessionToken) (Principal, error)
@@ -923,47 +1024,46 @@ type AuthProvider interface {
     InviteUser(ctx context.Context, email string, role Role) (InviteLink, error)
     RevokeUser(ctx context.Context, userID string) error
 }
+// two in-tree impls: native (sqlite-backed) and genericOIDC
 
-// internal/authz/policy.go — platform authorization
+// internal/authz/policy.go
 type PolicyEngine interface {
     Authorize(ctx context.Context, p Principal, resource Resource, action Action) (bool, error)
 }
-
-// internal/forwardauth/provider.go — SSO in front of user Apps
-type ForwardAuthProvider interface {
-    IngressAnnotations(app, env string) map[string]string
-    Middleware(app, env string) (*IngressMiddleware, error)
-}
+// one in-tree impl: native admin/member
 
 // internal/build/client.go
 type BuildClient interface {
     Submit(ctx context.Context, req BuildRequest) (<-chan BuildEvent, error)
 }
+// one in-tree impl: BuildKit
 
-// internal/registry/backend.go — where built images land
+// internal/registry/backend.go
 type RegistryBackend interface {
-    PushTarget(app, tag string) (ImageRef, error)  // enforces <registry>/mortise/<app>:<tag>
-    PullSecretRef() string                         // for user pods
+    PushTarget(app, tag string) (ImageRef, error)
+    PullSecretRef() string
     Tags(ctx context.Context, app string) ([]string, error)
     DeleteTag(ctx context.Context, app, tag string) error
 }
+// one in-tree impl: generic OCI (config-driven for Zot/GHCR/Harbor/ECR/etc.)
 
-// internal/ingress/provider.go — ingress controller abstraction
+// internal/ingress/provider.go
 type IngressProvider interface {
     ClassName() string
     Annotations(app AppRef, hostnames []string, middleware []MiddlewareRef) map[string]string
-    SupportsForwardAuth() bool
 }
+// one in-tree impl: generic annotation-driven (config map per controller family)
 
-// internal/git/api.go — forge-specific API calls (per-provider impl)
+// internal/git/api.go — forge-specific API calls
 type GitAPI interface {
     RegisterWebhook(ctx context.Context, repo string, cfg WebhookConfig) error
     PostCommitStatus(ctx context.Context, repo, sha string, status CommitStatus) error
     VerifyWebhookSignature(body []byte, header http.Header) error
     ResolveCloneCredentials(ctx context.Context, repo string) (GitCredentials, error)
 }
+// three in-tree impls: GitHub, GitLab, Gitea
 
-// internal/git/client.go — git protocol operations (single impl, all forges)
+// internal/git/client.go — git protocol (single impl, all forges)
 type GitClient interface {
     Clone(ctx context.Context, repo, ref, dest string, creds GitCredentials) error
     Fetch(ctx context.Context, dir, ref string) error
@@ -974,30 +1074,53 @@ type DNSProvider interface {
     UpsertRecord(ctx context.Context, record DNSRecord) error
     DeleteRecord(ctx context.Context, record DNSRecord) error
 }
+// one in-tree impl: ExternalDNS annotation-driven
 ```
 
-**Why split `GitAPI` from `GitClient`:** cloning is git-protocol and identical
-across forges (one impl). Webhook registration and commit status are REST API
-calls that differ per forge. Keeping them together means every forge fake has
-to reimplement the git protocol. Split, the forge fakes stay tiny and the
-single `GitClient` impl is shared.
+**Total in-tree impls across all contracts: ~11.** Not a plug-in ecosystem.
 
-**Why these exist** — three reasons, in order of importance:
+**Why split `GitAPI` from `GitClient`:** cloning is git-protocol and
+identical across forges (one impl). Webhook registration and commit status
+are REST calls that differ per forge. Split lets the forge fakes stay tiny
+while the single `GitClient` impl is shared.
 
-1. **Swap points for the addon pack.** `SecretBackend` is how v1 (k8s Secrets)
-   becomes OpenBao (addon) becomes AWS Secrets Manager (addon) without
-   rewriting controllers. The addon pack is a real product boundary because
-   these interfaces make it one.
-2. **Version-bump firewall.** A BuildKit or Authentik major version bump
-   touches one file (the implementation behind the interface), not fifty.
-   This is what solves the "we're glue for 8 services, every upgrade is
-   terrifying" problem.
-3. **Test seams.** Controllers take these interfaces via constructor
-   injection; unit tests pass in in-memory fakes. No network, no flake, no
-   credentials, millisecond test runs.
+**Why these interfaces exist** — in order of importance:
 
-All three wins come from the same discipline: **no controller code talks to
-third-party SDKs directly, ever.**
+1. **Test seams.** Controllers take interfaces via constructor injection;
+   unit tests pass in in-memory fakes. No network, no flake, no credentials,
+   millisecond test runs. This is the primary justification.
+2. **Version-bump firewall.** A BuildKit or go-github major version bump
+   touches one file, not fifty.
+3. **Config-driven swapping within the bounded impl set.** `IngressProvider`
+   picking "nginx vs traefik" is flipping a config value that selects a
+   different annotation map — still one Go impl, different data.
+
+**Why these are not extension points:** with ~11 impls total and ~1 realistic
+impl per contract, a plug-in protocol would be engineering for imagined
+third-party implementers rather than real ones. If a real third-party
+extension need appears later for a specific contract, that one contract can
+be converted to a CRD-based integration (as ESO demonstrates for secrets)
+without redesigning the whole surface.
+
+### 11.1a Third-Party Integration: Kubernetes IS the Contract
+
+Mortise integrates with other cluster components **by being a polite
+Kubernetes citizen**, not by offering a plug-in API. The pattern:
+
+| Capability | How third-party integration happens |
+|---|---|
+| External secret managers (Vault, AWS SM, etc.) | User installs ESO + a backend. ESO writes k8s Secrets. Mortise reads them. |
+| Custom ingress (Gateway API, service mesh) | User installs the controller. Mortise writes standard Ingress resources; the controller reconciles them. Gateway API support is a future config option selecting HTTPRoute output instead of Ingress. |
+| Alternative DNS providers | ExternalDNS already covers ~20 providers. User configures ExternalDNS; Mortise annotates Ingresses. |
+| Monitoring / logging | User installs Prometheus + Loki (or equivalents). Mortise pods emit standard Prometheus metrics and stdout logs. No Mortise-side integration code. |
+| Policy | User runs OPA/Kyverno as admission controllers. They gate Mortise's writes. Mortise doesn't need to know. |
+| Backing services (databases, queues) | User installs CNPG / redis-operator / whatever. Mortise binds via Service DNS + Secret refs. |
+
+**The integration fabric is Kubernetes.** This is the structural
+alternative to building a Mortise-specific plug-in ecosystem. It works
+because Kubernetes *already is* a plug-in ecosystem with mature versioning
+(CRDs), discovery (labels/selectors), and auth (ServiceAccounts). Mortise
+benefits from all of it without reinventing any of it.
 
 ### 11.2 Inward Contracts (CRD + REST API)
 

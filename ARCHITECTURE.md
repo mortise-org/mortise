@@ -15,10 +15,10 @@ flowchart TB
     subgraph External["External Systems"]
         direction TB
         User["User Browser"]
-        GitHub["Git Provider<br/>GitHub / GitLab / Gitea"]
-        DNSProv["DNS Provider<br/>Cloudflare / Route53 / etc"]
-        ACME["Let's Encrypt / ACME"]
-        CI["External CI<br/>GH Actions / Jenkins / etc"]
+        GitHub["Git Provider (GitHub or GitLab or Gitea)"]
+        DNSProv["DNS Provider (Cloudflare or Route53)"]
+        ACME["ACME (Lets Encrypt)"]
+        CI["External CI (GH Actions or Jenkins)"]
     end
 
     subgraph Cluster["Kubernetes Cluster"]
@@ -26,23 +26,22 @@ flowchart TB
 
         subgraph SysNS["mortise-system namespace"]
             direction TB
-            Operator["Mortise Operator<br/>controllers + API + UI"]
-            MetaDB[("operator metadata<br/>sqlite on PVC<br/>deploys / users / audit")]
-            SecretStore[("user secrets<br/>k8s Secrets in v1")]
-            Traefik["Traefik<br/>ingress controller<br/>optional - byo supported"]
-            CertMgr["cert-manager<br/>optional - byo supported"]
-            ExtDNS["ExternalDNS<br/>optional - byo supported"]
-            Zot["Zot OCI Registry<br/>optional - external registry supported"]
+            Operator["Mortise Operator - controllers + API + UI"]
+            MetaDB[["operator metadata - sqlite PVC - deploys users audit"]]
+            Traefik["Traefik ingress controller (optional BYO)"]
+            CertMgr["cert-manager (optional BYO)"]
+            ExtDNS["ExternalDNS (optional BYO)"]
+            Zot["Zot OCI Registry (optional external BYO)"]
         end
 
         subgraph BuildNS["mortise-builds namespace"]
-            BuildKit["BuildKit<br/>rootless Deployment<br/>+ layer-cache PVC"]
+            BuildKit["BuildKit - rootless Deployment + layer cache PVC"]
         end
 
         subgraph UserNS["user namespaces - one per App"]
             direction TB
-            AppPod["User App Pod<br/>Deployment"]
-            BackingPod["Backing Service Pod<br/>e.g. postgres 16<br/>Deployment + PVC"]
+            AppPod["User App Pod - Deployment"]
+            BackingPod["Backing Service Pod - e.g. postgres 16"]
             Ing["Ingress resources"]
         end
     end
@@ -51,12 +50,11 @@ flowchart TB
     Traefik --> AppPod
     Traefik --> Operator
 
-    CI -->|POST /api/deploy| Operator
-    GitHub -->|push / PR webhooks| Operator
+    CI -->|deploy webhook| Operator
+    GitHub -->|push and PR webhooks| Operator
 
     Operator -->|GitAPI iface| GitHub
     Operator -->|BuildClient iface| BuildKit
-    Operator -->|SecretBackend iface| SecretStore
     Operator -->|RegistryBackend iface| Zot
     Operator -->|IngressProvider iface| Traefik
     Operator -->|DNSProvider iface| ExtDNS
@@ -75,7 +73,7 @@ flowchart TB
     Operator -.reconciles.-> BuildKit
     Operator -.reconciles.-> Zot
 
-    AppPod -.env-var bindings.-> BackingPod
+    AppPod -.env bindings.-> BackingPod
 ```
 
 **How to read it:**
@@ -92,16 +90,17 @@ flowchart TB
   Services, Ingresses, and PVCs.
 - **Bindings** (bottom dotted arrow): resolved by the operator at reconcile
   time and baked into the binder's Deployment spec (literal env for Service
-  DNS facts; `secretKeyRef` for credentials from the secret backend). The
+  DNS facts; `secretKeyRef` for credentials pulled from k8s Secrets). The
   kubelet injects env the normal way at pod start — no admission webhook, no
   init container, no runtime agent. Apps are 12-factor — they just read
   `DATABASE_URL`.
-- **Two datastores in `mortise-system`, deliberately separate:** `MetaDB`
-  (sqlite-on-PVC) holds Mortise's own metadata (deploy history, users,
-  audit). `SecretStore` holds user-visible app secrets behind the
-  `SecretBackend` interface (v1 backend = k8s Secrets). Keeping them split
-  means swapping the secret backend for OpenBao / AWS SM never migrates
-  Mortise's operational data.
+- **One datastore in `mortise-system`:** `MetaDB` (sqlite-on-PVC) holds
+  Mortise's own metadata (deploy history, users, audit). User-visible app
+  secrets are stored as regular Kubernetes Secrets in the App's own
+  namespace — no separate Mortise-managed secret store, no `SecretBackend`
+  abstraction. External secret managers (Vault, AWS SM, etc.) integrate via
+  the ExternalSecrets Operator, which produces k8s Secrets that Mortise
+  reads like any other. See SPEC §5.9.
 - **"Optional" labels** on Traefik, cert-manager, ExternalDNS, Zot: each
   corresponds to an outward interface (`IngressProvider`, `DNSProvider`,
   `RegistryBackend`) and can be turned off at install via chart values when
@@ -131,7 +130,7 @@ skips the build phase entirely.
 ```mermaid
 sequenceDiagram
     actor Dev as Developer
-    participant Git as GitHub / GitLab / Gitea
+    participant Git as Git forge
     participant Op as Mortise Operator
     participant BK as BuildKit
     participant Reg as Zot Registry
@@ -140,39 +139,39 @@ sequenceDiagram
     participant TF as Traefik
 
     Dev->>Git: git push
-    Git->>Op: webhook: push event (HMAC-signed)
-    Op->>Op: resolve GitProvider + verify HMAC (GitAPI iface)
-    Op->>Op: list Apps on this repo,<br/>for each compare changed paths<br/>to watchPaths prefixes
-    Note over Op: one webhook fans out to<br/>N per-App build pipelines
+    Git->>Op: webhook push event (HMAC signed)
+    Op->>Op: resolve GitProvider and verify HMAC via GitAPI iface
+    Op->>Op: list Apps on this repo and match watchPaths prefixes
+    Note over Op: one webhook fans out to N per-App build pipelines
 
     loop per matched App
-        Op->>Git: clone repo (GitClient iface)
+        Op->>Git: clone repo via GitClient iface
         Op->>Op: detect Dockerfile vs Railpack mode
     end
 
     alt Dockerfile mode
-        Op->>BK: Submit dockerfile.v0 frontend
+        Op->>BK: submit dockerfile.v0 frontend
     else Railpack mode
-        Op->>Op: Railpack.GenerateBuildPlan<br/>ConvertPlanToLLB
-        Op->>BK: Submit LLB
+        Op->>Op: Railpack GenerateBuildPlan then ConvertPlanToLLB
+        Op->>BK: submit LLB
     end
 
     BK->>Reg: push image layers
     BK-->>Op: stream build events
-    Op-->>Dev: build logs via WebSocket (UI)
+    Op-->>Dev: build logs via WebSocket to UI
 
     alt build succeeds
         Op->>K8s: patch Deployment image digest
         K8s->>Pod: rolling update
         Pod->>Reg: pull new image
-        Op->>Git: post commit status: success
+        Op->>Git: post commit status success
     else build fails
-        Op->>Git: post commit status: failure
+        Op->>Git: post commit status failure
         Op-->>Dev: error surfaced in UI
     end
 
-    Dev->>TF: HTTPS GET app.domain.com
-    TF->>Pod: route (matched by Ingress)
+    Dev->>TF: HTTPS GET app domain
+    TF->>Pod: route matched by Ingress
     Pod-->>Dev: HTTP response
 ```
 
@@ -194,53 +193,64 @@ The two-layer contract model as a picture. Read top to bottom.
 
 ```mermaid
 flowchart TB
-    Callers["users / CI / pods / UI"]
+    Callers["external callers - users CI pods UI"]
+    Public["Inward Contract - CRDs plus REST plus WebSocket"]
+    Ctrl["Mortise controllers and reconcilers"]
 
-    subgraph Inward["Inward Contract - external callers agree to this"]
-        Public["CRDs: App, PreviewEnvironment, PlatformConfig, GitProvider<br/>REST API + WebSocket with OpenAPI spec"]
-    end
+    AU["AuthProvider iface"]
+    AUImpl["native DB plus generic OIDC - 2 impls"]
+    PE["PolicyEngine iface"]
+    PEImpl["admin member - 1 impl"]
+    GA["GitAPI plus GitClient ifaces"]
+    GAImpl["GitHub GitLab Gitea - 3 plus 1 impls"]
+    BC["BuildClient iface"]
+    BCImpl["BuildKit - 1 impl"]
+    RB["RegistryBackend iface"]
+    RBImpl["generic OCI - 1 config-driven impl"]
+    IP["IngressProvider iface"]
+    IPImpl["generic annotation-driven - 1 impl"]
+    DP["DNSProvider iface"]
+    DPImpl["ExternalDNS annotations - 1 impl"]
 
-    subgraph Business["Mortise business logic"]
-        Ctrl["Controllers / Reconcilers / HTTP handlers"]
-    end
-
-    subgraph Outward["Outward Contracts - Mortise code agrees to these"]
-        direction TB
-        SB["SecretBackend"] --> SBImpl["k8s Secrets v1<br/>OpenBao addon<br/>AWS / GCP / Vault addon"]
-        AU["AuthProvider"] --> AUImpl["native DB v1<br/>OIDC early addon<br/>Authentik / LDAP / SAML addon"]
-        PE["PolicyEngine"] --> PEImpl["admin/member v1<br/>teams + per-app v2<br/>OPA / Casbin addon"]
-        FA["ForwardAuthProvider"] --> FAImpl["none in v1<br/>Authentik addon<br/>oauth2-proxy addon"]
-        GA["GitAPI + GitClient"] --> GAImpl["GitHub / GitLab / Gitea<br/>shared GitClient impl"]
-        BC["BuildClient"] --> BCImpl["BuildKit client"]
-        RB["RegistryBackend"] --> RBImpl["Zot v1 default<br/>GHCR / Harbor / ECR<br/>any OCI registry"]
-        IP["IngressProvider"] --> IPImpl["Traefik v1 default<br/>NGINX / Contour / Gateway API"]
-        DP["DNSProvider"] --> DPImpl["ExternalDNS annotations v1<br/>Cloudflare direct addon"]
-    end
+    ESO["ExternalSecrets Operator - writes k8s Secrets from Vault or AWS SM"]
+    K8sSec["k8s Secrets - Mortise reads natively"]
 
     Callers --> Public
     Public --> Ctrl
-    Ctrl --> SB
-    Ctrl --> AU
-    Ctrl --> PE
-    Ctrl --> FA
-    Ctrl --> GA
-    Ctrl --> BC
-    Ctrl --> RB
-    Ctrl --> IP
-    Ctrl --> DP
+
+    Ctrl --> AU --> AUImpl
+    Ctrl --> PE --> PEImpl
+    Ctrl --> GA --> GAImpl
+    Ctrl --> BC --> BCImpl
+    Ctrl --> RB --> RBImpl
+    Ctrl --> IP --> IPImpl
+    Ctrl --> DP --> DPImpl
+
+    Ctrl --> K8sSec
+    ESO --> K8sSec
 ```
 
 **How to read it:**
 
-- **Top block (Inward)** = what the outside world sees. Versioned carefully;
-  breaking changes require CRD version bumps and migrations.
-- **Middle block (Business logic)** = Mortise's controllers. Imports only
-  Mortise's own types. Never imports third-party SDKs.
-- **Bottom two blocks (Outward + Impls)** = internal plumbing. Completely
-  invisible from outside the codebase. The controllers call an interface; the
-  concrete implementation behind it can change without touching controller
-  code. This is how the addon pack swaps in OpenBao later without rewriting
-  the reconcile loops.
+- **Top** (Callers → Public → Ctrl) = the inward contract surface. CRDs,
+  REST API, and WebSocket — versioned carefully; breaking changes require
+  CRD version bumps and migrations.
+- **Ctrl node** = Mortise's controllers and reconcilers. Imports only
+  Mortise's own types; never imports third-party SDKs directly.
+- **Middle chains** (Ctrl → each iface → impl) = internal abstractions.
+  Go interfaces used for test seams and for keeping third-party SDKs out
+  of controller code. **Not plug-in APIs** — third parties do not implement
+  these. ~11 in-tree impls total across all contracts.
+- **Bottom path** (Ctrl → k8s Secrets ← ESO) = the real third-party
+  integration path. External secret managers reach Mortise through
+  ExternalSecrets Operator, which writes a standard k8s Secret that
+  Mortise reads natively. No Mortise-specific contract is crossed;
+  Kubernetes is the protocol.
+- **No `SecretBackend` interface.** Mortise reads k8s Secrets directly.
+  Custom ingress controllers, alternative DNS providers, monitoring
+  stacks, and policy engines all follow the same pattern: they integrate
+  with Mortise by being Kubernetes citizens, not by implementing Mortise
+  contracts.
 
 ---
 
@@ -251,29 +261,22 @@ attaches later.
 
 ```mermaid
 flowchart TB
-    Umbrella["mortise<br/>umbrella Helm chart"]
-    Core["mortise-core subchart<br/>v1 always installs this"]
+    Umbrella["mortise umbrella Helm chart"]
+    Core["mortise-core subchart - v1 always installs"]
 
-    subgraph CoreContents["Contents of mortise-core"]
-        direction TB
-        OP["Operator binary<br/>controllers + REST API + embedded UI"]
-        CRDs["CRDs: App / PreviewEnvironment<br/>PlatformConfig / GitProvider"]
-        TFc["Traefik dep"]
-        CMc["cert-manager dep"]
-        EDc["ExternalDNS dep"]
-        ZOc["Zot conditional on registry.type=builtin"]
-    end
+    OP["Operator binary - controllers plus REST plus embedded UI"]
+    CRDs["CRDs - App PreviewEnvironment PlatformConfig GitProvider"]
+    TFc["Traefik dep"]
+    CMc["cert-manager dep"]
+    EDc["ExternalDNS dep"]
+    ZOc["Zot (conditional on registry.type=builtin)"]
 
-    subgraph Addons["Addon subcharts - post-v1, all optional"]
-        direction TB
-        Auth["authentik<br/>SSO + forward-auth"]
-        Bao["openbao<br/>secret backend"]
-        Mon["monitoring<br/>Prometheus + Grafana"]
-        Log["loki<br/>log aggregation"]
-        Cat["catalog<br/>CNPG + redis-operator"]
-        Bak["backup<br/>Velero + snapshots"]
-        Health["platform-health<br/>UI addon + status API"]
-    end
+    Auth["authentik - convenience chart for OIDC"]
+    Mon["monitoring - kube-prometheus-stack"]
+    Log["loki - log aggregation"]
+    Cat["catalog - CNPG plus redis-operator"]
+    Bak["backup - Velero plus snapshots"]
+    Health["addon-health - installed-addon status panel"]
 
     Umbrella --> Core
     Core --> OP
@@ -284,7 +287,6 @@ flowchart TB
     Core --> ZOc
 
     Umbrella -.opt-in.-> Auth
-    Umbrella -.opt-in.-> Bao
     Umbrella -.opt-in.-> Mon
     Umbrella -.opt-in.-> Log
     Umbrella -.opt-in.-> Cat
@@ -297,8 +299,16 @@ flowchart TB
 - **Solid arrows** = always installed when the umbrella chart is installed.
   The `mortise-core` subchart is the v1 footprint.
 - **Dotted arrows** = opt-in. Each addon is its own subchart with its own
-  values; the umbrella chart declares them as disabled-by-default dependencies
-  so users can turn them on with a values flag (or via the CLI picker later).
+  values and its own lifecycle (SPEC §6.1); the umbrella chart declares
+  them as disabled-by-default dependencies so users can turn them on with
+  a values flag (or via the CLI picker later). Addons never depend on
+  each other — enabling Authentik doesn't pull in monitoring, enabling
+  monitoring doesn't pull in Loki.
+- **Not subcharts, despite appearing in SPEC §6:** the `helm` / `external`
+  / `catalog` source types are operator features gated by feature flag,
+  not separate charts. Community app presets are a data repository, not
+  code. Storage guidance is documentation. Cloudflare integrations are
+  either operator features (Tunnel automation) or external relays.
 - **BuildKit is intentionally absent** from the core subchart. It's installed
   on-demand by the operator the first time a `git` App is created — not at
   chart install time. Keeps the base install lean for users who only deploy
@@ -317,18 +327,18 @@ sequenceDiagram
     participant Op as Mortise Operator
     actor User as First User
 
-    Admin->>Helm: helm install mortise ... --set domain=... --set dns.provider=...
+    Admin->>Helm: helm install mortise with domain and DNS values
     Helm->>K8s: apply CRDs
     Helm->>K8s: apply mortise-system namespace resources
     K8s->>Op: Operator pod starts
     Op->>Op: apply default PlatformConfig from Helm values
-    Op->>K8s: reconcile Traefik, cert-manager, ExternalDNS
-    Admin->>Op: open https://mortise.domain.com (first-run wizard)
-    Op-->>Admin: wizard: domain, DNS, git provider, admin user
+    Op->>K8s: reconcile Traefik and cert-manager and ExternalDNS
+    Admin->>Op: open mortise UI and begin first-run wizard
+    Op-->>Admin: wizard steps - domain DNS git admin
     Admin->>Op: complete wizard
-    Op->>K8s: persist platform config + admin user
-    User->>Op: login + create first App
-    Op->>K8s: create App CRD + reconcile
+    Op->>K8s: persist platform config and admin user
+    User->>Op: login and create first App
+    Op->>K8s: create App CRD and reconcile
     Op->>User: live URL
 ```
 
@@ -346,7 +356,8 @@ when reading the code or debugging a specific interaction.
 | External CI | Operator | HTTPS + bearer token | Deploy pre-built image without Mortise building it |
 | Operator | Git provider | `GitProvider` iface | Webhook registration, clone, commit status |
 | Operator | BuildKit | `BuildClient` iface (gRPC) | Submit build; receive streaming events |
-| Operator | SecretBackend | `SecretBackend` iface | Read/write secret values |
+| Operator | k8s Secret | native read/write | User-visible app secrets (stored as k8s Secrets in App namespace) |
+| ExternalSecrets Operator | k8s Secret | ESO reconciliation | External secret manager values (Vault / AWS SM / etc.) surface as k8s Secrets; Mortise reads them unchanged |
 | Operator | kube-apiserver | controller-runtime client | Reconcile Deployments, Services, Ingresses, PVCs |
 | BuildKit | Zot (or external registry) | OCI push | Store built images |
 | User App pod | Zot (or external) | OCI pull | Start with the built image |
