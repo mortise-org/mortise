@@ -64,8 +64,10 @@ through Mortise without touching manifest repos.
   own hardware
 - **Small dev teams** (2–15 engineers) who want self-hosted Railway on their own
   cloud k8s without a dedicated platform team
-- **Regulated industries** that need Railway-quality UX but cannot send code or
-  data through third-party infra
+- **Regulated / on-prem teams** that need Railway-quality UX and cannot send
+  code or data through third-party infra — using the **image source + deploy
+  webhook** path with their existing internal CI. (Mortise does not build
+  inside an airgap; see §8.5.)
 
 **Assumption:** a Kubernetes cluster already exists. Mortise installs as a Helm
 chart onto it. Cluster provisioning (k3s bootstrap, RKE2 HA, cloud k8s) is
@@ -242,9 +244,13 @@ source) and deploy. No CI integration needed in v1.
 ### 5.5 Bindings — The Magic
 
 An App with `credentials` declared is a backing service. Other Apps bind to it
-by `ref`. At pod-start time the operator resolves the bound App's credentials
-(password from the secret store, constructed `DATABASE_URL`, host/port from
-Service DNS) and injects them as env vars.
+by `ref`. At **reconcile time** the operator resolves the bound App's
+credentials (password from the secret store, constructed `DATABASE_URL`,
+host/port from Service DNS) and bakes them into the binder's Deployment —
+literal env values for Service DNS facts, `secretKeyRef` projections for
+credentials sourced from the secret backend. No admission webhook, no init
+container, no runtime agent: the Deployment spec is the single source of truth
+and the kubelet injects env the normal way.
 
 The v1 "click Postgres, get DATABASE_URL in my API" Railway moment works via
 an image-source App:
@@ -257,11 +263,17 @@ spec:
   network: { public: false }
   storage:
     - { name: pgdata, mountPath: /var/lib/postgresql/data, size: 10Gi }
-  env:
-    - name: POSTGRES_PASSWORD
-      valueFrom: { secretRef: my-db-password }
   credentials: [DATABASE_URL, host, port, user, password]
+  environments:
+    - name: production
+      env:
+        - name: POSTGRES_PASSWORD
+          valueFrom: { secretRef: my-db-password }
 ```
+
+`env` always lives under `environments[].env`. There is no `spec.env`:
+production and staging need distinct secrets and distinct env independently,
+and collapsing them would force duplication elsewhere.
 
 A "New Postgres" template button in the UI pre-fills this form. Looks like
 Railway; under the hood it's just an image source plus bindings. Operator-backed
@@ -319,16 +331,32 @@ interface the operator writes against.
 
 OpenBao wiring is addon-pack. The `SecretBackend` interface is designed for swap.
 
-### 5.10 Auth (v1 — native)
+### 5.10 Auth (v1 — native, interface-backed)
 
-v1 ships with native user accounts stored in the operator's own database (one
-admin created during wizard; invites via generated link). Authentik OIDC
-integration and forward-auth-per-App are **addon-pack**.
+Auth is two separate concerns, each behind its own interface (§11.1):
 
-- Roles: admin / member
+- **Platform auth** (`AuthProvider` + `PolicyEngine`) — who can log into
+  Mortise's UI/API, and what they can do there.
+- **App forward-auth** (`ForwardAuthProvider`) — SSO middleware placed in
+  front of user Apps' Ingresses. Entirely distinct from platform auth; a
+  user may keep GitHub OAuth on Mortise itself while running Authentik
+  forward-auth in front of their workloads, or vice versa.
+
+v1 ships with a **native `AuthProvider`** (password + invite link, accounts
+in the operator DB, one admin created during first-run wizard) and a **native
+`PolicyEngine`** (admin/member roles, hardcoded policy). `ForwardAuthProvider`
+has no v1 implementation — Apps get no middleware until the forward-auth addon
+is installed.
+
+Because these are interfaces from day one, a small OIDC `AuthProvider` impl
+can ship as an early addon without touching controllers — unblocking Okta,
+Keycloak, Google Workspace, Authentik, and Tailscale auth users who can't
+wait for the full Authentik addon.
+
+- v1 roles: admin / member
 - Admin can manage users, providers, DNS, platform settings, all apps
 - Member can create/manage own apps, view shared apps
-- Teams + per-app grants are v2
+- Teams + per-app grants are v2 (PolicyEngine swap)
 
 ### 5.11 In-UI Metrics (v1)
 
@@ -600,6 +628,60 @@ helm install mortise oci://ghcr.io/mortise/mortise \
   --set dns.apiToken=xxx
 ```
 
+### 8.3 Bring-Your-Own Platform Components
+
+Users with existing platform plumbing can disable any bundled component.
+Each is on by default but switchable at install:
+
+| Values flag | Default | Effect when disabled |
+|---|---|---|
+| `traefik.enabled` | `true` | Operator annotates Ingress for the existing controller; user picks `ingress.className` |
+| `certManager.enabled` | `true` | Operator expects an existing `ClusterIssuer`; user sets `tls.clusterIssuer` |
+| `externalDNS.enabled` | `true` | Operator still annotates Ingress; user's existing ExternalDNS picks it up, or DNS is managed manually |
+| `zot.enabled` | `true` | Operator pushes to external registry; user sets `registry.url` + `registry.pullSecret` |
+
+Each toggle corresponds to an outward interface (§11.1) — `IngressProvider`,
+`DNSProvider`, `RegistryBackend`. Disabling a bundled component does not
+disable the feature; it swaps the implementation.
+
+### 8.4 Restricted-Network Installs (Proxied / Custom-CA)
+
+For on-prem or regulated clusters where Mortise must reach internal git,
+internal registry, internal ACME — but still has *some* outbound path
+(directly or via proxy):
+
+| Values flag | Purpose |
+|---|---|
+| `global.caBundle` | PEM-encoded CA chain mounted into the operator pod — for internal ACME, internal registries, internal git forges signed by a private CA |
+| `global.httpProxy` / `httpsProxy` / `noProxy` | Propagated as env to the operator |
+| `global.imageRegistry` | Prefix for all Mortise-internal images (operator, Traefik, cert-manager, Zot) — for mirrored registries |
+| `global.pullSecret` | Pull secret for `global.imageRegistry` |
+| `tls.clusterIssuer` | Point cert-manager at an internal ACME (Smallstep, step-ca, Venafi) instead of Let's Encrypt |
+
+### 8.5 Fully Air-Gapped Clusters
+
+**Airgapped builds are out of scope.** Railpack fetches buildpack metadata,
+BuildKit pulls base images, Go/Node/Python toolchains download at build time
+— mirroring all of this reliably is a project unto itself and one that
+airgapped teams typically already solve with their existing CI.
+
+The supported airgap path is **image source only**:
+
+1. Team builds images in their existing CI (which already lives inside the
+   airgap and knows how to reach their internal registry and proxies).
+2. CI calls Mortise's deploy webhook with the built image reference.
+3. Mortise pulls from the internal registry (`registry.url` +
+   `registry.pullSecret`), not from Docker Hub.
+
+What Mortise *does* provide in an airgap: internal-registry image pulls,
+internal CA trust for its own outbound calls (to internal git forges for
+webhooks only — not for cloning, since no `git` source), internal ACME via
+`tls.clusterIssuer`, and the deploy webhook.
+
+What Mortise does *not* provide in an airgap: source-to-image builds. Git
+source is effectively disabled. This is a deliberate scope boundary, not a
+limitation to be lifted in an addon.
+
 Later (addon pack available):
 
 ```bash
@@ -668,8 +750,11 @@ change replicas → scales; change image → rolls; delete → namespace cleaned
   source only, App detail page with env / secrets / domains
 - CLI (`mortise app create --source image`, `mortise logs`, `mortise status`)
 
-**Exit criteria:** deploy Paperless-ngx entirely through the UI or CLI; no
-YAML visible to the user.
+**Exit criteria:** deploy a single-container image App (e.g. Paperless-ngx in
+sqlite mode, or any standalone service) entirely through the UI or CLI; no
+YAML visible to the user. Multi-service apps needing bindings (Paperless-ngx
+with Postgres + Redis) land in Phase 3 — this phase validates the CRUD and
+deploy surface, not the Railway moment.
 
 ### Phase 3 — Bindings + Secrets
 
@@ -802,10 +887,16 @@ Contracts that **Mortise's own code agrees to** when it talks to external
 systems. Nobody outside the codebase sees these — they are internal plumbing.
 
 ```
-Mortise controller  →  SecretBackend interface  →  k8s Secrets / OpenBao / AWS
-Mortise controller  →  GitProvider interface    →  GitHub / GitLab / Gitea
-Mortise controller  →  BuildClient interface    →  BuildKit
-Mortise controller  →  DNSProvider interface    →  ExternalDNS / Cloudflare
+Mortise controller  →  SecretBackend        →  k8s Secrets / OpenBao / AWS SM
+Mortise controller  →  AuthProvider         →  native DB / OIDC / LDAP / SAML
+Mortise controller  →  PolicyEngine         →  native RBAC / OPA / Casbin
+Mortise controller  →  ForwardAuthProvider  →  (none in v1) / Authentik / oauth2-proxy
+Mortise controller  →  GitAPI               →  GitHub / GitLab / Gitea forge APIs
+Mortise controller  →  GitClient            →  single impl: go-git / shell git
+Mortise controller  →  BuildClient          →  BuildKit
+Mortise controller  →  RegistryBackend      →  Zot / GHCR / Harbor / ECR
+Mortise controller  →  IngressProvider      →  Traefik / NGINX / Contour / Gateway API
+Mortise controller  →  DNSProvider          →  ExternalDNS / Cloudflare direct
 ```
 
 Controllers import only Mortise's own types. They never import
@@ -816,7 +907,7 @@ lives in `internal/<name>/`.
 **v1 interfaces:**
 
 ```go
-// internal/secrets/backend.go
+// internal/secrets/backend.go — user-visible secret values
 type SecretBackend interface {
     Get(ctx context.Context, scope, key string) (string, error)
     Set(ctx context.Context, scope, key, value string) error
@@ -824,17 +915,58 @@ type SecretBackend interface {
     List(ctx context.Context, scope string) ([]string, error)
 }
 
+// internal/auth/provider.go — platform authentication
+type AuthProvider interface {
+    Authenticate(ctx context.Context, creds Credentials) (Principal, error)
+    Principal(ctx context.Context, session SessionToken) (Principal, error)
+    ListUsers(ctx context.Context) ([]User, error)
+    InviteUser(ctx context.Context, email string, role Role) (InviteLink, error)
+    RevokeUser(ctx context.Context, userID string) error
+}
+
+// internal/authz/policy.go — platform authorization
+type PolicyEngine interface {
+    Authorize(ctx context.Context, p Principal, resource Resource, action Action) (bool, error)
+}
+
+// internal/forwardauth/provider.go — SSO in front of user Apps
+type ForwardAuthProvider interface {
+    IngressAnnotations(app, env string) map[string]string
+    Middleware(app, env string) (*IngressMiddleware, error)
+}
+
 // internal/build/client.go
 type BuildClient interface {
     Submit(ctx context.Context, req BuildRequest) (<-chan BuildEvent, error)
 }
 
-// internal/git/provider.go
-type GitProvider interface {
-    RegisterWebhook(ctx context.Context, repo string) error
-    PostCommitStatus(ctx context.Context, repo, sha, state, url string) error
-    CloneRepo(ctx context.Context, repo, ref, dest string) error
+// internal/registry/backend.go — where built images land
+type RegistryBackend interface {
+    PushTarget(app, tag string) (ImageRef, error)  // enforces <registry>/mortise/<app>:<tag>
+    PullSecretRef() string                         // for user pods
+    Tags(ctx context.Context, app string) ([]string, error)
+    DeleteTag(ctx context.Context, app, tag string) error
+}
+
+// internal/ingress/provider.go — ingress controller abstraction
+type IngressProvider interface {
+    ClassName() string
+    Annotations(app AppRef, hostnames []string, middleware []MiddlewareRef) map[string]string
+    SupportsForwardAuth() bool
+}
+
+// internal/git/api.go — forge-specific API calls (per-provider impl)
+type GitAPI interface {
+    RegisterWebhook(ctx context.Context, repo string, cfg WebhookConfig) error
+    PostCommitStatus(ctx context.Context, repo, sha string, status CommitStatus) error
     VerifyWebhookSignature(body []byte, header http.Header) error
+    ResolveCloneCredentials(ctx context.Context, repo string) (GitCredentials, error)
+}
+
+// internal/git/client.go — git protocol operations (single impl, all forges)
+type GitClient interface {
+    Clone(ctx context.Context, repo, ref, dest string, creds GitCredentials) error
+    Fetch(ctx context.Context, dir, ref string) error
 }
 
 // internal/dns/provider.go
@@ -843,6 +975,12 @@ type DNSProvider interface {
     DeleteRecord(ctx context.Context, record DNSRecord) error
 }
 ```
+
+**Why split `GitAPI` from `GitClient`:** cloning is git-protocol and identical
+across forges (one impl). Webhook registration and commit status are REST API
+calls that differ per forge. Keeping them together means every forge fake has
+to reimplement the git protocol. Split, the forge fakes stay tiny and the
+single `GitClient` impl is shared.
 
 **Why these exist** — three reasons, in order of importance:
 
@@ -909,13 +1047,81 @@ Two layers, two directions, two sets of rules:
 
 ---
 
-## 12. Non-Goals for v1
+## 12. GitOps Coexistence (Argo CD / Flux)
+
+Mortise is not a replacement for Argo CD or Flux and does not compete with
+them — they operate at different layers. There is one supported coexistence
+pattern; anything beyond it is user-at-own-risk.
+
+**The layer split:**
+- **Platform team owns the cluster and Mortise itself via GitOps.** Helm
+  releases for Mortise, cert-manager, Traefik, ExternalDNS, ingress classes,
+  node pools, the Mortise umbrella chart values — all in Argo/Flux.
+- **Dev teams own `App` CRDs via Mortise's UI/CLI/API.** App CRDs live in
+  etcd, not git. The Railway UX is the whole point; GitOps'ing the
+  user-authored surface would give it back.
+
+**What Argo/Flux should and should not manage:**
+
+| Resource | Argo/Flux-managed? | Why |
+|---|---|---|
+| Mortise Helm release (operator version, chart values) | **Yes, recommended** | Declarative platform config |
+| `PlatformConfig` CRD (domain, DNS, default SC) | **Yes, recommended** | Cluster-wide, rarely changes |
+| `GitProvider` CRDs | **Yes, recommended** | Credentials via ESO / sealed-secrets / SOPS |
+| Addon subchart enable/disable (post-v1) | **Yes, recommended** | Just more chart values |
+| `App` CRDs | **No** | Authored through Mortise; live in etcd |
+| `PreviewEnvironment` CRDs | **No — operator-created** | Lifecycle is PR-driven |
+| Deployments / Services / Ingresses | **No — operator-created** | Mortise owns these |
+| Secrets (user-visible) | **No — written via Mortise API** | Write-only UX, rotation |
+
+**Flux-specific:** identical. Flux users substitute `Kustomization` or
+`HelmRelease` for `Application`. Everything else is the same.
+
+**What this means in practice:** a platform team runs a fully GitOps'd
+cluster with Mortise installed as just another `HelmRelease`. Dev teams get
+Railway UX for their apps. The two tools' surface areas do not overlap, so
+there is no drift to manage.
+
+**Explicit non-support:** Mortise does not officially support Argo- or
+Flux-managed `App` CRDs. Users who check App YAML into git and sync it with
+Argo may make it work, but the operator is not designed to avoid writing to
+`spec.*` on those resources, and a successful build will patch
+`spec.environments[].image` — which Argo will revert on the next sync,
+causing the pod to flap. Revisit if user demand justifies the extra
+machinery (a companion `AppDeployment` CR, `managed-by` annotation
+handling, read-only UI mode); for now, pick one tool or the other per App.
+
+---
+
+## 13. Non-Goals for v1
 
 - Not a cluster provisioner
 - Not multi-cluster
 - Not a service mesh (no Istio, no mTLS)
 - Not a CI system for users' apps (deploy webhook integrates with whatever CI
   they have)
-- Not a replacement for Argo CD / Flux at the platform layer
+- Not a replacement for Argo CD / Flux at the platform layer — see §12
+- **Not an airgapped build system.** Source-to-image builds require outbound
+  network for Railpack metadata, BuildKit base images, and language
+  toolchains. Airgapped clusters use the image source + deploy webhook
+  path with their own internal CI; see §8.5.
 - Not optimized for sub-16GB cluster footprints once the addon pack is
   installed; core alone is much lighter and fits comfortably in 4–8GB
+- **Not a workload-kind platform.** v1 deploys long-running HTTP/TCP services
+  as Kubernetes Deployments. Jobs, CronJobs, StatefulSets, DaemonSets are not
+  supported. `perReplica` volumes and StatefulSet-per-App land in the addon
+  pack.
+- **Not a GPU / specialized-scheduling platform.** App CRD has no
+  `nodeSelector`, `tolerations`, `affinity`, `runtimeClassName`, or
+  `resourceClaims`. Teams with GPU, specialty hardware, or
+  multi-tenant bin-packing needs should use raw Kubernetes for those
+  workloads; Mortise can coexist for the rest.
+- **Not a multi-container Pod platform.** One container per App in v1. Init
+  containers and sidecars are not exposed. ML model-download init patterns,
+  service-mesh sidecars, and log-shipper sidecars are out of scope.
+- **Not a queue / async-job runner.** No background workers, no job queues,
+  no scheduled tasks beyond what users run themselves inside their container.
+- **Not a multi-tenant platform with hard isolation.** v1 has admin/member
+  only; namespace isolation is soft (no NetworkPolicy generation, no
+  ResourceQuota per user). Shared-cluster-with-students scenarios need v2
+  team RBAC + quota work.

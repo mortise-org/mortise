@@ -27,11 +27,12 @@ flowchart TB
         subgraph SysNS["mortise-system namespace"]
             direction TB
             Operator["Mortise Operator<br/>(controllers + API + UI)"]
-            DB[(operator datastore<br/>sqlite on PVC)]
-            Traefik[Traefik<br/>ingress controller]
-            CertMgr[cert-manager]
-            ExtDNS[ExternalDNS]
-            Zot[Zot OCI Registry]
+            MetaDB[(operator metadata<br/>sqlite on PVC:<br/>deploys, users, audit)]
+            SecretStore[(user secrets<br/>k8s Secrets in v1)]
+            Traefik["Traefik<br/>ingress controller<br/>(optional — byo supported)"]
+            CertMgr["cert-manager<br/>(optional — byo supported)"]
+            ExtDNS["ExternalDNS<br/>(optional — byo supported)"]
+            Zot["Zot OCI Registry<br/>(optional — external registry supported)"]
         end
 
         subgraph BuildNS["mortise-builds namespace"]
@@ -53,11 +54,13 @@ flowchart TB
     CI -->|POST /api/deploy| Operator
     GitHub -->|push / PR webhooks| Operator
 
-    Operator -->|GitProvider iface| GitHub
+    Operator -->|GitAPI iface| GitHub
     Operator -->|BuildClient iface| BuildKit
-    Operator -->|SecretBackend iface| DB
+    Operator -->|SecretBackend iface| SecretStore
+    Operator -->|RegistryBackend iface| Zot
+    Operator -->|IngressProvider iface| Traefik
     Operator -->|DNSProvider iface| ExtDNS
-    Operator --- DB
+    Operator --- MetaDB
 
     BuildKit -->|push image| Zot
     AppPod -->|pull image| Zot
@@ -87,8 +90,22 @@ flowchart TB
   itself; `mortise-builds` is isolated so build pods can't interfere with user
   workloads; each user App gets its own namespace with its own Deployments,
   Services, Ingresses, and PVCs.
-- **Bindings** (bottom dotted arrow): purely an env-var injection at pod-start
-  time. Apps are 12-factor — they just read `DATABASE_URL`. No SDK, no sidecar.
+- **Bindings** (bottom dotted arrow): resolved by the operator at reconcile
+  time and baked into the binder's Deployment spec (literal env for Service
+  DNS facts; `secretKeyRef` for credentials from the secret backend). The
+  kubelet injects env the normal way at pod start — no admission webhook, no
+  init container, no runtime agent. Apps are 12-factor — they just read
+  `DATABASE_URL`.
+- **Two datastores in `mortise-system`, deliberately separate:** `MetaDB`
+  (sqlite-on-PVC) holds Mortise's own metadata (deploy history, users,
+  audit). `SecretStore` holds user-visible app secrets behind the
+  `SecretBackend` interface (v1 backend = k8s Secrets). Keeping them split
+  means swapping the secret backend for OpenBao / AWS SM never migrates
+  Mortise's operational data.
+- **"Optional" labels** on Traefik, cert-manager, ExternalDNS, Zot: each
+  corresponds to an outward interface (`IngressProvider`, `DNSProvider`,
+  `RegistryBackend`) and can be turned off at install via chart values when
+  the cluster already has the component. See SPEC §8.3.
 
 ### Component Roles & Scopes
 
@@ -124,10 +141,14 @@ sequenceDiagram
 
     Dev->>Git: git push
     Git->>Op: webhook: push event (HMAC-signed)
-    Op->>Op: resolve GitProvider + verify HMAC
-    Op->>Op: fan out: which Apps match changed paths?
-    Op->>Git: clone repo (via GitProvider iface)
-    Op->>Op: detect Dockerfile vs Railpack mode
+    Op->>Op: resolve GitProvider + verify HMAC (GitAPI iface)
+    Op->>Op: list Apps on this repo;<br/>for each, compare changed paths<br/>to watchPaths prefixes
+    Note over Op: one webhook → N concurrent<br/>per-App build pipelines
+
+    loop per matched App
+        Op->>Git: clone repo (GitClient iface)
+        Op->>Op: detect Dockerfile vs Railpack mode
+    end
 
     alt Dockerfile mode
         Op->>BK: Submit dockerfile.v0 frontend
@@ -191,22 +212,37 @@ flowchart TB
     subgraph Outward["Outward Contracts — Mortise's code agrees to this"]
         direction LR
         SB["SecretBackend"]
-        GP["GitProvider"]
+        AU["AuthProvider"]
+        PE["PolicyEngine"]
+        FA["ForwardAuthProvider"]
+        GA["GitAPI + GitClient"]
         BC["BuildClient"]
+        RB["RegistryBackend"]
+        IP["IngressProvider"]
         DP["DNSProvider"]
     end
 
     subgraph Impls["Implementations (swappable)"]
         direction LR
-        SBImpl["k8s Secrets (v1)<br/>OpenBao (addon)<br/>AWS Secrets Mgr (addon)"]
-        GPImpl["GitHub<br/>GitLab<br/>Gitea"]
+        SBImpl["k8s Secrets (v1)<br/>OpenBao (addon)<br/>AWS/GCP/Vault (addon)"]
+        AUImpl["native DB (v1)<br/>OIDC (early addon)<br/>Authentik / LDAP / SAML (addon)"]
+        PEImpl["admin/member (v1)<br/>teams + per-app (v2)<br/>OPA / Casbin (addon)"]
+        FAImpl["none (v1)<br/>Authentik (addon)<br/>oauth2-proxy (addon)"]
+        GAImpl["GitHub / GitLab / Gitea<br/>(shared GitClient impl)"]
         BCImpl["BuildKit client"]
+        RBImpl["Zot (v1 default)<br/>GHCR / Harbor / ECR<br/>(any OCI registry)"]
+        IPImpl["Traefik (v1 default)<br/>NGINX / Contour / Gateway API<br/>(via annotations)"]
         DPImpl["ExternalDNS annotations (v1)<br/>Cloudflare direct (addon)"]
     end
 
     SB --> SBImpl
-    GP --> GPImpl
+    AU --> AUImpl
+    PE --> PEImpl
+    FA --> FAImpl
+    GA --> GAImpl
     BC --> BCImpl
+    RB --> RBImpl
+    IP --> IPImpl
     DP --> DPImpl
 ```
 
@@ -328,8 +364,12 @@ when reading the code or debugging a specific interaction.
 | User App pod | Zot (or external) | OCI pull | Start with the built image |
 | ExternalDNS | DNS provider API | HTTPS | Create/delete DNS records from Ingress annotations |
 | cert-manager | ACME server | HTTPS (ACME protocol) | Provision TLS certs for Ingress hostnames |
-| User App pod | Backing service pod | Cluster DNS (Service) + env vars | Runtime consumption of bindings |
+| User App pod | Backing service pod | Cluster DNS (Service) + env vars | Runtime consumption of bindings (env resolved at reconcile time, baked into Deployment spec) |
 | Operator | User browser | WebSocket | Stream build logs and App status to UI |
+| Operator | Registry | `RegistryBackend` iface | Image naming, tag listing, GC |
+| Operator | Ingress controller | `IngressProvider` iface | Pick ingress class, set provider-specific annotations |
+| Operator | AuthProvider | `AuthProvider` iface | Platform auth (UI/API login) |
+| Operator | PolicyEngine | `PolicyEngine` iface | Who can do what on which App |
 
 ---
 
