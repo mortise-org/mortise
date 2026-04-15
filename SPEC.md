@@ -198,6 +198,13 @@ native Go client. Scale-out revisited if p99 queue wait exceeds ~2 minutes.
 **Build cache:** OCI artifacts in the configured registry, keyed per app per
 branch.
 
+**Image naming:** built images are path-namespaced by App, e.g.
+`<registry>/mortise/<app-name>:<tag>`. This is a convention the operator
+enforces, not a user-facing setting. Keeps Apps' images cleanly organized
+regardless of registry backend (Zot, GHCR, Harbor, etc.) and prevents
+accidental cross-App references. Admin has full read/write across all paths
+by default.
+
 **Monorepo fan-out:** one webhook per push; operator iterates every App whose
 `source.repo` matches, compares changed paths against each App's `watchPaths`
 prefixes, rebuilds only matching Apps. UI groups builds by commit ("3 of 12
