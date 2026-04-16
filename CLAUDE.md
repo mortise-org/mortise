@@ -10,6 +10,25 @@ Kubernetes is fully abstracted away from the user.
 Read SPEC.md for the full product spec. Read ARCHITECTURE.md for system
 diagrams. This file is the operating manual for working in this codebase.
 
+## Progress tracking
+
+`PROGRESS.md` at the repo root is the single source of truth for what is
+implemented vs. what the spec still calls for. **Read it at the start of
+any task that touches feature scope** — it records phase-by-phase status,
+interface / CRD coverage, and known landmines that the code itself will
+not tell you about (e.g. resolver bugs, doc drift, hard-coded values that
+should go behind an interface).
+
+When your work changes implementation status, update `PROGRESS.md` in the
+same commit as the code change. The "Keeping this file up to date" section
+at the bottom of `PROGRESS.md` lists the specific triggers (feature
+landed, bug found, interface impl added, CRD promoted from scaffold,
+spec scope change). If you finish a task and `PROGRESS.md` still shows the
+old state, your task isn't done.
+
+Do not write progress info into this file (`CLAUDE.md`) or into
+`README.md` — they drift. Put it in `PROGRESS.md`.
+
 ## Tech stack
 
 - **Operator + API:** Go, kubebuilder, controller-runtime
