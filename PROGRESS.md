@@ -19,7 +19,7 @@ Last reconciled against spec + code: 2026-04-16 (git-source integration test lan
 | 3 — Bindings + secrets           | §7.4        | **Partial**      | Resolver writes env vars, but the credential Secret it references is never created and cross-namespace `secretKeyRef` is invalid in k8s (see issues #1 + #2). No deploy tokens, no secret rotation endpoint. |
 | 3.5 — Projects                   | §5 / §5.10  | **Done**         | `Project` CRD + controller + REST API + CLI + UI routes + default-project seeding. |
 | 4 — Build system (git source)    | §7.5        | **Done**         | All stacks wired end-to-end: webhook patches `mortise.dev/revision` annotation → App reconciler clones + builds + deploys. Operator entrypoint reads config from `PlatformConfig` (env-var fallback for first-boot). Builds run asynchronously in background goroutines; the reconciler returns `Building` immediately and polls on requeue. |
-| 5 — Monorepo support             | §7.6        | **Not started**  | No `watchPaths` handling, no per-path routing. |
+| 5 — Monorepo support             | §7.6        | **Done**         | `source.path` plumbs into BuildKit context; `source.watchPaths` gates webhook rebuilds (prefix match). UI build grouping deferred. |
 | 6 — Preview environments        | §7.7        | **Not started**  | `PreviewEnvironment` CRD is scaffold-only; controller empty. |
 | 7 — Polish & v1                  | §7.8        | **Partial**      | Controller-side `RollbackDeployment` exists, but no CLI/UI for rollback, no promote, no first-run wizard, no custom-domain UI. |
 | 8 — Tenons & integration recipes | §7.9 / §13  | **Not started**  | No bundled Traefik/cert-manager/ExternalDNS/Zot subcharts; no ESO / OPA / Prometheus recipes. |
@@ -509,10 +509,25 @@ landed and what each deferred.
   (`createGitProvider`, `deleteGitProvider`); request type
   `CreateGitProviderRequest` in `ui/src/lib/types.ts`.
 
-### Phase 5 — Monorepo support — **Not started**
+### Phase 5 — Monorepo support — **Done**
 
-- `App` spec has no `watchPaths` field.
-- No mechanism to gate rebuilds on path-filtered diffs.
+- `source.path` resolved against the clone root by
+  `resolveSourceDir` (`internal/controller/app_controller.go`) and
+  threaded through `buildParams.path` into the `BuildRequest.SourceDir`
+  handed to BuildKit. Rejects absolute paths and any `..` segment; fails
+  the build cleanly with `"source path 'x' not found in repo"` when the
+  subdirectory is missing.
+- `source.watchPaths` gates webhook fan-out. `parsePushEvent`
+  (`internal/webhook/handler.go`) now captures a deduped union of
+  `commits[].{added,modified,removed}` into
+  `BuildRequest.ChangedPaths`; `dispatchToApps` calls
+  `matchesWatchPaths` before patching the revision annotation. Prefix
+  match only (no globs, per spec). Leading `/` on watchPaths is
+  normalized. Payloads with no `commits[]` key skip the gate
+  (backward-compatible with today's behaviour).
+- Fixture: `test/fixtures/git-monorepo.yaml`.
+- UI build grouping (the fourth bullet in SPEC.md §7.6) is deferred
+  — backend-only landing.
 
 ### Phase 6 — Preview environments — **Not started**
 

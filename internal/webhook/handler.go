@@ -118,6 +118,10 @@ func (h *Handler) dispatchToApps(ctx context.Context, br BuildRequest) {
 
 	pushedBranch := branchFromRef(br.Ref)
 
+	if br.ChangedPaths == nil {
+		log.Info("push payload has no commits[]; skipping watchPaths gate", "repo", br.Repo, "ref", br.Ref)
+	}
+
 	matched := 0
 	for i := range apps {
 		app := &apps[i]
@@ -133,6 +137,10 @@ func (h *Handler) dispatchToApps(ctx context.Context, br BuildRequest) {
 			branch = "main"
 		}
 		if branch != pushedBranch {
+			continue
+		}
+		if !matchesWatchPaths(src.WatchPaths, br.ChangedPaths) {
+			log.Info("skipping app: no changed paths match watchPaths", "app", app.Name, "namespace", app.Namespace, "watchPaths", src.WatchPaths)
 			continue
 		}
 		if err := h.k8s.patchAppRevision(ctx, app, br.SHA); err != nil {
@@ -201,13 +209,16 @@ func normalizeRepo(raw string) string {
 
 // BuildRequest is the parsed push event payload.
 type BuildRequest struct {
-	Provider string // GitProvider name
-	Repo     string // full repo path (owner/repo or URL)
-	Ref      string // branch or tag ref
-	SHA      string // commit SHA
+	Provider     string   // GitProvider name
+	Repo         string   // full repo path (owner/repo or URL)
+	Ref          string   // branch or tag ref
+	SHA          string   // commit SHA
+	ChangedPaths []string // deduped union of added/modified/removed paths across all commits; nil when the payload carries no commits[]
 }
 
 // pushPayload is the minimal common shape we extract from all three forges.
+// All three forges (GitHub, GitLab, Gitea) use compatible commits[].{added,
+// modified, removed} shapes, so one struct covers them all.
 type pushPayload struct {
 	Ref  string `json:"ref"`
 	SHA  string `json:"after"`
@@ -215,6 +226,11 @@ type pushPayload struct {
 		FullName string `json:"full_name"`
 		HTMLURL  string `json:"html_url"`
 	} `json:"repository"`
+	Commits []struct {
+		Added    []string `json:"added"`
+		Modified []string `json:"modified"`
+		Removed  []string `json:"removed"`
+	} `json:"commits"`
 }
 
 // parsePushEvent extracts a BuildRequest from a push payload.
@@ -254,9 +270,69 @@ func parsePushEvent(providerType mortisev1alpha1.GitProviderType, body []byte) (
 		repo = p.Repo.HTMLURL
 	}
 
+	// Collect a deduped union of added/modified/removed paths across all
+	// commits. If commits[] is absent, leave ChangedPaths nil — the watchPaths
+	// gate treats that as "unknown, don't filter".
+	var changed []string
+	if p.Commits != nil {
+		seen := make(map[string]struct{})
+		for _, c := range p.Commits {
+			for _, group := range [][]string{c.Added, c.Modified, c.Removed} {
+				for _, path := range group {
+					if path == "" {
+						continue
+					}
+					if _, ok := seen[path]; ok {
+						continue
+					}
+					seen[path] = struct{}{}
+					changed = append(changed, path)
+				}
+			}
+		}
+		if changed == nil {
+			// Commits present but empty — still distinguishable from "no
+			// commits key" so the gate can apply.
+			changed = []string{}
+		}
+	}
+
 	return BuildRequest{
-		Repo: repo,
-		Ref:  p.Ref,
-		SHA:  sha,
+		Repo:         repo,
+		Ref:          p.Ref,
+		SHA:          sha,
+		ChangedPaths: changed,
 	}, true
+}
+
+// matchesWatchPaths returns true when the push should trigger a rebuild for an
+// App with the given watchPaths.
+//
+// Rules:
+//   - Empty watchPaths → always true (no filter configured).
+//   - Nil changedPaths → always true (payload had no commits[]; we can't
+//     reason about what changed, so fall back to rebuild-on-any-push).
+//   - Otherwise: any changed path that has any watchPath as a prefix → true.
+//
+// Leading slashes on watchPaths are stripped before comparison so users can
+// write either "services/api" or "/services/api".
+func matchesWatchPaths(watchPaths, changedPaths []string) bool {
+	if len(watchPaths) == 0 {
+		return true
+	}
+	if changedPaths == nil {
+		return true
+	}
+	for _, wp := range watchPaths {
+		wp = strings.TrimPrefix(wp, "/")
+		if wp == "" {
+			continue
+		}
+		for _, cp := range changedPaths {
+			if strings.HasPrefix(cp, wp) {
+				return true
+			}
+		}
+	}
+	return false
 }

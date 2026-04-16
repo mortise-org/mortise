@@ -379,6 +379,139 @@ func TestWebhook_DispatchMatrix(t *testing.T) {
 	}
 }
 
+// TestMatchesWatchPaths is a table-driven test for the monorepo watchPaths gate.
+func TestMatchesWatchPaths(t *testing.T) {
+	tests := []struct {
+		name         string
+		watchPaths   []string
+		changedPaths []string
+		want         bool
+	}{
+		{
+			name:         "empty watchPaths always matches",
+			watchPaths:   nil,
+			changedPaths: []string{"foo.txt"},
+			want:         true,
+		},
+		{
+			name:         "nil changedPaths (no commits key) always matches — backward compat",
+			watchPaths:   []string{"services/api"},
+			changedPaths: nil,
+			want:         true,
+		},
+		{
+			name:         "empty changedPaths (commits present but empty) with watchPaths — no match",
+			watchPaths:   []string{"services/api"},
+			changedPaths: []string{},
+			want:         false,
+		},
+		{
+			name:         "prefix match triggers rebuild",
+			watchPaths:   []string{"services/api"},
+			changedPaths: []string{"services/api/main.go", "README.md"},
+			want:         true,
+		},
+		{
+			name:         "no prefix match, skip rebuild",
+			watchPaths:   []string{"services/api"},
+			changedPaths: []string{"services/worker/main.go", "README.md"},
+			want:         false,
+		},
+		{
+			name:         "leading slash on watchPaths normalized",
+			watchPaths:   []string{"/services/api"},
+			changedPaths: []string{"services/api/handler.go"},
+			want:         true,
+		},
+		{
+			name:         "multiple watchPaths, any-match semantics",
+			watchPaths:   []string{"services/api", "shared/"},
+			changedPaths: []string{"shared/util.go"},
+			want:         true,
+		},
+		{
+			name:         "watchPath of empty string after strip is ignored",
+			watchPaths:   []string{"/"},
+			changedPaths: []string{"any/file.go"},
+			want:         false,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := matchesWatchPaths(tc.watchPaths, tc.changedPaths)
+			if got != tc.want {
+				t.Errorf("matchesWatchPaths(%v, %v) = %v, want %v", tc.watchPaths, tc.changedPaths, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestWebhook_WatchPathsGating verifies that a push carrying commits[] only
+// triggers rebuilds for Apps whose watchPaths prefix-match at least one
+// changed file — while Apps without watchPaths configured still rebuild.
+func TestWebhook_WatchPathsGating(t *testing.T) {
+	const secret = "secret"
+
+	apiApp := makeGitApp("api", "project-a", "https://github.com/org/repo", "main")
+	apiApp.Spec.Source.WatchPaths = []string{"services/api/"}
+
+	workerApp := makeGitApp("worker", "project-a", "https://github.com/org/repo", "main")
+	workerApp.Spec.Source.WatchPaths = []string{"services/worker/"}
+
+	unscopedApp := makeGitApp("all", "project-a", "https://github.com/org/repo", "main")
+	// No WatchPaths → always rebuilds.
+
+	body, _ := json.Marshal(map[string]interface{}{
+		"ref":   "refs/heads/main",
+		"after": "sha-api-change",
+		"repository": map[string]string{
+			"full_name": "org/repo",
+		},
+		"commits": []map[string]interface{}{
+			{
+				"added":    []string{"services/api/handler.go"},
+				"modified": []string{"README.md"},
+				"removed":  []string{},
+			},
+		},
+	})
+
+	gp := makeGitProvider(mortisev1alpha1.GitProviderTypeGitHub, "mortise-system", "wh-secret", "value")
+	kr := &fakeK8sReader{
+		provider: gp,
+		secrets:  map[string]string{"mortise-system/wh-secret/value": secret},
+		apps:     []mortisev1alpha1.App{apiApp, workerApp, unscopedApp},
+	}
+	h := New(kr)
+
+	req := httptest.NewRequest(http.MethodPost, "/github-main", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Hub-Signature-256", githubSignature(body, secret))
+
+	rr := httptest.NewRecorder()
+	h.Routes().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	want := map[string]string{
+		"project-a/api": "sha-api-change",
+		"project-a/all": "sha-api-change",
+	}
+	if len(kr.patched) != len(want) {
+		t.Fatalf("patched count mismatch: got %v, want %v", kr.patched, want)
+	}
+	for k, v := range want {
+		if got := kr.patched[k]; got != v {
+			t.Errorf("app %s: got sha %q, want %q (all patched: %v)", k, got, v, kr.patched)
+		}
+	}
+	if _, skipped := kr.patched["project-a/worker"]; skipped {
+		t.Errorf("worker app should have been gated out, but was patched: %v", kr.patched)
+	}
+}
+
 // TestRepoMatches verifies the URL normalization used for dispatch matching.
 func TestRepoMatches(t *testing.T) {
 	tests := []struct {

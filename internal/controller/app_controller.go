@@ -20,6 +20,8 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -247,6 +249,7 @@ func (r *AppReconciler) reconcileGitSource(ctx context.Context, app *mortisev1al
 		repo:       app.Spec.Source.Repo,
 		branch:     firstNonEmpty(app.Spec.Source.Branch, "main"),
 		token:      token,
+		path:       app.Spec.Source.Path,
 		dockerfile: dockerfilePath(app),
 		buildArgs:  buildArgsOf(app),
 		imageRef:   imageRef,
@@ -263,6 +266,7 @@ type buildParams struct {
 	repo       string
 	branch     string
 	token      string
+	path       string // subdirectory within the clone used as BuildKit context; "" = repo root
 	dockerfile string
 	buildArgs  map[string]string
 	imageRef   registry.ImageRef
@@ -288,10 +292,16 @@ func (r *AppReconciler) runBuild(ctx context.Context, cancel context.CancelFunc,
 	}
 	log.Info("cloned repo", "repo", p.repo, "branch", p.branch, "dir", cloneDir)
 
+	sourceDir, err := resolveSourceDir(cloneDir, p.path)
+	if err != nil {
+		t.setFailed(err.Error())
+		return
+	}
+
 	req := build.BuildRequest{
 		AppName:    p.appName,
 		Namespace:  p.namespace,
-		SourceDir:  cloneDir,
+		SourceDir:  sourceDir,
 		Dockerfile: p.dockerfile,
 		BuildArgs:  p.buildArgs,
 		PushTarget: p.imageRef.Full,
@@ -342,6 +352,41 @@ func (r *AppReconciler) applyBuildSuccess(ctx context.Context, app *mortisev1alp
 		return err
 	}
 	return nil
+}
+
+// resolveSourceDir returns the build context directory inside cloneDir,
+// honoring the App's source.path (monorepo subdirectory). An empty path means
+// the repo root. Rejects absolute paths and any segment equal to ".." to
+// prevent traversal out of the clone. Fails if the resolved directory does
+// not exist in the clone.
+func resolveSourceDir(cloneDir, path string) (string, error) {
+	if path == "" {
+		return cloneDir, nil
+	}
+	// Reject absolute paths outright.
+	if filepath.IsAbs(path) {
+		return "", fmt.Errorf("source path %q must be relative", path)
+	}
+	// Normalize forward slashes (users typically write "services/api") and
+	// reject any parent-directory segments.
+	clean := filepath.ToSlash(path)
+	for _, seg := range strings.Split(clean, "/") {
+		if seg == ".." {
+			return "", fmt.Errorf("source path %q must not contain '..' segments", path)
+		}
+	}
+	resolved := filepath.Join(cloneDir, filepath.FromSlash(clean))
+	info, err := os.Stat(resolved)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", fmt.Errorf("source path %q not found in repo", path)
+		}
+		return "", fmt.Errorf("stat source path %q: %v", path, err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("source path %q is not a directory", path)
+	}
+	return resolved, nil
 }
 
 // shortTag produces an image tag from a revision string, truncated to 7 chars.
