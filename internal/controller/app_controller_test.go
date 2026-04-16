@@ -35,6 +35,9 @@ import (
 	"k8s.io/utils/ptr"
 
 	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
+	"github.com/MC-Meesh/mortise/internal/build"
+	"github.com/MC-Meesh/mortise/internal/git"
+	"github.com/MC-Meesh/mortise/internal/registry"
 )
 
 var _ = Describe("App Controller", func() {
@@ -750,6 +753,340 @@ var _ = Describe("App Controller", func() {
 			err = reconciler.RollbackDeployment(ctx, app, "staging", 0)
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("not found"))
+		})
+	})
+})
+
+// --- Mock types for git-source tests ---
+
+// fakeBuildClient implements build.BuildClient for tests.
+type fakeBuildClient struct {
+	digest string
+	err    string // if non-empty, Submit returns an EventFailure with this error
+}
+
+func (f *fakeBuildClient) Submit(_ context.Context, _ build.BuildRequest) (<-chan build.BuildEvent, error) {
+	ch := make(chan build.BuildEvent, 2)
+	if f.err != "" {
+		ch <- build.BuildEvent{Type: build.EventFailure, Error: f.err}
+	} else {
+		ch <- build.BuildEvent{Type: build.EventSuccess, Digest: f.digest}
+	}
+	close(ch)
+	return ch, nil
+}
+
+// fakeGitClient implements git.GitClient for tests (no-op clone).
+type fakeGitClient struct {
+	err error
+}
+
+func (f *fakeGitClient) Clone(_ context.Context, _, _, _ string, _ git.GitCredentials) error {
+	return f.err
+}
+
+func (f *fakeGitClient) Fetch(_ context.Context, _, _ string) error {
+	return f.err
+}
+
+// fakeRegistryBackend implements registry.RegistryBackend for tests.
+type fakeRegistryBackend struct {
+	imageRef registry.ImageRef
+}
+
+func (f *fakeRegistryBackend) PushTarget(app, tag string) (registry.ImageRef, error) {
+	if f.imageRef.Full != "" {
+		return f.imageRef, nil
+	}
+	return registry.ImageRef{
+		Registry: "registry.example.com",
+		Path:     "mortise/" + app,
+		Tag:      tag,
+		Full:     "registry.example.com/mortise/" + app + ":" + tag,
+	}, nil
+}
+
+func (f *fakeRegistryBackend) PullSecretRef() string { return "" }
+
+func (f *fakeRegistryBackend) Tags(_ context.Context, _ string) ([]string, error) {
+	return nil, nil
+}
+
+func (f *fakeRegistryBackend) DeleteTag(_ context.Context, _, _ string) error {
+	return nil
+}
+
+// gitSourceReconciler returns an AppReconciler wired with fakes for git-source tests.
+func gitSourceReconciler(bc build.BuildClient, gc git.GitClient, rb registry.RegistryBackend) *AppReconciler {
+	return &AppReconciler{
+		Client:          k8sClient,
+		Scheme:          k8sClient.Scheme(),
+		BuildClient:     bc,
+		GitClient:       gc,
+		RegistryBackend: rb,
+	}
+}
+
+// makeGitApp creates an App spec with source.type=git.
+func makeGitSourceApp(name, ns, providerRef string) *mortisev1alpha1.App {
+	return &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: ns,
+		},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{
+				Type:        mortisev1alpha1.SourceTypeGit,
+				Repo:        "https://github.com/org/repo",
+				Branch:      "main",
+				ProviderRef: providerRef,
+			},
+			Network: mortisev1alpha1.NetworkConfig{Public: false},
+			Environments: []mortisev1alpha1.Environment{
+				{Name: "production", Replicas: ptr.To[int32](1)},
+			},
+		},
+	}
+}
+
+var _ = Describe("App Controller — git source", func() {
+	const namespace = "default"
+
+	Context("no providerRef", func() {
+		It("should set phase=Failed when providerRef is missing", func() {
+			ctx := context.Background()
+			app := makeGitSourceApp("git-no-provider", namespace, "")
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+
+			r := gitSourceReconciler(
+				&fakeBuildClient{digest: "sha256:abc"},
+				&fakeGitClient{},
+				&fakeRegistryBackend{},
+			)
+			_, err := r.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: app.Name, Namespace: namespace},
+			})
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("MissingProviderRef"))
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: namespace}, app)).To(Succeed())
+			Expect(app.Status.Phase).To(Equal(mortisev1alpha1.AppPhaseFailed))
+		})
+	})
+
+	Context("clone failure", func() {
+		It("should set phase=Failed when clone fails", func() {
+			ctx := context.Background()
+
+			// Create the provider and its token secret so the reconciler gets past token resolution.
+			gp := &mortisev1alpha1.GitProvider{
+				ObjectMeta: metav1.ObjectMeta{Name: "gh-clone-fail"},
+				Spec: mortisev1alpha1.GitProviderSpec{
+					Type: mortisev1alpha1.GitProviderTypeGitHub,
+					Host: "https://github.com",
+					OAuth: mortisev1alpha1.OAuthConfig{
+						ClientIDSecretRef:     mortisev1alpha1.SecretRef{Namespace: namespace, Name: "dummy", Key: "id"},
+						ClientSecretSecretRef: mortisev1alpha1.SecretRef{Namespace: namespace, Name: "dummy", Key: "secret"},
+					},
+					WebhookSecretRef: mortisev1alpha1.SecretRef{Namespace: namespace, Name: "dummy", Key: "wh"},
+				},
+			}
+			Expect(k8sClient.Create(ctx, gp)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, gp)).To(Succeed()) }()
+
+			tokenSecret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{Name: "gitprovider-token-gh-clone-fail", Namespace: "mortise-system"},
+				Data:       map[string][]byte{"token": []byte("tok")},
+			}
+			ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "mortise-system"}}
+			// Namespace may already exist; ignore AlreadyExists.
+			_ = k8sClient.Create(ctx, ns)
+			Expect(k8sClient.Create(ctx, tokenSecret)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, tokenSecret)).To(Succeed()) }()
+
+			app := makeGitSourceApp("git-clone-fail", namespace, "gh-clone-fail")
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+
+			r := gitSourceReconciler(
+				&fakeBuildClient{},
+				&fakeGitClient{err: fmt.Errorf("connection refused")},
+				&fakeRegistryBackend{},
+			)
+			_, err := r.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: app.Name, Namespace: namespace},
+			})
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("CloneFailed"))
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: namespace}, app)).To(Succeed())
+			Expect(app.Status.Phase).To(Equal(mortisev1alpha1.AppPhaseFailed))
+		})
+	})
+
+	Context("build failure", func() {
+		It("should set phase=Failed when build fails", func() {
+			ctx := context.Background()
+
+			gp := &mortisev1alpha1.GitProvider{
+				ObjectMeta: metav1.ObjectMeta{Name: "gh-build-fail"},
+				Spec: mortisev1alpha1.GitProviderSpec{
+					Type: mortisev1alpha1.GitProviderTypeGitHub,
+					Host: "https://github.com",
+					OAuth: mortisev1alpha1.OAuthConfig{
+						ClientIDSecretRef:     mortisev1alpha1.SecretRef{Namespace: namespace, Name: "dummy", Key: "id"},
+						ClientSecretSecretRef: mortisev1alpha1.SecretRef{Namespace: namespace, Name: "dummy", Key: "secret"},
+					},
+					WebhookSecretRef: mortisev1alpha1.SecretRef{Namespace: namespace, Name: "dummy", Key: "wh"},
+				},
+			}
+			Expect(k8sClient.Create(ctx, gp)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, gp)).To(Succeed()) }()
+
+			tokenSecret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{Name: "gitprovider-token-gh-build-fail", Namespace: "mortise-system"},
+				Data:       map[string][]byte{"token": []byte("tok")},
+			}
+			_ = k8sClient.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "mortise-system"}})
+			Expect(k8sClient.Create(ctx, tokenSecret)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, tokenSecret)).To(Succeed()) }()
+
+			app := makeGitSourceApp("git-build-fail", namespace, "gh-build-fail")
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+
+			r := gitSourceReconciler(
+				&fakeBuildClient{err: "dockerfile not found"},
+				&fakeGitClient{},
+				&fakeRegistryBackend{},
+			)
+			_, err := r.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: app.Name, Namespace: namespace},
+			})
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("BuildFailed"))
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: namespace}, app)).To(Succeed())
+			Expect(app.Status.Phase).To(Equal(mortisev1alpha1.AppPhaseFailed))
+		})
+	})
+
+	Context("happy path", func() {
+		It("should build, set lastBuiltSHA, and create a Deployment with the built image", func() {
+			ctx := context.Background()
+
+			gp := &mortisev1alpha1.GitProvider{
+				ObjectMeta: metav1.ObjectMeta{Name: "gh-happy"},
+				Spec: mortisev1alpha1.GitProviderSpec{
+					Type: mortisev1alpha1.GitProviderTypeGitHub,
+					Host: "https://github.com",
+					OAuth: mortisev1alpha1.OAuthConfig{
+						ClientIDSecretRef:     mortisev1alpha1.SecretRef{Namespace: namespace, Name: "dummy", Key: "id"},
+						ClientSecretSecretRef: mortisev1alpha1.SecretRef{Namespace: namespace, Name: "dummy", Key: "secret"},
+					},
+					WebhookSecretRef: mortisev1alpha1.SecretRef{Namespace: namespace, Name: "dummy", Key: "wh"},
+				},
+			}
+			Expect(k8sClient.Create(ctx, gp)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, gp)).To(Succeed()) }()
+
+			tokenSecret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{Name: "gitprovider-token-gh-happy", Namespace: "mortise-system"},
+				Data:       map[string][]byte{"token": []byte("mytoken")},
+			}
+			_ = k8sClient.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "mortise-system"}})
+			Expect(k8sClient.Create(ctx, tokenSecret)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, tokenSecret)).To(Succeed()) }()
+
+			app := makeGitSourceApp("git-happy", namespace, "gh-happy")
+			// Set the revision annotation as the webhook would.
+			app.Annotations = map[string]string{"mortise.dev/revision": "abc1234567890"}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+
+			r := gitSourceReconciler(
+				&fakeBuildClient{digest: "sha256:deadbeef"},
+				&fakeGitClient{},
+				&fakeRegistryBackend{},
+			)
+			_, err := r.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: app.Name, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Status should have the built SHA and image.
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: namespace}, app)).To(Succeed())
+			Expect(app.Status.LastBuiltSHA).To(Equal("abc1234567890"))
+			Expect(app.Status.LastBuiltImage).NotTo(BeEmpty())
+
+			// A Deployment should have been created with the built image.
+			var dep appsv1.Deployment
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      "git-happy-production",
+				Namespace: namespace,
+			}, &dep)).To(Succeed())
+			Expect(dep.Spec.Template.Spec.Containers[0].Image).To(ContainSubstring("sha256:deadbeef"))
+		})
+	})
+
+	Context("same-SHA short-circuit", func() {
+		It("should skip rebuild when lastBuiltSHA matches the annotation revision", func() {
+			ctx := context.Background()
+
+			gp := &mortisev1alpha1.GitProvider{
+				ObjectMeta: metav1.ObjectMeta{Name: "gh-shortcircuit"},
+				Spec: mortisev1alpha1.GitProviderSpec{
+					Type: mortisev1alpha1.GitProviderTypeGitHub,
+					Host: "https://github.com",
+					OAuth: mortisev1alpha1.OAuthConfig{
+						ClientIDSecretRef:     mortisev1alpha1.SecretRef{Namespace: namespace, Name: "dummy", Key: "id"},
+						ClientSecretSecretRef: mortisev1alpha1.SecretRef{Namespace: namespace, Name: "dummy", Key: "secret"},
+					},
+					WebhookSecretRef: mortisev1alpha1.SecretRef{Namespace: namespace, Name: "dummy", Key: "wh"},
+				},
+			}
+			Expect(k8sClient.Create(ctx, gp)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, gp)).To(Succeed()) }()
+
+			tokenSecret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{Name: "gitprovider-token-gh-shortcircuit", Namespace: "mortise-system"},
+				Data:       map[string][]byte{"token": []byte("tok")},
+			}
+			_ = k8sClient.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "mortise-system"}})
+			Expect(k8sClient.Create(ctx, tokenSecret)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, tokenSecret)).To(Succeed()) }()
+
+			app := makeGitSourceApp("git-shortcircuit", namespace, "gh-shortcircuit")
+			app.Annotations = map[string]string{"mortise.dev/revision": "same-sha"}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+
+			// Simulate a prior successful build by presetting the status.
+			app.Status.LastBuiltSHA = "same-sha"
+			app.Status.LastBuiltImage = "registry.example.com/mortise/git-shortcircuit:same-sha"
+			Expect(k8sClient.Status().Update(ctx, app)).To(Succeed())
+
+			r := gitSourceReconciler(
+				&fakeBuildClient{digest: "sha256:shouldnotbecalled"},
+				&fakeGitClient{},
+				&fakeRegistryBackend{},
+			)
+
+			// We verify the short-circuit by checking that the Deployment image
+			// matches the pre-set lastBuiltImage (not a newly built one).
+			_, err := r.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: app.Name, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// The Deployment should use the already-built image.
+			var dep appsv1.Deployment
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      "git-shortcircuit-production",
+				Namespace: namespace,
+			}, &dep)).To(Succeed())
+			Expect(dep.Spec.Template.Spec.Containers[0].Image).To(Equal("registry.example.com/mortise/git-shortcircuit:same-sha"))
 		})
 	})
 })

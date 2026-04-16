@@ -13,13 +13,18 @@ import (
 	"testing"
 
 	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // fakeK8sReader is a test double for k8sReader.
 type fakeK8sReader struct {
 	provider *mortisev1alpha1.GitProvider
 	secrets  map[string]string // "ns/name/key" -> value
+	apps     []mortisev1alpha1.App
 	err      error
+
+	// patched records calls to patchAppRevision: app namespace/name -> sha
+	patched map[string]string
 }
 
 func (f *fakeK8sReader) getGitProvider(_ context.Context, name string) (*mortisev1alpha1.GitProvider, error) {
@@ -44,6 +49,21 @@ func (f *fakeK8sReader) getSecret(_ context.Context, namespace, name, key string
 	return v, nil
 }
 
+func (f *fakeK8sReader) listGitApps(_ context.Context) ([]mortisev1alpha1.App, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.apps, nil
+}
+
+func (f *fakeK8sReader) patchAppRevision(_ context.Context, app *mortisev1alpha1.App, sha string) error {
+	if f.patched == nil {
+		f.patched = make(map[string]string)
+	}
+	f.patched[app.Namespace+"/"+app.Name] = sha
+	return nil
+}
+
 func makeGitProvider(providerType mortisev1alpha1.GitProviderType, secretNS, secretName, secretKey string) *mortisev1alpha1.GitProvider {
 	ref := mortisev1alpha1.SecretRef{Namespace: secretNS, Name: secretName, Key: secretKey}
 	return &mortisev1alpha1.GitProvider{
@@ -55,6 +75,19 @@ func makeGitProvider(providerType mortisev1alpha1.GitProviderType, secretNS, sec
 				ClientSecretSecretRef: ref,
 			},
 			WebhookSecretRef: ref,
+		},
+	}
+}
+
+func makeGitApp(name, ns, repo, branch string) mortisev1alpha1.App {
+	return mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{
+				Type:   mortisev1alpha1.SourceTypeGit,
+				Repo:   repo,
+				Branch: branch,
+			},
 		},
 	}
 }
@@ -86,7 +119,6 @@ func pushPayloadJSON(ref, sha, fullName string) []byte {
 func TestGitHubWebhook_ValidSignature(t *testing.T) {
 	const secret = "mysecret"
 	const providerName = "github-main"
-	builds := make(chan BuildRequest, 1)
 
 	body := pushPayloadJSON("refs/heads/main", "abc123def456", "org/repo")
 
@@ -96,16 +128,17 @@ func TestGitHubWebhook_ValidSignature(t *testing.T) {
 		secrets: map[string]string{
 			"mortise-system/wh-secret/value": secret,
 		},
+		apps: []mortisev1alpha1.App{
+			makeGitApp("my-app", "project-default", "https://github.com/org/repo", "main"),
+		},
 	}
-	h := New(kr, builds)
+	h := New(kr)
 
 	req := httptest.NewRequest(http.MethodPost, "/"+providerName, bytes.NewReader(body))
-	req.SetPathValue("provider", providerName) // net/http 1.22+
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Hub-Signature-256", githubSignature(body, secret))
 	req.Header.Set("X-Github-Event", "push")
 
-	// Use the chi router so the provider param is resolved.
 	rr := httptest.NewRecorder()
 	h.Routes().ServeHTTP(rr, req)
 
@@ -113,23 +146,14 @@ func TestGitHubWebhook_ValidSignature(t *testing.T) {
 		t.Fatalf("expected 202, got %d: %s", rr.Code, rr.Body.String())
 	}
 
-	select {
-	case br := <-builds:
-		if br.Repo != "org/repo" {
-			t.Errorf("expected repo org/repo, got %q", br.Repo)
-		}
-		if br.SHA != "abc123def456" {
-			t.Errorf("expected sha abc123def456, got %q", br.SHA)
-		}
-	default:
-		t.Fatal("expected build request to be enqueued")
+	if sha := kr.patched["project-default/my-app"]; sha != "abc123def456" {
+		t.Errorf("expected my-app patched with sha abc123def456, got %q (all patched: %v)", sha, kr.patched)
 	}
 }
 
 func TestGitHubWebhook_InvalidSignature(t *testing.T) {
 	const secret = "mysecret"
 	const providerName = "github-main"
-	builds := make(chan BuildRequest, 1)
 
 	body := pushPayloadJSON("refs/heads/main", "abc123def456", "org/repo")
 
@@ -140,7 +164,7 @@ func TestGitHubWebhook_InvalidSignature(t *testing.T) {
 			"mortise-system/wh-secret/value": secret,
 		},
 	}
-	h := New(kr, builds)
+	h := New(kr)
 
 	req := httptest.NewRequest(http.MethodPost, "/"+providerName, bytes.NewReader(body))
 	req.Header.Set("X-Hub-Signature-256", "sha256=invalidsignature")
@@ -156,7 +180,6 @@ func TestGitHubWebhook_InvalidSignature(t *testing.T) {
 func TestGiteaWebhook_ValidSignature(t *testing.T) {
 	const secret = "giteasecret"
 	const providerName = "gitea-homelab"
-	builds := make(chan BuildRequest, 1)
 
 	body := pushPayloadJSON("refs/heads/feature", "deadbeef1234", "user/myrepo")
 
@@ -167,8 +190,11 @@ func TestGiteaWebhook_ValidSignature(t *testing.T) {
 		secrets: map[string]string{
 			"mortise-system/wh-secret/value": secret,
 		},
+		apps: []mortisev1alpha1.App{
+			makeGitApp("my-repo-app", "project-x", "https://gitea.example.com/user/myrepo", "feature"),
+		},
 	}
-	h := New(kr, builds)
+	h := New(kr)
 
 	req := httptest.NewRequest(http.MethodPost, "/"+providerName, bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -181,20 +207,14 @@ func TestGiteaWebhook_ValidSignature(t *testing.T) {
 		t.Fatalf("expected 202, got %d: %s", rr.Code, rr.Body.String())
 	}
 
-	select {
-	case br := <-builds:
-		if br.Repo != "user/myrepo" {
-			t.Errorf("expected repo user/myrepo, got %q", br.Repo)
-		}
-	default:
-		t.Fatal("expected build request to be enqueued")
+	if sha := kr.patched["project-x/my-repo-app"]; sha != "deadbeef1234" {
+		t.Errorf("expected my-repo-app patched with sha deadbeef1234, got %q", sha)
 	}
 }
 
 func TestGitLabWebhook_ValidToken(t *testing.T) {
 	const secret = "gitlab-webhook-token"
 	const providerName = "gitlab-com"
-	builds := make(chan BuildRequest, 1)
 
 	// GitLab uses checkout_sha rather than after.
 	body, _ := json.Marshal(map[string]interface{}{
@@ -213,8 +233,11 @@ func TestGitLabWebhook_ValidToken(t *testing.T) {
 		secrets: map[string]string{
 			"mortise-system/wh-secret/value": secret,
 		},
+		apps: []mortisev1alpha1.App{
+			makeGitApp("gitlab-app", "project-ns", "https://gitlab.com/ns/project", "main"),
+		},
 	}
-	h := New(kr, builds)
+	h := New(kr)
 
 	req := httptest.NewRequest(http.MethodPost, "/"+providerName, bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -227,20 +250,14 @@ func TestGitLabWebhook_ValidToken(t *testing.T) {
 		t.Fatalf("expected 202, got %d: %s", rr.Code, rr.Body.String())
 	}
 
-	select {
-	case br := <-builds:
-		if br.SHA != "cafebabe5678" {
-			t.Errorf("expected sha cafebabe5678, got %q", br.SHA)
-		}
-	default:
-		t.Fatal("expected build request to be enqueued")
+	if sha := kr.patched["project-ns/gitlab-app"]; sha != "cafebabe5678" {
+		t.Errorf("expected gitlab-app patched with sha cafebabe5678, got %q", sha)
 	}
 }
 
 func TestWebhook_ProviderNotFound(t *testing.T) {
-	builds := make(chan BuildRequest, 1)
 	kr := &fakeK8sReader{err: fmt.Errorf("not found")}
-	h := New(kr, builds)
+	h := New(kr)
 
 	req := httptest.NewRequest(http.MethodPost, "/unknown-provider", http.NoBody)
 
@@ -249,5 +266,142 @@ func TestWebhook_ProviderNotFound(t *testing.T) {
 
 	if rr.Code != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d", rr.Code)
+	}
+}
+
+// TestWebhook_DispatchMatrix is a table-driven test covering the dispatch logic:
+// which Apps get their revision annotation patched for a given push event.
+func TestWebhook_DispatchMatrix(t *testing.T) {
+	const secret = "secret"
+
+	appMain := makeGitApp("app-main", "project-a", "https://github.com/org/repo", "main")
+	appDev := makeGitApp("app-dev", "project-a", "https://github.com/org/repo", "dev")
+	appOtherRepo := makeGitApp("app-other", "project-b", "https://github.com/org/other", "main")
+
+	tests := []struct {
+		name        string
+		pushRef     string
+		pushSHA     string
+		pushRepo    string
+		apps        []mortisev1alpha1.App
+		wantPatched map[string]string // ns/name -> sha; nil means nothing patched
+	}{
+		{
+			name:     "push to main matches app-main only",
+			pushRef:  "refs/heads/main",
+			pushSHA:  "sha1111",
+			pushRepo: "org/repo",
+			apps:     []mortisev1alpha1.App{appMain, appDev, appOtherRepo},
+			wantPatched: map[string]string{
+				"project-a/app-main": "sha1111",
+			},
+		},
+		{
+			name:     "push to dev matches app-dev only",
+			pushRef:  "refs/heads/dev",
+			pushSHA:  "sha2222",
+			pushRepo: "org/repo",
+			apps:     []mortisev1alpha1.App{appMain, appDev, appOtherRepo},
+			wantPatched: map[string]string{
+				"project-a/app-dev": "sha2222",
+			},
+		},
+		{
+			name:        "push to different repo matches nothing",
+			pushRef:     "refs/heads/main",
+			pushSHA:     "sha3333",
+			pushRepo:    "org/unrelated",
+			apps:        []mortisev1alpha1.App{appMain, appDev, appOtherRepo},
+			wantPatched: map[string]string{},
+		},
+		{
+			name:     "URL with .git suffix normalizes correctly",
+			pushRef:  "refs/heads/main",
+			pushSHA:  "sha4444",
+			pushRepo: "org/repo",
+			apps: []mortisev1alpha1.App{
+				makeGitApp("app-giturl", "project-c", "https://github.com/org/repo.git", "main"),
+			},
+			wantPatched: map[string]string{
+				"project-c/app-giturl": "sha4444",
+			},
+		},
+		{
+			name:        "no apps returns 202 with no patches",
+			pushRef:     "refs/heads/main",
+			pushSHA:     "sha5555",
+			pushRepo:    "org/repo",
+			apps:        []mortisev1alpha1.App{},
+			wantPatched: map[string]string{},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			body := pushPayloadJSON(tc.pushRef, tc.pushSHA, tc.pushRepo)
+
+			gp := makeGitProvider(mortisev1alpha1.GitProviderTypeGitHub, "mortise-system", "wh-secret", "value")
+			kr := &fakeK8sReader{
+				provider: gp,
+				secrets: map[string]string{
+					"mortise-system/wh-secret/value": secret,
+				},
+				apps: tc.apps,
+			}
+			h := New(kr)
+
+			req := httptest.NewRequest(http.MethodPost, "/github-main", bytes.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("X-Hub-Signature-256", githubSignature(body, secret))
+
+			rr := httptest.NewRecorder()
+			h.Routes().ServeHTTP(rr, req)
+
+			if rr.Code != http.StatusAccepted {
+				t.Fatalf("expected 202, got %d: %s", rr.Code, rr.Body.String())
+			}
+
+			got := kr.patched
+			if got == nil {
+				got = map[string]string{}
+			}
+
+			if len(got) != len(tc.wantPatched) {
+				t.Errorf("patched count mismatch: got %v, want %v", got, tc.wantPatched)
+				return
+			}
+			for k, wantSHA := range tc.wantPatched {
+				if gotSHA := got[k]; gotSHA != wantSHA {
+					t.Errorf("app %s: got sha %q, want %q", k, gotSHA, wantSHA)
+				}
+			}
+		})
+	}
+}
+
+// TestRepoMatches verifies the URL normalization used for dispatch matching.
+func TestRepoMatches(t *testing.T) {
+	tests := []struct {
+		a, b  string
+		match bool
+	}{
+		// Full URL app repo matches short full_name event repo (the primary webhook case).
+		{"https://github.com/org/repo", "org/repo", true},
+		// Full URL vs host+path (no scheme).
+		{"https://github.com/org/repo", "github.com/org/repo", true},
+		// .git suffix is stripped.
+		{"https://github.com/org/repo.git", "https://github.com/org/repo", true},
+		// Case-insensitive.
+		{"https://github.com/Org/Repo", "https://github.com/org/repo", true},
+		// Short-form equality.
+		{"org/repo", "org/repo", true},
+		// Different repo — no match.
+		{"https://github.com/org/repo", "org/other", false},
+	}
+	for _, tc := range tests {
+		got := repoMatches(tc.a, tc.b)
+		if got != tc.match {
+			t.Errorf("repoMatches(%q, %q) = %v, want %v", tc.a, tc.b, got, tc.match)
+		}
 	}
 }

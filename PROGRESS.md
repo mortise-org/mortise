@@ -5,7 +5,7 @@ whenever implementation status changes — see the **Keeping this file up to
 date** section at the bottom.
 
 Legend: **Done** / **Partial** / **Not started**
-Last reconciled against spec + code: 2026-04-16 (commit `31f8e52`).
+Last reconciled against spec + code: 2026-04-16 (commit pending — git-source end-to-end path).
 
 ---
 
@@ -14,11 +14,11 @@ Last reconciled against spec + code: 2026-04-16 (commit `31f8e52`).
 | Phase | Spec §   | Status       | Summary |
 |-------|----------|--------------|---------|
 | 0 — Foundation                   | §7.1 / §8   | **Done**         | kubebuilder scaffold, chart skeleton, Makefile, test helpers + fixtures. |
-| 1 — Core operator (image source) | §7.2        | **Partial**      | Deployment / Service / Ingress / PVC reconciliation works for `source.type: image`. No ServiceAccount/imagePullSecret, no IngressProvider/DNSProvider interfaces, cluster-issuer is hard-coded. |
+| 1 — Core operator (image source) | §7.2        | **Partial**      | Deployment / Service / Ingress / PVC reconciliation works for `source.type: image` and `source.type: git` (git builds synchronously with a 30-min timeout). No ServiceAccount/imagePullSecret, no IngressProvider/DNSProvider interfaces, cluster-issuer is hard-coded. |
 | 2 — API + UI skeleton            | §7.3        | **Done**         | Auth, project CRUD, app CRUD, secrets CRUD, deploy webhook, SSE logs, SvelteKit UI. |
 | 3 — Bindings + secrets           | §7.4        | **Partial**      | Resolver writes env vars, but the credential Secret it references is never created and cross-namespace `secretKeyRef` is invalid in k8s (see issues #1 + #2). No deploy tokens, no secret rotation endpoint. |
 | 3.5 — Projects                   | §5 / §5.10  | **Done**         | `Project` CRD + controller + REST API + CLI + UI routes + default-project seeding. |
-| 4 — Build system (git source)    | §7.5        | **Partial**      | `GitProvider` CRD + reconciler, three forge `GitAPI` impls, `GitClient` (go-git), `BuildClient` (BuildKit), `RegistryBackend` (OCI), webhook receiver with per-forge HMAC, OAuth authorize/callback server. Remaining: wire git-source path into `app_controller.go` so pushes actually build+deploy; `PlatformConfig` hasn't been promoted from scaffold so all three stacks are configured via ad-hoc structs. |
+| 4 — Build system (git source)    | §7.5        | **Partial**      | All stacks wired end-to-end: webhook patches `mortise.dev/revision` annotation → App reconciler clones + builds + deploys. Builds are synchronous (block reconcile goroutine up to 30 min) — async follow-up tracked below. `PlatformConfig` not yet promoted; registry/build/git configured via env vars (`MORTISE_BUILDKIT_ADDR`, `MORTISE_REGISTRY_URL`, `MORTISE_REGISTRY_USERNAME`, `MORTISE_REGISTRY_PASSWORD`). |
 | 5 — Monorepo support             | §7.6        | **Not started**  | No `watchPaths` handling, no per-path routing. |
 | 6 — Preview environments        | §7.7        | **Not started**  | `PreviewEnvironment` CRD is scaffold-only; controller empty. |
 | 7 — Polish & v1                  | §7.8        | **Partial**      | Controller-side `RollbackDeployment` exists, but no CLI/UI for rollback, no promote, no first-run wizard, no custom-domain UI. |
@@ -81,9 +81,15 @@ Spec rule: every outward interface must have at least one real v1 impl
 Where it works (`internal/controller/app_controller.go`):
 - Reconciles `Deployment`, `Service`, `Ingress`, `PersistentVolumeClaim(s)`
   for `source.type: image` apps.
+- Reconciles `source.type: git` apps: resolves GitProvider OAuth token,
+  clones repo, runs build via `BuildClient`, pushes image via
+  `RegistryBackend`, then falls through to Deployment/Service/Ingress
+  reconciliation with the built image digest.
 - Sets owner references so everything GCs with the `App`.
 - Exposes `RollbackDeployment` for the API layer to call.
-- Envtest suite in `internal/controller/app_controller_test.go`.
+- Envtest suite in `internal/controller/app_controller_test.go` covers image
+  source (existing) and git source (happy path, clone failure, build failure,
+  same-SHA short-circuit).
 
 Known gaps against spec §7.2 / §11:
 - **No ServiceAccount** per App, no `imagePullSecret` wiring — spec §11 says
@@ -92,13 +98,14 @@ Known gaps against spec §7.2 / §11:
   projects from this Secret, so backing services never surface
   user/password env vars. See **Known issues** below.
 - Ingress annotation `cert-manager.io/cluster-issuer: letsencrypt-prod` is
-  **hard-coded** at `internal/controller/app_controller.go:231`. Violates the
-  "standards, not implementations" rule and should move behind
-  `IngressProvider` + read from `PlatformConfig`.
+  **hard-coded**. Violates the "standards, not implementations" rule and should
+  move behind `IngressProvider` + read from `PlatformConfig`.
 - `IngressProvider` / `DNSProvider` interfaces exist (`internal/ingress/`,
   `internal/dns/`) but have no impls; the controller bypasses them.
-- `Reconcile` returns early for any `source.type` other than `image` — git
-  path is unimplemented.
+- **Git build is synchronous**: `reconcileGitSource` blocks the reconcile
+  goroutine for up to 30 min (`buildTimeout`). Acceptable for v1; a follow-up
+  should run builds in a Job or goroutine and return `Building` phase
+  immediately.
 
 ### Phase 2 — API + UI skeleton — **Done**
 
@@ -177,22 +184,77 @@ an image, and trigger a deploy. See sub-sections below for what each stack
 landed and what each deferred.
 
 **Cross-stack deferred work (tracked here, not duplicated in sub-sections):**
-- **App controller git path** — `internal/controller/app_controller.go`
-  returns early for `source.type != image`. It needs to call
-  `GitClient.Clone` → `BuildClient.Build` → `RegistryBackend.PushTarget`
-  and then flow the resulting image digest into the Deployment it already
-  knows how to create.
+- ~~**App controller git path**~~ — **Done.** `internal/controller/app_controller.go`
+  now handles `source.type: git` via `reconcileGitSource`: resolves provider
+  token, clones, builds, pushes, and falls through to Deployment reconciliation.
+  `spec.source.providerRef` field added to `AppSource`.
+  `status.lastBuiltSHA` / `status.lastBuiltImage` added to `AppStatus`.
 - **PlatformConfig wiring** — `api/v1alpha1/platformconfig_types.go` is
   still scaffold-only, so each stack currently takes its config via a
   plain Go struct at construction time rather than reading from the CRD.
   When `PlatformConfig` is promoted, all three stacks should be built from
-  the operator entrypoint using CRD values.
-- **Webhook → build dispatch** — the webhook receiver parses events and
-  logs/queues them (placeholder) but does not yet actually call the build
-  pipeline. Wiring belongs in the same PR that adds the app-controller
-  git path.
-- **`test/fixtures/git-basic.yaml`** — still missing; add alongside the
-  app-controller git path test.
+  the operator entrypoint using CRD values. Env vars for now:
+  `MORTISE_BUILDKIT_ADDR`, `MORTISE_REGISTRY_URL`, `MORTISE_REGISTRY_USERNAME`,
+  `MORTISE_REGISTRY_PASSWORD` (defaults suitable for `make dev-up`).
+- ~~**Webhook → build dispatch**~~ — **Done.** `internal/webhook/handler.go`
+  patches the `mortise.dev/revision` annotation on every matching App when a
+  verified push event arrives. Branch and normalized-URL matching implemented.
+- ~~**`test/fixtures/git-basic.yaml`**~~ — **Done.** Added at
+  `test/fixtures/git-basic.yaml`.
+- **Async builds** — git builds currently block the reconcile goroutine for up
+  to 30 min. A follow-up should move long builds to a Kubernetes Job or a
+  dedicated goroutine pool and return `Building` phase immediately.
+
+### Git-source end-to-end path — **Done** (synchronous builds)
+
+**What landed in this PR:**
+
+- `api/v1alpha1/app_types.go` — added `spec.source.providerRef` (name of the
+  `GitProvider` CRD that holds credentials for this repo's forge) and
+  `status.lastBuiltSHA` / `status.lastBuiltImage` for short-circuit tracking.
+  `make manifests generate` regenerated `zz_generated.deepcopy.go` and CRD yaml.
+
+- `internal/git/tokens.go` — new helper `ResolveProviderToken` that reads the
+  OAuth access token Secret written by `internal/api/oauth.go:storeToken`
+  (named `gitprovider-token-{providerName}` in `mortise-system`, key `"token"`).
+
+- `internal/controller/app_controller.go` — `AppReconciler` now carries
+  `BuildClient`, `GitClient`, `RegistryBackend` fields. The `Reconcile` method
+  dispatches on `source.type`: `image` falls through as before; `git` calls the
+  new `reconcileGitSource` helper, which:
+  1. Reads `mortise.dev/revision` annotation (set by webhook) or falls back to branch name.
+  2. Short-circuits if `status.lastBuiltSHA == revision` and image is already set.
+  3. Resolves GitProvider + OAuth token.
+  4. Clones to a temp dir via `GitClient.Clone`.
+  5. Calls `RegistryBackend.PushTarget` to compute the image ref.
+  6. Submits build via `BuildClient.Submit` with a 30-min timeout.
+  7. On success: sets `status.lastBuiltSHA`, `status.lastBuiltImage`,
+     `status.phase = Deploying`, and `BuildSucceeded=True` condition.
+  8. On any failure: sets `status.phase = Failed` + `BuildSucceeded=False` condition.
+  9. Sets `spec.source.image` to the built digest so the downstream Deployment
+     reconciler picks it up (same code path as image-source apps).
+
+- `internal/webhook/handler.go` — replaced in-memory channel dispatch with
+  annotation patching. On a verified push event: lists all git-source Apps
+  cluster-wide, matches by normalized URL (host+path, .git-stripped, lowercase)
+  and branch name, then patches `mortise.dev/revision` on each matching App.
+  Zero-match events return 202 (not an error). `k8sReader` interface extended
+  with `listGitApps` and `patchAppRevision`.
+
+- `internal/webhook/k8s.go` — `K8sReader` implements the two new interface
+  methods: `listGitApps` (all-namespace list, filter to type=git) and
+  `patchAppRevision` (merge-patch on metadata.annotations).
+
+- `internal/api/server.go` — `webhook.New` call updated (channel arg removed).
+
+- `cmd/main.go` — constructs `BuildKitClient`, `OCIBackend`, `GoGitClient`
+  from env vars and injects them into `AppReconciler`. Defaults suit
+  `make dev-up`. `envOrDefault` helper added.
+
+- `test/fixtures/git-basic.yaml` — canonical fixture for integration tests.
+
+**Known limitation:** builds are synchronous and block the reconcile goroutine
+for up to 30 minutes. Tracked in the cross-stack deferred work above.
 
 ### Registry stack — **Done**
 
@@ -346,8 +408,8 @@ landed and what each deferred.
 - **Frontend for OAuth** — no SvelteKit page drives the authorize →
   callback round-trip yet. The server endpoints work when hit directly
   but a user can't onboard a forge from the UI.
-- **Webhook → build dispatch** — see cross-stack deferred work above.
-- **App controller git path** — see cross-stack deferred work above.
+- ~~**Webhook → build dispatch**~~ — Done; see cross-stack section above.
+- ~~**App controller git path**~~ — Done; see cross-stack section above.
 - **`PlatformConfig` wiring** — see cross-stack deferred work above.
 - **Integration tests against local Gitea** — belongs in the
   (not-yet-wired) `test/integration/` harness.

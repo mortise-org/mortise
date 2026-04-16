@@ -28,9 +28,8 @@ type Server struct {
 // NewServer creates a new API server.
 // ui is an optional filesystem for serving the SvelteKit UI; pass nil to disable UI serving.
 func NewServer(c client.Client, cs kubernetes.Interface, authProvider auth.AuthProvider, jwt *auth.JWTHelper, ui fs.FS) *Server {
-	builds := make(chan webhook.BuildRequest, 256)
 	kr := webhook.NewK8sReader(c)
-	wh := webhook.New(kr, builds)
+	wh := webhook.New(kr)
 	oh := newOAuthHandler(c)
 	return &Server{
 		client:    c,
