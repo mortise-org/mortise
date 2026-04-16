@@ -1080,6 +1080,68 @@ the PR, preview disappears.
 **Exit criteria:** a new user goes from "empty k3s cluster" to "deployed app
 with preview envs" in under 15 minutes using only the UI and CLI.
 
+### Phase 8 — Tenons & Integration Recipes
+
+Tenons are independent projects that consume Mortise's REST API for specific
+workflows or audiences. They live in their own repos, ship as their own Helm
+charts, and are not part of the Mortise operator binary. Mortise ships one
+or two reference tenons as living documentation; everything else is
+community- or user-built.
+
+**Reference tenons** (separate repos under `mortise-tenons/`):
+- **cf-for-saas** — customer-managed domains via Cloudflare custom hostnames.
+  Web app that accepts signups, creates Apps in per-customer namespaces, wires
+  CF custom hostnames. Canonical example of "host other people's apps."
+- **backup-tenon** — scheduled App backups (PVs + Secrets) to S3/NFS via
+  Velero. Homelab-friendly; replaces a potential core feature.
+- **cost-dashboard** (optional) — watches Apps, aggregates resource usage,
+  attributes cost per App/team. Uses metrics-server or Prometheus if present.
+
+**Integration recipes** (documentation pages in the main docs site, not code):
+- **External CI path** — how to build images in GitHub Actions / GitLab CI /
+  Woodpecker / bash / anything, push to any registry, and call the deploy
+  webhook. Mortise's built-in BuildKit is an opt-in convenience; teams with
+  existing CI or cluster-CPU constraints use this path and skip BuildKit
+  entirely. Canonical workflow example alongside the Railpack/Dockerfile path.
+- **OIDC setup** against Authentik / Keycloak / Okta / Google Workspace
+- **Prometheus + Grafana** via kube-prometheus-stack, using Mortise's
+  standard `ServiceMonitor` output
+- **Log aggregation via Loki** — Mortise pods emit stdout logs; Loki
+  collects; UI optionally surfaces via a Loki endpoint configured in
+  platform settings
+- **External secret managers** (Vault, AWS Secrets Manager) via
+  ExternalSecrets Operator — ESO writes k8s Secrets, Mortise reads them.
+  No Mortise-side changes.
+- **Policy enforcement** via OPA/Kyverno — gate Mortise's admission writes
+  with cluster-wide policies
+- **Custom ingress controllers** (Gateway API, Istio, NGINX) — Mortise emits
+  standard Ingress resources; the user's chosen controller reconciles them
+- **Backing services** (Postgres via CNPG, Redis via redis-operator, MinIO,
+  Supabase) — users install the upstream project, Mortise Apps bind to
+  services via Service DNS + Secret refs
+- **Storage sizing guidance** — RWX StorageClass options for homelab vs cloud
+
+**Platform polish within the single binary** (last-mile v1 work):
+- **First-run wizard** — admin setup, platform domain, DNS provider, storage
+  class detection/recommendation
+- **Rollback UI** — deploy history browser with one-click rollback (backend
+  already supports)
+- **Promote** — staging → production without rebuild (re-tag the digest)
+- **Custom domains UI** — add CNAME-based custom domains per environment
+- **Metrics in UI** — CPU/memory per pod via `metrics-server`
+- **User/team management UI** — invite flow, role management (API already
+  supports)
+- **Infrastructure bundle** — cert-manager, ExternalDNS, Traefik as optional
+  Helm chart dependencies for "one-command install with working TLS/DNS"
+
+**Exit criteria for Phase 8 / full v1:**
+- Fresh cluster → `helm install mortise` → first-run wizard → deploy a git
+  App with preview envs → working HTTPS URL, in under 15 minutes
+- At least one reference tenon (cf-for-saas or backup-tenon) published in
+  its own repo, demonstrating API consumption
+- Integration recipe docs for: external CI, OIDC, monitoring, external
+  secret managers, Cloudflare Tunnel
+
 ### Post-v1
 
 Organized by §6's taxonomy — operator features, integration recipes, deferred
