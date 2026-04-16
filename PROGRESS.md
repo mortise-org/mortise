@@ -5,7 +5,7 @@ whenever implementation status changes — see the **Keeping this file up to
 date** section at the bottom.
 
 Legend: **Done** / **Partial** / **Not started**
-Last reconciled against spec + code: 2026-04-16 (see git log for latest).
+Last reconciled against spec + code: 2026-04-16 (commit `d894f6c` — all 4 Phase 4 agent branches merged).
 
 ---
 
@@ -45,7 +45,7 @@ Spec rule: every outward interface must have at least one real v1 impl
 | CRD                  | Types file        | Controller       | Status        |
 |----------------------|-------------------|------------------|---------------|
 | `Project`            | real              | real reconciler  | **Done**      |
-| `App`                | real              | real (image)     | **Partial**   — no `kind: service\|cron`, `schedule`, `concurrencyPolicy`, `sharedVars`, or `valueFrom.fromBinding` from spec §4. |
+| `App`                | real              | real (image + git) | **Partial** — no `kind: service\|cron`, `schedule`, `concurrencyPolicy`, `sharedVars`, or `valueFrom.fromBinding` from spec §4. |
 | `GitProvider`        | real (`api/v1alpha1/gitprovider_types.go`) | real reconciler (`internal/controller/gitprovider_controller.go`) | **Done** |
 | `PlatformConfig`     | real (`api/v1alpha1/platformconfig_types.go`) | real reconciler (`internal/controller/platformconfig_controller.go`) | **Done** |
 | `PreviewEnvironment` | scaffold (`Foo *string`) | empty TODO | **Not started** |
@@ -72,7 +72,6 @@ Spec rule: every outward interface must have at least one real v1 impl
 
 **Gaps:**
 - No `.github/` → no CI config checked in.
-- CLAUDE.md claims the layout contains `internal/webhook/`; it does not.
 
 ### Integration harness — Done (skeleton)
 
@@ -327,7 +326,7 @@ landed and what each deferred.
 - Cache hints (`CacheImports` / `CacheExports`) — the interface doesn't
   surface them yet; add when build-time optimization matters.
 
-### Git provider stack — **Partial**
+### Git provider stack — **Done**
 
 `internal/git/`, `internal/webhook/`, `internal/api/oauth.go`,
 `api/v1alpha1/gitprovider_types.go`,
@@ -392,13 +391,11 @@ landed and what each deferred.
 - Wired into `server.go:74-75` as unauthenticated routes (same reasoning
   as the webhook route).
 
-**Deferred — moves this to Partial not Done:**
-- ~~**Frontend for OAuth**~~ — **Done.** See new "Git provider UI — Done" section below.
-- ~~**Webhook → build dispatch**~~ — Done; see cross-stack section above.
-- ~~**App controller git path**~~ — Done; see cross-stack section above.
+**Follow-up (not blocking Phase 4):**
 - **`PlatformConfig` wiring** — see cross-stack deferred work above.
-- **Integration tests against local Gitea** — belongs in the
-  (not-yet-wired) `test/integration/` harness.
+- **Integration tests against local Gitea** — the integration harness
+  exists (`test/integration/`, skeleton) but Gitea, Zot, and Pebble installs
+  in the test cluster haven't landed. Tracked under Phase 0 / harness.
 
 ### PlatformConfig — **Done**
 
@@ -442,6 +439,7 @@ landed and what each deferred.
 **Deferred — operator rewiring (explicit follow-up PR):**
 - `internal/registry/`, `internal/build/`, and `internal/git/` stacks still take config via ad-hoc Go structs at construction time. When the follow-up PR lands, the operator entrypoint (`cmd/main.go`) will call `platformconfig.Load` and inject config into each stack.
 - `IngressProvider` and cert-manager wiring (`spec.tls.certManagerClusterIssuer`) remain deferred to that same follow-up.
+
 ### Git provider UI — **Done**
 
 - **Frontend for OAuth** — `ui/src/routes/settings/git-providers/+page.svelte`
