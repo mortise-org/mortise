@@ -74,11 +74,18 @@ func envOrDefault(key, def string) string {
 	return def
 }
 
-// stacks bundles the three pluggable clients the AppReconciler needs.
+// stacks bundles the three pluggable clients the AppReconciler needs plus any
+// non-client platform settings the controller has to thread through.
 type stacks struct {
 	build    build.BuildClient
 	registry *registry.OCIBackend
 	git      git.GitClient
+
+	// TLS is the resolved cert-manager / TLS configuration from PlatformConfig.
+	// Currently only CertManagerClusterIssuer is consumed (by the App
+	// reconciler); kept as a struct so future TLS settings can land here
+	// without another plumbing churn.
+	TLS platformconfig.TLSConfig
 }
 
 // buildStacks constructs the registry / build / git clients from the
@@ -143,6 +150,7 @@ func stacksFromPlatformConfig(cfg *platformconfig.Config, log logr.Logger) stack
 			InsecureSkipTLSVerify: cfg.Registry.InsecureSkipTLSVerify,
 		}),
 		git: git.NewGoGitClient(),
+		TLS: cfg.TLS,
 	}
 }
 
@@ -356,11 +364,12 @@ func main() {
 	stk := buildStacks(context.Background(), directReader, setupLog)
 
 	if err := (&controller.AppReconciler{
-		Client:          mgr.GetClient(),
-		Scheme:          mgr.GetScheme(),
-		BuildClient:     stk.build,
-		GitClient:       stk.git,
-		RegistryBackend: stk.registry,
+		Client:               mgr.GetClient(),
+		Scheme:               mgr.GetScheme(),
+		BuildClient:          stk.build,
+		GitClient:            stk.git,
+		RegistryBackend:      stk.registry,
+		DefaultClusterIssuer: stk.TLS.CertManagerClusterIssuer,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "App")
 		os.Exit(1)

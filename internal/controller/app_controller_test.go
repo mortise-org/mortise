@@ -40,9 +40,12 @@ import (
 	"github.com/MC-Meesh/mortise/internal/registry"
 )
 
+// testImageNginx is the pinned image used across App controller tests.
+// Hoisted to package scope so it is visible from multiple Describe blocks.
+const testImageNginx = "nginx:1.27"
+
 var _ = Describe("App Controller", func() {
 	const namespace = "default"
-	const testImageNginx = "nginx:1.27"
 
 	Context("image source with one environment", func() {
 		const appName = "test-nginx"
@@ -134,7 +137,224 @@ var _ = Describe("App Controller", func() {
 			Expect(ing.Spec.Rules[0].Host).To(Equal("nginx.example.com"))
 			Expect(ing.Spec.TLS).To(HaveLen(1))
 			Expect(ing.Spec.TLS[0].Hosts).To(ContainElement("nginx.example.com"))
-			Expect(ing.Annotations["cert-manager.io/cluster-issuer"]).To(Equal("letsencrypt-prod"))
+			// No DefaultClusterIssuer configured → no cert-manager annotation.
+			_, hasIssuer := ing.Annotations["cert-manager.io/cluster-issuer"]
+			Expect(hasIssuer).To(BeFalse())
+			// Auto-generated TLS Secret name.
+			Expect(ing.Spec.TLS[0].SecretName).To(Equal("test-nginx-production-tls"))
+		})
+
+		It("should annotate the Ingress with DefaultClusterIssuer when configured", func() {
+			reconciler := &AppReconciler{
+				Client:               k8sClient,
+				Scheme:               k8sClient.Scheme(),
+				DefaultClusterIssuer: "prod-issuer",
+			}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var ing networkingv1.Ingress
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: "test-nginx-production", Namespace: namespace,
+			}, &ing)).To(Succeed())
+			Expect(ing.Annotations["cert-manager.io/cluster-issuer"]).To(Equal("prod-issuer"))
+		})
+	})
+
+	Context("ingress TLS overrides per environment (§5.6)", func() {
+		const appName = "tls-overrides"
+		ctx := context.Background()
+
+		var app *mortisev1alpha1.App
+
+		AfterEach(func() {
+			if app != nil {
+				_ = k8sClient.Delete(ctx, app)
+				app = nil
+			}
+		})
+
+		It("env.TLS.ClusterIssuer wins over DefaultClusterIssuer", func() {
+			app = &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{Name: appName, Namespace: namespace},
+				Spec: mortisev1alpha1.AppSpec{
+					Source: mortisev1alpha1.AppSource{
+						Type: mortisev1alpha1.SourceTypeImage, Image: testImageNginx,
+					},
+					Network: mortisev1alpha1.NetworkConfig{Public: true},
+					Environments: []mortisev1alpha1.Environment{{
+						Name:     "production",
+						Replicas: ptr.To[int32](1),
+						Domain:   "over.example.com",
+						TLS:      &mortisev1alpha1.EnvTLSConfig{ClusterIssuer: "override-issuer"},
+					}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+
+			reconciler := &AppReconciler{
+				Client:               k8sClient,
+				Scheme:               k8sClient.Scheme(),
+				DefaultClusterIssuer: "fallback",
+			}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var ing networkingv1.Ingress
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName + "-production", Namespace: namespace,
+			}, &ing)).To(Succeed())
+			Expect(ing.Annotations["cert-manager.io/cluster-issuer"]).To(Equal("override-issuer"))
+			Expect(ing.Spec.TLS[0].SecretName).To(Equal(appName + "-production-tls"))
+		})
+
+		It("env.TLS.SecretName (BYO) suppresses cert-manager annotation", func() {
+			app = &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{Name: appName, Namespace: namespace},
+				Spec: mortisev1alpha1.AppSpec{
+					Source: mortisev1alpha1.AppSource{
+						Type: mortisev1alpha1.SourceTypeImage, Image: testImageNginx,
+					},
+					Network: mortisev1alpha1.NetworkConfig{Public: true},
+					Environments: []mortisev1alpha1.Environment{{
+						Name:     "production",
+						Replicas: ptr.To[int32](1),
+						Domain:   "byo.example.com",
+						TLS:      &mortisev1alpha1.EnvTLSConfig{SecretName: "byo-tls"},
+					}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+
+			reconciler := &AppReconciler{
+				Client:               k8sClient,
+				Scheme:               k8sClient.Scheme(),
+				DefaultClusterIssuer: "fallback",
+			}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var ing networkingv1.Ingress
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName + "-production", Namespace: namespace,
+			}, &ing)).To(Succeed())
+			_, hasIssuer := ing.Annotations["cert-manager.io/cluster-issuer"]
+			Expect(hasIssuer).To(BeFalse())
+			Expect(ing.Spec.TLS).To(HaveLen(1))
+			Expect(ing.Spec.TLS[0].SecretName).To(Equal("byo-tls"))
+		})
+
+		It("user annotation overrides Mortise cert-manager default", func() {
+			app = &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{Name: appName, Namespace: namespace},
+				Spec: mortisev1alpha1.AppSpec{
+					Source: mortisev1alpha1.AppSource{
+						Type: mortisev1alpha1.SourceTypeImage, Image: testImageNginx,
+					},
+					Network: mortisev1alpha1.NetworkConfig{Public: true},
+					Environments: []mortisev1alpha1.Environment{{
+						Name:     "production",
+						Replicas: ptr.To[int32](1),
+						Domain:   "userwins.example.com",
+						Annotations: map[string]string{
+							"linkerd.io/inject":              "enabled",
+							"cert-manager.io/cluster-issuer": "user-wins",
+						},
+					}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+
+			reconciler := &AppReconciler{
+				Client:               k8sClient,
+				Scheme:               k8sClient.Scheme(),
+				DefaultClusterIssuer: "fallback",
+			}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var ing networkingv1.Ingress
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName + "-production", Namespace: namespace,
+			}, &ing)).To(Succeed())
+			Expect(ing.Annotations["linkerd.io/inject"]).To(Equal("enabled"))
+			Expect(ing.Annotations["cert-manager.io/cluster-issuer"]).To(Equal("user-wins"))
+		})
+	})
+
+	Context("environment annotations passthrough (§5.2a)", func() {
+		const appName = "annot-passthrough"
+		ctx := context.Background()
+
+		var app *mortisev1alpha1.App
+
+		BeforeEach(func() {
+			app = &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{Name: appName, Namespace: namespace},
+				Spec: mortisev1alpha1.AppSpec{
+					Source: mortisev1alpha1.AppSource{
+						Type: mortisev1alpha1.SourceTypeImage, Image: testImageNginx,
+					},
+					Network: mortisev1alpha1.NetworkConfig{Public: true},
+					Storage: []mortisev1alpha1.VolumeSpec{{
+						Name:      "data",
+						MountPath: "/data",
+						Size:      resource.MustParse("1Gi"),
+					}},
+					Environments: []mortisev1alpha1.Environment{{
+						Name:        "production",
+						Replicas:    ptr.To[int32](1),
+						Domain:      "annot.example.com",
+						Annotations: map[string]string{"foo": "bar"},
+					}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+		})
+
+		AfterEach(func() {
+			_ = k8sClient.Delete(ctx, app)
+		})
+
+		It("propagates env.Annotations onto Deployment, pod template, Service, Ingress, and PVCs", func() {
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var dep appsv1.Deployment
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName + "-production", Namespace: namespace,
+			}, &dep)).To(Succeed())
+			Expect(dep.Annotations["foo"]).To(Equal("bar"))
+			Expect(dep.Spec.Template.Annotations["foo"]).To(Equal("bar"))
+
+			var svc corev1.Service
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName + "-production", Namespace: namespace,
+			}, &svc)).To(Succeed())
+			Expect(svc.Annotations["foo"]).To(Equal("bar"))
+
+			var ing networkingv1.Ingress
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName + "-production", Namespace: namespace,
+			}, &ing)).To(Succeed())
+			Expect(ing.Annotations["foo"]).To(Equal("bar"))
+
+			var pvc corev1.PersistentVolumeClaim
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName + "-data", Namespace: namespace,
+			}, &pvc)).To(Succeed())
+			Expect(pvc.Annotations["foo"]).To(Equal("bar"))
 		})
 	})
 
@@ -155,8 +375,12 @@ var _ = Describe("App Controller", func() {
 						Type:  mortisev1alpha1.SourceTypeImage,
 						Image: "postgres:16",
 					},
-					Network:     mortisev1alpha1.NetworkConfig{Public: false},
-					Credentials: []string{"DATABASE_URL", "host", "port"},
+					Network: mortisev1alpha1.NetworkConfig{Public: false},
+					Credentials: []mortisev1alpha1.Credential{
+						{Name: "DATABASE_URL", Value: "postgres://test"},
+						{Name: "host"},
+						{Name: "port"},
+					},
 					Environments: []mortisev1alpha1.Environment{
 						{
 							Name:     "production",
@@ -224,8 +448,14 @@ var _ = Describe("App Controller", func() {
 						Type:  mortisev1alpha1.SourceTypeImage,
 						Image: "postgres:16",
 					},
-					Network:     mortisev1alpha1.NetworkConfig{Public: false},
-					Credentials: []string{"DATABASE_URL", "host", "port", "user", "password"},
+					Network: mortisev1alpha1.NetworkConfig{Public: false},
+					Credentials: []mortisev1alpha1.Credential{
+						{Name: "DATABASE_URL", Value: "postgres://testpass@my-db/postgres"},
+						{Name: "host"},
+						{Name: "port"},
+						{Name: "user", Value: "postgres"},
+						{Name: "password", Value: "testpass"},
+					},
 					Environments: []mortisev1alpha1.Environment{
 						{
 							Name:     "production",
@@ -472,6 +702,195 @@ var _ = Describe("App Controller", func() {
 			Expect(dep.Spec.Template.Spec.Volumes[0].PersistentVolumeClaim.ClaimName).To(Equal("test-pvc-mount-data"))
 			Expect(dep.Spec.Template.Spec.Containers[0].VolumeMounts).To(HaveLen(1))
 			Expect(dep.Spec.Template.Spec.Containers[0].VolumeMounts[0].MountPath).To(Equal("/var/lib/postgresql/data"))
+		})
+	})
+
+	Context("secretMounts mount existing Secrets as volumes", func() {
+		ctx := context.Background()
+
+		newMountApp := func(name string, mounts []mortisev1alpha1.SecretMount) *mortisev1alpha1.App {
+			return &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      name,
+					Namespace: namespace,
+				},
+				Spec: mortisev1alpha1.AppSpec{
+					Source: mortisev1alpha1.AppSource{
+						Type:  mortisev1alpha1.SourceTypeImage,
+						Image: testImageNginx,
+					},
+					Network: mortisev1alpha1.NetworkConfig{Public: false},
+					Environments: []mortisev1alpha1.Environment{
+						{
+							Name:         "production",
+							Replicas:     ptr.To[int32](1),
+							SecretMounts: mounts,
+						},
+					},
+				},
+			}
+		}
+
+		findVolume := func(vols []corev1.Volume, n string) *corev1.Volume {
+			for i := range vols {
+				if vols[i].Name == n {
+					return &vols[i]
+				}
+			}
+			return nil
+		}
+
+		findMount := func(ms []corev1.VolumeMount, n string) *corev1.VolumeMount {
+			for i := range ms {
+				if ms[i].Name == n {
+					return &ms[i]
+				}
+			}
+			return nil
+		}
+
+		It("should wire one SecretMount as a Volume + VolumeMount with ReadOnly=true", func() {
+			app := newMountApp("test-sm-basic", []mortisev1alpha1.SecretMount{
+				{Name: "tls-bundle", Secret: "my-app-tls", Path: "/etc/ssl/app"},
+			})
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: app.Name, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var dep appsv1.Deployment
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: "test-sm-basic-production", Namespace: namespace,
+			}, &dep)).To(Succeed())
+
+			vol := findVolume(dep.Spec.Template.Spec.Volumes, "tls-bundle")
+			Expect(vol).NotTo(BeNil())
+			Expect(vol.Secret).NotTo(BeNil())
+			Expect(vol.Secret.SecretName).To(Equal("my-app-tls"))
+			Expect(vol.Secret.Items).To(BeEmpty())
+
+			vm := findMount(dep.Spec.Template.Spec.Containers[0].VolumeMounts, "tls-bundle")
+			Expect(vm).NotTo(BeNil())
+			Expect(vm.MountPath).To(Equal("/etc/ssl/app"))
+			Expect(vm.ReadOnly).To(BeTrue())
+		})
+
+		It("should honor explicit ReadOnly=false", func() {
+			falseVal := false
+			app := newMountApp("test-sm-rw", []mortisev1alpha1.SecretMount{
+				{Name: "writable", Secret: "rw-secret", Path: "/var/run/secrets/rw", ReadOnly: &falseVal},
+			})
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: app.Name, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var dep appsv1.Deployment
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: "test-sm-rw-production", Namespace: namespace,
+			}, &dep)).To(Succeed())
+
+			vm := findMount(dep.Spec.Template.Spec.Containers[0].VolumeMounts, "writable")
+			Expect(vm).NotTo(BeNil())
+			Expect(vm.ReadOnly).To(BeFalse())
+		})
+
+		It("should project user-supplied Items 1:1 into the SecretVolumeSource", func() {
+			mode := int32(0o400)
+			app := newMountApp("test-sm-items", []mortisev1alpha1.SecretMount{
+				{
+					Name:   "tls-bundle",
+					Secret: "my-app-tls",
+					Path:   "/etc/ssl/app",
+					Items: []mortisev1alpha1.KeyToPath{
+						{Key: "tls.crt", Path: "cert.pem"},
+						{Key: "tls.key", Path: "key.pem", Mode: &mode},
+					},
+				},
+			})
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: app.Name, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var dep appsv1.Deployment
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: "test-sm-items-production", Namespace: namespace,
+			}, &dep)).To(Succeed())
+
+			vol := findVolume(dep.Spec.Template.Spec.Volumes, "tls-bundle")
+			Expect(vol).NotTo(BeNil())
+			Expect(vol.Secret).NotTo(BeNil())
+			Expect(vol.Secret.Items).To(HaveLen(2))
+			Expect(vol.Secret.Items[0]).To(Equal(corev1.KeyToPath{Key: "tls.crt", Path: "cert.pem"}))
+			Expect(vol.Secret.Items[1].Key).To(Equal("tls.key"))
+			Expect(vol.Secret.Items[1].Path).To(Equal("key.pem"))
+			Expect(vol.Secret.Items[1].Mode).NotTo(BeNil())
+			Expect(*vol.Secret.Items[1].Mode).To(Equal(int32(0o400)))
+		})
+
+		It("should wire multiple SecretMounts simultaneously", func() {
+			app := newMountApp("test-sm-multi", []mortisev1alpha1.SecretMount{
+				{Name: "tls-bundle", Secret: "my-app-tls", Path: "/etc/ssl/app"},
+				{Name: "jwt-keys", Secret: "jwt-signing", Path: "/etc/jwt"},
+			})
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: app.Name, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var dep appsv1.Deployment
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: "test-sm-multi-production", Namespace: namespace,
+			}, &dep)).To(Succeed())
+
+			Expect(findVolume(dep.Spec.Template.Spec.Volumes, "tls-bundle")).NotTo(BeNil())
+			Expect(findVolume(dep.Spec.Template.Spec.Volumes, "jwt-keys")).NotTo(BeNil())
+
+			tlsMount := findMount(dep.Spec.Template.Spec.Containers[0].VolumeMounts, "tls-bundle")
+			Expect(tlsMount).NotTo(BeNil())
+			Expect(tlsMount.MountPath).To(Equal("/etc/ssl/app"))
+
+			jwtMount := findMount(dep.Spec.Template.Spec.Containers[0].VolumeMounts, "jwt-keys")
+			Expect(jwtMount).NotTo(BeNil())
+			Expect(jwtMount.MountPath).To(Equal("/etc/jwt"))
+		})
+
+		It("should produce no secret-typed volumes when SecretMounts is empty", func() {
+			app := newMountApp("test-sm-none", nil)
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: app.Name, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var dep appsv1.Deployment
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: "test-sm-none-production", Namespace: namespace,
+			}, &dep)).To(Succeed())
+
+			for _, v := range dep.Spec.Template.Spec.Volumes {
+				Expect(v.Secret).To(BeNil(), "expected no Secret-typed volumes, found %q", v.Name)
+			}
 		})
 	})
 
@@ -1214,6 +1633,334 @@ var _ = Describe("App Controller — git source", func() {
 				Namespace: namespace,
 			}, &dep)).To(Succeed())
 			Expect(dep.Spec.Template.Spec.Containers[0].Image).To(Equal("registry.example.com/mortise/git-shortcircuit:same-sha"))
+		})
+	})
+
+	Context("credentials Secret materialization", func() {
+		ctx := context.Background()
+
+		It("creates no Secret when credentials is empty", func() {
+			const appName = "creds-empty"
+			app := &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{Name: appName, Namespace: namespace},
+				Spec: mortisev1alpha1.AppSpec{
+					Source:  mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: "nginx:1.27"},
+					Network: mortisev1alpha1.NetworkConfig{Public: false},
+					Environments: []mortisev1alpha1.Environment{
+						{Name: "production", Replicas: ptr.To[int32](1)},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+
+			r := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := r.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var sec corev1.Secret
+			err = k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName + "-credentials", Namespace: namespace,
+			}, &sec)
+			Expect(err).To(HaveOccurred())
+
+			// Pod template must NOT carry the credentials-hash annotation.
+			var dep appsv1.Deployment
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName + "-production", Namespace: namespace,
+			}, &dep)).To(Succeed())
+			Expect(dep.Spec.Template.Annotations).NotTo(HaveKey("mortise.dev/credentials-hash"))
+		})
+
+		It("materialises inline Values into the Secret and injects a hash annotation", func() {
+			const appName = "creds-inline"
+			app := &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{Name: appName, Namespace: namespace},
+				Spec: mortisev1alpha1.AppSpec{
+					Source:  mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: "postgres:16"},
+					Network: mortisev1alpha1.NetworkConfig{Public: false},
+					Credentials: []mortisev1alpha1.Credential{
+						{Name: "host"},
+						{Name: "port"},
+						{Name: "username", Value: "postgres"},
+						{Name: "password", Value: "hunter2"},
+					},
+					Environments: []mortisev1alpha1.Environment{
+						{Name: "production", Replicas: ptr.To[int32](1)},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+
+			r := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := r.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var sec corev1.Secret
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName + "-credentials", Namespace: namespace,
+			}, &sec)).To(Succeed())
+
+			Expect(sec.Type).To(Equal(corev1.SecretTypeOpaque))
+			Expect(sec.Labels).To(HaveKeyWithValue("mortise.dev/managed-by", "controller"))
+			Expect(sec.Labels).To(HaveKeyWithValue("mortise.dev/app", appName))
+			// Well-known keys (host, port) are resolved at binder time, not
+			// stored in the Secret.
+			Expect(sec.Data).NotTo(HaveKey("host"))
+			Expect(sec.Data).NotTo(HaveKey("port"))
+			Expect(sec.Data).To(HaveKeyWithValue("username", []byte("postgres")))
+			Expect(sec.Data).To(HaveKeyWithValue("password", []byte("hunter2")))
+
+			// OwnerRef back to the App.
+			Expect(sec.OwnerReferences).To(HaveLen(1))
+			Expect(sec.OwnerReferences[0].Name).To(Equal(appName))
+
+			// Pod template carries the hash annotation.
+			var dep appsv1.Deployment
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName + "-production", Namespace: namespace,
+			}, &dep)).To(Succeed())
+			Expect(dep.Spec.Template.Annotations).To(HaveKey("mortise.dev/credentials-hash"))
+			Expect(dep.Spec.Template.Annotations["mortise.dev/credentials-hash"]).NotTo(BeEmpty())
+		})
+
+		It("resolves valueFrom secretRef from a user-managed Secret", func() {
+			const appName = "creds-valuefrom"
+
+			userSec := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{Name: "user-db-secret", Namespace: namespace},
+				Type:       corev1.SecretTypeOpaque,
+				Data:       map[string][]byte{"pw": []byte("s3cret!")},
+			}
+			Expect(k8sClient.Create(ctx, userSec)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, userSec)).To(Succeed()) }()
+
+			app := &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{Name: appName, Namespace: namespace},
+				Spec: mortisev1alpha1.AppSpec{
+					Source:  mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: "postgres:16"},
+					Network: mortisev1alpha1.NetworkConfig{Public: false},
+					Credentials: []mortisev1alpha1.Credential{
+						{Name: "username", Value: "postgres"},
+						{
+							Name: "password",
+							ValueFrom: &mortisev1alpha1.CredentialSource{
+								SecretRef: &mortisev1alpha1.SecretKeyRef{Name: "user-db-secret", Key: "pw"},
+							},
+						},
+					},
+					Environments: []mortisev1alpha1.Environment{
+						{Name: "production", Replicas: ptr.To[int32](1)},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+
+			r := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := r.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var sec corev1.Secret
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName + "-credentials", Namespace: namespace,
+			}, &sec)).To(Succeed())
+			Expect(sec.Data).To(HaveKeyWithValue("username", []byte("postgres")))
+			Expect(sec.Data).To(HaveKeyWithValue("password", []byte("s3cret!")))
+		})
+
+		It("errors when valueFrom references a missing Secret", func() {
+			const appName = "creds-missing-src"
+			app := &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{Name: appName, Namespace: namespace},
+				Spec: mortisev1alpha1.AppSpec{
+					Source:  mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: "postgres:16"},
+					Network: mortisev1alpha1.NetworkConfig{Public: false},
+					Credentials: []mortisev1alpha1.Credential{
+						{
+							Name: "password",
+							ValueFrom: &mortisev1alpha1.CredentialSource{
+								SecretRef: &mortisev1alpha1.SecretKeyRef{Name: "does-not-exist", Key: "pw"},
+							},
+						},
+					},
+					Environments: []mortisev1alpha1.Environment{
+						{Name: "production", Replicas: ptr.To[int32](1)},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+
+			r := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := r.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("does-not-exist"))
+		})
+
+		It("rotates the hash when a referenced user Secret changes", func() {
+			const appName = "creds-rotate"
+
+			userSec := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{Name: "rotate-src", Namespace: namespace},
+				Type:       corev1.SecretTypeOpaque,
+				Data:       map[string][]byte{"pw": []byte("v1")},
+			}
+			Expect(k8sClient.Create(ctx, userSec)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, userSec)).To(Succeed()) }()
+
+			app := &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{Name: appName, Namespace: namespace},
+				Spec: mortisev1alpha1.AppSpec{
+					Source:  mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: "postgres:16"},
+					Network: mortisev1alpha1.NetworkConfig{Public: false},
+					Credentials: []mortisev1alpha1.Credential{
+						{
+							Name: "password",
+							ValueFrom: &mortisev1alpha1.CredentialSource{
+								SecretRef: &mortisev1alpha1.SecretKeyRef{Name: "rotate-src", Key: "pw"},
+							},
+						},
+					},
+					Environments: []mortisev1alpha1.Environment{
+						{Name: "production", Replicas: ptr.To[int32](1)},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+
+			r := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := r.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var dep1 appsv1.Deployment
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName + "-production", Namespace: namespace,
+			}, &dep1)).To(Succeed())
+			hash1 := dep1.Spec.Template.Annotations["mortise.dev/credentials-hash"]
+			Expect(hash1).NotTo(BeEmpty())
+
+			// Rotate the source Secret and re-reconcile.
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: "rotate-src", Namespace: namespace,
+			}, userSec)).To(Succeed())
+			userSec.Data["pw"] = []byte("v2")
+			Expect(k8sClient.Update(ctx, userSec)).To(Succeed())
+
+			_, err = r.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var dep2 appsv1.Deployment
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName + "-production", Namespace: namespace,
+			}, &dep2)).To(Succeed())
+			hash2 := dep2.Spec.Template.Annotations["mortise.dev/credentials-hash"]
+			Expect(hash2).NotTo(Equal(hash1))
+		})
+
+		It("deletes a previously-managed Secret when credentials are removed", func() {
+			const appName = "creds-drop"
+			app := &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{Name: appName, Namespace: namespace},
+				Spec: mortisev1alpha1.AppSpec{
+					Source:  mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: "postgres:16"},
+					Network: mortisev1alpha1.NetworkConfig{Public: false},
+					Credentials: []mortisev1alpha1.Credential{
+						{Name: "password", Value: "hunter2"},
+					},
+					Environments: []mortisev1alpha1.Environment{
+						{Name: "production", Replicas: ptr.To[int32](1)},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+
+			r := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := r.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var sec corev1.Secret
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName + "-credentials", Namespace: namespace,
+			}, &sec)).To(Succeed())
+
+			// Clear credentials, reconcile again; Secret should go away.
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName, Namespace: namespace,
+			}, app)).To(Succeed())
+			app.Spec.Credentials = nil
+			Expect(k8sClient.Update(ctx, app)).To(Succeed())
+
+			_, err = r.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			Eventually(func() bool {
+				err := k8sClient.Get(ctx, types.NamespacedName{
+					Name: appName + "-credentials", Namespace: namespace,
+				}, &sec)
+				return err != nil
+			}, 5*time.Second, 100*time.Millisecond).Should(BeTrue())
+		})
+
+		It("refuses to adopt an unmanaged Secret with the reserved name", func() {
+			const appName = "creds-conflict"
+
+			// User pre-created a Secret at {app}-credentials with no Mortise label.
+			preExisting := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{Name: appName + "-credentials", Namespace: namespace},
+				Type:       corev1.SecretTypeOpaque,
+				Data:       map[string][]byte{"external": []byte("data")},
+			}
+			Expect(k8sClient.Create(ctx, preExisting)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, preExisting)).To(Succeed()) }()
+
+			app := &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{Name: appName, Namespace: namespace},
+				Spec: mortisev1alpha1.AppSpec{
+					Source:  mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: "postgres:16"},
+					Network: mortisev1alpha1.NetworkConfig{Public: false},
+					Credentials: []mortisev1alpha1.Credential{
+						{Name: "password", Value: "hunter2"},
+					},
+					Environments: []mortisev1alpha1.Environment{
+						{Name: "production", Replicas: ptr.To[int32](1)},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+
+			r := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := r.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).To(HaveOccurred())
+
+			// Pre-existing Secret must be untouched.
+			var sec corev1.Secret
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName + "-credentials", Namespace: namespace,
+			}, &sec)).To(Succeed())
+			Expect(sec.Data).To(HaveKeyWithValue("external", []byte("data")))
 		})
 	})
 })

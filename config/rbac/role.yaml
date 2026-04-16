@@ -9,6 +9,7 @@ rules:
   resources:
   - namespaces
   - persistentvolumeclaims
+  - secrets
   - services
   verbs:
   - create
@@ -17,14 +18,6 @@ rules:
   - list
   - patch
   - update
-  - watch
-- apiGroups:
-  - ""
-  resources:
-  - secrets
-  verbs:
-  - get
-  - list
   - watch
 - apiGroups:
   - apps

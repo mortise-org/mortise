@@ -18,9 +18,12 @@ package controller
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -68,6 +71,14 @@ type AppReconciler struct {
 	GitClient       git.GitClient
 	RegistryBackend registry.RegistryBackend
 
+	// DefaultClusterIssuer is the cert-manager ClusterIssuer name written onto
+	// every Ingress this controller creates unless the environment opts out
+	// (env.TLS.SecretName) or overrides it (env.TLS.ClusterIssuer). Sourced
+	// from PlatformConfig.spec.tls.certManagerClusterIssuer in cmd/main.go.
+	// When empty, no cert-manager annotation is written — letting operators run
+	// Mortise with an external cert flow, internal PKI, etc. (spec §5.6).
+	DefaultClusterIssuer string
+
 	// builds tracks in-flight asynchronous git-source builds so subsequent
 	// reconciles can check progress without blocking the worker. Lost on
 	// operator restart; the next reconcile re-launches (builds are idempotent).
@@ -81,6 +92,7 @@ type AppReconciler struct {
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=ingresses,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch;delete
 
 func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
@@ -113,10 +125,15 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		return ctrl.Result{}, fmt.Errorf("reconcile PVCs: %w", err)
 	}
 
+	credentialsHash, err := r.reconcileCredentialsSecret(ctx, &app)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("reconcile credentials secret: %w", err)
+	}
+
 	for i := range app.Spec.Environments {
 		env := &app.Spec.Environments[i]
 
-		if err := r.reconcileDeployment(ctx, &app, env); err != nil {
+		if err := r.reconcileDeployment(ctx, &app, env, credentialsHash); err != nil {
 			return ctrl.Result{}, fmt.Errorf("reconcile deployment for env %s: %w", env.Name, err)
 		}
 
@@ -439,7 +456,7 @@ func (r *AppReconciler) setFailedCondition(ctx context.Context, app *mortisev1al
 	return fmt.Errorf("%s: %s", reason, msg)
 }
 
-func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1alpha1.App, env *mortisev1alpha1.Environment) error {
+func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1alpha1.App, env *mortisev1alpha1.Environment, credentialsHash string) error {
 	name := deploymentName(app.Name, env.Name)
 	replicas := int32(1)
 	if env.Replicas != nil {
@@ -470,15 +487,38 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 	}
 
 	volumes, mounts := toVolumesAndMounts(app)
+
+	// Secret mounts (spec §5.5b). Appended after storage volumes. Mortise does
+	// not reconcile collisions with spec.storage[].name — if a user reuses a
+	// volume name the apiserver will reject the resulting Deployment, which
+	// surfaces as a reconcile error with a clear message.
+	secretVols, secretMounts := toSecretVolumesAndMounts(env.SecretMounts)
+	volumes = append(volumes, secretVols...)
+	mounts = append(mounts, secretMounts...)
+
 	if len(mounts) > 0 {
 		containers[0].VolumeMounts = mounts
 	}
 
+	userAnno := mergeAnnotations(nil, env.Annotations)
+
+	// Pod-template annotations combine the user's passthrough with Mortise-owned
+	// rollout triggers. The credentials hash forces a pod restart when the
+	// materialised {app}-credentials Secret changes — kubelet won't otherwise
+	// pick up Secret rotation for env-var mounts without a pod recreate.
+	podAnno := userAnno
+	if credentialsHash != "" {
+		podAnno = mergeAnnotations(podAnno, map[string]string{
+			"mortise.dev/credentials-hash": credentialsHash,
+		})
+	}
+
 	desired := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: app.Namespace,
-			Labels:    appLabels(app.Name, env.Name),
+			Name:        name,
+			Namespace:   app.Namespace,
+			Labels:      appLabels(app.Name, env.Name),
+			Annotations: userAnno,
 		},
 		Spec: appsv1.DeploymentSpec{
 			Replicas: &replicas,
@@ -487,7 +527,8 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 			},
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
-					Labels: appLabels(app.Name, env.Name),
+					Labels:      appLabels(app.Name, env.Name),
+					Annotations: podAnno,
 				},
 				Spec: corev1.PodSpec{
 					Containers: containers,
@@ -510,6 +551,7 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 		return err
 	}
 
+	existing.Annotations = desired.Annotations
 	existing.Spec = desired.Spec
 	return r.Update(ctx, &existing)
 }
@@ -519,9 +561,10 @@ func (r *AppReconciler) reconcileService(ctx context.Context, app *mortisev1alph
 
 	desired := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: app.Namespace,
-			Labels:    appLabels(app.Name, env.Name),
+			Name:        name,
+			Namespace:   app.Namespace,
+			Labels:      appLabels(app.Name, env.Name),
+			Annotations: mergeAnnotations(nil, env.Annotations),
 		},
 		Spec: corev1.ServiceSpec{
 			Selector: appLabels(app.Name, env.Name),
@@ -549,6 +592,7 @@ func (r *AppReconciler) reconcileService(ctx context.Context, app *mortisev1alph
 		return err
 	}
 
+	existing.Annotations = desired.Annotations
 	existing.Spec.Selector = desired.Spec.Selector
 	existing.Spec.Ports = desired.Spec.Ports
 	return r.Update(ctx, &existing)
@@ -558,14 +602,34 @@ func (r *AppReconciler) reconcileIngress(ctx context.Context, app *mortisev1alph
 	name := ingressName(app.Name, env.Name)
 	pathType := networkingv1.PathTypePrefix
 
+	// Decide the TLS Secret reference and cert-manager annotation independently:
+	//   - BYO Secret (env.TLS.SecretName): reference that Secret, skip the
+	//     cert-manager annotation entirely. The Secret lifecycle is the user's.
+	//   - Otherwise: auto-generate {name}-tls and write the cluster-issuer
+	//     annotation if one is configured (env override > platform default).
+	// If neither a secretName nor an issuer is available, the Ingress is
+	// emitted without any cert-manager annotation — valid per the k8s Ingress
+	// contract (standards, not implementations).
+	var owned map[string]string
+	tlsSecretName := fmt.Sprintf("%s-tls", name)
+	if env.TLS != nil && env.TLS.SecretName != "" {
+		tlsSecretName = env.TLS.SecretName
+	} else {
+		issuer := r.DefaultClusterIssuer
+		if env.TLS != nil && env.TLS.ClusterIssuer != "" {
+			issuer = env.TLS.ClusterIssuer
+		}
+		if issuer != "" {
+			owned = map[string]string{"cert-manager.io/cluster-issuer": issuer}
+		}
+	}
+
 	desired := &networkingv1.Ingress{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: app.Namespace,
-			Labels:    appLabels(app.Name, env.Name),
-			Annotations: map[string]string{
-				"cert-manager.io/cluster-issuer": "letsencrypt-prod",
-			},
+			Name:        name,
+			Namespace:   app.Namespace,
+			Labels:      appLabels(app.Name, env.Name),
+			Annotations: mergeAnnotations(owned, env.Annotations),
 		},
 		Spec: networkingv1.IngressSpec{
 			Rules: []networkingv1.IngressRule{
@@ -594,7 +658,7 @@ func (r *AppReconciler) reconcileIngress(ctx context.Context, app *mortisev1alph
 			TLS: []networkingv1.IngressTLS{
 				{
 					Hosts:      []string{env.Domain},
-					SecretName: fmt.Sprintf("%s-tls", name),
+					SecretName: tlsSecretName,
 				},
 			},
 		},
@@ -619,6 +683,21 @@ func (r *AppReconciler) reconcileIngress(ctx context.Context, app *mortisev1alph
 }
 
 func (r *AppReconciler) reconcilePVCs(ctx context.Context, app *mortisev1alpha1.App) error {
+	// PVCs are App-level (not per-env), but env.Annotations are per-env per
+	// spec §5.2a. Merge the passthrough maps across all envs; the last env's
+	// value wins on key collision. For the common single-env App this is a
+	// no-op; for multi-env Apps annotation conflicts on a shared PVC aren't
+	// meaningful anyway (there's only one PVC).
+	pvcAnno := map[string]string{}
+	for i := range app.Spec.Environments {
+		for k, v := range app.Spec.Environments[i].Annotations {
+			pvcAnno[k] = v
+		}
+	}
+	if len(pvcAnno) == 0 {
+		pvcAnno = nil
+	}
+
 	for _, vol := range app.Spec.Storage {
 		name := pvcName(app.Name, vol.Name)
 
@@ -629,9 +708,10 @@ func (r *AppReconciler) reconcilePVCs(ctx context.Context, app *mortisev1alpha1.
 
 		desired := &corev1.PersistentVolumeClaim{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:      name,
-				Namespace: app.Namespace,
-				Labels:    appLabels(app.Name, ""),
+				Name:        name,
+				Namespace:   app.Namespace,
+				Labels:      appLabels(app.Name, ""),
+				Annotations: pvcAnno,
 			},
 			Spec: corev1.PersistentVolumeClaimSpec{
 				AccessModes: []corev1.PersistentVolumeAccessMode{accessMode},
@@ -665,8 +745,16 @@ func (r *AppReconciler) reconcilePVCs(ctx context.Context, app *mortisev1alpha1.
 
 		// PVC spec is largely immutable; only storage size can be expanded (requires bound claim + expandable SC)
 		currentSize := existing.Spec.Resources.Requests[corev1.ResourceStorage]
+		needsUpdate := false
 		if vol.Size.Cmp(currentSize) != 0 {
 			existing.Spec.Resources.Requests[corev1.ResourceStorage] = vol.Size
+			needsUpdate = true
+		}
+		if !annotationsEqual(existing.Annotations, desired.Annotations) {
+			existing.Annotations = desired.Annotations
+			needsUpdate = true
+		}
+		if needsUpdate {
 			if err := r.Update(ctx, &existing); err != nil {
 				return err
 			}
@@ -677,6 +765,179 @@ func (r *AppReconciler) reconcilePVCs(ctx context.Context, app *mortisev1alpha1.
 
 func pvcName(app, volume string) string {
 	return fmt.Sprintf("%s-%s", app, volume)
+}
+
+// credentialsSecretName is the name of the {app}-credentials Secret this
+// controller materialises from spec.credentials (spec §5.5a Flavor A).
+// Centralised so the resolver, test helpers, and the controller can't drift.
+func credentialsSecretName(appName string) string {
+	return fmt.Sprintf("%s-credentials", appName)
+}
+
+// reconcileCredentialsSecret materialises the {app}-credentials Secret from
+// app.Spec.Credentials (spec §5.5a). Returns a stable hash of the rendered
+// credential data so the Deployment reconciler can stamp it onto the pod
+// template and force a restart on Secret rotation. Returns "" when there
+// are no credentials to reconcile (and ensures any stale Mortise-managed
+// Secret is removed). Per CLAUDE.md "Mortise owns only what it creates":
+// we refuse to modify or delete a pre-existing Secret that lacks our
+// managed-by label — the user must rename or delete it by hand.
+func (r *AppReconciler) reconcileCredentialsSecret(ctx context.Context, app *mortisev1alpha1.App) (string, error) {
+	name := credentialsSecretName(app.Name)
+	key := types.NamespacedName{Name: name, Namespace: app.Namespace}
+
+	// Empty credentials → clean up any Secret we previously materialised.
+	if len(app.Spec.Credentials) == 0 {
+		var existing corev1.Secret
+		err := r.Get(ctx, key, &existing)
+		if errors.IsNotFound(err) {
+			return "", nil
+		}
+		if err != nil {
+			return "", fmt.Errorf("get credentials secret: %w", err)
+		}
+		if !isMortiseManaged(&existing) {
+			// Not ours — leave it alone, don't surface an error (user may be
+			// managing it themselves).
+			return "", nil
+		}
+		if err := r.Delete(ctx, &existing); err != nil && !errors.IsNotFound(err) {
+			return "", fmt.Errorf("delete credentials secret: %w", err)
+		}
+		return "", nil
+	}
+
+	// Validate + render data.
+	data := make(map[string][]byte, len(app.Spec.Credentials))
+	for i := range app.Spec.Credentials {
+		cred := &app.Spec.Credentials[i]
+		if err := validateCredential(cred); err != nil {
+			return "", err
+		}
+		value, ok, err := r.resolveCredential(ctx, app.Namespace, cred)
+		if err != nil {
+			return "", err
+		}
+		if !ok {
+			// Well-known key with neither Value nor ValueFrom (e.g. "host",
+			// "port") — the bindings resolver fills these in at binder time,
+			// they don't go in the Secret.
+			continue
+		}
+		data[cred.Name] = value
+	}
+
+	hash := hashCredentialData(data)
+
+	desired := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: app.Namespace,
+			Labels: map[string]string{
+				"mortise.dev/managed-by": "controller",
+				"mortise.dev/app":        app.Name,
+			},
+		},
+		Type: corev1.SecretTypeOpaque,
+		Data: data,
+	}
+	if err := controllerutil.SetControllerReference(app, desired, r.Scheme); err != nil {
+		return "", err
+	}
+
+	var existing corev1.Secret
+	err := r.Get(ctx, key, &existing)
+	if errors.IsNotFound(err) {
+		if err := r.Create(ctx, desired); err != nil {
+			return "", fmt.Errorf("create credentials secret: %w", err)
+		}
+		return hash, nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("get credentials secret: %w", err)
+	}
+	if !isMortiseManaged(&existing) {
+		// Pre-existing Secret with the reserved name but no managed-by label
+		// — refuse to take it over. Users see a clear error rather than
+		// silent credential exfiltration.
+		return "", fmt.Errorf("Secret %q already exists in namespace %q and is not managed by Mortise; rename or delete it to let Mortise manage credentials", name, app.Namespace)
+	}
+	existing.Labels = desired.Labels
+	existing.Type = desired.Type
+	existing.Data = desired.Data
+	if err := r.Update(ctx, &existing); err != nil {
+		return "", fmt.Errorf("update credentials secret: %w", err)
+	}
+	return hash, nil
+}
+
+// validateCredential rejects credentials that set both Value and ValueFrom.
+// The CRD markers catch the obvious shape violations; this catches the
+// "exactly one of" constraint that markers don't express.
+func validateCredential(c *mortisev1alpha1.Credential) error {
+	hasValue := c.Value != ""
+	hasFrom := c.ValueFrom != nil && c.ValueFrom.SecretRef != nil
+	if hasValue && hasFrom {
+		return fmt.Errorf("credential %q: value and valueFrom are mutually exclusive", c.Name)
+	}
+	if c.ValueFrom != nil && c.ValueFrom.SecretRef != nil {
+		if c.ValueFrom.SecretRef.Name == "" || c.ValueFrom.SecretRef.Key == "" {
+			return fmt.Errorf("credential %q: valueFrom.secretRef requires name and key", c.Name)
+		}
+	}
+	return nil
+}
+
+// resolveCredential returns the byte value for one credential. The bool is
+// false when neither Value nor ValueFrom is set — the "well-known key"
+// case the bindings resolver fills in later.
+func (r *AppReconciler) resolveCredential(ctx context.Context, namespace string, c *mortisev1alpha1.Credential) ([]byte, bool, error) {
+	if c.Value != "" {
+		return []byte(c.Value), true, nil
+	}
+	if c.ValueFrom != nil && c.ValueFrom.SecretRef != nil {
+		ref := c.ValueFrom.SecretRef
+		var src corev1.Secret
+		if err := r.Get(ctx, types.NamespacedName{Name: ref.Name, Namespace: namespace}, &src); err != nil {
+			return nil, false, fmt.Errorf("credential %q: read source Secret %s/%s: %w", c.Name, namespace, ref.Name, err)
+		}
+		val, ok := src.Data[ref.Key]
+		if !ok {
+			return nil, false, fmt.Errorf("credential %q: key %q not present in Secret %s/%s", c.Name, ref.Key, namespace, ref.Name)
+		}
+		return val, true, nil
+	}
+	return nil, false, nil
+}
+
+// hashCredentialData produces a sha256 over the sorted key=value pairs.
+// Key sorting is load-bearing: Go maps randomise iteration order, and an
+// unstable hash would cause gratuitous pod restarts on every reconcile.
+func hashCredentialData(data map[string][]byte) string {
+	if len(data) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(data))
+	for k := range data {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	h := sha256.New()
+	for _, k := range keys {
+		h.Write([]byte(k))
+		h.Write([]byte{'='})
+		h.Write(data[k])
+		h.Write([]byte{0})
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// isMortiseManaged returns true iff the object carries the Mortise
+// managed-by label this controller stamps on everything it creates.
+func isMortiseManaged(obj client.Object) bool {
+	labels := obj.GetLabels()
+	return labels["mortise.dev/managed-by"] == "controller"
 }
 
 func (r *AppReconciler) clock() clock.Clock {
@@ -811,6 +1072,39 @@ func appLabels(app, env string) map[string]string {
 	}
 }
 
+// mergeAnnotations combines Mortise-owned annotations with user-supplied
+// passthrough annotations (spec §5.2a `environments[].annotations`). The user
+// wins on key conflict — that's how a team overrides Mortise's default
+// cluster-issuer without dropping to raw Kubernetes. Returns nil if both
+// inputs are empty so callers don't write an empty annotation map.
+func mergeAnnotations(owned, user map[string]string) map[string]string {
+	if len(owned) == 0 && len(user) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(owned)+len(user))
+	for k, v := range owned {
+		out[k] = v
+	}
+	for k, v := range user {
+		out[k] = v
+	}
+	return out
+}
+
+// annotationsEqual returns true iff a and b contain exactly the same key/value
+// pairs. nil and empty maps compare equal.
+func annotationsEqual(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		if bv, ok := b[k]; !ok || bv != v {
+			return false
+		}
+	}
+	return true
+}
+
 func toEnvVars(envs []mortisev1alpha1.EnvVar) []corev1.EnvVar {
 	result := make([]corev1.EnvVar, 0, len(envs))
 	for _, e := range envs {
@@ -869,6 +1163,57 @@ func toVolumesAndMounts(app *mortisev1alpha1.App) ([]corev1.Volume, []corev1.Vol
 	return volumes, mounts
 }
 
+// toSecretVolumesAndMounts translates spec.environments[].secretMounts into
+// raw corev1 Volume + VolumeMount entries. Spec §5.5b: plain
+// SecretVolumeSource; no projected-volume trickery. ReadOnly defaults to
+// true when the user leaves it unset. Secret existence is intentionally
+// not validated here — the Pod will stay in ContainerCreating until the
+// Secret appears in the App's namespace.
+func toSecretVolumesAndMounts(mounts []mortisev1alpha1.SecretMount) ([]corev1.Volume, []corev1.VolumeMount) {
+	if len(mounts) == 0 {
+		return nil, nil
+	}
+
+	volumes := make([]corev1.Volume, 0, len(mounts))
+	vms := make([]corev1.VolumeMount, 0, len(mounts))
+
+	for _, m := range mounts {
+		var items []corev1.KeyToPath
+		if len(m.Items) > 0 {
+			items = make([]corev1.KeyToPath, 0, len(m.Items))
+			for _, it := range m.Items {
+				items = append(items, corev1.KeyToPath{
+					Key:  it.Key,
+					Path: it.Path,
+					Mode: it.Mode,
+				})
+			}
+		}
+
+		volumes = append(volumes, corev1.Volume{
+			Name: m.Name,
+			VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{
+					SecretName: m.Secret,
+					Items:      items,
+				},
+			},
+		})
+
+		readOnly := true
+		if m.ReadOnly != nil {
+			readOnly = *m.ReadOnly
+		}
+		vms = append(vms, corev1.VolumeMount{
+			Name:      m.Name,
+			MountPath: m.Path,
+			ReadOnly:  readOnly,
+		})
+	}
+
+	return volumes, vms
+}
+
 // SetupWithManager sets up the controller with the Manager.
 func (r *AppReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
@@ -876,6 +1221,7 @@ func (r *AppReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.Service{}).
 		Owns(&corev1.PersistentVolumeClaim{}).
+		Owns(&corev1.Secret{}).
 		Owns(&networkingv1.Ingress{}).
 		Named("app").
 		Complete(r)

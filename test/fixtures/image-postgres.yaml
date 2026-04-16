@@ -13,11 +13,14 @@ spec:
       mountPath: /var/lib/postgresql/data
       size: 1Gi
   credentials:
-    - DATABASE_URL
-    - host
-    - port
-    - user
-    - password
+    - name: host
+    - name: port
+    - name: user
+      value: postgres
+    - name: password
+      value: testpassword
+    - name: DATABASE_URL
+      value: postgres://postgres:testpassword@test-db/postgres
   environments:
     - name: production
       replicas: 1

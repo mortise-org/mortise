@@ -31,8 +31,13 @@ func newDB(name, namespace string) *mortisev1alpha1.App {
 	return &mortisev1alpha1.App{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
 		Spec: mortisev1alpha1.AppSpec{
-			Source:      mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: "postgres:16"},
-			Credentials: []string{"host", "port", "username", "password"},
+			Source: mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: "postgres:16"},
+			Credentials: []mortisev1alpha1.Credential{
+				{Name: "host"},
+				{Name: "port"},
+				{Name: "username", Value: "postgres"},
+				{Name: "password", Value: "hunter2"},
+			},
 			Environments: []mortisev1alpha1.Environment{
 				{Name: "production"},
 			},

@@ -55,8 +55,15 @@ func (r *Resolver) Resolve(ctx context.Context, namespace string, bindings []mor
 		svcHost := fmt.Sprintf("%s.%s.svc.cluster.local", svcName, ns)
 		secretName := fmt.Sprintf("%s-credentials", boundApp.Name)
 
+		// NOTE: Issue #2 (cross-project bindings) remains open. When b.Project is
+		// set, we still emit a plain SecretKeyRef pointing at a Secret in the
+		// bound app's project namespace — the kubelet resolves secretKeyRef in
+		// the Pod's own namespace, so the Pod will fail to start with
+		// CreateContainerConfigError. Do not "fix" that here by renaming the
+		// Secret or dropping the ref; the resolution is a Secret-replication
+		// or projected-volume design, tracked separately.
 		for _, cred := range boundApp.Spec.Credentials {
-			switch cred {
+			switch cred.Name {
 			case "host":
 				result = append(result, corev1.EnvVar{
 					Name:  "host",
@@ -69,11 +76,11 @@ func (r *Resolver) Resolve(ctx context.Context, namespace string, bindings []mor
 				})
 			default:
 				result = append(result, corev1.EnvVar{
-					Name: cred,
+					Name: cred.Name,
 					ValueFrom: &corev1.EnvVarSource{
 						SecretKeyRef: &corev1.SecretKeySelector{
 							LocalObjectReference: corev1.LocalObjectReference{Name: secretName},
-							Key:                  cred,
+							Key:                  cred.Name,
 						},
 					},
 				})

@@ -50,12 +50,64 @@ spec:
             description: AppSpec defines the desired state of App
             properties:
               credentials:
+                description: |-
+                  Credentials declares the keys this App exposes to binders. The App
+                  controller materialises the `{app}-credentials` Secret from these
+                  entries; the bindings resolver projects them into binder Pods (spec §5.5a).
                 items:
-                  type: string
+                  description: |-
+                    Credential declares a single named credential exposed by this App to any
+                    binder. Flavor A (spec §5.5a): the Mortise-owned `{app}-credentials` Secret
+                    is materialised from these entries. At most one of Value / ValueFrom may
+                    be set; a credential with neither is treated as a well-known key whose
+                    value the bindings resolver fills in (e.g. `host`, `port`).
+                  properties:
+                    name:
+                      description: |-
+                        Name is the key written into the {app}-credentials Secret and the env
+                        var name projected into binders.
+                      maxLength: 253
+                      pattern: ^[a-zA-Z_][a-zA-Z0-9_]*$
+                      type: string
+                    value:
+                      description: Value is the inline credential value. Mutually
+                        exclusive with ValueFrom.
+                      type: string
+                    valueFrom:
+                      description: |-
+                        ValueFrom references a key in a user-managed Secret in the App's own
+                        namespace. Mutually exclusive with Value.
+                      properties:
+                        secretRef:
+                          description: SecretRef references a key in a Secret in the
+                            App's own namespace.
+                          properties:
+                            key:
+                              description: Key within the Secret.
+                              type: string
+                            name:
+                              description: Name of the Secret in the App's namespace.
+                              type: string
+                          required:
+                          - key
+                          - name
+                          type: object
+                      type: object
+                  required:
+                  - name
+                  type: object
                 type: array
               environments:
                 items:
                   properties:
+                    annotations:
+                      additionalProperties:
+                        type: string
+                      description: |-
+                        Annotations are passed through to every k8s resource Mortise creates for
+                        this environment (Deployment, pod template, Service, Ingress, PVCs).
+                        User-supplied keys win on conflict with Mortise-owned annotations (spec §5.2a).
+                      type: object
                     bindings:
                       items:
                         properties:
@@ -107,6 +159,97 @@ spec:
                         cpu:
                           type: string
                         memory:
+                          type: string
+                      type: object
+                    secretMounts:
+                      description: |-
+                        SecretMounts mounts existing k8s Secrets in the App's namespace as
+                        files on the container filesystem. See spec §5.5b. Each entry becomes
+                        a `Volume` + `VolumeMount` on the Deployment's Pod template. Names
+                        must not collide with `spec.storage[].name` — the operator does not
+                        reconcile such collisions; the apiserver will reject the Deployment.
+                      items:
+                        description: |-
+                          SecretMount mounts an existing k8s Secret in the App's namespace as a
+                          file-system volume on the container. Secret existence is not validated at
+                          reconcile time — if the named Secret is missing the Pod stays in
+                          ContainerCreating until it appears (spec §5.5b: "must exist in the App's
+                          namespace at Pod-start time").
+                        properties:
+                          items:
+                            description: |-
+                              Items projects specific Secret keys to specific filenames (and
+                              optional file modes) under Path. When empty, every key in the Secret
+                              is surfaced as a file whose name matches the key.
+                            items:
+                              description: |-
+                                KeyToPath projects one Secret key to a specific filename (and optional
+                                mode bits) under the mount path.
+                              properties:
+                                key:
+                                  description: Key is the Secret key to project.
+                                  type: string
+                                mode:
+                                  description: Mode is the file mode bits for the
+                                    projected file (e.g. 0400).
+                                  format: int32
+                                  type: integer
+                                path:
+                                  description: |-
+                                    Path is the filename (relative to the mount path) to write the key's
+                                    value to.
+                                  type: string
+                              required:
+                              - key
+                              - path
+                              type: object
+                            type: array
+                          name:
+                            description: Name is the Pod volume name. Must be a DNS-1123
+                              label.
+                            maxLength: 63
+                            pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                            type: string
+                          path:
+                            description: |-
+                              Path is the absolute mount path inside the container. Must begin with
+                              a slash.
+                            pattern: ^/.*
+                            type: string
+                          readOnly:
+                            description: |-
+                              ReadOnly defaults to true when unset. Pointer so that an explicit
+                              `false` is distinguishable from the omitted default.
+                            type: boolean
+                          secret:
+                            description: |-
+                              Secret names an existing k8s Secret in the App's namespace. Mortise
+                              does not create or manage this Secret.
+                            type: string
+                        required:
+                        - name
+                        - path
+                        - secret
+                        type: object
+                      type: array
+                    tls:
+                      description: |-
+                        TLS overrides the default cert-manager-driven TLS path for this
+                        environment's Ingress (spec §5.6). If nil the operator writes the
+                        PlatformConfig default cluster-issuer annotation and auto-generates the
+                        Secret name.
+                      properties:
+                        clusterIssuer:
+                          description: |-
+                            ClusterIssuer overrides the PlatformConfig default cert-manager
+                            ClusterIssuer for this environment. Ignored if SecretName is also set
+                            (BYO Secret takes precedence).
+                          type: string
+                        secretName:
+                          description: |-
+                            SecretName points at a pre-existing k8s Secret in the App's namespace
+                            containing tls.crt / tls.key. When set, Mortise skips the cert-manager
+                            annotation entirely and wires the Ingress TLS block to this Secret.
                           type: string
                       type: object
                   required:
