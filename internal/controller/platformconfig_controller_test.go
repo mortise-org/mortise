@@ -21,64 +21,161 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
-
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
 )
 
 var _ = Describe("PlatformConfig Controller", func() {
-	Context("When reconciling a resource", func() {
-		const resourceName = "test-resource"
+	ctx := context.Background()
 
-		ctx := context.Background()
+	const secretNS = "default"
 
-		typeNamespacedName := types.NamespacedName{
-			Name:      resourceName,
-			Namespace: "default", // TODO(user):Modify as needed
+	makeSecret := func(ns, name, key, value string) {
+		s := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+			Data:       map[string][]byte{key: []byte(value)},
 		}
-		platformconfig := &mortisev1alpha1.PlatformConfig{}
+		err := k8sClient.Get(ctx, types.NamespacedName{Namespace: ns, Name: name}, &corev1.Secret{})
+		if errors.IsNotFound(err) {
+			Expect(k8sClient.Create(ctx, s)).To(Succeed())
+		}
+	}
+
+	makePlatformConfig := func(name, dnsSecretName string) *mortisev1alpha1.PlatformConfig {
+		return &mortisev1alpha1.PlatformConfig{
+			ObjectMeta: metav1.ObjectMeta{Name: name},
+			Spec: mortisev1alpha1.PlatformConfigSpec{
+				Domain: "example.com",
+				DNS: mortisev1alpha1.DNSConfig{
+					Provider: mortisev1alpha1.DNSProviderCloudflare,
+					APITokenSecretRef: mortisev1alpha1.SecretRef{
+						Namespace: secretNS,
+						Name:      dnsSecretName,
+						Key:       "token",
+					},
+				},
+			},
+		}
+	}
+
+	doReconcile := func(name string) error {
+		r := &PlatformConfigReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+		_, err := r.Reconcile(ctx, reconcile.Request{
+			NamespacedName: types.NamespacedName{Name: name},
+		})
+		return err
+	}
+
+	deletePC := func(name string) {
+		pc := &mortisev1alpha1.PlatformConfig{}
+		if err := k8sClient.Get(ctx, types.NamespacedName{Name: name}, pc); err == nil {
+			Expect(k8sClient.Delete(ctx, pc)).To(Succeed())
+		}
+	}
+
+	Context("happy path — singleton named 'platform' with all secrets present", func() {
+		const pcName = "platform"
+		const secretName = "pc-dns-secret-ready"
 
 		BeforeEach(func() {
-			By("creating the custom resource for the Kind PlatformConfig")
-			err := k8sClient.Get(ctx, typeNamespacedName, platformconfig)
-			if err != nil && errors.IsNotFound(err) {
-				resource := &mortisev1alpha1.PlatformConfig{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      resourceName,
-						Namespace: "default",
-					},
-					// TODO(user): Specify other spec details if needed.
+			makeSecret(secretNS, secretName, "token", "cf-token-value")
+			Expect(k8sClient.Create(ctx, makePlatformConfig(pcName, secretName))).To(Succeed())
+		})
+
+		AfterEach(func() { deletePC(pcName) })
+
+		It("marks the PlatformConfig as Ready", func() {
+			Expect(doReconcile(pcName)).To(Succeed())
+
+			var updated mortisev1alpha1.PlatformConfig
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: pcName}, &updated)).To(Succeed())
+			Expect(updated.Status.Phase).To(Equal(mortisev1alpha1.PlatformConfigPhaseReady))
+
+			var availableCond *metav1.Condition
+			for i := range updated.Status.Conditions {
+				if updated.Status.Conditions[i].Type == "Available" {
+					availableCond = &updated.Status.Conditions[i]
+					break
 				}
-				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 			}
+			Expect(availableCond).NotTo(BeNil())
+			Expect(availableCond.Status).To(Equal(metav1.ConditionTrue))
+			Expect(availableCond.Reason).To(Equal("Reconciled"))
+		})
+	})
+
+	// The "missing DNS secret" test also uses name "platform" because the singleton
+	// check runs before the secret check — without the correct name, we'd get
+	// InvalidName rather than SecretNotFound.
+	Context("missing DNS secret", func() {
+		const pcName = "platform"
+
+		BeforeEach(func() {
+			// Secret deliberately not created.
+			Expect(k8sClient.Create(ctx, makePlatformConfig(pcName, "does-not-exist"))).To(Succeed())
 		})
 
-		AfterEach(func() {
-			// TODO(user): Cleanup logic after each test, like removing the resource instance.
-			resource := &mortisev1alpha1.PlatformConfig{}
-			err := k8sClient.Get(ctx, typeNamespacedName, resource)
-			Expect(err).NotTo(HaveOccurred())
+		AfterEach(func() { deletePC(pcName) })
 
-			By("Cleanup the specific resource instance PlatformConfig")
-			Expect(k8sClient.Delete(ctx, resource)).To(Succeed())
-		})
-		It("should successfully reconcile the resource", func() {
-			By("Reconciling the created resource")
-			controllerReconciler := &PlatformConfigReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
+		It("marks the PlatformConfig as Failed with SecretNotFound", func() {
+			Expect(doReconcile(pcName)).To(Succeed())
+
+			var updated mortisev1alpha1.PlatformConfig
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: pcName}, &updated)).To(Succeed())
+			Expect(updated.Status.Phase).To(Equal(mortisev1alpha1.PlatformConfigPhaseFailed))
+
+			var availableCond *metav1.Condition
+			for i := range updated.Status.Conditions {
+				if updated.Status.Conditions[i].Type == "Available" {
+					availableCond = &updated.Status.Conditions[i]
+					break
+				}
 			}
+			Expect(availableCond).NotTo(BeNil())
+			Expect(availableCond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(availableCond.Reason).To(Equal("SecretNotFound"))
+		})
+	})
 
-			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
-				NamespacedName: typeNamespacedName,
-			})
-			Expect(err).NotTo(HaveOccurred())
-			// TODO(user): Add more specific assertions depending on your controller's reconciliation logic.
-			// Example: If you expect a certain status condition after reconciliation, verify it here.
+	Context("duplicate config — name is not 'platform'", func() {
+		const pcName = "not-platform"
+		const secretName = "pc-dns-secret-dupe"
+
+		BeforeEach(func() {
+			makeSecret(secretNS, secretName, "token", "cf-token-value")
+			Expect(k8sClient.Create(ctx, makePlatformConfig(pcName, secretName))).To(Succeed())
+		})
+
+		AfterEach(func() { deletePC(pcName) })
+
+		It("marks the PlatformConfig as Failed with InvalidName", func() {
+			Expect(doReconcile(pcName)).To(Succeed())
+
+			var updated mortisev1alpha1.PlatformConfig
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: pcName}, &updated)).To(Succeed())
+			Expect(updated.Status.Phase).To(Equal(mortisev1alpha1.PlatformConfigPhaseFailed))
+
+			var availableCond *metav1.Condition
+			for i := range updated.Status.Conditions {
+				if updated.Status.Conditions[i].Type == "Available" {
+					availableCond = &updated.Status.Conditions[i]
+					break
+				}
+			}
+			Expect(availableCond).NotTo(BeNil())
+			Expect(availableCond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(availableCond.Reason).To(Equal("InvalidName"))
+		})
+	})
+
+	Context("resource does not exist", func() {
+		It("returns nil without error", func() {
+			Expect(doReconcile("does-not-exist")).To(Succeed())
 		})
 	})
 })

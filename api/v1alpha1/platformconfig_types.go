@@ -20,38 +20,136 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
-// NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
+// PlatformConfigPhase is the reconciliation phase of a PlatformConfig.
+// +kubebuilder:validation:Enum=Pending;Ready;Failed
+type PlatformConfigPhase string
 
-// PlatformConfigSpec defines the desired state of PlatformConfig
-type PlatformConfigSpec struct {
-	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
-	// The following markers will use OpenAPI v3 schema to validate the value
-	// More info: https://book.kubebuilder.io/reference/markers/crd-validation.html
+const (
+	PlatformConfigPhasePending PlatformConfigPhase = "Pending"
+	PlatformConfigPhaseReady   PlatformConfigPhase = "Ready"
+	PlatformConfigPhaseFailed  PlatformConfigPhase = "Failed"
+)
 
-	// foo is an example field of PlatformConfig. Edit platformconfig_types.go to remove/update
+// DNSProviderType identifies the DNS provider backend.
+// +kubebuilder:validation:Enum=cloudflare;route53;externaldns-noop
+type DNSProviderType string
+
+const (
+	DNSProviderCloudflare      DNSProviderType = "cloudflare"
+	DNSProviderRoute53         DNSProviderType = "route53"
+	DNSProviderExternalDNSNoop DNSProviderType = "externaldns-noop"
+)
+
+// DNSConfig holds the DNS provider configuration.
+type DNSConfig struct {
+	// Provider is the DNS provider to use for creating records.
+	// +required
+	Provider DNSProviderType `json:"provider"`
+
+	// APITokenSecretRef references the secret containing the DNS provider API token.
+	// +required
+	APITokenSecretRef SecretRef `json:"apiTokenSecretRef"`
+}
+
+// StorageConfig holds platform-level storage settings.
+type StorageConfig struct {
+	// DefaultStorageClass is the StorageClass to use for App volumes that do not
+	// specify their own. If empty, the cluster default StorageClass is used.
 	// +optional
-	Foo *string `json:"foo,omitempty"`
+	DefaultStorageClass string `json:"defaultStorageClass,omitempty"`
+}
+
+// RegistryConfig holds the OCI registry configuration used for built images.
+type RegistryConfig struct {
+	// URL is the OCI registry endpoint (e.g. registry.example.com).
+	// +required
+	URL string `json:"url"`
+
+	// Namespace is the registry namespace under which app images are stored.
+	// Defaults to "mortise".
+	// +optional
+	// +kubebuilder:default=mortise
+	Namespace string `json:"namespace,omitempty"`
+
+	// CredentialsSecretRef references a secret containing Basic or Bearer auth
+	// credentials for the registry (keys: username, password).
+	// +optional
+	CredentialsSecretRef *SecretRef `json:"credentialsSecretRef,omitempty"`
+
+	// PullSecretName is the name of the k8s image-pull Secret that carries the
+	// registry credentials and is projected into App pods.
+	// +optional
+	PullSecretName string `json:"pullSecretName,omitempty"`
+
+	// InsecureSkipTLSVerify disables TLS verification when talking to the registry.
+	// Intended for local k3d clusters only.
+	// +optional
+	InsecureSkipTLSVerify bool `json:"insecureSkipTLSVerify,omitempty"`
+}
+
+// BuildConfig holds the BuildKit configuration.
+type BuildConfig struct {
+	// BuildkitAddr is the address of the BuildKit daemon
+	// (e.g. tcp://buildkitd:1234 or unix:///run/buildkit/buildkitd.sock).
+	// +required
+	BuildkitAddr string `json:"buildkitAddr"`
+
+	// TLSSecretRef references a secret containing mTLS credentials for BuildKit
+	// (keys: ca.crt, tls.crt, tls.key).
+	// +optional
+	TLSSecretRef *SecretRef `json:"tlsSecretRef,omitempty"`
+
+	// DefaultPlatform is the OCI platform string used when building images
+	// (e.g. linux/amd64). Defaults to linux/amd64.
+	// +optional
+	// +kubebuilder:default="linux/amd64"
+	DefaultPlatform string `json:"defaultPlatform,omitempty"`
+}
+
+// TLSConfig holds TLS/cert-manager configuration.
+type TLSConfig struct {
+	// CertManagerClusterIssuer is the name of the cert-manager ClusterIssuer to
+	// use when provisioning TLS certificates for App Ingresses
+	// (e.g. letsencrypt-prod).
+	// +optional
+	CertManagerClusterIssuer string `json:"certManagerClusterIssuer,omitempty"`
+}
+
+// PlatformConfigSpec defines the desired state of PlatformConfig.
+type PlatformConfigSpec struct {
+	// Domain is the base domain for the platform. Apps receive subdomains under
+	// this domain automatically (e.g. yourdomain.com → app.yourdomain.com).
+	// +required
+	Domain string `json:"domain"`
+
+	// DNS configures the provider used to create DNS records for App Ingresses.
+	// +required
+	DNS DNSConfig `json:"dns"`
+
+	// Storage configures platform-level storage defaults.
+	// +optional
+	Storage StorageConfig `json:"storage,omitempty"`
+
+	// Registry configures the OCI registry used to store built App images.
+	// +optional
+	Registry RegistryConfig `json:"registry,omitempty"`
+
+	// Build configures the BuildKit daemon used to build App images from source.
+	// +optional
+	Build BuildConfig `json:"build,omitempty"`
+
+	// TLS configures TLS certificate issuance for App Ingresses.
+	// +optional
+	TLS TLSConfig `json:"tls,omitempty"`
 }
 
 // PlatformConfigStatus defines the observed state of PlatformConfig.
 type PlatformConfigStatus struct {
-	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
+	// Phase is the current lifecycle phase.
+	// +optional
+	Phase PlatformConfigPhase `json:"phase,omitempty"`
 
-	// For Kubernetes API conventions, see:
-	// https://github.com/kubernetes/community/blob/master/contributors/devel/sig-architecture/api-conventions.md#typical-status-properties
-
-	// conditions represent the current state of the PlatformConfig resource.
-	// Each condition has a unique type and reflects the status of a specific aspect of the resource.
-	//
-	// Standard condition types include:
-	// - "Available": the resource is fully functional
-	// - "Progressing": the resource is being created or updated
-	// - "Degraded": the resource failed to reach or maintain its desired state
-	//
-	// The status of each condition is one of True, False, or Unknown.
+	// Conditions represent the current state of the PlatformConfig resource.
 	// +listType=map
 	// +listMapKey=type
 	// +optional
@@ -61,8 +159,12 @@ type PlatformConfigStatus struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:scope=Cluster
+// +kubebuilder:printcolumn:name="Domain",type=string,JSONPath=`.spec.domain`
+// +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
+// +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
-// PlatformConfig is the Schema for the platformconfigs API
+// PlatformConfig is the Schema for the platformconfigs API. It is cluster-scoped
+// and there must be exactly one instance named "platform" per cluster.
 type PlatformConfig struct {
 	metav1.TypeMeta `json:",inline"`
 

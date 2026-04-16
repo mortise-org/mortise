@@ -5,7 +5,7 @@ whenever implementation status changes — see the **Keeping this file up to
 date** section at the bottom.
 
 Legend: **Done** / **Partial** / **Not started**
-Last reconciled against spec + code: 2026-04-16 (commit `31f8e52`).
+Last reconciled against spec + code: 2026-04-16 (commit TBD — PlatformConfig promotion).
 
 ---
 
@@ -47,7 +47,7 @@ Spec rule: every outward interface must have at least one real v1 impl
 | `Project`            | real              | real reconciler  | **Done**      |
 | `App`                | real              | real (image)     | **Partial**   — no `kind: service\|cron`, `schedule`, `concurrencyPolicy`, `sharedVars`, or `valueFrom.fromBinding` from spec §4. |
 | `GitProvider`        | real (`api/v1alpha1/gitprovider_types.go`) | real reconciler (`internal/controller/gitprovider_controller.go`) | **Done** |
-| `PlatformConfig`     | scaffold (`Foo *string`) | empty TODO | **Not started** |
+| `PlatformConfig`     | real (`api/v1alpha1/platformconfig_types.go`) | real reconciler (`internal/controller/platformconfig_controller.go`) | **Done** |
 | `PreviewEnvironment` | scaffold (`Foo *string`) | empty TODO | **Not started** |
 
 ---
@@ -182,11 +182,11 @@ landed and what each deferred.
   `GitClient.Clone` → `BuildClient.Build` → `RegistryBackend.PushTarget`
   and then flow the resulting image digest into the Deployment it already
   knows how to create.
-- **PlatformConfig wiring** — `api/v1alpha1/platformconfig_types.go` is
-  still scaffold-only, so each stack currently takes its config via a
-  plain Go struct at construction time rather than reading from the CRD.
-  When `PlatformConfig` is promoted, all three stacks should be built from
-  the operator entrypoint using CRD values.
+- **PlatformConfig wiring** — `PlatformConfig` CRD and loader are now real
+  (see "PlatformConfig — Done" section). Each stack still takes its config
+  via a plain Go struct at construction time; the follow-up PR rewires the
+  operator entrypoint (`cmd/main.go`) to call `platformconfig.Load` and
+  inject config into each stack.
 - **Webhook → build dispatch** — the webhook receiver parses events and
   logs/queues them (placeholder) but does not yet actually call the build
   pipeline. Wiring belongs in the same PR that adds the app-controller
@@ -352,6 +352,49 @@ landed and what each deferred.
 - **Integration tests against local Gitea** — belongs in the
   (not-yet-wired) `test/integration/` harness.
 
+### PlatformConfig — **Done**
+
+`api/v1alpha1/platformconfig_types.go`, `internal/controller/platformconfig_controller.go`,
+`internal/platformconfig/loader.go`.
+
+**CRD fields:**
+- `spec.domain` — base domain for the platform (required).
+- `spec.dns.provider` — enum (`cloudflare | route53 | externaldns-noop`); validated by kubebuilder marker.
+- `spec.dns.apiTokenSecretRef` — `SecretRef{Namespace, Name, Key}` for the DNS provider API token (required).
+- `spec.storage.defaultStorageClass` — optional, falls back to cluster default.
+- `spec.registry.url` — OCI registry endpoint (required if registry is configured).
+- `spec.registry.namespace` — image namespace, defaults to `"mortise"` via kubebuilder default marker.
+- `spec.registry.credentialsSecretRef` — optional `*SecretRef` for Basic/Bearer registry auth.
+- `spec.registry.pullSecretName` — optional k8s image-pull Secret name.
+- `spec.registry.insecureSkipTLSVerify` — bool, for local k3d clusters.
+- `spec.build.buildkitAddr` — `tcp://...` or `unix://...` address.
+- `spec.build.tlsSecretRef` — optional `*SecretRef` for BuildKit mTLS (keys: `ca.crt`, `tls.crt`, `tls.key`).
+- `spec.build.defaultPlatform` — defaults to `"linux/amd64"` via kubebuilder default marker.
+- `spec.tls.certManagerClusterIssuer` — optional ClusterIssuer name; consumed by Ingress code (wiring deferred).
+- `status.phase` — `Pending | Ready | Failed`.
+- `status.conditions` — standard `[]metav1.Condition`.
+
+`SecretRef` is reused from `gitprovider_types.go` (same package, no move needed).
+
+**Reconciler behaviour (`PlatformConfigReconciler`):**
+- Enforces singleton: only the instance named `"platform"` advances past validation; any other name gets `status.phase=Failed` + `reason=InvalidName`.
+- Validates DNS API token secret exists and contains the referenced key.
+- Validates optional registry credentials secret if `credentialsSecretRef` is set.
+- Validates optional BuildKit TLS secret if `tlsSecretRef` is set.
+- On success: `status.phase=Ready` + `Available=True` condition.
+- On failure: `status.phase=Failed` + `Available=False` condition with typed reason.
+- Envtest suite covers: happy path, missing-secret failure, wrong-name rejection, not-found early return.
+
+**Loader package (`internal/platformconfig/`):**
+- `Load(ctx, c client.Reader) (*Config, error)` — fetches the singleton PlatformConfig, resolves all referenced Secrets, returns a plain Go `Config` struct (no k8s types exposed).
+- `ErrNotFound` sentinel for "not configured yet" — callers use `errors.Is`.
+- `Config` sub-structs: `DNSConfig`, `StorageConfig`, `RegistryConfig`, `BuildConfig`, `TLSConfig`.
+- Unit tests with fake client covering: found+resolved, not-found, bad DNS secret ref, registry credentials resolution, bad registry secret ref, BuildKit TLS resolution.
+
+**Deferred — operator rewiring (explicit follow-up PR):**
+- `internal/registry/`, `internal/build/`, and `internal/git/` stacks still take config via ad-hoc Go structs at construction time. When the follow-up PR lands, the operator entrypoint (`cmd/main.go`) will call `platformconfig.Load` and inject config into each stack.
+- `IngressProvider` and cert-manager wiring (`spec.tls.certManagerClusterIssuer`) remain deferred to that same follow-up.
+
 ### Phase 5 — Monorepo support — **Not started**
 
 - `App` spec has no `watchPaths` field.
@@ -389,8 +432,6 @@ Missing:
 - `charts/mortise/values.yaml` exposes only operator image / resources /
   service. No toggles for bundled components (spec §13).
 - No documented recipes for ESO / OPA / Prometheus.
-- `PlatformConfig` CRD is scaffold-only, so there is nowhere for bundled
-  components to be configured yet.
 
 ---
 

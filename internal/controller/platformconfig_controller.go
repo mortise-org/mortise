@@ -18,14 +18,23 @@ package controller
 
 import (
 	"context"
+	"fmt"
 
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
 )
+
+// singletonName is the required metadata.name for the singleton PlatformConfig.
+const singletonName = "platform"
 
 // PlatformConfigReconciler reconciles a PlatformConfig object
 type PlatformConfigReconciler struct {
@@ -36,22 +45,95 @@ type PlatformConfigReconciler struct {
 // +kubebuilder:rbac:groups=mortise.mortise.dev,resources=platformconfigs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=mortise.mortise.dev,resources=platformconfigs/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=mortise.mortise.dev,resources=platformconfigs/finalizers,verbs=update
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 
-// Reconcile is part of the main kubernetes reconciliation loop which aims to
-// move the current state of the cluster closer to the desired state.
-// TODO(user): Modify the Reconcile function to compare the state specified by
-// the PlatformConfig object against the actual cluster state, and then
-// perform operations to make the cluster state reflect the state specified by
-// the user.
-//
-// For more details, check Reconcile and its Result here:
-// - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.23.3/pkg/reconcile
 func (r *PlatformConfigReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	_ = logf.FromContext(ctx)
+	log := logf.FromContext(ctx)
 
-	// TODO(user): your logic here
+	var pc mortisev1alpha1.PlatformConfig
+	if err := r.Get(ctx, req.NamespacedName, &pc); err != nil {
+		if errors.IsNotFound(err) {
+			return ctrl.Result{}, nil
+		}
+		return ctrl.Result{}, err
+	}
 
-	return ctrl.Result{}, nil
+	// Enforce singleton: only the instance named "platform" is valid.
+	if pc.Name != singletonName {
+		log.Info("rejecting non-singleton PlatformConfig", "name", pc.Name)
+		return ctrl.Result{}, r.markFailed(ctx, &pc, "InvalidName",
+			fmt.Sprintf("PlatformConfig must be named %q; got %q", singletonName, pc.Name))
+	}
+
+	// Validate DNS API token secret.
+	if err := r.validateSecretRef(ctx, pc.Spec.DNS.APITokenSecretRef, "spec.dns.apiTokenSecretRef"); err != nil {
+		log.Info("DNS secret ref invalid", "error", err)
+		return ctrl.Result{}, r.markFailed(ctx, &pc, "SecretNotFound", err.Error())
+	}
+
+	// Validate optional registry credentials secret.
+	if pc.Spec.Registry.CredentialsSecretRef != nil {
+		if err := r.validateSecretRef(ctx, *pc.Spec.Registry.CredentialsSecretRef, "spec.registry.credentialsSecretRef"); err != nil {
+			log.Info("registry credentials secret ref invalid", "error", err)
+			return ctrl.Result{}, r.markFailed(ctx, &pc, "SecretNotFound", err.Error())
+		}
+	}
+
+	// Validate optional BuildKit TLS secret.
+	if pc.Spec.Build.TLSSecretRef != nil {
+		if err := r.validateSecretRef(ctx, *pc.Spec.Build.TLSSecretRef, "spec.build.tlsSecretRef"); err != nil {
+			log.Info("buildkit TLS secret ref invalid", "error", err)
+			return ctrl.Result{}, r.markFailed(ctx, &pc, "SecretNotFound", err.Error())
+		}
+	}
+
+	return ctrl.Result{}, r.markReady(ctx, &pc)
+}
+
+// validateSecretRef returns an error if the secret does not exist or the key is absent.
+func (r *PlatformConfigReconciler) validateSecretRef(ctx context.Context, ref mortisev1alpha1.SecretRef, desc string) error {
+	var secret corev1.Secret
+	key := types.NamespacedName{Namespace: ref.Namespace, Name: ref.Name}
+	if err := r.Get(ctx, key, &secret); err != nil {
+		if errors.IsNotFound(err) {
+			return fmt.Errorf("%s: secret %s/%s not found", desc, ref.Namespace, ref.Name)
+		}
+		return fmt.Errorf("%s: get secret %s/%s: %w", desc, ref.Namespace, ref.Name, err)
+	}
+	if _, ok := secret.Data[ref.Key]; !ok {
+		return fmt.Errorf("%s: key %q not present in secret %s/%s", desc, ref.Key, ref.Namespace, ref.Name)
+	}
+	return nil
+}
+
+func (r *PlatformConfigReconciler) markReady(ctx context.Context, pc *mortisev1alpha1.PlatformConfig) error {
+	pc.Status.Phase = mortisev1alpha1.PlatformConfigPhaseReady
+	meta.SetStatusCondition(&pc.Status.Conditions, metav1.Condition{
+		Type:               "Available",
+		Status:             metav1.ConditionTrue,
+		Reason:             "Reconciled",
+		Message:            "PlatformConfig is ready",
+		ObservedGeneration: pc.Generation,
+	})
+	if err := r.Status().Update(ctx, pc); err != nil {
+		return fmt.Errorf("update status: %w", err)
+	}
+	return nil
+}
+
+func (r *PlatformConfigReconciler) markFailed(ctx context.Context, pc *mortisev1alpha1.PlatformConfig, reason, msg string) error {
+	pc.Status.Phase = mortisev1alpha1.PlatformConfigPhaseFailed
+	meta.SetStatusCondition(&pc.Status.Conditions, metav1.Condition{
+		Type:               "Available",
+		Status:             metav1.ConditionFalse,
+		Reason:             reason,
+		Message:            msg,
+		ObservedGeneration: pc.Generation,
+	})
+	if err := r.Status().Update(ctx, pc); err != nil {
+		return fmt.Errorf("update status: %w", err)
+	}
+	return nil
 }
 
 // SetupWithManager sets up the controller with the Manager.
