@@ -17,41 +17,154 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
-// NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
+// SourceType determines how an App is deployed.
+// +kubebuilder:validation:Enum=git;image
+type SourceType string
+
+const (
+	SourceTypeGit   SourceType = "git"
+	SourceTypeImage SourceType = "image"
+)
+
+// BuildMode determines how source is built.
+// +kubebuilder:validation:Enum=auto;dockerfile;railpack
+type BuildMode string
+
+const (
+	BuildModeAuto       BuildMode = "auto"
+	BuildModeDockerfile BuildMode = "dockerfile"
+	BuildModeRailpack   BuildMode = "railpack"
+)
+
+type AppSource struct {
+	// +kubebuilder:validation:Required
+	Type SourceType `json:"type"`
+
+	// Git source fields (used when type=git)
+	Repo       string   `json:"repo,omitempty"`
+	Branch     string   `json:"branch,omitempty"`
+	Path       string   `json:"path,omitempty"`
+	WatchPaths []string `json:"watchPaths,omitempty"`
+	Build      *Build   `json:"build,omitempty"`
+
+	// Image source fields (used when type=image)
+	Image         string `json:"image,omitempty"`
+	PullSecretRef string `json:"pullSecretRef,omitempty"`
+}
+
+type Build struct {
+	Mode           BuildMode         `json:"mode,omitempty"`
+	DockerfilePath string            `json:"dockerfilePath,omitempty"`
+	Cache          *bool             `json:"cache,omitempty"`
+	Args           map[string]string `json:"args,omitempty"`
+}
+
+type NetworkConfig struct {
+	// +kubebuilder:default=true
+	Public bool `json:"public,omitempty"`
+}
+
+type VolumeSpec struct {
+	// +kubebuilder:validation:Required
+	Name string `json:"name"`
+	// +kubebuilder:validation:Required
+	MountPath    string            `json:"mountPath"`
+	Size         resource.Quantity `json:"size,omitempty"`
+	StorageClass string            `json:"storageClass,omitempty"`
+	AccessMode   string            `json:"accessMode,omitempty"`
+}
+
+type EnvVar struct {
+	Name      string        `json:"name"`
+	Value     string        `json:"value,omitempty"`
+	ValueFrom *EnvVarSource `json:"valueFrom,omitempty"`
+}
+
+type EnvVarSource struct {
+	SecretRef string `json:"secretRef,omitempty"`
+}
+
+type Binding struct {
+	Ref string `json:"ref"`
+}
+
+type ResourceRequirements struct {
+	CPU    string `json:"cpu,omitempty"`
+	Memory string `json:"memory,omitempty"`
+}
+
+type Environment struct {
+	// +kubebuilder:validation:Required
+	Name          string               `json:"name"`
+	Replicas      *int32               `json:"replicas,omitempty"`
+	Resources     ResourceRequirements `json:"resources,omitempty"`
+	Env           []EnvVar             `json:"env,omitempty"`
+	Bindings      []Binding            `json:"bindings,omitempty"`
+	Domain        string               `json:"domain,omitempty"`
+	CustomDomains []string             `json:"customDomains,omitempty"`
+}
+
+type PreviewConfig struct {
+	Enabled   bool                 `json:"enabled,omitempty"`
+	Domain    string               `json:"domain,omitempty"`
+	TTL       string               `json:"ttl,omitempty"`
+	Resources ResourceRequirements `json:"resources,omitempty"`
+}
 
 // AppSpec defines the desired state of App
 type AppSpec struct {
-	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
-	// The following markers will use OpenAPI v3 schema to validate the value
-	// More info: https://book.kubebuilder.io/reference/markers/crd-validation.html
+	// +kubebuilder:validation:Required
+	Source AppSource `json:"source"`
 
-	// foo is an example field of App. Edit app_types.go to remove/update
-	// +optional
-	Foo *string `json:"foo,omitempty"`
+	Network NetworkConfig `json:"network,omitempty"`
+
+	Storage []VolumeSpec `json:"storage,omitempty"`
+
+	Credentials []string `json:"credentials,omitempty"`
+
+	Environments []Environment `json:"environments,omitempty"`
+
+	Preview *PreviewConfig `json:"preview,omitempty"`
 }
+
+// DeployRecord tracks a single deployment for rollback.
+type DeployRecord struct {
+	Image     string      `json:"image"`
+	Digest    string      `json:"digest,omitempty"`
+	GitSHA    string      `json:"gitSHA,omitempty"`
+	Timestamp metav1.Time `json:"timestamp"`
+}
+
+// EnvironmentStatus tracks the observed state of a single environment.
+type EnvironmentStatus struct {
+	Name          string         `json:"name"`
+	ReadyReplicas int32          `json:"readyReplicas,omitempty"`
+	CurrentImage  string         `json:"currentImage,omitempty"`
+	CurrentDigest string         `json:"currentDigest,omitempty"`
+	DeployHistory []DeployRecord `json:"deployHistory,omitempty"`
+}
+
+// AppPhase represents the overall lifecycle phase.
+// +kubebuilder:validation:Enum=Pending;Building;Deploying;Ready;Failed
+type AppPhase string
+
+const (
+	AppPhasePending   AppPhase = "Pending"
+	AppPhaseBuilding  AppPhase = "Building"
+	AppPhaseDeploying AppPhase = "Deploying"
+	AppPhaseReady     AppPhase = "Ready"
+	AppPhaseFailed    AppPhase = "Failed"
+)
 
 // AppStatus defines the observed state of App.
 type AppStatus struct {
-	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
+	Phase        AppPhase            `json:"phase,omitempty"`
+	Environments []EnvironmentStatus `json:"environments,omitempty"`
 
-	// For Kubernetes API conventions, see:
-	// https://github.com/kubernetes/community/blob/master/contributors/devel/sig-architecture/api-conventions.md#typical-status-properties
-
-	// conditions represent the current state of the App resource.
-	// Each condition has a unique type and reflects the status of a specific aspect of the resource.
-	//
-	// Standard condition types include:
-	// - "Available": the resource is fully functional
-	// - "Progressing": the resource is being created or updated
-	// - "Degraded": the resource failed to reach or maintain its desired state
-	//
-	// The status of each condition is one of True, False, or Unknown.
 	// +listType=map
 	// +listMapKey=type
 	// +optional
@@ -60,20 +173,20 @@ type AppStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:printcolumn:name="Source",type=string,JSONPath=`.spec.source.type`
+// +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
+// +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // App is the Schema for the apps API
 type App struct {
 	metav1.TypeMeta `json:",inline"`
 
-	// metadata is a standard object metadata
 	// +optional
 	metav1.ObjectMeta `json:"metadata,omitzero"`
 
-	// spec defines the desired state of App
 	// +required
 	Spec AppSpec `json:"spec"`
 
-	// status defines the observed state of App
 	// +optional
 	Status AppStatus `json:"status,omitzero"`
 }

@@ -14,7 +14,17 @@ spec:
     singular: app
   scope: Namespaced
   versions:
-  - name: v1alpha1
+  - additionalPrinterColumns:
+    - jsonPath: .spec.source.type
+      name: Source
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
     schema:
       openAPIV3Schema:
         description: App is the Schema for the apps API
@@ -37,27 +47,158 @@ spec:
           metadata:
             type: object
           spec:
-            description: spec defines the desired state of App
+            description: AppSpec defines the desired state of App
             properties:
-              foo:
-                description: foo is an example field of App. Edit app_types.go to
-                  remove/update
-                type: string
+              credentials:
+                items:
+                  type: string
+                type: array
+              environments:
+                items:
+                  properties:
+                    bindings:
+                      items:
+                        properties:
+                          ref:
+                            type: string
+                        required:
+                        - ref
+                        type: object
+                      type: array
+                    customDomains:
+                      items:
+                        type: string
+                      type: array
+                    domain:
+                      type: string
+                    env:
+                      items:
+                        properties:
+                          name:
+                            type: string
+                          value:
+                            type: string
+                          valueFrom:
+                            properties:
+                              secretRef:
+                                type: string
+                            type: object
+                        required:
+                        - name
+                        type: object
+                      type: array
+                    name:
+                      type: string
+                    replicas:
+                      format: int32
+                      type: integer
+                    resources:
+                      properties:
+                        cpu:
+                          type: string
+                        memory:
+                          type: string
+                      type: object
+                  required:
+                  - name
+                  type: object
+                type: array
+              network:
+                properties:
+                  public:
+                    default: true
+                    type: boolean
+                type: object
+              preview:
+                properties:
+                  domain:
+                    type: string
+                  enabled:
+                    type: boolean
+                  resources:
+                    properties:
+                      cpu:
+                        type: string
+                      memory:
+                        type: string
+                    type: object
+                  ttl:
+                    type: string
+                type: object
+              source:
+                properties:
+                  branch:
+                    type: string
+                  build:
+                    properties:
+                      args:
+                        additionalProperties:
+                          type: string
+                        type: object
+                      cache:
+                        type: boolean
+                      dockerfilePath:
+                        type: string
+                      mode:
+                        description: BuildMode determines how source is built.
+                        enum:
+                        - auto
+                        - dockerfile
+                        - railpack
+                        type: string
+                    type: object
+                  image:
+                    description: Image source fields (used when type=image)
+                    type: string
+                  path:
+                    type: string
+                  pullSecretRef:
+                    type: string
+                  repo:
+                    description: Git source fields (used when type=git)
+                    type: string
+                  type:
+                    description: SourceType determines how an App is deployed.
+                    enum:
+                    - git
+                    - image
+                    type: string
+                  watchPaths:
+                    items:
+                      type: string
+                    type: array
+                required:
+                - type
+                type: object
+              storage:
+                items:
+                  properties:
+                    accessMode:
+                      type: string
+                    mountPath:
+                      type: string
+                    name:
+                      type: string
+                    size:
+                      anyOf:
+                      - type: integer
+                      - type: string
+                      pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                      x-kubernetes-int-or-string: true
+                    storageClass:
+                      type: string
+                  required:
+                  - mountPath
+                  - name
+                  type: object
+                type: array
+            required:
+            - source
             type: object
           status:
-            description: status defines the observed state of App
+            description: AppStatus defines the observed state of App.
             properties:
               conditions:
-                description: |-
-                  conditions represent the current state of the App resource.
-                  Each condition has a unique type and reflects the status of a specific aspect of the resource.
-
-                  Standard condition types include:
-                  - "Available": the resource is fully functional
-                  - "Progressing": the resource is being created or updated
-                  - "Degraded": the resource failed to reach or maintain its desired state
-
-                  The status of each condition is one of True, False, or Unknown.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -116,6 +257,51 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              environments:
+                items:
+                  description: EnvironmentStatus tracks the observed state of a single
+                    environment.
+                  properties:
+                    currentDigest:
+                      type: string
+                    currentImage:
+                      type: string
+                    deployHistory:
+                      items:
+                        description: DeployRecord tracks a single deployment for rollback.
+                        properties:
+                          digest:
+                            type: string
+                          gitSHA:
+                            type: string
+                          image:
+                            type: string
+                          timestamp:
+                            format: date-time
+                            type: string
+                        required:
+                        - image
+                        - timestamp
+                        type: object
+                      type: array
+                    name:
+                      type: string
+                    readyReplicas:
+                      format: int32
+                      type: integer
+                  required:
+                  - name
+                  type: object
+                type: array
+              phase:
+                description: AppPhase represents the overall lifecycle phase.
+                enum:
+                - Pending
+                - Building
+                - Deploying
+                - Ready
+                - Failed
+                type: string
             type: object
         required:
         - spec
