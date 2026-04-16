@@ -257,3 +257,73 @@ func (g *GiteaBootstrap) fileSHA(token, owner, repo, path string) string {
 	}
 	return out.SHA
 }
+
+// GiteaOAuthApp describes a freshly-created OAuth2 application on Gitea.
+// The ID is what the admin API accepts for deletion.
+type GiteaOAuthApp struct {
+	ID           int64
+	ClientID     string
+	ClientSecret string
+}
+
+// CreateOAuthApp creates a new OAuth2 application on Gitea under the admin
+// user using the admin credentials stored on the bootstrap. Gitea's API
+// returns the plaintext client_secret only in this response, so callers
+// must capture it here.
+func (g *GiteaBootstrap) CreateOAuthApp(t *testing.T, name string, redirectURIs []string) *GiteaOAuthApp {
+	t.Helper()
+
+	body, _ := json.Marshal(map[string]any{
+		"name":                name,
+		"redirect_uris":       redirectURIs,
+		"confidential_client": true,
+	})
+	req, _ := http.NewRequest(http.MethodPost,
+		g.BaseURL+"/api/v1/user/applications/oauth2", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.SetBasicAuth(g.Username, g.Password)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("gitea: create oauth app: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("gitea: create oauth app status %d: %s", resp.StatusCode, string(b))
+	}
+
+	var out struct {
+		ID           int64  `json:"id"`
+		ClientID     string `json:"client_id"`
+		ClientSecret string `json:"client_secret"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("gitea: decode oauth app response: %v", err)
+	}
+	if out.ClientID == "" || out.ClientSecret == "" {
+		t.Fatalf("gitea: empty client_id or client_secret in oauth app response")
+	}
+	return &GiteaOAuthApp{ID: out.ID, ClientID: out.ClientID, ClientSecret: out.ClientSecret}
+}
+
+// DeleteOAuthApp removes a previously-created OAuth2 application by ID.
+// Best-effort: a 404 is treated as success so cleanup is idempotent.
+func (g *GiteaBootstrap) DeleteOAuthApp(t *testing.T, id int64) {
+	t.Helper()
+
+	url := fmt.Sprintf("%s/api/v1/user/applications/oauth2/%d", g.BaseURL, id)
+	req, _ := http.NewRequest(http.MethodDelete, url, nil)
+	req.SetBasicAuth(g.Username, g.Password)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Logf("gitea: delete oauth app %d: %v", id, err)
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 && resp.StatusCode != http.StatusNotFound {
+		b, _ := io.ReadAll(resp.Body)
+		t.Logf("gitea: delete oauth app %d: status %d: %s", id, resp.StatusCode, string(b))
+	}
+}

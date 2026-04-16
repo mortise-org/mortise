@@ -106,12 +106,29 @@ cluster via the `//go:build integration` tag.
   an App from `test/fixtures/git-gitea-basic.yaml`, and asserts the App
   reaches `Ready`, the registry surfaces the built tag, and the Deployment
   runs the built image.
+- `gitprovider_admin_test.go` — `TestGitProviderAdminAPICRUD`: port-forwards
+  the Mortise API, bootstraps / logs in as an admin, POSTs to
+  `/api/gitproviders`, asserts the `GitProvider` CRD + managed OAuth
+  Secret land with the `mortise.dev/managed-by: api` label, re-POSTs for
+  409, then DELETEs and asserts the CRD + both Secrets are gone.
+  `TestGiteaOAuthFlow`: end-to-end authorize → consent → callback → token
+  persistence using the in-cluster Gitea as the OAuth provider. Creates
+  a Gitea OAuth app via its admin API, drives a cookie-jar HTTP client
+  through Gitea's login + consent forms (scraping the `_csrf` token), and
+  verifies the operator-side code exchange stores a usable access token in
+  `gitprovider-token-{name}` — proved by calling Gitea's `/api/v1/user`
+  with it.
 
 **Helpers added:**
 - `test/helpers/gitea.go` — `GiteaBootstrap{BaseURL, Username, Password}`
   with `Ensure(t, inClusterBaseURL, owner, repo, files)` that mints an
   admin token, creates the repo, and uploads files through Gitea's REST
-  API (no SDK — keeps the helper portable).
+  API (no SDK — keeps the helper portable). Also exposes
+  `CreateOAuthApp(t, name, redirectURIs)` / `DeleteOAuthApp(t, id)` for
+  integration tests that need a live OAuth client on the test Gitea.
+- `test/helpers/mortise_api.go` — `LoginAsAdmin(t, baseURL, email, pw)`
+  returns a Mortise JWT, idempotently bootstrapping first-user setup when
+  the platform is empty and falling through to `/api/auth/login` otherwise.
 - `test/helpers/portforward.go` — `PortForward(t, ns, svc, remotePort)`
   shells out to `kubectl port-forward` on an OS-picked local port, waits
   for the TCP accept, and registers cleanup.
