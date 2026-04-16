@@ -17,21 +17,26 @@ limitations under the License.
 package main
 
 import (
+	"context"
 	"crypto/tls"
+	"errors"
 	"flag"
 	"io/fs"
 	"net/http"
 	"os"
+	"path/filepath"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
+	"github.com/go-logr/logr"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
@@ -44,6 +49,7 @@ import (
 	"github.com/MC-Meesh/mortise/internal/build"
 	"github.com/MC-Meesh/mortise/internal/controller"
 	"github.com/MC-Meesh/mortise/internal/git"
+	"github.com/MC-Meesh/mortise/internal/platformconfig"
 	"github.com/MC-Meesh/mortise/internal/registry"
 	"github.com/MC-Meesh/mortise/internal/ui"
 	// +kubebuilder:scaffold:imports
@@ -66,6 +72,137 @@ func envOrDefault(key, def string) string {
 		return v
 	}
 	return def
+}
+
+// stacks bundles the three pluggable clients the AppReconciler needs.
+type stacks struct {
+	build    build.BuildClient
+	registry *registry.OCIBackend
+	git      git.GitClient
+}
+
+// buildStacks constructs the registry / build / git clients from the
+// singleton PlatformConfig if present, falling back to env-var defaults so the
+// operator can still start (and the API/UI stay reachable) when a user hasn't
+// created the PlatformConfig yet.
+//
+// Fallback env vars (emergency use only — normal path is PlatformConfig):
+//
+//	MORTISE_BUILDKIT_ADDR     buildkitd address (default: tcp://buildkitd.mortise-system.svc:1234)
+//	MORTISE_REGISTRY_URL      OCI registry URL (default: http://zot.mortise-system.svc:5000)
+//	MORTISE_REGISTRY_USERNAME registry username (default: empty)
+//	MORTISE_REGISTRY_PASSWORD registry password (default: empty)
+//
+// Note: changes to the PlatformConfig CRD require an operator restart to take
+// effect (no hot reload in v1).
+func buildStacks(ctx context.Context, reader client.Reader, log logr.Logger) stacks {
+	cfg, err := platformconfig.Load(ctx, reader)
+	if err == nil {
+		return stacksFromPlatformConfig(cfg, log)
+	}
+	if errors.Is(err, platformconfig.ErrNotFound) {
+		log.Info("PlatformConfig \"platform\" not found; using env-var fallback. " +
+			"Git-source apps will build as soon as a PlatformConfig is created and the operator is restarted.")
+	} else {
+		log.Error(err, "Failed to load PlatformConfig; using env-var fallback")
+	}
+	return stacksFromEnv(log)
+}
+
+// stacksFromPlatformConfig builds the stacks from a resolved PlatformConfig.
+// BuildKit TLS material (PEM) is written to temp files because bkclient
+// expects file paths, not in-memory PEM.
+func stacksFromPlatformConfig(cfg *platformconfig.Config, log logr.Logger) stacks {
+	buildCfg := build.Config{
+		Addr:            cfg.Build.BuildkitAddr,
+		DefaultPlatform: cfg.Build.DefaultPlatform,
+	}
+	if cfg.Build.TLSCA != "" || cfg.Build.TLSCert != "" {
+		if err := writeBuildKitTLS(&buildCfg, cfg.Build); err != nil {
+			log.Error(err, "Failed to materialise BuildKit TLS material; continuing without TLS")
+		}
+	}
+
+	var bc build.BuildClient
+	if buildCfg.Addr == "" {
+		log.Info("PlatformConfig has no spec.build.buildkitAddr; git-source apps will not build")
+	} else if bk, err := build.New(buildCfg); err != nil {
+		log.Error(err, "Failed to connect to buildkitd; git-source apps will not build", "addr", buildCfg.Addr)
+	} else {
+		bc = bk
+	}
+
+	return stacks{
+		build: bc,
+		registry: registry.NewOCIBackend(registry.Config{
+			URL:                   cfg.Registry.URL,
+			Namespace:             cfg.Registry.Namespace,
+			Username:              cfg.Registry.Username,
+			Password:              cfg.Registry.Password,
+			PullSecretName:        cfg.Registry.PullSecretName,
+			InsecureSkipTLSVerify: cfg.Registry.InsecureSkipTLSVerify,
+		}),
+		git: git.NewGoGitClient(),
+	}
+}
+
+// stacksFromEnv is the fallback path when PlatformConfig doesn't exist yet.
+// Defaults match `make dev-up` so a fresh cluster boots without hand-written
+// env. Once a PlatformConfig is created, an operator restart switches to it.
+func stacksFromEnv(log logr.Logger) stacks {
+	buildkitAddr := envOrDefault("MORTISE_BUILDKIT_ADDR", "tcp://buildkitd.mortise-system.svc:1234")
+	registryURL := envOrDefault("MORTISE_REGISTRY_URL", "http://zot.mortise-system.svc:5000")
+
+	var bc build.BuildClient
+	if bk, err := build.New(build.Config{Addr: buildkitAddr}); err != nil {
+		log.Error(err, "Failed to connect to buildkitd; git-source apps will not build", "addr", buildkitAddr)
+	} else {
+		bc = bk
+	}
+
+	return stacks{
+		build: bc,
+		registry: registry.NewOCIBackend(registry.Config{
+			URL:                   registryURL,
+			Username:              os.Getenv("MORTISE_REGISTRY_USERNAME"),
+			Password:              os.Getenv("MORTISE_REGISTRY_PASSWORD"),
+			InsecureSkipTLSVerify: true, // safe default for dev/fallback
+		}),
+		git: git.NewGoGitClient(),
+	}
+}
+
+// writeBuildKitTLS materialises PEM strings from PlatformConfig into temp files
+// and sets the corresponding path fields on buildCfg. bkclient requires file
+// paths; holding the PEM in memory isn't enough.
+func writeBuildKitTLS(buildCfg *build.Config, src platformconfig.BuildConfig) error {
+	dir, err := os.MkdirTemp("", "mortise-buildkit-tls-*")
+	if err != nil {
+		return err
+	}
+	write := func(name, pem string) (string, error) {
+		if pem == "" {
+			return "", nil
+		}
+		p := filepath.Join(dir, name)
+		return p, os.WriteFile(p, []byte(pem), 0o600)
+	}
+	if p, err := write("ca.crt", src.TLSCA); err != nil {
+		return err
+	} else {
+		buildCfg.TLSCACert = p
+	}
+	if p, err := write("tls.crt", src.TLSCert); err != nil {
+		return err
+	} else {
+		buildCfg.TLSCert = p
+	}
+	if p, err := write("tls.key", src.TLSKey); err != nil {
+		return err
+	} else {
+		buildCfg.TLSKey = p
+	}
+	return nil
 }
 
 // nolint:gocyclo
@@ -204,44 +341,26 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Build the registry / build / git clients from environment variables.
-	// Defaults are suitable for `make dev-up` (buildkitd + Zot in mortise-system).
+	// Build the registry / build / git clients from PlatformConfig (singleton
+	// named "platform"). If PlatformConfig doesn't exist yet, fall back to
+	// MORTISE_* env-var defaults so the operator still starts and the API/UI
+	// remain reachable for initial setup. See buildStacks for details.
 	//
-	// MORTISE_BUILDKIT_ADDR    — buildkitd address (default: tcp://buildkitd.mortise-system.svc:1234)
-	// MORTISE_REGISTRY_URL     — OCI registry base URL (default: http://zot.mortise-system.svc:5000)
-	// MORTISE_REGISTRY_USERNAME — registry username (default: empty, anonymous)
-	// MORTISE_REGISTRY_PASSWORD — registry password (default: empty)
-	//
-	// A follow-up PR will read these values from PlatformConfig once that CRD is promoted.
-	buildkitAddr := envOrDefault("MORTISE_BUILDKIT_ADDR", "tcp://buildkitd.mortise-system.svc:1234")
-	registryURL := envOrDefault("MORTISE_REGISTRY_URL", "http://zot.mortise-system.svc:5000")
-	registryUser := os.Getenv("MORTISE_REGISTRY_USERNAME")
-	registryPass := os.Getenv("MORTISE_REGISTRY_PASSWORD")
-
-	var buildClient build.BuildClient
-	bkClient, err := build.New(build.Config{Addr: buildkitAddr})
+	// We construct a direct client (bypassing the manager's cache, which isn't
+	// started yet at this point) just for the one-shot Load call.
+	directReader, err := client.New(mgr.GetConfig(), client.Options{Scheme: scheme})
 	if err != nil {
-		// Non-fatal: git-source apps will log "clients not configured" and skip builds.
-		setupLog.Error(err, "Failed to connect to buildkitd; git-source apps will not build", "addr", buildkitAddr)
-	} else {
-		buildClient = bkClient
+		setupLog.Error(err, "Failed to create direct API reader for PlatformConfig load")
+		os.Exit(1)
 	}
-
-	registryBackend := registry.NewOCIBackend(registry.Config{
-		URL:                   registryURL,
-		Username:              registryUser,
-		Password:              registryPass,
-		InsecureSkipTLSVerify: true, // safe default for dev; PlatformConfig wiring will make this configurable
-	})
-
-	gitClient := git.NewGoGitClient()
+	stk := buildStacks(context.Background(), directReader, setupLog)
 
 	if err := (&controller.AppReconciler{
 		Client:          mgr.GetClient(),
 		Scheme:          mgr.GetScheme(),
-		BuildClient:     buildClient,
-		GitClient:       gitClient,
-		RegistryBackend: registryBackend,
+		BuildClient:     stk.build,
+		GitClient:       stk.git,
+		RegistryBackend: stk.registry,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "App")
 		os.Exit(1)

@@ -5,7 +5,7 @@ whenever implementation status changes — see the **Keeping this file up to
 date** section at the bottom.
 
 Legend: **Done** / **Partial** / **Not started**
-Last reconciled against spec + code: 2026-04-16 (commit `d894f6c` — all 4 Phase 4 agent branches merged).
+Last reconciled against spec + code: 2026-04-16 (PlatformConfig wiring landed).
 
 ---
 
@@ -18,7 +18,7 @@ Last reconciled against spec + code: 2026-04-16 (commit `d894f6c` — all 4 Phas
 | 2 — API + UI skeleton            | §7.3        | **Done**         | Auth, project CRUD, app CRUD, secrets CRUD, deploy webhook, SSE logs, SvelteKit UI. |
 | 3 — Bindings + secrets           | §7.4        | **Partial**      | Resolver writes env vars, but the credential Secret it references is never created and cross-namespace `secretKeyRef` is invalid in k8s (see issues #1 + #2). No deploy tokens, no secret rotation endpoint. |
 | 3.5 — Projects                   | §5 / §5.10  | **Done**         | `Project` CRD + controller + REST API + CLI + UI routes + default-project seeding. |
-| 4 — Build system (git source)    | §7.5        | **Partial**      | All stacks wired end-to-end: webhook patches `mortise.dev/revision` annotation → App reconciler clones + builds + deploys. Builds are synchronous (block reconcile goroutine up to 30 min) — async follow-up tracked below. `PlatformConfig` not yet promoted; registry/build/git configured via env vars (`MORTISE_BUILDKIT_ADDR`, `MORTISE_REGISTRY_URL`, `MORTISE_REGISTRY_USERNAME`, `MORTISE_REGISTRY_PASSWORD`). |
+| 4 — Build system (git source)    | §7.5        | **Partial**      | All stacks wired end-to-end: webhook patches `mortise.dev/revision` annotation → App reconciler clones + builds + deploys. Operator entrypoint reads config from `PlatformConfig` (env-var fallback for first-boot). Builds are synchronous (block reconcile goroutine up to 30 min) — async follow-up tracked below. |
 | 5 — Monorepo support             | §7.6        | **Not started**  | No `watchPaths` handling, no per-path routing. |
 | 6 — Preview environments        | §7.7        | **Not started**  | `PreviewEnvironment` CRD is scaffold-only; controller empty. |
 | 7 — Polish & v1                  | §7.8        | **Partial**      | Controller-side `RollbackDeployment` exists, but no CLI/UI for rollback, no promote, no first-run wizard, no custom-domain UI. |
@@ -227,13 +227,13 @@ landed and what each deferred.
   token, clones, builds, pushes, and falls through to Deployment reconciliation.
   `spec.source.providerRef` field added to `AppSource`.
   `status.lastBuiltSHA` / `status.lastBuiltImage` added to `AppStatus`.
-- **PlatformConfig wiring** — `PlatformConfig` CRD and loader are now real
-  (see "PlatformConfig — Done" section). Each stack still takes its config
-  via a plain Go struct at construction time; the follow-up PR rewires the
-  operator entrypoint (`cmd/main.go`) to call `platformconfig.Load` and
-  inject config into each stack. Env vars for now:
-  `MORTISE_BUILDKIT_ADDR`, `MORTISE_REGISTRY_URL`, `MORTISE_REGISTRY_USERNAME`,
-  `MORTISE_REGISTRY_PASSWORD` (defaults suitable for `make dev-up`).
+- ~~**PlatformConfig wiring**~~ — **Done.** `cmd/main.go` now constructs the
+  registry / build / git stacks from the singleton `PlatformConfig` via
+  `platformconfig.Load`. When the CRD isn't present yet, the operator falls
+  back to `MORTISE_*` env vars so the API/UI stay reachable for initial
+  setup. BuildKit TLS material (PEM from Secret) is materialised to a temp
+  dir since `bkclient` requires file paths. No hot-reload: changes to
+  PlatformConfig require an operator restart (acceptable for v1).
 - ~~**Webhook → build dispatch**~~ — **Done.** `internal/webhook/handler.go`
   patches the `mortise.dev/revision` annotation on every matching App when a
   verified push event arrives. Branch and normalized-URL matching implemented.
@@ -392,7 +392,7 @@ landed and what each deferred.
   as the webhook route).
 
 **Follow-up (not blocking Phase 4):**
-- **`PlatformConfig` wiring** — see cross-stack deferred work above.
+- ~~**`PlatformConfig` wiring**~~ — Done; see cross-stack section above.
 - **Integration tests against local Gitea** — the integration harness
   exists (`test/integration/`, skeleton) but Gitea, Zot, and Pebble installs
   in the test cluster haven't landed. Tracked under Phase 0 / harness.
@@ -436,9 +436,15 @@ landed and what each deferred.
 - `Config` sub-structs: `DNSConfig`, `StorageConfig`, `RegistryConfig`, `BuildConfig`, `TLSConfig`.
 - Unit tests with fake client covering: found+resolved, not-found, bad DNS secret ref, registry credentials resolution, bad registry secret ref, BuildKit TLS resolution.
 
-**Deferred — operator rewiring (explicit follow-up PR):**
-- `internal/registry/`, `internal/build/`, and `internal/git/` stacks still take config via ad-hoc Go structs at construction time. When the follow-up PR lands, the operator entrypoint (`cmd/main.go`) will call `platformconfig.Load` and inject config into each stack.
-- `IngressProvider` and cert-manager wiring (`spec.tls.certManagerClusterIssuer`) remain deferred to that same follow-up.
+**Operator wiring — Done:**
+- `cmd/main.go` → `buildStacks` constructs the registry / build / git clients from `platformconfig.Load`.
+- Fallback path: when `errors.Is(err, platformconfig.ErrNotFound)`, the operator logs a warning and uses `MORTISE_*` env-var defaults so the API/UI stay reachable before the user creates a PlatformConfig. An operator restart switches to the CRD once created.
+- BuildKit TLS PEM (`ca.crt`/`tls.crt`/`tls.key` keys in `spec.build.tlsSecretRef`) is materialised to a temp dir since `bkclient` expects file paths.
+- No hot reload: changes to the PlatformConfig CRD require a restart to take effect. Acceptable for v1; tracked if demand warrants.
+
+**Still deferred:**
+- `IngressProvider` impl and cert-manager wiring (`spec.tls.certManagerClusterIssuer`) — Phase 1 follow-up.
+- `DNSProvider` impl — Phase 1 follow-up.
 
 ### Git provider UI — **Done**
 
