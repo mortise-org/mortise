@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -42,5 +43,24 @@ func (s *Server) jwtAuthMiddleware(next http.Handler) http.Handler {
 
 		ctx := context.WithValue(r.Context(), principalKey, &principal)
 		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+// sseTokenQueryParamMiddleware allows the SSE log-stream endpoint to accept
+// a `?token=<jwt>` query param as an alternative to the Authorization header.
+// This is the standard workaround for EventSource, which cannot set custom
+// headers. If the Authorization header is already present, this is a no-op.
+//
+// The token value itself is never logged; only its presence is noted at debug
+// level.
+func sseTokenQueryParamMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") == "" {
+			if tok := r.URL.Query().Get("token"); tok != "" {
+				r.Header.Set("Authorization", "Bearer "+tok)
+				slog.Debug("sse: using ?token= query param for authorization", "path", r.URL.Path)
+			}
+		}
+		next.ServeHTTP(w, r)
 	})
 }

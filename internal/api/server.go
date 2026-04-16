@@ -45,21 +45,30 @@ func (s *Server) Handler() http.Handler {
 
 	// Authenticated API routes
 	r.Route("/api", func(r chi.Router) {
-		r.Use(s.jwtAuthMiddleware)
+		r.Group(func(r chi.Router) {
+			r.Use(s.jwtAuthMiddleware)
 
-		r.Post("/apps", s.CreateApp)
-		r.Get("/apps", s.ListApps)
-		r.Get("/apps/{name}", s.GetApp)
-		r.Put("/apps/{name}", s.UpdateApp)
-		r.Delete("/apps/{name}", s.DeleteApp)
+			r.Post("/apps", s.CreateApp)
+			r.Get("/apps", s.ListApps)
+			r.Get("/apps/{name}", s.GetApp)
+			r.Put("/apps/{name}", s.UpdateApp)
+			r.Delete("/apps/{name}", s.DeleteApp)
 
-		r.Post("/deploy", s.Deploy)
+			r.Post("/deploy", s.Deploy)
 
-		r.Post("/apps/{name}/secrets", s.CreateSecret)
-		r.Get("/apps/{name}/secrets", s.ListSecrets)
-		r.Delete("/apps/{name}/secrets/{secretName}", s.DeleteSecret)
+			r.Post("/apps/{name}/secrets", s.CreateSecret)
+			r.Get("/apps/{name}/secrets", s.ListSecrets)
+			r.Delete("/apps/{name}/secrets/{secretName}", s.DeleteSecret)
+		})
 
-		r.Get("/apps/{name}/logs", s.handleLogs)
+		// /logs: JWT may come via `?token=` query param as an EventSource
+		// workaround. sseTokenQueryParamMiddleware runs before jwtAuthMiddleware
+		// and promotes the query param onto the Authorization header.
+		r.Group(func(r chi.Router) {
+			r.Use(sseTokenQueryParamMiddleware)
+			r.Use(s.jwtAuthMiddleware)
+			r.Get("/apps/{name}/logs", s.handleLogs)
+		})
 	})
 
 	// UI: serve SvelteKit static files at all non-/api paths

@@ -4,6 +4,7 @@
 	import { goto } from '$app/navigation';
 	import { api } from '$lib/api';
 	import EnvVarEditor from '$lib/components/EnvVarEditor.svelte';
+	import LogViewer from '$lib/components/LogViewer.svelte';
 	import type { App, EnvironmentStatus, EnvVar, SecretResponse } from '$lib/types';
 
 	const appName = $derived(page.params.name);
@@ -367,6 +368,9 @@
 					</div>
 					<EnvVarEditor bind:value={envVars} />
 				</section>
+
+				<!-- Logs -->
+				<LogViewer appName={appName ?? ''} env={env.name} />
 
 				<!-- Deploy history -->
 				{#if envStatus?.deployHistory && envStatus.deployHistory.length > 0}
