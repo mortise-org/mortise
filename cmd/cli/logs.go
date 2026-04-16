@@ -1,35 +1,26 @@
 package main
 
 import (
-	"bufio"
-	"fmt"
+	"os"
 
 	"github.com/spf13/cobra"
 )
 
 func newLogsCmd() *cobra.Command {
-	return &cobra.Command{
+	var project, env string
+	cmd := &cobra.Command{
 		Use:   "logs <app>",
-		Short: "Stream logs from an app",
+		Short: "Stream logs from an app in a project",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := newClientFromConfig()
 			if err != nil {
 				return err
 			}
-			resp, err := c.do("GET", "/api/apps/"+args[0]+"/logs?follow=true", nil)
-			if err != nil {
-				return err
-			}
-			defer func() { _ = resp.Body.Close() }()
-			if resp.StatusCode >= 400 {
-				return fmt.Errorf("API error %d", resp.StatusCode)
-			}
-			scanner := bufio.NewScanner(resp.Body)
-			for scanner.Scan() {
-				fmt.Println(scanner.Text())
-			}
-			return scanner.Err()
+			return c.StreamLogs(c.ResolveProject(project), args[0], env, os.Stdout)
 		},
 	}
+	cmd.Flags().StringVar(&project, "project", "", "Project the app belongs to (default: current project)")
+	cmd.Flags().StringVar(&env, "env", "", "Environment (default: production)")
+	return cmd
 }

@@ -7,9 +7,24 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// defaultProject is the project name seeded during first-user setup. The CLI
+// falls back to this when `current_project` is unset so commands behave
+// sensibly for freshly-logged-in users.
+const defaultProject = "default"
+
 type Config struct {
-	ServerURL string `yaml:"server_url"`
-	Token     string `yaml:"token"`
+	ServerURL      string `yaml:"server_url"`
+	Token          string `yaml:"token"`
+	CurrentProject string `yaml:"current_project"`
+}
+
+// Project returns the effective current project, falling back to the seeded
+// "default" project when the config has no value set.
+func (c *Config) Project() string {
+	if c.CurrentProject == "" {
+		return defaultProject
+	}
+	return c.CurrentProject
 }
 
 func configPath() string {

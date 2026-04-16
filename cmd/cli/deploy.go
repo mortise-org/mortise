@@ -6,34 +6,29 @@ import (
 	"github.com/spf13/cobra"
 )
 
-type DeployRequest struct {
-	Env   string `json:"env,omitempty"`
-	Image string `json:"image,omitempty"`
-}
-
 func newDeployCmd() *cobra.Command {
-	var env, image string
+	var project, env, image string
 	cmd := &cobra.Command{
 		Use:   "deploy <app>",
-		Short: "Trigger a deployment",
+		Short: "Trigger a deployment for an app in a project",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if image == "" {
+				return fmt.Errorf("--image is required")
+			}
 			c, err := newClientFromConfig()
 			if err != nil {
 				return err
 			}
-			req := DeployRequest{Env: env, Image: image}
-			if err := c.doJSON("POST", "/api/deploy", map[string]any{
-				"app":   args[0],
-				"env":   req.Env,
-				"image": req.Image,
-			}, nil); err != nil {
+			p := c.ResolveProject(project)
+			if err := c.Deploy(p, args[0], env, image); err != nil {
 				return err
 			}
-			fmt.Printf("Deploy triggered for %q.\n", args[0])
+			fmt.Printf("Deploy triggered for %q in project %q.\n", args[0], p)
 			return nil
 		},
 	}
+	cmd.Flags().StringVar(&project, "project", "", "Project the app belongs to (default: current project)")
 	cmd.Flags().StringVar(&env, "env", "", "Target environment")
 	cmd.Flags().StringVar(&image, "image", "", "Image reference to deploy")
 	return cmd

@@ -43,7 +43,7 @@ func newLoginCmd() *cobra.Command {
 			var resp struct {
 				Token string `json:"token"`
 			}
-			err = c.doJSON("POST", "/api/auth/login", map[string]string{
+			err = c.doJSON("POST", serverURL+"/api/auth/login", map[string]string{
 				"email":    email,
 				"password": string(pw),
 			}, &resp)
@@ -51,14 +51,18 @@ func newLoginCmd() *cobra.Command {
 				return fmt.Errorf("login failed: %w", err)
 			}
 
+			// Default the CLI's project context to `default` — the project the
+			// backend seeds during first-user setup. Users can switch later
+			// via `mortise project use <name>`.
 			if err := saveConfig(&Config{
-				ServerURL: serverURL,
-				Token:     resp.Token,
+				ServerURL:      serverURL,
+				Token:          resp.Token,
+				CurrentProject: defaultProject,
 			}); err != nil {
 				return fmt.Errorf("saving config: %w", err)
 			}
 
-			fmt.Println("Logged in successfully.")
+			fmt.Printf("Logged in successfully. Current project: %s\n", defaultProject)
 			return nil
 		},
 	}

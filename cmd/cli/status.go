@@ -8,45 +8,30 @@ import (
 	"github.com/spf13/cobra"
 )
 
-type AppDetailResponse struct {
-	Name   string          `json:"name"`
-	Source AppSourceResp   `json:"source"`
-	Status AppDetailStatus `json:"status"`
-}
-
-type AppDetailStatus struct {
-	Phase        string          `json:"phase,omitempty"`
-	Environments []EnvStatusResp `json:"environments,omitempty"`
-}
-
-type EnvStatusResp struct {
-	Name          string `json:"name"`
-	ReadyReplicas int32  `json:"readyReplicas"`
-	CurrentImage  string `json:"currentImage,omitempty"`
-}
-
 func newStatusCmd() *cobra.Command {
-	return &cobra.Command{
+	var project string
+	cmd := &cobra.Command{
 		Use:   "status <app>",
-		Short: "Show app status",
+		Short: "Show status for an app in a project",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := newClientFromConfig()
 			if err != nil {
 				return err
 			}
-			var resp AppDetailResponse
-			if err := c.doJSON("GET", "/api/apps/"+args[0], nil, &resp); err != nil {
+			app, err := c.GetApp(c.ResolveProject(project), args[0])
+			if err != nil {
 				return err
 			}
-			fmt.Printf("App:    %s\n", resp.Name)
-			fmt.Printf("Source: %s\n", resp.Source.Type)
-			fmt.Printf("Phase:  %s\n", resp.Status.Phase)
-			if len(resp.Status.Environments) > 0 {
+			fmt.Printf("App:     %s\n", app.Name)
+			fmt.Printf("Project: %s\n", c.ResolveProject(project))
+			fmt.Printf("Source:  %s\n", app.Spec.Source.Type)
+			fmt.Printf("Phase:   %s\n", app.Status.Phase)
+			if len(app.Status.Environments) > 0 {
 				fmt.Println()
 				w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
 				_, _ = fmt.Fprintln(w, "ENV\tREADY\tIMAGE")
-				for _, e := range resp.Status.Environments {
+				for _, e := range app.Status.Environments {
 					_, _ = fmt.Fprintf(w, "%s\t%d\t%s\n", e.Name, e.ReadyReplicas, e.CurrentImage)
 				}
 				_ = w.Flush()
@@ -54,4 +39,6 @@ func newStatusCmd() *cobra.Command {
 			return nil
 		},
 	}
+	cmd.Flags().StringVar(&project, "project", "", "Project the app belongs to (default: current project)")
+	return cmd
 }

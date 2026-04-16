@@ -9,11 +9,24 @@ import (
 
 func newRootCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:          "mortise",
-		Short:        "Self-hosted Railway-style deploy platform",
+		Use:   "mortise",
+		Short: "Self-hosted Railway-style deploy platform",
+		Long: `mortise — self-hosted Railway-style deploy platform.
+
+Apps live inside projects. The CLI tracks a "current project" in its config
+and scopes app commands to it unless --project is passed.
+
+Quickstart:
+  mortise login
+  mortise project list
+  mortise project use my-project
+  mortise app create --source image --image nginx:1.27 --name web
+  mortise deploy web --env production --image nginx:1.27
+`,
 		SilenceUsage: true,
 	}
 	cmd.AddCommand(newLoginCmd())
+	cmd.AddCommand(newProjectCmd())
 	cmd.AddCommand(newAppCmd())
 	cmd.AddCommand(newDeployCmd())
 	cmd.AddCommand(newLogsCmd())
