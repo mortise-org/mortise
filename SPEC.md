@@ -750,7 +750,7 @@ run builds and bind volumes.
 │   └── helpers/                     # namespace lifecycle, assertion helpers
 ├── charts/
 │   └── mortise/                    # umbrella Helm chart (v1 = core only)
-├── ui/                              # React app
+├── ui/                              # SvelteKit app
 ├── Makefile
 └── README.md
 ```
@@ -998,8 +998,8 @@ change replicas → scales; change image → rolls; delete → namespace cleaned
 - REST API with OpenAPI spec
 - Auth: native accounts, JWT, first-user bootstrap via Helm values
 - SSE endpoint for log streaming
-- React UI skeleton: login, dashboard (list Apps), new-app form for `image`
-  source only, App detail page with env / secrets / domains
+- SvelteKit UI skeleton: login, dashboard (list Apps), new-app form for
+  `image` source only, App detail page with env / secrets / domains
 - CLI (`mortise app create --source image`, `mortise logs`, `mortise status`)
 
 **Exit criteria:** deploy a single-container image App (e.g. Paperless-ngx in
