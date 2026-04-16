@@ -5,7 +5,7 @@ whenever implementation status changes — see the **Keeping this file up to
 date** section at the bottom.
 
 Legend: **Done** / **Partial** / **Not started**
-Last reconciled against spec + code: 2026-04-16 (commit `31f8e52`).
+Last reconciled against spec + code: 2026-04-16 (commit TBD — OAuth UI PR).
 
 ---
 
@@ -343,14 +343,25 @@ landed and what each deferred.
   as the webhook route).
 
 **Deferred — moves this to Partial not Done:**
-- **Frontend for OAuth** — no SvelteKit page drives the authorize →
-  callback round-trip yet. The server endpoints work when hit directly
-  but a user can't onboard a forge from the UI.
 - **Webhook → build dispatch** — see cross-stack deferred work above.
 - **App controller git path** — see cross-stack deferred work above.
 - **`PlatformConfig` wiring** — see cross-stack deferred work above.
 - **Integration tests against local Gitea** — belongs in the
   (not-yet-wired) `test/integration/` harness.
+
+**Done in this PR:**
+- **Frontend for OAuth** — `ui/src/routes/settings/git-providers/+page.svelte`
+  drives the authorize → callback round-trip. The list page shows all
+  `GitProvider` CRDs with Name, Type, Host, Phase, token status (Connected /
+  Not Connected), and a "Connect"/"Reconnect" anchor that navigates to
+  `/api/oauth/{name}/authorize` (full browser navigation, not fetch).
+  OAuth callback now redirects to `/settings/git-providers?connected={name}`
+  and the list page displays a success banner keyed on that query param.
+  Navigation link ("Settings") added to the main header in `+layout.svelte`.
+- **`GET /api/gitproviders`** — admin-only endpoint in
+  `internal/api/gitproviders.go` returns `[]GitProviderSummary` with
+  `hasToken` reflecting whether `gitprovider-token-{name}` exists in
+  `mortise-system`. Unit tests in `internal/api/gitproviders_test.go`.
 
 ### Phase 5 — Monorepo support — **Not started**
 

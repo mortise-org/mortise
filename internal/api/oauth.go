@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 
@@ -93,8 +92,7 @@ func (o *OAuthHandler) Callback(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok", "provider": providerName}) //nolint:errcheck
+	http.Redirect(w, req, "/settings/git-providers?connected="+providerName, http.StatusFound)
 }
 
 // oauthConfig builds an oauth2.Config from the GitProvider CRD + resolved secrets.

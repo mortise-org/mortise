@@ -111,3 +111,14 @@ export interface Project {
 	appCount: number;
 	createdAt?: string;
 }
+
+export type GitProviderType = 'github' | 'gitlab' | 'gitea';
+export type GitProviderPhase = 'Pending' | 'Ready' | 'Failed';
+
+export interface GitProviderSummary {
+	name: string;
+	type: GitProviderType;
+	host: string;
+	phase: GitProviderPhase;
+	hasToken: boolean;
+}

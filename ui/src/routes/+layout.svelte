@@ -185,12 +185,20 @@
 				</div>
 			</div>
 
-			<button
-				onclick={logout}
-				class="rounded-md px-3 py-1.5 text-sm text-gray-400 transition-colors hover:bg-surface-700 hover:text-white"
-			>
-				Sign out
-			</button>
+			<div class="flex items-center gap-2">
+				<a
+					href="/settings/git-providers"
+					class="rounded-md px-3 py-1.5 text-sm text-gray-400 transition-colors hover:bg-surface-700 hover:text-white"
+				>
+					Settings
+				</a>
+				<button
+					onclick={logout}
+					class="rounded-md px-3 py-1.5 text-sm text-gray-400 transition-colors hover:bg-surface-700 hover:text-white"
+				>
+					Sign out
+				</button>
+			</div>
 		</header>
 
 		<main class="flex-1 overflow-y-auto p-8">
