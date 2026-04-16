@@ -17,7 +17,7 @@ func TestAppListCommand(t *testing.T) {
 		if auth := r.Header.Get("Authorization"); auth != "Bearer test-token" {
 			t.Errorf("unexpected auth header: %s", auth)
 		}
-		json.NewEncoder(w).Encode(AppListResponse{
+		_ = json.NewEncoder(w).Encode(AppListResponse{
 			Items: []AppResponse{
 				{Name: "web", Source: AppSourceResp{Type: "image"}, Status: AppStatusResp{Phase: "Ready"}},
 			},
@@ -44,14 +44,14 @@ func TestAppCreateCommand(t *testing.T) {
 			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
 		}
 		var req CreateAppRequest
-		json.NewDecoder(r.Body).Decode(&req)
+		_ = json.NewDecoder(r.Body).Decode(&req)
 		if req.Name != "myapp" {
 			t.Errorf("expected name 'myapp', got %q", req.Name)
 		}
 		if req.Source.Type != "image" {
 			t.Errorf("expected source type 'image', got %q", req.Source.Type)
 		}
-		json.NewEncoder(w).Encode(AppResponse{Name: req.Name, Source: AppSourceResp{Type: req.Source.Type}})
+		_ = json.NewEncoder(w).Encode(AppResponse{Name: req.Name, Source: AppSourceResp{Type: req.Source.Type}})
 	}))
 	defer srv.Close()
 
@@ -87,14 +87,11 @@ func TestConfigLoadSave(t *testing.T) {
 	tmp := t.TempDir()
 	p := filepath.Join(tmp, "config.yaml")
 
-	// Override configPath for testing
-	origHome := os.Getenv("HOME")
-	os.Setenv("HOME", tmp)
-	defer os.Setenv("HOME", origHome)
+	t.Setenv("HOME", tmp)
 
 	// Create the config dir structure that configPath expects
 	dir := filepath.Join(tmp, ".config", "mortise")
-	os.MkdirAll(dir, 0o700)
+	_ = os.MkdirAll(dir, 0o700)
 
 	cfg := &Config{ServerURL: "http://localhost:8080", Token: "abc"}
 	if err := saveConfig(cfg); err != nil {
@@ -113,14 +110,12 @@ func TestConfigLoadSave(t *testing.T) {
 	}
 
 	// Clean up so we don't leave the file
-	os.Remove(p)
+	_ = os.Remove(p)
 }
 
 func TestConfigLoadMissing(t *testing.T) {
 	tmp := t.TempDir()
-	origHome := os.Getenv("HOME")
-	os.Setenv("HOME", tmp)
-	defer os.Setenv("HOME", origHome)
+	t.Setenv("HOME", tmp)
 
 	cfg, err := loadConfig()
 	if err != nil {
@@ -172,7 +167,7 @@ func TestAppSubcommands(t *testing.T) {
 func TestAPIError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
-		w.Write([]byte("unauthorized"))
+		_, _ = w.Write([]byte("unauthorized"))
 	}))
 	defer srv.Close()
 

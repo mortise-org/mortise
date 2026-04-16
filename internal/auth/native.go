@@ -112,7 +112,7 @@ func (n *NativeAuthProvider) InviteUser(ctx context.Context, email string, role 
 			"email":      []byte(email),
 			"role":       []byte(role),
 			"token":      []byte(inviteToken),
-			"expires_at": []byte(fmt.Sprintf("%d", expiresAt.Unix())),
+			"expires_at": fmt.Appendf(nil, "%d", expiresAt.Unix()),
 		},
 	}
 

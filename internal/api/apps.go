@@ -13,6 +13,8 @@ import (
 	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
 )
 
+const defaultNamespace = "default"
+
 // createAppRequest is the JSON body for creating an App.
 type createAppRequest struct {
 	Name      string                  `json:"name"`
@@ -32,7 +34,7 @@ func (s *Server) CreateApp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Namespace == "" {
-		req.Namespace = "default"
+		req.Namespace = defaultNamespace
 	}
 
 	app := &mortisev1alpha1.App{
@@ -72,7 +74,7 @@ func (s *Server) GetApp(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
 	ns := r.URL.Query().Get("namespace")
 	if ns == "" {
-		ns = "default"
+		ns = defaultNamespace
 	}
 
 	var app mortisev1alpha1.App
@@ -88,7 +90,7 @@ func (s *Server) UpdateApp(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
 	ns := r.URL.Query().Get("namespace")
 	if ns == "" {
-		ns = "default"
+		ns = defaultNamespace
 	}
 
 	var app mortisev1alpha1.App
@@ -116,7 +118,7 @@ func (s *Server) DeleteApp(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
 	ns := r.URL.Query().Get("namespace")
 	if ns == "" {
-		ns = "default"
+		ns = defaultNamespace
 	}
 
 	var app mortisev1alpha1.App

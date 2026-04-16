@@ -45,11 +45,11 @@ func newStatusCmd() *cobra.Command {
 			if len(resp.Status.Environments) > 0 {
 				fmt.Println()
 				w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-				fmt.Fprintln(w, "ENV\tREADY\tIMAGE")
+				_, _ = fmt.Fprintln(w, "ENV\tREADY\tIMAGE")
 				for _, e := range resp.Status.Environments {
-					fmt.Fprintf(w, "%s\t%d\t%s\n", e.Name, e.ReadyReplicas, e.CurrentImage)
+					_, _ = fmt.Fprintf(w, "%s\t%d\t%s\n", e.Name, e.ReadyReplicas, e.CurrentImage)
 				}
-				w.Flush()
+				_ = w.Flush()
 			}
 			return nil
 		},

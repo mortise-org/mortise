@@ -32,7 +32,7 @@ func setupEnvtest(t *testing.T) client.Client {
 	if err != nil {
 		t.Fatalf("start envtest: %v", err)
 	}
-	t.Cleanup(func() { testEnv.Stop() })
+	t.Cleanup(func() { _ = testEnv.Stop() })
 
 	err = mortisev1alpha1.AddToScheme(scheme.Scheme)
 	if err != nil {
@@ -46,7 +46,7 @@ func setupEnvtest(t *testing.T) client.Client {
 
 	// Ensure default namespace exists.
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "default"}}
-	k8sClient.Create(context.Background(), ns)
+	_ = k8sClient.Create(context.Background(), ns)
 
 	return k8sClient
 }
@@ -54,7 +54,7 @@ func setupEnvtest(t *testing.T) client.Client {
 func doRequest(handler http.Handler, method, path string, body any) *httptest.ResponseRecorder {
 	var buf bytes.Buffer
 	if body != nil {
-		json.NewEncoder(&buf).Encode(body)
+		_ = json.NewEncoder(&buf).Encode(body)
 	}
 	req := httptest.NewRequest(method, path, &buf)
 	req.Header.Set("Content-Type", "application/json")
@@ -92,7 +92,7 @@ func TestCreateAndGetApp(t *testing.T) {
 	}
 
 	var app mortisev1alpha1.App
-	json.NewDecoder(w.Body).Decode(&app)
+	_ = json.NewDecoder(w.Body).Decode(&app)
 	if app.Spec.Source.Image != "nginx:1.25.0" {
 		t.Errorf("expected image nginx:1.25.0, got %s", app.Spec.Source.Image)
 	}
@@ -119,7 +119,7 @@ func TestListApps(t *testing.T) {
 	}
 
 	var apps []mortisev1alpha1.App
-	json.NewDecoder(w.Body).Decode(&apps)
+	_ = json.NewDecoder(w.Body).Decode(&apps)
 	if len(apps) < 2 {
 		t.Errorf("expected at least 2 apps, got %d", len(apps))
 	}
@@ -146,7 +146,7 @@ func TestUpdateApp(t *testing.T) {
 	}
 
 	var app mortisev1alpha1.App
-	json.NewDecoder(w.Body).Decode(&app)
+	_ = json.NewDecoder(w.Body).Decode(&app)
 	if app.Spec.Source.Image != "nginx:1.26.0" {
 		t.Errorf("expected image nginx:1.26.0, got %s", app.Spec.Source.Image)
 	}
@@ -231,7 +231,7 @@ func TestSecretsCRUD(t *testing.T) {
 	}
 
 	var secrets []map[string]any
-	json.NewDecoder(w.Body).Decode(&secrets)
+	_ = json.NewDecoder(w.Body).Decode(&secrets)
 	if len(secrets) != 1 {
 		t.Fatalf("expected 1 secret, got %d", len(secrets))
 	}
@@ -247,7 +247,7 @@ func TestSecretsCRUD(t *testing.T) {
 
 	// Verify deleted
 	w = doRequest(h, http.MethodGet, "/api/apps/myapp/secrets?namespace=default", nil)
-	json.NewDecoder(w.Body).Decode(&secrets)
+	_ = json.NewDecoder(w.Body).Decode(&secrets)
 	if len(secrets) != 0 {
 		t.Errorf("expected 0 secrets after delete, got %d", len(secrets))
 	}

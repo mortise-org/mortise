@@ -28,7 +28,7 @@ func (s *Server) CreateSecret(w http.ResponseWriter, r *http.Request) {
 	appName := chi.URLParam(r, "name")
 	ns := r.URL.Query().Get("namespace")
 	if ns == "" {
-		ns = "default"
+		ns = defaultNamespace
 	}
 
 	var req createSecretRequest
@@ -65,7 +65,7 @@ func (s *Server) ListSecrets(w http.ResponseWriter, r *http.Request) {
 	appName := chi.URLParam(r, "name")
 	ns := r.URL.Query().Get("namespace")
 	if ns == "" {
-		ns = "default"
+		ns = defaultNamespace
 	}
 
 	var list corev1.SecretList
@@ -92,7 +92,7 @@ func (s *Server) DeleteSecret(w http.ResponseWriter, r *http.Request) {
 	secretName := chi.URLParam(r, "secretName")
 	ns := r.URL.Query().Get("namespace")
 	if ns == "" {
-		ns = "default"
+		ns = defaultNamespace
 	}
 
 	var secret corev1.Secret

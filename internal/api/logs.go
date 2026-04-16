@@ -24,7 +24,7 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
 	ns := r.URL.Query().Get("namespace")
 	if ns == "" {
-		ns = "default"
+		ns = defaultNamespace
 	}
 	env := r.URL.Query().Get("env")
 	if env == "" {
@@ -80,11 +80,11 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			// Write error as SSE event and continue to next pod.
 			data, _ := json.Marshal(logLine{Line: fmt.Sprintf("error streaming logs: %v", err), Pod: podName})
-			fmt.Fprintf(w, "data: %s\n\n", data)
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
 			flusher.Flush()
 			continue
 		}
-		defer stream.Close()
+		defer func() { _ = stream.Close() }()
 
 		scanner := bufio.NewScanner(stream)
 		for scanner.Scan() {
@@ -94,7 +94,7 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 			default:
 			}
 			data, _ := json.Marshal(logLine{Line: scanner.Text(), Pod: podName})
-			fmt.Fprintf(w, "data: %s\n\n", data)
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
 			flusher.Flush()
 		}
 	}

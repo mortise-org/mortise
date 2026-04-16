@@ -65,9 +65,9 @@ func newAppListCmd() *cobra.Command {
 				return err
 			}
 			w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-			fmt.Fprintln(w, "NAME\tSOURCE\tPHASE")
+			_, _ = fmt.Fprintln(w, "NAME\tSOURCE\tPHASE")
 			for _, a := range resp.Items {
-				fmt.Fprintf(w, "%s\t%s\t%s\n", a.Name, a.Source.Type, a.Status.Phase)
+				_, _ = fmt.Fprintf(w, "%s\t%s\t%s\n", a.Name, a.Source.Type, a.Status.Phase)
 			}
 			return w.Flush()
 		},

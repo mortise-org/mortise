@@ -39,6 +39,7 @@ import (
 
 var _ = Describe("App Controller", func() {
 	const namespace = "default"
+	const testImageNginx = "nginx:1.27"
 
 	Context("image source with one environment", func() {
 		const appName = "test-nginx"
@@ -55,7 +56,7 @@ var _ = Describe("App Controller", func() {
 				Spec: mortisev1alpha1.AppSpec{
 					Source: mortisev1alpha1.AppSource{
 						Type:  mortisev1alpha1.SourceTypeImage,
-						Image: "nginx:1.27",
+						Image: testImageNginx,
 					},
 					Network: mortisev1alpha1.NetworkConfig{Public: true},
 					Environments: []mortisev1alpha1.Environment{
@@ -92,7 +93,7 @@ var _ = Describe("App Controller", func() {
 
 			Expect(*dep.Spec.Replicas).To(Equal(int32(2)))
 			Expect(dep.Spec.Template.Spec.Containers).To(HaveLen(1))
-			Expect(dep.Spec.Template.Spec.Containers[0].Image).To(Equal("nginx:1.27"))
+			Expect(dep.Spec.Template.Spec.Containers[0].Image).To(Equal(testImageNginx))
 			Expect(dep.Labels["app.kubernetes.io/managed-by"]).To(Equal("mortise"))
 			Expect(dep.Labels["mortise.dev/environment"]).To(Equal("production"))
 		})
@@ -521,7 +522,7 @@ var _ = Describe("App Controller", func() {
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
 				Name: appName, Namespace: namespace,
 			}, app)).To(Succeed())
-			app.Spec.Source.Image = "nginx:1.27"
+			app.Spec.Source.Image = testImageNginx
 			Expect(k8sClient.Update(ctx, app)).To(Succeed())
 
 			_, err = reconciler.Reconcile(ctx, reconcile.Request{
@@ -532,7 +533,7 @@ var _ = Describe("App Controller", func() {
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
 				Name: "test-update-production", Namespace: namespace,
 			}, &dep)).To(Succeed())
-			Expect(dep.Spec.Template.Spec.Containers[0].Image).To(Equal("nginx:1.27"))
+			Expect(dep.Spec.Template.Spec.Containers[0].Image).To(Equal(testImageNginx))
 		})
 	})
 
@@ -614,7 +615,7 @@ var _ = Describe("App Controller", func() {
 
 			// Re-fetch, update image, reconcile again.
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: appName, Namespace: namespace}, app)).To(Succeed())
-			app.Spec.Source.Image = "nginx:1.27"
+			app.Spec.Source.Image = testImageNginx
 			Expect(k8sClient.Update(ctx, app)).To(Succeed())
 
 			fakeClock.Step(5 * time.Minute)
@@ -626,7 +627,7 @@ var _ = Describe("App Controller", func() {
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: appName, Namespace: namespace}, app)).To(Succeed())
 			history := app.Status.Environments[0].DeployHistory
 			Expect(history).To(HaveLen(2))
-			Expect(history[0].Image).To(Equal("nginx:1.27"))
+			Expect(history[0].Image).To(Equal(testImageNginx))
 			Expect(history[1].Image).To(Equal("nginx:1.26"))
 		})
 
@@ -703,7 +704,7 @@ var _ = Describe("App Controller", func() {
 
 			// Update to nginx:1.27 and reconcile.
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: appName, Namespace: namespace}, app)).To(Succeed())
-			app.Spec.Source.Image = "nginx:1.27"
+			app.Spec.Source.Image = testImageNginx
 			Expect(k8sClient.Update(ctx, app)).To(Succeed())
 
 			fakeClock.Step(time.Minute)

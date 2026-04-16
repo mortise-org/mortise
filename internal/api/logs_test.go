@@ -21,7 +21,7 @@ func TestLogsNonexistentApp(t *testing.T) {
 	}
 
 	var resp map[string]string
-	json.NewDecoder(w.Body).Decode(&resp)
+	_ = json.NewDecoder(w.Body).Decode(&resp)
 	if resp["error"] == "" {
 		t.Error("expected error message in response")
 	}
@@ -47,7 +47,7 @@ func TestLogsNoPods(t *testing.T) {
 	}
 
 	var resp map[string]string
-	json.NewDecoder(w.Body).Decode(&resp)
+	_ = json.NewDecoder(w.Body).Decode(&resp)
 	if resp["error"] == "" {
 		t.Error("expected error message about no pods")
 	}

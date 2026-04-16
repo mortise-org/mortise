@@ -357,7 +357,7 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 		existingByName[es.Name] = es
 	}
 
-	var envStatuses []mortisev1alpha1.EnvironmentStatus
+	envStatuses := make([]mortisev1alpha1.EnvironmentStatus, 0, len(app.Spec.Environments))
 
 	for _, env := range app.Spec.Environments {
 		name := deploymentName(app.Name, env.Name)
@@ -476,7 +476,7 @@ func appLabels(app, env string) map[string]string {
 }
 
 func toEnvVars(envs []mortisev1alpha1.EnvVar) []corev1.EnvVar {
-	var result []corev1.EnvVar
+	result := make([]corev1.EnvVar, 0, len(envs))
 	for _, e := range envs {
 		ev := corev1.EnvVar{Name: e.Name, Value: e.Value}
 		if e.ValueFrom != nil && e.ValueFrom.SecretRef != "" {
@@ -512,8 +512,8 @@ func toResourceRequirements(r mortisev1alpha1.ResourceRequirements) corev1.Resou
 }
 
 func toVolumesAndMounts(app *mortisev1alpha1.App) ([]corev1.Volume, []corev1.VolumeMount) {
-	var volumes []corev1.Volume
-	var mounts []corev1.VolumeMount
+	volumes := make([]corev1.Volume, 0, len(app.Spec.Storage))
+	mounts := make([]corev1.VolumeMount, 0, len(app.Spec.Storage))
 
 	for _, v := range app.Spec.Storage {
 		volumes = append(volumes, corev1.Volume{

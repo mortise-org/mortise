@@ -31,7 +31,7 @@ func (s *Server) Deploy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Namespace == "" {
-		req.Namespace = "default"
+		req.Namespace = defaultNamespace
 	}
 
 	var app mortisev1alpha1.App
