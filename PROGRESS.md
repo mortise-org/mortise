@@ -5,7 +5,7 @@ whenever implementation status changes — see the **Keeping this file up to
 date** section at the bottom.
 
 Legend: **Done** / **Partial** / **Not started**
-Last reconciled against spec + code: 2026-04-16 (PlatformConfig wiring landed).
+Last reconciled against spec + code: 2026-04-16 (async git builds landed).
 
 ---
 
@@ -18,7 +18,7 @@ Last reconciled against spec + code: 2026-04-16 (PlatformConfig wiring landed).
 | 2 — API + UI skeleton            | §7.3        | **Done**         | Auth, project CRUD, app CRUD, secrets CRUD, deploy webhook, SSE logs, SvelteKit UI. |
 | 3 — Bindings + secrets           | §7.4        | **Partial**      | Resolver writes env vars, but the credential Secret it references is never created and cross-namespace `secretKeyRef` is invalid in k8s (see issues #1 + #2). No deploy tokens, no secret rotation endpoint. |
 | 3.5 — Projects                   | §5 / §5.10  | **Done**         | `Project` CRD + controller + REST API + CLI + UI routes + default-project seeding. |
-| 4 — Build system (git source)    | §7.5        | **Partial**      | All stacks wired end-to-end: webhook patches `mortise.dev/revision` annotation → App reconciler clones + builds + deploys. Operator entrypoint reads config from `PlatformConfig` (env-var fallback for first-boot). Builds are synchronous (block reconcile goroutine up to 30 min) — async follow-up tracked below. |
+| 4 — Build system (git source)    | §7.5        | **Done**         | All stacks wired end-to-end: webhook patches `mortise.dev/revision` annotation → App reconciler clones + builds + deploys. Operator entrypoint reads config from `PlatformConfig` (env-var fallback for first-boot). Builds run asynchronously in background goroutines; the reconciler returns `Building` immediately and polls on requeue. |
 | 5 — Monorepo support             | §7.6        | **Not started**  | No `watchPaths` handling, no per-path routing. |
 | 6 — Preview environments        | §7.7        | **Not started**  | `PreviewEnvironment` CRD is scaffold-only; controller empty. |
 | 7 — Polish & v1                  | §7.8        | **Partial**      | Controller-side `RollbackDeployment` exists, but no CLI/UI for rollback, no promote, no first-run wizard, no custom-domain UI. |
@@ -140,10 +140,6 @@ Known gaps against spec §7.2 / §11:
   move behind `IngressProvider` + read from `PlatformConfig`.
 - `IngressProvider` / `DNSProvider` interfaces exist (`internal/ingress/`,
   `internal/dns/`) but have no impls; the controller bypasses them.
-- **Git build is synchronous**: `reconcileGitSource` blocks the reconcile
-  goroutine for up to 30 min (`buildTimeout`). Acceptable for v1; a follow-up
-  should run builds in a Job or goroutine and return `Building` phase
-  immediately.
 
 ### Phase 2 — API + UI skeleton — **Done**
 
@@ -239,9 +235,13 @@ landed and what each deferred.
   verified push event arrives. Branch and normalized-URL matching implemented.
 - ~~**`test/fixtures/git-basic.yaml`**~~ — **Done.** Added at
   `test/fixtures/git-basic.yaml`.
-- **Async builds** — git builds currently block the reconcile goroutine for up
-  to 30 min. A follow-up should move long builds to a Kubernetes Job or a
-  dedicated goroutine pool and return `Building` phase immediately.
+- ~~**Async builds**~~ — **Done.** `reconcileGitSource` now launches the
+  clone + build in a background goroutine tracked by an in-memory
+  `buildTrackerStore` (keyed by App). The first reconcile for a new revision
+  returns `Building` + `RequeueAfter: 15s`; subsequent reconciles poll the
+  tracker and, on success, write `status.lastBuilt*` and fall through to
+  Deployment reconciliation. Trackers are lost on operator restart; builds
+  are idempotent so the next reconcile re-launches.
 
 ### Registry stack — **Done**
 

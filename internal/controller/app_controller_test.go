@@ -776,6 +776,29 @@ func (f *fakeBuildClient) Submit(_ context.Context, _ build.BuildRequest) (<-cha
 	return ch, nil
 }
 
+// gatedBuildClient is a BuildClient whose Submit returns a channel that only
+// emits a success event after the caller closes its release channel. Used to
+// test async reconciles where we need the build to be in-flight across
+// multiple Reconcile calls.
+type gatedBuildClient struct {
+	digest  string
+	release <-chan struct{}
+}
+
+func (g *gatedBuildClient) Submit(ctx context.Context, _ build.BuildRequest) (<-chan build.BuildEvent, error) {
+	ch := make(chan build.BuildEvent, 1)
+	go func() {
+		defer close(ch)
+		select {
+		case <-g.release:
+			ch <- build.BuildEvent{Type: build.EventSuccess, Digest: g.digest}
+		case <-ctx.Done():
+			ch <- build.BuildEvent{Type: build.EventFailure, Error: ctx.Err().Error()}
+		}
+	}()
+	return ch, nil
+}
+
 // fakeGitClient implements git.GitClient for tests (no-op clone).
 type fakeGitClient struct {
 	err error
@@ -825,6 +848,29 @@ func gitSourceReconciler(bc build.BuildClient, gc git.GitClient, rb registry.Reg
 		GitClient:       gc,
 		RegistryBackend: rb,
 	}
+}
+
+// reconcileUntilBuildDone drives Reconcile past the async-build requeue loop.
+// Returns the last Result/error from Reconcile. Fails the test if it takes
+// more than a bounded number of iterations (the fake BuildClient completes
+// synchronously, so a handful of reconciles is always sufficient).
+func reconcileUntilBuildDone(r *AppReconciler, ctx context.Context, req reconcile.Request) (reconcile.Result, error) {
+	var (
+		res reconcile.Result
+		err error
+	)
+	for i := 0; i < 20; i++ {
+		res, err = r.Reconcile(ctx, req)
+		if err != nil {
+			return res, err
+		}
+		if res.RequeueAfter == 0 {
+			return res, nil
+		}
+		// Let the background build goroutine run.
+		time.Sleep(10 * time.Millisecond)
+	}
+	return res, fmt.Errorf("Reconcile still requeuing after 20 iterations")
 }
 
 // makeGitApp creates an App spec with source.type=git.
@@ -914,10 +960,11 @@ var _ = Describe("App Controller — git source", func() {
 				&fakeGitClient{err: fmt.Errorf("connection refused")},
 				&fakeRegistryBackend{},
 			)
-			_, err := r.Reconcile(ctx, reconcile.Request{
+			_, err := reconcileUntilBuildDone(r, ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{Name: app.Name, Namespace: namespace},
 			})
 			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("BuildFailed"))
 			Expect(err.Error()).To(ContainSubstring("CloneFailed"))
 
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: namespace}, app)).To(Succeed())
@@ -961,7 +1008,7 @@ var _ = Describe("App Controller — git source", func() {
 				&fakeGitClient{},
 				&fakeRegistryBackend{},
 			)
-			_, err := r.Reconcile(ctx, reconcile.Request{
+			_, err := reconcileUntilBuildDone(r, ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{Name: app.Name, Namespace: namespace},
 			})
 			Expect(err).To(HaveOccurred())
@@ -1010,7 +1057,7 @@ var _ = Describe("App Controller — git source", func() {
 				&fakeGitClient{},
 				&fakeRegistryBackend{},
 			)
-			_, err := r.Reconcile(ctx, reconcile.Request{
+			_, err := reconcileUntilBuildDone(r, ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{Name: app.Name, Namespace: namespace},
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -1027,6 +1074,86 @@ var _ = Describe("App Controller — git source", func() {
 				Namespace: namespace,
 			}, &dep)).To(Succeed())
 			Expect(dep.Spec.Template.Spec.Containers[0].Image).To(ContainSubstring("sha256:deadbeef"))
+		})
+	})
+
+	Context("async build", func() {
+		It("should return Building + requeue on first reconcile and finish on subsequent reconciles", func() {
+			ctx := context.Background()
+
+			gp := &mortisev1alpha1.GitProvider{
+				ObjectMeta: metav1.ObjectMeta{Name: "gh-async"},
+				Spec: mortisev1alpha1.GitProviderSpec{
+					Type: mortisev1alpha1.GitProviderTypeGitHub,
+					Host: "https://github.com",
+					OAuth: mortisev1alpha1.OAuthConfig{
+						ClientIDSecretRef:     mortisev1alpha1.SecretRef{Namespace: namespace, Name: "dummy", Key: "id"},
+						ClientSecretSecretRef: mortisev1alpha1.SecretRef{Namespace: namespace, Name: "dummy", Key: "secret"},
+					},
+					WebhookSecretRef: mortisev1alpha1.SecretRef{Namespace: namespace, Name: "dummy", Key: "wh"},
+				},
+			}
+			Expect(k8sClient.Create(ctx, gp)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, gp)).To(Succeed()) }()
+
+			tokenSecret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{Name: "gitprovider-token-gh-async", Namespace: "mortise-system"},
+				Data:       map[string][]byte{"token": []byte("tok")},
+			}
+			_ = k8sClient.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "mortise-system"}})
+			Expect(k8sClient.Create(ctx, tokenSecret)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, tokenSecret)).To(Succeed()) }()
+
+			app := makeGitSourceApp("git-async", namespace, "gh-async")
+			app.Annotations = map[string]string{"mortise.dev/revision": "revasync"}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+
+			// gatedBuildClient blocks on release until we tell it to succeed.
+			release := make(chan struct{})
+			bc := &gatedBuildClient{digest: "sha256:asyncdigest", release: release}
+
+			r := gitSourceReconciler(bc, &fakeGitClient{}, &fakeRegistryBackend{})
+
+			req := reconcile.Request{NamespacedName: types.NamespacedName{Name: app.Name, Namespace: namespace}}
+
+			// First reconcile kicks off the goroutine, must return quickly with
+			// RequeueAfter > 0 even though the build hasn't completed.
+			start := time.Now()
+			res, err := r.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res.RequeueAfter).To(BeNumerically(">", 0))
+			Expect(time.Since(start)).To(BeNumerically("<", 2*time.Second))
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: namespace}, app)).To(Succeed())
+			Expect(app.Status.Phase).To(Equal(mortisev1alpha1.AppPhaseBuilding))
+
+			// A second reconcile while the build is still in flight should also
+			// return quickly and the phase should still be Building (no
+			// Deployment yet).
+			res, err = r.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res.RequeueAfter).To(BeNumerically(">", 0))
+
+			var dep appsv1.Deployment
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: "git-async-production", Namespace: namespace,
+			}, &dep)).To(MatchError(ContainSubstring("not found")))
+
+			// Release the build; the next reconcile should observe the
+			// succeeded tracker, write lastBuiltImage, and create a Deployment.
+			close(release)
+			_, err = reconcileUntilBuildDone(r, ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: namespace}, app)).To(Succeed())
+			Expect(app.Status.LastBuiltSHA).To(Equal("revasync"))
+			Expect(app.Status.LastBuiltImage).To(ContainSubstring("sha256:asyncdigest"))
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: "git-async-production", Namespace: namespace,
+			}, &dep)).To(Succeed())
+			Expect(dep.Spec.Template.Spec.Containers[0].Image).To(ContainSubstring("sha256:asyncdigest"))
 		})
 	})
 

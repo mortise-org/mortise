@@ -1,0 +1,96 @@
+/*
+Copyright 2026.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package controller
+
+import (
+	"sync"
+
+	"k8s.io/apimachinery/pkg/types"
+)
+
+// buildPhase is the in-memory lifecycle state of an async build goroutine.
+type buildPhase string
+
+const (
+	buildPhaseRunning   buildPhase = "Running"
+	buildPhaseSucceeded buildPhase = "Succeeded"
+	buildPhaseFailed    buildPhase = "Failed"
+)
+
+// buildTracker holds the state of a single asynchronous build. Only the
+// goroutine that owns the tracker mutates its fields; callers read them under
+// the mutex. Cancel aborts the build.
+type buildTracker struct {
+	mu       sync.Mutex
+	revision string
+	phase    buildPhase
+	image    string // set on success
+	digest   string // set on success
+	errMsg   string // set on failure
+	cancel   func()
+}
+
+// snapshot returns a value-copy of the tracker's mutable state.
+func (t *buildTracker) snapshot() (phase buildPhase, revision, image, digest, errMsg string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.phase, t.revision, t.image, t.digest, t.errMsg
+}
+
+// setSucceeded marks the build as succeeded with the resulting image and digest.
+func (t *buildTracker) setSucceeded(image, digest string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.phase = buildPhaseSucceeded
+	t.image = image
+	t.digest = digest
+}
+
+// setFailed marks the build as failed with the given error message.
+func (t *buildTracker) setFailed(msg string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.phase = buildPhaseFailed
+	t.errMsg = msg
+}
+
+// buildTrackerStore is a concurrency-safe map of active builds keyed by App.
+// Operator restarts lose the map; that's acceptable because builds are
+// idempotent (same revision → same image) and the next reconcile will
+// re-launch.
+type buildTrackerStore struct {
+	trackers sync.Map // map[types.NamespacedName]*buildTracker
+}
+
+// get returns the tracker for the given App, or nil if none exists.
+func (s *buildTrackerStore) get(key types.NamespacedName) *buildTracker {
+	v, ok := s.trackers.Load(key)
+	if !ok {
+		return nil
+	}
+	return v.(*buildTracker)
+}
+
+// set stores the tracker under the given key.
+func (s *buildTrackerStore) set(key types.NamespacedName, t *buildTracker) {
+	s.trackers.Store(key, t)
+}
+
+// delete removes the tracker for the given App.
+func (s *buildTrackerStore) delete(key types.NamespacedName) {
+	s.trackers.Delete(key)
+}

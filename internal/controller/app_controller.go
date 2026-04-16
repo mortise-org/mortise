@@ -49,9 +49,13 @@ import (
 // maxDeployHistory is the maximum number of deploy records kept per environment.
 const maxDeployHistory = 20
 
-// buildTimeout is the maximum wall time the reconciler will block waiting for a
-// build to complete. Synchronous builds are v1-acceptable (noted in PROGRESS.md).
+// buildTimeout is the maximum wall time a background build goroutine may run
+// before its context is cancelled.
 const buildTimeout = 30 * time.Minute
+
+// buildPollInterval is how often the reconciler re-queues while a build is in
+// flight to check for completion.
+const buildPollInterval = 15 * time.Second
 
 // AppReconciler reconciles a App object
 type AppReconciler struct {
@@ -61,6 +65,11 @@ type AppReconciler struct {
 	BuildClient     build.BuildClient
 	GitClient       git.GitClient
 	RegistryBackend registry.RegistryBackend
+
+	// builds tracks in-flight asynchronous git-source builds so subsequent
+	// reconciles can check progress without blocking the worker. Lost on
+	// operator restart; the next reconcile re-launches (builds are idempotent).
+	builds buildTrackerStore
 }
 
 // +kubebuilder:rbac:groups=mortise.mortise.dev,resources=apps,verbs=get;list;watch;create;update;patch;delete
@@ -84,8 +93,12 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 
 	switch app.Spec.Source.Type {
 	case mortisev1alpha1.SourceTypeGit:
-		if err := r.reconcileGitSource(ctx, &app); err != nil {
+		result, proceed, err := r.reconcileGitSource(ctx, &app)
+		if err != nil {
 			return ctrl.Result{}, err
+		}
+		if !proceed {
+			return result, nil
 		}
 	case mortisev1alpha1.SourceTypeImage:
 		// image path: nothing extra needed before reconciling workloads
@@ -123,20 +136,21 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	return ctrl.Result{}, nil
 }
 
-// reconcileGitSource handles the build-from-source path for source.type=git apps.
-// It resolves the target revision, short-circuits if the image is already built,
-// clones the repo, runs a build, and updates app.Spec.Source.Image with the result
-// so the downstream Deployment reconciler picks it up.
+// reconcileGitSource handles the build-from-source path for source.type=git apps
+// without blocking the reconcile worker. On the first reconcile of a new
+// revision it launches a background goroutine and returns with phase=Building
+// and a requeue; subsequent reconciles poll the tracker and, on completion,
+// surface the built image to the Deployment reconciler.
 //
-// Note: builds run synchronously with a bounded timeout (buildTimeout). This is
-// acceptable for v1; a follow-up should move long builds into a Job or background
-// goroutine and return Building phase immediately.
-func (r *AppReconciler) reconcileGitSource(ctx context.Context, app *mortisev1alpha1.App) error {
+// The returned bool is true iff the caller should continue to Deployment
+// reconciliation; when false the caller should return the given ctrl.Result
+// immediately (a build is still in flight, or nothing to do).
+func (r *AppReconciler) reconcileGitSource(ctx context.Context, app *mortisev1alpha1.App) (ctrl.Result, bool, error) {
 	log := logf.FromContext(ctx)
 
 	if r.BuildClient == nil || r.GitClient == nil || r.RegistryBackend == nil {
 		log.Info("git source clients not configured; skipping build")
-		return nil
+		return ctrl.Result{}, true, nil
 	}
 
 	// Determine target revision from annotation (set by webhook) or fall back to branch name.
@@ -155,87 +169,140 @@ func (r *AppReconciler) reconcileGitSource(ctx context.Context, app *mortisev1al
 	// Short-circuit: skip rebuild if we already built this revision and have an image.
 	if app.Status.LastBuiltSHA == revision && app.Status.LastBuiltImage != "" {
 		app.Spec.Source.Image = app.Status.LastBuiltImage
-		return nil
+		return ctrl.Result{}, true, nil
 	}
 
-	// Resolve the GitProvider and its OAuth token.
+	key := types.NamespacedName{Namespace: app.Namespace, Name: app.Name}
+
+	// Check for an existing tracker. If it matches the current revision, inspect
+	// its state; if it's for a stale revision, discard and fall through to launch.
+	if t := r.builds.get(key); t != nil {
+		phase, trackedRev, image, digest, errMsg := t.snapshot()
+		if trackedRev != revision {
+			// Stale tracker from a previous revision — cancel and drop.
+			t.mu.Lock()
+			cancel := t.cancel
+			t.mu.Unlock()
+			if cancel != nil {
+				cancel()
+			}
+			r.builds.delete(key)
+		} else {
+			switch phase {
+			case buildPhaseRunning:
+				return ctrl.Result{RequeueAfter: buildPollInterval}, false, nil
+			case buildPhaseSucceeded:
+				r.builds.delete(key)
+				if err := r.applyBuildSuccess(ctx, app, revision, image, digest); err != nil {
+					return ctrl.Result{}, false, err
+				}
+				app.Spec.Source.Image = image
+				return ctrl.Result{}, true, nil
+			case buildPhaseFailed:
+				r.builds.delete(key)
+				return ctrl.Result{}, false, r.setFailedCondition(ctx, app, "BuildFailed", errMsg)
+			}
+		}
+	}
+
+	// Resolve the GitProvider and its OAuth token (synchronously — these are
+	// cheap API lookups and their failure is the user's to fix immediately).
 	if app.Spec.Source.ProviderRef == "" {
-		return r.setFailedCondition(ctx, app, "MissingProviderRef", "spec.source.providerRef must be set for git source apps")
+		return ctrl.Result{}, false, r.setFailedCondition(ctx, app, "MissingProviderRef", "spec.source.providerRef must be set for git source apps")
 	}
 	var gp mortisev1alpha1.GitProvider
 	if err := r.Get(ctx, types.NamespacedName{Name: app.Spec.Source.ProviderRef}, &gp); err != nil {
-		return r.setFailedCondition(ctx, app, "ProviderNotFound", fmt.Sprintf("GitProvider %q: %v", app.Spec.Source.ProviderRef, err))
+		return ctrl.Result{}, false, r.setFailedCondition(ctx, app, "ProviderNotFound", fmt.Sprintf("GitProvider %q: %v", app.Spec.Source.ProviderRef, err))
 	}
 	token, err := git.ResolveProviderToken(ctx, r.Client, &gp)
 	if err != nil {
-		return r.setFailedCondition(ctx, app, "TokenResolutionFailed", err.Error())
+		return ctrl.Result{}, false, r.setFailedCondition(ctx, app, "TokenResolutionFailed", err.Error())
 	}
 
-	// Clone into a temp dir.
-	cloneDir, err := os.MkdirTemp("", "mortise-build-*")
+	imageRef, err := r.RegistryBackend.PushTarget(app.Name, shortTag(revision))
 	if err != nil {
-		return fmt.Errorf("create temp dir: %w", err)
-	}
-	defer os.RemoveAll(cloneDir)
-
-	branch := app.Spec.Source.Branch
-	if branch == "" {
-		branch = "main"
-	}
-	creds := git.GitCredentials{Token: token}
-	if err := r.GitClient.Clone(ctx, app.Spec.Source.Repo, branch, cloneDir, creds); err != nil {
-		return r.setFailedCondition(ctx, app, "CloneFailed", err.Error())
-	}
-	log.Info("cloned repo", "repo", app.Spec.Source.Repo, "branch", branch, "dir", cloneDir)
-
-	// Compute image tag from the first 7 chars of the revision (or the full string
-	// if it's already a short ref like a branch name).
-	tag := revision
-	if len(tag) > 7 {
-		tag = tag[:7]
+		return ctrl.Result{}, false, r.setFailedCondition(ctx, app, "PushTargetFailed", err.Error())
 	}
 
-	imageRef, err := r.RegistryBackend.PushTarget(app.Name, tag)
-	if err != nil {
-		return r.setFailedCondition(ctx, app, "PushTargetFailed", err.Error())
-	}
-
-	dockerfile := "Dockerfile"
-	if app.Spec.Source.Build != nil && app.Spec.Source.Build.DockerfilePath != "" {
-		dockerfile = app.Spec.Source.Build.DockerfilePath
-	}
-
-	// Mark building phase before the (potentially long) build.
+	// Mark building phase before kicking off the goroutine.
 	app.Status.Phase = mortisev1alpha1.AppPhaseBuilding
 	if err := r.Status().Update(ctx, app); err != nil {
-		// Non-fatal: the build will proceed; status update failure just means
-		// the user sees stale phase briefly.
 		log.Error(err, "update status to Building")
 	}
 
-	buildCtx, cancel := context.WithTimeout(ctx, buildTimeout)
-	defer cancel()
-
-	var buildArgs map[string]string
-	if app.Spec.Source.Build != nil {
-		buildArgs = app.Spec.Source.Build.Args
+	// Launch the background build. The goroutine is detached from the reconcile
+	// context so the worker can return immediately; its own context has the
+	// buildTimeout applied.
+	buildCtx, cancel := context.WithTimeout(context.Background(), buildTimeout)
+	tracker := &buildTracker{
+		revision: revision,
+		phase:    buildPhaseRunning,
+		cancel:   cancel,
 	}
+	r.builds.set(key, tracker)
+
+	go r.runBuild(buildCtx, cancel, tracker, buildParams{
+		appName:    app.Name,
+		namespace:  app.Namespace,
+		repo:       app.Spec.Source.Repo,
+		branch:     firstNonEmpty(app.Spec.Source.Branch, "main"),
+		token:      token,
+		dockerfile: dockerfilePath(app),
+		buildArgs:  buildArgsOf(app),
+		imageRef:   imageRef,
+	})
+
+	return ctrl.Result{RequeueAfter: buildPollInterval}, false, nil
+}
+
+// buildParams bundles the inputs the background build goroutine needs. Keeping
+// it a value struct avoids the goroutine holding onto the live *App.
+type buildParams struct {
+	appName    string
+	namespace  string
+	repo       string
+	branch     string
+	token      string
+	dockerfile string
+	buildArgs  map[string]string
+	imageRef   registry.ImageRef
+}
+
+// runBuild clones the repo, submits the build to the BuildClient, drains events,
+// and records the outcome on the tracker. Intended to run in its own goroutine.
+func (r *AppReconciler) runBuild(ctx context.Context, cancel context.CancelFunc, t *buildTracker, p buildParams) {
+	defer cancel()
+	log := logf.Log.WithName("build").WithValues("app", p.appName, "namespace", p.namespace)
+
+	cloneDir, err := os.MkdirTemp("", "mortise-build-*")
+	if err != nil {
+		t.setFailed(fmt.Sprintf("create temp dir: %v", err))
+		return
+	}
+	defer os.RemoveAll(cloneDir)
+
+	creds := git.GitCredentials{Token: p.token}
+	if err := r.GitClient.Clone(ctx, p.repo, p.branch, cloneDir, creds); err != nil {
+		t.setFailed(fmt.Sprintf("CloneFailed: %v", err))
+		return
+	}
+	log.Info("cloned repo", "repo", p.repo, "branch", p.branch, "dir", cloneDir)
 
 	req := build.BuildRequest{
-		AppName:    app.Name,
-		Namespace:  app.Namespace,
+		AppName:    p.appName,
+		Namespace:  p.namespace,
 		SourceDir:  cloneDir,
-		Dockerfile: dockerfile,
-		BuildArgs:  buildArgs,
-		PushTarget: imageRef.Full,
+		Dockerfile: p.dockerfile,
+		BuildArgs:  p.buildArgs,
+		PushTarget: p.imageRef.Full,
 	}
 
-	events, err := r.BuildClient.Submit(buildCtx, req)
+	events, err := r.BuildClient.Submit(ctx, req)
 	if err != nil {
-		return r.setFailedCondition(ctx, app, "BuildSubmitFailed", err.Error())
+		t.setFailed(fmt.Sprintf("BuildSubmitFailed: %v", err))
+		return
 	}
 
-	// Drain build events; on success extract the digest.
 	digest := ""
 	for ev := range events {
 		switch ev.Type {
@@ -243,35 +310,69 @@ func (r *AppReconciler) reconcileGitSource(ctx context.Context, app *mortisev1al
 			log.V(1).Info("build log", "line", ev.Line)
 		case build.EventSuccess:
 			digest = ev.Digest
-			log.Info("build succeeded", "image", imageRef.Full, "digest", digest)
+			log.Info("build succeeded", "image", p.imageRef.Full, "digest", digest)
 		case build.EventFailure:
-			return r.setFailedCondition(ctx, app, "BuildFailed", ev.Error)
+			t.setFailed(ev.Error)
+			return
 		}
 	}
 
-	// Resolve the pushed image reference: prefer digest for determinism.
-	pushedImage := imageRef.Full
+	pushedImage := p.imageRef.Full
 	if digest != "" {
-		// registry/path@sha256:... for immutable references.
-		pushedImage = imageRef.Registry + "/" + imageRef.Path + "@" + digest
+		pushedImage = p.imageRef.Registry + "/" + p.imageRef.Path + "@" + digest
 	}
+	t.setSucceeded(pushedImage, digest)
+}
 
+// applyBuildSuccess writes the successful build result onto the App status.
+func (r *AppReconciler) applyBuildSuccess(ctx context.Context, app *mortisev1alpha1.App, revision, image, digest string) error {
+	log := logf.FromContext(ctx)
 	app.Status.LastBuiltSHA = revision
-	app.Status.LastBuiltImage = pushedImage
+	app.Status.LastBuiltImage = image
 	app.Status.Phase = mortisev1alpha1.AppPhaseDeploying
 	meta.SetStatusCondition(&app.Status.Conditions, metav1.Condition{
 		Type:               "BuildSucceeded",
 		Status:             metav1.ConditionTrue,
 		Reason:             "BuildComplete",
-		Message:            fmt.Sprintf("built %s@%s", imageRef.Full, digest),
+		Message:            fmt.Sprintf("built %s digest=%s", image, digest),
 		LastTransitionTime: metav1.NewTime(r.clock().Now()),
 	})
 	if err := r.Status().Update(ctx, app); err != nil {
 		log.Error(err, "update status after build")
+		return err
 	}
+	return nil
+}
 
-	// Surface the built image to the downstream Deployment reconciler.
-	app.Spec.Source.Image = pushedImage
+// shortTag produces an image tag from a revision string, truncated to 7 chars.
+func shortTag(revision string) string {
+	if len(revision) > 7 {
+		return revision[:7]
+	}
+	return revision
+}
+
+// firstNonEmpty returns a if non-empty, else b.
+func firstNonEmpty(a, b string) string {
+	if a != "" {
+		return a
+	}
+	return b
+}
+
+// dockerfilePath returns the configured Dockerfile path or the default.
+func dockerfilePath(app *mortisev1alpha1.App) string {
+	if app.Spec.Source.Build != nil && app.Spec.Source.Build.DockerfilePath != "" {
+		return app.Spec.Source.Build.DockerfilePath
+	}
+	return "Dockerfile"
+}
+
+// buildArgsOf returns the configured build args or nil.
+func buildArgsOf(app *mortisev1alpha1.App) map[string]string {
+	if app.Spec.Source.Build != nil {
+		return app.Spec.Source.Build.Args
+	}
 	return nil
 }
 
