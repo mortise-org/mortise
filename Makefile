@@ -67,35 +67,6 @@ test: manifests generate fmt vet setup-envtest check-ui ## Run tests.
 check-ui: ## Run svelte-check (Svelte + TypeScript diagnostics) against the UI.
 	cd ui && npm install && npm run check
 
-# TODO(user): To use a different vendor for e2e tests, modify the setup under 'tests/e2e'.
-# The default setup assumes Kind is pre-installed and builds/loads the Manager Docker image locally.
-# CertManager is installed by default; skip with:
-# - CERT_MANAGER_INSTALL_SKIP=true
-KIND_CLUSTER ?= capybara-test-e2e
-
-.PHONY: setup-test-e2e
-setup-test-e2e: ## Set up a Kind cluster for e2e tests if it does not exist
-	@command -v $(KIND) >/dev/null 2>&1 || { \
-		echo "Kind is not installed. Please install Kind manually."; \
-		exit 1; \
-	}
-	@case "$$($(KIND) get clusters)" in \
-		*"$(KIND_CLUSTER)"*) \
-			echo "Kind cluster '$(KIND_CLUSTER)' already exists. Skipping creation." ;; \
-		*) \
-			echo "Creating Kind cluster '$(KIND_CLUSTER)'..."; \
-			$(KIND) create cluster --name $(KIND_CLUSTER) ;; \
-	esac
-
-.PHONY: test-e2e
-test-e2e: setup-test-e2e manifests generate fmt vet ## Run the e2e tests. Expected an isolated environment using Kind.
-	KIND=$(KIND) KIND_CLUSTER=$(KIND_CLUSTER) go test -tags=e2e ./test/e2e/ -v -ginkgo.v
-	$(MAKE) cleanup-test-e2e
-
-.PHONY: cleanup-test-e2e
-cleanup-test-e2e: ## Tear down the Kind cluster used for e2e tests
-	@$(KIND) delete cluster --name $(KIND_CLUSTER)
-
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter
 	"$(GOLANGCI_LINT)" run
@@ -208,6 +179,10 @@ test-integration: ## Create k3d cluster, install chart + test deps, run integrat
 .PHONY: test-integration-fast
 test-integration-fast: ## Run integration tests against the existing dev cluster (requires make dev-up + chart installed)
 	go test -tags integration -count=1 -timeout 5m ./test/integration/...
+
+.PHONY: test-e2e
+test-e2e: ## Run Playwright E2E suite against existing dev cluster.
+	cd ui && npm install && npx playwright install --with-deps chromium && npm run test:e2e
 
 .PHONY: dev-reload
 dev-reload: ## Rebuild image, re-apply CRDs + chart, restart Mortise in existing cluster

@@ -11,7 +11,11 @@
 		"sourceMap": true,
 		"strict": true,
 		"moduleResolution": "bundler"
-	}
+	},
+	// Playwright specs live under tests/e2e and are typechecked by Playwright
+	// itself, not by svelte-check. Excluding them here keeps svelte-check
+	// focused on the Svelte app sources.
+	"exclude": ["tests/e2e/**"]
 	// Path aliases are handled by https://svelte.dev/docs/kit/configuration#alias
 	// except $lib which is handled by https://svelte.dev/docs/kit/configuration#files
 	//

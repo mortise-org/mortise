@@ -42,6 +42,8 @@ __pycache__/
 ui/node_modules/
 ui/.svelte-kit/
 ui/build/
+ui/playwright-report/
+ui/test-results/
 
 # Embedded UI output (copied from ui/build by `make build-ui`)
 internal/ui/build/*
