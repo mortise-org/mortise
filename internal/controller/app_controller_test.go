@@ -196,6 +196,124 @@ var _ = Describe("App Controller", func() {
 		})
 	})
 
+	Context("bindings resolution", func() {
+		const (
+			dbAppName  = "my-db"
+			apiAppName = "my-api"
+		)
+		ctx := context.Background()
+
+		var dbApp, apiApp *mortisev1alpha1.App
+
+		BeforeEach(func() {
+			dbApp = &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      dbAppName,
+					Namespace: namespace,
+				},
+				Spec: mortisev1alpha1.AppSpec{
+					Source: mortisev1alpha1.AppSource{
+						Type:  mortisev1alpha1.SourceTypeImage,
+						Image: "postgres:16",
+					},
+					Network:     mortisev1alpha1.NetworkConfig{Public: false},
+					Credentials: []string{"DATABASE_URL", "host", "port", "user", "password"},
+					Environments: []mortisev1alpha1.Environment{
+						{
+							Name:     "production",
+							Replicas: ptr.To[int32](1),
+							Env: []mortisev1alpha1.EnvVar{
+								{Name: "POSTGRES_PASSWORD", Value: "testpass"},
+							},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, dbApp)).To(Succeed())
+
+			// Reconcile db app first so its Service exists
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: dbAppName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			apiApp = &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      apiAppName,
+					Namespace: namespace,
+				},
+				Spec: mortisev1alpha1.AppSpec{
+					Source: mortisev1alpha1.AppSource{
+						Type:  mortisev1alpha1.SourceTypeImage,
+						Image: "my-api:latest",
+					},
+					Network: mortisev1alpha1.NetworkConfig{Public: true},
+					Environments: []mortisev1alpha1.Environment{
+						{
+							Name:     "production",
+							Replicas: ptr.To[int32](1),
+							Bindings: []mortisev1alpha1.Binding{
+								{Ref: dbAppName},
+							},
+							Domain: "api.example.com",
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, apiApp)).To(Succeed())
+		})
+
+		AfterEach(func() {
+			Expect(k8sClient.Delete(ctx, apiApp)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, dbApp)).To(Succeed())
+		})
+
+		It("should inject bound credentials as env vars in the binder Deployment", func() {
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: apiAppName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var dep appsv1.Deployment
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: "my-api-production", Namespace: namespace,
+			}, &dep)).To(Succeed())
+
+			envVars := dep.Spec.Template.Spec.Containers[0].Env
+
+			// host should be a literal Service DNS value
+			hostVar := findEnvVar(envVars, "host")
+			Expect(hostVar).NotTo(BeNil())
+			Expect(hostVar.Value).To(Equal("my-db-production.default.svc.cluster.local"))
+
+			// port should be a literal value
+			portVar := findEnvVar(envVars, "port")
+			Expect(portVar).NotTo(BeNil())
+			Expect(portVar.Value).To(Equal("80"))
+
+			// DATABASE_URL should be a secretKeyRef
+			dbURLVar := findEnvVar(envVars, "DATABASE_URL")
+			Expect(dbURLVar).NotTo(BeNil())
+			Expect(dbURLVar.ValueFrom).NotTo(BeNil())
+			Expect(dbURLVar.ValueFrom.SecretKeyRef.Name).To(Equal("my-db-credentials"))
+			Expect(dbURLVar.ValueFrom.SecretKeyRef.Key).To(Equal("DATABASE_URL"))
+
+			// user should be a secretKeyRef
+			userVar := findEnvVar(envVars, "user")
+			Expect(userVar).NotTo(BeNil())
+			Expect(userVar.ValueFrom).NotTo(BeNil())
+			Expect(userVar.ValueFrom.SecretKeyRef.Name).To(Equal("my-db-credentials"))
+
+			// password should be a secretKeyRef
+			passVar := findEnvVar(envVars, "password")
+			Expect(passVar).NotTo(BeNil())
+			Expect(passVar.ValueFrom).NotTo(BeNil())
+			Expect(passVar.ValueFrom.SecretKeyRef.Name).To(Equal("my-db-credentials"))
+		})
+	})
+
 	Context("updating an existing App", func() {
 		const appName = "test-update"
 		ctx := context.Background()
@@ -261,3 +379,12 @@ var _ = Describe("App Controller", func() {
 		})
 	})
 })
+
+func findEnvVar(envVars []corev1.EnvVar, name string) *corev1.EnvVar {
+	for i := range envVars {
+		if envVars[i].Name == name {
+			return &envVars[i]
+		}
+	}
+	return nil
+}

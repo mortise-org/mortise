@@ -36,6 +36,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
+	"github.com/MC-Meesh/mortise/internal/bindings"
 )
 
 // AppReconciler reconciles a App object
@@ -100,11 +101,22 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 		replicas = *env.Replicas
 	}
 
+	envVars := toEnvVars(env.Env)
+
+	if len(env.Bindings) > 0 {
+		resolver := &bindings.Resolver{Client: r.Client}
+		boundVars, err := resolver.Resolve(ctx, app.Namespace, env.Bindings)
+		if err != nil {
+			return fmt.Errorf("resolve bindings: %w", err)
+		}
+		envVars = append(boundVars, envVars...)
+	}
+
 	containers := []corev1.Container{
 		{
 			Name:  app.Name,
 			Image: app.Spec.Source.Image,
-			Env:   toEnvVars(env.Env),
+			Env:   envVars,
 		},
 	}
 
