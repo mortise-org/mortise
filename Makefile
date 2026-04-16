@@ -157,9 +157,15 @@ dev-down: ## Delete k3d dev cluster
 	k3d cluster delete $(DEV_CLUSTER)
 
 .PHONY: dev-reload
-dev-reload: ## Rebuild image and restart Mortise in existing cluster
+dev-reload: ## Rebuild image, re-apply CRDs + chart, restart Mortise in existing cluster
 	$(CONTAINER_TOOL) build -t $(DEV_IMG) .
 	k3d image import $(DEV_IMG) -c $(DEV_CLUSTER)
+	kubectl apply -f charts/mortise/crds/
+	helm upgrade mortise charts/mortise \
+		--namespace mortise-system \
+		--set image.repository=mortise \
+		--set image.tag=dev \
+		--set image.pullPolicy=Never
 	kubectl rollout restart deployment/mortise -n mortise-system
 	kubectl rollout status deployment/mortise -n mortise-system --timeout 60s
 

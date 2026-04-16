@@ -43,6 +43,33 @@ func TestCreateProjectAsAdmin(t *testing.T) {
 	}
 }
 
+// TestCreateProjectInvalidName verifies the API rejects names that cannot be
+// used as a DNS-1123 label or that would exceed namespace-name limits. The
+// caller should see a 400 with a descriptive error, not a CRD-layer 422 or
+// a project that gets stuck in Failed phase once the controller tries to
+// create an invalid namespace.
+func TestCreateProjectInvalidName(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+
+	cases := []struct{ name, input string }{
+		{"empty", ""},
+		{"uppercase", "Bad_Name"},
+		{"underscore", "bad_name"},
+		{"leading-hyphen", "-bad"},
+		{"too-long", "a-very-very-very-very-very-very-very-very-very-long-name-that-exceeds-dns-limits"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w := doRequest(h, http.MethodPost, "/api/projects", map[string]any{"name": tc.input})
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400 for %q, got %d: %s", tc.input, w.Code, w.Body.String())
+			}
+		})
+	}
+}
+
 // TestCreateProjectAsMemberForbidden verifies members cannot create projects.
 func TestCreateProjectAsMemberForbidden(t *testing.T) {
 	k8sClient := setupEnvtest(t)

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"regexp"
 
 	"github.com/go-chi/chi/v5"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -18,6 +19,31 @@ import (
 // backs each Project. A Project named "infra" runs in namespace
 // "project-infra". Kept in sync with internal/controller.ProjectNamespacePrefix.
 const ProjectNamespacePrefix = "project-"
+
+// maxProjectNameLen is the maximum length of a Project name. The backing
+// namespace is `project-{name}` and k8s caps namespace names at 63 chars, so
+// names can be at most 63 - len("project-") = 55 characters.
+const maxProjectNameLen = 63 - len(ProjectNamespacePrefix)
+
+// dns1123LabelRegex matches a valid DNS-1123 label: lowercase alphanumerics
+// and hyphens, must start/end with an alphanumeric. Project names must be
+// DNS labels (not subdomains) because they're interpolated into a namespace.
+var dns1123LabelRegex = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
+
+// validateProjectName returns an error message describing why name is invalid,
+// or "" if it's acceptable.
+func validateProjectName(name string) string {
+	if name == "" {
+		return "name is required"
+	}
+	if len(name) > maxProjectNameLen {
+		return fmt.Sprintf("name must be %d characters or fewer", maxProjectNameLen)
+	}
+	if !dns1123LabelRegex.MatchString(name) {
+		return "name must be a DNS-1123 label: lowercase alphanumerics and '-', starting and ending with an alphanumeric"
+	}
+	return ""
+}
 
 // projectNamespace returns the backing namespace name for a Project.
 func projectNamespace(projectName string) string {
@@ -71,8 +97,8 @@ func (s *Server) CreateProject(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errorResponse{"invalid JSON: " + err.Error()})
 		return
 	}
-	if req.Name == "" {
-		writeJSON(w, http.StatusBadRequest, errorResponse{"name is required"})
+	if msg := validateProjectName(req.Name); msg != "" {
+		writeJSON(w, http.StatusBadRequest, errorResponse{msg})
 		return
 	}
 

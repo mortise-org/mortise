@@ -43,4 +43,12 @@ resources:
   kind: PreviewEnvironment
   path: github.com/MC-Meesh/mortise/api/v1alpha1
   version: v1alpha1
+- api:
+    crdVersion: v1
+  controller: true
+  domain: mortise.dev
+  group: mortise
+  kind: Project
+  path: github.com/MC-Meesh/mortise/api/v1alpha1
+  version: v1alpha1
 version: "3"
