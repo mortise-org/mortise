@@ -48,6 +48,7 @@ import (
 	"github.com/MC-Meesh/mortise/internal/bindings"
 	"github.com/MC-Meesh/mortise/internal/build"
 	"github.com/MC-Meesh/mortise/internal/git"
+	"github.com/MC-Meesh/mortise/internal/ingress"
 	"github.com/MC-Meesh/mortise/internal/registry"
 )
 
@@ -71,13 +72,12 @@ type AppReconciler struct {
 	GitClient       git.GitClient
 	RegistryBackend registry.RegistryBackend
 
-	// DefaultClusterIssuer is the cert-manager ClusterIssuer name written onto
-	// every Ingress this controller creates unless the environment opts out
-	// (env.TLS.SecretName) or overrides it (env.TLS.ClusterIssuer). Sourced
-	// from PlatformConfig.spec.tls.certManagerClusterIssuer in cmd/main.go.
-	// When empty, no cert-manager annotation is written — letting operators run
-	// Mortise with an external cert flow, internal PKI, etc. (spec §5.6).
-	DefaultClusterIssuer string
+	// IngressProvider supplies the base annotations (ExternalDNS, cert-manager)
+	// and the optional ingressClassName for every Ingress this controller
+	// creates. Nil-safe: when nil (e.g. in envtest code that doesn't care about
+	// ingress annotations), the controller emits no provider annotations and no
+	// ingressClassName.
+	IngressProvider ingress.IngressProvider
 
 	// builds tracks in-flight asynchronous git-source builds so subsequent
 	// reconciles can check progress without blocking the worker. Lost on
@@ -93,6 +93,7 @@ type AppReconciler struct {
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=ingresses,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=get;list;watch;create;update;patch;delete
 
 func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
@@ -123,6 +124,10 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 
 	if err := r.reconcilePVCs(ctx, &app); err != nil {
 		return ctrl.Result{}, fmt.Errorf("reconcile PVCs: %w", err)
+	}
+
+	if err := r.reconcileServiceAccount(ctx, &app); err != nil {
+		return ctrl.Result{}, fmt.Errorf("reconcile service account: %w", err)
 	}
 
 	credentialsHash, err := r.reconcileCredentialsSecret(ctx, &app)
@@ -531,8 +536,9 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 					Annotations: podAnno,
 				},
 				Spec: corev1.PodSpec{
-					Containers: containers,
-					Volumes:    volumes,
+					ServiceAccountName: app.Name,
+					Containers:         containers,
+					Volumes:            volumes,
 				},
 			},
 		},
@@ -601,27 +607,65 @@ func (r *AppReconciler) reconcileService(ctx context.Context, app *mortisev1alph
 func (r *AppReconciler) reconcileIngress(ctx context.Context, app *mortisev1alpha1.App, env *mortisev1alpha1.Environment) error {
 	name := ingressName(app.Name, env.Name)
 	pathType := networkingv1.PathTypePrefix
+	svcName := serviceName(app.Name, env.Name)
 
-	// Decide the TLS Secret reference and cert-manager annotation independently:
-	//   - BYO Secret (env.TLS.SecretName): reference that Secret, skip the
-	//     cert-manager annotation entirely. The Secret lifecycle is the user's.
-	//   - Otherwise: auto-generate {name}-tls and write the cluster-issuer
-	//     annotation if one is configured (env override > platform default).
-	// If neither a secretName nor an issuer is available, the Ingress is
-	// emitted without any cert-manager annotation — valid per the k8s Ingress
-	// contract (standards, not implementations).
-	var owned map[string]string
+	// Collect all hostnames: primary domain + custom domains.
+	allHosts := []string{env.Domain}
+	allHosts = append(allHosts, env.CustomDomains...)
+
+	// Build IngressRules — one per hostname, all pointing at the same backend.
+	backend := networkingv1.IngressBackend{
+		Service: &networkingv1.IngressServiceBackend{
+			Name: svcName,
+			Port: networkingv1.ServiceBackendPort{Number: 80},
+		},
+	}
+	var rules []networkingv1.IngressRule
+	for _, host := range allHosts {
+		rules = append(rules, networkingv1.IngressRule{
+			Host: host,
+			IngressRuleValue: networkingv1.IngressRuleValue{
+				HTTP: &networkingv1.HTTPIngressRuleValue{
+					Paths: []networkingv1.HTTPIngressPath{
+						{
+							Path:     "/",
+							PathType: &pathType,
+							Backend:  backend,
+						},
+					},
+				},
+			},
+		})
+	}
+
+	// TLS Secret reference: BYO or auto-generated.
 	tlsSecretName := fmt.Sprintf("%s-tls", name)
 	if env.TLS != nil && env.TLS.SecretName != "" {
 		tlsSecretName = env.TLS.SecretName
-	} else {
-		issuer := r.DefaultClusterIssuer
-		if env.TLS != nil && env.TLS.ClusterIssuer != "" {
-			issuer = env.TLS.ClusterIssuer
+	}
+
+	// Base annotations from IngressProvider (ExternalDNS hostname,
+	// cert-manager issuer). Nil-safe: if no provider is set, start empty.
+	var owned map[string]string
+	if r.IngressProvider != nil {
+		owned = r.IngressProvider.Annotations(
+			ingress.AppRef{Name: app.Name, Namespace: app.Namespace},
+			allHosts,
+			nil,
+		)
+	}
+
+	// Per-env TLS overrides (spec §5.6).
+	//   - BYO Secret (env.TLS.SecretName): strip the cert-manager annotation
+	//     from owned — the Secret lifecycle is the user's.
+	//   - env.TLS.ClusterIssuer override: replace the provider default.
+	if env.TLS != nil && env.TLS.SecretName != "" {
+		delete(owned, "cert-manager.io/cluster-issuer")
+	} else if env.TLS != nil && env.TLS.ClusterIssuer != "" {
+		if owned == nil {
+			owned = make(map[string]string, 1)
 		}
-		if issuer != "" {
-			owned = map[string]string{"cert-manager.io/cluster-issuer": issuer}
-		}
+		owned["cert-manager.io/cluster-issuer"] = env.TLS.ClusterIssuer
 	}
 
 	desired := &networkingv1.Ingress{
@@ -632,36 +676,20 @@ func (r *AppReconciler) reconcileIngress(ctx context.Context, app *mortisev1alph
 			Annotations: mergeAnnotations(owned, env.Annotations),
 		},
 		Spec: networkingv1.IngressSpec{
-			Rules: []networkingv1.IngressRule{
-				{
-					Host: env.Domain,
-					IngressRuleValue: networkingv1.IngressRuleValue{
-						HTTP: &networkingv1.HTTPIngressRuleValue{
-							Paths: []networkingv1.HTTPIngressPath{
-								{
-									Path:     "/",
-									PathType: &pathType,
-									Backend: networkingv1.IngressBackend{
-										Service: &networkingv1.IngressServiceBackend{
-											Name: serviceName(app.Name, env.Name),
-											Port: networkingv1.ServiceBackendPort{
-												Number: 80,
-											},
-										},
-									},
-								},
-							},
-						},
-					},
-				},
-			},
+			Rules: rules,
 			TLS: []networkingv1.IngressTLS{
 				{
-					Hosts:      []string{env.Domain},
+					Hosts:      allHosts,
 					SecretName: tlsSecretName,
 				},
 			},
 		},
+	}
+
+	// Set ingressClassName if the provider specifies one.
+	if r.IngressProvider != nil && r.IngressProvider.ClassName() != "" {
+		cn := r.IngressProvider.ClassName()
+		desired.Spec.IngressClassName = &cn
 	}
 
 	if err := controllerutil.SetControllerReference(app, desired, r.Scheme); err != nil {
@@ -680,6 +708,57 @@ func (r *AppReconciler) reconcileIngress(ctx context.Context, app *mortisev1alph
 	existing.Spec = desired.Spec
 	existing.Annotations = desired.Annotations
 	return r.Update(ctx, &existing)
+}
+
+func (r *AppReconciler) reconcileServiceAccount(ctx context.Context, app *mortisev1alpha1.App) error {
+	var imagePullSecrets []corev1.LocalObjectReference
+	if r.RegistryBackend != nil {
+		if ref := r.RegistryBackend.PullSecretRef(); ref != "" {
+			imagePullSecrets = []corev1.LocalObjectReference{{Name: ref}}
+		}
+	}
+
+	desired := &corev1.ServiceAccount{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      app.Name,
+			Namespace: app.Namespace,
+			Labels:    appLabels(app.Name, ""),
+		},
+		ImagePullSecrets: imagePullSecrets,
+	}
+
+	if err := controllerutil.SetControllerReference(app, desired, r.Scheme); err != nil {
+		return err
+	}
+
+	var existing corev1.ServiceAccount
+	err := r.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: app.Namespace}, &existing)
+	if errors.IsNotFound(err) {
+		return r.Create(ctx, desired)
+	}
+	if err != nil {
+		return err
+	}
+
+	if !imagePullSecretsEqual(existing.ImagePullSecrets, desired.ImagePullSecrets) {
+		existing.ImagePullSecrets = desired.ImagePullSecrets
+		return r.Update(ctx, &existing)
+	}
+	return nil
+}
+
+// imagePullSecretsEqual returns true iff a and b reference the same set of
+// secret names in the same order.
+func imagePullSecretsEqual(a, b []corev1.LocalObjectReference) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].Name != b[i].Name {
+			return false
+		}
+	}
+	return true
 }
 
 func (r *AppReconciler) reconcilePVCs(ctx context.Context, app *mortisev1alpha1.App) error {
@@ -1222,6 +1301,7 @@ func (r *AppReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&corev1.Service{}).
 		Owns(&corev1.PersistentVolumeClaim{}).
 		Owns(&corev1.Secret{}).
+		Owns(&corev1.ServiceAccount{}).
 		Owns(&networkingv1.Ingress{}).
 		Named("app").
 		Complete(r)

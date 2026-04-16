@@ -37,6 +37,7 @@ import (
 	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
 	"github.com/MC-Meesh/mortise/internal/build"
 	"github.com/MC-Meesh/mortise/internal/git"
+	"github.com/MC-Meesh/mortise/internal/ingress"
 	"github.com/MC-Meesh/mortise/internal/registry"
 )
 
@@ -146,9 +147,11 @@ var _ = Describe("App Controller", func() {
 
 		It("should annotate the Ingress with DefaultClusterIssuer when configured", func() {
 			reconciler := &AppReconciler{
-				Client:               k8sClient,
-				Scheme:               k8sClient.Scheme(),
-				DefaultClusterIssuer: "prod-issuer",
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+				IngressProvider: ingress.NewAnnotationProvider(ingress.AnnotationProviderConfig{
+					DefaultClusterIssuer: "prod-issuer",
+				}),
 			}
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
@@ -195,9 +198,11 @@ var _ = Describe("App Controller", func() {
 			Expect(k8sClient.Create(ctx, app)).To(Succeed())
 
 			reconciler := &AppReconciler{
-				Client:               k8sClient,
-				Scheme:               k8sClient.Scheme(),
-				DefaultClusterIssuer: "fallback",
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+				IngressProvider: ingress.NewAnnotationProvider(ingress.AnnotationProviderConfig{
+					DefaultClusterIssuer: "fallback",
+				}),
 			}
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
@@ -231,9 +236,11 @@ var _ = Describe("App Controller", func() {
 			Expect(k8sClient.Create(ctx, app)).To(Succeed())
 
 			reconciler := &AppReconciler{
-				Client:               k8sClient,
-				Scheme:               k8sClient.Scheme(),
-				DefaultClusterIssuer: "fallback",
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+				IngressProvider: ingress.NewAnnotationProvider(ingress.AnnotationProviderConfig{
+					DefaultClusterIssuer: "fallback",
+				}),
 			}
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
@@ -272,9 +279,11 @@ var _ = Describe("App Controller", func() {
 			Expect(k8sClient.Create(ctx, app)).To(Succeed())
 
 			reconciler := &AppReconciler{
-				Client:               k8sClient,
-				Scheme:               k8sClient.Scheme(),
-				DefaultClusterIssuer: "fallback",
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+				IngressProvider: ingress.NewAnnotationProvider(ingress.AnnotationProviderConfig{
+					DefaultClusterIssuer: "fallback",
+				}),
 			}
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
@@ -287,6 +296,221 @@ var _ = Describe("App Controller", func() {
 			}, &ing)).To(Succeed())
 			Expect(ing.Annotations["linkerd.io/inject"]).To(Equal("enabled"))
 			Expect(ing.Annotations["cert-manager.io/cluster-issuer"]).To(Equal("user-wins"))
+		})
+	})
+
+	Context("ExternalDNS annotation on Ingress", func() {
+		const appName = "test-externaldns"
+		ctx := context.Background()
+
+		var app *mortisev1alpha1.App
+
+		AfterEach(func() {
+			if app != nil {
+				_ = k8sClient.Delete(ctx, app)
+				app = nil
+			}
+		})
+
+		It("should emit ExternalDNS hostname annotation with env.Domain", func() {
+			app = &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{Name: appName, Namespace: namespace},
+				Spec: mortisev1alpha1.AppSpec{
+					Source: mortisev1alpha1.AppSource{
+						Type: mortisev1alpha1.SourceTypeImage, Image: testImageNginx,
+					},
+					Network: mortisev1alpha1.NetworkConfig{Public: true},
+					Environments: []mortisev1alpha1.Environment{{
+						Name:     "production",
+						Replicas: ptr.To[int32](1),
+						Domain:   "dns.example.com",
+					}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+
+			reconciler := &AppReconciler{
+				Client:          k8sClient,
+				Scheme:          k8sClient.Scheme(),
+				IngressProvider: ingress.NewAnnotationProvider(ingress.AnnotationProviderConfig{}),
+			}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var ing networkingv1.Ingress
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName + "-production", Namespace: namespace,
+			}, &ing)).To(Succeed())
+			Expect(ing.Annotations["external-dns.alpha.kubernetes.io/hostname"]).To(Equal("dns.example.com"))
+		})
+	})
+
+	Context("customDomains on Ingress", func() {
+		const appName = "test-customdomains"
+		ctx := context.Background()
+
+		var app *mortisev1alpha1.App
+
+		AfterEach(func() {
+			if app != nil {
+				_ = k8sClient.Delete(ctx, app)
+				app = nil
+			}
+		})
+
+		It("should create rules for env.Domain and custom domains, all in TLS hosts, all in ExternalDNS annotation", func() {
+			app = &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{Name: appName, Namespace: namespace},
+				Spec: mortisev1alpha1.AppSpec{
+					Source: mortisev1alpha1.AppSource{
+						Type: mortisev1alpha1.SourceTypeImage, Image: testImageNginx,
+					},
+					Network: mortisev1alpha1.NetworkConfig{Public: true},
+					Environments: []mortisev1alpha1.Environment{{
+						Name:          "production",
+						Replicas:      ptr.To[int32](1),
+						Domain:        "primary.example.com",
+						CustomDomains: []string{"custom1.example.com", "custom2.example.com"},
+					}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+
+			reconciler := &AppReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+				IngressProvider: ingress.NewAnnotationProvider(ingress.AnnotationProviderConfig{
+					DefaultClusterIssuer: "letsencrypt",
+				}),
+			}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var ing networkingv1.Ingress
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName + "-production", Namespace: namespace,
+			}, &ing)).To(Succeed())
+
+			// 3 rules: primary + 2 custom domains.
+			Expect(ing.Spec.Rules).To(HaveLen(3))
+			Expect(ing.Spec.Rules[0].Host).To(Equal("primary.example.com"))
+			Expect(ing.Spec.Rules[1].Host).To(Equal("custom1.example.com"))
+			Expect(ing.Spec.Rules[2].Host).To(Equal("custom2.example.com"))
+
+			// TLS covers all hosts.
+			Expect(ing.Spec.TLS).To(HaveLen(1))
+			Expect(ing.Spec.TLS[0].Hosts).To(ConsistOf(
+				"primary.example.com", "custom1.example.com", "custom2.example.com",
+			))
+
+			// ExternalDNS annotation lists all hostnames.
+			Expect(ing.Annotations["external-dns.alpha.kubernetes.io/hostname"]).To(Equal(
+				"primary.example.com,custom1.example.com,custom2.example.com",
+			))
+		})
+	})
+
+	Context("IngressProvider className", func() {
+		const appName = "test-classname"
+		ctx := context.Background()
+
+		var app *mortisev1alpha1.App
+
+		AfterEach(func() {
+			if app != nil {
+				_ = k8sClient.Delete(ctx, app)
+				app = nil
+			}
+		})
+
+		It("should set Spec.IngressClassName when provider ClassName is non-empty", func() {
+			app = &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{Name: appName, Namespace: namespace},
+				Spec: mortisev1alpha1.AppSpec{
+					Source: mortisev1alpha1.AppSource{
+						Type: mortisev1alpha1.SourceTypeImage, Image: testImageNginx,
+					},
+					Network: mortisev1alpha1.NetworkConfig{Public: true},
+					Environments: []mortisev1alpha1.Environment{{
+						Name:     "production",
+						Replicas: ptr.To[int32](1),
+						Domain:   "class.example.com",
+					}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+
+			reconciler := &AppReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+				IngressProvider: ingress.NewAnnotationProvider(ingress.AnnotationProviderConfig{
+					ClassName: "traefik",
+				}),
+			}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var ing networkingv1.Ingress
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName + "-production", Namespace: namespace,
+			}, &ing)).To(Succeed())
+			Expect(ing.Spec.IngressClassName).NotTo(BeNil())
+			Expect(*ing.Spec.IngressClassName).To(Equal("traefik"))
+		})
+	})
+
+	Context("nil IngressProvider (backward compat)", func() {
+		const appName = "test-nil-provider"
+		ctx := context.Background()
+
+		var app *mortisev1alpha1.App
+
+		AfterEach(func() {
+			if app != nil {
+				_ = k8sClient.Delete(ctx, app)
+				app = nil
+			}
+		})
+
+		It("should not crash and should emit no provider annotations or className", func() {
+			app = &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{Name: appName, Namespace: namespace},
+				Spec: mortisev1alpha1.AppSpec{
+					Source: mortisev1alpha1.AppSource{
+						Type: mortisev1alpha1.SourceTypeImage, Image: testImageNginx,
+					},
+					Network: mortisev1alpha1.NetworkConfig{Public: true},
+					Environments: []mortisev1alpha1.Environment{{
+						Name:     "production",
+						Replicas: ptr.To[int32](1),
+						Domain:   "nil.example.com",
+					}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var ing networkingv1.Ingress
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName + "-production", Namespace: namespace,
+			}, &ing)).To(Succeed())
+
+			_, hasExternalDNS := ing.Annotations["external-dns.alpha.kubernetes.io/hostname"]
+			Expect(hasExternalDNS).To(BeFalse())
+			_, hasCertManager := ing.Annotations["cert-manager.io/cluster-issuer"]
+			Expect(hasCertManager).To(BeFalse())
+			Expect(ing.Spec.IngressClassName).To(BeNil())
 		})
 	})
 
@@ -1174,6 +1398,171 @@ var _ = Describe("App Controller", func() {
 			Expect(err.Error()).To(ContainSubstring("not found"))
 		})
 	})
+
+	Context("ServiceAccount creation and imagePullSecret wiring", func() {
+		ctx := context.Background()
+
+		It("creates a ServiceAccount named after the app, owned by the App", func() {
+			const appName = "sa-basic"
+			app := &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{Name: appName, Namespace: namespace},
+				Spec: mortisev1alpha1.AppSpec{
+					Source:  mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: testImageNginx},
+					Network: mortisev1alpha1.NetworkConfig{Public: false},
+					Environments: []mortisev1alpha1.Environment{
+						{Name: "production", Replicas: ptr.To[int32](1)},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var sa corev1.ServiceAccount
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName, Namespace: namespace,
+			}, &sa)).To(Succeed())
+
+			Expect(sa.OwnerReferences).To(HaveLen(1))
+			Expect(sa.OwnerReferences[0].Name).To(Equal(appName))
+			Expect(*sa.OwnerReferences[0].Controller).To(BeTrue())
+			Expect(sa.Labels["app.kubernetes.io/managed-by"]).To(Equal("mortise"))
+		})
+
+		It("sets serviceAccountName on the Deployment pod spec", func() {
+			const appName = "sa-dep-ref"
+			app := &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{Name: appName, Namespace: namespace},
+				Spec: mortisev1alpha1.AppSpec{
+					Source:  mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: testImageNginx},
+					Network: mortisev1alpha1.NetworkConfig{Public: false},
+					Environments: []mortisev1alpha1.Environment{
+						{Name: "production", Replicas: ptr.To[int32](1)},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var dep appsv1.Deployment
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName + "-production", Namespace: namespace,
+			}, &dep)).To(Succeed())
+			Expect(dep.Spec.Template.Spec.ServiceAccountName).To(Equal(appName))
+		})
+
+		It("attaches imagePullSecrets when RegistryBackend has a PullSecretRef", func() {
+			const appName = "sa-pull-secret"
+			app := &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{Name: appName, Namespace: namespace},
+				Spec: mortisev1alpha1.AppSpec{
+					Source:  mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: testImageNginx},
+					Network: mortisev1alpha1.NetworkConfig{Public: false},
+					Environments: []mortisev1alpha1.Environment{
+						{Name: "production", Replicas: ptr.To[int32](1)},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+
+			reconciler := &AppReconciler{
+				Client:          k8sClient,
+				Scheme:          k8sClient.Scheme(),
+				RegistryBackend: &fakeRegistryBackend{pullSecretName: "registry-pull"},
+			}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var sa corev1.ServiceAccount
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName, Namespace: namespace,
+			}, &sa)).To(Succeed())
+			Expect(sa.ImagePullSecrets).To(HaveLen(1))
+			Expect(sa.ImagePullSecrets[0].Name).To(Equal("registry-pull"))
+		})
+
+		It("creates SA without imagePullSecrets when RegistryBackend is nil", func() {
+			const appName = "sa-no-registry"
+			app := &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{Name: appName, Namespace: namespace},
+				Spec: mortisev1alpha1.AppSpec{
+					Source:  mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: testImageNginx},
+					Network: mortisev1alpha1.NetworkConfig{Public: false},
+					Environments: []mortisev1alpha1.Environment{
+						{Name: "production", Replicas: ptr.To[int32](1)},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var sa corev1.ServiceAccount
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName, Namespace: namespace,
+			}, &sa)).To(Succeed())
+			Expect(sa.ImagePullSecrets).To(BeEmpty())
+		})
+
+		It("is idempotent on re-reconcile", func() {
+			const appName = "sa-idempotent"
+			app := &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{Name: appName, Namespace: namespace},
+				Spec: mortisev1alpha1.AppSpec{
+					Source:  mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: testImageNginx},
+					Network: mortisev1alpha1.NetworkConfig{Public: false},
+					Environments: []mortisev1alpha1.Environment{
+						{Name: "production", Replicas: ptr.To[int32](1)},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+
+			reconciler := &AppReconciler{
+				Client:          k8sClient,
+				Scheme:          k8sClient.Scheme(),
+				RegistryBackend: &fakeRegistryBackend{pullSecretName: "registry-pull"},
+			}
+
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Second reconcile should not error.
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var sa corev1.ServiceAccount
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName, Namespace: namespace,
+			}, &sa)).To(Succeed())
+			Expect(sa.ImagePullSecrets).To(HaveLen(1))
+			Expect(sa.ImagePullSecrets[0].Name).To(Equal("registry-pull"))
+		})
+	})
 })
 
 // --- Mock types for git-source tests ---
@@ -1233,7 +1622,8 @@ func (f *fakeGitClient) Fetch(_ context.Context, _, _ string) error {
 
 // fakeRegistryBackend implements registry.RegistryBackend for tests.
 type fakeRegistryBackend struct {
-	imageRef registry.ImageRef
+	imageRef       registry.ImageRef
+	pullSecretName string
 }
 
 func (f *fakeRegistryBackend) PushTarget(app, tag string) (registry.ImageRef, error) {
@@ -1248,7 +1638,7 @@ func (f *fakeRegistryBackend) PushTarget(app, tag string) (registry.ImageRef, er
 	}, nil
 }
 
-func (f *fakeRegistryBackend) PullSecretRef() string { return "" }
+func (f *fakeRegistryBackend) PullSecretRef() string { return f.pullSecretName }
 
 func (f *fakeRegistryBackend) Tags(_ context.Context, _ string) ([]string, error) {
 	return nil, nil

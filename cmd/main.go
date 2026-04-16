@@ -49,6 +49,7 @@ import (
 	"github.com/MC-Meesh/mortise/internal/build"
 	"github.com/MC-Meesh/mortise/internal/controller"
 	"github.com/MC-Meesh/mortise/internal/git"
+	"github.com/MC-Meesh/mortise/internal/ingress"
 	"github.com/MC-Meesh/mortise/internal/platformconfig"
 	"github.com/MC-Meesh/mortise/internal/registry"
 	"github.com/MC-Meesh/mortise/internal/ui"
@@ -363,13 +364,18 @@ func main() {
 	}
 	stk := buildStacks(context.Background(), directReader, setupLog)
 
-	if err := (&controller.AppReconciler{
-		Client:               mgr.GetClient(),
-		Scheme:               mgr.GetScheme(),
-		BuildClient:          stk.build,
-		GitClient:            stk.git,
-		RegistryBackend:      stk.registry,
+	ingressProvider := ingress.NewAnnotationProvider(ingress.AnnotationProviderConfig{
+		ClassName:            os.Getenv("MORTISE_INGRESS_CLASS"),
 		DefaultClusterIssuer: stk.TLS.CertManagerClusterIssuer,
+	})
+
+	if err := (&controller.AppReconciler{
+		Client:          mgr.GetClient(),
+		Scheme:          mgr.GetScheme(),
+		BuildClient:     stk.build,
+		GitClient:       stk.git,
+		RegistryBackend: stk.registry,
+		IngressProvider: ingressProvider,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "App")
 		os.Exit(1)
