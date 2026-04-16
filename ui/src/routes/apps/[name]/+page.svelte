@@ -3,7 +3,8 @@
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import { api } from '$lib/api';
-	import type { App, EnvironmentStatus, SecretResponse } from '$lib/types';
+	import EnvVarEditor from '$lib/components/EnvVarEditor.svelte';
+	import type { App, EnvironmentStatus, EnvVar, SecretResponse } from '$lib/types';
 
 	const appName = $derived(page.params.name);
 
@@ -14,6 +15,12 @@
 	let deployImage = $state('');
 	let deploying = $state(false);
 	let activeTab = $state(0);
+	let copied = $state<string | null>(null);
+
+	// Env var editing
+	let envVars = $state<EnvVar[]>([]);
+	let envDirty = $state(false);
+	let savingEnv = $state(false);
 
 	// Secret form
 	let newSecretKey = $state('');
@@ -34,10 +41,69 @@
 		try {
 			app = await api.get<App>(`/apps/${appName}`);
 			secrets = await api.get<SecretResponse[]>(`/apps/${appName}/secrets`);
+			syncEnvVarsFromApp();
 		} catch (err) {
 			error = err instanceof Error ? err.message : 'Failed to load app';
 		} finally {
 			loading = false;
+		}
+	}
+
+	function syncEnvVarsFromApp() {
+		const env = app?.spec.environments?.[activeTab]?.env ?? [];
+		envVars = env.map((e) => ({ name: e.name, value: e.value ?? '', valueFrom: e.valueFrom }));
+		envDirty = false;
+	}
+
+	$effect(() => {
+		// When the active tab changes and we aren't dirty, resync from the app.
+		activeTab;
+		if (!envDirty && app) syncEnvVarsFromApp();
+	});
+
+	function onEnvChange() {
+		// The EnvVarEditor writes to envVars via bind:value. Mark dirty whenever
+		// the serialized form differs from what the server last returned.
+		const current = (app?.spec.environments?.[activeTab]?.env ?? []).map((e) => ({
+			name: e.name,
+			value: e.value ?? ''
+		}));
+		const next = envVars.map((e) => ({ name: e.name, value: e.value ?? '' }));
+		if (current.length !== next.length) {
+			envDirty = true;
+			return;
+		}
+		for (let i = 0; i < current.length; i++) {
+			if (current[i].name !== next[i].name || current[i].value !== next[i].value) {
+				envDirty = true;
+				return;
+			}
+		}
+		envDirty = false;
+	}
+
+	$effect(() => {
+		// Re-run dirty check whenever envVars changes.
+		envVars;
+		if (app) onEnvChange();
+	});
+
+	async function saveEnvVars() {
+		if (!app) return;
+		savingEnv = true;
+		try {
+			const spec = structuredClone($state.snapshot(app.spec));
+			const envs = spec.environments ?? [];
+			if (envs[activeTab]) {
+				envs[activeTab].env = envVars.filter((v) => v.name.trim());
+				spec.environments = envs;
+			}
+			await api.put(`/apps/${appName}`, spec);
+			await loadApp();
+		} catch (err) {
+			error = err instanceof Error ? err.message : 'Failed to save variables';
+		} finally {
+			savingEnv = false;
 		}
 	}
 
@@ -104,17 +170,48 @@
 		}
 	}
 
-	const phaseColors: Record<string, string> = {
-		Ready: 'bg-success/20 text-success',
-		Deploying: 'bg-accent/20 text-accent',
-		Building: 'bg-accent/20 text-accent',
-		Pending: 'bg-warning/20 text-warning',
-		Failed: 'bg-danger/20 text-danger'
+	async function copy(text: string, key: string) {
+		try {
+			await navigator.clipboard.writeText(text);
+			copied = key;
+			setTimeout(() => {
+				if (copied === key) copied = null;
+			}, 1500);
+		} catch {
+			// ignore
+		}
+	}
+
+	const phaseStyles: Record<string, { dot: string; pill: string }> = {
+		Ready: { dot: 'bg-success', pill: 'bg-success/15 text-success' },
+		Deploying: { dot: 'bg-accent animate-pulse', pill: 'bg-accent/15 text-accent' },
+		Building: { dot: 'bg-accent animate-pulse', pill: 'bg-accent/15 text-accent' },
+		Pending: { dot: 'bg-warning', pill: 'bg-warning/15 text-warning' },
+		Failed: { dot: 'bg-danger', pill: 'bg-danger/15 text-danger' }
 	};
+
+	function phase() {
+		return app?.status?.phase ?? 'Pending';
+	}
+
+	function currentImage(envName: string): string | undefined {
+		const s = app?.status?.environments?.find((e) => e.name === envName);
+		return s?.currentImage ?? app?.spec.source.image;
+	}
 </script>
 
 {#if loading}
-	<div class="text-sm text-gray-500">Loading...</div>
+	<!-- Loading skeleton -->
+	<div class="animate-pulse">
+		<div class="mb-6 flex items-center gap-3">
+			<div class="h-6 w-6 rounded bg-surface-700"></div>
+			<div class="h-6 w-40 rounded bg-surface-700"></div>
+			<div class="h-5 w-16 rounded-full bg-surface-700"></div>
+		</div>
+		<div class="mb-4 h-24 rounded-lg bg-surface-800"></div>
+		<div class="mb-4 h-10 rounded-lg bg-surface-800"></div>
+		<div class="h-64 rounded-lg bg-surface-800"></div>
+	</div>
 {:else if error && !app}
 	<div class="rounded-md bg-danger/10 px-3 py-2 text-sm text-danger">{error}</div>
 {:else if app}
@@ -126,13 +223,17 @@
 		<!-- Header -->
 		<div class="mb-6 flex items-center justify-between">
 			<div class="flex items-center gap-3">
-				<a href="/" class="text-gray-500 hover:text-white">&larr;</a>
+				<a href="/" class="text-gray-500 hover:text-white" aria-label="Back to apps">&larr;</a>
 				<h1 class="text-xl font-semibold text-white">{app.metadata.name}</h1>
-				{#if app.status?.phase}
-					<span class="rounded-full px-2 py-0.5 text-xs font-medium {phaseColors[app.status.phase] ?? ''}">
-						{app.status.phase}
-					</span>
-				{/if}
+				<span
+					class="inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium {phaseStyles[
+						phase()
+					]?.pill ?? 'bg-surface-700 text-gray-400'}"
+				>
+					<span class="h-1.5 w-1.5 rounded-full {phaseStyles[phase()]?.dot ?? 'bg-gray-500'}"
+					></span>
+					{phase()}
+				</span>
 			</div>
 			<button
 				onclick={handleDeleteApp}
@@ -142,15 +243,70 @@
 			</button>
 		</div>
 
+		<!-- Overview -->
+		<section class="mb-6 grid grid-cols-1 gap-4 md:grid-cols-3">
+			<div class="rounded-lg border border-surface-600 bg-surface-800 p-4">
+				<div class="text-xs uppercase tracking-wide text-gray-500">Source</div>
+				<div class="mt-1 text-sm text-white">
+					{app.spec.source.type === 'image' ? 'Container Image' : 'Git Repository'}
+				</div>
+				{#if app.spec.source.image}
+					<div class="mt-1 break-all font-mono text-xs text-gray-400">
+						{currentImage(app.spec.environments?.[activeTab]?.name ?? '') ?? app.spec.source.image}
+					</div>
+				{/if}
+			</div>
+
+			<div class="rounded-lg border border-surface-600 bg-surface-800 p-4">
+				<div class="text-xs uppercase tracking-wide text-gray-500">Replicas</div>
+				{#if app.spec.environments?.[activeTab]}
+					{@const env = app.spec.environments[activeTab]}
+					{@const envStatus = app.status?.environments?.find((e) => e.name === env.name)}
+					<div class="mt-1 text-2xl font-semibold text-white">
+						{envStatus?.readyReplicas ?? 0}
+						<span class="text-sm font-normal text-gray-500">/ {env.replicas ?? 1}</span>
+					</div>
+					<div class="mt-1 text-xs text-gray-500">ready / desired</div>
+				{/if}
+			</div>
+
+			<div class="rounded-lg border border-surface-600 bg-surface-800 p-4">
+				<div class="text-xs uppercase tracking-wide text-gray-500">Domain</div>
+				{#if app.spec.environments?.[activeTab]?.domain}
+					{@const d = app.spec.environments[activeTab].domain!}
+					<div class="mt-1 flex items-center gap-2">
+						<a
+							href="https://{d}"
+							target="_blank"
+							rel="noopener noreferrer"
+							class="truncate text-sm text-accent hover:text-accent-hover"
+						>
+							{d}
+						</a>
+						<button
+							type="button"
+							onclick={() => copy(d, 'domain')}
+							class="shrink-0 text-xs text-gray-500 transition-colors hover:text-white"
+							aria-label="Copy domain"
+						>
+							{copied === 'domain' ? 'Copied!' : 'Copy'}
+						</button>
+					</div>
+				{:else}
+					<div class="mt-1 text-sm text-gray-500">Private</div>
+				{/if}
+			</div>
+		</section>
+
 		<!-- Deploy -->
 		<section class="mb-6 rounded-lg border border-surface-600 bg-surface-800 p-5">
-			<h2 class="mb-3 text-sm font-medium text-gray-300">Deploy</h2>
+			<h2 class="mb-3 text-sm font-medium text-gray-300">Deploy new image</h2>
 			<div class="flex gap-2">
 				<input
 					type="text"
 					bind:value={deployImage}
 					placeholder="registry.example.com/app:v2.0.0"
-					class="flex-1 rounded-md border border-surface-600 bg-surface-700 px-3 py-2 text-sm text-white placeholder-gray-500 outline-none focus:border-accent"
+					class="flex-1 rounded-md border border-surface-600 bg-surface-700 px-3 py-2 font-mono text-sm text-white placeholder-gray-500 outline-none focus:border-accent"
 				/>
 				<button
 					onclick={handleDeploy}
@@ -163,7 +319,7 @@
 		</section>
 
 		<!-- Environment tabs -->
-		{#if app.spec.environments && app.spec.environments.length > 0}
+		{#if app.spec.environments && app.spec.environments.length > 1}
 			<div class="mb-4 flex gap-1 border-b border-surface-600">
 				{#each app.spec.environments as env, i}
 					<button
@@ -183,47 +339,49 @@
 			{@const env = app.spec.environments[activeTab]}
 			{@const envStatus = app.status?.environments?.find((e) => e.name === env.name)}
 
-			<div class="space-y-4">
-				<!-- Info row -->
-				<div class="flex gap-6 text-sm text-gray-400">
-					{#if env.domain}
-						<div>Domain: <span class="text-white">{env.domain}</span></div>
-					{/if}
-					<div>Replicas: <span class="text-white">{env.replicas ?? 1}</span></div>
-					{#if envStatus}
-						<div>Ready: <span class="text-white">{envStatus.readyReplicas ?? 0}</span></div>
-					{/if}
-				</div>
-
-				<!-- Env vars (from spec, read-only display) -->
-				{#if env.env && env.env.length > 0}
-					<section class="rounded-lg border border-surface-600 bg-surface-800 p-4">
-						<h3 class="mb-2 text-sm font-medium text-gray-300">Variables</h3>
-						<div class="space-y-1">
-							{#each env.env as envVar}
-								<div class="flex text-sm">
-									<span class="w-40 font-mono text-gray-400">{envVar.name}</span>
-									<span class="font-mono text-white">{envVar.valueFrom ? '********' : envVar.value}</span>
-								</div>
-							{/each}
-						</div>
-					</section>
-				{/if}
+			<div class="space-y-6">
+				<!-- Env vars editor -->
+				<section>
+					<div class="mb-2 flex items-center justify-between">
+						<h2 class="text-sm font-medium text-gray-300">Environment Variables</h2>
+						{#if envDirty}
+							<div class="flex items-center gap-2">
+								<button
+									type="button"
+									onclick={syncEnvVarsFromApp}
+									disabled={savingEnv}
+									class="rounded-md border border-surface-600 px-3 py-1.5 text-xs text-gray-400 transition-colors hover:text-white"
+								>
+									Discard
+								</button>
+								<button
+									type="button"
+									onclick={saveEnvVars}
+									disabled={savingEnv}
+									class="rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-accent-hover disabled:opacity-50"
+								>
+									{savingEnv ? 'Saving...' : 'Save changes'}
+								</button>
+							</div>
+						{/if}
+					</div>
+					<EnvVarEditor bind:value={envVars} />
+				</section>
 
 				<!-- Deploy history -->
 				{#if envStatus?.deployHistory && envStatus.deployHistory.length > 0}
-					<section class="rounded-lg border border-surface-600 bg-surface-800 p-4">
-						<h3 class="mb-2 text-sm font-medium text-gray-300">Deploy History</h3>
+					<section class="rounded-lg border border-surface-600 bg-surface-800 p-5">
+						<h2 class="mb-3 text-sm font-medium text-gray-300">Deploy History</h2>
 						<div class="space-y-2">
 							{#each envStatus.deployHistory.toReversed() as record, i}
 								<div class="flex items-center justify-between text-sm">
-									<div>
+									<div class="min-w-0 flex-1">
 										<span class="font-mono text-white">{record.image}</span>
 										{#if record.gitSHA}
 											<span class="ml-2 text-gray-500">{record.gitSHA.slice(0, 7)}</span>
 										{/if}
 									</div>
-									<div class="flex items-center gap-3">
+									<div class="flex shrink-0 items-center gap-3">
 										<span class="text-xs text-gray-500">
 											{new Date(record.timestamp).toLocaleDateString('en-US', {
 												month: 'short',
@@ -234,7 +392,8 @@
 										</span>
 										{#if i > 0}
 											<button
-												onclick={() => handleRollback(envStatus, envStatus.deployHistory!.length - 1 - i)}
+												onclick={() =>
+													handleRollback(envStatus, envStatus.deployHistory!.length - 1 - i)}
 												class="text-xs text-accent hover:text-accent-hover"
 											>
 												Rollback
@@ -256,10 +415,14 @@
 			{#if secrets.length > 0}
 				<div class="mb-4 space-y-2">
 					{#each secrets as secret}
-						<div class="flex items-center justify-between rounded-md bg-surface-700 px-3 py-2 text-sm">
+						<div
+							class="flex items-center justify-between rounded-md bg-surface-700 px-3 py-2 text-sm"
+						>
 							<div>
 								<span class="font-mono text-white">{secret.name}</span>
-								<span class="ml-2 text-xs text-gray-500">{secret.keys.length} key{secret.keys.length !== 1 ? 's' : ''}</span>
+								<span class="ml-2 text-xs text-gray-500"
+									>{secret.keys.length} key{secret.keys.length !== 1 ? 's' : ''}</span
+								>
 							</div>
 							<button
 								onclick={() => handleDeleteSecret(secret.name)}
