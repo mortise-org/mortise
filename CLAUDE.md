@@ -59,12 +59,20 @@ controller  →  DNSProvider      →  ExternalDNS annotation-driven
 
 No interface without a real v1 implementation behind it.
 
-### Everything is an App
+### Everything is an App, grouped under Projects
 
-One CRD, one concept. Source type (git | image) determines how it deploys.
-No separate ServiceInstance, DatabaseInstance, or similar CRDs. Backing
-services (Postgres, Redis) are Apps with `network.public: false` and a
-`credentials` block. Other Apps bind to them.
+One CRD for workloads, one concept. Source type (git | image) determines
+how it deploys. No separate ServiceInstance, DatabaseInstance, or similar
+CRDs. Backing services (Postgres, Redis) are Apps with
+`network.public: false` and a `credentials` block. Other Apps bind to them.
+
+**Apps live inside Projects, not free-floating.** Every App belongs to
+exactly one Project; its namespace is `project-{project-name}`. Users,
+URLs, and CLI commands scope to a current project context. When in doubt
+about where something goes: does it exist PER PROJECT (apps, secrets,
+domains, preview envs) or PER PLATFORM (users, git providers, DNS config,
+platform domain)? Per-project → lives under the project namespace.
+Per-platform → lives in `mortise-system` or a cluster-scoped CRD.
 
 ### Mortise owns only what it creates
 
@@ -222,12 +230,27 @@ Makefile
 ## CRD quick reference
 
 ```yaml
-# App — the only user-facing resource
+# Project — top-level grouping, cluster-scoped
+apiVersion: mortise.dev/v1alpha1
+kind: Project
+metadata:
+  name: my-saas
+spec:
+  description: "Customer-facing SaaS stack"
+status:
+  phase: Ready               # Pending | Ready | Terminating | Failed
+  namespace: project-my-saas
+  appCount: 3
+```
+
+```yaml
+# App — the user-facing workload resource
+# Apps live in their Project's namespace: metadata.namespace = project-{project-name}
 apiVersion: mortise.dev/v1alpha1
 kind: App
 metadata:
   name: my-app
-  namespace: my-project
+  namespace: project-my-saas
 spec:
   source:
     type: git | image
@@ -237,7 +260,12 @@ spec:
     public: true             # false for backing services
   storage: [...]             # named volumes
   credentials: [...]         # backing-service credential declaration
-  environments: [...]        # named envs with replicas, resources, env, bindings
+  environments:               # named envs with replicas, resources, env, bindings
+    - name: production
+      bindings:
+        - ref: my-db                    # same project (default)
+        - ref: shared-cache
+          project: infra                # cross-project binding
   preview: { ... }           # PR-driven preview config (git source only)
 ```
 

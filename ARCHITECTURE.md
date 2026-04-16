@@ -38,7 +38,7 @@ flowchart TB
             BuildKit["BuildKit - rootless Deployment + layer cache PVC"]
         end
 
-        subgraph UserNS["user namespaces - one per App"]
+        subgraph ProjectNS["project namespace - one per Project, contains all Apps in that Project"]
             direction TB
             AppPod["User App Pod - Deployment"]
             BackingPod["Backing Service Pod - e.g. postgres 16"]
@@ -84,10 +84,12 @@ flowchart TB
 - **Named arrows** (`GitProvider iface`, `BuildClient iface`, etc.) cross one of
   the outward interface seams defined in SPEC §11. Everything the operator does
   *outside* the Kubernetes API goes through one of these contracts.
-- **Namespaces** are the ownership boundary. `mortise-system` is the platform
-  itself; `mortise-builds` is isolated so build pods can't interfere with user
-  workloads; each user App gets its own namespace with its own Deployments,
-  Services, Ingresses, and PVCs.
+- **Namespaces are organized around Projects.** `mortise-system` holds the
+  platform itself; `mortise-builds` is isolated so build pods can't
+  interfere with user workloads; each **Project** owns a namespace named
+  `project-{name}` that contains every App in that project along with its
+  Deployments, Services, Ingresses, PVCs, and Secrets. Deleting a Project
+  deletes its namespace, which cascades to every resource inside.
 - **Bindings** (bottom dotted arrow): resolved by the operator at reconcile
   time and baked into the binder's Deployment spec (literal env for Service
   DNS facts; `secretKeyRef` for credentials pulled from k8s Secrets). The
@@ -112,15 +114,16 @@ flowchart TB
 
 | Component | Namespace | Role | Scope boundary |
 |---|---|---|---|
-| **Mortise Operator** | `mortise-system` | Reconciles CRDs (`App`, `PreviewEnvironment`, `PlatformConfig`, `GitProvider`, `Team`). Serves the REST API and UI. Handles webhooks. Owns everything the platform creates. | Never touches resources outside what it created; coexists with Argo CD, manual kubectl, other tools. |
+| **Mortise Operator** | `mortise-system` | Reconciles CRDs (`Project`, `App`, `PreviewEnvironment`, `PlatformConfig`, `GitProvider`). Serves the REST API and UI. Handles webhooks. Owns everything the platform creates. | Never touches resources outside what it created; coexists with Argo CD, manual kubectl, other tools. |
+| **Project** (CRD) | cluster-scoped | Top-level grouping. Each Project owns a namespace named `project-{name}` via owner reference; deleting the Project deletes the namespace and cascades to every resource inside. | Users interact via project name only; `project-` prefix is internal plumbing. |
 | **Operator state** | `mortise-system` | Deploy history in App CRD status; users/sessions as k8s Secrets; audit/build logs to stdout. No PVC, no database — operator is stateless. | Never stores user app data. |
 | **Traefik** | `mortise-system` | Ingress controller. Routes external HTTPS traffic to user Apps and the Mortise API/UI. | Installed and managed by the Mortise chart; can be disabled when the cluster has an existing controller (SPEC §8.3). |
 | **cert-manager** | `mortise-system` | Issues TLS certs via ACME (or self-signed in dev/test). Triggered by annotations on Ingress resources. | Core chart dependency; not touched by user. |
 | **ExternalDNS** | `mortise-system` | Watches Ingress resources and creates matching DNS records at the configured provider. | Core chart dependency; configured once during install. |
 | **Zot** | `mortise-system` | OCI image registry. Default target for builds unless external registry configured. | Installed conditionally (omitted if user picks GHCR/Docker Hub/custom). |
 | **BuildKit** | `mortise-builds` | Builds container images from git sources. Consumes LLB or Dockerfile input; pushes to registry. | Installed lazily on first git App. Pooling / scale-out is post-v1 operator work if queue wait becomes a problem. |
-| **User App pods** | `<app-ns>` | The actual workloads Mortise deploys. | Pure 12-factor; no Mortise SDK or sidecar required. |
-| **Backing service pods** | `<app-ns>` | Apps with `credentials:` declared — typically stateful (Postgres, Redis). Other Apps bind to them. | v1 = `image` source + PVC + manual credentials. Users who need HA/PITR install CNPG or redis-operator directly and point Apps at them (SPEC §6.3). |
+| **User App pods** | `project-{name}` | The actual workloads Mortise deploys. All Apps inside a project share its namespace. | Pure 12-factor; no Mortise SDK or sidecar required. |
+| **Backing service pods** | `project-{name}` | Apps with `credentials:` declared — typically stateful (Postgres, Redis). Other Apps in the same project bind trivially via Service DNS; cross-project bindings are allowed but must name the project explicitly. | v1 = `image` source + PVC + manual credentials. Users who need HA/PITR install CNPG or redis-operator directly and point Apps at them (SPEC §6.3). |
 
 ---
 

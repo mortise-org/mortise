@@ -253,16 +253,30 @@ kubectl get pods -A -l app.kubernetes.io/managed-by=mortise -w
 # Stream operator logs
 kubectl -n mortise-system logs -l app.kubernetes.io/name=mortise -f --tail=50
 
-# Create an App via the API (admin already set up)
+# Create an App in the default project via the API (admin already set up)
 TOKEN=$(curl -s -X POST http://localhost:8090/api/auth/login \
   -H "Content-Type: application/json" \
   -d '{"email":"admin@local","password":"admin123"}' | jq -r .token)
 
-curl -X POST http://localhost:8090/api/apps \
+# List projects (default should exist)
+curl -s http://localhost:8090/api/projects -H "Authorization: Bearer $TOKEN" | jq
+
+# Create an app inside the default project
+curl -X POST http://localhost:8090/api/projects/default/apps \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"name":"nginx-test","spec":{"source":{"type":"image","image":"nginx:1.27"},"network":{"public":false},"environments":[{"name":"production","replicas":1,"resources":{"cpu":"50m","memory":"64Mi"}}]}}'
 
-# Inspect the created k8s resources
-kubectl get app,deployment,service,ingress -l app.kubernetes.io/name=nginx-test -A
+# Inspect the created k8s resources (in the project namespace)
+kubectl get app,deployment,service,ingress -n project-default
+
+# Create a second project
+curl -X POST http://localhost:8090/api/projects \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"staging","spec":{"description":"Staging environment"}}'
+
+# Tear down a whole project (cascades to everything inside)
+curl -X DELETE http://localhost:8090/api/projects/staging \
+  -H "Authorization: Bearer $TOKEN"
 ```

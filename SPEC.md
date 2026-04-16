@@ -118,24 +118,35 @@ wrapper for bootstrap may return later.
 Apps do not stand alone. They live inside a **Project** — the equivalent of
 a Railway "project" or a Vercel "team." A project groups related apps
 (frontend + backend + database) that deploy together, tear down together,
-and bind freely to one another.
+and bind freely to one another. The Project is the first concept a user
+meets after logging in; everything below it (apps, domains, secrets) is
+scoped to its containing project.
 
-**Architecture:**
-- `Project` is a cluster-scoped CRD. Creating one provisions a dedicated
-  Kubernetes namespace named after the project.
-- Apps live inside a project's namespace (`metadata.namespace = project-name`).
-- Deleting a Project deletes the namespace and, via owner references, every
-  App, Deployment, Service, Ingress, PVC, and Secret inside it.
+#### Model
 
-**Cross-project bindings** are allowed but explicit. Within-project
-bindings use `bindings: [{ ref: my-db }]`. Cross-project uses
-`bindings: [{ ref: my-db, project: other-project }]`. Within-project is
-the default and overwhelmingly the common case.
+- `Project` is a cluster-scoped CRD.
+- When reconciled, the Project controller creates a Kubernetes namespace
+  named `project-{project-name}` and sets itself as the namespace's owner
+  reference.
+- Apps live inside that namespace (`metadata.namespace = project-{name}`).
+  Users never type namespace names directly — the UI, API, and CLI accept
+  the project name and translate.
+- Deleting the Project deletes its namespace, which cascades (via standard
+  k8s garbage collection) to every App, Deployment, Service, Ingress, PVC,
+  and Secret inside.
 
-**Default project:** every user gets a `default` project on first login so
-the experience is never empty. Users can rename it or create more.
+**Namespace naming** is prefixed (`project-foo`) to avoid collisions with
+system namespaces (`default`, `kube-system`, `mortise-system`). Users do not
+see this prefix in day-to-day use; it is surfaced only in CLI/debug output.
 
-**Project CRD (v1 surface):**
+#### Default project
+
+On first-user setup (the `/api/auth/setup` flow), the backend automatically
+creates a `default` Project before redirecting the user to the dashboard.
+The workspace is never empty, the "Create your first project" anti-pattern
+is avoided, and users can rename or create additional projects at leisure.
+
+#### Project CRD (v1 surface)
 
 ```yaml
 apiVersion: mortise.dev/v1alpha1
@@ -144,29 +155,134 @@ metadata:
   name: my-saas
 spec:
   description: "Core customer-facing SaaS"
-  # future: team, quota, default-domain-suffix, etc.
+  # v2+: team, quota, default-domain-suffix, retention policy
 status:
-  phase: Ready
+  phase: Ready               # Pending | Ready | Terminating | Failed
+  namespace: project-my-saas
   appCount: 3
+  conditions: []
 ```
 
-**What Projects provide in v1:**
-- Grouping (UI shows Apps under their Project)
-- Isolation (namespace boundary)
-- Lifecycle (one-click teardown)
-- Default scope for bindings
+#### Cross-project bindings
 
-**What Projects do NOT provide in v1 (post-v1 or tenon work):**
-- Per-project user roles — v1 permissions are platform-wide (admin/member)
-- Per-project quotas — v1 has none
-- Per-project domains — v1 uses the single platform domain
-- Teams — v2 work
+Bindings default to within-project (same namespace, cheap Service DNS):
 
-**UI shape:**
-- Dashboard shows Projects (cards or sidebar tree)
-- Click a project → see its Apps
-- Every `/apps/...` URL is scoped: `/projects/{name}/apps/{app-name}`
-- Top-left project switcher for moving between projects (Railway pattern)
+```yaml
+# Same project — the common case
+bindings:
+  - ref: my-db
+```
+
+Cross-project bindings are allowed but explicit:
+
+```yaml
+# Different project — operator resolves into project-other-proj namespace
+bindings:
+  - ref: shared-postgres
+    project: infra
+```
+
+The bindings resolver reads `project:` and resolves `ref` in that project's
+namespace. Missing project defaults to the App's own project.
+
+#### What Projects provide in v1
+
+- **Grouping** — UI organizes apps under their project
+- **Isolation** — hard Kubernetes namespace boundary between projects
+- **Lifecycle** — one-click teardown of a whole stack
+- **Bindings scope** — default target for `bindings[].ref`
+- **URL scoping** — `/projects/{p}/apps/{a}` paths throughout API, UI, CLI
+
+#### What Projects do NOT provide in v1
+
+- **Per-project roles** — v1 permissions remain platform-wide (admin/member).
+  An admin can do anything in any project; a member can create/manage apps
+  in any project. Per-project grants are v2 work.
+- **Quotas** — no CPU/memory/storage caps per project
+- **Custom domain per project** — projects inherit the single platform domain
+- **Team concept** — one platform, one user pool; no team boundaries. v2.
+- **Project locking / freeze** — no way to make a project read-only yet
+- **Project export/import** — no YAML bundle export of a whole project. Future.
+
+#### API surface
+
+| Method + path | Purpose |
+|---|---|
+| `GET /api/projects` | list all projects |
+| `POST /api/projects` | create a project (admin only) |
+| `GET /api/projects/{p}` | get project details + app count |
+| `DELETE /api/projects/{p}` | delete project + every app in it (admin only) |
+| `GET /api/projects/{p}/apps` | list apps in project |
+| `POST /api/projects/{p}/apps` | create app in project |
+| `GET /api/projects/{p}/apps/{a}` | get app |
+| `PUT /api/projects/{p}/apps/{a}` | update app |
+| `DELETE /api/projects/{p}/apps/{a}` | delete app |
+| `POST /api/projects/{p}/apps/{a}/secrets` | upsert secret |
+| `GET /api/projects/{p}/apps/{a}/secrets` | list (names only) |
+| `DELETE /api/projects/{p}/apps/{a}/secrets/{s}` | delete secret |
+| `GET /api/projects/{p}/apps/{a}/logs` | SSE multi-pod log stream |
+| `POST /api/projects/{p}/apps/{a}/deploy` | deploy webhook (per-App token) |
+
+The pre-Project `?namespace=` query param is **removed**. This is a
+breaking change, but the project is pre-release and there is no existing
+user data to migrate.
+
+#### UI routing
+
+- `/` — project dashboard (list of projects with app count badge)
+- `/projects/new` — create a new project
+- `/projects/{p}` — apps in project (main working surface)
+- `/projects/{p}/apps/new` — template picker + new-app form
+- `/projects/{p}/apps/{a}` — app detail page
+
+A top-bar project switcher dropdown lets users jump between projects
+without returning to the dashboard (Railway pattern).
+
+#### CLI context
+
+The CLI config file (`~/.config/mortise/config.yaml`) adds a
+`current_project` field. After `mortise login`, it defaults to `default`.
+
+```bash
+mortise project list                      # list projects
+mortise project create my-saas            # create new project
+mortise project delete my-saas            # delete (admin only; prompts confirmation)
+mortise project use my-saas               # set current project context
+mortise project show                      # show current project details
+
+# App commands scope to current_project unless --project is given
+mortise app list                          # apps in current project
+mortise app list --project infra          # override
+mortise app create --source image --image nginx:1.27 --name web
+mortise deploy web --env production --image registry/web:abc123
+```
+
+#### Lifecycle details
+
+**Project creation flow:**
+1. User submits `POST /api/projects` with name + description
+2. Controller creates `Project` CRD; status=Pending
+3. Controller reconciles: creates namespace `project-{name}` with owner ref
+4. Status → Ready; appCount=0
+5. UI surfaces project, user can start creating apps
+
+**Project deletion flow:**
+1. User submits `DELETE /api/projects/{p}` (admin only)
+2. API returns 202 Accepted, status → Terminating
+3. Controller deletes the namespace (`kubectl delete namespace project-{name}`)
+4. Kubernetes garbage collector cascades: all Apps, Deployments, Services,
+   Ingresses, PVCs, Secrets in the namespace are deleted
+5. When namespace deletion completes, Project CRD is removed
+
+**Failure modes:**
+- Name collision (project named `default` already exists) → 409
+- Invalid name (not a valid DNS label) → 400
+- Non-admin tries to create/delete → 403
+- Deleting `default` while it contains apps → allowed (apps go with it),
+  but user is warned; if `default` is deleted, the next project they visit
+  becomes their new `current_project` context
+- Apps exist outside any project namespace (legacy or manually created) →
+  surfaced as "Orphan apps" in an admin view (future; v1 returns 404 for them)
 
 ### 5.1 App Kinds and Source Types (v1)
 
@@ -600,12 +716,21 @@ v1 path — no third-party infrastructure required to install Mortise.
 
 ### 5.13 Web UI (v1)
 
-- **Dashboard** — Apps, status badges, last deploy, active previews
-- **New app** — source picker (git | image) → guided form
-- **App detail** — deploy history, real-time build logs, environment tabs,
-  metrics, custom domains, secrets editor, bindings, deploy tokens
+- **Project dashboard** — list of Projects, each card shows app count,
+  status summary, last activity
+- **Project workspace** (`/projects/{p}`) — apps in this project, status
+  badges, last deploy; primary working surface
+- **New app** (`/projects/{p}/apps/new`) — template picker → source picker
+  (git | image) → guided form
+- **App detail** (`/projects/{p}/apps/{a}`) — deploy history, real-time
+  build logs, environment tabs, metrics, custom domains, secrets editor,
+  bindings (in-project and cross-project), deploy tokens
+- **Create project** — name + description
 - **Secret store** — list by app/env, write-only values, rotation
 - **Platform settings** — domain, DNS, git providers, user management
+
+Top-bar project switcher lets users jump between projects without
+returning to the dashboard.
 
 UX standard: Railway-quality. Source types abstracted — users see "your apps."
 
@@ -615,7 +740,16 @@ Railway-style: short commands, positional args, interactive prompts when
 ambiguous. Full flags for scripting/CI.
 
 ```bash
+# Projects — the top-level context
+mortise project list
+mortise project create my-saas
+mortise project delete my-saas                # prompts confirmation; admin only
+mortise project use my-saas                   # set current project
+mortise project show                          # show current project details
+
+# App commands scope to current project unless --project is given
 mortise app list
+mortise app list --project infra
 mortise app create --source git --repo github.com/org/my-app
 mortise app create --source image --image ghcr.io/paperless-ngx/paperless-ngx:latest
 mortise deploy my-app --env production --image registry/org/my-app:abc123
@@ -630,7 +764,9 @@ mortise token create my-app production
 mortise preview list my-app
 ```
 
-Config at `~/.config/mortise/config.yaml`.
+Config at `~/.config/mortise/config.yaml` stores `server_url`, `token`, and
+`current_project`. `mortise login` sets `current_project=default` after
+successful login.
 
 ### 5.15 CRDs (v1)
 
@@ -1076,6 +1212,49 @@ deploy surface, not the Railway moment.
 **Exit criteria:** "Create Postgres App (image), create API App (image) that
 binds to it, DATABASE_URL appears in API's pod env." The Railway moment,
 without builds yet.
+
+### Phase 3.5 — Projects
+
+Introduces the top-level grouping concept before Phase 4 layers builds,
+previews, and the rest on top. Landing Projects before Phase 4 avoids
+retrofitting the URL scheme, bindings resolver, and UI navigation later.
+
+**Backend:**
+- `Project` CRD (cluster-scoped) + controller that reconciles a k8s namespace
+  (`project-{name}`) and sets itself as owner
+- App controller respects project namespace boundaries (no logic change —
+  Apps are already namespace-scoped; the namespace is now named by the Project)
+- Bindings resolver honors the optional `project:` field for cross-project
+  bindings
+- API routes restructured to `/api/projects/{p}/apps/{a}/...` throughout.
+  The pre-Project `?namespace=` query form is removed.
+- First-run setup auto-creates a `default` Project after admin setup
+
+**Frontend:**
+- Dashboard becomes the Project list (was App list)
+- New `/projects/{p}` workspace view shows apps in that project
+- `/apps/*` URLs replaced by `/projects/{p}/apps/*` everywhere
+- Project switcher in top bar for cross-project navigation
+- Create Project form
+
+**CLI:**
+- `mortise project list/create/delete/use/show`
+- `current_project` field in config file, defaulted to `default` after login
+- All `mortise app ...` commands scope to current project unless
+  `--project` overrides
+
+**Lifecycle:**
+- Delete Project → delete namespace → k8s GC cascades all contained
+  resources (Apps, Deployments, Services, Ingresses, PVCs, Secrets)
+
+Tests: create Project → namespace exists; create App in Project → App
+lands in `project-{name}` namespace; cross-project binding resolves to
+correct Service DNS; delete Project → namespace and Apps gone.
+
+**Exit criteria:** user logs in → lands in `default` project → creates a
+Postgres App + a bound API App inside that project → creates a second
+project `staging` → moves (recreates) the app stack there → deletes
+`staging` → everything in it disappears, `default` unaffected.
 
 ### Phase 4 — Build System (git source)
 
