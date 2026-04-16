@@ -711,15 +711,39 @@ same as a `stern` tail. Historical log search requires a log agent.
 
 ### 5.12 Git Providers (v1)
 
-- GitHub via self-registered OAuth app (pre-filled
-  `github.com/settings/apps/new` URL; ~90s; no external dependency)
-- GitLab (.com or self-hosted) via OAuth app + auto webhook registration
-- Gitea / Forgejo via OAuth app + auto webhook registration
-- GitProvider CRD, one per configured provider; credentials reference secret
-  store
+All three supported forges use the same shape: an OAuth application the
+admin creates on the forge and pastes into Mortise's Git Provider
+settings. Identical mental model across GitHub, GitLab, Gitea.
 
-**Relay-mode Cloudflare Worker is deferred** (§6.4). Self-registered is the
-v1 path — no third-party infrastructure required to install Mortise.
+- **GitHub** — admin creates an OAuth App at
+  `github.com/settings/applications/new` (~90s), sets callback URL to
+  `https://mortise.yourdomain.com/api/oauth/github/callback`, pastes
+  client ID + client secret into Mortise.
+- **GitLab** (.com or self-hosted) — admin creates an OAuth application
+  at `{gitlab-url}/-/user_settings/applications`, pastes credentials.
+- **Gitea / Forgejo** (self-hosted) — admin creates an OAuth2 application
+  in user settings, pastes credentials.
+
+After credentials are configured, the per-repo webhook is registered
+automatically by the GitProvider controller when a user connects a repo
+(POST `/repos/{owner}/{repo}/hooks` on GitHub; equivalent on the others).
+
+**Why OAuth instead of GitHub App:** GitHub Apps offer finer permissions
+and per-install rate limits, at the cost of admin setup complexity
+(RSA key generation, per-org installation, permission config). Mortise's
+target audience (homelabbers, small teams) is better served by OAuth's
+~90-second flow. All three forges end up with the same mental model.
+
+GitHub App support can land as a second `spec.mode: githubApp` on the
+GitProvider CRD if real demand appears; the interface seam
+(`internal/git/github/`) accommodates it. Not v1.
+
+GitProvider CRD: one instance per configured provider (e.g.
+`github-main`, `gitea-homelab`). Cluster-scoped. Credentials via
+secretRefs.
+
+**Relay-mode Cloudflare Worker is deferred** (§6.4). Admin-configured
+OAuth is the v1 path — no third-party infrastructure required.
 
 ### 5.13 Web UI (v1)
 
@@ -1265,7 +1289,7 @@ project `staging` → moves (recreates) the app stack there → deletes
 
 ### Phase 4 — Build System (git source)
 
-- Git provider CRD + controllers: GitHub (self-registered), GitLab, Gitea
+- Git provider CRD + controllers: GitHub, GitLab, Gitea — all via admin-configured OAuth apps
 - Webhook receiver + HMAC verification
 - Repo clone into temp workspace
 - Dockerfile mode: BuildKit `dockerfile.v0` frontend, submit via Go client
