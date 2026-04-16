@@ -2,6 +2,7 @@ import { goto } from '$app/navigation';
 import type {
 	App,
 	AppSpec,
+	GitProviderSummary,
 	Project,
 	SecretResponse
 } from './types';
@@ -102,6 +103,9 @@ export const api = {
 		}
 		return `/api/projects/${enc(project)}/apps/${enc(app)}/logs?${params.toString()}`;
 	},
+
+	// --- git providers ---
+	listGitProviders: () => request<GitProviderSummary[]>('/gitproviders'),
 
 	// --- secrets ---
 	listSecrets: (project: string, app: string) =>

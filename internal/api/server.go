@@ -79,6 +79,8 @@ func (s *Server) Handler() http.Handler {
 		r.Group(func(r chi.Router) {
 			r.Use(s.jwtAuthMiddleware)
 
+			r.Get("/gitproviders", s.ListGitProviders)
+
 			r.Post("/projects", s.CreateProject)
 			r.Get("/projects", s.ListProjects)
 			r.Get("/projects/{project}", s.GetProject)

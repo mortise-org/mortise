@@ -382,15 +382,13 @@ landed and what each deferred.
   as the webhook route).
 
 **Deferred — moves this to Partial not Done:**
-- **Frontend for OAuth** — no SvelteKit page drives the authorize →
-  callback round-trip yet. The server endpoints work when hit directly
-  but a user can't onboard a forge from the UI.
 - **Webhook → build dispatch** — see cross-stack deferred work above.
 - **App controller git path** — see cross-stack deferred work above.
 - **`PlatformConfig` wiring** — see cross-stack deferred work above.
 - **Integration tests against local Gitea** — belongs in the
   (not-yet-wired) `test/integration/` harness.
 
+<<<<<<< HEAD
 ### PlatformConfig — **Done**
 
 `api/v1alpha1/platformconfig_types.go`, `internal/controller/platformconfig_controller.go`,
@@ -433,6 +431,21 @@ landed and what each deferred.
 **Deferred — operator rewiring (explicit follow-up PR):**
 - `internal/registry/`, `internal/build/`, and `internal/git/` stacks still take config via ad-hoc Go structs at construction time. When the follow-up PR lands, the operator entrypoint (`cmd/main.go`) will call `platformconfig.Load` and inject config into each stack.
 - `IngressProvider` and cert-manager wiring (`spec.tls.certManagerClusterIssuer`) remain deferred to that same follow-up.
+=======
+**Done in this PR:**
+- **Frontend for OAuth** — `ui/src/routes/settings/git-providers/+page.svelte`
+  drives the authorize → callback round-trip. The list page shows all
+  `GitProvider` CRDs with Name, Type, Host, Phase, token status (Connected /
+  Not Connected), and a "Connect"/"Reconnect" anchor that navigates to
+  `/api/oauth/{name}/authorize` (full browser navigation, not fetch).
+  OAuth callback now redirects to `/settings/git-providers?connected={name}`
+  and the list page displays a success banner keyed on that query param.
+  Navigation link ("Settings") added to the main header in `+layout.svelte`.
+- **`GET /api/gitproviders`** — admin-only endpoint in
+  `internal/api/gitproviders.go` returns `[]GitProviderSummary` with
+  `hasToken` reflecting whether `gitprovider-token-{name}` exists in
+  `mortise-system`. Unit tests in `internal/api/gitproviders_test.go`.
+>>>>>>> worktree-agent-ad80276a
 
 ### Phase 5 — Monorepo support — **Not started**
 
