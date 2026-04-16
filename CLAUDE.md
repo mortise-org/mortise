@@ -13,7 +13,7 @@ diagrams. This file is the operating manual for working in this codebase.
 ## Tech stack
 
 - **Operator + API:** Go, kubebuilder, controller-runtime
-- **UI:** React (embedded in operator binary via embed.FS)
+- **UI:** SvelteKit + TypeScript (embedded in operator binary via embed.FS)
 - **CLI:** Go (cobra)
 - **Helm chart:** charts/mortise/
 - **CRDs:** App, PlatformConfig, GitProvider, PreviewEnvironment
@@ -215,7 +215,7 @@ test/
     assertions.go
 charts/
   mortise/                   # single Helm chart
-ui/                          # React app
+ui/                          # SvelteKit app
 Makefile
 ```
 
