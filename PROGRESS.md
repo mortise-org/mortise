@@ -5,7 +5,7 @@ whenever implementation status changes — see the **Keeping this file up to
 date** section at the bottom.
 
 Legend: **Done** / **Partial** / **Not started**
-Last reconciled against spec + code: 2026-04-16 (commit TBD — PlatformConfig promotion).
+Last reconciled against spec + code: 2026-04-16 (commit `3b61f77`).
 
 ---
 
