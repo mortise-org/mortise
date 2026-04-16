@@ -39,6 +39,7 @@ func (s *Server) Handler() http.Handler {
 	r := chi.NewRouter()
 
 	// Unauthenticated API routes (auth endpoints)
+	r.Get("/api/auth/status", s.Status)
 	r.Post("/api/auth/setup", s.Setup)
 	r.Post("/api/auth/login", s.Login)
 

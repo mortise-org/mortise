@@ -14,6 +14,43 @@ import (
 	"github.com/MC-Meesh/mortise/internal/auth"
 )
 
+// TestAuthStatusSetupRequired verifies /api/auth/status flips from setupRequired=true
+// to false once the first admin is created.
+func TestAuthStatusSetupRequired(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	ctx := context.Background()
+	_ = k8sClient.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "mortise-system"}})
+
+	authProvider := auth.NewNativeAuthProvider(k8sClient)
+	jwtHelper := auth.NewJWTHelper(k8sClient)
+	srv := api.NewServer(k8sClient, fake.NewClientset(), authProvider, jwtHelper, nil)
+	h := srv.Handler()
+
+	// With no users, setupRequired=true.
+	w := doRequestWithToken(h, http.MethodGet, "/api/auth/status", nil, "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 on status, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]any
+	json.NewDecoder(w.Body).Decode(&resp)
+	if resp["setupRequired"] != true {
+		t.Fatalf("expected setupRequired=true before any user exists, got %v", resp["setupRequired"])
+	}
+
+	// Create a user; status should flip to false.
+	if err := authProvider.CreateUser(ctx, "admin@example.com", "initialpass", auth.RoleAdmin); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	w = doRequestWithToken(h, http.MethodGet, "/api/auth/status", nil, "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 on status, got %d", w.Code)
+	}
+	json.NewDecoder(w.Body).Decode(&resp)
+	if resp["setupRequired"] != false {
+		t.Fatalf("expected setupRequired=false after user created, got %v", resp["setupRequired"])
+	}
+}
+
 // TestSetupFirstUser exercises the /api/auth/setup endpoint for the first-user flow.
 func TestSetupFirstUser(t *testing.T) {
 	k8sClient := setupEnvtest(t)

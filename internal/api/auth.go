@@ -22,6 +22,21 @@ type authResponse struct {
 	User  auth.Principal `json:"user"`
 }
 
+type statusResponse struct {
+	SetupRequired bool `json:"setupRequired"`
+}
+
+// Status reports whether first-user setup is required (no users exist yet).
+// Unauthenticated so the UI can check before the user signs in.
+func (s *Server) Status(w http.ResponseWriter, r *http.Request) {
+	users, err := s.auth.ListUsers(r.Context())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorResponse{err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, statusResponse{SetupRequired: len(users) == 0})
+}
+
 // Setup creates the first admin user. Returns 409 if any user already exists.
 func (s *Server) Setup(w http.ResponseWriter, r *http.Request) {
 	var req setupRequest

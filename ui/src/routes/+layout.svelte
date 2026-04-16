@@ -1,11 +1,39 @@
 <script lang="ts">
 	import '../app.css';
+	import { onMount } from 'svelte';
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 
 	let { children } = $props();
 
 	const isLogin = $derived(page.url.pathname === '/login');
+	const isSetup = $derived(page.url.pathname === '/setup');
+	const bareLayout = $derived(isLogin || isSetup);
+
+	let checking = $state(true);
+
+	async function checkSetupStatus() {
+		try {
+			const res = await fetch('/api/auth/status');
+			if (!res.ok) {
+				return;
+			}
+			const data = (await res.json()) as { setupRequired: boolean };
+			const path = page.url.pathname;
+			if (data.setupRequired && path !== '/setup') {
+				await goto('/setup', { replaceState: true });
+			} else if (!data.setupRequired && path === '/setup') {
+				await goto('/login', { replaceState: true });
+			}
+		} catch {
+			// Status endpoint unreachable — fall through and let the page render.
+		}
+	}
+
+	onMount(async () => {
+		await checkSetupStatus();
+		checking = false;
+	});
 
 	function logout() {
 		localStorage.removeItem('token');
@@ -18,7 +46,9 @@
 	];
 </script>
 
-{#if isLogin}
+{#if checking}
+	<div class="flex min-h-screen items-center justify-center bg-surface-900"></div>
+{:else if bareLayout}
 	{@render children()}
 {:else}
 	<div class="flex h-screen bg-surface-900 text-gray-100">

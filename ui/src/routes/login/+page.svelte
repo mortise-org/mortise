@@ -1,10 +1,20 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
 
 	let email = $state('');
 	let password = $state('');
 	let error = $state('');
+	let flash = $state('');
 	let loading = $state(false);
+
+	onMount(() => {
+		const msg = sessionStorage.getItem('loginFlash');
+		if (msg) {
+			flash = msg;
+			sessionStorage.removeItem('loginFlash');
+		}
+	});
 
 	async function handleLogin(e: SubmitEvent) {
 		e.preventDefault();
@@ -42,6 +52,9 @@
 		</div>
 
 		<form onsubmit={handleLogin} class="space-y-4">
+			{#if flash}
+				<div class="rounded-md bg-accent/10 px-3 py-2 text-sm text-accent">{flash}</div>
+			{/if}
 			{#if error}
 				<div class="rounded-md bg-danger/10 px-3 py-2 text-sm text-danger">{error}</div>
 			{/if}
