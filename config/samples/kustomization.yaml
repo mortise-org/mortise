@@ -1,0 +1,7 @@
+## Append samples of your project ##
+resources:
+- mortise_v1alpha1_app.yaml
+- mortise_v1alpha1_platformconfig.yaml
+- mortise_v1alpha1_gitprovider.yaml
+- mortise_v1alpha1_previewenvironment.yaml
+# +kubebuilder:scaffold:manifestskustomizesamples

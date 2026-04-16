@@ -1,0 +1,9 @@
+apiVersion: mortise.mortise.dev/v1alpha1
+kind: PreviewEnvironment
+metadata:
+  labels:
+    app.kubernetes.io/name: capybara
+    app.kubernetes.io/managed-by: kustomize
+  name: previewenvironment-sample
+spec:
+  # TODO(user): Add fields here

@@ -1,0 +1,41 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: manager-role
+rules:
+- apiGroups:
+  - mortise.mortise.dev
+  resources:
+  - apps
+  - gitproviders
+  - platformconfigs
+  - previewenvironments
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - mortise.mortise.dev
+  resources:
+  - apps/finalizers
+  - gitproviders/finalizers
+  - platformconfigs/finalizers
+  - previewenvironments/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - mortise.mortise.dev
+  resources:
+  - apps/status
+  - gitproviders/status
+  - platformconfigs/status
+  - previewenvironments/status
+  verbs:
+  - get
+  - patch
+  - update

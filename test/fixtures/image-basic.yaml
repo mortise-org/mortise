@@ -1,0 +1,16 @@
+apiVersion: mortise.mortise.dev/v1alpha1
+kind: App
+metadata:
+  name: test-nginx
+spec:
+  source:
+    type: image
+    image: nginx:1.27
+  network:
+    public: true
+  environments:
+    - name: production
+      replicas: 1
+      resources:
+        cpu: "100m"
+        memory: "128Mi"
