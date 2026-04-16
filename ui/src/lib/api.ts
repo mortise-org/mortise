@@ -2,6 +2,7 @@ import { goto } from '$app/navigation';
 import type {
 	App,
 	AppSpec,
+	CreateGitProviderRequest,
 	GitProviderSummary,
 	Project,
 	SecretResponse
@@ -106,6 +107,13 @@ export const api = {
 
 	// --- git providers ---
 	listGitProviders: () => request<GitProviderSummary[]>('/gitproviders'),
+	createGitProvider: (body: CreateGitProviderRequest) =>
+		request<GitProviderSummary>('/gitproviders', {
+			method: 'POST',
+			body: JSON.stringify(body)
+		}),
+	deleteGitProvider: (name: string) =>
+		request<void>(`/gitproviders/${enc(name)}`, { method: 'DELETE' }),
 
 	// --- secrets ---
 	listSecrets: (project: string, app: string) =>

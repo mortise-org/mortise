@@ -123,3 +123,11 @@ export interface GitProviderSummary {
 	phase: GitProviderPhase;
 	hasToken: boolean;
 }
+
+export interface CreateGitProviderRequest {
+	name: string;
+	type: GitProviderType;
+	host: string;
+	oauth: { clientID: string; clientSecret: string };
+	webhookSecret: string;
+}

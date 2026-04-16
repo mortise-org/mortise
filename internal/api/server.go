@@ -79,6 +79,8 @@ func (s *Server) Handler() http.Handler {
 			r.Use(s.jwtAuthMiddleware)
 
 			r.Get("/gitproviders", s.ListGitProviders)
+			r.Post("/gitproviders", s.CreateGitProvider)
+			r.Delete("/gitproviders/{name}", s.DeleteGitProvider)
 
 			r.Post("/projects", s.CreateProject)
 			r.Get("/projects", s.ListProjects)

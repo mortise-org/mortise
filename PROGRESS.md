@@ -412,6 +412,11 @@ landed and what each deferred.
 - Wired into `server.go:74-75` as unauthenticated routes (same reasoning
   as the webhook route).
 
+**Admin REST API (`internal/api/gitproviders.go`):**
+- `GET`, `POST`, `DELETE /api/gitproviders` let admins list, create, and
+  delete `GitProvider` CRDs and their backing OAuth secret from the UI —
+  see "Git provider UI" below for the create/delete surface area.
+
 **Follow-up (not blocking Phase 4):**
 - ~~**`PlatformConfig` wiring**~~ — Done; see cross-stack section above.
 - ~~**Integration tests against local Gitea**~~ — Done.
@@ -483,6 +488,26 @@ landed and what each deferred.
   `internal/api/gitproviders.go` returns `[]GitProviderSummary` with
   `hasToken` reflecting whether `gitprovider-token-{name}` exists in
   `mortise-system`. Unit tests in `internal/api/gitproviders_test.go`.
+- **`POST /api/gitproviders`** — admin-only. Accepts name / type / host /
+  OAuth client ID+secret / webhook secret. Creates a Secret named
+  `gitprovider-oauth-{name}` in `mortise-system` (labeled
+  `mortise.dev/managed-by: api`) holding `clientID`, `clientSecret`,
+  `webhookSecret`; then creates the GitProvider CRD pointing at it.
+  Rolls back the Secret if CRD creation fails. Returns 400 on
+  validation errors, 409 if a provider with that name already exists.
+- **`DELETE /api/gitproviders/{name}`** — admin-only. Deletes the CRD,
+  the managed OAuth Secret (`gitprovider-oauth-{name}`), and the per-
+  provider OAuth access-token Secret (`gitprovider-token-{name}`).
+  Returns 204 on success, 404 if the provider doesn't exist. Missing
+  secrets are ignored.
+- **Create/delete UI** — `ui/src/routes/settings/git-providers/+page.svelte`
+  now has an inline "Create git provider" form (name, type, host,
+  OAuth client ID+secret, webhook secret with a "Generate" helper) and
+  a Delete action per row. The previous `kubectl apply` snippet in
+  the empty state has been removed — the UI is now a self-contained
+  admin experience. Client wired in `ui/src/lib/api.ts`
+  (`createGitProvider`, `deleteGitProvider`); request type
+  `CreateGitProviderRequest` in `ui/src/lib/types.ts`.
 
 ### Phase 5 — Monorepo support — **Not started**
 

@@ -3,11 +3,35 @@
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { api } from '$lib/api';
-	import type { GitProviderSummary, GitProviderPhase } from '$lib/types';
+	import type {
+		CreateGitProviderRequest,
+		GitProviderPhase,
+		GitProviderSummary,
+		GitProviderType
+	} from '$lib/types';
 
 	let providers = $state<GitProviderSummary[]>([]);
 	let loading = $state(true);
 	let error = $state('');
+
+	// Create-form state.
+	let showForm = $state(false);
+	let formName = $state('');
+	let formType = $state<GitProviderType>('github');
+	let formHost = $state('https://github.com');
+	let formClientID = $state('');
+	let formClientSecret = $state('');
+	let formWebhookSecret = $state('');
+	let formError = $state('');
+	let submitting = $state(false);
+	// Tracks whether the user has manually edited host so we don't clobber their value.
+	let hostDirty = $state(false);
+
+	const DEFAULT_HOSTS: Record<GitProviderType, string> = {
+		github: 'https://github.com',
+		gitlab: 'https://gitlab.com',
+		gitea: 'https://gitea.example.com'
+	};
 
 	// Show a success banner when ?connected=<name> is present (set by the
 	// OAuth callback redirect).
@@ -30,6 +54,71 @@
 			error = err instanceof Error ? err.message : 'Failed to load git providers';
 		} finally {
 			loading = false;
+		}
+	}
+
+	function openForm() {
+		showForm = true;
+		formError = '';
+		formName = '';
+		formType = 'github';
+		formHost = DEFAULT_HOSTS.github;
+		formClientID = '';
+		formClientSecret = '';
+		formWebhookSecret = '';
+		hostDirty = false;
+	}
+
+	function closeForm() {
+		showForm = false;
+	}
+
+	function onTypeChange() {
+		if (!hostDirty) {
+			formHost = DEFAULT_HOSTS[formType];
+		}
+	}
+
+	function generateWebhookSecret() {
+		const bytes = new Uint8Array(16);
+		crypto.getRandomValues(bytes);
+		formWebhookSecret = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+	}
+
+	async function submitCreate(e: SubmitEvent) {
+		e.preventDefault();
+		formError = '';
+		submitting = true;
+		const body: CreateGitProviderRequest = {
+			name: formName.trim(),
+			type: formType,
+			host: formHost.trim(),
+			oauth: { clientID: formClientID, clientSecret: formClientSecret },
+			webhookSecret: formWebhookSecret
+		};
+		try {
+			await api.createGitProvider(body);
+			closeForm();
+			await load();
+		} catch (err) {
+			formError = err instanceof Error ? err.message : 'Failed to create git provider';
+		} finally {
+			submitting = false;
+		}
+	}
+
+	async function handleDelete(name: string) {
+		const ok = confirm(
+			`Delete git provider '${name}'? This will remove OAuth credentials and any stored access token.`
+		);
+		if (!ok) {
+			return;
+		}
+		try {
+			await api.deleteGitProvider(name);
+			await load();
+		} catch (err) {
+			error = err instanceof Error ? err.message : 'Failed to delete git provider';
 		}
 	}
 
@@ -60,13 +149,24 @@
 					Connect git forges so Mortise can clone repositories and register webhooks.
 				</p>
 			</div>
-			<button
-				type="button"
-				onclick={load}
-				class="rounded-md border border-surface-600 px-3 py-1.5 text-sm text-gray-400 transition-colors hover:bg-surface-700 hover:text-white"
-			>
-				Refresh
-			</button>
+			<div class="flex items-center gap-2">
+				<button
+					type="button"
+					onclick={load}
+					class="rounded-md border border-surface-600 px-3 py-1.5 text-sm text-gray-400 transition-colors hover:bg-surface-700 hover:text-white"
+				>
+					Refresh
+				</button>
+				{#if providers.length > 0}
+					<button
+						type="button"
+						onclick={openForm}
+						class="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-accent-hover"
+					>
+						Add provider
+					</button>
+				{/if}
+			</div>
 		</div>
 
 		<!-- Success banner from OAuth callback redirect -->
@@ -81,7 +181,152 @@
 			<div class="mb-4 rounded-md bg-danger/10 px-4 py-3 text-sm text-danger">{error}</div>
 		{/if}
 
-		{#if providers.length === 0 && !error}
+		{#if showForm}
+			<!-- Create-provider form (inline) -->
+			<form
+				onsubmit={submitCreate}
+				class="mb-6 space-y-4 rounded-lg border border-surface-600 bg-surface-800/60 p-6"
+			>
+				<div class="flex items-start justify-between">
+					<h2 class="text-base font-medium text-white">Create git provider</h2>
+					<button
+						type="button"
+						onclick={closeForm}
+						class="text-xs text-gray-500 transition-colors hover:text-white"
+						aria-label="Close"
+					>
+						Cancel
+					</button>
+				</div>
+
+				{#if formError}
+					<div class="rounded-md bg-danger/10 px-3 py-2 text-sm text-danger">{formError}</div>
+				{/if}
+
+				<div class="grid gap-4 sm:grid-cols-2">
+					<div>
+						<label for="gp-name" class="mb-1 block text-sm text-gray-400">Name</label>
+						<input
+							id="gp-name"
+							type="text"
+							bind:value={formName}
+							required
+							pattern="[a-z0-9]([a-z0-9-]{'{'}0,61{'}'}[a-z0-9])?"
+							maxlength="63"
+							autocomplete="off"
+							placeholder="github-main"
+							class="w-full rounded-md border border-surface-600 bg-surface-900 px-3 py-2 font-mono text-sm text-white placeholder-gray-500 outline-none focus:border-accent"
+						/>
+					</div>
+
+					<div>
+						<label for="gp-type" class="mb-1 block text-sm text-gray-400">Type</label>
+						<select
+							id="gp-type"
+							bind:value={formType}
+							onchange={onTypeChange}
+							class="w-full rounded-md border border-surface-600 bg-surface-900 px-3 py-2 text-sm text-white outline-none focus:border-accent"
+						>
+							<option value="github">GitHub</option>
+							<option value="gitlab">GitLab</option>
+							<option value="gitea">Gitea</option>
+						</select>
+					</div>
+				</div>
+
+				<div>
+					<label for="gp-host" class="mb-1 block text-sm text-gray-400">Host</label>
+					<input
+						id="gp-host"
+						type="url"
+						bind:value={formHost}
+						oninput={() => (hostDirty = true)}
+						required
+						placeholder="https://github.com"
+						class="w-full rounded-md border border-surface-600 bg-surface-900 px-3 py-2 font-mono text-sm text-white placeholder-gray-500 outline-none focus:border-accent"
+					/>
+					<p class="mt-1 text-xs text-gray-500">
+						Override for self-hosted instances (e.g. <span class="font-mono"
+							>https://gitea.internal.example</span
+						>).
+					</p>
+				</div>
+
+				<div>
+					<label for="gp-client-id" class="mb-1 block text-sm text-gray-400"
+						>OAuth Client ID</label
+					>
+					<input
+						id="gp-client-id"
+						type="text"
+						bind:value={formClientID}
+						required
+						autocomplete="off"
+						class="w-full rounded-md border border-surface-600 bg-surface-900 px-3 py-2 font-mono text-sm text-white placeholder-gray-500 outline-none focus:border-accent"
+					/>
+				</div>
+
+				<div>
+					<label for="gp-client-secret" class="mb-1 block text-sm text-gray-400"
+						>OAuth Client Secret</label
+					>
+					<input
+						id="gp-client-secret"
+						type="password"
+						bind:value={formClientSecret}
+						required
+						autocomplete="new-password"
+						class="w-full rounded-md border border-surface-600 bg-surface-900 px-3 py-2 font-mono text-sm text-white placeholder-gray-500 outline-none focus:border-accent"
+					/>
+				</div>
+
+				<div>
+					<div class="mb-1 flex items-center justify-between">
+						<label for="gp-webhook-secret" class="block text-sm text-gray-400"
+							>Webhook Secret</label
+						>
+						<button
+							type="button"
+							onclick={generateWebhookSecret}
+							class="text-xs text-accent transition-colors hover:underline"
+						>
+							Generate
+						</button>
+					</div>
+					<input
+						id="gp-webhook-secret"
+						type="password"
+						bind:value={formWebhookSecret}
+						required
+						autocomplete="new-password"
+						class="w-full rounded-md border border-surface-600 bg-surface-900 px-3 py-2 font-mono text-sm text-white placeholder-gray-500 outline-none focus:border-accent"
+					/>
+					<p class="mt-1 text-xs text-gray-500">
+						Used to verify inbound webhook HMAC signatures. Paste the value you configured on the
+						forge, or Generate a new one here and copy it into the forge's webhook settings.
+					</p>
+				</div>
+
+				<div class="flex gap-2 pt-2">
+					<button
+						type="submit"
+						disabled={submitting}
+						class="rounded-md bg-accent px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-accent-hover disabled:opacity-50"
+					>
+						{submitting ? 'Creating...' : 'Create provider'}
+					</button>
+					<button
+						type="button"
+						onclick={closeForm}
+						class="rounded-md border border-surface-600 px-4 py-2 text-sm text-gray-400 transition-colors hover:text-white"
+					>
+						Cancel
+					</button>
+				</div>
+			</form>
+		{/if}
+
+		{#if providers.length === 0 && !error && !showForm}
 			<!-- Empty state -->
 			<div
 				class="rounded-lg border border-dashed border-surface-600 bg-surface-800/60 p-12 text-center"
@@ -107,37 +352,18 @@
 				</div>
 				<h2 class="text-base font-medium text-white">No git providers configured</h2>
 				<p class="mx-auto mt-2 max-w-sm text-sm text-gray-500">
-					A git provider must be created as a CRD before it appears here. Use the CLI or
-					<code class="rounded bg-surface-700 px-1 py-0.5 font-mono text-xs text-gray-300"
-						>kubectl</code
-					>:
+					Register a git forge with its OAuth app credentials so Mortise can clone repositories
+					and receive webhook events.
 				</p>
-				<pre
-					class="mx-auto mt-4 max-w-lg rounded-md bg-surface-900 px-4 py-3 text-left text-xs text-gray-300"
-				><code>kubectl apply -f - &lt;&lt;EOF
-apiVersion: mortise.dev/v1alpha1
-kind: GitProvider
-metadata:
-  name: github-main
-spec:
-  type: github
-  host: https://github.com
-  oauth:
-    clientIDSecretRef:
-      namespace: mortise-system
-      name: github-oauth
-      key: clientID
-    clientSecretSecretRef:
-      namespace: mortise-system
-      name: github-oauth
-      key: clientSecret
-  webhookSecretRef:
-    namespace: mortise-system
-    name: github-webhook
-    key: secret
-EOF</code></pre>
+				<button
+					type="button"
+					onclick={openForm}
+					class="mt-5 rounded-md bg-accent px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-accent-hover"
+				>
+					Create git provider
+				</button>
 			</div>
-		{:else if !error}
+		{:else if !error && providers.length > 0}
 			<!-- Provider table -->
 			<div class="overflow-hidden rounded-lg border border-surface-600">
 				<table class="w-full text-sm">
@@ -148,6 +374,7 @@ EOF</code></pre>
 							<th class="px-4 py-3 text-left font-medium">Host</th>
 							<th class="px-4 py-3 text-left font-medium">Phase</th>
 							<th class="px-4 py-3 text-left font-medium">Token</th>
+							<th class="px-4 py-3 text-left font-medium">Connect</th>
 							<th class="px-4 py-3 text-left font-medium">Action</th>
 						</tr>
 					</thead>
@@ -196,6 +423,15 @@ EOF</code></pre>
 									>
 										{provider.hasToken ? 'Reconnect' : 'Connect'}
 									</a>
+								</td>
+								<td class="px-4 py-3">
+									<button
+										type="button"
+										onclick={() => handleDelete(provider.name)}
+										class="text-xs text-danger transition-colors hover:underline"
+									>
+										Delete
+									</button>
 								</td>
 							</tr>
 						{/each}
