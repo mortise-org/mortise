@@ -5,7 +5,7 @@ whenever implementation status changes — see the **Keeping this file up to
 date** section at the bottom.
 
 Legend: **Done** / **Partial** / **Not started**
-Last reconciled against spec + code: 2026-04-16 (commit `6704d4e`).
+Last reconciled against spec + code: 2026-04-16 (commit `31f8e52`).
 
 ---
 
@@ -18,7 +18,7 @@ Last reconciled against spec + code: 2026-04-16 (commit `6704d4e`).
 | 2 — API + UI skeleton            | §7.3        | **Done**         | Auth, project CRUD, app CRUD, secrets CRUD, deploy webhook, SSE logs, SvelteKit UI. |
 | 3 — Bindings + secrets           | §7.4        | **Partial**      | Resolver writes env vars, but the credential Secret it references is never created and cross-namespace `secretKeyRef` is invalid in k8s (see issues #1 + #2). No deploy tokens, no secret rotation endpoint. |
 | 3.5 — Projects                   | §5 / §5.10  | **Done**         | `Project` CRD + controller + REST API + CLI + UI routes + default-project seeding. |
-| 4 — Build system (git source)    | §7.5        | **Not started**  | `GitProvider` CRD is scaffold-only; all build/git/registry interfaces have zero impls; no webhook receiver; no OAuth flow. |
+| 4 — Build system (git source)    | §7.5        | **Partial**      | `GitProvider` CRD + reconciler, three forge `GitAPI` impls, `GitClient` (go-git), `BuildClient` (BuildKit), `RegistryBackend` (OCI), webhook receiver with per-forge HMAC, OAuth authorize/callback server. Remaining: wire git-source path into `app_controller.go` so pushes actually build+deploy; `PlatformConfig` hasn't been promoted from scaffold so all three stacks are configured via ad-hoc structs. |
 | 5 — Monorepo support             | §7.6        | **Not started**  | No `watchPaths` handling, no per-path routing. |
 | 6 — Preview environments        | §7.7        | **Not started**  | `PreviewEnvironment` CRD is scaffold-only; controller empty. |
 | 7 — Polish & v1                  | §7.8        | **Partial**      | Controller-side `RollbackDeployment` exists, but no CLI/UI for rollback, no promote, no first-run wizard, no custom-domain UI. |
@@ -33,9 +33,9 @@ Spec rule: every outward interface must have at least one real v1 impl
 |-------------------|------------------------------------|-----------------|
 | `AuthProvider`    | `NativeAuthProvider` (k8s Secret + bcrypt + JWT) | **Done**    |
 | `PolicyEngine`    | `NativePolicyEngine` (roles: `admin` / `member`)   | **Partial** — role model does not match spec §5.10 (`platform-admin` / `team-admin` / `team-member`); no team concept. |
-| `GitAPI`          | —                                  | **Not started** |
-| `GitClient`       | —                                  | **Not started** |
-| `BuildClient`     | —                                  | **Not started** |
+| `GitAPI`          | `GitHubAPI`, `GitLabAPI`, `GiteaAPI` (`internal/git/{github,gitlab,gitea}.go`); factory at `internal/git/factory.go` | **Done** |
+| `GitClient`       | `GoGitClient` (`internal/git/gogit_client.go`) — single impl per CLAUDE.md | **Done** |
+| `BuildClient`     | `BuildKitClient` (`internal/build/buildkit.go`) — mockable `solveClient` boundary for unit tests | **Done** |
 | `RegistryBackend` | `OCIBackend` (`internal/registry/oci.go`) — generic OCI Distribution Spec v1.1; Bearer + Basic auth; works with Zot, Harbor, GHCR, ECR | **Done** |
 | `IngressProvider` | —                                  | **Not started** — App controller writes `networkingv1.Ingress` directly with hardcoded annotations. |
 | `DNSProvider`     | —                                  | **Not started** |
@@ -46,7 +46,7 @@ Spec rule: every outward interface must have at least one real v1 impl
 |----------------------|-------------------|------------------|---------------|
 | `Project`            | real              | real reconciler  | **Done**      |
 | `App`                | real              | real (image)     | **Partial**   — no `kind: service\|cron`, `schedule`, `concurrencyPolicy`, `sharedVars`, or `valueFrom.fromBinding` from spec §4. |
-| `GitProvider`        | scaffold (`Foo *string`) | empty TODO | **Not started** |
+| `GitProvider`        | real (`api/v1alpha1/gitprovider_types.go`) | real reconciler (`internal/controller/gitprovider_controller.go`) | **Done** |
 | `PlatformConfig`     | scaffold (`Foo *string`) | empty TODO | **Not started** |
 | `PreviewEnvironment` | scaffold (`Foo *string`) | empty TODO | **Not started** |
 
@@ -168,22 +168,31 @@ Missing:
 - First-run seeds a `default` project (`internal/api/auth.go`
   `ensureDefaultProject`).
 
-### Phase 4 — Build system (git source) — **Not started**
+### Phase 4 — Build system (git source) — **Partial**
 
-Everything in spec §7.5 / §5.12 is absent:
-- `api/v1alpha1/gitprovider_types.go` is the kubebuilder scaffold
-  (`Foo *string`).
-- `internal/controller/gitprovider_controller.go` has an empty `Reconcile`.
-- `internal/git/api.go` and `internal/git/client.go` define `GitAPI` /
-  `GitClient` interfaces with no implementations.
-- `internal/build/client.go` defines `BuildClient` with no implementation
-  (spec calls for BuildKit).
-- `internal/registry/backend.go` defines `RegistryBackend` with no impl.
-- No git-webhook receiver anywhere. CLAUDE.md lists `internal/webhook/` in
-  the repo layout; that path does not exist.
-- No OAuth flow for GitHub / GitLab / Gitea (spec §5.12 forbids the GitHub
-  App path).
-- No `test/fixtures/git-basic.yaml`.
+All three foundational stacks (Registry / Build / Git provider) have real
+v1 impls behind their interfaces. The remaining work is the **integration
+edge**: getting a git push to actually run through the reconciler, produce
+an image, and trigger a deploy. See sub-sections below for what each stack
+landed and what each deferred.
+
+**Cross-stack deferred work (tracked here, not duplicated in sub-sections):**
+- **App controller git path** — `internal/controller/app_controller.go`
+  returns early for `source.type != image`. It needs to call
+  `GitClient.Clone` → `BuildClient.Build` → `RegistryBackend.PushTarget`
+  and then flow the resulting image digest into the Deployment it already
+  knows how to create.
+- **PlatformConfig wiring** — `api/v1alpha1/platformconfig_types.go` is
+  still scaffold-only, so each stack currently takes its config via a
+  plain Go struct at construction time rather than reading from the CRD.
+  When `PlatformConfig` is promoted, all three stacks should be built from
+  the operator entrypoint using CRD values.
+- **Webhook → build dispatch** — the webhook receiver parses events and
+  logs/queues them (placeholder) but does not yet actually call the build
+  pipeline. Wiring belongs in the same PR that adds the app-controller
+  git path.
+- **`test/fixtures/git-basic.yaml`** — still missing; add alongside the
+  app-controller git path test.
 
 ### Registry stack — **Done**
 
@@ -230,6 +239,118 @@ Everything in spec §7.5 / §5.12 is absent:
   `PushTarget` or create imagePullSecrets; see Phase 1 gaps.
 - Pagination for `Tags` — the OCI spec uses `Link` headers for pages; current
   impl reads only the first page. Sufficient until tag counts are large.
+
+### Build stack — **Done**
+
+`internal/build/buildkit.go` — `BuildKitClient` implementing `BuildClient`.
+
+**What landed:**
+- Constructor takes a `Config` struct (buildkit addr as `tcp://` or
+  `unix://`, optional `ClientCA` / `ClientCert` / `ClientKey` for mTLS,
+  default platform string). Exposes a `solveClient` interface seam so
+  unit tests can inject a fake; production code dials BuildKit over the
+  real client SDK.
+- `Build(ctx, req)` runs a Dockerfile-frontend Solve: frontend
+  `dockerfile.v0`, local context + dockerfile mounted from
+  `req.ContextDir`, `target` + build-args passed through, image output
+  pushed to `req.ImageRef` via the `image` exporter with
+  `name`/`push=true` attrs. Returns the pushed image digest.
+- Registry credentials are attached via `authprovider.NewDockerAuthProvider`
+  so pushes can authenticate against whatever `RegistryBackend` is
+  configured.
+- Context cancellation is propagated through to the SolveStatus
+  goroutine; a status drain goroutine is stopped when Solve returns
+  (success or failure).
+
+**Test coverage** (`internal/build/buildkit_test.go`, all mocking the
+`solveClient` seam per CLAUDE.md):
+- Happy path: successful Solve returns the expected digest.
+- Build failure: Solve error surfaces as returned error.
+- Cancellation: parent context cancel interrupts Solve.
+- Request validation: empty `ContextDir` / `ImageRef` rejected pre-Solve.
+
+**Deferred:**
+- `PlatformConfig` wiring — see cross-stack deferred work above.
+- App controller integration — see cross-stack deferred work above.
+- Integration test against real buildkitd — belongs in the (not-yet-wired)
+  `test/integration/` harness.
+- Cache hints (`CacheImports` / `CacheExports`) — the interface doesn't
+  surface them yet; add when build-time optimization matters.
+
+### Git provider stack — **Partial**
+
+`internal/git/`, `internal/webhook/`, `internal/api/oauth.go`,
+`api/v1alpha1/gitprovider_types.go`,
+`internal/controller/gitprovider_controller.go`.
+
+**CRD (`api/v1alpha1/gitprovider_types.go`, 140 LOC):**
+- `spec.type` — enum `github | gitlab | gitea` (CEL-validated).
+- `spec.host` — base URL.
+- `spec.oauth.clientIDSecretRef` / `spec.oauth.clientSecretSecretRef` —
+  `SecretRef{Namespace, Name, Key}` pointing at the OAuth app credentials.
+- `spec.webhookSecretRef` — `SecretRef` for HMAC verification.
+- `status.phase` — `Pending | Ready | Failed`; plus standard `Conditions`.
+- Generated `zz_generated.deepcopy.go`, CRD yaml, and RBAC role all
+  regenerated via `make manifests generate`.
+
+**Reconciler (`internal/controller/gitprovider_controller.go`, 141 LOC):**
+- Validates that every referenced Secret exists and is non-empty.
+- Sets `status.phase = Ready` + `Available=True` condition on success.
+- Sets `status.phase = Failed` + condition with reason on validation
+  failure; requeues with backoff.
+- Envtest in `internal/controller/gitprovider_controller_test.go` covers
+  happy path + missing-secret failure.
+
+**`GitAPI` impls (`internal/git/{github,gitlab,gitea}.go` + `factory.go`):**
+- Each wraps the forge's official SDK (`google/go-github`,
+  `xanzy/go-gitlab`, `code.gitea.io/sdk/gitea`) behind the `GitAPI`
+  interface so controllers never import these directly.
+- `Factory(ctx, provider, token)` in `internal/git/factory.go` takes a
+  `*mortisev1alpha1.GitProvider` + resolved OAuth access token and
+  returns the matching impl.
+- `internal/git/api_test.go` exercises the factory's dispatch and
+  mocks at the `GitAPI` boundary per CLAUDE.md mocking policy.
+
+**`GitClient` impl (`internal/git/gogit_client.go`):**
+- `GoGitClient` — single impl using `github.com/go-git/go-git/v5`.
+- Clones a repo at a ref into a working directory, authenticating with a
+  token via the standard HTTP basic-auth-as-token convention.
+
+**Webhook receiver (`internal/webhook/`, 463 LOC total):**
+- `handler.go` — HTTP handler that looks up a `GitProvider` by URL path,
+  loads its `webhookSecretRef` via `k8s.go`, and dispatches to the
+  per-forge HMAC verifier: GitHub `X-Hub-Signature-256`, GitLab
+  `X-Gitlab-Token`, Gitea `X-Gitea-Signature`. Push events are parsed
+  into a normalized struct (`Repo`, `Ref`, `CommitSHA`) and written to
+  an in-memory dispatch channel + logged. Returns `202 Accepted`.
+- `k8s.go` — tiny helper that resolves a `SecretRef` to bytes from the
+  cluster.
+- `handler_test.go` covers happy-path HMAC verification per forge, bad
+  signature rejection, unknown provider, and malformed payloads.
+- Mounted in `internal/api/server.go` at `/api/webhooks/{provider}`
+  (unauthenticated — auth is via HMAC).
+
+**OAuth server (`internal/api/oauth.go`, 202 LOC):**
+- `GET /api/oauth/{provider}/authorize` — builds the forge's OAuth
+  consent URL from the `GitProvider`'s `oauth.clientIDSecretRef` and
+  redirects.
+- `GET /api/oauth/{provider}/callback` — exchanges the code for an
+  access token (using `golang.org/x/oauth2`), then stores the token in a
+  k8s Secret keyed by provider name.
+- Scopes are per-forge: `repo` / `admin:repo_hook` for GitHub, `api` for
+  GitLab, `repo` / `write:repo_hook` for Gitea.
+- Wired into `server.go:74-75` as unauthenticated routes (same reasoning
+  as the webhook route).
+
+**Deferred — moves this to Partial not Done:**
+- **Frontend for OAuth** — no SvelteKit page drives the authorize →
+  callback round-trip yet. The server endpoints work when hit directly
+  but a user can't onboard a forge from the UI.
+- **Webhook → build dispatch** — see cross-stack deferred work above.
+- **App controller git path** — see cross-stack deferred work above.
+- **`PlatformConfig` wiring** — see cross-stack deferred work above.
+- **Integration tests against local Gitea** — belongs in the
+  (not-yet-wired) `test/integration/` harness.
 
 ### Phase 5 — Monorepo support — **Not started**
 
@@ -321,8 +442,6 @@ Items in `CLAUDE.md` that no longer reflect reality — fix these opportunistica
   `Project`. `Project` has been the top-level grouping since Phase 3.5.
 - **`make test-integration`** and **`make test-integration-fast`** — not
   defined in the Makefile.
-- **`internal/webhook/`** listed in the repo-layout tree — directory does
-  not exist.
 - **Testing Layers table** claims an "Integration" layer with a harness at
   `test/integration/` — the directory does not exist.
 
