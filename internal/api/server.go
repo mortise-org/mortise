@@ -4,17 +4,19 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
+	"k8s.io/client-go/kubernetes"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 // Server is the REST API server that translates HTTP requests into CRD operations.
 type Server struct {
-	client client.Client
+	client    client.Client
+	clientset kubernetes.Interface
 }
 
 // NewServer creates a new API server backed by the given controller-runtime client.
-func NewServer(c client.Client) *Server {
-	return &Server{client: c}
+func NewServer(c client.Client, cs kubernetes.Interface) *Server {
+	return &Server{client: c, clientset: cs}
 }
 
 // Handler returns the root HTTP handler with all routes mounted.
@@ -34,6 +36,8 @@ func (s *Server) Handler() http.Handler {
 		r.Post("/apps/{name}/secrets", s.CreateSecret)
 		r.Get("/apps/{name}/secrets", s.ListSecrets)
 		r.Delete("/apps/{name}/secrets/{secretName}", s.DeleteSecret)
+
+		r.Get("/apps/{name}/logs", s.handleLogs)
 	})
 
 	return r

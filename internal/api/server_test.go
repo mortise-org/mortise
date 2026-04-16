@@ -12,6 +12,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
@@ -65,7 +66,7 @@ func doRequest(handler http.Handler, method, path string, body any) *httptest.Re
 
 func TestCreateAndGetApp(t *testing.T) {
 	k8sClient := setupEnvtest(t)
-	srv := api.NewServer(k8sClient)
+	srv := api.NewServer(k8sClient, fake.NewClientset())
 	h := srv.Handler()
 
 	createBody := map[string]any{
@@ -99,7 +100,7 @@ func TestCreateAndGetApp(t *testing.T) {
 
 func TestListApps(t *testing.T) {
 	k8sClient := setupEnvtest(t)
-	srv := api.NewServer(k8sClient)
+	srv := api.NewServer(k8sClient, fake.NewClientset())
 	h := srv.Handler()
 
 	for _, name := range []string{"app-a", "app-b"} {
@@ -126,7 +127,7 @@ func TestListApps(t *testing.T) {
 
 func TestUpdateApp(t *testing.T) {
 	k8sClient := setupEnvtest(t)
-	srv := api.NewServer(k8sClient)
+	srv := api.NewServer(k8sClient, fake.NewClientset())
 	h := srv.Handler()
 
 	doRequest(h, http.MethodPost, "/api/apps", map[string]any{
@@ -153,7 +154,7 @@ func TestUpdateApp(t *testing.T) {
 
 func TestDeleteApp(t *testing.T) {
 	k8sClient := setupEnvtest(t)
-	srv := api.NewServer(k8sClient)
+	srv := api.NewServer(k8sClient, fake.NewClientset())
 	h := srv.Handler()
 
 	doRequest(h, http.MethodPost, "/api/apps", map[string]any{
@@ -178,7 +179,7 @@ func TestDeleteApp(t *testing.T) {
 
 func TestDeploy(t *testing.T) {
 	k8sClient := setupEnvtest(t)
-	srv := api.NewServer(k8sClient)
+	srv := api.NewServer(k8sClient, fake.NewClientset())
 	h := srv.Handler()
 
 	doRequest(h, http.MethodPost, "/api/apps", map[string]any{
@@ -211,7 +212,7 @@ func TestDeploy(t *testing.T) {
 
 func TestSecretsCRUD(t *testing.T) {
 	k8sClient := setupEnvtest(t)
-	srv := api.NewServer(k8sClient)
+	srv := api.NewServer(k8sClient, fake.NewClientset())
 	h := srv.Handler()
 
 	// Create a secret for an app
@@ -254,7 +255,7 @@ func TestSecretsCRUD(t *testing.T) {
 
 func TestUnauthenticatedRequest(t *testing.T) {
 	k8sClient := setupEnvtest(t)
-	srv := api.NewServer(k8sClient)
+	srv := api.NewServer(k8sClient, fake.NewClientset())
 	h := srv.Handler()
 
 	// Request without Authorization header
@@ -269,7 +270,7 @@ func TestUnauthenticatedRequest(t *testing.T) {
 
 func TestGetAppNotFound(t *testing.T) {
 	k8sClient := setupEnvtest(t)
-	srv := api.NewServer(k8sClient)
+	srv := api.NewServer(k8sClient, fake.NewClientset())
 	h := srv.Handler()
 
 	w := doRequest(h, http.MethodGet, "/api/apps/nonexistent?namespace=default", nil)

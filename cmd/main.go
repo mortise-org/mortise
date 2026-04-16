@@ -28,6 +28,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
@@ -222,7 +223,12 @@ func main() {
 	}
 
 	// Start REST API server alongside the controller manager.
-	apiServer := api.NewServer(mgr.GetClient())
+	clientset, err := kubernetes.NewForConfig(mgr.GetConfig())
+	if err != nil {
+		setupLog.Error(err, "Failed to create kubernetes clientset")
+		os.Exit(1)
+	}
+	apiServer := api.NewServer(mgr.GetClient(), clientset)
 	httpServer := &http.Server{Addr: apiAddr, Handler: apiServer.Handler()}
 	go func() {
 		setupLog.Info("Starting API server", "addr", apiAddr)
