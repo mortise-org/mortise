@@ -36,5 +36,4 @@ cover.out
 .runtime/
 .claude/
 .logs/
-.beads/
 __pycache__/
