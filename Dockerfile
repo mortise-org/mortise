@@ -16,8 +16,9 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
-# Embed the built UI static files
-COPY --from=ui-builder /ui/build ./ui/build
+# Embed the built UI static files into the location the internal/ui package expects
+RUN rm -rf internal/ui/build
+COPY --from=ui-builder /ui/build ./internal/ui/build
 
 RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -a -o manager cmd/main.go
 

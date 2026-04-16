@@ -4,15 +4,11 @@ import (
 	"encoding/json"
 	"net/http"
 	"testing"
-
-	"k8s.io/client-go/kubernetes/fake"
-
-	"github.com/MC-Meesh/mortise/internal/api"
 )
 
 func TestLogsNonexistentApp(t *testing.T) {
 	k8sClient := setupEnvtest(t)
-	srv := api.NewServer(k8sClient, fake.NewClientset())
+	srv := oldNewServer(t, k8sClient)
 	h := srv.Handler()
 
 	w := doRequest(h, http.MethodGet, "/api/apps/no-such-app/logs?namespace=default", nil)
@@ -29,7 +25,7 @@ func TestLogsNonexistentApp(t *testing.T) {
 
 func TestLogsNoPods(t *testing.T) {
 	k8sClient := setupEnvtest(t)
-	srv := api.NewServer(k8sClient, fake.NewClientset())
+	srv := oldNewServer(t, k8sClient)
 	h := srv.Handler()
 
 	// Create an app so it exists, but no pods will be present.
@@ -55,7 +51,7 @@ func TestLogsNoPods(t *testing.T) {
 
 func TestLogsSSEHeaders(t *testing.T) {
 	k8sClient := setupEnvtest(t)
-	srv := api.NewServer(k8sClient, fake.NewClientset())
+	srv := oldNewServer(t, k8sClient)
 	h := srv.Handler()
 
 	// Create an app with a pod — but envtest doesn't run real pods, so we'll get

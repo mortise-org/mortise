@@ -19,6 +19,7 @@ package main
 import (
 	"crypto/tls"
 	"flag"
+	"io/fs"
 	"net/http"
 	"os"
 
@@ -39,7 +40,9 @@ import (
 
 	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
 	"github.com/MC-Meesh/mortise/internal/api"
+	"github.com/MC-Meesh/mortise/internal/auth"
 	"github.com/MC-Meesh/mortise/internal/controller"
+	"github.com/MC-Meesh/mortise/internal/ui"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -228,7 +231,18 @@ func main() {
 		setupLog.Error(err, "Failed to create kubernetes clientset")
 		os.Exit(1)
 	}
-	apiServer := api.NewServer(mgr.GetClient(), clientset)
+
+	authProvider := auth.NewNativeAuthProvider(mgr.GetClient())
+	jwtHelper := auth.NewJWTHelper(mgr.GetClient())
+
+	var uiSub fs.FS
+	if sub, err := ui.FS(); err == nil {
+		uiSub = sub
+	} else {
+		setupLog.Info("UI files not available; API will still serve", "err", err)
+	}
+
+	apiServer := api.NewServer(mgr.GetClient(), clientset, authProvider, jwtHelper, uiSub)
 	httpServer := &http.Server{Addr: apiAddr, Handler: apiServer.Handler()}
 	go func() {
 		setupLog.Info("Starting API server", "addr", apiAddr)

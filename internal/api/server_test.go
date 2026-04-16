@@ -19,7 +19,49 @@ import (
 
 	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
 	"github.com/MC-Meesh/mortise/internal/api"
+	"github.com/MC-Meesh/mortise/internal/auth"
 )
+
+// newTestServer builds an API server wired against the given k8s client.
+// Uses NativeAuthProvider + JWTHelper so tests exercise real auth wiring.
+// Returns the server, a valid JWT for an admin user, and the auth provider for setup.
+func newTestServer(t *testing.T, k8sClient client.Client) (*api.Server, string) {
+	t.Helper()
+	ctx := context.Background()
+
+	// Ensure mortise-system namespace exists (auth stores user Secrets there).
+	_ = k8sClient.Create(ctx, &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: "mortise-system"},
+	})
+
+	authProvider := auth.NewNativeAuthProvider(k8sClient)
+	jwtHelper := auth.NewJWTHelper(k8sClient)
+
+	// Create a test admin user and generate a real JWT for test requests.
+	if err := authProvider.CreateUser(ctx, "test@example.com", "testpass", auth.RoleAdmin); err != nil {
+		t.Fatalf("create test user: %v", err)
+	}
+	principal, err := authProvider.Authenticate(ctx, auth.Credentials{Email: "test@example.com", Password: "testpass"})
+	if err != nil {
+		t.Fatalf("authenticate test user: %v", err)
+	}
+	token, err := jwtHelper.GenerateToken(ctx, principal)
+	if err != nil {
+		t.Fatalf("generate token: %v", err)
+	}
+
+	srv := api.NewServer(k8sClient, fake.NewClientset(), authProvider, jwtHelper, nil)
+	testToken = token
+	return srv, token
+}
+
+// oldNewServer wraps newTestServer for backwards compatibility with existing tests.
+// Returns the server as before so the test bodies don't need to change their calls.
+func oldNewServer(t *testing.T, k8sClient client.Client) *api.Server {
+	t.Helper()
+	srv, _ := newTestServer(t, k8sClient)
+	return srv
+}
 
 func setupEnvtest(t *testing.T) client.Client {
 	t.Helper()
@@ -51,14 +93,24 @@ func setupEnvtest(t *testing.T) client.Client {
 	return k8sClient
 }
 
+// testToken is set by the first call to newTestServer in any test. Tests that use
+// the legacy doRequest signature rely on this package-level value.
+var testToken string
+
 func doRequest(handler http.Handler, method, path string, body any) *httptest.ResponseRecorder {
+	return doRequestWithToken(handler, method, path, body, testToken)
+}
+
+func doRequestWithToken(handler http.Handler, method, path string, body any, token string) *httptest.ResponseRecorder {
 	var buf bytes.Buffer
 	if body != nil {
 		_ = json.NewEncoder(&buf).Encode(body)
 	}
 	req := httptest.NewRequest(method, path, &buf)
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer test-token")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 	return w
@@ -66,7 +118,7 @@ func doRequest(handler http.Handler, method, path string, body any) *httptest.Re
 
 func TestCreateAndGetApp(t *testing.T) {
 	k8sClient := setupEnvtest(t)
-	srv := api.NewServer(k8sClient, fake.NewClientset())
+	srv := oldNewServer(t, k8sClient)
 	h := srv.Handler()
 
 	createBody := map[string]any{
@@ -100,7 +152,7 @@ func TestCreateAndGetApp(t *testing.T) {
 
 func TestListApps(t *testing.T) {
 	k8sClient := setupEnvtest(t)
-	srv := api.NewServer(k8sClient, fake.NewClientset())
+	srv := oldNewServer(t, k8sClient)
 	h := srv.Handler()
 
 	for _, name := range []string{"app-a", "app-b"} {
@@ -127,7 +179,7 @@ func TestListApps(t *testing.T) {
 
 func TestUpdateApp(t *testing.T) {
 	k8sClient := setupEnvtest(t)
-	srv := api.NewServer(k8sClient, fake.NewClientset())
+	srv := oldNewServer(t, k8sClient)
 	h := srv.Handler()
 
 	doRequest(h, http.MethodPost, "/api/apps", map[string]any{
@@ -154,7 +206,7 @@ func TestUpdateApp(t *testing.T) {
 
 func TestDeleteApp(t *testing.T) {
 	k8sClient := setupEnvtest(t)
-	srv := api.NewServer(k8sClient, fake.NewClientset())
+	srv := oldNewServer(t, k8sClient)
 	h := srv.Handler()
 
 	doRequest(h, http.MethodPost, "/api/apps", map[string]any{
@@ -179,7 +231,7 @@ func TestDeleteApp(t *testing.T) {
 
 func TestDeploy(t *testing.T) {
 	k8sClient := setupEnvtest(t)
-	srv := api.NewServer(k8sClient, fake.NewClientset())
+	srv := oldNewServer(t, k8sClient)
 	h := srv.Handler()
 
 	doRequest(h, http.MethodPost, "/api/apps", map[string]any{
@@ -212,7 +264,7 @@ func TestDeploy(t *testing.T) {
 
 func TestSecretsCRUD(t *testing.T) {
 	k8sClient := setupEnvtest(t)
-	srv := api.NewServer(k8sClient, fake.NewClientset())
+	srv := oldNewServer(t, k8sClient)
 	h := srv.Handler()
 
 	// Create a secret for an app
@@ -255,7 +307,7 @@ func TestSecretsCRUD(t *testing.T) {
 
 func TestUnauthenticatedRequest(t *testing.T) {
 	k8sClient := setupEnvtest(t)
-	srv := api.NewServer(k8sClient, fake.NewClientset())
+	srv := oldNewServer(t, k8sClient)
 	h := srv.Handler()
 
 	// Request without Authorization header
@@ -270,7 +322,7 @@ func TestUnauthenticatedRequest(t *testing.T) {
 
 func TestGetAppNotFound(t *testing.T) {
 	k8sClient := setupEnvtest(t)
-	srv := api.NewServer(k8sClient, fake.NewClientset())
+	srv := oldNewServer(t, k8sClient)
 	h := srv.Handler()
 
 	w := doRequest(h, http.MethodGet, "/api/apps/nonexistent?namespace=default", nil)
