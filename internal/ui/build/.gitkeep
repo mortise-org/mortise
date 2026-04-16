@@ -1,0 +1,5 @@
+Build output directory.
+
+SvelteKit static files land here when you run `make build-ui`.
+This file exists only so `//go:embed all:build` has something to embed
+on a fresh clone; real UI assets replace it during build.
