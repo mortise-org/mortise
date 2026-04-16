@@ -11,6 +11,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/MC-Meesh/mortise/internal/auth"
+	"github.com/MC-Meesh/mortise/internal/webhook"
 )
 
 // Server is the REST API server that translates HTTP requests into CRD operations.
@@ -20,17 +21,25 @@ type Server struct {
 	auth      auth.AuthProvider
 	jwt       *auth.JWTHelper
 	ui        fs.FS
+	webhook   *webhook.Handler
+	oauth     *OAuthHandler
 }
 
 // NewServer creates a new API server.
 // ui is an optional filesystem for serving the SvelteKit UI; pass nil to disable UI serving.
 func NewServer(c client.Client, cs kubernetes.Interface, authProvider auth.AuthProvider, jwt *auth.JWTHelper, ui fs.FS) *Server {
+	builds := make(chan webhook.BuildRequest, 256)
+	kr := webhook.NewK8sReader(c)
+	wh := webhook.New(kr, builds)
+	oh := newOAuthHandler(c)
 	return &Server{
 		client:    c,
 		clientset: cs,
 		auth:      authProvider,
 		jwt:       jwt,
 		ui:        ui,
+		webhook:   wh,
+		oauth:     oh,
 	}
 }
 
@@ -39,6 +48,9 @@ func NewServer(c client.Client, cs kubernetes.Interface, authProvider auth.AuthP
 // URL scheme:
 //
 //	/api/auth/{status|setup|login}                                 unauthenticated
+//	/api/oauth/{provider}/authorize                                unauthenticated — OAuth redirect
+//	/api/oauth/{provider}/callback                                 unauthenticated — OAuth callback
+//	/api/webhooks/{provider}                                       unauthenticated — HMAC-verified
 //	/api/projects                                                  list/create
 //	/api/projects/{project}                                        get/delete
 //	/api/projects/{project}/apps                                   list/create
@@ -54,6 +66,13 @@ func (s *Server) Handler() http.Handler {
 	r.Get("/api/auth/status", s.Status)
 	r.Post("/api/auth/setup", s.Setup)
 	r.Post("/api/auth/login", s.Login)
+
+	// Unauthenticated git forge webhook receiver (auth is via HMAC).
+	r.Mount("/api/webhooks", s.webhook.Routes())
+
+	// Unauthenticated OAuth endpoints.
+	r.Get("/api/oauth/{provider}/authorize", s.oauth.Authorize)
+	r.Get("/api/oauth/{provider}/callback", s.oauth.Callback)
 
 	// Authenticated /api routes.
 	r.Route("/api", func(r chi.Router) {

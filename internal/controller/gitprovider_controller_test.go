@@ -21,64 +21,198 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
-
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
 )
 
 var _ = Describe("GitProvider Controller", func() {
-	Context("When reconciling a resource", func() {
-		const resourceName = "test-resource"
+	ctx := context.Background()
 
-		ctx := context.Background()
+	// secretNS is the namespace we create test secrets in.
+	const secretNS = "default"
 
-		typeNamespacedName := types.NamespacedName{
-			Name:      resourceName,
-			Namespace: "default", // TODO(user):Modify as needed
+	// makeSecret creates a simple secret in the given namespace.
+	makeSecret := func(ns, name, key, value string) {
+		s := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+			Data:       map[string][]byte{key: []byte(value)},
 		}
-		gitprovider := &mortisev1alpha1.GitProvider{}
+		err := k8sClient.Get(ctx, types.NamespacedName{Namespace: ns, Name: name}, &corev1.Secret{})
+		if errors.IsNotFound(err) {
+			Expect(k8sClient.Create(ctx, s)).To(Succeed())
+		}
+	}
+
+	// makeProvider builds a GitProvider with three secretRefs all pointing to the
+	// same secret / key for convenience in tests.
+	makeProvider := func(name string, providerType mortisev1alpha1.GitProviderType, secretName string) *mortisev1alpha1.GitProvider {
+		ref := mortisev1alpha1.SecretRef{Namespace: secretNS, Name: secretName, Key: "value"}
+		return &mortisev1alpha1.GitProvider{
+			ObjectMeta: metav1.ObjectMeta{Name: name},
+			Spec: mortisev1alpha1.GitProviderSpec{
+				Type: providerType,
+				Host: "https://github.com",
+				OAuth: mortisev1alpha1.OAuthConfig{
+					ClientIDSecretRef:     ref,
+					ClientSecretSecretRef: ref,
+				},
+				WebhookSecretRef: ref,
+			},
+		}
+	}
+
+	reconcile := func(name string) error {
+		r := &GitProviderReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+		_, err := r.Reconcile(ctx, reconcile.Request{
+			NamespacedName: types.NamespacedName{Name: name},
+		})
+		return err
+	}
+
+	Context("when all secrets exist", func() {
+		const gpName = "gp-ready"
+		const secretName = "gp-secret-ready"
 
 		BeforeEach(func() {
-			By("creating the custom resource for the Kind GitProvider")
-			err := k8sClient.Get(ctx, typeNamespacedName, gitprovider)
-			if err != nil && errors.IsNotFound(err) {
-				resource := &mortisev1alpha1.GitProvider{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      resourceName,
-						Namespace: "default",
-					},
-					// TODO(user): Specify other spec details if needed.
-				}
-				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
-			}
+			makeSecret(secretNS, secretName, "value", "test-value")
+			gp := makeProvider(gpName, mortisev1alpha1.GitProviderTypeGitHub, secretName)
+			Expect(k8sClient.Create(ctx, gp)).To(Succeed())
 		})
 
 		AfterEach(func() {
-			// TODO(user): Cleanup logic after each test, like removing the resource instance.
-			resource := &mortisev1alpha1.GitProvider{}
-			err := k8sClient.Get(ctx, typeNamespacedName, resource)
-			Expect(err).NotTo(HaveOccurred())
-
-			By("Cleanup the specific resource instance GitProvider")
-			Expect(k8sClient.Delete(ctx, resource)).To(Succeed())
-		})
-		It("should successfully reconcile the resource", func() {
-			By("Reconciling the created resource")
-			controllerReconciler := &GitProviderReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
+			gp := &mortisev1alpha1.GitProvider{}
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: gpName}, gp); err == nil {
+				Expect(k8sClient.Delete(ctx, gp)).To(Succeed())
 			}
-
-			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
-				NamespacedName: typeNamespacedName,
-			})
-			Expect(err).NotTo(HaveOccurred())
-			// TODO(user): Add more specific assertions depending on your controller's reconciliation logic.
-			// Example: If you expect a certain status condition after reconciliation, verify it here.
 		})
+
+		It("marks the GitProvider as Ready", func() {
+			Expect(reconcile(gpName)).To(Succeed())
+
+			var updated mortisev1alpha1.GitProvider
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: gpName}, &updated)).To(Succeed())
+			Expect(updated.Status.Phase).To(Equal(mortisev1alpha1.GitProviderPhaseReady))
+
+			var availableCond *metav1.Condition
+			for i := range updated.Status.Conditions {
+				if updated.Status.Conditions[i].Type == "Available" {
+					availableCond = &updated.Status.Conditions[i]
+					break
+				}
+			}
+			Expect(availableCond).NotTo(BeNil())
+			Expect(availableCond.Status).To(Equal(metav1.ConditionTrue))
+		})
+	})
+
+	Context("when a required secret is missing", func() {
+		const gpName = "gp-missing-secret"
+
+		BeforeEach(func() {
+			gp := makeProvider(gpName, mortisev1alpha1.GitProviderTypeGitHub, "does-not-exist")
+			Expect(k8sClient.Create(ctx, gp)).To(Succeed())
+		})
+
+		AfterEach(func() {
+			gp := &mortisev1alpha1.GitProvider{}
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: gpName}, gp); err == nil {
+				Expect(k8sClient.Delete(ctx, gp)).To(Succeed())
+			}
+		})
+
+		It("marks the GitProvider as Failed", func() {
+			Expect(reconcile(gpName)).To(Succeed())
+
+			var updated mortisev1alpha1.GitProvider
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: gpName}, &updated)).To(Succeed())
+			Expect(updated.Status.Phase).To(Equal(mortisev1alpha1.GitProviderPhaseFailed))
+		})
+	})
+
+	Context("when the secret exists but the key is absent", func() {
+		const gpName = "gp-missing-key"
+		const secretName = "gp-secret-missing-key"
+
+		BeforeEach(func() {
+			// Secret exists but key "value" is absent.
+			s := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{Name: secretName, Namespace: secretNS},
+				Data:       map[string][]byte{"other-key": []byte("x")},
+			}
+			Expect(k8sClient.Create(ctx, s)).To(Succeed())
+			gp := makeProvider(gpName, mortisev1alpha1.GitProviderTypeGitHub, secretName)
+			Expect(k8sClient.Create(ctx, gp)).To(Succeed())
+		})
+
+		AfterEach(func() {
+			gp := &mortisev1alpha1.GitProvider{}
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: gpName}, gp); err == nil {
+				Expect(k8sClient.Delete(ctx, gp)).To(Succeed())
+			}
+		})
+
+		It("marks the GitProvider as Failed", func() {
+			Expect(reconcile(gpName)).To(Succeed())
+
+			var updated mortisev1alpha1.GitProvider
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: gpName}, &updated)).To(Succeed())
+			Expect(updated.Status.Phase).To(Equal(mortisev1alpha1.GitProviderPhaseFailed))
+
+			var availableCond *metav1.Condition
+			for i := range updated.Status.Conditions {
+				if updated.Status.Conditions[i].Type == "Available" {
+					availableCond = &updated.Status.Conditions[i]
+					break
+				}
+			}
+			Expect(availableCond).NotTo(BeNil())
+			Expect(availableCond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(availableCond.Reason).To(Equal("SecretNotFound"))
+		})
+	})
+
+	Context("when the resource does not exist", func() {
+		It("returns nil without error", func() {
+			Expect(reconcile("does-not-exist")).To(Succeed())
+		})
+	})
+
+	Context("reconciling each provider type", func() {
+		for _, pt := range []mortisev1alpha1.GitProviderType{
+			mortisev1alpha1.GitProviderTypeGitHub,
+			mortisev1alpha1.GitProviderTypeGitLab,
+			mortisev1alpha1.GitProviderTypeGitea,
+		} {
+			pt := pt // capture loop var
+			name := "gp-type-" + string(pt)
+			secretName := "gp-secret-type-" + string(pt)
+
+			Context("type="+string(pt), func() {
+				BeforeEach(func() {
+					makeSecret(secretNS, secretName, "value", "test-value")
+					gp := makeProvider(name, pt, secretName)
+					Expect(k8sClient.Create(ctx, gp)).To(Succeed())
+				})
+
+				AfterEach(func() {
+					gp := &mortisev1alpha1.GitProvider{}
+					if err := k8sClient.Get(ctx, types.NamespacedName{Name: name}, gp); err == nil {
+						Expect(k8sClient.Delete(ctx, gp)).To(Succeed())
+					}
+				})
+
+				It("reaches Ready phase", func() {
+					Expect(reconcile(name)).To(Succeed())
+					var updated mortisev1alpha1.GitProvider
+					Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name}, &updated)).To(Succeed())
+					Expect(updated.Status.Phase).To(Equal(mortisev1alpha1.GitProviderPhaseReady))
+				})
+			})
+		}
 	})
 })

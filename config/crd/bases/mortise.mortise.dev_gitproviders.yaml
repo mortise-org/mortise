@@ -14,10 +14,25 @@ spec:
     singular: gitprovider
   scope: Cluster
   versions:
-  - name: v1alpha1
+  - additionalPrinterColumns:
+    - jsonPath: .spec.type
+      name: Type
+      type: string
+    - jsonPath: .spec.host
+      name: Host
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: GitProvider is the Schema for the gitproviders API
+        description: |-
+          GitProvider is the Schema for the gitproviders API. It is cluster-scoped;
+          one instance per configured git forge.
         properties:
           apiVersion:
             description: |-
@@ -39,25 +54,93 @@ spec:
           spec:
             description: spec defines the desired state of GitProvider
             properties:
-              foo:
-                description: foo is an example field of GitProvider. Edit gitprovider_types.go
-                  to remove/update
+              host:
+                description: Host is the base URL of the forge (e.g. https://github.com
+                  or https://gitea.internal.example).
                 type: string
+              oauth:
+                description: |-
+                  OAuth holds the OAuth application credentials used to authenticate users and
+                  register webhooks on their behalf.
+                properties:
+                  clientIDSecretRef:
+                    description: ClientIDSecretRef references the secret containing
+                      the OAuth client ID.
+                    properties:
+                      key:
+                        description: Key within the secret.
+                        type: string
+                      name:
+                        description: Name of the secret.
+                        type: string
+                      namespace:
+                        description: Namespace of the secret.
+                        type: string
+                    required:
+                    - key
+                    - name
+                    - namespace
+                    type: object
+                  clientSecretSecretRef:
+                    description: ClientSecretSecretRef references the secret containing
+                      the OAuth client secret.
+                    properties:
+                      key:
+                        description: Key within the secret.
+                        type: string
+                      name:
+                        description: Name of the secret.
+                        type: string
+                      namespace:
+                        description: Namespace of the secret.
+                        type: string
+                    required:
+                    - key
+                    - name
+                    - namespace
+                    type: object
+                required:
+                - clientIDSecretRef
+                - clientSecretSecretRef
+                type: object
+              type:
+                description: Type is the git forge type.
+                enum:
+                - github
+                - gitlab
+                - gitea
+                type: string
+              webhookSecretRef:
+                description: |-
+                  WebhookSecretRef references the secret used to verify HMAC signatures on
+                  inbound webhook payloads from this forge.
+                properties:
+                  key:
+                    description: Key within the secret.
+                    type: string
+                  name:
+                    description: Name of the secret.
+                    type: string
+                  namespace:
+                    description: Namespace of the secret.
+                    type: string
+                required:
+                - key
+                - name
+                - namespace
+                type: object
+            required:
+            - host
+            - oauth
+            - type
+            - webhookSecretRef
             type: object
           status:
             description: status defines the observed state of GitProvider
             properties:
               conditions:
-                description: |-
-                  conditions represent the current state of the GitProvider resource.
-                  Each condition has a unique type and reflects the status of a specific aspect of the resource.
-
-                  Standard condition types include:
-                  - "Available": the resource is fully functional
-                  - "Progressing": the resource is being created or updated
-                  - "Degraded": the resource failed to reach or maintain its desired state
-
-                  The status of each condition is one of True, False, or Unknown.
+                description: Conditions represent the current state of the GitProvider
+                  resource.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -116,6 +199,13 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              phase:
+                description: Phase is the current lifecycle phase.
+                enum:
+                - Pending
+                - Ready
+                - Failed
+                type: string
             type: object
         required:
         - spec
