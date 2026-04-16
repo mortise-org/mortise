@@ -51,6 +51,11 @@ type AppSource struct {
 	WatchPaths []string `json:"watchPaths,omitempty"`
 	Build      *Build   `json:"build,omitempty"`
 
+	// ProviderRef is the name of the GitProvider CRD that holds credentials for
+	// this repo's forge. Required when type=git.
+	// +optional
+	ProviderRef string `json:"providerRef,omitempty"`
+
 	// Image source fields (used when type=image)
 	Image         string `json:"image,omitempty"`
 	PullSecretRef string `json:"pullSecretRef,omitempty"`
@@ -173,6 +178,16 @@ const (
 type AppStatus struct {
 	Phase        AppPhase            `json:"phase,omitempty"`
 	Environments []EnvironmentStatus `json:"environments,omitempty"`
+
+	// LastBuiltSHA is the git commit SHA of the most recently completed build.
+	// The reconciler uses this to short-circuit rebuilds when the revision hasn't changed.
+	// +optional
+	LastBuiltSHA string `json:"lastBuiltSHA,omitempty"`
+
+	// LastBuiltImage is the full image reference (including digest) produced by the
+	// most recently completed build. The Deployment spec is set to this value.
+	// +optional
+	LastBuiltImage string `json:"lastBuiltImage,omitempty"`
 
 	// +listType=map
 	// +listMapKey=type

@@ -2,6 +2,7 @@ package webhook
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
@@ -39,4 +40,36 @@ func (r *K8sReader) getSecret(ctx context.Context, namespace, name, key string) 
 		return "", fmt.Errorf("key %q not found in secret %s/%s", key, namespace, name)
 	}
 	return string(v), nil
+}
+
+// listGitApps returns all Apps across all namespaces that have source.type=git.
+func (r *K8sReader) listGitApps(ctx context.Context) ([]mortisev1alpha1.App, error) {
+	var all mortisev1alpha1.AppList
+	if err := r.client.List(ctx, &all); err != nil {
+		return nil, fmt.Errorf("list apps: %w", err)
+	}
+	out := make([]mortisev1alpha1.App, 0)
+	for _, a := range all.Items {
+		if a.Spec.Source.Type == mortisev1alpha1.SourceTypeGit {
+			out = append(out, a)
+		}
+	}
+	return out, nil
+}
+
+// patchAppRevision sets the mortise.dev/revision annotation on the given App
+// using a strategic-merge patch so it triggers a reconcile without a full update.
+func (r *K8sReader) patchAppRevision(ctx context.Context, app *mortisev1alpha1.App, sha string) error {
+	patch := map[string]interface{}{
+		"metadata": map[string]interface{}{
+			"annotations": map[string]string{
+				"mortise.dev/revision": sha,
+			},
+		},
+	}
+	data, err := json.Marshal(patch)
+	if err != nil {
+		return fmt.Errorf("marshal patch: %w", err)
+	}
+	return r.client.Patch(ctx, app, client.RawPatch(types.MergePatchType, data))
 }

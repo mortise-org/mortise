@@ -1,0 +1,23 @@
+apiVersion: mortise.mortise.dev/v1alpha1
+kind: App
+metadata:
+  name: test-git-app
+  annotations:
+    mortise.dev/revision: ""  # set by webhook or test to trigger a build
+spec:
+  source:
+    type: git
+    repo: https://github.com/org/repo
+    branch: main
+    providerRef: github-main  # must match a GitProvider CRD name in the cluster
+    build:
+      dockerfilePath: Dockerfile
+  network:
+    public: true
+  environments:
+    - name: production
+      replicas: 1
+      resources:
+        cpu: "100m"
+        memory: "128Mi"
+      domain: test-git-app.example.com

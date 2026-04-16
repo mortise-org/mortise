@@ -162,6 +162,11 @@ spec:
                     type: string
                   path:
                     type: string
+                  providerRef:
+                    description: |-
+                      ProviderRef is the name of the GitProvider CRD that holds credentials for
+                      this repo's forge. Required when type=git.
+                    type: string
                   pullSecretRef:
                     type: string
                   repo:
@@ -303,6 +308,16 @@ spec:
                   - name
                   type: object
                 type: array
+              lastBuiltImage:
+                description: |-
+                  LastBuiltImage is the full image reference (including digest) produced by the
+                  most recently completed build. The Deployment spec is set to this value.
+                type: string
+              lastBuiltSHA:
+                description: |-
+                  LastBuiltSHA is the git commit SHA of the most recently completed build.
+                  The reconciler uses this to short-circuit rebuilds when the revision hasn't changed.
+                type: string
               phase:
                 description: AppPhase represents the overall lifecycle phase.
                 enum:

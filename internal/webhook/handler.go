@@ -2,9 +2,9 @@
 //
 // The handler is mounted at /api/webhooks/{provider} (unauthenticated; auth is
 // via HMAC). It verifies the payload signature using the secret stored in the
-// GitProvider CRD's webhookSecretRef, parses push events, and writes build
-// requests to an in-memory channel. Full wiring to the build stack is a
-// follow-up.
+// GitProvider CRD's webhookSecretRef, parses push events, then patches the
+// annotation mortise.dev/revision on every matching App so the App reconciler
+// picks up the new commit SHA and triggers a rebuild.
 package webhook
 
 import (
@@ -12,6 +12,8 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/url"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -20,18 +22,9 @@ import (
 	"github.com/MC-Meesh/mortise/internal/git"
 )
 
-// BuildRequest is the payload enqueued for a push event.
-type BuildRequest struct {
-	Provider string // GitProvider name
-	Repo     string // full repo path (owner/repo or URL)
-	Ref      string // branch or tag ref
-	SHA      string // commit SHA
-}
-
 // Handler handles inbound git forge webhooks.
 type Handler struct {
-	k8s    k8sReader
-	builds chan<- BuildRequest
+	k8s k8sReader
 }
 
 // k8sReader is a minimal interface over the k8s client so Handler doesn't
@@ -39,11 +32,13 @@ type Handler struct {
 type k8sReader interface {
 	getGitProvider(ctx context.Context, name string) (*mortisev1alpha1.GitProvider, error)
 	getSecret(ctx context.Context, namespace, name, key string) (string, error)
+	listGitApps(ctx context.Context) ([]mortisev1alpha1.App, error)
+	patchAppRevision(ctx context.Context, app *mortisev1alpha1.App, sha string) error
 }
 
-// New creates a Handler. builds is the channel that receives parsed push events.
-func New(r k8sReader, builds chan<- BuildRequest) *Handler {
-	return &Handler{k8s: r, builds: builds}
+// New creates a Handler.
+func New(r k8sReader) *Handler {
+	return &Handler{k8s: r}
 }
 
 // ServeHTTP dispatches to the chi-routed sub-router.
@@ -103,14 +98,113 @@ func (h *Handler) handleWebhook(w http.ResponseWriter, req *http.Request) {
 	}
 	br.Provider = providerName
 
-	select {
-	case h.builds <- br:
-		log.Info("enqueued build request", "provider", providerName, "repo", br.Repo, "ref", br.Ref, "sha", br.SHA)
-	default:
-		log.Info("build queue full, dropping", "provider", providerName, "repo", br.Repo)
-	}
+	// Dispatch: find all Apps whose git repo + branch match, patch revision annotation.
+	h.dispatchToApps(req.Context(), br)
 
 	w.WriteHeader(http.StatusAccepted)
+}
+
+// dispatchToApps lists all git-source Apps and patches mortise.dev/revision on
+// those whose repo URL and branch match the push event. Errors are logged but
+// do not fail the HTTP response — the forge has already delivered the event.
+func (h *Handler) dispatchToApps(ctx context.Context, br BuildRequest) {
+	log := logf.FromContext(ctx)
+
+	apps, err := h.k8s.listGitApps(ctx)
+	if err != nil {
+		log.Error(err, "list git apps for dispatch")
+		return
+	}
+
+	pushedBranch := branchFromRef(br.Ref)
+
+	matched := 0
+	for i := range apps {
+		app := &apps[i]
+		src := app.Spec.Source
+		if src.Type != mortisev1alpha1.SourceTypeGit {
+			continue
+		}
+		if !repoMatches(src.Repo, br.Repo) {
+			continue
+		}
+		branch := src.Branch
+		if branch == "" {
+			branch = "main"
+		}
+		if branch != pushedBranch {
+			continue
+		}
+		if err := h.k8s.patchAppRevision(ctx, app, br.SHA); err != nil {
+			log.Error(err, "patch app revision annotation", "app", app.Name, "namespace", app.Namespace)
+			continue
+		}
+		log.Info("patched revision annotation", "app", app.Name, "namespace", app.Namespace, "sha", br.SHA)
+		matched++
+	}
+
+	if matched == 0 {
+		log.Info("no matching apps for push event", "repo", br.Repo, "ref", br.Ref)
+	}
+}
+
+// branchFromRef strips the "refs/heads/" prefix from a git ref string.
+// "refs/heads/main" → "main". Non-branch refs (tags) are returned as-is.
+func branchFromRef(ref string) string {
+	return strings.TrimPrefix(ref, "refs/heads/")
+}
+
+// repoMatches returns true if the App's configured repo URL and the webhook
+// event's repo identifier refer to the same repository.
+//
+// The event may carry either "owner/repo" (short form from full_name) or a
+// full HTTPS URL (from html_url). The App always stores a full URL.
+//
+// Normalization rules:
+//   - Strip trailing ".git" from both sides.
+//   - Lowercase everything.
+//   - If both are full URLs, compare host+path.
+//   - If one is a short path ("owner/repo"), check whether the other's URL path
+//     ends with "/" + that short path (e.g. "github.com/org/repo" ends with "/org/repo").
+func repoMatches(appRepo, eventRepo string) bool {
+	if appRepo == "" || eventRepo == "" {
+		return false
+	}
+	a := normalizeRepo(appRepo)
+	b := normalizeRepo(eventRepo)
+	if a == b {
+		return true
+	}
+	// One may be a short path; check suffix containment.
+	// Add a "/" prefix to avoid partial segment matches.
+	if strings.HasSuffix(a, "/"+b) || strings.HasSuffix(b, "/"+a) {
+		return true
+	}
+	return false
+}
+
+// normalizeRepo returns a canonical lowercased string for comparison.
+// Full URLs are reduced to "host/path" (no scheme, no leading slash on path).
+// Short "owner/repo" style strings are returned lowercased.
+func normalizeRepo(raw string) string {
+	raw = strings.TrimSuffix(raw, ".git")
+
+	if strings.Contains(raw, "://") {
+		u, err := url.Parse(raw)
+		if err == nil {
+			// e.g. "github.com/org/repo"
+			return strings.ToLower(u.Host) + "/" + strings.ToLower(strings.TrimPrefix(u.Path, "/"))
+		}
+	}
+	return strings.ToLower(raw)
+}
+
+// BuildRequest is the parsed push event payload.
+type BuildRequest struct {
+	Provider string // GitProvider name
+	Repo     string // full repo path (owner/repo or URL)
+	Ref      string // branch or tag ref
+	SHA      string // commit SHA
 }
 
 // pushPayload is the minimal common shape we extract from all three forges.

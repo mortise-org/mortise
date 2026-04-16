@@ -41,7 +41,10 @@ import (
 	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
 	"github.com/MC-Meesh/mortise/internal/api"
 	"github.com/MC-Meesh/mortise/internal/auth"
+	"github.com/MC-Meesh/mortise/internal/build"
 	"github.com/MC-Meesh/mortise/internal/controller"
+	"github.com/MC-Meesh/mortise/internal/git"
+	"github.com/MC-Meesh/mortise/internal/registry"
 	"github.com/MC-Meesh/mortise/internal/ui"
 	// +kubebuilder:scaffold:imports
 )
@@ -56,6 +59,13 @@ func init() {
 
 	utilruntime.Must(mortisev1alpha1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
+}
+
+func envOrDefault(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
 }
 
 // nolint:gocyclo
@@ -193,9 +203,45 @@ func main() {
 		setupLog.Error(err, "Failed to create controller", "controller", "Project")
 		os.Exit(1)
 	}
+
+	// Build the registry / build / git clients from environment variables.
+	// Defaults are suitable for `make dev-up` (buildkitd + Zot in mortise-system).
+	//
+	// MORTISE_BUILDKIT_ADDR    — buildkitd address (default: tcp://buildkitd.mortise-system.svc:1234)
+	// MORTISE_REGISTRY_URL     — OCI registry base URL (default: http://zot.mortise-system.svc:5000)
+	// MORTISE_REGISTRY_USERNAME — registry username (default: empty, anonymous)
+	// MORTISE_REGISTRY_PASSWORD — registry password (default: empty)
+	//
+	// A follow-up PR will read these values from PlatformConfig once that CRD is promoted.
+	buildkitAddr := envOrDefault("MORTISE_BUILDKIT_ADDR", "tcp://buildkitd.mortise-system.svc:1234")
+	registryURL := envOrDefault("MORTISE_REGISTRY_URL", "http://zot.mortise-system.svc:5000")
+	registryUser := os.Getenv("MORTISE_REGISTRY_USERNAME")
+	registryPass := os.Getenv("MORTISE_REGISTRY_PASSWORD")
+
+	var buildClient build.BuildClient
+	bkClient, err := build.New(build.Config{Addr: buildkitAddr})
+	if err != nil {
+		// Non-fatal: git-source apps will log "clients not configured" and skip builds.
+		setupLog.Error(err, "Failed to connect to buildkitd; git-source apps will not build", "addr", buildkitAddr)
+	} else {
+		buildClient = bkClient
+	}
+
+	registryBackend := registry.NewOCIBackend(registry.Config{
+		URL:                   registryURL,
+		Username:              registryUser,
+		Password:              registryPass,
+		InsecureSkipTLSVerify: true, // safe default for dev; PlatformConfig wiring will make this configurable
+	})
+
+	gitClient := git.NewGoGitClient()
+
 	if err := (&controller.AppReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:          mgr.GetClient(),
+		Scheme:          mgr.GetScheme(),
+		BuildClient:     buildClient,
+		GitClient:       gitClient,
+		RegistryBackend: registryBackend,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "App")
 		os.Exit(1)

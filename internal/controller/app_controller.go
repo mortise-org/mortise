@@ -19,11 +19,14 @@ package controller
 import (
 	"context"
 	"fmt"
+	"os"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -38,16 +41,26 @@ import (
 
 	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
 	"github.com/MC-Meesh/mortise/internal/bindings"
+	"github.com/MC-Meesh/mortise/internal/build"
+	"github.com/MC-Meesh/mortise/internal/git"
+	"github.com/MC-Meesh/mortise/internal/registry"
 )
 
 // maxDeployHistory is the maximum number of deploy records kept per environment.
 const maxDeployHistory = 20
 
+// buildTimeout is the maximum wall time the reconciler will block waiting for a
+// build to complete. Synchronous builds are v1-acceptable (noted in PROGRESS.md).
+const buildTimeout = 30 * time.Minute
+
 // AppReconciler reconciles a App object
 type AppReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
-	Clock  clock.Clock
+	Scheme          *runtime.Scheme
+	Clock           clock.Clock
+	BuildClient     build.BuildClient
+	GitClient       git.GitClient
+	RegistryBackend registry.RegistryBackend
 }
 
 // +kubebuilder:rbac:groups=mortise.mortise.dev,resources=apps,verbs=get;list;watch;create;update;patch;delete
@@ -69,8 +82,15 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		return ctrl.Result{}, err
 	}
 
-	if app.Spec.Source.Type != mortisev1alpha1.SourceTypeImage {
-		log.Info("skipping non-image source app", "type", app.Spec.Source.Type)
+	switch app.Spec.Source.Type {
+	case mortisev1alpha1.SourceTypeGit:
+		if err := r.reconcileGitSource(ctx, &app); err != nil {
+			return ctrl.Result{}, err
+		}
+	case mortisev1alpha1.SourceTypeImage:
+		// image path: nothing extra needed before reconciling workloads
+	default:
+		log.Info("skipping unsupported source type", "type", app.Spec.Source.Type)
 		return ctrl.Result{}, nil
 	}
 
@@ -101,6 +121,176 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	}
 
 	return ctrl.Result{}, nil
+}
+
+// reconcileGitSource handles the build-from-source path for source.type=git apps.
+// It resolves the target revision, short-circuits if the image is already built,
+// clones the repo, runs a build, and updates app.Spec.Source.Image with the result
+// so the downstream Deployment reconciler picks it up.
+//
+// Note: builds run synchronously with a bounded timeout (buildTimeout). This is
+// acceptable for v1; a follow-up should move long builds into a Job or background
+// goroutine and return Building phase immediately.
+func (r *AppReconciler) reconcileGitSource(ctx context.Context, app *mortisev1alpha1.App) error {
+	log := logf.FromContext(ctx)
+
+	if r.BuildClient == nil || r.GitClient == nil || r.RegistryBackend == nil {
+		log.Info("git source clients not configured; skipping build")
+		return nil
+	}
+
+	// Determine target revision from annotation (set by webhook) or fall back to branch name.
+	revision := app.Annotations["mortise.dev/revision"]
+	if revision == "" {
+		// No annotation means "tip of the configured branch". We use the branch
+		// name itself as a pseudo-revision so the short-circuit below still works
+		// on re-reconcile of the same branch state. A follow-up can call
+		// GitAPI.ResolveRef to get the actual tip SHA.
+		revision = app.Spec.Source.Branch
+	}
+	if revision == "" {
+		revision = "main"
+	}
+
+	// Short-circuit: skip rebuild if we already built this revision and have an image.
+	if app.Status.LastBuiltSHA == revision && app.Status.LastBuiltImage != "" {
+		app.Spec.Source.Image = app.Status.LastBuiltImage
+		return nil
+	}
+
+	// Resolve the GitProvider and its OAuth token.
+	if app.Spec.Source.ProviderRef == "" {
+		return r.setFailedCondition(ctx, app, "MissingProviderRef", "spec.source.providerRef must be set for git source apps")
+	}
+	var gp mortisev1alpha1.GitProvider
+	if err := r.Get(ctx, types.NamespacedName{Name: app.Spec.Source.ProviderRef}, &gp); err != nil {
+		return r.setFailedCondition(ctx, app, "ProviderNotFound", fmt.Sprintf("GitProvider %q: %v", app.Spec.Source.ProviderRef, err))
+	}
+	token, err := git.ResolveProviderToken(ctx, r.Client, &gp)
+	if err != nil {
+		return r.setFailedCondition(ctx, app, "TokenResolutionFailed", err.Error())
+	}
+
+	// Clone into a temp dir.
+	cloneDir, err := os.MkdirTemp("", "mortise-build-*")
+	if err != nil {
+		return fmt.Errorf("create temp dir: %w", err)
+	}
+	defer os.RemoveAll(cloneDir)
+
+	branch := app.Spec.Source.Branch
+	if branch == "" {
+		branch = "main"
+	}
+	creds := git.GitCredentials{Token: token}
+	if err := r.GitClient.Clone(ctx, app.Spec.Source.Repo, branch, cloneDir, creds); err != nil {
+		return r.setFailedCondition(ctx, app, "CloneFailed", err.Error())
+	}
+	log.Info("cloned repo", "repo", app.Spec.Source.Repo, "branch", branch, "dir", cloneDir)
+
+	// Compute image tag from the first 7 chars of the revision (or the full string
+	// if it's already a short ref like a branch name).
+	tag := revision
+	if len(tag) > 7 {
+		tag = tag[:7]
+	}
+
+	imageRef, err := r.RegistryBackend.PushTarget(app.Name, tag)
+	if err != nil {
+		return r.setFailedCondition(ctx, app, "PushTargetFailed", err.Error())
+	}
+
+	dockerfile := "Dockerfile"
+	if app.Spec.Source.Build != nil && app.Spec.Source.Build.DockerfilePath != "" {
+		dockerfile = app.Spec.Source.Build.DockerfilePath
+	}
+
+	// Mark building phase before the (potentially long) build.
+	app.Status.Phase = mortisev1alpha1.AppPhaseBuilding
+	if err := r.Status().Update(ctx, app); err != nil {
+		// Non-fatal: the build will proceed; status update failure just means
+		// the user sees stale phase briefly.
+		log.Error(err, "update status to Building")
+	}
+
+	buildCtx, cancel := context.WithTimeout(ctx, buildTimeout)
+	defer cancel()
+
+	var buildArgs map[string]string
+	if app.Spec.Source.Build != nil {
+		buildArgs = app.Spec.Source.Build.Args
+	}
+
+	req := build.BuildRequest{
+		AppName:    app.Name,
+		Namespace:  app.Namespace,
+		SourceDir:  cloneDir,
+		Dockerfile: dockerfile,
+		BuildArgs:  buildArgs,
+		PushTarget: imageRef.Full,
+	}
+
+	events, err := r.BuildClient.Submit(buildCtx, req)
+	if err != nil {
+		return r.setFailedCondition(ctx, app, "BuildSubmitFailed", err.Error())
+	}
+
+	// Drain build events; on success extract the digest.
+	digest := ""
+	for ev := range events {
+		switch ev.Type {
+		case build.EventLog:
+			log.V(1).Info("build log", "line", ev.Line)
+		case build.EventSuccess:
+			digest = ev.Digest
+			log.Info("build succeeded", "image", imageRef.Full, "digest", digest)
+		case build.EventFailure:
+			return r.setFailedCondition(ctx, app, "BuildFailed", ev.Error)
+		}
+	}
+
+	// Resolve the pushed image reference: prefer digest for determinism.
+	pushedImage := imageRef.Full
+	if digest != "" {
+		// registry/path@sha256:... for immutable references.
+		pushedImage = imageRef.Registry + "/" + imageRef.Path + "@" + digest
+	}
+
+	app.Status.LastBuiltSHA = revision
+	app.Status.LastBuiltImage = pushedImage
+	app.Status.Phase = mortisev1alpha1.AppPhaseDeploying
+	meta.SetStatusCondition(&app.Status.Conditions, metav1.Condition{
+		Type:               "BuildSucceeded",
+		Status:             metav1.ConditionTrue,
+		Reason:             "BuildComplete",
+		Message:            fmt.Sprintf("built %s@%s", imageRef.Full, digest),
+		LastTransitionTime: metav1.NewTime(r.clock().Now()),
+	})
+	if err := r.Status().Update(ctx, app); err != nil {
+		log.Error(err, "update status after build")
+	}
+
+	// Surface the built image to the downstream Deployment reconciler.
+	app.Spec.Source.Image = pushedImage
+	return nil
+}
+
+// setFailedCondition sets the App phase to Failed, writes a condition, updates
+// status, and returns an error so the reconciler requeues.
+func (r *AppReconciler) setFailedCondition(ctx context.Context, app *mortisev1alpha1.App, reason, msg string) error {
+	log := logf.FromContext(ctx)
+	app.Status.Phase = mortisev1alpha1.AppPhaseFailed
+	meta.SetStatusCondition(&app.Status.Conditions, metav1.Condition{
+		Type:               "BuildSucceeded",
+		Status:             metav1.ConditionFalse,
+		Reason:             reason,
+		Message:            msg,
+		LastTransitionTime: metav1.NewTime(r.clock().Now()),
+	})
+	if err := r.Status().Update(ctx, app); err != nil {
+		log.Error(err, "update failed status")
+	}
+	return fmt.Errorf("%s: %s", reason, msg)
 }
 
 func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1alpha1.App, env *mortisev1alpha1.Environment) error {
