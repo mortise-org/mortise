@@ -24,6 +24,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
@@ -311,6 +312,159 @@ var _ = Describe("App Controller", func() {
 			Expect(passVar).NotTo(BeNil())
 			Expect(passVar.ValueFrom).NotTo(BeNil())
 			Expect(passVar.ValueFrom.SecretKeyRef.Name).To(Equal("my-db-credentials"))
+		})
+	})
+
+	Context("PVC reconciliation from spec.storage", func() {
+		ctx := context.Background()
+
+		newStorageApp := func(name string, vols []mortisev1alpha1.VolumeSpec) *mortisev1alpha1.App {
+			return &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      name,
+					Namespace: namespace,
+				},
+				Spec: mortisev1alpha1.AppSpec{
+					Source: mortisev1alpha1.AppSource{
+						Type:  mortisev1alpha1.SourceTypeImage,
+						Image: "postgres:16",
+					},
+					Network: mortisev1alpha1.NetworkConfig{Public: false},
+					Storage: vols,
+					Environments: []mortisev1alpha1.Environment{
+						{
+							Name:     "production",
+							Replicas: ptr.To[int32](1),
+						},
+					},
+				},
+			}
+		}
+
+		It("should create a PVC with correct size and access mode", func() {
+			app := newStorageApp("test-pvc-basic", []mortisev1alpha1.VolumeSpec{
+				{Name: "data", MountPath: "/data", Size: resource.MustParse("10Gi")},
+			})
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: app.Name, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var pvc corev1.PersistentVolumeClaim
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: "test-pvc-basic-data", Namespace: namespace,
+			}, &pvc)).To(Succeed())
+
+			Expect(pvc.Spec.AccessModes).To(ContainElement(corev1.ReadWriteOnce))
+			storageReq := pvc.Spec.Resources.Requests[corev1.ResourceStorage]
+			Expect(storageReq.Equal(resource.MustParse("10Gi"))).To(BeTrue())
+		})
+
+		It("should create a PVC with custom storage class and access mode", func() {
+			app := newStorageApp("test-pvc-sc", []mortisev1alpha1.VolumeSpec{
+				{
+					Name:         "data",
+					MountPath:    "/data",
+					Size:         resource.MustParse("5Gi"),
+					StorageClass: "fast-ssd",
+					AccessMode:   "ReadWriteMany",
+				},
+			})
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: app.Name, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var pvc corev1.PersistentVolumeClaim
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: "test-pvc-sc-data", Namespace: namespace,
+			}, &pvc)).To(Succeed())
+
+			Expect(pvc.Spec.StorageClassName).NotTo(BeNil())
+			Expect(*pvc.Spec.StorageClassName).To(Equal("fast-ssd"))
+			Expect(pvc.Spec.AccessModes).To(ContainElement(corev1.ReadWriteMany))
+		})
+
+		It("should be idempotent on re-reconcile with same size", func() {
+			app := newStorageApp("test-pvc-idem", []mortisev1alpha1.VolumeSpec{
+				{Name: "data", MountPath: "/data", Size: resource.MustParse("10Gi")},
+			})
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: app.Name, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Reconcile again with unchanged size — should not error
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: app.Name, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var pvc corev1.PersistentVolumeClaim
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: "test-pvc-idem-data", Namespace: namespace,
+			}, &pvc)).To(Succeed())
+			storageReq := pvc.Spec.Resources.Requests[corev1.ResourceStorage]
+			Expect(storageReq.Equal(resource.MustParse("10Gi"))).To(BeTrue())
+		})
+
+		It("should set owner reference for garbage collection", func() {
+			app := newStorageApp("test-pvc-owner", []mortisev1alpha1.VolumeSpec{
+				{Name: "data", MountPath: "/data", Size: resource.MustParse("1Gi")},
+			})
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: app.Name, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var pvc corev1.PersistentVolumeClaim
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: "test-pvc-owner-data", Namespace: namespace,
+			}, &pvc)).To(Succeed())
+
+			Expect(pvc.OwnerReferences).To(HaveLen(1))
+			Expect(pvc.OwnerReferences[0].Name).To(Equal("test-pvc-owner"))
+			Expect(*pvc.OwnerReferences[0].Controller).To(BeTrue())
+		})
+
+		It("should wire PVC into Deployment volume mounts", func() {
+			app := newStorageApp("test-pvc-mount", []mortisev1alpha1.VolumeSpec{
+				{Name: "data", MountPath: "/var/lib/postgresql/data", Size: resource.MustParse("10Gi")},
+			})
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: app.Name, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var dep appsv1.Deployment
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: "test-pvc-mount-production", Namespace: namespace,
+			}, &dep)).To(Succeed())
+
+			Expect(dep.Spec.Template.Spec.Volumes).To(HaveLen(1))
+			Expect(dep.Spec.Template.Spec.Volumes[0].PersistentVolumeClaim.ClaimName).To(Equal("test-pvc-mount-data"))
+			Expect(dep.Spec.Template.Spec.Containers[0].VolumeMounts).To(HaveLen(1))
+			Expect(dep.Spec.Template.Spec.Containers[0].VolumeMounts[0].MountPath).To(Equal("/var/lib/postgresql/data"))
 		})
 	})
 

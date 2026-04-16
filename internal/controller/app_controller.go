@@ -69,6 +69,10 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		return ctrl.Result{}, nil
 	}
 
+	if err := r.reconcilePVCs(ctx, &app); err != nil {
+		return ctrl.Result{}, fmt.Errorf("reconcile PVCs: %w", err)
+	}
+
 	for i := range app.Spec.Environments {
 		env := &app.Spec.Environments[i]
 
@@ -273,6 +277,67 @@ func (r *AppReconciler) reconcileIngress(ctx context.Context, app *mortisev1alph
 	return r.Update(ctx, &existing)
 }
 
+func (r *AppReconciler) reconcilePVCs(ctx context.Context, app *mortisev1alpha1.App) error {
+	for _, vol := range app.Spec.Storage {
+		name := pvcName(app.Name, vol.Name)
+
+		accessMode := corev1.ReadWriteOnce
+		if vol.AccessMode != "" {
+			accessMode = corev1.PersistentVolumeAccessMode(vol.AccessMode)
+		}
+
+		desired := &corev1.PersistentVolumeClaim{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: app.Namespace,
+				Labels:    appLabels(app.Name, ""),
+			},
+			Spec: corev1.PersistentVolumeClaimSpec{
+				AccessModes: []corev1.PersistentVolumeAccessMode{accessMode},
+				Resources: corev1.VolumeResourceRequirements{
+					Requests: corev1.ResourceList{
+						corev1.ResourceStorage: vol.Size,
+					},
+				},
+			},
+		}
+
+		if vol.StorageClass != "" {
+			desired.Spec.StorageClassName = &vol.StorageClass
+		}
+
+		if err := controllerutil.SetControllerReference(app, desired, r.Scheme); err != nil {
+			return err
+		}
+
+		var existing corev1.PersistentVolumeClaim
+		err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: app.Namespace}, &existing)
+		if errors.IsNotFound(err) {
+			if err := r.Create(ctx, desired); err != nil {
+				return err
+			}
+			continue
+		}
+		if err != nil {
+			return err
+		}
+
+		// PVC spec is largely immutable; only storage size can be expanded (requires bound claim + expandable SC)
+		currentSize := existing.Spec.Resources.Requests[corev1.ResourceStorage]
+		if vol.Size.Cmp(currentSize) != 0 {
+			existing.Spec.Resources.Requests[corev1.ResourceStorage] = vol.Size
+			if err := r.Update(ctx, &existing); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func pvcName(app, volume string) string {
+	return fmt.Sprintf("%s-%s", app, volume)
+}
+
 func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.App) error {
 	var envStatuses []mortisev1alpha1.EnvironmentStatus
 
@@ -396,6 +461,7 @@ func (r *AppReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&mortisev1alpha1.App{}).
 		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.Service{}).
+		Owns(&corev1.PersistentVolumeClaim{}).
 		Owns(&networkingv1.Ingress{}).
 		Named("app").
 		Complete(r)
