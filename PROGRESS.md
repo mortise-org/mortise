@@ -5,7 +5,10 @@ whenever implementation status changes — see the **Keeping this file up to
 date** section at the bottom.
 
 Legend: **Done** / **Partial** / **Not started**
-Last reconciled against spec + code: 2026-04-16 (git-source integration test landed).
+Last reconciled against spec + code: 2026-04-16 (SPEC §5 expanded:
+`namespaceOverride`/`adoptExistingNamespace`, `external` source promoted to v1,
+`secretMounts`, `environments[].annotations` passthrough, `tls.secretName`/
+`tls.clusterIssuer` overrides, 5-role RBAC + env-scoped grants).
 
 ---
 
@@ -14,10 +17,10 @@ Last reconciled against spec + code: 2026-04-16 (git-source integration test lan
 | Phase | Spec §   | Status       | Summary |
 |-------|----------|--------------|---------|
 | 0 — Foundation                   | §7.1 / §8   | **Done**         | kubebuilder scaffold, chart skeleton, Makefile, test helpers + fixtures. |
-| 1 — Core operator (image source) | §7.2        | **Partial**      | Deployment / Service / Ingress / PVC reconciliation works for `source.type: image` and `source.type: git` (git builds synchronously with a 30-min timeout). No ServiceAccount/imagePullSecret, no IngressProvider/DNSProvider interfaces, cluster-issuer is hard-coded. |
+| 1 — Core operator (image source) | §7.2        | **Partial**      | Deployment / Service / Ingress / PVC reconciliation works for `source.type: image` and `source.type: git` (git builds synchronously with a 30-min timeout). Ingress honours `environments[].annotations` passthrough (§5.2a) and `environments[].tls.{secretName,clusterIssuer}` overrides (§5.6); default cluster-issuer comes from `PlatformConfig.tls.certManagerClusterIssuer`. No ServiceAccount/imagePullSecret, no IngressProvider/DNSProvider interfaces. |
 | 2 — API + UI skeleton            | §7.3        | **Done**         | Auth, project CRUD, app CRUD, secrets CRUD, deploy webhook, SSE logs, SvelteKit UI. |
-| 3 — Bindings + secrets           | §7.4        | **Partial**      | Resolver writes env vars, but the credential Secret it references is never created and cross-namespace `secretKeyRef` is invalid in k8s (see issues #1 + #2). No deploy tokens, no secret rotation endpoint. |
-| 3.5 — Projects                   | §5 / §5.10  | **Done**         | `Project` CRD + controller + REST API + CLI + UI routes + default-project seeding. |
+| 3 — Bindings + secrets           | §7.4        | **Partial**      | Resolver writes env vars; `{app}-credentials` Secret is now materialised from `spec.credentials` (Flavor A, §5.5a) — inline `value` and `valueFrom.secretRef` both supported, with sha256 pod-template annotation for rotation. Cross-namespace `secretKeyRef` for cross-project bindings is still invalid in k8s (issue #2). No deploy tokens, no secret rotation endpoint. |
+| 3.5 — Projects                   | §5 / §5.10  | **Done**         | `Project` CRD + controller + REST API + CLI + UI routes + default-project seeding all landed. `spec.namespaceOverride` and admin-only `spec.adoptExistingNamespace` (spec §5.0) are implemented: controller resolves the target namespace name, enforces cross-Project uniqueness (`NamespaceConflict`), surfaces refusals via the `NamespaceReady` condition (`NamespaceAlreadyExists` / `NamespaceOwnedByAnotherProject`), and takes the adoption path only when explicitly opted in. |
 | 4 — Build system (git source)    | §7.5        | **Done**         | All stacks wired end-to-end: webhook patches `mortise.dev/revision` annotation → App reconciler clones + builds + deploys. Operator entrypoint reads config from `PlatformConfig` (env-var fallback for first-boot). Builds run asynchronously in background goroutines; the reconciler returns `Building` immediately and polls on requeue. |
 | 5 — Monorepo support             | §7.6        | **Done**         | `source.path` plumbs into BuildKit context; `source.watchPaths` gates webhook rebuilds (prefix match). UI build grouping deferred. |
 | 6 — Preview environments        | §7.7        | **Not started**  | `PreviewEnvironment` CRD is scaffold-only; controller empty. |
@@ -37,15 +40,15 @@ Spec rule: every outward interface must have at least one real v1 impl
 | `GitClient`       | `GoGitClient` (`internal/git/gogit_client.go`) — single impl per CLAUDE.md | **Done** |
 | `BuildClient`     | `BuildKitClient` (`internal/build/buildkit.go`) — mockable `solveClient` boundary for unit tests | **Done** |
 | `RegistryBackend` | `OCIBackend` (`internal/registry/oci.go`) — generic OCI Distribution Spec v1.1; Bearer + Basic auth; works with Zot, Harbor, GHCR, ECR | **Done** |
-| `IngressProvider` | —                                  | **Not started** — App controller writes `networkingv1.Ingress` directly with hardcoded annotations. |
+| `IngressProvider` | —                                  | **Not started** — App controller writes `networkingv1.Ingress` directly; annotations come from `env.Annotations` + `PlatformConfig.tls.certManagerClusterIssuer`. |
 | `DNSProvider`     | —                                  | **Not started** |
 
 ### CRD coverage
 
 | CRD                  | Types file        | Controller       | Status        |
 |----------------------|-------------------|------------------|---------------|
-| `Project`            | real              | real reconciler  | **Done**      |
-| `App`                | real              | real (image + git) | **Partial** — no `kind: service\|cron`, `schedule`, `concurrencyPolicy`, `sharedVars`, or `valueFrom.fromBinding` from spec §4. |
+| `Project`            | real              | real reconciler  | **Done** |
+| `App`                | real              | real (image + git) | **Partial** — no `kind: service\|cron`, `schedule`, `concurrencyPolicy`, `sharedVars`, or `valueFrom.fromBinding` from spec §5.2. Also missing: `source.type: external` (spec §5.1 v1) and the `importFrom` flavour of `spec.credentials` (§5.5a). `spec.credentials` Flavor A (inline value + valueFrom.secretRef) is implemented with Secret materialisation. `environments[].secretMounts` (§5.5b), `environments[].annotations` (§5.2a), and `environments[].tls.{secretName,clusterIssuer}` (§5.6) are implemented. |
 | `GitProvider`        | real (`api/v1alpha1/gitprovider_types.go`) | real reconciler (`internal/controller/gitprovider_controller.go`) | **Done** |
 | `PlatformConfig`     | real (`api/v1alpha1/platformconfig_types.go`) | real reconciler (`internal/controller/platformconfig_controller.go`) | **Done** |
 | `PreviewEnvironment` | scaffold (`Foo *string`) | empty TODO | **Not started** |
@@ -170,14 +173,12 @@ Where it works (`internal/controller/app_controller.go`):
 Known gaps against spec §7.2 / §11:
 - **No ServiceAccount** per App, no `imagePullSecret` wiring — spec §11 says
   the operator creates both. Private registries will not work end-to-end.
-- **No `{app}-credentials` Secret** is ever written. The bindings resolver
-  projects from this Secret, so backing services never surface
-  user/password env vars. See **Known issues** below.
-- Ingress annotation `cert-manager.io/cluster-issuer: letsencrypt-prod` is
-  **hard-coded**. Violates the "standards, not implementations" rule and should
-  move behind `IngressProvider` + read from `PlatformConfig`.
 - `IngressProvider` / `DNSProvider` interfaces exist (`internal/ingress/`,
-  `internal/dns/`) but have no impls; the controller bypasses them.
+  `internal/dns/`) but have no impls; the controller writes `networkingv1.Ingress`
+  directly. Cert-manager annotation is now sourced from
+  `PlatformConfig.tls.certManagerClusterIssuer` (empty by default → no
+  annotation emitted), with per-env `tls.clusterIssuer` / `tls.secretName`
+  overrides honoured per spec §5.6.
 
 ### Phase 2 — API + UI skeleton — **Done**
 
@@ -210,12 +211,19 @@ Works:
 - Cross-project bindings supported at the resolver level via
   `Binding.Project` → namespace `project-{project}`.
 - `internal/api/secrets.go` implements per-app user-secret CRUD.
+- `{app}-credentials` Secret materialised by `reconcileCredentialsSecret` in
+  `app_controller.go` from `spec.credentials` (Flavor A, §5.5a). Credential
+  type is `[]Credential` with inline `value` and `valueFrom.secretRef`
+  (referencing user-managed Secrets in the App's own namespace). Well-known
+  keys (`host`, `port`) are skipped in the Secret — filled in by the
+  resolver at binder time. A sha256 hash annotation
+  (`mortise.dev/credentials-hash`) on the pod template forces rollouts on
+  Secret rotation. Cleanup deletes the Secret when credentials are removed
+  (only if Mortise-managed). Tests: envtest Context "credentials Secret
+  materialization" (7 cases). Fixture: `test/fixtures/image-credentials.yaml`.
 
 Missing:
-- **Issue #1** — the `{app}-credentials` Secret the resolver projects from
-  (`resolver.go:56`) is never created by any controller. Any `App` that
-  declares `spec.credentials` will not expose those keys to binders.
-- **Issue #2** — even if #1 is fixed, the resolver emits plain
+- **Issue #2** — the resolver emits plain
   `SecretKeyRef{Name: {app}-credentials}` for cross-project bindings
   (`resolver.go:73-79`). Kubernetes `envFrom`/`env.valueFrom.secretKeyRef`
   only resolves within the Pod's own namespace. Cross-project bindings will
@@ -224,9 +232,6 @@ Missing:
 - No deploy tokens (`mortise token create/list/revoke`, `Authorization:
   Bearer mrt_...`) from spec §5.1 / §7.8 phase 7.
 - No rotation endpoint for user secrets.
-- `App.Spec.Credentials` is currently `[]string` — spec §4 Apps-as-DB
-  example supplies richer per-credential metadata; revisit when backing
-  services land.
 
 ### Phase 3.5 — Projects — **Done**
 
@@ -568,8 +573,9 @@ Missing:
 - Custom-domain attach flow (UI + API).
 - Deploy-token verbs (see Phase 3 gaps).
 - Authz role upgrade: current roles are `admin` / `member`. Spec §5.10
-  expects `platform-admin` / `team-admin` / `team-member` + a `Team`
-  abstraction. No `Team` CRD exists.
+  expects five roles (`platform-admin`, `platform-viewer`, `team-admin`,
+  `team-deployer`, `team-viewer`) + a `Team` abstraction + per-grant
+  environment scoping. No `Team` CRD exists; grants have no env field.
 
 ### Phase 8 — Tenons & integration recipes — **Not started**
 
@@ -583,15 +589,15 @@ Missing:
 
 ## Known issues
 
-### Issue #1 — `{app}-credentials` Secret is never created
-`internal/bindings/resolver.go:56` projects env vars from a Secret named
-`{boundApp.Name}-credentials`. No controller creates this Secret. Backing
-services declared via `spec.credentials` will never expose their
-credentials to binders.
-
-**Fix direction:** have the App controller (or a new `credentials` package)
-generate/rotate the `{app}-credentials` Secret when `spec.credentials` is
-non-empty, and own it via `controllerutil.SetControllerReference`.
+### Issue #1 — `{app}-credentials` Secret is never created — **Resolved**
+`reconcileCredentialsSecret` in `app_controller.go` now materialises the
+`{app}-credentials` Secret from `spec.credentials` (Flavor A, §5.5a).
+Inline values and `valueFrom.secretRef` are both supported. Well-known keys
+(`host`, `port`) are omitted from the Secret — the bindings resolver fills
+them in at binder time. A sha256 hash annotation on the pod template forces
+rollouts on Secret rotation. Cleanup honours the "Mortise owns only what it
+creates" rule. Envtest coverage: 7 cases under "credentials Secret
+materialization".
 
 ### Issue #2 — Cross-project bindings can't use `secretKeyRef`
 `resolver.go:73-79` returns `EnvVar{ValueFrom: SecretKeyRef{...}}` for
@@ -605,19 +611,25 @@ fail to start with `CreateContainerConfigError`.
 volume populated by an initContainer that calls the API with the consumer's
 ServiceAccount token.
 
-### Issue #3 — Hard-coded cert-manager cluster-issuer
-`internal/controller/app_controller.go:231` writes
-`cert-manager.io/cluster-issuer: letsencrypt-prod` as an Ingress
-annotation. Violates the "standards, not implementations" rule and breaks
-for anyone using a different issuer. Should be sourced from
-`PlatformConfig` once that CRD is real, and should flow through
-`IngressProvider`.
+### Issue #3 — Hard-coded cert-manager cluster-issuer — **Resolved**
+Previously, `internal/controller/app_controller.go` wrote
+`cert-manager.io/cluster-issuer: letsencrypt-prod` as an Ingress annotation
+regardless of operator configuration. The default now comes from
+`PlatformConfig.spec.tls.certManagerClusterIssuer` (empty by default →
+annotation omitted, so operators without cert-manager get a plain Ingress),
+with per-env `tls.clusterIssuer` / `tls.secretName` overrides honoured per
+spec §5.6. User annotations on the environment win over Mortise's default
+cert-manager annotation (spec §5.2a). An `IngressProvider` interface is
+still the longer-term home for this logic but is not required to unblock
+multi-issuer installs.
 
 ### Issue #4 — Authz role model doesn't match spec
-`internal/authz/native.go` uses `admin` / `member`. Spec §5.10 calls for
-`platform-admin` / `team-admin` / `team-member` with a `Team` scope.
+`internal/authz/native.go` uses `admin` / `member`. Spec §5.10 now calls
+for five roles: `platform-admin`, `platform-viewer`, `team-admin`,
+`team-deployer`, `team-viewer`, with a `Team` scope and per-grant
+environment scoping (e.g. a team-deployer restricted to `[staging]`).
 Project ownership and admin-only gates in the API currently key off the
-two-role model.
+two-role model. No `Team` CRD exists, and grants have no env field.
 
 ---
 
