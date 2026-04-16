@@ -8,7 +8,9 @@ Legend: **Done** / **Partial** / **Not started**
 Last reconciled against spec + code: 2026-04-16 (SPEC §5 expanded:
 `namespaceOverride`/`adoptExistingNamespace`, `external` source promoted to v1,
 `secretMounts`, `environments[].annotations` passthrough, `tls.secretName`/
-`tls.clusterIssuer` overrides, 5-role RBAC + env-scoped grants).
+`tls.clusterIssuer` overrides, 5-role RBAC + env-scoped grants. Also:
+`DNSProvider` interface dropped from spec — DNS is now annotation-only via
+ExternalDNS, no Go interface).
 
 ---
 
@@ -17,7 +19,7 @@ Last reconciled against spec + code: 2026-04-16 (SPEC §5 expanded:
 | Phase | Spec §   | Status       | Summary |
 |-------|----------|--------------|---------|
 | 0 — Foundation                   | §7.1 / §8   | **Done**         | kubebuilder scaffold, chart skeleton, Makefile, test helpers + fixtures. |
-| 1 — Core operator (image source) | §7.2        | **Partial**      | Deployment / Service / Ingress / PVC reconciliation works for `source.type: image` and `source.type: git` (git builds synchronously with a 30-min timeout). Ingress honours `environments[].annotations` passthrough (§5.2a) and `environments[].tls.{secretName,clusterIssuer}` overrides (§5.6); default cluster-issuer comes from `PlatformConfig.tls.certManagerClusterIssuer`. No ServiceAccount/imagePullSecret, no IngressProvider/DNSProvider interfaces. |
+| 1 — Core operator (image source) | §7.2        | **Done**         | Deployment / Service / Ingress / PVC / ServiceAccount reconciliation works for `source.type: image` and `source.type: git` (git builds asynchronously with a 30-min timeout). Ingress honours `environments[].annotations` passthrough (§5.2a), `environments[].tls.{secretName,clusterIssuer}` overrides (§5.6), `environments[].customDomains` (multi-host rules + TLS), and `IngressProvider`-driven annotations (`AnnotationProvider`: ExternalDNS hostname + cert-manager cluster-issuer). `ingressClassName` configurable via `MORTISE_INGRESS_CLASS` env var. ServiceAccount per App carries `imagePullSecrets` from `RegistryBackend.PullSecretRef()`. |
 | 2 — API + UI skeleton            | §7.3        | **Done**         | Auth, project CRUD, app CRUD, secrets CRUD, deploy webhook, SSE logs, SvelteKit UI. |
 | 3 — Bindings + secrets           | §7.4        | **Partial**      | Resolver writes env vars; `{app}-credentials` Secret is now materialised from `spec.credentials` (Flavor A, §5.5a) — inline `value` and `valueFrom.secretRef` both supported, with sha256 pod-template annotation for rotation. Cross-namespace `secretKeyRef` for cross-project bindings is still invalid in k8s (issue #2). No deploy tokens, no secret rotation endpoint. |
 | 3.5 — Projects                   | §5 / §5.10  | **Done**         | `Project` CRD + controller + REST API + CLI + UI routes + default-project seeding all landed. `spec.namespaceOverride` and admin-only `spec.adoptExistingNamespace` (spec §5.0) are implemented: controller resolves the target namespace name, enforces cross-Project uniqueness (`NamespaceConflict`), surfaces refusals via the `NamespaceReady` condition (`NamespaceAlreadyExists` / `NamespaceOwnedByAnotherProject`), and takes the adoption path only when explicitly opted in. |
@@ -40,8 +42,7 @@ Spec rule: every outward interface must have at least one real v1 impl
 | `GitClient`       | `GoGitClient` (`internal/git/gogit_client.go`) — single impl per CLAUDE.md | **Done** |
 | `BuildClient`     | `BuildKitClient` (`internal/build/buildkit.go`) — mockable `solveClient` boundary for unit tests | **Done** |
 | `RegistryBackend` | `OCIBackend` (`internal/registry/oci.go`) — generic OCI Distribution Spec v1.1; Bearer + Basic auth; works with Zot, Harbor, GHCR, ECR | **Done** |
-| `IngressProvider` | —                                  | **Not started** — App controller writes `networkingv1.Ingress` directly; annotations come from `env.Annotations` + `PlatformConfig.tls.certManagerClusterIssuer`. |
-| `DNSProvider`     | —                                  | **Not started** |
+| `IngressProvider` | `AnnotationProvider` (`internal/ingress/annotation_provider.go`) — ExternalDNS hostname + cert-manager cluster-issuer annotations; configurable `ingressClassName` | **Done** |
 
 ### CRD coverage
 
@@ -155,30 +156,33 @@ cluster via the `//go:build integration` tag.
 - UI Playwright tests.
 - `.github/` CI config.
 
-### Phase 1 — Core operator (image source) — **Partial**
+### Phase 1 — Core operator (image source) — **Done**
 
 Where it works (`internal/controller/app_controller.go`):
-- Reconciles `Deployment`, `Service`, `Ingress`, `PersistentVolumeClaim(s)`
-  for `source.type: image` apps.
+- Reconciles `Deployment`, `Service`, `Ingress`, `PersistentVolumeClaim(s)`,
+  `ServiceAccount` for `source.type: image` apps.
 - Reconciles `source.type: git` apps: resolves GitProvider OAuth token,
   clones repo, runs build via `BuildClient`, pushes image via
   `RegistryBackend`, then falls through to Deployment/Service/Ingress
   reconciliation with the built image digest.
+- Creates one `ServiceAccount` per App (shared across envs) with
+  `imagePullSecrets` from `RegistryBackend.PullSecretRef()`. Deployment pod
+  spec references this SA via `serviceAccountName`. Private registries now
+  work end-to-end.
+- Ingress: `IngressProvider` (`AnnotationProvider`) emits ExternalDNS
+  hostname annotation and cert-manager cluster-issuer annotation on every
+  Ingress. `customDomains` on each environment produce additional
+  IngressRules and TLS hosts. `ingressClassName` configurable via
+  `MORTISE_INGRESS_CLASS` env var. Per-env TLS overrides (§5.6) and
+  annotation passthrough (§5.2a) are preserved; user annotations win on
+  key conflict. Provider is nil-safe for test code that doesn't set it.
 - Sets owner references so everything GCs with the `App`.
 - Exposes `RollbackDeployment` for the API layer to call.
 - Envtest suite in `internal/controller/app_controller_test.go` covers image
-  source (existing) and git source (happy path, clone failure, build failure,
-  same-SHA short-circuit).
-
-Known gaps against spec §7.2 / §11:
-- **No ServiceAccount** per App, no `imagePullSecret` wiring — spec §11 says
-  the operator creates both. Private registries will not work end-to-end.
-- `IngressProvider` / `DNSProvider` interfaces exist (`internal/ingress/`,
-  `internal/dns/`) but have no impls; the controller writes `networkingv1.Ingress`
-  directly. Cert-manager annotation is now sourced from
-  `PlatformConfig.tls.certManagerClusterIssuer` (empty by default → no
-  annotation emitted), with per-env `tls.clusterIssuer` / `tls.secretName`
-  overrides honoured per spec §5.6.
+  source (existing), git source (happy path, clone failure, build failure,
+  same-SHA short-circuit), ServiceAccount creation + imagePullSecret
+  wiring (5 cases), ExternalDNS annotation, customDomains, IngressProvider
+  className, and nil-provider backward compat.
 
 ### Phase 2 — API + UI skeleton — **Done**
 
@@ -494,7 +498,7 @@ landed and what each deferred.
 
 **Still deferred:**
 - `IngressProvider` impl and cert-manager wiring (`spec.tls.certManagerClusterIssuer`) — Phase 1 follow-up.
-- `DNSProvider` impl — Phase 1 follow-up.
+- ExternalDNS annotation emission on Ingress — Phase 1 follow-up. (No `DNSProvider` interface — annotation-only per spec §11.1.)
 
 ### Git provider UI — **Done**
 
@@ -564,6 +568,12 @@ Present:
   (`app_controller.go RollbackDeployment`).
 
 Missing:
+- **Env-management surface (spec §5.9a):** no `PATCH/PUT /env` or
+  `POST /env/import` API endpoints (env edits today require a full PUT on
+  the App). No `mortise env list/set/unset/import/pull` CLI verbs (the
+  one-line `env set` from §5.14 is not yet implemented). No Variables tab
+  in the App detail UI. No `mortise.dev/env-hash` annotation on the pod
+  template, so env-only changes don't auto-roll the Deployment.
 - CLI `mortise rollback <app> [--env]` — not registered in `newRootCmd`.
 - CLI `mortise promote <app> --from staging --to production` — not
   implemented.
