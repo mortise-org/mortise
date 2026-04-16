@@ -29,6 +29,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/utils/clock"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -39,10 +40,14 @@ import (
 	"github.com/MC-Meesh/mortise/internal/bindings"
 )
 
+// maxDeployHistory is the maximum number of deploy records kept per environment.
+const maxDeployHistory = 20
+
 // AppReconciler reconciles a App object
 type AppReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+	Clock  clock.Clock
 }
 
 // +kubebuilder:rbac:groups=mortise.mortise.dev,resources=apps,verbs=get;list;watch;create;update;patch;delete
@@ -338,7 +343,20 @@ func pvcName(app, volume string) string {
 	return fmt.Sprintf("%s-%s", app, volume)
 }
 
+func (r *AppReconciler) clock() clock.Clock {
+	if r.Clock != nil {
+		return r.Clock
+	}
+	return clock.RealClock{}
+}
+
 func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.App) error {
+	// Index existing environment statuses by name for deploy history carryover.
+	existingByName := make(map[string]mortisev1alpha1.EnvironmentStatus, len(app.Status.Environments))
+	for _, es := range app.Status.Environments {
+		existingByName[es.Name] = es
+	}
+
 	var envStatuses []mortisev1alpha1.EnvironmentStatus
 
 	for _, env := range app.Spec.Environments {
@@ -351,6 +369,22 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 		if err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: app.Namespace}, &dep); err == nil {
 			es.ReadyReplicas = dep.Status.ReadyReplicas
 		}
+
+		// Carry forward deploy history and append if image changed.
+		if prev, ok := existingByName[env.Name]; ok {
+			es.DeployHistory = prev.DeployHistory
+		}
+		if needsDeployRecord(es.CurrentImage, es.DeployHistory) {
+			record := mortisev1alpha1.DeployRecord{
+				Image:     es.CurrentImage,
+				Timestamp: metav1.NewTime(r.clock().Now()),
+			}
+			es.DeployHistory = append([]mortisev1alpha1.DeployRecord{record}, es.DeployHistory...)
+			if len(es.DeployHistory) > maxDeployHistory {
+				es.DeployHistory = es.DeployHistory[:maxDeployHistory]
+			}
+		}
+
 		envStatuses = append(envStatuses, es)
 	}
 
@@ -375,6 +409,50 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 	app.Status.Phase = phase
 	app.Status.Environments = envStatuses
 	return r.Status().Update(ctx, app)
+}
+
+// needsDeployRecord returns true if a new deploy record should be created —
+// either the history is empty or the current image differs from the most recent entry.
+func needsDeployRecord(currentImage string, history []mortisev1alpha1.DeployRecord) bool {
+	return len(history) == 0 || history[0].Image != currentImage
+}
+
+// RollbackDeployment patches the Deployment for the given App + environment back
+// to the image at the specified deploy history index.
+func (r *AppReconciler) RollbackDeployment(ctx context.Context, app *mortisev1alpha1.App, envName string, historyIndex int) error {
+	var envStatus *mortisev1alpha1.EnvironmentStatus
+	for i := range app.Status.Environments {
+		if app.Status.Environments[i].Name == envName {
+			envStatus = &app.Status.Environments[i]
+			break
+		}
+	}
+	if envStatus == nil {
+		return fmt.Errorf("environment %q not found in app status", envName)
+	}
+	if historyIndex < 0 || historyIndex >= len(envStatus.DeployHistory) {
+		return fmt.Errorf("deploy history index %d out of range (len=%d)", historyIndex, len(envStatus.DeployHistory))
+	}
+
+	target := envStatus.DeployHistory[historyIndex]
+	rollbackImage := target.Image
+	if target.Digest != "" {
+		// Use digest for deterministic rollback when available.
+		rollbackImage = target.Digest
+	}
+
+	name := deploymentName(app.Name, envName)
+	var dep appsv1.Deployment
+	if err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: app.Namespace}, &dep); err != nil {
+		return fmt.Errorf("get deployment %s: %w", name, err)
+	}
+
+	if len(dep.Spec.Template.Spec.Containers) == 0 {
+		return fmt.Errorf("deployment %s has no containers", name)
+	}
+
+	dep.Spec.Template.Spec.Containers[0].Image = rollbackImage
+	return r.Update(ctx, &dep)
 }
 
 func deploymentName(app, env string) string {

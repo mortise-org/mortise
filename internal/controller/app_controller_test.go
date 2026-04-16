@@ -18,6 +18,8 @@ package controller
 
 import (
 	"context"
+	"fmt"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -26,6 +28,7 @@ import (
 	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/types"
+	clocktesting "k8s.io/utils/clock/testing"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -530,6 +533,222 @@ var _ = Describe("App Controller", func() {
 				Name: "test-update-production", Namespace: namespace,
 			}, &dep)).To(Succeed())
 			Expect(dep.Spec.Template.Spec.Containers[0].Image).To(Equal("nginx:1.27"))
+		})
+	})
+
+	Context("deploy history tracking", func() {
+		const appName = "test-history"
+		ctx := context.Background()
+
+		var (
+			app        *mortisev1alpha1.App
+			reconciler *AppReconciler
+			fakeClock  *clocktesting.FakeClock
+		)
+
+		BeforeEach(func() {
+			fakeClock = clocktesting.NewFakeClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+			reconciler = &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
+
+			app = &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      appName,
+					Namespace: namespace,
+				},
+				Spec: mortisev1alpha1.AppSpec{
+					Source: mortisev1alpha1.AppSource{
+						Type:  mortisev1alpha1.SourceTypeImage,
+						Image: "nginx:1.26",
+					},
+					Environments: []mortisev1alpha1.Environment{
+						{
+							Name:     "production",
+							Replicas: ptr.To[int32](1),
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+		})
+
+		AfterEach(func() {
+			Expect(k8sClient.Delete(ctx, app)).To(Succeed())
+		})
+
+		It("should record one deploy history entry on first reconcile", func() {
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: appName, Namespace: namespace}, app)).To(Succeed())
+			Expect(app.Status.Environments).To(HaveLen(1))
+			Expect(app.Status.Environments[0].DeployHistory).To(HaveLen(1))
+			Expect(app.Status.Environments[0].DeployHistory[0].Image).To(Equal("nginx:1.26"))
+		})
+
+		It("should not duplicate entry on re-reconcile with same image", func() {
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Re-fetch to get status with deploy history before second reconcile.
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: appName, Namespace: namespace}, app)).To(Succeed())
+
+			fakeClock.Step(time.Minute)
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: appName, Namespace: namespace}, app)).To(Succeed())
+			Expect(app.Status.Environments[0].DeployHistory).To(HaveLen(1))
+		})
+
+		It("should add a second entry when image changes, newest first", func() {
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Re-fetch, update image, reconcile again.
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: appName, Namespace: namespace}, app)).To(Succeed())
+			app.Spec.Source.Image = "nginx:1.27"
+			Expect(k8sClient.Update(ctx, app)).To(Succeed())
+
+			fakeClock.Step(5 * time.Minute)
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: appName, Namespace: namespace}, app)).To(Succeed())
+			history := app.Status.Environments[0].DeployHistory
+			Expect(history).To(HaveLen(2))
+			Expect(history[0].Image).To(Equal("nginx:1.27"))
+			Expect(history[1].Image).To(Equal("nginx:1.26"))
+		})
+
+		It("should cap deploy history at 20 entries", func() {
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			for i := 1; i <= 25; i++ {
+				Expect(k8sClient.Get(ctx, types.NamespacedName{Name: appName, Namespace: namespace}, app)).To(Succeed())
+				app.Spec.Source.Image = fmt.Sprintf("nginx:1.%d", i)
+				Expect(k8sClient.Update(ctx, app)).To(Succeed())
+
+				fakeClock.Step(time.Minute)
+				_, err = reconciler.Reconcile(ctx, reconcile.Request{
+					NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+				})
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: appName, Namespace: namespace}, app)).To(Succeed())
+			Expect(app.Status.Environments[0].DeployHistory).To(HaveLen(20))
+			// Newest first: most recent image should be at index 0.
+			Expect(app.Status.Environments[0].DeployHistory[0].Image).To(Equal("nginx:1.25"))
+		})
+	})
+
+	Context("rollback", func() {
+		const appName = "test-rollback"
+		ctx := context.Background()
+
+		var (
+			app        *mortisev1alpha1.App
+			reconciler *AppReconciler
+			fakeClock  *clocktesting.FakeClock
+		)
+
+		BeforeEach(func() {
+			fakeClock = clocktesting.NewFakeClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+			reconciler = &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
+
+			app = &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      appName,
+					Namespace: namespace,
+				},
+				Spec: mortisev1alpha1.AppSpec{
+					Source: mortisev1alpha1.AppSource{
+						Type:  mortisev1alpha1.SourceTypeImage,
+						Image: "nginx:1.26",
+					},
+					Environments: []mortisev1alpha1.Environment{
+						{
+							Name:     "production",
+							Replicas: ptr.To[int32](1),
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+		})
+
+		AfterEach(func() {
+			Expect(k8sClient.Delete(ctx, app)).To(Succeed())
+		})
+
+		It("should rollback Deployment to a previous image", func() {
+			// First reconcile with nginx:1.26.
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Update to nginx:1.27 and reconcile.
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: appName, Namespace: namespace}, app)).To(Succeed())
+			app.Spec.Source.Image = "nginx:1.27"
+			Expect(k8sClient.Update(ctx, app)).To(Succeed())
+
+			fakeClock.Step(time.Minute)
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Re-fetch to get updated status.
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: appName, Namespace: namespace}, app)).To(Succeed())
+			Expect(app.Status.Environments[0].DeployHistory).To(HaveLen(2))
+
+			// Rollback to index 1 (nginx:1.26).
+			err = reconciler.RollbackDeployment(ctx, app, "production", 1)
+			Expect(err).NotTo(HaveOccurred())
+
+			var dep appsv1.Deployment
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: "test-rollback-production", Namespace: namespace,
+			}, &dep)).To(Succeed())
+			Expect(dep.Spec.Template.Spec.Containers[0].Image).To(Equal("nginx:1.26"))
+		})
+
+		It("should return error for invalid history index", func() {
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: appName, Namespace: namespace}, app)).To(Succeed())
+			err = reconciler.RollbackDeployment(ctx, app, "production", 5)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("out of range"))
+		})
+
+		It("should return error for unknown environment", func() {
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: appName, Namespace: namespace}, app)).To(Succeed())
+			err = reconciler.RollbackDeployment(ctx, app, "staging", 0)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("not found"))
 		})
 	})
 })
