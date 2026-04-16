@@ -1,171 +1,82 @@
 <script lang="ts">
-	import { goto } from '$app/navigation';
-	import { api } from '$lib/api';
+	import { untrack } from 'svelte';
+	import { page } from '$app/state';
+	import AppForm from '$lib/AppForm.svelte';
+	import { templates, getTemplate, type TemplateCategory } from '$lib/templates';
 
-	let name = $state('');
-	let image = $state('');
-	let domain = $state('');
-	let replicas = $state(1);
-	let envVars = $state<{ key: string; value: string }[]>([]);
-	let error = $state('');
-	let submitting = $state(false);
+	type Filter = 'all' | TemplateCategory;
 
-	function addEnvVar() {
-		envVars = [...envVars, { key: '', value: '' }];
+	let selectedId = $state<string | null>(
+		untrack(() => page.url.searchParams.get('template'))
+	);
+	let filter = $state<Filter>('all');
+
+	const selected = $derived(selectedId ? getTemplate(selectedId) : undefined);
+
+	const filtered = $derived(
+		filter === 'all' ? templates : templates.filter((t) => t.category === filter)
+	);
+
+	const filterTabs: { id: Filter; label: string }[] = [
+		{ id: 'all', label: 'All' },
+		{ id: 'database', label: 'Databases' },
+		{ id: 'app', label: 'Apps' },
+		{ id: 'blank', label: 'Blank' }
+	];
+
+	function pick(id: string) {
+		selectedId = id;
 	}
 
-	function removeEnvVar(index: number) {
-		envVars = envVars.filter((_, i) => i !== index);
-	}
-
-	async function handleSubmit(e: SubmitEvent) {
-		e.preventDefault();
-		error = '';
-		submitting = true;
-
-		try {
-			const env = envVars
-				.filter((v) => v.key.trim())
-				.map((v) => ({ name: v.key, value: v.value }));
-
-			await api.post('/apps', {
-				name,
-				spec: {
-					source: { type: 'image', image },
-					network: { public: true },
-					environments: [
-						{
-							name: 'production',
-							replicas,
-							env,
-							...(domain ? { domain } : {})
-						}
-					]
-				}
-			});
-
-			goto('/');
-		} catch (err) {
-			error = err instanceof Error ? err.message : 'Failed to create app';
-		} finally {
-			submitting = false;
-		}
+	function back() {
+		selectedId = null;
 	}
 </script>
 
-<div class="mx-auto max-w-lg">
-	<h1 class="mb-6 text-xl font-semibold text-white">New App</h1>
-
-	<form onsubmit={handleSubmit} class="space-y-5">
-		{#if error}
-			<div class="rounded-md bg-danger/10 px-3 py-2 text-sm text-danger">{error}</div>
-		{/if}
-
-		<div>
-			<label for="name" class="mb-1 block text-sm text-gray-400">App Name</label>
-			<input
-				id="name"
-				type="text"
-				bind:value={name}
-				required
-				pattern="[a-z0-9-]+"
-				class="w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-white placeholder-gray-500 outline-none focus:border-accent"
-				placeholder="my-app"
-			/>
+{#if selected}
+	<AppForm template={selected} onBack={back} />
+{:else}
+	<div class="mx-auto max-w-5xl">
+		<div class="mb-6">
+			<h1 class="text-xl font-semibold text-white">Deploy from template</h1>
+			<p class="mt-1 text-sm text-gray-500">
+				Pick a pre-configured template or start from a blank app.
+			</p>
 		</div>
 
-		<div>
-			<span class="mb-1 block text-sm text-gray-400">Source</span>
-			<div class="rounded-md border border-surface-600 bg-surface-700 px-3 py-2 text-sm text-gray-300">
-				Container Image
-			</div>
-		</div>
-
-		<div>
-			<label for="image" class="mb-1 block text-sm text-gray-400">Image Reference</label>
-			<input
-				id="image"
-				type="text"
-				bind:value={image}
-				required
-				class="w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-white placeholder-gray-500 outline-none focus:border-accent"
-				placeholder="registry.example.com/app:v1.0.0"
-			/>
-		</div>
-
-		<div>
-			<label for="domain" class="mb-1 block text-sm text-gray-400">Domain (optional)</label>
-			<input
-				id="domain"
-				type="text"
-				bind:value={domain}
-				class="w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-white placeholder-gray-500 outline-none focus:border-accent"
-				placeholder="app.example.com"
-			/>
-		</div>
-
-		<div>
-			<label for="replicas" class="mb-1 block text-sm text-gray-400">Replicas</label>
-			<input
-				id="replicas"
-				type="number"
-				bind:value={replicas}
-				min="1"
-				max="20"
-				class="w-24 rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-white outline-none focus:border-accent"
-			/>
-		</div>
-
-		<div>
-			<div class="mb-2 flex items-center justify-between">
-				<span class="text-sm text-gray-400">Environment Variables</span>
+		<div class="mb-6 flex gap-1 border-b border-surface-600">
+			{#each filterTabs as tab}
 				<button
 					type="button"
-					onclick={addEnvVar}
-					class="text-xs text-accent hover:text-accent-hover"
+					onclick={() => (filter = tab.id)}
+					class="px-4 py-2 text-sm transition-colors {filter === tab.id
+						? 'border-b-2 border-accent text-white'
+						: 'text-gray-500 hover:text-gray-300'}"
 				>
-					+ Add variable
+					{tab.label}
 				</button>
-			</div>
-			{#each envVars as envVar, i}
-				<div class="mb-2 flex gap-2">
-					<input
-						type="text"
-						bind:value={envVar.key}
-						placeholder="KEY"
-						class="w-1/3 rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-white placeholder-gray-500 outline-none focus:border-accent"
-					/>
-					<input
-						type="text"
-						bind:value={envVar.value}
-						placeholder="value"
-						class="flex-1 rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-white placeholder-gray-500 outline-none focus:border-accent"
-					/>
-					<button
-						type="button"
-						onclick={() => removeEnvVar(i)}
-						class="px-2 text-gray-500 hover:text-danger"
-					>
-						&times;
-					</button>
-				</div>
 			{/each}
 		</div>
 
-		<div class="flex gap-3 pt-2">
-			<button
-				type="submit"
-				disabled={submitting}
-				class="rounded-md bg-accent px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-accent-hover disabled:opacity-50"
-			>
-				{submitting ? 'Creating...' : 'Create App'}
-			</button>
-			<a
-				href="/"
-				class="rounded-md border border-surface-600 px-4 py-2 text-sm text-gray-400 transition-colors hover:text-white"
-			>
-				Cancel
-			</a>
+		<div class="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
+			{#each filtered as template}
+				<button
+					type="button"
+					onclick={() => pick(template.id)}
+					class="group flex flex-col items-start rounded-lg border border-surface-600 bg-surface-800 p-5 text-left transition-colors hover:border-accent/60 hover:bg-surface-700"
+				>
+					<div class="mb-3 flex items-center gap-3">
+						<span class="text-2xl">{template.icon}</span>
+						<span class="font-medium text-white group-hover:text-accent">{template.name}</span>
+					</div>
+					<p class="text-sm text-gray-400">{template.description}</p>
+					<span
+						class="mt-4 rounded-full bg-surface-700 px-2 py-0.5 text-xs uppercase tracking-wide text-gray-500 group-hover:bg-surface-600"
+					>
+						{template.category}
+					</span>
+				</button>
+			{/each}
 		</div>
-	</form>
-</div>
+	</div>
+{/if}

@@ -14,7 +14,7 @@
 
 	const navItems = [
 		{ href: '/', label: 'Apps' },
-		{ href: '/apps/new', label: 'New App' }
+		{ href: '/apps/new', label: 'Deploy' }
 	];
 </script>
 
