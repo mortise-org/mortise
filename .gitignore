@@ -32,6 +32,7 @@ bin/
 cover.out
 
 # Gas Town (added by gt)
+.beads/
 .runtime/
 .claude/
 .logs/
