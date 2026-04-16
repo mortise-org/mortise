@@ -60,8 +60,12 @@ vet: ## Run go vet against code.
 	go vet ./...
 
 .PHONY: test
-test: manifests generate fmt vet setup-envtest ## Run tests.
+test: manifests generate fmt vet setup-envtest check-ui ## Run tests.
 	KUBEBUILDER_ASSETS="$(shell "$(ENVTEST)" use $(ENVTEST_K8S_VERSION) --bin-dir "$(LOCALBIN)" -p path)" go test $$(go list ./... | grep -v /e2e) -coverprofile cover.out
+
+.PHONY: check-ui
+check-ui: ## Run svelte-check (Svelte + TypeScript diagnostics) against the UI.
+	cd ui && npm install && npm run check
 
 # TODO(user): To use a different vendor for e2e tests, modify the setup under 'tests/e2e'.
 # The default setup assumes Kind is pre-installed and builds/loads the Manager Docker image locally.
@@ -111,6 +115,9 @@ build-ui: ## Build the SvelteKit UI and copy into internal/ui/build for embeddin
 	cd ui && npm install && npm run build
 	rm -rf internal/ui/build
 	cp -r ui/build internal/ui/build
+	# .gitkeep preserves the directory on a fresh clone so //go:embed has a
+	# target to attach to before `make build-ui` has been run.
+	touch internal/ui/build/.gitkeep
 
 .PHONY: build
 build: manifests generate fmt vet ## Build manager binary.

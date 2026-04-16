@@ -4,7 +4,7 @@
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import { api } from '$lib/api';
-	import { currentProject } from '$lib/context';
+	import { currentProject } from '$lib/context.svelte';
 	import type { Project } from '$lib/types';
 
 	let { children } = $props();
