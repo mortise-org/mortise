@@ -185,6 +185,32 @@ export const templates: Template[] = [
 		}
 	},
 	{
+		id: 'git-dockerfile',
+		name: 'Deploy from Git',
+		description: 'Connect a Git repository and build with Dockerfile or auto-detect.',
+		icon: '📦',
+		category: 'app',
+		submitLabel: 'Create App',
+		fields: [
+			{ key: 'name', label: 'App Name', placeholder: 'my-app', required: true },
+			{ key: 'domain', label: 'Domain', placeholder: 'app.example.com' }
+		],
+		defaults: {
+			name: '',
+			spec: {
+				source: { type: 'git', repo: '', branch: 'main', build: { mode: 'auto' } },
+				network: { public: true },
+				environments: [
+					{
+						name: 'production',
+						replicas: 1,
+						env: []
+					}
+				]
+			}
+		}
+	},
+	{
 		id: 'blank',
 		name: 'Blank',
 		description: 'Start from scratch with a custom container image and your own configuration.',

@@ -7,6 +7,7 @@ export interface AppSource {
 	path?: string;
 	watchPaths?: string[];
 	build?: Build;
+	providerRef?: string;
 	image?: string;
 	pullSecretRef?: string;
 }

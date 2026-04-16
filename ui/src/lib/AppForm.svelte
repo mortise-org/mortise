@@ -4,7 +4,7 @@
 	import { api } from '$lib/api';
 	import EnvVarEditor from '$lib/components/EnvVarEditor.svelte';
 	import type { Template } from '$lib/templates';
-	import type { AppSpec, EnvVar, VolumeSpec } from '$lib/types';
+	import type { AppSource, AppSpec, Build, EnvVar, GitProviderSummary, SourceType, VolumeSpec } from '$lib/types';
 
 	let {
 		project,
@@ -18,7 +18,14 @@
 	const initial = untrack(() => structuredClone(template.defaults));
 
 	let name = $state(initial.name);
+	let sourceType = $state<SourceType>(initial.spec.source.type);
 	let image = $state(initial.spec.source.image ?? '');
+	let repo = $state(initial.spec.source.repo ?? '');
+	let branch = $state(initial.spec.source.branch ?? 'main');
+	let sourcePath = $state(initial.spec.source.path ?? '');
+	let providerRef = $state(initial.spec.source.providerRef ?? '');
+	let buildMode = $state<NonNullable<Build['mode']>>(initial.spec.source.build?.mode ?? 'auto');
+	let dockerfilePath = $state(initial.spec.source.build?.dockerfilePath ?? '');
 	let publicNet = $state(initial.spec.network?.public ?? true);
 
 	const firstEnv = initial.spec.environments?.[0];
@@ -36,7 +43,30 @@
 	let error = $state('');
 	let submitting = $state(false);
 
+	let gitProviders = $state<GitProviderSummary[]>([]);
+	let providersLoaded = $state(false);
+
 	const hasDomainField = untrack(() => template.fields.some((f) => f.key === 'domain'));
+
+	$effect(() => {
+		if (sourceType !== 'git' || providersLoaded) {
+			return;
+		}
+		api
+			.listGitProviders()
+			.then((list) => {
+				gitProviders = list ?? [];
+				if (!providerRef && gitProviders.length === 1) {
+					providerRef = gitProviders[0].name;
+				}
+			})
+			.catch(() => {
+				gitProviders = [];
+			})
+			.finally(() => {
+				providersLoaded = true;
+			});
+	});
 
 	async function handleSubmit(e: SubmitEvent) {
 		e.preventDefault();
@@ -46,8 +76,28 @@
 		try {
 			const env: EnvVar[] = envVars.filter((v) => v.name.trim());
 
+			let source: AppSource;
+			if (sourceType === 'git') {
+				const build: Build = { mode: buildMode };
+				if (buildMode === 'dockerfile' && dockerfilePath.trim()) {
+					build.dockerfilePath = dockerfilePath.trim();
+				}
+				source = {
+					type: 'git',
+					repo,
+					branch: branch || 'main',
+					providerRef,
+					build
+				};
+				if (sourcePath.trim()) {
+					source.path = sourcePath.trim();
+				}
+			} else {
+				source = { type: 'image', image };
+			}
+
 			const spec: AppSpec = {
-				source: { type: 'image', image },
+				source,
 				network: { public: publicNet },
 				environments: [
 					{
@@ -116,21 +166,119 @@
 			<div
 				class="rounded-md border border-surface-600 bg-surface-700 px-3 py-2 text-sm text-gray-300"
 			>
-				Container Image
+				{sourceType === 'git' ? 'Git Repository' : 'Container Image'}
 			</div>
 		</div>
 
-		<div>
-			<label for="image" class="mb-1 block text-sm text-gray-400">Image Reference</label>
-			<input
-				id="image"
-				type="text"
-				bind:value={image}
-				required
-				class="w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-white placeholder-gray-500 outline-none focus:border-accent"
-				placeholder="registry.example.com/app:v1.0.0"
-			/>
-		</div>
+		{#if sourceType === 'image'}
+			<div>
+				<label for="image" class="mb-1 block text-sm text-gray-400">Image Reference</label>
+				<input
+					id="image"
+					type="text"
+					bind:value={image}
+					required
+					class="w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-white placeholder-gray-500 outline-none focus:border-accent"
+					placeholder="registry.example.com/app:v1.0.0"
+				/>
+			</div>
+		{:else}
+			<div>
+				<label for="repo" class="mb-1 block text-sm text-gray-400">Repo URL</label>
+				<input
+					id="repo"
+					type="text"
+					bind:value={repo}
+					required
+					class="w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-white placeholder-gray-500 outline-none focus:border-accent"
+					placeholder="https://github.com/you/your-repo"
+				/>
+			</div>
+
+			<div>
+				<label for="branch" class="mb-1 block text-sm text-gray-400">Branch</label>
+				<input
+					id="branch"
+					type="text"
+					bind:value={branch}
+					class="w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-white placeholder-gray-500 outline-none focus:border-accent"
+					placeholder="main"
+				/>
+			</div>
+
+			<div>
+				<label for="source-path" class="mb-1 block text-sm text-gray-400">Path</label>
+				<input
+					id="source-path"
+					type="text"
+					bind:value={sourcePath}
+					class="w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 font-mono text-sm text-white placeholder-gray-500 outline-none focus:border-accent"
+					placeholder="services/api"
+				/>
+				<p class="mt-1 text-xs text-gray-500">
+					Leave empty for root. Use a subdirectory for monorepos.
+				</p>
+			</div>
+
+			<div>
+				<label for="provider-ref" class="mb-1 block text-sm text-gray-400">Git Provider</label>
+				{#if providersLoaded && gitProviders.length === 0}
+					<div
+						class="rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-gray-400"
+					>
+						No git providers configured.
+						<a href="/settings/git-providers" class="text-accent hover:underline">
+							Go to Settings → Git Providers
+						</a>
+						to connect one.
+					</div>
+				{:else}
+					<select
+						id="provider-ref"
+						bind:value={providerRef}
+						required
+						class="w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-white outline-none focus:border-accent"
+					>
+						<option value="" disabled>
+							{providersLoaded ? 'Select a git provider' : 'Loading…'}
+						</option>
+						{#each gitProviders as provider}
+							<option value={provider.name}>
+								{provider.name} ({provider.type} · {provider.host})
+							</option>
+						{/each}
+					</select>
+				{/if}
+			</div>
+
+			<div>
+				<label for="build-mode" class="mb-1 block text-sm text-gray-400">Build Mode</label>
+				<select
+					id="build-mode"
+					bind:value={buildMode}
+					class="w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-white outline-none focus:border-accent"
+				>
+					<option value="auto">Auto-detect</option>
+					<option value="dockerfile">Dockerfile</option>
+					<option value="railpack">Railpack</option>
+				</select>
+			</div>
+
+			{#if buildMode === 'dockerfile'}
+				<div>
+					<label for="dockerfile-path" class="mb-1 block text-sm text-gray-400">
+						Dockerfile Path
+					</label>
+					<input
+						id="dockerfile-path"
+						type="text"
+						bind:value={dockerfilePath}
+						class="w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 font-mono text-sm text-white placeholder-gray-500 outline-none focus:border-accent"
+						placeholder="Dockerfile"
+					/>
+				</div>
+			{/if}
+		{/if}
 
 		{#if hasDomainField}
 			<div>
