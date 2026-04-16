@@ -54,12 +54,38 @@ spec:
           spec:
             description: |-
               ProjectSpec defines the desired state of a Project — the top-level grouping
-              above Apps. Each Project owns a Kubernetes namespace named
-              `project-{metadata.name}` into which its Apps are placed.
+              above Apps. Each Project owns a Kubernetes namespace (by default
+              `project-{metadata.name}`) into which its Apps are placed.
             properties:
+              adoptExistingNamespace:
+                description: |-
+                  AdoptExistingNamespace, when true, tells the controller to adopt a
+                  pre-existing Kubernetes namespace that matches the resolved namespace
+                  name (default or `namespaceOverride`) by adding this Project's owner
+                  reference and `app.kubernetes.io/managed-by: mortise` label. Mortise
+                  will never mutate resources it did not create inside the adopted
+                  namespace, but deleting the Project will cascade-delete the namespace
+                  and everything in it — adoption is a deliberate, admin-only operation.
+
+                  When false (the default), encountering a pre-existing namespace with no
+                  Mortise ownership causes the Project to transition to Failed.
+                type: boolean
               description:
                 description: Description is a short, human-readable note about the
                   project.
+                type: string
+              namespaceOverride:
+                description: |-
+                  NamespaceOverride, when set, makes the controller use this name verbatim
+                  for the Project's backing namespace instead of the default
+                  `project-{name}` form. The value must be a valid DNS-1123 label.
+
+                  This is an admin-only field (enforced at the REST API layer) intended for
+                  regulated or enterprise clusters where namespace naming is governed by
+                  OPA policies, naming standards, or pre-existing IAM bindings (e.g.
+                  cloud IRSA roles keyed off namespace name).
+                maxLength: 63
+                pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
                 type: string
             type: object
           status:

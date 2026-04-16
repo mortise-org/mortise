@@ -43,6 +43,81 @@ func TestCreateProjectAsAdmin(t *testing.T) {
 	}
 }
 
+// TestCreateProjectWithNamespaceOverride verifies an admin can create a
+// Project with a custom backing namespace name via spec.namespaceOverride.
+// The field is admin-only (the handler is already gated behind requireAdmin).
+func TestCreateProjectWithNamespaceOverride(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+
+	w := doRequest(h, http.MethodPost, "/api/projects", map[string]any{
+		"name":              "corp-proj",
+		"namespaceOverride": "corp-team-acme-prod",
+	})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var project mortisev1alpha1.Project
+	if err := k8sClient.Get(context.Background(), types.NamespacedName{Name: "corp-proj"}, &project); err != nil {
+		t.Fatalf("project CRD not found: %v", err)
+	}
+	if project.Spec.NamespaceOverride != "corp-team-acme-prod" {
+		t.Errorf("expected NamespaceOverride=corp-team-acme-prod, got %q", project.Spec.NamespaceOverride)
+	}
+	if project.Spec.AdoptExistingNamespace {
+		t.Errorf("expected AdoptExistingNamespace=false by default")
+	}
+}
+
+// TestCreateProjectWithAdoption verifies adoptExistingNamespace flows through
+// the create request into the CRD spec.
+func TestCreateProjectWithAdoption(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+
+	w := doRequest(h, http.MethodPost, "/api/projects", map[string]any{
+		"name":                   "adopter",
+		"namespaceOverride":      "pre-existing-ns",
+		"adoptExistingNamespace": true,
+	})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var project mortisev1alpha1.Project
+	if err := k8sClient.Get(context.Background(), types.NamespacedName{Name: "adopter"}, &project); err != nil {
+		t.Fatalf("project CRD not found: %v", err)
+	}
+	if !project.Spec.AdoptExistingNamespace {
+		t.Errorf("expected AdoptExistingNamespace=true")
+	}
+	if project.Spec.NamespaceOverride != "pre-existing-ns" {
+		t.Errorf("expected NamespaceOverride=pre-existing-ns, got %q", project.Spec.NamespaceOverride)
+	}
+}
+
+// TestCreateProjectRejectsInvalidNamespaceOverride verifies the API rejects
+// namespace overrides that aren't valid DNS-1123 labels before they hit the
+// controller.
+func TestCreateProjectRejectsInvalidNamespaceOverride(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+
+	for _, bad := range []string{"Bad_Ns", "-leading", "trailing-", "UPPER"} {
+		w := doRequest(h, http.MethodPost, "/api/projects", map[string]any{
+			"name":              "p-" + bad,
+			"namespaceOverride": bad,
+		})
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("namespaceOverride=%q: expected 400, got %d: %s", bad, w.Code, w.Body.String())
+		}
+	}
+}
+
 // TestCreateProjectInvalidName verifies the API rejects names that cannot be
 // used as a DNS-1123 label or that would exceed namespace-name limits. The
 // caller should see a 400 with a descriptive error, not a CRD-layer 422 or

@@ -51,9 +51,16 @@ func projectNamespace(projectName string) string {
 }
 
 // createProjectRequest is the JSON body for creating a Project.
+//
+// NamespaceOverride and AdoptExistingNamespace are admin-only knobs
+// (spec §5.0); they are accepted here because the handler is already gated
+// behind requireAdmin. Non-admin requests are rejected at the top of the
+// handler, so members cannot set them.
 type createProjectRequest struct {
-	Name        string `json:"name"`
-	Description string `json:"description,omitempty"`
+	Name                   string `json:"name"`
+	Description            string `json:"description,omitempty"`
+	NamespaceOverride      string `json:"namespaceOverride,omitempty"`
+	AdoptExistingNamespace bool   `json:"adoptExistingNamespace,omitempty"`
 }
 
 // projectResponse is the JSON shape returned for Project GETs. It is a flat,
@@ -101,13 +108,25 @@ func (s *Server) CreateProject(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errorResponse{msg})
 		return
 	}
+	if req.NamespaceOverride != "" {
+		if len(req.NamespaceOverride) > 63 {
+			writeJSON(w, http.StatusBadRequest, errorResponse{"namespaceOverride must be 63 characters or fewer"})
+			return
+		}
+		if !dns1123LabelRegex.MatchString(req.NamespaceOverride) {
+			writeJSON(w, http.StatusBadRequest, errorResponse{"namespaceOverride must be a DNS-1123 label"})
+			return
+		}
+	}
 
 	project := &mortisev1alpha1.Project{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: req.Name,
 		},
 		Spec: mortisev1alpha1.ProjectSpec{
-			Description: req.Description,
+			Description:            req.Description,
+			NamespaceOverride:      req.NamespaceOverride,
+			AdoptExistingNamespace: req.AdoptExistingNamespace,
 		},
 	}
 
