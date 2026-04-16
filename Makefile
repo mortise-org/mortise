@@ -108,6 +108,10 @@ lint-config: golangci-lint ## Verify golangci-lint linter configuration
 build: manifests generate fmt vet ## Build manager binary.
 	go build -o bin/manager cmd/main.go
 
+.PHONY: build-cli
+build-cli: fmt vet ## Build CLI binary.
+	go build -o bin/mortise ./cmd/cli
+
 .PHONY: run
 run: manifests generate fmt vet ## Run a controller from your host.
 	go run ./cmd/main.go
