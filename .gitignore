@@ -37,3 +37,8 @@ cover.out
 .claude/
 .logs/
 __pycache__/
+
+# UI
+ui/node_modules/
+ui/.svelte-kit/
+ui/build/

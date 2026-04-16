@@ -104,6 +104,10 @@ lint-config: golangci-lint ## Verify golangci-lint linter configuration
 
 ##@ Build
 
+.PHONY: build-ui
+build-ui: ## Build the SvelteKit UI to ui/build.
+	cd ui && npm install && npm run build
+
 .PHONY: build
 build: manifests generate fmt vet ## Build manager binary.
 	go build -o bin/manager cmd/main.go
