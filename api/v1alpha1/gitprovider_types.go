@@ -20,38 +20,80 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
-// NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
+// GitProviderType identifies the git forge.
+// +kubebuilder:validation:Enum=github;gitlab;gitea
+type GitProviderType string
 
-// GitProviderSpec defines the desired state of GitProvider
+const (
+	GitProviderTypeGitHub GitProviderType = "github"
+	GitProviderTypeGitLab GitProviderType = "gitlab"
+	GitProviderTypeGitea  GitProviderType = "gitea"
+)
+
+// GitProviderPhase is the reconciliation phase of a GitProvider.
+// +kubebuilder:validation:Enum=Pending;Ready;Failed
+type GitProviderPhase string
+
+const (
+	GitProviderPhasePending GitProviderPhase = "Pending"
+	GitProviderPhaseReady   GitProviderPhase = "Ready"
+	GitProviderPhaseFailed  GitProviderPhase = "Failed"
+)
+
+// SecretRef is a reference to a key in a Kubernetes Secret.
+type SecretRef struct {
+	// Namespace of the secret.
+	// +required
+	Namespace string `json:"namespace"`
+
+	// Name of the secret.
+	// +required
+	Name string `json:"name"`
+
+	// Key within the secret.
+	// +required
+	Key string `json:"key"`
+}
+
+// OAuthConfig holds the OAuth client credentials for a git forge.
+type OAuthConfig struct {
+	// ClientIDSecretRef references the secret containing the OAuth client ID.
+	// +required
+	ClientIDSecretRef SecretRef `json:"clientIDSecretRef"`
+
+	// ClientSecretSecretRef references the secret containing the OAuth client secret.
+	// +required
+	ClientSecretSecretRef SecretRef `json:"clientSecretSecretRef"`
+}
+
+// GitProviderSpec defines the desired state of GitProvider.
 type GitProviderSpec struct {
-	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
-	// The following markers will use OpenAPI v3 schema to validate the value
-	// More info: https://book.kubebuilder.io/reference/markers/crd-validation.html
+	// Type is the git forge type.
+	// +required
+	Type GitProviderType `json:"type"`
 
-	// foo is an example field of GitProvider. Edit gitprovider_types.go to remove/update
-	// +optional
-	Foo *string `json:"foo,omitempty"`
+	// Host is the base URL of the forge (e.g. https://github.com or https://gitea.internal.example).
+	// +required
+	Host string `json:"host"`
+
+	// OAuth holds the OAuth application credentials used to authenticate users and
+	// register webhooks on their behalf.
+	// +required
+	OAuth OAuthConfig `json:"oauth"`
+
+	// WebhookSecretRef references the secret used to verify HMAC signatures on
+	// inbound webhook payloads from this forge.
+	// +required
+	WebhookSecretRef SecretRef `json:"webhookSecretRef"`
 }
 
 // GitProviderStatus defines the observed state of GitProvider.
 type GitProviderStatus struct {
-	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
+	// Phase is the current lifecycle phase.
+	// +optional
+	Phase GitProviderPhase `json:"phase,omitempty"`
 
-	// For Kubernetes API conventions, see:
-	// https://github.com/kubernetes/community/blob/master/contributors/devel/sig-architecture/api-conventions.md#typical-status-properties
-
-	// conditions represent the current state of the GitProvider resource.
-	// Each condition has a unique type and reflects the status of a specific aspect of the resource.
-	//
-	// Standard condition types include:
-	// - "Available": the resource is fully functional
-	// - "Progressing": the resource is being created or updated
-	// - "Degraded": the resource failed to reach or maintain its desired state
-	//
-	// The status of each condition is one of True, False, or Unknown.
+	// Conditions represent the current state of the GitProvider resource.
 	// +listType=map
 	// +listMapKey=type
 	// +optional
@@ -61,8 +103,13 @@ type GitProviderStatus struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:scope=Cluster
+// +kubebuilder:printcolumn:name="Type",type=string,JSONPath=`.spec.type`
+// +kubebuilder:printcolumn:name="Host",type=string,JSONPath=`.spec.host`
+// +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
+// +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
-// GitProvider is the Schema for the gitproviders API
+// GitProvider is the Schema for the gitproviders API. It is cluster-scoped;
+// one instance per configured git forge.
 type GitProvider struct {
 	metav1.TypeMeta `json:",inline"`
 

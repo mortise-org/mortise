@@ -18,8 +18,14 @@ package controller
 
 import (
 	"context"
+	"fmt"
 
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -36,22 +42,94 @@ type GitProviderReconciler struct {
 // +kubebuilder:rbac:groups=mortise.mortise.dev,resources=gitproviders,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=mortise.mortise.dev,resources=gitproviders/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=mortise.mortise.dev,resources=gitproviders/finalizers,verbs=update
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 
-// Reconcile is part of the main kubernetes reconciliation loop which aims to
-// move the current state of the cluster closer to the desired state.
-// TODO(user): Modify the Reconcile function to compare the state specified by
-// the GitProvider object against the actual cluster state, and then
-// perform operations to make the cluster state reflect the state specified by
-// the user.
-//
-// For more details, check Reconcile and its Result here:
-// - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.23.3/pkg/reconcile
 func (r *GitProviderReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	_ = logf.FromContext(ctx)
+	log := logf.FromContext(ctx)
 
-	// TODO(user): your logic here
+	var gp mortisev1alpha1.GitProvider
+	if err := r.Get(ctx, req.NamespacedName, &gp); err != nil {
+		if errors.IsNotFound(err) {
+			return ctrl.Result{}, nil
+		}
+		return ctrl.Result{}, err
+	}
 
-	return ctrl.Result{}, nil
+	// Validate the type field.
+	switch gp.Spec.Type {
+	case mortisev1alpha1.GitProviderTypeGitHub,
+		mortisev1alpha1.GitProviderTypeGitLab,
+		mortisev1alpha1.GitProviderTypeGitea:
+		// valid
+	default:
+		log.Info("unknown provider type", "type", gp.Spec.Type)
+		return ctrl.Result{}, r.markFailed(ctx, &gp, "UnknownType",
+			fmt.Sprintf("spec.type %q is not one of: github, gitlab, gitea", gp.Spec.Type))
+	}
+
+	// Validate that all referenced secrets exist and contain the required keys.
+	refs := []struct {
+		ref  mortisev1alpha1.SecretRef
+		desc string
+	}{
+		{gp.Spec.OAuth.ClientIDSecretRef, "spec.oauth.clientIDSecretRef"},
+		{gp.Spec.OAuth.ClientSecretSecretRef, "spec.oauth.clientSecretSecretRef"},
+		{gp.Spec.WebhookSecretRef, "spec.webhookSecretRef"},
+	}
+	for _, r2 := range refs {
+		if err := r.validateSecretRef(ctx, r2.ref, r2.desc); err != nil {
+			log.Info("secret ref invalid", "field", r2.desc, "error", err)
+			return ctrl.Result{}, r.markFailed(ctx, &gp, "SecretNotFound", err.Error())
+		}
+	}
+
+	return ctrl.Result{}, r.markReady(ctx, &gp)
+}
+
+// validateSecretRef returns an error if the secret does not exist or the key is absent.
+func (r *GitProviderReconciler) validateSecretRef(ctx context.Context, ref mortisev1alpha1.SecretRef, desc string) error {
+	var secret corev1.Secret
+	key := types.NamespacedName{Namespace: ref.Namespace, Name: ref.Name}
+	if err := r.Get(ctx, key, &secret); err != nil {
+		if errors.IsNotFound(err) {
+			return fmt.Errorf("%s: secret %s/%s not found", desc, ref.Namespace, ref.Name)
+		}
+		return fmt.Errorf("%s: get secret %s/%s: %w", desc, ref.Namespace, ref.Name, err)
+	}
+	if _, ok := secret.Data[ref.Key]; !ok {
+		return fmt.Errorf("%s: key %q not present in secret %s/%s", desc, ref.Key, ref.Namespace, ref.Name)
+	}
+	return nil
+}
+
+func (r *GitProviderReconciler) markReady(ctx context.Context, gp *mortisev1alpha1.GitProvider) error {
+	gp.Status.Phase = mortisev1alpha1.GitProviderPhaseReady
+	meta.SetStatusCondition(&gp.Status.Conditions, metav1.Condition{
+		Type:               "Available",
+		Status:             metav1.ConditionTrue,
+		Reason:             "Reconciled",
+		Message:            "GitProvider is ready",
+		ObservedGeneration: gp.Generation,
+	})
+	if err := r.Status().Update(ctx, gp); err != nil {
+		return fmt.Errorf("update status: %w", err)
+	}
+	return nil
+}
+
+func (r *GitProviderReconciler) markFailed(ctx context.Context, gp *mortisev1alpha1.GitProvider, reason, msg string) error {
+	gp.Status.Phase = mortisev1alpha1.GitProviderPhaseFailed
+	meta.SetStatusCondition(&gp.Status.Conditions, metav1.Condition{
+		Type:               "Available",
+		Status:             metav1.ConditionFalse,
+		Reason:             reason,
+		Message:            msg,
+		ObservedGeneration: gp.Generation,
+	})
+	if err := r.Status().Update(ctx, gp); err != nil {
+		return fmt.Errorf("update status: %w", err)
+	}
+	return nil
 }
 
 // SetupWithManager sets up the controller with the Manager.
