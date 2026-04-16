@@ -1,0 +1,30 @@
+# Integration-test fixture for the git-source build path. Paired with the
+# in-cluster Gitea provisioned by test/integration/manifests/20-gitea.yaml.
+#
+# The test overrides metadata.namespace (to the per-test project namespace),
+# metadata.annotations (to trigger a build), and spec.source.repo (to the
+# in-cluster Gitea clone URL of the test repo created by the bootstrap
+# helper). Everything else stays as-is so the fixture reads like a real
+# user-authored App.
+apiVersion: mortise.mortise.dev/v1alpha1
+kind: App
+metadata:
+  name: test-git-app
+  annotations:
+    mortise.dev/revision: ""  # overridden by test to "main" to trigger build
+spec:
+  source:
+    type: git
+    repo: http://gitea.mortise-test-deps.svc:3000/mortise-test/testrepo.git
+    branch: main
+    providerRef: gitea-int
+    build:
+      dockerfilePath: Dockerfile
+  network:
+    public: false            # no ingress needed for this test
+  environments:
+    - name: production
+      replicas: 1
+      resources:
+        cpu: "50m"
+        memory: "64Mi"

@@ -44,6 +44,8 @@ help: ## Display this help.
 .PHONY: manifests
 manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects.
 	"$(CONTROLLER_GEN)" rbac:roleName=manager-role crd webhook paths="./..." output:crd:artifacts:config=config/crd/bases
+	# Sync generated CRDs into the Helm chart so `helm install` ships the real schema.
+	cp config/crd/bases/*.yaml charts/mortise/crds/
 
 .PHONY: generate
 generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
@@ -162,27 +164,35 @@ INT_CLUSTER ?= mortise-int
 INT_IMG ?= mortise:int
 
 .PHONY: test-integration
-test-integration: ## Create k3d cluster, install chart, run integration tests, tear down
+test-integration: ## Create k3d cluster, install chart + test deps, run integration tests, tear down
+	@echo "==> Deleting any stale k3d cluster from a prior run..."
+	-k3d cluster delete $(INT_CLUSTER) >/dev/null 2>&1
 	@echo "==> Creating k3d cluster $(INT_CLUSTER)..."
-	k3d cluster create $(INT_CLUSTER) \
-		--port "8091:80@loadbalancer" \
-		--k3s-arg "--disable=traefik@server:0" \
-		--wait
+	# --config wires the containerd mirror rule that makes
+	# registry.mortise-test-deps.svc:5000 pulls reachable from the node.
+	k3d cluster create --config test/integration/k3d-config.yaml --wait
 	@echo "==> Building Docker image..."
 	$(CONTAINER_TOOL) build -t $(INT_IMG) .
 	@echo "==> Loading image into k3d..."
 	k3d image import $(INT_IMG) -c $(INT_CLUSTER)
 	@echo "==> Installing CRDs..."
 	kubectl apply -f charts/mortise/crds/
+	@echo "==> Installing test-only dependencies (Zot, Gitea, BuildKit)..."
+	kubectl create namespace mortise-system --dry-run=client -o yaml | kubectl apply -f -
+	kubectl apply -f test/integration/manifests/
+	@echo "==> Waiting for test dependencies to become ready..."
+	kubectl -n mortise-test-deps rollout status deployment/registry  --timeout=120s
+	kubectl -n mortise-test-deps rollout status deployment/gitea     --timeout=180s
+	kubectl -n mortise-test-deps rollout status deployment/buildkitd --timeout=180s
 	@echo "==> Installing Mortise via Helm..."
 	helm upgrade --install mortise charts/mortise \
 		--namespace mortise-system --create-namespace \
 		--set image.repository=mortise \
 		--set image.tag=int \
 		--set image.pullPolicy=Never \
-		--wait --timeout 60s
+		--wait --timeout 120s
 	@echo "==> Running integration tests..."
-	go test -tags integration -count=1 -timeout 5m ./test/integration/... || { \
+	go test -tags integration -count=1 -timeout 15m ./test/integration/... || { \
 		k3d cluster delete $(INT_CLUSTER); exit 1; \
 	}
 	@echo "==> Tearing down cluster..."

@@ -1,0 +1,104 @@
+# Gitea — local git forge for integration tests.
+# - INSTALL_LOCK=true + GITEA__security__INSTALL_LOCK=true skips the web installer.
+# - An admin user ("mortise-test" / "mortise-test-pw") is provisioned at boot
+#   via a postStart hook; the Gitea bootstrap helper (test/helpers/gitea.go)
+#   uses this account to mint an access token, create repos, and upload files.
+# - HTTP only (no TLS) — tests never leave the cluster boundary.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gitea
+  namespace: mortise-test-deps
+  labels:
+    app.kubernetes.io/name: gitea
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: gitea
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: gitea
+    spec:
+      containers:
+        - name: gitea
+          image: gitea/gitea:1.24.3
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: USER_UID
+              value: "1000"
+            - name: USER_GID
+              value: "1000"
+            - name: GITEA__security__INSTALL_LOCK
+              value: "true"
+            - name: GITEA__database__DB_TYPE
+              value: "sqlite3"
+            - name: GITEA__server__ROOT_URL
+              value: "http://gitea.mortise-test-deps.svc:3000/"
+            - name: GITEA__server__DOMAIN
+              value: "gitea.mortise-test-deps.svc"
+            - name: GITEA__server__SSH_DOMAIN
+              value: "gitea.mortise-test-deps.svc"
+            - name: GITEA__server__DISABLE_SSH
+              value: "true"
+            - name: GITEA__service__DISABLE_REGISTRATION
+              value: "true"
+            - name: GITEA__service__REQUIRE_SIGNIN_VIEW
+              value: "false"
+            - name: GITEA__webhook__ALLOWED_HOST_LIST
+              value: "*"
+          ports:
+            - name: http
+              containerPort: 3000
+          lifecycle:
+            postStart:
+              exec:
+                # Wait for Gitea to be reachable, then (idempotently) create the
+                # admin user used by integration tests.
+                command:
+                  - /bin/sh
+                  - -c
+                  - |
+                    for i in $(seq 1 60); do
+                      if wget -q -O- http://127.0.0.1:3000/api/v1/version >/dev/null 2>&1; then
+                        break
+                      fi
+                      sleep 1
+                    done
+                    # Use full path because `su - git` strips PATH and the
+                    # gitea binary lives at /usr/local/bin/gitea.
+                    su - git -c "/usr/local/bin/gitea admin user create \
+                      --admin \
+                      --username mortise-test \
+                      --password mortise-test-pw \
+                      --email mortise-test@example.invalid \
+                      --must-change-password=false" || true
+          readinessProbe:
+            httpGet:
+              path: /api/v1/version
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 3
+            failureThreshold: 30
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gitea
+  namespace: mortise-test-deps
+spec:
+  selector:
+    app.kubernetes.io/name: gitea
+  ports:
+    - name: http
+      port: 3000
+      targetPort: 3000

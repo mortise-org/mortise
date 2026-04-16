@@ -1,0 +1,84 @@
+# BuildKit — dockerfile-frontend build backend.
+# Runs privileged because k3d (k3s-in-Docker) blocks the syscalls rootlesskit
+# needs for userns unshare. `privileged: true` is fine for an integration-test
+# scaffold — production deployments bring their own BuildKit.
+# Exposes gRPC on tcp://:1234 (no TLS for tests — the operator dials via
+# ClusterIP). An "insecure registry" entry points at in-cluster Zot so
+# BuildKit's pusher treats Zot's HTTP endpoint as valid.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: buildkitd-config
+  namespace: mortise-test-deps
+data:
+  buildkitd.toml: |
+    debug = false
+    [grpc]
+      address = ["tcp://0.0.0.0:1234"]
+    [registry."registry.mortise-test-deps.svc:5000"]
+      http = true
+      insecure = true
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: buildkitd
+  namespace: mortise-test-deps
+  labels:
+    app.kubernetes.io/name: buildkitd
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: buildkitd
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: buildkitd
+    spec:
+      containers:
+        - name: buildkitd
+          image: moby/buildkit:v0.29.0
+          imagePullPolicy: IfNotPresent
+          args:
+            - --addr
+            - tcp://0.0.0.0:1234
+            - --config
+            - /etc/buildkit/buildkitd.toml
+          readinessProbe:
+            exec:
+              command: ["buildctl", "--addr", "tcp://127.0.0.1:1234", "debug", "workers"]
+            initialDelaySeconds: 5
+            periodSeconds: 3
+            failureThreshold: 30
+          ports:
+            - name: grpc
+              containerPort: 1234
+          securityContext:
+            privileged: true
+          volumeMounts:
+            - name: config
+              mountPath: /etc/buildkit
+            - name: data
+              mountPath: /var/lib/buildkit
+      volumes:
+        - name: config
+          configMap:
+            name: buildkitd-config
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: buildkitd
+  namespace: mortise-test-deps
+spec:
+  selector:
+    app.kubernetes.io/name: buildkitd
+  ports:
+    - name: grpc
+      port: 1234
+      targetPort: 1234

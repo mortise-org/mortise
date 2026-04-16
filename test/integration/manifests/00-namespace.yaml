@@ -1,0 +1,10 @@
+# Namespace for integration-test infrastructure (Gitea, Zot, BuildKit).
+# Kept separate from mortise-system so `kubectl delete ns` during cleanup
+# doesn't tear down the operator. Not part of the product chart — these
+# resources exist only to back integration tests.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: mortise-test-deps
+  labels:
+    app.kubernetes.io/managed-by: mortise-integration-tests

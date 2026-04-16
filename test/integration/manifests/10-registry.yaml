@@ -1,0 +1,77 @@
+# In-cluster OCI registry — destination for BuildKit pushes and source for
+# kubelet image pulls. We use distribution/distribution v2 (not Zot) because
+# Zot's htpasswd watcher exhausts fs.inotify.max_user_instances on Linux hosts
+# with the default 128 limit. HTTP only — tests never leave the cluster.
+#
+# Two access paths matter here:
+#   1. In-cluster (BuildKit push, operator status reads): reached via the
+#      ClusterIP Service at registry.mortise-test-deps.svc:5000. Uses CoreDNS.
+#   2. Node-side (kubelet/containerd pull): the containerd process on the k3d
+#      node can't resolve cluster DNS. We work around this with a k3d
+#      registries-config mirror rule (see test/integration/k3d-config.yaml)
+#      that rewrites registry.mortise-test-deps.svc:5000 →
+#      http://127.0.0.1:30500. The hostPort below publishes the registry pod
+#      on the node at 30500 so the mirror endpoint is reachable.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: registry
+  namespace: mortise-test-deps
+  labels:
+    app.kubernetes.io/name: registry
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: registry
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: registry
+    spec:
+      containers:
+        - name: registry
+          image: distribution/distribution:2.8.3
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: REGISTRY_HTTP_ADDR
+              value: "0.0.0.0:5000"
+            - name: REGISTRY_STORAGE_DELETE_ENABLED
+              value: "true"
+          ports:
+            # Single port entry: accessible in-cluster via the Service at :5000
+            # and on the node at 127.0.0.1:30500 (hostPort). The node-local
+            # binding exists so the k3d containerd mirror rule can reach the
+            # registry without needing cluster DNS.
+            - name: http
+              containerPort: 5000
+              hostPort: 30500
+              hostIP: 127.0.0.1
+          readinessProbe:
+            httpGet:
+              path: /v2/
+              port: 5000
+            initialDelaySeconds: 2
+            periodSeconds: 2
+            failureThreshold: 30
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/registry
+      volumes:
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: registry
+  namespace: mortise-test-deps
+spec:
+  selector:
+    app.kubernetes.io/name: registry
+  ports:
+    - name: http
+      port: 5000
+      targetPort: 5000

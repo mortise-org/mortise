@@ -5,7 +5,7 @@ whenever implementation status changes — see the **Keeping this file up to
 date** section at the bottom.
 
 Legend: **Done** / **Partial** / **Not started**
-Last reconciled against spec + code: 2026-04-16 (async git builds landed).
+Last reconciled against spec + code: 2026-04-16 (git-source integration test landed).
 
 ---
 
@@ -73,44 +73,65 @@ Spec rule: every outward interface must have at least one real v1 impl
 **Gaps:**
 - No `.github/` → no CI config checked in.
 
-### Integration harness — Done (skeleton)
+### Integration harness — Done
 
-`test/integration/` exists and compiles under the `//go:build integration` tag.
+`test/integration/` exercises the operator end-to-end against a real k3d
+cluster via the `//go:build integration` tag.
 
 **What the harness does:**
-- `test/integration/suite_test.go` — `TestMain` that:
-  1. Loads kubeconfig from `$KUBECONFIG` env var, defaulting to `~/.kube/config`.
-  2. Builds a `client.Client` with the mortise scheme registered.
-  3. Asserts the cluster is reachable by listing nodes; `log.Fatalf` with a
-     pointer to `make dev-up` if not.
-  4. Asserts the `mortise` Deployment in `mortise-system` has
-     `AvailableReplicas > 0` with a 60 s timeout.
-  5. Calls `m.Run()` and forwards the exit code.
-  6. Package-global `k8sClient` shared by all tests.
-  7. `createTestNamespace(t)` helper wrapping `helpers.CreateTestNamespace`.
+- `test/integration/suite_test.go` — `TestMain` loads kubeconfig, builds a
+  scheme-registered `client.Client`, waits for the `mortise` Deployment in
+  `mortise-system` to have `AvailableReplicas > 0`, then runs the suite.
+- Package-global `k8sClient` shared by all tests; `createTestNamespace(t)`
+  helper gives each test an isolated namespace.
+- `test/integration/k3d-config.yaml` — k3d config that installs a
+  containerd registries-config mirror rewriting
+  `registry.mortise-test-deps.svc:5000` → `http://127.0.0.1:30500`. Without
+  this, the node's containerd can't resolve the cluster-internal registry
+  hostname. The in-cluster registry pod binds a 127.0.0.1 hostPort at 30500
+  so the mirror endpoint is reachable.
+- `test/integration/manifests/` — `00-namespace` (`mortise-test-deps`),
+  `10-registry` (`distribution/distribution:2.8.3`),
+  `20-gitea` (`gitea:1.24.3` + postStart admin-user bootstrap),
+  `30-buildkit` (`moby/buildkit:v0.29.0`, privileged),
+  `40-platformconfig` (singleton `platform` PlatformConfig pointing at the
+  deps namespace).
 
-**Smoke test (`test/integration/app_image_source_test.go`):**
-- `TestImageSourceAppGoesReady` creates a unique test namespace, loads
-  `test/fixtures/image-basic.yaml` (`nginx:1.27`, image source), overrides
-  `metadata.namespace`, and applies the App.
-- Asserts: Deployment has `ReadyReplicas > 0`, Service exists,
-  `App.status.phase == Ready`. Timeout: 2 min.
+**Tests:**
+- `app_image_source_test.go` — `TestImageSourceAppGoesReady`: loads
+  `test/fixtures/image-basic.yaml` and asserts Deployment becomes ready.
+- `app_git_source_test.go` — `TestGitSourceAppBuildsAndDeploys`: bootstraps
+  a Gitea repo with a minimal Dockerfile via `helpers.GiteaBootstrap`, stubs
+  the OAuth + webhook + provider-token secrets, creates a GitProvider and
+  an App from `test/fixtures/git-gitea-basic.yaml`, and asserts the App
+  reaches `Ready`, the registry surfaces the built tag, and the Deployment
+  runs the built image.
 
-**Makefile targets added:**
-- `make test-integration` — creates k3d cluster `mortise-int`, builds image
-  tagged `mortise:int`, loads it, installs CRDs + chart via Helm, runs
-  `go test -tags integration ./test/integration/...`, tears down on finish or
-  failure.
-- `make test-integration-fast` — same `go test` invocation, no cluster
-  lifecycle. Requires `make dev-up` and chart pre-installed.
+**Helpers added:**
+- `test/helpers/gitea.go` — `GiteaBootstrap{BaseURL, Username, Password}`
+  with `Ensure(t, inClusterBaseURL, owner, repo, files)` that mints an
+  admin token, creates the repo, and uploads files through Gitea's REST
+  API (no SDK — keeps the helper portable).
+- `test/helpers/portforward.go` — `PortForward(t, ns, svc, remotePort)`
+  shells out to `kubectl port-forward` on an OS-picked local port, waits
+  for the TCP accept, and registers cleanup.
+- `test/helpers/registry.go` — `AssertRegistryHasTags(t, base, ns, app,
+  timeout)` polls `GET /v2/<ns>/<app>/tags/list` per the OCI Distribution
+  Spec.
+- `test/helpers/assertions.go` — `WaitForAppReady(t, k8sClient, ns, name,
+  timeout)` polls `App.Status.Phase`.
 
-**`test/helpers/assertions.go` — added:**
-- `WaitForAppReady(t, k8sClient, ns, name, timeout)` — polls
-  `App.Status.Phase` until `AppPhaseReady` or timeout.
+**Makefile targets:**
+- `make test-integration` — deletes any stale cluster, creates a fresh
+  k3d cluster from `test/integration/k3d-config.yaml`, builds + loads the
+  operator image, applies CRDs, installs test deps, installs the chart via
+  Helm, runs `go test -tags integration -timeout 15m`, tears down.
+- `make test-integration-fast` — `go test` only, against an already-running
+  dev cluster.
 
-**Not in this PR (follow-up work):**
-- Zot, Gitea, Pebble installs in the test cluster.
-- `git_source_test.go` / `bindings_test.go`.
+**Follow-up work (not blocking Phase 4):**
+- Pebble (ACME) for a TLS integration test.
+- `bindings_test.go` — pending fix for the `{app}-credentials` secret gap.
 - UI Playwright tests.
 - `.github/` CI config.
 
@@ -393,9 +414,11 @@ landed and what each deferred.
 
 **Follow-up (not blocking Phase 4):**
 - ~~**`PlatformConfig` wiring**~~ — Done; see cross-stack section above.
-- **Integration tests against local Gitea** — the integration harness
-  exists (`test/integration/`, skeleton) but Gitea, Zot, and Pebble installs
-  in the test cluster haven't landed. Tracked under Phase 0 / harness.
+- ~~**Integration tests against local Gitea**~~ — Done.
+  `TestGitSourceAppBuildsAndDeploys` in `test/integration/app_git_source_test.go`
+  exercises the full git → build → push → pull → deploy path against
+  in-cluster Gitea + distribution registry + BuildKit. See Phase 0 /
+  Integration harness for details.
 
 ### PlatformConfig — **Done**
 

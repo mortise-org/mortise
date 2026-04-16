@@ -1,0 +1,34 @@
+# k3d cluster config for integration tests.
+#
+# The critical bit is registries.config: it embeds a /etc/rancher/k3s/registries.yaml
+# on the node that teaches containerd to rewrite pulls of
+# registry.mortise-test-deps.svc:5000 to a node-local endpoint.
+#
+# Without this rewrite, containerd tries to DNS-resolve the cluster-internal
+# registry hostname using the node's host resolver (not CoreDNS) and fails.
+# The rewrite sends pulls to 127.0.0.1:30500, which is the hostPort published
+# by the in-cluster registry pod (see manifests/10-registry.yaml), so both
+# BuildKit pushes (via cluster DNS) and kubelet pulls (via the mirror) hit the
+# same registry storage.
+apiVersion: k3d.io/v1alpha5
+kind: Simple
+metadata:
+  name: mortise-int
+servers: 1
+agents: 0
+options:
+  k3s:
+    extraArgs:
+      - arg: "--disable=traefik"
+        nodeFilters:
+          - "server:0"
+registries:
+  config: |
+    mirrors:
+      "registry.mortise-test-deps.svc:5000":
+        endpoint:
+          - "http://127.0.0.1:30500"
+    configs:
+      "127.0.0.1:30500":
+        tls:
+          insecure_skip_verify: true
