@@ -6,6 +6,8 @@
 
 	type Filter = 'all' | TemplateCategory;
 
+	const projectName = $derived(page.params.project ?? '');
+
 	let selectedId = $state<string | null>(
 		untrack(() => page.url.searchParams.get('template'))
 	);
@@ -34,9 +36,16 @@
 </script>
 
 {#if selected}
-	<AppForm template={selected} onBack={back} />
+	<AppForm project={projectName} template={selected} onBack={back} />
 {:else}
 	<div class="mx-auto max-w-5xl">
+		<a
+			href="/projects/{encodeURIComponent(projectName)}"
+			class="mb-4 inline-block text-sm text-gray-500 transition-colors hover:text-white"
+		>
+			&larr; Back to {projectName}
+		</a>
+
 		<div class="mb-6">
 			<h1 class="text-xl font-semibold text-white">Deploy from template</h1>
 			<p class="mt-1 text-sm text-gray-500">

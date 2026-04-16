@@ -7,7 +7,8 @@
 	import LogViewer from '$lib/components/LogViewer.svelte';
 	import type { App, EnvironmentStatus, EnvVar, SecretResponse } from '$lib/types';
 
-	const appName = $derived(page.params.name);
+	const projectName = $derived(page.params.project ?? '');
+	const appName = $derived(page.params.app ?? '');
 
 	let app = $state<App | null>(null);
 	let secrets = $state<SecretResponse[]>([]);
@@ -40,8 +41,8 @@
 		loading = true;
 		error = '';
 		try {
-			app = await api.get<App>(`/apps/${appName}`);
-			secrets = await api.get<SecretResponse[]>(`/apps/${appName}/secrets`);
+			app = await api.getApp(projectName, appName);
+			secrets = await api.listSecrets(projectName, appName);
 			syncEnvVarsFromApp();
 		} catch (err) {
 			error = err instanceof Error ? err.message : 'Failed to load app';
@@ -63,8 +64,6 @@
 	});
 
 	function onEnvChange() {
-		// The EnvVarEditor writes to envVars via bind:value. Mark dirty whenever
-		// the serialized form differs from what the server last returned.
 		const current = (app?.spec.environments?.[activeTab]?.env ?? []).map((e) => ({
 			name: e.name,
 			value: e.value ?? ''
@@ -84,7 +83,6 @@
 	}
 
 	$effect(() => {
-		// Re-run dirty check whenever envVars changes.
 		envVars;
 		if (app) onEnvChange();
 	});
@@ -99,7 +97,7 @@
 				envs[activeTab].env = envVars.filter((v) => v.name.trim());
 				spec.environments = envs;
 			}
-			await api.put(`/apps/${appName}`, spec);
+			await api.updateApp(projectName, appName, spec);
 			await loadApp();
 		} catch (err) {
 			error = err instanceof Error ? err.message : 'Failed to save variables';
@@ -109,10 +107,12 @@
 	}
 
 	async function handleDeploy() {
-		if (!deployImage.trim()) return;
+		if (!deployImage.trim() || !app) return;
+		const env = app.spec.environments?.[activeTab];
+		if (!env) return;
 		deploying = true;
 		try {
-			await api.post('/deploy', { app: appName, image: deployImage });
+			await api.deploy(projectName, appName, env.name, deployImage);
 			deployImage = '';
 			await loadApp();
 		} catch (err) {
@@ -127,7 +127,7 @@
 		if (!history || index < 0) return;
 		const target = history[index];
 		try {
-			await api.post('/deploy', { app: appName, image: target.image });
+			await api.deploy(projectName, appName, envStatus.name, target.image);
 			await loadApp();
 		} catch (err) {
 			error = err instanceof Error ? err.message : 'Rollback failed';
@@ -137,8 +137,8 @@
 	async function handleDeleteApp() {
 		if (!confirm(`Delete ${appName}? This cannot be undone.`)) return;
 		try {
-			await api.del(`/apps/${appName}`);
-			goto('/');
+			await api.deleteApp(projectName, appName);
+			await goto(`/projects/${encodeURIComponent(projectName)}`);
 		} catch (err) {
 			error = err instanceof Error ? err.message : 'Delete failed';
 		}
@@ -148,13 +148,10 @@
 		if (!newSecretKey.trim()) return;
 		savingSecret = true;
 		try {
-			await api.post(`/apps/${appName}/secrets`, {
-				name: newSecretKey,
-				data: { [newSecretKey]: newSecretValue }
-			});
+			await api.createSecret(projectName, appName, newSecretKey, newSecretValue);
 			newSecretKey = '';
 			newSecretValue = '';
-			secrets = await api.get<SecretResponse[]>(`/apps/${appName}/secrets`);
+			secrets = await api.listSecrets(projectName, appName);
 		} catch (err) {
 			error = err instanceof Error ? err.message : 'Failed to save secret';
 		} finally {
@@ -164,8 +161,8 @@
 
 	async function handleDeleteSecret(name: string) {
 		try {
-			await api.del(`/apps/${appName}/secrets/${name}`);
-			secrets = await api.get<SecretResponse[]>(`/apps/${appName}/secrets`);
+			await api.deleteSecret(projectName, appName, name);
+			secrets = await api.listSecrets(projectName, appName);
 		} catch (err) {
 			error = err instanceof Error ? err.message : 'Failed to delete secret';
 		}
@@ -202,7 +199,6 @@
 </script>
 
 {#if loading}
-	<!-- Loading skeleton -->
 	<div class="animate-pulse">
 		<div class="mb-6 flex items-center gap-3">
 			<div class="h-6 w-6 rounded bg-surface-700"></div>
@@ -222,26 +218,37 @@
 		{/if}
 
 		<!-- Header -->
-		<div class="mb-6 flex items-center justify-between">
-			<div class="flex items-center gap-3">
-				<a href="/" class="text-gray-500 hover:text-white" aria-label="Back to apps">&larr;</a>
-				<h1 class="text-xl font-semibold text-white">{app.metadata.name}</h1>
-				<span
-					class="inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium {phaseStyles[
-						phase()
-					]?.pill ?? 'bg-surface-700 text-gray-400'}"
-				>
-					<span class="h-1.5 w-1.5 rounded-full {phaseStyles[phase()]?.dot ?? 'bg-gray-500'}"
-					></span>
-					{phase()}
-				</span>
+		<div class="mb-6">
+			<div class="flex items-center gap-2 text-xs text-gray-500">
+				<a href="/" class="hover:text-white">Projects</a>
+				<span>/</span>
+				<a href="/projects/{encodeURIComponent(projectName)}" class="hover:text-white">
+					{projectName}
+				</a>
+				<span>/</span>
+				<span class="text-gray-400">apps</span>
 			</div>
-			<button
-				onclick={handleDeleteApp}
-				class="rounded-md border border-danger/30 px-3 py-1.5 text-xs text-danger transition-colors hover:bg-danger/10"
-			>
-				Delete App
-			</button>
+			<div class="mt-1 flex items-center justify-between gap-3">
+				<div class="flex items-center gap-3">
+					<h1 class="text-xl font-semibold text-white">{app.metadata.name}</h1>
+					<span
+						class="inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium {phaseStyles[
+							phase()
+						]?.pill ?? 'bg-surface-700 text-gray-400'}"
+					>
+						<span
+							class="h-1.5 w-1.5 rounded-full {phaseStyles[phase()]?.dot ?? 'bg-gray-500'}"
+						></span>
+						{phase()}
+					</span>
+				</div>
+				<button
+					onclick={handleDeleteApp}
+					class="rounded-md border border-danger/30 px-3 py-1.5 text-xs text-danger transition-colors hover:bg-danger/10"
+				>
+					Delete App
+				</button>
+			</div>
 		</div>
 
 		<!-- Overview -->
@@ -370,7 +377,7 @@
 				</section>
 
 				<!-- Logs -->
-				<LogViewer appName={appName ?? ''} env={env.name} />
+				<LogViewer project={projectName} {appName} env={env.name} />
 
 				<!-- Deploy history -->
 				{#if envStatus?.deployHistory && envStatus.deployHistory.length > 0}

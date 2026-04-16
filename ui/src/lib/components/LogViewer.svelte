@@ -1,13 +1,15 @@
 <script lang="ts">
 	import { onMount, onDestroy, tick } from 'svelte';
+	import { api } from '$lib/api';
 
 	interface Props {
+		project: string;
 		appName: string;
 		env: string;
 		tail?: number;
 	}
 
-	let { appName, env, tail = 200 }: Props = $props();
+	let { project, appName, env, tail = 200 }: Props = $props();
 
 	interface LogEntry {
 		pod: string;
@@ -63,16 +65,7 @@
 			source.close();
 			source = null;
 		}
-		const token = localStorage.getItem('token') ?? '';
-		const params = new URLSearchParams({
-			env,
-			follow: 'true',
-			tail: String(tail)
-		});
-		if (token) {
-			params.set('token', token);
-		}
-		const url = `/api/apps/${encodeURIComponent(appName)}/logs?${params.toString()}`;
+		const url = api.logsURL(project, appName, env, tail);
 		errored = false;
 		source = new EventSource(url);
 
@@ -201,8 +194,9 @@
 		}
 	});
 
-	// Reconnect when appName or env changes.
+	// Reconnect when project/appName/env changes.
 	$effect(() => {
+		void project;
 		void appName;
 		void env;
 		entries = [];

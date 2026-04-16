@@ -38,6 +38,7 @@ export interface EnvVar {
 
 export interface Binding {
 	ref: string;
+	project?: string;
 }
 
 export interface ResourceRequirements {
@@ -98,4 +99,15 @@ export interface App {
 export interface SecretResponse {
 	name: string;
 	keys: string[];
+}
+
+export type ProjectPhase = 'Pending' | 'Ready' | 'Terminating' | 'Failed';
+
+export interface Project {
+	name: string;
+	description?: string;
+	namespace: string;
+	phase?: ProjectPhase;
+	appCount: number;
+	createdAt?: string;
 }

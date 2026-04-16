@@ -6,7 +6,11 @@
 	import type { Template } from '$lib/templates';
 	import type { AppSpec, EnvVar, VolumeSpec } from '$lib/types';
 
-	let { template, onBack }: { template: Template; onBack: () => void } = $props();
+	let {
+		project,
+		template,
+		onBack
+	}: { project: string; template: Template; onBack: () => void } = $props();
 
 	// Initialize state from the template defaults. The parent remounts this
 	// component when the template changes, so reading the initial value once
@@ -62,8 +66,8 @@
 				spec.credentials = credentials;
 			}
 
-			await api.post('/apps', { name, spec });
-			goto('/');
+			await api.createApp(project, name, spec);
+			goto(`/projects/${encodeURIComponent(project)}`);
 		} catch (err) {
 			error = err instanceof Error ? err.message : 'Failed to create app';
 		} finally {
@@ -225,7 +229,7 @@
 				{submitting ? 'Creating...' : template.submitLabel}
 			</button>
 			<a
-				href="/"
+				href="/projects/{project}"
 				class="rounded-md border border-surface-600 px-4 py-2 text-sm text-gray-400 transition-colors hover:text-white"
 			>
 				Cancel

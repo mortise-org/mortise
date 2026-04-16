@@ -1,4 +1,10 @@
 import { goto } from '$app/navigation';
+import type {
+	App,
+	AppSpec,
+	Project,
+	SecretResponse
+} from './types';
 
 const BASE = '/api';
 
@@ -25,17 +31,89 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 		throw new Error(body.error || res.statusText);
 	}
 
-	return res.json();
+	// 204s and empty bodies — return undefined as T.
+	if (res.status === 204) {
+		return undefined as T;
+	}
+	const text = await res.text();
+	if (!text) {
+		return undefined as T;
+	}
+	return JSON.parse(text) as T;
+}
+
+function enc(s: string): string {
+	return encodeURIComponent(s);
 }
 
 export const api = {
-	get: <T>(path: string) => request<T>(path),
+	// --- projects ---
+	listProjects: () => request<Project[]>('/projects'),
+	createProject: (name: string, description?: string) =>
+		request<Project>('/projects', {
+			method: 'POST',
+			body: JSON.stringify({ name, description })
+		}),
+	getProject: (name: string) => request<Project>(`/projects/${enc(name)}`),
+	deleteProject: (name: string) =>
+		request<{ status: string; project: string }>(`/projects/${enc(name)}`, {
+			method: 'DELETE'
+		}),
 
-	post: <T>(path: string, body: unknown) =>
-		request<T>(path, { method: 'POST', body: JSON.stringify(body) }),
+	// --- apps (project-scoped) ---
+	listApps: (project: string) => request<App[]>(`/projects/${enc(project)}/apps`),
+	createApp: (project: string, name: string, spec: AppSpec) =>
+		request<App>(`/projects/${enc(project)}/apps`, {
+			method: 'POST',
+			body: JSON.stringify({ name, spec })
+		}),
+	getApp: (project: string, app: string) =>
+		request<App>(`/projects/${enc(project)}/apps/${enc(app)}`),
+	updateApp: (project: string, app: string, spec: AppSpec) =>
+		request<App>(`/projects/${enc(project)}/apps/${enc(app)}`, {
+			method: 'PUT',
+			body: JSON.stringify(spec)
+		}),
+	deleteApp: (project: string, app: string) =>
+		request<{ status: string }>(`/projects/${enc(project)}/apps/${enc(app)}`, {
+			method: 'DELETE'
+		}),
 
-	put: <T>(path: string, body: unknown) =>
-		request<T>(path, { method: 'PUT', body: JSON.stringify(body) }),
+	// --- deploy ---
+	deploy: (project: string, app: string, environment: string, image: string) =>
+		request<{ status: string; app: string; image: string }>(
+			`/projects/${enc(project)}/apps/${enc(app)}/deploy`,
+			{
+				method: 'POST',
+				body: JSON.stringify({ environment, image })
+			}
+		),
 
-	del: <T>(path: string) => request<T>(path, { method: 'DELETE' })
+	// --- logs: returns a ready-to-use SSE URL including the JWT ---
+	logsURL: (project: string, app: string, env: string, tail = 200): string => {
+		const token = localStorage.getItem('token') ?? '';
+		const params = new URLSearchParams({
+			env,
+			follow: 'true',
+			tail: String(tail)
+		});
+		if (token) {
+			params.set('token', token);
+		}
+		return `/api/projects/${enc(project)}/apps/${enc(app)}/logs?${params.toString()}`;
+	},
+
+	// --- secrets ---
+	listSecrets: (project: string, app: string) =>
+		request<SecretResponse[]>(`/projects/${enc(project)}/apps/${enc(app)}/secrets`),
+	createSecret: (project: string, app: string, name: string, value: string) =>
+		request<SecretResponse>(`/projects/${enc(project)}/apps/${enc(app)}/secrets`, {
+			method: 'POST',
+			body: JSON.stringify({ name, data: { [name]: value } })
+		}),
+	deleteSecret: (project: string, app: string, secretName: string) =>
+		request<{ status: string }>(
+			`/projects/${enc(project)}/apps/${enc(app)}/secrets/${enc(secretName)}`,
+			{ method: 'DELETE' }
+		)
 };
