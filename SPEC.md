@@ -99,7 +99,7 @@ wrapper for bootstrap may return later.
    (OIDC, monitoring, backups, external secret managers) install the upstream
    projects themselves; Mortise coexists with them through standard
    Kubernetes primitives. No addon subcharts, no plug-in SDK.
-4. **API-first.** REST + WebSocket, full OpenAPI spec, externally accessible.
+4. **API-first.** REST + SSE, full OpenAPI spec, externally accessible.
    Multi-cluster, custom UIs, and any future orchestration layer become thin
    wrappers over this API.
 5. **Neutral data model.** Even though v1 targets single-cluster and often
@@ -113,15 +113,25 @@ wrapper for bootstrap may return later.
 
 ## 5. v1 Scope — The Railway Clone
 
-### 5.1 Source Types (v1)
+### 5.1 App Kinds and Source Types (v1)
 
-**`git`** — build from source. Auto-detects Dockerfile or language. Full build
-pipeline, preview environments, deploy history. Monorepo-aware via
-`source.path` + `source.watchPaths`.
+**Kinds** — set via `spec.kind`:
 
-**`image`** — pre-built image. No build. Covers self-hosted apps
-(Paperless-ngx, Vaultwarden, etc.) and the v1 Postgres/Redis path
-(image + PVC + manual credentials block).
+- **`service`** (default) — long-running workload reconciled to a Deployment.
+  HTTP/TCP services, backing services, anything that stays up.
+- **`cron`** — scheduled workload reconciled to a CronJob. See §5.8a.
+
+**Source types** — set via `spec.source.type`:
+
+- **`git`** — build from source. Auto-detects Dockerfile or language. Full
+  build pipeline, preview environments, deploy history. Monorepo-aware via
+  `source.path` + `source.watchPaths`.
+- **`image`** — pre-built image. No build. Covers self-hosted apps
+  (Paperless-ngx, Vaultwarden, etc.) and the v1 Postgres/Redis path
+  (image + PVC + manual credentials block).
+
+Kinds and source types compose orthogonally: a `cron` App can use a `git` or
+`image` source; same build pipeline either way.
 
 Explicitly **deferred post-v1** (see §6): `helm`, `external`, `catalog`
 source types.
@@ -168,6 +178,16 @@ spec:
     - user
     - password
 
+  kind: service                       # service (default) | cron
+  # schedule: "0 3 * * *"             # cron only; stdlib cron expression
+  # concurrencyPolicy: Forbid         # cron only; Forbid | Allow | Replace (default Forbid)
+
+  sharedVars:                         # project-scoped vars visible to every env
+    - name: LOG_LEVEL
+      value: info
+    - name: SENTRY_DSN
+      valueFrom: { secretRef: project-sentry-dsn }
+
   environments:
     - name: production
       replicas: 2
@@ -177,8 +197,10 @@ spec:
           value: "3000"
         - name: API_KEY
           valueFrom: { secretRef: my-app-api-key }
+        - name: DB_HOST
+          valueFrom: { fromBinding: { ref: my-db, key: host } }   # explicit projection
       bindings:
-        - ref: my-db                  # injects bound App's credentials as env
+        - ref: my-db                  # short form: inject every declared credential as env
       domain: my-app.yourdomain.com
       customDomains: [app.theirdomain.com]
     - name: staging
@@ -227,7 +249,7 @@ touching `services/api/` creates a preview for the `api` App only; PR touching
 `shared/` creates previews for every App that watches `shared/`.
 
 **On push:**
-- Build logs stream to UI via WebSocket in real-time
+- Build logs stream to UI via SSE in real-time
 - Success: operator updates the environment's Deployment with the new image
   digest; rolling update proceeds
 - Failure: deploy blocked; error surfaced in UI; commit status posted back via
@@ -332,6 +354,62 @@ cluster's default SC). For v1:
   bindings live-resolved through staging (no credential copy). PR closes or TTL
   expires → everything deleted. URL posted as PR comment.
 
+### 5.8a Cron Apps
+
+An App with `kind: cron` reconciles to a Kubernetes `CronJob` instead of a
+`Deployment`. Everything else — source, build pipeline, env/secrets/bindings,
+environments, preview envs, rollback, image digest tracking — works the same.
+
+```yaml
+kind: App
+spec:
+  kind: cron
+  schedule: "0 3 * * *"               # stdlib cron expression; required for cron
+  concurrencyPolicy: Forbid           # Forbid (default) | Allow | Replace
+  source: { type: git, repo: ... }
+  environments:
+    - name: production
+      resources: { cpu: 200m, memory: 256Mi }
+      env: [...]
+      bindings: [ { ref: my-db } ]
+```
+
+Constraints:
+- `network.public` is ignored; no Ingress, no domain, no TLS.
+- `replicas` is ignored (CronJobs don't replicate; concurrency is controlled by `concurrencyPolicy`).
+- Preview environments skip cron Apps by default (they'd fire in PRs, usually
+  unwanted). Opt in per-App via `preview.includeCron: true`.
+- Logs and run history are surfaced in the UI the same way as Deployment
+  rollouts — per-run stdout/stderr, exit code, duration.
+
+Why this shape: CronJob is a k8s primitive; the only work is reconciling one
+instead of a Deployment at the end of the same pipeline. No separate "Jobs"
+product, no new lifecycle.
+
+### 5.8b Variable Resolution
+
+Four levels of variable contribute to a pod's final env, resolved in order —
+later levels override earlier:
+
+1. **Platform defaults** — a fixed set the operator always injects
+   (`MORTISE_APP`, `MORTISE_ENVIRONMENT`, `MORTISE_DEPLOY_ID`).
+2. **Bound App credentials** — short-form `bindings: [{ ref: my-db }]`
+   projects every key in the bound App's `credentials:` block as env
+   (`DATABASE_URL`, `host`, `port`, …). Long-form `valueFrom.fromBinding`
+   projects a single key under a different env name.
+3. **App-level `sharedVars`** — project/App-wide values visible to every
+   environment of this App. Use for `LOG_LEVEL`, `SENTRY_DSN`, feature
+   flags. Supports both literal `value:` and `valueFrom.secretRef:`.
+4. **Environment-level `env`** — per-environment overrides. Wins on
+   conflict.
+
+All three of `value:`, `valueFrom.secretRef:`, and `valueFrom.fromBinding:`
+are supported in both `sharedVars` and `env`. Bindings remain the
+cross-App contract; `sharedVars` is the answer to "I don't want to
+repeat `LOG_LEVEL=info` in every environment." Team-level shared
+variables (visible to all Apps in a team) are a natural follow-on once
+the team model (§5.10) settles; not in v1.
+
 ### 5.9 Secrets
 
 Mortise uses **Kubernetes Secrets directly** as the storage and runtime
@@ -372,9 +450,9 @@ out of scope (see note below).
 
 **Two in-tree implementations cover the realistic space:**
 
-- **Native** (default): username/password accounts stored in the operator's
-  database. One admin created during first-run wizard; invites via
-  generated link.
+- **Native** (default): username/password accounts stored as k8s Secrets in
+  `mortise-system` (hashed, never plaintext). One admin created during
+  first-run wizard; invites via generated link.
 - **Generic OIDC**: configured with `issuerURL + clientID + clientSecret`.
   Covers every mainstream IdP via the OIDC standard — Authentik, Keycloak,
   Okta, Auth0, Google, GitHub, GitLab, Microsoft Entra, Zitadel, etc.
@@ -386,10 +464,32 @@ operator. That's enough flexibility for 90%+ of real users. SAML and LDAP
 are out of scope for v1 and can be added in-tree later as separate modes if
 demand appears.
 
-- Roles: admin / member
-- Admin can manage users, providers, DNS, platform settings, all apps
-- Member can create/manage own apps, view shared apps
-- Teams + per-app grants are v2
+**Roles and RBAC (v1):**
+
+Three roles, scoped to teams:
+
+| Role | Scope | Can do |
+|---|---|---|
+| **platform-admin** | Global | Everything — users, teams, providers, DNS, platform settings, all Apps |
+| **team-admin** | Per-team | Create/delete Apps within their team, manage team membership, edit all team Apps' config/secrets/domains |
+| **team-member** | Per-team | Deploy, rollback, view logs, edit env/secrets on Apps they have access to. Cannot create/delete Apps or manage team membership. |
+
+A **team** is a lightweight grouping: a name, a list of members with roles,
+and a list of Apps. Stored as a `Team` CRD in `mortise-system`. Teams map
+to Kubernetes namespaces — each team gets a namespace, and its Apps live
+there. A user can belong to multiple teams with different roles.
+
+- Platform-admin creates teams and assigns the first team-admin.
+- Team-admin invites members (via generated link or OIDC group mapping).
+- A user with no team membership sees nothing.
+- Solo users (homelab): one team, one platform-admin. The UI hides team
+  chrome when there's only one team.
+
+This is deliberately not full RBAC (no custom roles, no per-resource
+policies, no deny rules). Three fixed roles cover the real-world shapes:
+"the person who runs the cluster," "the tech lead who owns a set of apps,"
+and "the developer who ships code." Custom roles and per-App grants are
+post-v1 if demand appears.
 
 **SSO for user apps is not a Mortise concern.** Mortise-v1's job is what
 Railway's is: hand users env vars and a URL. A user who wants their Gitea
@@ -399,12 +499,37 @@ secrets editor — same flow as on Railway. Forward-auth middleware and
 automated OIDC/SAML client provisioning for user apps are post-v1 topics
 to be specced if and when real demand shows up; they are not a v1 contract.
 
-### 5.11 In-UI Metrics (v1)
+### 5.11 Observability (v1)
 
-`metrics-server` baseline: CPU/memory per pod/environment surfaced in UI. No
-Prometheus installed by core. Users who want deeper observability install
-kube-prometheus-stack themselves (see §6.3). UI degrades gracefully — charts
-show what's available.
+**Metrics:** `metrics-server` baseline — CPU/memory per pod/environment
+surfaced in UI. No Prometheus installed by core. Users who want deeper
+observability install kube-prometheus-stack themselves (see §6.3). UI
+degrades gracefully — charts show what's available.
+
+**Logs — structured JSON on stdout.** The operator emits all output as
+structured JSON to stdout. Three log categories, distinguished by
+`component` field:
+
+| Component | Content | Example query (Loki) |
+|---|---|---|
+| `build` | Build log lines, one per BuildKit stream event | `{app="mortise-operator"} \| json \| component="build" \| app="my-api"` |
+| `audit` | User actions: deploy, rollback, secret rotate, team changes | `{app="mortise-operator"} \| json \| component="audit" \| actor="jane@co.com"` |
+| `reconciler` | Controller reconciliation events, errors, retries | `{app="mortise-operator"} \| json \| component="reconciler" \| level="error"` |
+
+Every log line includes: `app`, `team`, `environment` (where applicable),
+`timestamp`, `level`. Build logs also carry `buildID` and `commitSHA`.
+Audit logs carry `actor` and `resource`.
+
+**No log storage in the operator.** Build logs stream to the UI via
+SSE during the build. After the build finishes, they exist only in
+the operator's stdout — if a log agent (Loki, Fluentd, CloudWatch, etc.)
+is collecting, users get full history with retention. If not, live-stream
+only. This is the trade-off of the no-PVC architecture.
+
+**User app logs:** standard container stdout/stderr. Any log agent on the
+cluster collects them. Mortise does not proxy, aggregate, or store user
+app logs. The UI surfaces live `kubectl logs` output via SSE —
+same as a `stern` tail. Historical log search requires a log agent.
 
 ### 5.12 Git Providers (v1)
 
@@ -872,7 +997,7 @@ change replicas → scales; change image → rolls; delete → namespace cleaned
 
 - REST API with OpenAPI spec
 - Auth: native accounts, JWT, first-user bootstrap via Helm values
-- WebSocket endpoint for log streaming
+- SSE endpoint for log streaming
 - React UI skeleton: login, dashboard (list Apps), new-app form for `image`
   source only, App detail page with env / secrets / domains
 - CLI (`mortise app create --source image`, `mortise logs`, `mortise status`)
@@ -909,7 +1034,7 @@ without builds yet.
   Docker Hub, custom); Helm values-driven
 - Build cache: OCI artifacts, keyed per app/branch
 - Operator submission queue serializes builds
-- Build logs streamed to UI via WebSocket
+- Build logs streamed to UI via SSE
 - On success: image digest updates the App's environments → rolling deploy
 - On failure: commit status posted back
 
@@ -996,11 +1121,18 @@ new install surface. Order depends on user demand after v1 ships.
    into CRD apiVersions (`mortise.dev/v1alpha1`), Helm chart, CLI binary,
    config path, and the domain for any hosted assets (relay Worker later).
    Pick before tagging v1.
-2. **Operator datastore.** The operator needs somewhere to store deploy
-   history, users (pre-Authentik), and audit logs. Options: CRD status +
-   ConfigMaps (stateless, ugly), sqlite on a PVC (simple, single-replica
-   operator), embedded BoltDB, Postgres (heavy but standard). Recommendation:
-   sqlite on PVC for v1 — simplest; migrate to Postgres when we ship HA.
+2. ~~**Operator datastore.**~~ **Resolved — no external datastore in v1.**
+   The operator is stateless. Deploy history lives in `App` CRD status
+   (bounded list per environment). Users and sessions are k8s Secrets in
+   `mortise-system`. Audit events are structured JSON on stdout — the
+   user's log aggregation (Loki, CloudWatch, etc.) handles retention and
+   querying; Mortise does not store or index them. Build logs stream via
+   SSE during the build and are emitted to stdout for collection.
+   This removes the PVC requirement, enables multi-replica operator from
+   day one (leader election for controllers, stateless API layer), and
+   means backup = etcd snapshot. If deep audit querying or analytics
+   becomes a real need post-v1, add an optional Postgres projection —
+   CRD status remains source of truth.
 3. **UI packaging.** Served by the operator binary (embed via `embed.FS`) or
    separate Deployment? Recommendation: embed — one fewer pod, simpler install.
 4. **Helm chart distribution.** OCI (ghcr.io) or classic Helm repo? OCI is the
@@ -1033,7 +1165,7 @@ interface in `internal/<name>/`.
 
 ```
 Mortise controller  →  AuthProvider     →  native DB | generic OIDC
-Mortise controller  →  PolicyEngine     →  native (admin/member)
+Mortise controller  →  PolicyEngine     →  team-scoped RBAC (3 roles)
 Mortise controller  →  GitAPI           →  GitHub | GitLab | Gitea
 Mortise controller  →  GitClient        →  go-git (single impl, all forges)
 Mortise controller  →  BuildClient      →  BuildKit (single impl)
@@ -1061,13 +1193,13 @@ type AuthProvider interface {
     InviteUser(ctx context.Context, email string, role Role) (InviteLink, error)
     RevokeUser(ctx context.Context, userID string) error
 }
-// two in-tree impls: native (sqlite-backed) and genericOIDC
+// two in-tree impls: native (k8s-Secret-backed) and genericOIDC
 
 // internal/authz/policy.go
 type PolicyEngine interface {
     Authorize(ctx context.Context, p Principal, resource Resource, action Action) (bool, error)
 }
-// one in-tree impl: native admin/member
+// one in-tree impl: team-scoped RBAC (platform-admin / team-admin / team-member)
 
 // internal/build/client.go
 type BuildClient interface {
@@ -1267,9 +1399,10 @@ handling, read-only UI mode); for now, pick one tool or the other per App.
 - Optimized for 4–8GB clusters as a baseline; much heavier once the user
   also runs monitoring / log aggregation / etc. alongside (which they install
   themselves — see §6.3)
-- **Not a workload-kind platform.** v1 deploys long-running HTTP/TCP services
-  as Kubernetes Deployments. Jobs, CronJobs, StatefulSets, DaemonSets are not
-  supported. `perReplica` volumes and StatefulSet-per-App are post-v1 (§6.2).
+- **Limited workload-kind surface.** v1 supports long-running services
+  (Deployment) and scheduled jobs (CronJob via `kind: cron` — see §5.8a).
+  One-off Jobs, StatefulSets, and DaemonSets are not supported. `perReplica`
+  volumes and StatefulSet-per-App are post-v1 (§6.2).
 - **Not a GPU / specialized-scheduling platform.** App CRD has no
   `nodeSelector`, `tolerations`, `affinity`, `runtimeClassName`, or
   `resourceClaims`. Teams with GPU, specialty hardware, or
@@ -1280,7 +1413,8 @@ handling, read-only UI mode); for now, pick one tool or the other per App.
   service-mesh sidecars, and log-shipper sidecars are out of scope.
 - **Not a queue / async-job runner.** No background workers, no job queues,
   no scheduled tasks beyond what users run themselves inside their container.
-- **Not a multi-tenant platform with hard isolation.** v1 has admin/member
-  only; namespace isolation is soft (no NetworkPolicy generation, no
-  ResourceQuota per user). Shared-cluster-with-students scenarios need v2
-  team RBAC + quota work.
+- **Not a hard-isolation multi-tenant platform.** v1 has team-scoped RBAC
+  (platform-admin / team-admin / team-member — see §5.10) but namespace
+  isolation is soft (no NetworkPolicy generation, no ResourceQuota per
+  team). Shared-cluster-with-untrusted-users scenarios need additional
+  hardening beyond what v1 provides.

@@ -27,7 +27,7 @@ flowchart TB
         subgraph SysNS["mortise-system namespace"]
             direction TB
             Operator["Mortise Operator - controllers + API + UI"]
-            MetaDB[["operator metadata - sqlite PVC - deploys users audit"]]
+            MetaDB[["operator state - CRD status plus k8s Secrets - no PVC"]]
             Traefik["Traefik ingress controller (optional BYO)"]
             CertMgr["cert-manager (optional BYO)"]
             ExtDNS["ExternalDNS (optional BYO)"]
@@ -94,8 +94,10 @@ flowchart TB
   kubelet injects env the normal way at pod start — no admission webhook, no
   init container, no runtime agent. Apps are 12-factor — they just read
   `DATABASE_URL`.
-- **One datastore in `mortise-system`:** `MetaDB` (sqlite-on-PVC) holds
-  Mortise's own metadata (deploy history, users, audit). User-visible app
+- **No external datastore.** The operator is stateless — deploy history
+  lives in App CRD status (bounded list), users and sessions are k8s
+  Secrets in `mortise-system`, audit events are structured JSON on stdout.
+  No PVC, no database. User-visible app
   secrets are stored as regular Kubernetes Secrets in the App's own
   namespace — no separate Mortise-managed secret store, no `SecretBackend`
   abstraction. External secret managers (Vault, AWS SM, etc.) integrate via
@@ -110,8 +112,8 @@ flowchart TB
 
 | Component | Namespace | Role | Scope boundary |
 |---|---|---|---|
-| **Mortise Operator** | `mortise-system` | Reconciles CRDs (`App`, `PreviewEnvironment`, `PlatformConfig`, `GitProvider`). Serves the REST API and UI. Handles webhooks. Owns everything the platform creates. | Never touches resources outside what it created; coexists with Argo CD, manual kubectl, other tools. |
-| **Operator datastore** | `mortise-system` | Stores deploy history, users (v1 native auth), audit logs, session tokens. v1 = sqlite on PVC; v2 = Postgres for HA. | Never stores user app data — only Mortise metadata. |
+| **Mortise Operator** | `mortise-system` | Reconciles CRDs (`App`, `PreviewEnvironment`, `PlatformConfig`, `GitProvider`, `Team`). Serves the REST API and UI. Handles webhooks. Owns everything the platform creates. | Never touches resources outside what it created; coexists with Argo CD, manual kubectl, other tools. |
+| **Operator state** | `mortise-system` | Deploy history in App CRD status; users/sessions as k8s Secrets; audit/build logs to stdout. No PVC, no database — operator is stateless. | Never stores user app data. |
 | **Traefik** | `mortise-system` | Ingress controller. Routes external HTTPS traffic to user Apps and the Mortise API/UI. | Installed and managed by the Mortise chart; can be disabled when the cluster has an existing controller (SPEC §8.3). |
 | **cert-manager** | `mortise-system` | Issues TLS certs via ACME (or self-signed in dev/test). Triggered by annotations on Ingress resources. | Core chart dependency; not touched by user. |
 | **ExternalDNS** | `mortise-system` | Watches Ingress resources and creates matching DNS records at the configured provider. | Core chart dependency; configured once during install. |
@@ -158,7 +160,7 @@ sequenceDiagram
 
     BK->>Reg: push image layers
     BK-->>Op: stream build events
-    Op-->>Dev: build logs via WebSocket to UI
+    Op-->>Dev: build logs via SSE to UI
 
     alt build succeeds
         Op->>K8s: patch Deployment image digest
@@ -194,7 +196,7 @@ The two-layer contract model as a picture. Read top to bottom.
 ```mermaid
 flowchart TB
     Callers["external callers - users CI pods UI"]
-    Public["Inward Contract - CRDs plus REST plus WebSocket"]
+    Public["Inward Contract - CRDs plus REST plus SSE"]
     Ctrl["Mortise controllers and reconcilers"]
 
     AU["AuthProvider iface"]
@@ -233,7 +235,7 @@ flowchart TB
 **How to read it:**
 
 - **Top** (Callers → Public → Ctrl) = the inward contract surface. CRDs,
-  REST API, and WebSocket — versioned carefully; breaking changes require
+  REST API, and SSE — versioned carefully; breaking changes require
   CRD version bumps and migrations.
 - **Ctrl node** = Mortise's controllers and reconcilers. Imports only
   Mortise's own types; never imports third-party SDKs directly.
@@ -355,7 +357,7 @@ when reading the code or debugging a specific interaction.
 | ExternalDNS | DNS provider API | HTTPS | Create/delete DNS records from Ingress annotations |
 | cert-manager | ACME server | HTTPS (ACME protocol) | Provision TLS certs for Ingress hostnames |
 | User App pod | Backing service pod | Cluster DNS (Service) + env vars | Runtime consumption of bindings (env resolved at reconcile time, baked into Deployment spec) |
-| Operator | User browser | WebSocket | Stream build logs and App status to UI |
+| Operator | User browser | SSE (text/event-stream) | Stream build logs, deploy status, and live app logs to UI |
 | Operator | Registry | `RegistryBackend` iface | Image naming, tag listing, GC |
 | Operator | Ingress controller | `IngressProvider` iface | Pick ingress class, set provider-specific annotations |
 | Operator | AuthProvider | `AuthProvider` iface | Platform auth (UI/API login) |
