@@ -5,7 +5,7 @@ whenever implementation status changes — see the **Keeping this file up to
 date** section at the bottom.
 
 Legend: **Done** / **Partial** / **Not started**
-Last reconciled against spec + code: 2026-04-16 (commit `02a76db`).
+Last reconciled against spec + code: 2026-04-16 (commit `6704d4e`).
 
 ---
 
