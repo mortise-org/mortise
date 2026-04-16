@@ -120,6 +120,47 @@ build-cli: fmt vet ## Build CLI binary.
 run: manifests generate fmt vet ## Run a controller from your host.
 	go run ./cmd/main.go
 
+##@ Dev Cluster
+
+DEV_CLUSTER ?= mortise-dev
+DEV_IMG ?= mortise:dev
+
+.PHONY: dev-up
+dev-up: ## Create k3d dev cluster, build image, install Mortise
+	@echo "==> Creating k3d cluster $(DEV_CLUSTER)..."
+	@k3d cluster list | grep -q $(DEV_CLUSTER) || k3d cluster create $(DEV_CLUSTER) \
+		--port "8090:80@loadbalancer" \
+		--k3s-arg "--disable=traefik@server:0" \
+		--wait
+	@echo "==> Building Docker image..."
+	$(CONTAINER_TOOL) build -t $(DEV_IMG) .
+	@echo "==> Loading image into k3d..."
+	k3d image import $(DEV_IMG) -c $(DEV_CLUSTER)
+	@echo "==> Installing CRDs..."
+	kubectl apply -f charts/mortise/crds/
+	@echo "==> Installing Mortise via Helm..."
+	helm upgrade --install mortise charts/mortise \
+		--namespace mortise-system --create-namespace \
+		--set image.repository=mortise \
+		--set image.tag=dev \
+		--set image.pullPolicy=Never \
+		--wait --timeout 60s
+	@echo ""
+	@echo "✓ Mortise is running!"
+	@echo "  API: kubectl port-forward -n mortise-system svc/mortise 8090:80"
+	@echo "  Then open http://localhost:8090"
+
+.PHONY: dev-down
+dev-down: ## Delete k3d dev cluster
+	k3d cluster delete $(DEV_CLUSTER)
+
+.PHONY: dev-reload
+dev-reload: ## Rebuild image and restart Mortise in existing cluster
+	$(CONTAINER_TOOL) build -t $(DEV_IMG) .
+	k3d image import $(DEV_IMG) -c $(DEV_CLUSTER)
+	kubectl rollout restart deployment/mortise -n mortise-system
+	kubectl rollout status deployment/mortise -n mortise-system --timeout 60s
+
 # If you wish to build the manager image targeting other platforms you can use the --platform flag.
 # (i.e. docker build --platform linux/arm64). However, you must enable docker buildKit for it.
 # More info: https://docs.docker.com/develop/develop-images/build_enhancements/

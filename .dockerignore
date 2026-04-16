@@ -9,3 +9,12 @@
 # Re-include Go module files
 !go.mod
 !go.sum
+
+# Re-include UI source for the build stage
+!ui/package.json
+!ui/package-lock.json
+!ui/svelte.config.js
+!ui/vite.config.ts
+!ui/tsconfig.json
+!ui/src/**
+!ui/static/**

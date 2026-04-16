@@ -1,0 +1,30 @@
+image:
+  repository: mortise
+  tag: dev
+  pullPolicy: IfNotPresent
+
+replicaCount: 1
+
+api:
+  port: 8090
+
+service:
+  type: ClusterIP
+  port: 80
+
+ingress:
+  enabled: false
+  # className: ""
+  # host: mortise.example.com
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 256Mi
+  requests:
+    cpu: 100m
+    memory: 128Mi
+
+serviceAccount:
+  create: true
+  name: mortise-controller
