@@ -113,6 +113,61 @@ wrapper for bootstrap may return later.
 
 ## 5. v1 Scope — The Railway Clone
 
+### 5.0 Projects — the top-level grouping
+
+Apps do not stand alone. They live inside a **Project** — the equivalent of
+a Railway "project" or a Vercel "team." A project groups related apps
+(frontend + backend + database) that deploy together, tear down together,
+and bind freely to one another.
+
+**Architecture:**
+- `Project` is a cluster-scoped CRD. Creating one provisions a dedicated
+  Kubernetes namespace named after the project.
+- Apps live inside a project's namespace (`metadata.namespace = project-name`).
+- Deleting a Project deletes the namespace and, via owner references, every
+  App, Deployment, Service, Ingress, PVC, and Secret inside it.
+
+**Cross-project bindings** are allowed but explicit. Within-project
+bindings use `bindings: [{ ref: my-db }]`. Cross-project uses
+`bindings: [{ ref: my-db, project: other-project }]`. Within-project is
+the default and overwhelmingly the common case.
+
+**Default project:** every user gets a `default` project on first login so
+the experience is never empty. Users can rename it or create more.
+
+**Project CRD (v1 surface):**
+
+```yaml
+apiVersion: mortise.dev/v1alpha1
+kind: Project
+metadata:
+  name: my-saas
+spec:
+  description: "Core customer-facing SaaS"
+  # future: team, quota, default-domain-suffix, etc.
+status:
+  phase: Ready
+  appCount: 3
+```
+
+**What Projects provide in v1:**
+- Grouping (UI shows Apps under their Project)
+- Isolation (namespace boundary)
+- Lifecycle (one-click teardown)
+- Default scope for bindings
+
+**What Projects do NOT provide in v1 (post-v1 or tenon work):**
+- Per-project user roles — v1 permissions are platform-wide (admin/member)
+- Per-project quotas — v1 has none
+- Per-project domains — v1 uses the single platform domain
+- Teams — v2 work
+
+**UI shape:**
+- Dashboard shows Projects (cards or sidebar tree)
+- Click a project → see its Apps
+- Every `/apps/...` URL is scoped: `/projects/{name}/apps/{app-name}`
+- Top-left project switcher for moving between projects (Railway pattern)
+
 ### 5.1 App Kinds and Source Types (v1)
 
 **Kinds** — set via `spec.kind`:
@@ -581,7 +636,8 @@ Config at `~/.config/mortise/config.yaml`.
 
 | CRD | Scope | Purpose |
 |---|---|---|
-| `App` | Namespaced | Deploy anything (git or image in v1) |
+| `Project` | Cluster | Top-level grouping; owns a k8s namespace |
+| `App` | Namespaced | Deploy anything (git or image in v1); lives in a Project's namespace |
 | `PreviewEnvironment` | Namespaced | Ephemeral PR environments (auto-managed) |
 | `PlatformConfig` | Cluster | Platform settings (domain, DNS, default SC) |
 | `GitProvider` | Cluster | One per configured git provider |
