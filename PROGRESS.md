@@ -5,7 +5,7 @@ whenever implementation status changes — see the **Keeping this file up to
 date** section at the bottom.
 
 Legend: **Done** / **Partial** / **Not started**
-Last reconciled against spec + code: 2026-04-16 (commit `3b61f77`).
+Last reconciled against spec + code: 2026-04-16 (see git log for latest).
 
 ---
 
@@ -72,9 +72,48 @@ Spec rule: every outward interface must have at least one real v1 impl
 
 **Gaps:**
 - No `.github/` → no CI config checked in.
-- No `test/integration/` directory. CLAUDE.md references `make test-integration`
-  and `make test-integration-fast`, which do **not** exist in the Makefile.
 - CLAUDE.md claims the layout contains `internal/webhook/`; it does not.
+
+### Integration harness — Done (skeleton)
+
+`test/integration/` exists and compiles under the `//go:build integration` tag.
+
+**What the harness does:**
+- `test/integration/suite_test.go` — `TestMain` that:
+  1. Loads kubeconfig from `$KUBECONFIG` env var, defaulting to `~/.kube/config`.
+  2. Builds a `client.Client` with the mortise scheme registered.
+  3. Asserts the cluster is reachable by listing nodes; `log.Fatalf` with a
+     pointer to `make dev-up` if not.
+  4. Asserts the `mortise` Deployment in `mortise-system` has
+     `AvailableReplicas > 0` with a 60 s timeout.
+  5. Calls `m.Run()` and forwards the exit code.
+  6. Package-global `k8sClient` shared by all tests.
+  7. `createTestNamespace(t)` helper wrapping `helpers.CreateTestNamespace`.
+
+**Smoke test (`test/integration/app_image_source_test.go`):**
+- `TestImageSourceAppGoesReady` creates a unique test namespace, loads
+  `test/fixtures/image-basic.yaml` (`nginx:1.27`, image source), overrides
+  `metadata.namespace`, and applies the App.
+- Asserts: Deployment has `ReadyReplicas > 0`, Service exists,
+  `App.status.phase == Ready`. Timeout: 2 min.
+
+**Makefile targets added:**
+- `make test-integration` — creates k3d cluster `mortise-int`, builds image
+  tagged `mortise:int`, loads it, installs CRDs + chart via Helm, runs
+  `go test -tags integration ./test/integration/...`, tears down on finish or
+  failure.
+- `make test-integration-fast` — same `go test` invocation, no cluster
+  lifecycle. Requires `make dev-up` and chart pre-installed.
+
+**`test/helpers/assertions.go` — added:**
+- `WaitForAppReady(t, k8sClient, ns, name, timeout)` — polls
+  `App.Status.Phase` until `AppPhaseReady` or timeout.
+
+**Not in this PR (follow-up work):**
+- Zot, Gitea, Pebble installs in the test cluster.
+- `git_source_test.go` / `bindings_test.go`.
+- UI Playwright tests.
+- `.github/` CI config.
 
 ### Phase 1 — Core operator (image source) — **Partial**
 
@@ -481,10 +520,6 @@ Items in `CLAUDE.md` that no longer reflect reality — fix these opportunistica
 
 - **`CRDs: App, PlatformConfig, GitProvider, PreviewEnvironment`** — missing
   `Project`. `Project` has been the top-level grouping since Phase 3.5.
-- **`make test-integration`** and **`make test-integration-fast`** — not
-  defined in the Makefile.
-- **Testing Layers table** claims an "Integration" layer with a harness at
-  `test/integration/` — the directory does not exist.
 
 `README.md` says "Phases 1–3 of the spec are complete"; Phase 3.5
 (Projects) is also complete but Phase 3 (bindings) is actually **Partial**

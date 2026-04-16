@@ -9,6 +9,8 @@ import (
 	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
 )
 
 // RequireEventually polls fn every 200ms until it returns true or timeout is reached.
@@ -59,5 +61,19 @@ func AssertIngressExists(t *testing.T, k8sClient client.Client, ns, name string)
 		return k8sClient.Get(context.Background(), types.NamespacedName{
 			Name: name, Namespace: ns,
 		}, &ing) == nil
+	})
+}
+
+// WaitForAppReady polls until App.status.phase == Ready or timeout is reached.
+func WaitForAppReady(t *testing.T, k8sClient client.Client, ns, name string, timeout time.Duration) {
+	t.Helper()
+	RequireEventually(t, timeout, func() bool {
+		var app mortisev1alpha1.App
+		if err := k8sClient.Get(context.Background(), types.NamespacedName{
+			Name: name, Namespace: ns,
+		}, &app); err != nil {
+			return false
+		}
+		return app.Status.Phase == mortisev1alpha1.AppPhaseReady
 	})
 }

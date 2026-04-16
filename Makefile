@@ -156,6 +156,42 @@ dev-up: ## Create k3d dev cluster, build image, install Mortise
 dev-down: ## Delete k3d dev cluster
 	k3d cluster delete $(DEV_CLUSTER)
 
+##@ Integration Tests
+
+INT_CLUSTER ?= mortise-int
+INT_IMG ?= mortise:int
+
+.PHONY: test-integration
+test-integration: ## Create k3d cluster, install chart, run integration tests, tear down
+	@echo "==> Creating k3d cluster $(INT_CLUSTER)..."
+	k3d cluster create $(INT_CLUSTER) \
+		--port "8091:80@loadbalancer" \
+		--k3s-arg "--disable=traefik@server:0" \
+		--wait
+	@echo "==> Building Docker image..."
+	$(CONTAINER_TOOL) build -t $(INT_IMG) .
+	@echo "==> Loading image into k3d..."
+	k3d image import $(INT_IMG) -c $(INT_CLUSTER)
+	@echo "==> Installing CRDs..."
+	kubectl apply -f charts/mortise/crds/
+	@echo "==> Installing Mortise via Helm..."
+	helm upgrade --install mortise charts/mortise \
+		--namespace mortise-system --create-namespace \
+		--set image.repository=mortise \
+		--set image.tag=int \
+		--set image.pullPolicy=Never \
+		--wait --timeout 60s
+	@echo "==> Running integration tests..."
+	go test -tags integration -count=1 -timeout 5m ./test/integration/... || { \
+		k3d cluster delete $(INT_CLUSTER); exit 1; \
+	}
+	@echo "==> Tearing down cluster..."
+	k3d cluster delete $(INT_CLUSTER)
+
+.PHONY: test-integration-fast
+test-integration-fast: ## Run integration tests against the existing dev cluster (requires make dev-up + chart installed)
+	go test -tags integration -count=1 -timeout 5m ./test/integration/...
+
 .PHONY: dev-reload
 dev-reload: ## Rebuild image, re-apply CRDs + chart, restart Mortise in existing cluster
 	$(CONTAINER_TOOL) build -t $(DEV_IMG) .
