@@ -72,8 +72,8 @@ func TestUIDoesNotInterceptAPI(t *testing.T) {
 	srv := api.NewServer(k8sClient, fake.NewClientset(), authProvider, jwtHelper, uiFS)
 	h := srv.Handler()
 
-	// /api/apps should still require auth (not be caught by the UI handler).
-	w := doRequestWithToken(h, http.MethodGet, "/api/apps", nil, "")
+	// /api/projects should still require auth (not be caught by the UI handler).
+	w := doRequestWithToken(h, http.MethodGet, "/api/projects", nil, "")
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401 for /api without token, got %d", w.Code)
 	}

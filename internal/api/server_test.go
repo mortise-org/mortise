@@ -22,14 +22,18 @@ import (
 	"github.com/MC-Meesh/mortise/internal/auth"
 )
 
-// newTestServer builds an API server wired against the given k8s client.
-// Uses NativeAuthProvider + JWTHelper so tests exercise real auth wiring.
-// Returns the server, a valid JWT for an admin user, and the auth provider for setup.
+// newTestServer builds an API server wired against the given k8s client with
+// a real admin user + JWT. Returns the server and the bearer token.
 func newTestServer(t *testing.T, k8sClient client.Client) (*api.Server, string) {
+	return newTestServerAs(t, k8sClient, auth.RoleAdmin)
+}
+
+// newTestServerAs is like newTestServer but lets tests pick the principal's
+// role (admin vs member) so they can exercise authorization boundaries.
+func newTestServerAs(t *testing.T, k8sClient client.Client, role auth.Role) (*api.Server, string) {
 	t.Helper()
 	ctx := context.Background()
 
-	// Ensure mortise-system namespace exists (auth stores user Secrets there).
 	_ = k8sClient.Create(ctx, &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{Name: "mortise-system"},
 	})
@@ -37,11 +41,14 @@ func newTestServer(t *testing.T, k8sClient client.Client) (*api.Server, string) 
 	authProvider := auth.NewNativeAuthProvider(k8sClient)
 	jwtHelper := auth.NewJWTHelper(k8sClient)
 
-	// Create a test admin user and generate a real JWT for test requests.
-	if err := authProvider.CreateUser(ctx, "test@example.com", "testpass", auth.RoleAdmin); err != nil {
+	email := "test@example.com"
+	if role == auth.RoleMember {
+		email = "member@example.com"
+	}
+	if err := authProvider.CreateUser(ctx, email, "testpass", role); err != nil {
 		t.Fatalf("create test user: %v", err)
 	}
-	principal, err := authProvider.Authenticate(ctx, auth.Credentials{Email: "test@example.com", Password: "testpass"})
+	principal, err := authProvider.Authenticate(ctx, auth.Credentials{Email: email, Password: "testpass"})
 	if err != nil {
 		t.Fatalf("authenticate test user: %v", err)
 	}
@@ -55,9 +62,9 @@ func newTestServer(t *testing.T, k8sClient client.Client) (*api.Server, string) 
 	return srv, token
 }
 
-// oldNewServer wraps newTestServer for backwards compatibility with existing tests.
-// Returns the server as before so the test bodies don't need to change their calls.
-func oldNewServer(t *testing.T, k8sClient client.Client) *api.Server {
+// newAdminServer is a convenience wrapper for tests that just need an admin
+// client without caring about the token.
+func newAdminServer(t *testing.T, k8sClient client.Client) *api.Server {
 	t.Helper()
 	srv, _ := newTestServer(t, k8sClient)
 	return srv
@@ -86,15 +93,40 @@ func setupEnvtest(t *testing.T) client.Client {
 		t.Fatalf("create client: %v", err)
 	}
 
-	// Ensure default namespace exists.
-	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "default"}}
-	_ = k8sClient.Create(context.Background(), ns)
-
+	// "default" namespace exists by default in k8s — no need to create it.
 	return k8sClient
 }
 
-// testToken is set by the first call to newTestServer in any test. Tests that use
-// the legacy doRequest signature rely on this package-level value.
+// seedProject creates a Project CRD and its backing namespace so tests can
+// exercise handlers that require both to be present. Returns the namespace
+// name the handlers will resolve to.
+func seedProject(t *testing.T, c client.Client, name string) string {
+	t.Helper()
+	ctx := context.Background()
+
+	proj := &mortisev1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: name}}
+	if err := c.Create(ctx, proj); err != nil {
+		t.Fatalf("create project %q: %v", name, err)
+	}
+
+	nsName := "project-" + name
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: nsName}}
+	if err := c.Create(ctx, ns); err != nil {
+		t.Fatalf("create namespace %q: %v", nsName, err)
+	}
+
+	// Reflect the Project->Namespace binding in status so handlers can read it.
+	proj.Status.Phase = mortisev1alpha1.ProjectPhaseReady
+	proj.Status.Namespace = nsName
+	if err := c.Status().Update(ctx, proj); err != nil {
+		t.Fatalf("update project status: %v", err)
+	}
+
+	return nsName
+}
+
+// testToken is set by the first call to newTestServer. Tests that use
+// doRequest (no explicit token) pick it up here.
 var testToken string
 
 func doRequest(handler http.Handler, method, path string, body any) *httptest.ResponseRecorder {
@@ -118,12 +150,12 @@ func doRequestWithToken(handler http.Handler, method, path string, body any, tok
 
 func TestCreateAndGetApp(t *testing.T) {
 	k8sClient := setupEnvtest(t)
-	srv := oldNewServer(t, k8sClient)
+	srv := newAdminServer(t, k8sClient)
 	h := srv.Handler()
+	seedProject(t, k8sClient, "default")
 
 	createBody := map[string]any{
-		"name":      "myapp",
-		"namespace": "default",
+		"name": "myapp",
 		"spec": map[string]any{
 			"source": map[string]any{
 				"type":  "image",
@@ -132,13 +164,12 @@ func TestCreateAndGetApp(t *testing.T) {
 		},
 	}
 
-	w := doRequest(h, http.MethodPost, "/api/apps", createBody)
+	w := doRequest(h, http.MethodPost, "/api/projects/default/apps", createBody)
 	if w.Code != http.StatusCreated {
 		t.Fatalf("create app: expected 201, got %d: %s", w.Code, w.Body.String())
 	}
 
-	// GET by name
-	w = doRequest(h, http.MethodGet, "/api/apps/myapp?namespace=default", nil)
+	w = doRequest(h, http.MethodGet, "/api/projects/default/apps/myapp", nil)
 	if w.Code != http.StatusOK {
 		t.Fatalf("get app: expected 200, got %d: %s", w.Code, w.Body.String())
 	}
@@ -148,49 +179,52 @@ func TestCreateAndGetApp(t *testing.T) {
 	if app.Spec.Source.Image != "nginx:1.25.0" {
 		t.Errorf("expected image nginx:1.25.0, got %s", app.Spec.Source.Image)
 	}
+	if app.Namespace != "project-default" {
+		t.Errorf("expected namespace project-default, got %s", app.Namespace)
+	}
 }
 
-func TestListApps(t *testing.T) {
+func TestListAppsInProject(t *testing.T) {
 	k8sClient := setupEnvtest(t)
-	srv := oldNewServer(t, k8sClient)
+	srv := newAdminServer(t, k8sClient)
 	h := srv.Handler()
+	seedProject(t, k8sClient, "default")
 
 	for _, name := range []string{"app-a", "app-b"} {
-		doRequest(h, http.MethodPost, "/api/apps", map[string]any{
-			"name":      name,
-			"namespace": "default",
+		doRequest(h, http.MethodPost, "/api/projects/default/apps", map[string]any{
+			"name": name,
 			"spec": map[string]any{
 				"source": map[string]any{"type": "image", "image": "nginx:1.25.0"},
 			},
 		})
 	}
 
-	w := doRequest(h, http.MethodGet, "/api/apps?namespace=default", nil)
+	w := doRequest(h, http.MethodGet, "/api/projects/default/apps", nil)
 	if w.Code != http.StatusOK {
 		t.Fatalf("list apps: expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 
 	var apps []mortisev1alpha1.App
 	_ = json.NewDecoder(w.Body).Decode(&apps)
-	if len(apps) < 2 {
-		t.Errorf("expected at least 2 apps, got %d", len(apps))
+	if len(apps) != 2 {
+		t.Errorf("expected 2 apps, got %d", len(apps))
 	}
 }
 
 func TestUpdateApp(t *testing.T) {
 	k8sClient := setupEnvtest(t)
-	srv := oldNewServer(t, k8sClient)
+	srv := newAdminServer(t, k8sClient)
 	h := srv.Handler()
+	seedProject(t, k8sClient, "default")
 
-	doRequest(h, http.MethodPost, "/api/apps", map[string]any{
-		"name":      "update-me",
-		"namespace": "default",
+	doRequest(h, http.MethodPost, "/api/projects/default/apps", map[string]any{
+		"name": "update-me",
 		"spec": map[string]any{
 			"source": map[string]any{"type": "image", "image": "nginx:1.25.0"},
 		},
 	})
 
-	w := doRequest(h, http.MethodPut, "/api/apps/update-me?namespace=default", map[string]any{
+	w := doRequest(h, http.MethodPut, "/api/projects/default/apps/update-me", map[string]any{
 		"source": map[string]any{"type": "image", "image": "nginx:1.26.0"},
 	})
 	if w.Code != http.StatusOK {
@@ -206,24 +240,23 @@ func TestUpdateApp(t *testing.T) {
 
 func TestDeleteApp(t *testing.T) {
 	k8sClient := setupEnvtest(t)
-	srv := oldNewServer(t, k8sClient)
+	srv := newAdminServer(t, k8sClient)
 	h := srv.Handler()
+	seedProject(t, k8sClient, "default")
 
-	doRequest(h, http.MethodPost, "/api/apps", map[string]any{
-		"name":      "delete-me",
-		"namespace": "default",
+	doRequest(h, http.MethodPost, "/api/projects/default/apps", map[string]any{
+		"name": "delete-me",
 		"spec": map[string]any{
 			"source": map[string]any{"type": "image", "image": "nginx:1.25.0"},
 		},
 	})
 
-	w := doRequest(h, http.MethodDelete, "/api/apps/delete-me?namespace=default", nil)
+	w := doRequest(h, http.MethodDelete, "/api/projects/default/apps/delete-me", nil)
 	if w.Code != http.StatusOK {
 		t.Fatalf("delete app: expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 
-	// Verify deleted
-	w = doRequest(h, http.MethodGet, "/api/apps/delete-me?namespace=default", nil)
+	w = doRequest(h, http.MethodGet, "/api/projects/default/apps/delete-me", nil)
 	if w.Code != http.StatusNotFound {
 		t.Errorf("expected 404 after delete, got %d", w.Code)
 	}
@@ -231,29 +264,27 @@ func TestDeleteApp(t *testing.T) {
 
 func TestDeploy(t *testing.T) {
 	k8sClient := setupEnvtest(t)
-	srv := oldNewServer(t, k8sClient)
+	srv := newAdminServer(t, k8sClient)
 	h := srv.Handler()
+	seedProject(t, k8sClient, "default")
 
-	doRequest(h, http.MethodPost, "/api/apps", map[string]any{
-		"name":      "deploy-target",
-		"namespace": "default",
+	doRequest(h, http.MethodPost, "/api/projects/default/apps", map[string]any{
+		"name": "deploy-target",
 		"spec": map[string]any{
 			"source": map[string]any{"type": "image", "image": "nginx:1.25.0"},
 		},
 	})
 
-	w := doRequest(h, http.MethodPost, "/api/deploy", map[string]any{
-		"app":       "deploy-target",
-		"namespace": "default",
-		"image":     "nginx:1.26.0",
+	w := doRequest(h, http.MethodPost, "/api/projects/default/apps/deploy-target/deploy", map[string]any{
+		"image": "nginx:1.26.0",
 	})
 	if w.Code != http.StatusOK {
 		t.Fatalf("deploy: expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 
-	// Verify image was updated on the CRD
+	// Verify image was updated on the CRD.
 	var app mortisev1alpha1.App
-	err := k8sClient.Get(context.Background(), types.NamespacedName{Name: "deploy-target", Namespace: "default"}, &app)
+	err := k8sClient.Get(context.Background(), types.NamespacedName{Name: "deploy-target", Namespace: "project-default"}, &app)
 	if err != nil {
 		t.Fatalf("get app after deploy: %v", err)
 	}
@@ -264,11 +295,11 @@ func TestDeploy(t *testing.T) {
 
 func TestSecretsCRUD(t *testing.T) {
 	k8sClient := setupEnvtest(t)
-	srv := oldNewServer(t, k8sClient)
+	srv := newAdminServer(t, k8sClient)
 	h := srv.Handler()
+	seedProject(t, k8sClient, "default")
 
-	// Create a secret for an app
-	w := doRequest(h, http.MethodPost, "/api/apps/myapp/secrets?namespace=default", map[string]any{
+	w := doRequest(h, http.MethodPost, "/api/projects/default/apps/myapp/secrets", map[string]any{
 		"name": "db-creds",
 		"data": map[string]string{"password": "s3cret"},
 	})
@@ -276,8 +307,7 @@ func TestSecretsCRUD(t *testing.T) {
 		t.Fatalf("create secret: expected 201, got %d: %s", w.Code, w.Body.String())
 	}
 
-	// List secrets
-	w = doRequest(h, http.MethodGet, "/api/apps/myapp/secrets?namespace=default", nil)
+	w = doRequest(h, http.MethodGet, "/api/projects/default/apps/myapp/secrets", nil)
 	if w.Code != http.StatusOK {
 		t.Fatalf("list secrets: expected 200, got %d: %s", w.Code, w.Body.String())
 	}
@@ -291,14 +321,12 @@ func TestSecretsCRUD(t *testing.T) {
 		t.Errorf("expected secret name db-creds, got %v", secrets[0]["name"])
 	}
 
-	// Delete secret
-	w = doRequest(h, http.MethodDelete, "/api/apps/myapp/secrets/db-creds?namespace=default", nil)
+	w = doRequest(h, http.MethodDelete, "/api/projects/default/apps/myapp/secrets/db-creds", nil)
 	if w.Code != http.StatusOK {
 		t.Fatalf("delete secret: expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 
-	// Verify deleted
-	w = doRequest(h, http.MethodGet, "/api/apps/myapp/secrets?namespace=default", nil)
+	w = doRequest(h, http.MethodGet, "/api/projects/default/apps/myapp/secrets", nil)
 	_ = json.NewDecoder(w.Body).Decode(&secrets)
 	if len(secrets) != 0 {
 		t.Errorf("expected 0 secrets after delete, got %d", len(secrets))
@@ -307,11 +335,10 @@ func TestSecretsCRUD(t *testing.T) {
 
 func TestUnauthenticatedRequest(t *testing.T) {
 	k8sClient := setupEnvtest(t)
-	srv := oldNewServer(t, k8sClient)
+	srv := newAdminServer(t, k8sClient)
 	h := srv.Handler()
 
-	// Request without Authorization header
-	req := httptest.NewRequest(http.MethodGet, "/api/apps", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/projects", nil)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
 
@@ -322,11 +349,31 @@ func TestUnauthenticatedRequest(t *testing.T) {
 
 func TestGetAppNotFound(t *testing.T) {
 	k8sClient := setupEnvtest(t)
-	srv := oldNewServer(t, k8sClient)
+	srv := newAdminServer(t, k8sClient)
 	h := srv.Handler()
+	seedProject(t, k8sClient, "default")
 
-	w := doRequest(h, http.MethodGet, "/api/apps/nonexistent?namespace=default", nil)
+	w := doRequest(h, http.MethodGet, "/api/projects/default/apps/nonexistent", nil)
 	if w.Code != http.StatusNotFound {
 		t.Errorf("expected 404, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestGetAppInNonexistentProjectIs404 verifies that accessing an app inside a
+// project that doesn't exist returns 404 at the project-resolution step, not
+// 500 from a missing namespace lookup.
+func TestGetAppInNonexistentProjectIs404(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+
+	w := doRequest(h, http.MethodGet, "/api/projects/ghost/apps/anything", nil)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for app in nonexistent project, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]string
+	_ = json.NewDecoder(w.Body).Decode(&resp)
+	if resp["error"] == "" {
+		t.Errorf("expected error body in 404 response")
 	}
 }

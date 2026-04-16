@@ -192,17 +192,24 @@ namespace. Missing project defaults to the App's own project.
 - **Lifecycle** — one-click teardown of a whole stack
 - **Bindings scope** — default target for `bindings[].ref`
 - **URL scoping** — `/projects/{p}/apps/{a}` paths throughout API, UI, CLI
+- **Teams and per-project access control** — Team CRD groups users; grants
+  attach roles (`owner`, `editor`, `viewer`) to a (team, project) pair.
+  Platform admins bypass grants entirely. See SPEC §5.10a for the access
+  control model; it lands in the same phase as the Project foundation.
+
+Domain handling is unchanged by Projects: each App still owns its own
+domain (the environment-level `domain` and `customDomains` fields). Apps
+in the same project routinely serve different domains. The "project
+domain" concept does not exist.
 
 #### What Projects do NOT provide in v1
 
-- **Per-project roles** — v1 permissions remain platform-wide (admin/member).
-  An admin can do anything in any project; a member can create/manage apps
-  in any project. Per-project grants are v2 work.
-- **Quotas** — no CPU/memory/storage caps per project
-- **Custom domain per project** — projects inherit the single platform domain
-- **Team concept** — one platform, one user pool; no team boundaries. v2.
+- **Quotas** — no CPU/memory/storage caps per project (post-v1)
 - **Project locking / freeze** — no way to make a project read-only yet
-- **Project export/import** — no YAML bundle export of a whole project. Future.
+- **Project export/import** — post-v1. All the data lives in CRDs, so
+  this is mostly a YAML-emission tool; the work is in the restore-side
+  (creating a new project with renamed resources, re-injecting secrets).
+  Tractable, just not v1 shape.
 
 #### API surface
 

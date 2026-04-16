@@ -89,7 +89,16 @@ type EnvVarSource struct {
 }
 
 type Binding struct {
+	// Ref is the name of the bound App. By default the ref is resolved within
+	// the binder's own project namespace.
 	Ref string `json:"ref"`
+
+	// Project, if set, resolves the ref in the namespace of the named Project
+	// (`project-{project}`) instead of the binder's own namespace. Enables
+	// cross-project bindings (e.g. binding app in `web` project to a db in
+	// `infra` project).
+	// +optional
+	Project string `json:"project,omitempty"`
 }
 
 type ResourceRequirements struct {

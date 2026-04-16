@@ -3,6 +3,10 @@ kind: ClusterRole
 metadata:
   name: mortise-controller
 rules:
+  # Project CRD (cluster-scoped; operator creates/deletes the backing namespace)
+  - apiGroups: ["mortise.mortise.dev"]
+    resources: ["projects", "projects/status", "projects/finalizers"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   # App CRDs
   - apiGroups: ["mortise.mortise.dev"]
     resources: ["apps", "apps/status", "apps/finalizers"]
@@ -10,12 +14,16 @@ rules:
   - apiGroups: ["mortise.mortise.dev"]
     resources: ["platformconfigs", "gitproviders", "previewenvironments"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  # Core resources the operator creates
+  # Namespaces: Project controller creates + deletes one per Project.
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Core resources the App controller creates
   - apiGroups: ["apps"]
     resources: ["deployments"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: [""]
-    resources: ["services", "secrets", "persistentvolumeclaims", "namespaces"]
+    resources: ["services", "secrets", "persistentvolumeclaims"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: ["networking.k8s.io"]
     resources: ["ingresses"]

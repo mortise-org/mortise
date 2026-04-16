@@ -8,8 +8,10 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/fake"
 
+	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
 	"github.com/MC-Meesh/mortise/internal/api"
 	"github.com/MC-Meesh/mortise/internal/auth"
 )
@@ -26,7 +28,6 @@ func TestAuthStatusSetupRequired(t *testing.T) {
 	srv := api.NewServer(k8sClient, fake.NewClientset(), authProvider, jwtHelper, nil)
 	h := srv.Handler()
 
-	// With no users, setupRequired=true.
 	w := doRequestWithToken(h, http.MethodGet, "/api/auth/status", nil, "")
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200 on status, got %d: %s", w.Code, w.Body.String())
@@ -37,7 +38,6 @@ func TestAuthStatusSetupRequired(t *testing.T) {
 		t.Fatalf("expected setupRequired=true before any user exists, got %v", resp["setupRequired"])
 	}
 
-	// Create a user; status should flip to false.
 	if err := authProvider.CreateUser(ctx, "admin@example.com", "initialpass", auth.RoleAdmin); err != nil {
 		t.Fatalf("create user: %v", err)
 	}
@@ -51,8 +51,9 @@ func TestAuthStatusSetupRequired(t *testing.T) {
 	}
 }
 
-// TestSetupFirstUser exercises the /api/auth/setup endpoint for the first-user flow.
-func TestSetupFirstUser(t *testing.T) {
+// TestSetupCreatesAdminAndDefaultProject exercises the /api/auth/setup endpoint,
+// verifying both an admin user and a `default` Project are created.
+func TestSetupCreatesAdminAndDefaultProject(t *testing.T) {
 	k8sClient := setupEnvtest(t)
 	ctx := context.Background()
 	_ = k8sClient.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "mortise-system"}})
@@ -62,7 +63,6 @@ func TestSetupFirstUser(t *testing.T) {
 	srv := api.NewServer(k8sClient, fake.NewClientset(), authProvider, jwtHelper, nil)
 	h := srv.Handler()
 
-	// Setup should succeed when no users exist.
 	body := map[string]any{"email": "admin@example.com", "password": "initialpass"}
 	w := doRequestWithToken(h, http.MethodPost, "/api/auth/setup", body, "")
 	if w.Code != http.StatusCreated {
@@ -73,6 +73,12 @@ func TestSetupFirstUser(t *testing.T) {
 	json.NewDecoder(w.Body).Decode(&resp)
 	if resp["token"] == nil || resp["token"] == "" {
 		t.Error("expected a token in the setup response")
+	}
+
+	// The `default` Project must have been created as part of setup.
+	var project mortisev1alpha1.Project
+	if err := k8sClient.Get(ctx, types.NamespacedName{Name: "default"}, &project); err != nil {
+		t.Fatalf("default project should exist after setup: %v", err)
 	}
 
 	// Second setup attempt should return 409.
@@ -133,7 +139,7 @@ func TestLoginInvalidCredentials(t *testing.T) {
 	}
 }
 
-// TestProtectedRouteRequiresToken verifies /api/apps requires auth.
+// TestProtectedRouteRequiresToken verifies /api/projects requires auth.
 func TestProtectedRouteRequiresToken(t *testing.T) {
 	k8sClient := setupEnvtest(t)
 	ctx := context.Background()
@@ -144,12 +150,12 @@ func TestProtectedRouteRequiresToken(t *testing.T) {
 	srv := api.NewServer(k8sClient, fake.NewClientset(), authProvider, jwtHelper, nil)
 	h := srv.Handler()
 
-	w := doRequestWithToken(h, http.MethodGet, "/api/apps?namespace=default", nil, "")
+	w := doRequestWithToken(h, http.MethodGet, "/api/projects", nil, "")
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401 without token, got %d", w.Code)
 	}
 
-	w = doRequestWithToken(h, http.MethodGet, "/api/apps?namespace=default", nil, "garbage-token")
+	w = doRequestWithToken(h, http.MethodGet, "/api/projects", nil, "garbage-token")
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401 with invalid token, got %d", w.Code)
 	}
@@ -172,7 +178,7 @@ func TestProtectedRouteAcceptsValidToken(t *testing.T) {
 	srv := api.NewServer(k8sClient, fake.NewClientset(), authProvider, jwtHelper, nil)
 	h := srv.Handler()
 
-	w := doRequestWithToken(h, http.MethodGet, "/api/apps?namespace=default", nil, token)
+	w := doRequestWithToken(h, http.MethodGet, "/api/projects", nil, token)
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200 with valid token, got %d: %s", w.Code, w.Body.String())
 	}

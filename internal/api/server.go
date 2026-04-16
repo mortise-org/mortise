@@ -35,30 +35,47 @@ func NewServer(c client.Client, cs kubernetes.Interface, authProvider auth.AuthP
 }
 
 // Handler returns the root HTTP handler with all routes mounted.
+//
+// URL scheme:
+//
+//	/api/auth/{status|setup|login}                                 unauthenticated
+//	/api/projects                                                  list/create
+//	/api/projects/{project}                                        get/delete
+//	/api/projects/{project}/apps                                   list/create
+//	/api/projects/{project}/apps/{app}                             get/update/delete
+//	/api/projects/{project}/apps/{app}/deploy                      deploy webhook
+//	/api/projects/{project}/apps/{app}/logs                        SSE log stream
+//	/api/projects/{project}/apps/{app}/secrets                     list/create
+//	/api/projects/{project}/apps/{app}/secrets/{secretName}        delete
 func (s *Server) Handler() http.Handler {
 	r := chi.NewRouter()
 
-	// Unauthenticated API routes (auth endpoints)
+	// Unauthenticated auth endpoints.
 	r.Get("/api/auth/status", s.Status)
 	r.Post("/api/auth/setup", s.Setup)
 	r.Post("/api/auth/login", s.Login)
 
-	// Authenticated API routes
+	// Authenticated /api routes.
 	r.Route("/api", func(r chi.Router) {
 		r.Group(func(r chi.Router) {
 			r.Use(s.jwtAuthMiddleware)
 
-			r.Post("/apps", s.CreateApp)
-			r.Get("/apps", s.ListApps)
-			r.Get("/apps/{name}", s.GetApp)
-			r.Put("/apps/{name}", s.UpdateApp)
-			r.Delete("/apps/{name}", s.DeleteApp)
+			r.Post("/projects", s.CreateProject)
+			r.Get("/projects", s.ListProjects)
+			r.Get("/projects/{project}", s.GetProject)
+			r.Delete("/projects/{project}", s.DeleteProject)
 
-			r.Post("/deploy", s.Deploy)
+			r.Post("/projects/{project}/apps", s.CreateApp)
+			r.Get("/projects/{project}/apps", s.ListApps)
+			r.Get("/projects/{project}/apps/{app}", s.GetApp)
+			r.Put("/projects/{project}/apps/{app}", s.UpdateApp)
+			r.Delete("/projects/{project}/apps/{app}", s.DeleteApp)
 
-			r.Post("/apps/{name}/secrets", s.CreateSecret)
-			r.Get("/apps/{name}/secrets", s.ListSecrets)
-			r.Delete("/apps/{name}/secrets/{secretName}", s.DeleteSecret)
+			r.Post("/projects/{project}/apps/{app}/deploy", s.Deploy)
+
+			r.Post("/projects/{project}/apps/{app}/secrets", s.CreateSecret)
+			r.Get("/projects/{project}/apps/{app}/secrets", s.ListSecrets)
+			r.Delete("/projects/{project}/apps/{app}/secrets/{secretName}", s.DeleteSecret)
 		})
 
 		// /logs: JWT may come via `?token=` query param as an EventSource
@@ -67,7 +84,7 @@ func (s *Server) Handler() http.Handler {
 		r.Group(func(r chi.Router) {
 			r.Use(sseTokenQueryParamMiddleware)
 			r.Use(s.jwtAuthMiddleware)
-			r.Get("/apps/{name}/logs", s.handleLogs)
+			r.Get("/projects/{project}/apps/{app}/logs", s.handleLogs)
 		})
 	})
 

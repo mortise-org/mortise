@@ -12,7 +12,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// createSecretRequest is the JSON body for creating a secret.
+// createSecretRequest is the JSON body for upserting a secret.
 type createSecretRequest struct {
 	Name string            `json:"name"`
 	Data map[string]string `json:"data"`
@@ -25,11 +25,11 @@ type secretResponse struct {
 }
 
 func (s *Server) CreateSecret(w http.ResponseWriter, r *http.Request) {
-	appName := chi.URLParam(r, "name")
-	ns := r.URL.Query().Get("namespace")
-	if ns == "" {
-		ns = defaultNamespace
+	ns, ok := s.resolveProject(w, r)
+	if !ok {
+		return
 	}
+	appName := chi.URLParam(r, "app")
 
 	var req createSecretRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -62,11 +62,11 @@ func (s *Server) CreateSecret(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) ListSecrets(w http.ResponseWriter, r *http.Request) {
-	appName := chi.URLParam(r, "name")
-	ns := r.URL.Query().Get("namespace")
-	if ns == "" {
-		ns = defaultNamespace
+	ns, ok := s.resolveProject(w, r)
+	if !ok {
+		return
 	}
+	appName := chi.URLParam(r, "app")
 
 	var list corev1.SecretList
 	if err := s.client.List(r.Context(), &list,
@@ -89,11 +89,11 @@ func (s *Server) ListSecrets(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) DeleteSecret(w http.ResponseWriter, r *http.Request) {
-	secretName := chi.URLParam(r, "secretName")
-	ns := r.URL.Query().Get("namespace")
-	if ns == "" {
-		ns = defaultNamespace
+	ns, ok := s.resolveProject(w, r)
+	if !ok {
+		return
 	}
+	secretName := chi.URLParam(r, "secretName")
 
 	var secret corev1.Secret
 	if err := s.client.Get(r.Context(), types.NamespacedName{Name: secretName, Namespace: ns}, &secret); err != nil {

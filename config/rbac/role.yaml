@@ -7,6 +7,7 @@ rules:
 - apiGroups:
   - ""
   resources:
+  - namespaces
   - persistentvolumeclaims
   - services
   verbs:
@@ -36,6 +37,7 @@ rules:
   - gitproviders
   - platformconfigs
   - previewenvironments
+  - projects
   verbs:
   - create
   - delete
@@ -51,6 +53,7 @@ rules:
   - gitproviders/finalizers
   - platformconfigs/finalizers
   - previewenvironments/finalizers
+  - projects/finalizers
   verbs:
   - update
 - apiGroups:
@@ -60,6 +63,7 @@ rules:
   - gitproviders/status
   - platformconfigs/status
   - previewenvironments/status
+  - projects/status
   verbs:
   - get
   - patch

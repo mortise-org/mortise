@@ -33,11 +33,12 @@ type logLine struct {
 // during the stream (e.g. rollouts) are picked up via a pod watcher and their
 // logs are joined into the stream.
 func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
-	name := chi.URLParam(r, "name")
-	ns := r.URL.Query().Get("namespace")
-	if ns == "" {
-		ns = defaultNamespace
+	ns, ok := s.resolveProject(w, r)
+	if !ok {
+		return
 	}
+	name := chi.URLParam(r, "app")
+
 	env := r.URL.Query().Get("env")
 	if env == "" {
 		env = "production"

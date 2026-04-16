@@ -13,10 +13,11 @@ import (
 
 func TestLogsNonexistentApp(t *testing.T) {
 	k8sClient := setupEnvtest(t)
-	srv := oldNewServer(t, k8sClient)
+	srv := newAdminServer(t, k8sClient)
 	h := srv.Handler()
+	seedProject(t, k8sClient, "default")
 
-	w := doRequest(h, http.MethodGet, "/api/apps/no-such-app/logs?namespace=default", nil)
+	w := doRequest(h, http.MethodGet, "/api/projects/default/apps/no-such-app/logs", nil)
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d: %s", w.Code, w.Body.String())
 	}
@@ -28,21 +29,31 @@ func TestLogsNonexistentApp(t *testing.T) {
 	}
 }
 
-func TestLogsNoPods(t *testing.T) {
+func TestLogsNonexistentProject(t *testing.T) {
 	k8sClient := setupEnvtest(t)
-	srv := oldNewServer(t, k8sClient)
+	srv := newAdminServer(t, k8sClient)
 	h := srv.Handler()
 
-	// Create an app so it exists, but no pods will be present.
-	doRequest(h, http.MethodPost, "/api/apps", map[string]any{
-		"name":      "logs-app",
-		"namespace": "default",
+	w := doRequest(h, http.MethodGet, "/api/projects/ghost/apps/anything/logs", nil)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for logs in nonexistent project, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestLogsNoPods(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+	seedProject(t, k8sClient, "default")
+
+	doRequest(h, http.MethodPost, "/api/projects/default/apps", map[string]any{
+		"name": "logs-app",
 		"spec": map[string]any{
 			"source": map[string]any{"type": "image", "image": "nginx:1.25.0"},
 		},
 	})
 
-	w := doRequest(h, http.MethodGet, "/api/apps/logs-app/logs?namespace=default", nil)
+	w := doRequest(h, http.MethodGet, "/api/projects/default/apps/logs-app/logs", nil)
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("expected 404 for no pods, got %d: %s", w.Code, w.Body.String())
 	}
@@ -56,43 +67,41 @@ func TestLogsNoPods(t *testing.T) {
 
 func TestLogsErrorResponseIsJSON(t *testing.T) {
 	k8sClient := setupEnvtest(t)
-	srv := oldNewServer(t, k8sClient)
+	srv := newAdminServer(t, k8sClient)
 	h := srv.Handler()
+	seedProject(t, k8sClient, "default")
 
-	doRequest(h, http.MethodPost, "/api/apps", map[string]any{
-		"name":      "headers-app",
-		"namespace": "default",
+	doRequest(h, http.MethodPost, "/api/projects/default/apps", map[string]any{
+		"name": "headers-app",
 		"spec": map[string]any{
 			"source": map[string]any{"type": "image", "image": "nginx:1.25.0"},
 		},
 	})
 
-	w := doRequest(h, http.MethodGet, "/api/apps/headers-app/logs?namespace=default", nil)
+	w := doRequest(h, http.MethodGet, "/api/projects/default/apps/headers-app/logs", nil)
 	ct := w.Header().Get("Content-Type")
 	if ct != "application/json" {
 		t.Errorf("expected Content-Type application/json for error response, got %s", ct)
 	}
 }
 
-// TestLogsAcceptsTailAndEnvParams verifies the endpoint parses tail and env
-// query params without erroring. Uses a nonexistent env so it 404s without
-// needing to actually stream, but exercises the full parameter parsing path.
+// TestLogsAcceptsTailAndEnvParams exercises the tail + env query parsing
+// without needing real pod streaming. Uses a nonexistent env so the handler
+// 404s after the parsing step.
 func TestLogsAcceptsTailAndEnvParams(t *testing.T) {
 	k8sClient := setupEnvtest(t)
-	srv := oldNewServer(t, k8sClient)
+	srv := newAdminServer(t, k8sClient)
 	h := srv.Handler()
+	seedProject(t, k8sClient, "default")
 
-	doRequest(h, http.MethodPost, "/api/apps", map[string]any{
-		"name":      "params-app",
-		"namespace": "default",
+	doRequest(h, http.MethodPost, "/api/projects/default/apps", map[string]any{
+		"name": "params-app",
 		"spec": map[string]any{
 			"source": map[string]any{"type": "image", "image": "nginx:1.25.0"},
 		},
 	})
 
-	// tail=50 env=production with no matching pods still returns 404 "no pods"
-	// but the parsing shouldn't fail.
-	w := doRequest(h, http.MethodGet, "/api/apps/params-app/logs?namespace=default&tail=50&env=production", nil)
+	w := doRequest(h, http.MethodGet, "/api/projects/default/apps/params-app/logs?tail=50&env=production", nil)
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("expected 404 for no pods, got %d: %s", w.Code, w.Body.String())
 	}
@@ -105,27 +114,25 @@ func TestLogsAcceptsTailAndEnvParams(t *testing.T) {
 }
 
 // TestLogsSSEHeadersWithPod verifies SSE headers and event structure when a
-// matching Pod object exists. The Pod doesn't need a running container —
-// the fake clientset returns synthetic log content regardless.
+// matching Pod object exists. The fake clientset returns synthetic log output
+// regardless of the pod's real runtime state.
 func TestLogsSSEHeadersWithPod(t *testing.T) {
 	k8sClient := setupEnvtest(t)
-	srv := oldNewServer(t, k8sClient)
+	srv := newAdminServer(t, k8sClient)
 	h := srv.Handler()
+	nsName := seedProject(t, k8sClient, "default")
 
-	// Create the App.
-	doRequest(h, http.MethodPost, "/api/apps", map[string]any{
-		"name":      "stream-app",
-		"namespace": "default",
+	doRequest(h, http.MethodPost, "/api/projects/default/apps", map[string]any{
+		"name": "stream-app",
 		"spec": map[string]any{
 			"source": map[string]any{"type": "image", "image": "nginx:1.25.0"},
 		},
 	})
 
-	// Create a Pod in envtest matching the label selector used by handleLogs.
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "stream-app-pod-1",
-			Namespace: "default",
+			Namespace: nsName,
 			Labels: map[string]string{
 				"app.kubernetes.io/name":       "stream-app",
 				"app.kubernetes.io/managed-by": "mortise",
@@ -140,9 +147,7 @@ func TestLogsSSEHeadersWithPod(t *testing.T) {
 		t.Fatalf("create pod: %v", err)
 	}
 
-	// follow=false so the stream terminates quickly on the fake clientset's
-	// single-response body.
-	w := doRequest(h, http.MethodGet, "/api/apps/stream-app/logs?namespace=default&env=production&tail=10", nil)
+	w := doRequest(h, http.MethodGet, "/api/projects/default/apps/stream-app/logs?env=production&tail=10", nil)
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
@@ -158,7 +163,6 @@ func TestLogsSSEHeadersWithPod(t *testing.T) {
 		t.Fatalf("expected SSE body to start with 'data: ', got: %q", body)
 	}
 
-	// Parse the first SSE event's JSON payload and verify structure.
 	line := strings.TrimPrefix(body, "data: ")
 	if idx := strings.Index(line, "\n"); idx > 0 {
 		line = line[:idx]
@@ -185,19 +189,16 @@ func TestLogsAcceptsTokenQueryParam(t *testing.T) {
 	k8sClient := setupEnvtest(t)
 	srv, token := newTestServer(t, k8sClient)
 	h := srv.Handler()
+	seedProject(t, k8sClient, "default")
 
-	// Create App via the normal auth path.
-	doRequest(h, http.MethodPost, "/api/apps", map[string]any{
-		"name":      "tok-app",
-		"namespace": "default",
+	doRequest(h, http.MethodPost, "/api/projects/default/apps", map[string]any{
+		"name": "tok-app",
 		"spec": map[string]any{
 			"source": map[string]any{"type": "image", "image": "nginx:1.25.0"},
 		},
 	})
 
-	// No Authorization header, but ?token=... should authenticate and
-	// then reach the handler which 404s because no pods exist.
-	path := "/api/apps/tok-app/logs?namespace=default&token=" + token
+	path := "/api/projects/default/apps/tok-app/logs?token=" + token
 	w := doRequestWithToken(h, http.MethodGet, path, nil, "")
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("expected 404 (auth passed, no pods), got %d: %s", w.Code, w.Body.String())
@@ -208,10 +209,10 @@ func TestLogsAcceptsTokenQueryParam(t *testing.T) {
 // the query-param token fallback doesn't weaken the auth requirement.
 func TestLogsRequiresAuth(t *testing.T) {
 	k8sClient := setupEnvtest(t)
-	srv := oldNewServer(t, k8sClient)
+	srv := newAdminServer(t, k8sClient)
 	h := srv.Handler()
 
-	w := doRequestWithToken(h, http.MethodGet, "/api/apps/anything/logs", nil, "")
+	w := doRequestWithToken(h, http.MethodGet, "/api/projects/default/apps/anything/logs", nil, "")
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401 without token, got %d", w.Code)
 	}
