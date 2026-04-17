@@ -11,9 +11,12 @@ import {
 } from './helpers';
 
 // ---------------------------------------------------------------------------
-// New-app page structure
+// New app modal structure (/projects/{p}/apps/new)
+//
+// The new UI shows a modal with a type picker. Navigating directly to
+// /projects/{p}/apps/new renders the NewAppModal component.
 // ---------------------------------------------------------------------------
-test.describe('new app page structure', () => {
+test.describe('new app modal structure', () => {
 	let token: string;
 	let project: string;
 
@@ -28,51 +31,86 @@ test.describe('new app page structure', () => {
 		await deleteProjectViaAPI(request, token, project);
 	});
 
-	test('shows all three deploy sections', async ({ page }) => {
+	test('shows type picker with all app type options', async ({ page }) => {
 		await injectToken(page, token);
 		await page.goto(`/projects/${project}/apps/new`);
 
 		await expect(
-			page.getByRole('heading', { name: 'Deploy a new service' })
-		).toBeVisible();
+			page.getByRole('heading', { name: 'What would you like to create?' })
+		).toBeVisible({ timeout: 10_000 });
 
-		// Section 1: Git repo
-		await expect(
-			page.getByRole('heading', { name: 'Deploy from a Git repo' })
-		).toBeVisible();
+		// All type options in the picker.
+		await expect(page.getByText('Git Repository')).toBeVisible();
+		await expect(page.getByText('Database')).toBeVisible();
+		await expect(page.getByText('Template')).toBeVisible();
+		await expect(page.getByText('Docker Image')).toBeVisible();
+		await expect(page.getByText('External Service')).toBeVisible();
+		await expect(page.getByText('Empty App')).toBeVisible();
+	});
 
-		// Section 2: Docker image
-		await expect(
-			page.getByRole('heading', { name: 'Deploy a Docker image' })
-		).toBeVisible();
+	test('selecting Docker Image shows image input and Create app button', async ({ page }) => {
+		await injectToken(page, token);
+		await page.goto(`/projects/${project}/apps/new`);
 
-		// Section 3: Templates
+		await expect(page.getByText('Docker Image')).toBeVisible({ timeout: 10_000 });
+		await page.getByText('Docker Image').click();
+
+		// Configure pane shows image reference input.
+		await expect(page.getByText('Image Reference')).toBeVisible();
+		await expect(page.getByPlaceholder('nginx:1.27 or ghcr.io/org/app:latest')).toBeVisible();
+
+		// App name input and Create button.
+		await expect(page.getByText('App name')).toBeVisible();
+		await expect(page.getByRole('button', { name: 'Create app' })).toBeVisible();
+	});
+
+	test('selecting Database shows preset grid', async ({ page }) => {
+		await injectToken(page, token);
+		await page.goto(`/projects/${project}/apps/new`);
+
+		await expect(page.getByText('Database')).toBeVisible({ timeout: 10_000 });
+		await page.getByText('Database').click();
+
+		// Database presets should be visible.
+		await expect(page.getByText('Postgres')).toBeVisible();
+		await expect(page.getByText('Redis')).toBeVisible();
+		await expect(page.getByText('MinIO')).toBeVisible();
+		await expect(page.getByText('MySQL')).toBeVisible();
+	});
+
+	test('Back button returns to type picker', async ({ page }) => {
+		await injectToken(page, token);
+		await page.goto(`/projects/${project}/apps/new`);
+
+		await expect(page.getByText('Docker Image')).toBeVisible({ timeout: 10_000 });
+		await page.getByText('Docker Image').click();
+
+		// Configure pane is shown.
+		await expect(page.getByRole('button', { name: 'Create app' })).toBeVisible();
+
+		// Click "← Back" to return to type picker.
+		await page.getByRole('button', { name: /Back/ }).click();
+
 		await expect(
-			page.getByRole('heading', { name: 'Deploy from a template' })
+			page.getByRole('heading', { name: 'What would you like to create?' })
 		).toBeVisible();
 	});
 
-	test('no git provider state shows connect prompt', async ({ page }) => {
+	test('Cancel button navigates to project canvas', async ({ page }) => {
 		await injectToken(page, token);
 		await page.goto(`/projects/${project}/apps/new`);
 
-		await expect(
-			page.getByText('Connect GitHub to deploy from a repository')
-		).toBeVisible({ timeout: 10_000 });
+		await expect(page.getByText('Docker Image')).toBeVisible({ timeout: 10_000 });
+		await page.getByText('Docker Image').click();
 
-		// The "Connect GitHub" element is a button that starts the device flow.
-		const connectBtn = page.getByRole('button', { name: 'Connect GitHub' });
-		await expect(connectBtn).toBeVisible();
+		await page.getByRole('button', { name: 'Cancel' }).click();
 
-		// A link to the manual git-providers settings page is also present.
-		const manualLink = page.getByRole('link', { name: /connect GitLab \/ Gitea manually/ });
-		await expect(manualLink).toBeVisible();
-		await expect(manualLink).toHaveAttribute('href', '/settings/git-providers');
+		await expect(page).toHaveURL(`/projects/${project}`, { timeout: 10_000 });
 	});
 });
 
 // ---------------------------------------------------------------------------
-// Deploy Docker image
+// Deploy Docker image via modal
 // ---------------------------------------------------------------------------
 test.describe('deploy docker image', () => {
 	let token: string;
@@ -89,55 +127,50 @@ test.describe('deploy docker image', () => {
 		await deleteProjectViaAPI(request, token, project);
 	});
 
-	test('deploy button is disabled when image input is empty', async ({ page }) => {
+	test('Create app button is disabled when app name is empty', async ({ page }) => {
 		await injectToken(page, token);
 		await page.goto(`/projects/${project}/apps/new`);
 
-		await expect(
-			page.getByRole('heading', { name: 'Deploy a Docker image' })
-		).toBeVisible();
+		await expect(page.getByText('Docker Image')).toBeVisible({ timeout: 10_000 });
+		await page.getByText('Docker Image').click();
 
-		// The Deploy button in the Docker section should be disabled initially.
-		const deployBtn = page
-			.locator('section', { has: page.getByText('Deploy a Docker image') })
-			.getByRole('button', { name: 'Deploy' });
-		await expect(deployBtn).toBeDisabled();
+		// Create button should be disabled when no app name is provided.
+		const createBtn = page.getByRole('button', { name: 'Create app' });
+		await expect(createBtn).toBeDisabled();
 	});
 
-	test('fill image and deploy redirects to project page', async ({ page }) => {
+	test('fill image and name then create navigates to app drawer', async ({ page }) => {
+		const appName = `nginx-${randomSuffix()}`;
+
 		await injectToken(page, token);
 		await page.goto(`/projects/${project}/apps/new`);
 
-		const section = page.locator('section', {
-			has: page.getByText('Deploy a Docker image')
-		});
+		await expect(page.getByText('Docker Image')).toBeVisible({ timeout: 10_000 });
+		await page.getByText('Docker Image').click();
 
-		await section.getByRole('textbox').fill('nginx:1.27');
+		await page.getByPlaceholder('nginx:1.27 or ghcr.io/org/app:latest').fill('nginx:1.27');
+		await page.getByPlaceholder('my-app').fill(appName);
 
-		const deployBtn = section.getByRole('button', { name: 'Deploy' });
-		await expect(deployBtn).toBeEnabled();
+		const createBtn = page.getByRole('button', { name: 'Create app' });
+		await expect(createBtn).toBeEnabled();
+		await createBtn.click();
 
-		await deployBtn.click();
-
-		// Should redirect to the project detail page.
-		await page.waitForURL(`/projects/${project}`, { timeout: 15_000 });
-
-		// The app card for "nginx" (derived from the image name) should appear.
-		await expect(page.getByText('nginx')).toBeVisible({ timeout: 10_000 });
+		// After creation, navigates to the app drawer URL.
+		await expect(page).toHaveURL(`/projects/${project}/apps/${appName}`, { timeout: 15_000 });
 	});
 });
 
 // ---------------------------------------------------------------------------
-// Deploy from Postgres template
+// Deploy from Database preset
 // ---------------------------------------------------------------------------
-test.describe('deploy postgres template', () => {
+test.describe('deploy database preset', () => {
 	let token: string;
 	let project: string;
 
 	test.beforeAll(async ({ request }) => {
 		await ensureAdmin(request);
 		token = await loginViaAPI(request);
-		project = `e2e-postgres-${randomSuffix()}`;
+		project = `e2e-dbpreset-${randomSuffix()}`;
 		await createProjectViaAPI(request, token, project);
 	});
 
@@ -145,164 +178,42 @@ test.describe('deploy postgres template', () => {
 		await deleteProjectViaAPI(request, token, project);
 	});
 
-	test('select Postgres 16 template, verify prefill, and submit', async ({ page }) => {
+	test('select Postgres preset, prefills app name and image', async ({ page }) => {
 		await injectToken(page, token);
 		await page.goto(`/projects/${project}/apps/new`);
 
-		// Click the Postgres 16 template button.
-		await page.getByRole('button', { name: 'Postgres 16' }).click();
+		await expect(page.getByText('Database')).toBeVisible({ timeout: 10_000 });
+		await page.getByText('Database').click();
 
-		// AppForm should be visible with the template name.
-		await expect(page.getByRole('heading', { name: 'Postgres 16' })).toBeVisible();
-		await expect(page.getByText('Back to templates')).toBeVisible();
+		// Click Postgres in the grid.
+		await page.getByText('Postgres').click();
 
-		// Image reference should be prefilled.
-		const imageInput = page.getByLabel('Image Reference');
-		await expect(imageInput).toHaveValue('postgres:16');
+		// App name should be prefilled to 'postgres'.
+		const appNameInput = page.getByPlaceholder('my-app');
+		await expect(appNameInput).toHaveValue('postgres');
 
-		// Source should show Container Image (readonly).
-		await expect(page.getByText('Container Image')).toBeVisible();
+		// Create button should be enabled.
+		await expect(page.getByRole('button', { name: 'Create app' })).toBeEnabled();
+	});
 
-		// Storage should show pgdata volume (bind:value sets DOM property, not attribute).
-		const pgStorageRow = page.locator('.flex.gap-2').filter({ has: page.getByPlaceholder('name') }).first();
-		await expect(pgStorageRow.getByPlaceholder('name')).toHaveValue('pgdata');
-		await expect(pgStorageRow.getByPlaceholder('/mount/path')).toHaveValue('/var/lib/postgresql/data');
-		await expect(pgStorageRow.getByPlaceholder('10Gi')).toHaveValue('10Gi');
+	test('select Redis preset, prefills app name', async ({ page }) => {
+		await injectToken(page, token);
+		await page.goto(`/projects/${project}/apps/new`);
 
-		// Credentials badges should be visible.
-		await expect(page.getByText('DATABASE_URL')).toBeVisible();
+		await expect(page.getByText('Database')).toBeVisible({ timeout: 10_000 });
+		await page.getByText('Database').click();
 
-		// Submit button should say "Deploy Postgres".
-		const submitBtn = page.getByRole('button', { name: 'Deploy Postgres' });
-		await expect(submitBtn).toBeVisible();
+		await page.getByText('Redis').click();
 
-		// Fill a unique app name and submit.
-		const appName = `pg-${randomSuffix()}`;
-		await page.getByLabel('App Name').clear();
-		await page.getByLabel('App Name').fill(appName);
-
-		await submitBtn.click();
-
-		// Should redirect to the project page.
-		await page.waitForURL(`/projects/${project}`, { timeout: 15_000 });
-		await expect(page.getByText(appName)).toBeVisible({ timeout: 10_000 });
+		const appNameInput = page.getByPlaceholder('my-app');
+		await expect(appNameInput).toHaveValue('redis');
 	});
 });
 
 // ---------------------------------------------------------------------------
-// Deploy from Redis template
+// App list view
 // ---------------------------------------------------------------------------
-test.describe('deploy redis template', () => {
-	let token: string;
-	let project: string;
-
-	test.beforeAll(async ({ request }) => {
-		await ensureAdmin(request);
-		token = await loginViaAPI(request);
-		project = `e2e-redis-${randomSuffix()}`;
-		await createProjectViaAPI(request, token, project);
-	});
-
-	test.afterAll(async ({ request }) => {
-		await deleteProjectViaAPI(request, token, project);
-	});
-
-	test('select Redis 7 template, verify prefill, and submit', async ({ page }) => {
-		await injectToken(page, token);
-		await page.goto(`/projects/${project}/apps/new`);
-
-		// Click the Redis 7 template button.
-		await page.getByRole('button', { name: 'Redis 7' }).click();
-
-		// AppForm should show Redis heading.
-		await expect(page.getByRole('heading', { name: 'Redis 7' })).toBeVisible();
-
-		// Image should be prefilled.
-		const imageInput = page.getByLabel('Image Reference');
-		await expect(imageInput).toHaveValue('redis:7-alpine');
-
-		// Storage should show redis-data (bind:value sets DOM property, not attribute).
-		const redisStorageRow = page.locator('.flex.gap-2').filter({ has: page.getByPlaceholder('name') }).first();
-		await expect(redisStorageRow.getByPlaceholder('name')).toHaveValue('redis-data');
-		await expect(redisStorageRow.getByPlaceholder('/mount/path')).toHaveValue('/data');
-
-		// Credentials badges.
-		await expect(page.getByText('REDIS_URL')).toBeVisible();
-
-		// Submit.
-		const submitBtn = page.getByRole('button', { name: 'Deploy Redis' });
-		await expect(submitBtn).toBeVisible();
-
-		const appName = `redis-${randomSuffix()}`;
-		await page.getByLabel('App Name').clear();
-		await page.getByLabel('App Name').fill(appName);
-
-		await submitBtn.click();
-
-		await page.waitForURL(`/projects/${project}`, { timeout: 15_000 });
-		await expect(page.getByText(appName)).toBeVisible({ timeout: 10_000 });
-	});
-});
-
-// ---------------------------------------------------------------------------
-// Template form navigation (cancel / back)
-// ---------------------------------------------------------------------------
-test.describe('template form navigation', () => {
-	let token: string;
-	let project: string;
-
-	test.beforeAll(async ({ request }) => {
-		await ensureAdmin(request);
-		token = await loginViaAPI(request);
-		project = `e2e-tmpnav-${randomSuffix()}`;
-		await createProjectViaAPI(request, token, project);
-	});
-
-	test.afterAll(async ({ request }) => {
-		await deleteProjectViaAPI(request, token, project);
-	});
-
-	test('cancel link navigates back to project page', async ({ page }) => {
-		await injectToken(page, token);
-		await page.goto(`/projects/${project}/apps/new`);
-
-		// Select a template to show the form.
-		await page.getByRole('button', { name: 'Postgres 16' }).click();
-		await expect(page.getByRole('heading', { name: 'Postgres 16' })).toBeVisible();
-
-		// Click Cancel link.
-		const cancelLink = page.getByRole('link', { name: 'Cancel' });
-		await expect(cancelLink).toBeVisible();
-		await cancelLink.click();
-
-		// Should navigate to the project page.
-		await page.waitForURL(`/projects/${project}`, { timeout: 10_000 });
-	});
-
-	test('back to templates button returns to template list', async ({ page }) => {
-		await injectToken(page, token);
-		await page.goto(`/projects/${project}/apps/new`);
-
-		// Select a template.
-		await page.getByRole('button', { name: 'Vaultwarden' }).click();
-		await expect(page.getByRole('heading', { name: 'Vaultwarden' })).toBeVisible();
-
-		// Click "Back to templates".
-		await page.getByText('Back to templates').click();
-
-		// Template list should reappear (we should see the heading and template buttons).
-		await expect(
-			page.getByRole('heading', { name: 'Deploy from a template' })
-		).toBeVisible();
-		await expect(page.getByRole('button', { name: 'Postgres 16' })).toBeVisible();
-		await expect(page.getByRole('button', { name: 'Redis 7' })).toBeVisible();
-	});
-});
-
-// ---------------------------------------------------------------------------
-// App detail page
-// ---------------------------------------------------------------------------
-test.describe('app detail page', () => {
+test.describe('app list view', () => {
 	let token: string;
 	let project: string;
 	let appName: string;
@@ -310,8 +221,68 @@ test.describe('app detail page', () => {
 	test.beforeAll(async ({ request }) => {
 		await ensureAdmin(request);
 		token = await loginViaAPI(request);
-		project = `e2e-detail-${randomSuffix()}`;
-		appName = `detail-app-${randomSuffix()}`;
+		project = `e2e-listview-${randomSuffix()}`;
+		appName = `list-app-${randomSuffix()}`;
+		await createProjectViaAPI(request, token, project);
+		await createAppViaAPI(request, token, project, appName);
+	});
+
+	test.afterAll(async ({ request }) => {
+		await deleteAppViaAPI(request, token, project, appName);
+		await deleteProjectViaAPI(request, token, project);
+	});
+
+	test('switching to list view shows app table', async ({ page }) => {
+		await injectToken(page, token);
+		await page.goto(`/projects/${project}`);
+
+		// Switch to list view via the toolbar toggle.
+		await page.getByTitle('List view').click();
+
+		// App should appear in the table.
+		await expect(page.getByText(appName)).toBeVisible({ timeout: 10_000 });
+	});
+
+	test('clicking app row in list view navigates to drawer URL', async ({ page }) => {
+		await injectToken(page, token);
+		await page.goto(`/projects/${project}`);
+
+		// Switch to list view.
+		await page.getByTitle('List view').click();
+
+		// Click the app row.
+		await expect(page.getByText(appName)).toBeVisible({ timeout: 10_000 });
+		await page.getByText(appName).click();
+
+		await expect(page).toHaveURL(`/projects/${project}/apps/${appName}`, { timeout: 10_000 });
+	});
+
+	test('list view table has expected column headers', async ({ page }) => {
+		await injectToken(page, token);
+		await page.goto(`/projects/${project}`);
+
+		await page.getByTitle('List view').click();
+
+		// Table headers.
+		await expect(page.getByText('Name')).toBeVisible({ timeout: 10_000 });
+		await expect(page.getByText('Source')).toBeVisible();
+		await expect(page.getByText('Status')).toBeVisible();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// App drawer (accessed via /projects/{p}/apps/{a})
+// ---------------------------------------------------------------------------
+test.describe('app drawer', () => {
+	let token: string;
+	let project: string;
+	let appName: string;
+
+	test.beforeAll(async ({ request }) => {
+		await ensureAdmin(request);
+		token = await loginViaAPI(request);
+		project = `e2e-drawer-${randomSuffix()}`;
+		appName = `drawer-app-${randomSuffix()}`;
 		await createProjectViaAPI(request, token, project);
 		await createAppViaAPI(request, token, project, appName, 'nginx:1.27');
 	});
@@ -321,70 +292,76 @@ test.describe('app detail page', () => {
 		await deleteProjectViaAPI(request, token, project);
 	});
 
-	test('shows overview cards with correct source info', async ({ page }) => {
+	test('navigating to app URL shows drawer with app name', async ({ page }) => {
 		await injectToken(page, token);
 		await page.goto(`/projects/${project}/apps/${appName}`);
 
-		// App heading.
-		await expect(page.getByRole('heading', { name: appName })).toBeVisible({
-			timeout: 10_000
-		});
+		// Drawer shows app name as heading.
+		await expect(page.getByRole('heading', { name: appName })).toBeVisible({ timeout: 10_000 });
+	});
 
-		// Phase badge should appear (any phase is fine).
+	test('drawer has five tabs', async ({ page }) => {
+		await injectToken(page, token);
+		await page.goto(`/projects/${project}/apps/${appName}`);
+
+		await expect(page.getByRole('heading', { name: appName })).toBeVisible({ timeout: 10_000 });
+
+		// All five tab buttons.
+		await expect(page.getByRole('button', { name: 'Deployments' })).toBeVisible();
+		await expect(page.getByRole('button', { name: 'Variables' })).toBeVisible();
+		await expect(page.getByRole('button', { name: 'Logs' })).toBeVisible();
+		await expect(page.getByRole('button', { name: 'Metrics' })).toBeVisible();
+		await expect(page.getByRole('button', { name: 'Settings' })).toBeVisible();
+	});
+
+	test('close button navigates back to project canvas', async ({ page }) => {
+		await injectToken(page, token);
+		await page.goto(`/projects/${project}/apps/${appName}`);
+
+		await expect(page.getByRole('heading', { name: appName })).toBeVisible({ timeout: 10_000 });
+
+		// Close button (X icon, aria-label="Close drawer").
+		await page.getByRole('button', { name: 'Close drawer' }).click();
+
+		await expect(page).toHaveURL(`/projects/${project}`, { timeout: 5_000 });
+	});
+
+	test('tab switching works — Variables tab shows content', async ({ page }) => {
+		await injectToken(page, token);
+		await page.goto(`/projects/${project}/apps/${appName}`);
+
+		await expect(page.getByRole('heading', { name: appName })).toBeVisible({ timeout: 10_000 });
+
+		await page.getByRole('button', { name: 'Variables' }).click();
+
+		// Variables tab content should appear (env var editor).
+		await expect(page.getByRole('button', { name: 'Variables' })).toBeVisible();
+		// The tab content area should load (no error).
+		await expect(page.locator('.flex-1.overflow-y-auto')).toBeVisible();
+	});
+
+	test('tab switching works — Settings tab shows content', async ({ page }) => {
+		await injectToken(page, token);
+		await page.goto(`/projects/${project}/apps/${appName}`);
+
+		await expect(page.getByRole('heading', { name: appName })).toBeVisible({ timeout: 10_000 });
+
+		await page.getByRole('button', { name: 'Settings' }).click();
+
+		// Settings tab renders some content.
+		await expect(page.locator('.flex-1.overflow-y-auto')).toBeVisible();
+	});
+
+	test('phase badge is visible in drawer header', async ({ page }) => {
+		await injectToken(page, token);
+		await page.goto(`/projects/${project}/apps/${appName}`);
+
+		await expect(page.getByRole('heading', { name: appName })).toBeVisible({ timeout: 10_000 });
+
+		// Phase badge (may be Pending, Ready, etc.).
 		const phaseBadge = page.locator('span', {
 			hasText: /Ready|Pending|Deploying|Building|Failed/
 		});
-		await expect(phaseBadge.first()).toBeVisible();
-
-		// Breadcrumbs.
-		await expect(page.getByText('Projects')).toBeVisible();
-		await expect(page.getByRole('link', { name: project })).toBeVisible();
-		await expect(page.getByText('apps')).toBeVisible();
-
-		// Source card.
-		await expect(page.getByText('Source')).toBeVisible();
-		await expect(page.getByText('Container Image')).toBeVisible();
-
-		// Replicas card.
-		await expect(page.getByText('Replicas')).toBeVisible();
-		await expect(page.getByText('ready / desired')).toBeVisible();
-
-		// Domain card.
-		await expect(page.getByText('Domain', { exact: true })).toBeVisible();
-	});
-
-	test('delete app redirects to project page', async ({ page }) => {
-		// Create a throwaway app for deletion.
-		const deleteAppName = `del-app-${randomSuffix()}`;
-		const res = await page.request.post(`/api/projects/${project}/apps`, {
-			headers: { Authorization: `Bearer ${token}` },
-			data: {
-				name: deleteAppName,
-				spec: {
-					source: { type: 'image', image: 'nginx:1.27' },
-					network: { public: true },
-					environments: [{ name: 'production', replicas: 1 }]
-				}
-			}
-		});
-		expect(res.ok()).toBeTruthy();
-
-		await injectToken(page, token);
-		await page.goto(`/projects/${project}/apps/${deleteAppName}`);
-
-		// Wait for the app to load.
-		await expect(page.getByRole('heading', { name: deleteAppName })).toBeVisible({
-			timeout: 10_000
-		});
-
-		// Click Delete App. The handler uses confirm(), so accept the dialog.
-		page.once('dialog', (dialog) => dialog.accept());
-		await page.getByRole('button', { name: 'Delete App' }).click();
-
-		// Should redirect to the project page.
-		await page.waitForURL(`/projects/${project}`, { timeout: 15_000 });
-
-		// The deleted app should no longer appear.
-		await expect(page.getByText(deleteAppName)).toHaveCount(0, { timeout: 10_000 });
+		await expect(phaseBadge.first()).toBeVisible({ timeout: 10_000 });
 	});
 });

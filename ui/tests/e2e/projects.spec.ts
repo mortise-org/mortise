@@ -11,8 +11,9 @@ import {
 
 // End-to-end tests for the Projects CRUD UI.
 //
-// Assumes an operator is reachable at MORTISE_BASE_URL and admin credentials
-// are supplied via MORTISE_ADMIN_EMAIL / MORTISE_ADMIN_PASSWORD.
+// New UI: project list is the dashboard (/), projects are cards linking to
+// /projects/{name} (canvas view). Project creation is at /projects/new.
+// Project deletion is via the project settings page (/projects/{name}/settings).
 
 test.describe('projects', () => {
 	let adminToken: string;
@@ -31,13 +32,13 @@ test.describe('projects', () => {
 		}
 	});
 
-	test('dashboard renders projects heading and default project', async ({ page }) => {
+	test('dashboard renders Projects heading and default project', async ({ page }) => {
 		await loginViaUI(page);
 
 		await expect(page.getByRole('heading', { name: 'Projects' })).toBeVisible();
 
 		// The "default" project is auto-created during first setup.
-		const defaultCard = page.getByRole('link').filter({ hasText: 'default' });
+		const defaultCard = page.locator('a').filter({ hasText: 'default' });
 		await expect(defaultCard).toBeVisible({ timeout: 10_000 });
 	});
 
@@ -46,29 +47,30 @@ test.describe('projects', () => {
 		projectsToCleanup.push(name);
 
 		await loginViaUI(page);
-		await page.getByRole('link', { name: 'New project' }).click();
+
+		// "+ New Project" button is in the top-right of the dashboard.
+		await page.getByRole('link', { name: 'New Project' }).click();
 		await expect(page).toHaveURL('/projects/new');
 
-		await expect(page.getByRole('heading', { name: 'New project' })).toBeVisible();
+		await expect(page.getByRole('heading', { name: 'New Project' })).toBeVisible();
 
-		await page.getByLabel('Name').fill(name);
+		await page.getByLabel('Project name').fill(name);
 		await page.getByLabel('Description').fill('E2E test project');
 
-		// Verify namespace preview updates.
+		// Namespace preview updates in the helper text.
 		await expect(page.getByText(`project-${name}`)).toBeVisible();
 
 		await page.getByRole('button', { name: 'Create project' }).click();
 
-		// Should redirect to the new project's detail page.
+		// Should redirect to the new project's canvas page.
 		await expect(page).toHaveURL(`/projects/${name}`, { timeout: 10_000 });
-		await expect(page.getByRole('heading', { name })).toBeVisible();
 	});
 
 	test('project name validation rejects invalid names', async ({ page }) => {
 		await loginViaUI(page);
 		await page.goto('/projects/new');
 
-		const nameInput = page.getByLabel('Name');
+		const nameInput = page.getByLabel('Project name');
 		const submitButton = page.getByRole('button', { name: 'Create project' });
 		const validationError = page.getByText(
 			'Project name must be 1-63 lowercase letters, digits, or hyphens, starting and ending with alphanumeric.'
@@ -90,7 +92,7 @@ test.describe('projects', () => {
 		await expect(validationError).toBeVisible();
 	});
 
-	test('project detail page loads with breadcrumbs and deploy button', async ({
+	test('project canvas page loads with toolbar and breadcrumb', async ({
 		page,
 		request
 	}) => {
@@ -101,58 +103,86 @@ test.describe('projects', () => {
 		await injectToken(page, adminToken);
 		await page.goto(`/projects/${name}`);
 
-		// Breadcrumbs: "Projects" link and namespace.
-		await expect(page.getByRole('link', { name: 'Projects' })).toBeVisible();
-		await expect(page.getByText(`project-${name}`)).toBeVisible();
+		// Toolbar breadcrumb: "Projects" link and project name.
+		await expect(page.getByRole('link', { name: 'Projects' })).toBeVisible({ timeout: 10_000 });
+		await expect(page.getByText(name, { exact: false }).first()).toBeVisible();
 
-		// Project name heading.
-		await expect(page.getByRole('heading', { name })).toBeVisible({ timeout: 10_000 });
+		// "+ Add" button in the toolbar.
+		await expect(page.getByRole('link', { name: 'Add' })).toBeVisible();
 
-		// "Deploy app" link.
-		await expect(page.getByRole('link', { name: 'Deploy app' })).toBeVisible();
-
-		// "Delete project" button.
-		await expect(page.getByRole('button', { name: 'Delete project' })).toBeVisible();
-
-		// Empty state for apps.
-		await expect(page.getByText('No apps in this project')).toBeVisible();
-		await expect(page.getByRole('link', { name: 'Deploy an app' })).toBeVisible();
+		// View toggle buttons.
+		await expect(page.getByTitle('Canvas view')).toBeVisible();
+		await expect(page.getByTitle('List view')).toBeVisible();
 	});
 
-	test('delete project via UI', async ({ page, request }) => {
-		const name = `e2e-del-${randomSuffix()}`;
+	test('list view shows empty state with Deploy an app link', async ({ page, request }) => {
+		const name = `e2e-empty-${randomSuffix()}`;
+		projectsToCleanup.push(name);
 		await createProjectViaAPI(request, adminToken, name);
 
 		await injectToken(page, adminToken);
 		await page.goto(`/projects/${name}`);
 
-		// Wait for the page to load.
-		await expect(page.getByRole('heading', { name })).toBeVisible({ timeout: 10_000 });
+		// Switch to list view to see the empty state message.
+		await page.getByTitle('List view').click();
 
-		// The delete button triggers a prompt() dialog where the user must type
-		// the project name to confirm.
-		page.once('dialog', async (dialog) => {
-			expect(dialog.type()).toBe('prompt');
-			await dialog.accept(name);
+		await expect(page.getByText('No apps in this project')).toBeVisible({ timeout: 10_000 });
+		await expect(page.getByRole('link', { name: 'Deploy an app' })).toBeVisible();
+	});
+
+	test('project settings page renders with delete section', async ({ page, request }) => {
+		const name = `e2e-settdet-${randomSuffix()}`;
+		projectsToCleanup.push(name);
+		await createProjectViaAPI(request, adminToken, name, 'Settings test');
+
+		await injectToken(page, adminToken);
+		await page.goto(`/projects/${name}/settings`);
+
+		await expect(page.getByRole('heading', { name: 'Project Settings' })).toBeVisible({
+			timeout: 10_000
 		});
 
-		await page.getByRole('button', { name: 'Delete project' }).click();
+		// Danger zone with delete button.
+		await expect(page.getByText('Delete Project')).toBeVisible();
+		await expect(page.getByRole('button', { name: 'Delete project' })).toBeVisible();
+	});
+
+	test('delete project via project settings UI', async ({ page, request }) => {
+		const name = `e2e-del-${randomSuffix()}`;
+		await createProjectViaAPI(request, adminToken, name);
+
+		await injectToken(page, adminToken);
+		await page.goto(`/projects/${name}/settings`);
+
+		// Wait for the page to load.
+		await expect(page.getByRole('heading', { name: 'Project Settings' })).toBeVisible({
+			timeout: 10_000
+		});
+
+		// The delete button is disabled until the user types the project name.
+		const deleteBtn = page.getByRole('button', { name: 'Delete project' });
+		await expect(deleteBtn).toBeDisabled();
+
+		// Type the project name into the confirmation input.
+		await page.getByPlaceholder(name).fill(name);
+		await expect(deleteBtn).toBeEnabled();
+		await deleteBtn.click();
 
 		// Should redirect back to the dashboard.
 		await expect(page).toHaveURL('/', { timeout: 10_000 });
 
 		// The deleted project should no longer appear. Project deletion in
 		// Kubernetes may take several seconds to propagate, so allow a longer
-		// timeout and reload the list to get a fresh view.
+		// timeout and reload the list.
 		await expect(async () => {
 			await page.reload();
-			await expect(page.getByRole('link').filter({ hasText: name })).toHaveCount(0);
+			await expect(page.locator('a').filter({ hasText: name })).toHaveCount(0);
 		}).toPass({ timeout: 15_000 });
 
-		// No cleanup needed -- project is already deleted.
+		// No cleanup needed — project is already deleted.
 	});
 
-	test('project card links to detail page', async ({ page, request }) => {
+	test('project card links to canvas page', async ({ page, request }) => {
 		const name = `e2e-link-${randomSuffix()}`;
 		projectsToCleanup.push(name);
 		await createProjectViaAPI(request, adminToken, name);
@@ -161,24 +191,35 @@ test.describe('projects', () => {
 		await page.goto('/');
 
 		// Find the card for our project and click it.
-		const card = page.getByRole('link').filter({ hasText: name });
+		const card = page.locator('a').filter({ hasText: name });
 		await expect(card).toBeVisible({ timeout: 10_000 });
 		await card.click();
 
 		await expect(page).toHaveURL(`/projects/${name}`);
-		await expect(page.getByRole('heading', { name })).toBeVisible({ timeout: 10_000 });
 	});
 
 	test('new project cancel navigates back to dashboard', async ({ page }) => {
 		await loginViaUI(page);
 		await page.goto('/projects/new');
 
-		await expect(page.getByRole('heading', { name: 'New project' })).toBeVisible();
+		await expect(page.getByRole('heading', { name: 'New Project' })).toBeVisible();
 
 		// Click the "Cancel" link.
 		await page.getByRole('link', { name: 'Cancel' }).click();
 
 		await expect(page).toHaveURL('/');
 		await expect(page.getByRole('heading', { name: 'Projects' })).toBeVisible();
+	});
+
+	test('back to projects link on new project page', async ({ page }) => {
+		await loginViaUI(page);
+		await page.goto('/projects/new');
+
+		await expect(page.getByRole('heading', { name: 'New Project' })).toBeVisible();
+
+		// "← Back to Projects" link.
+		await page.getByRole('link', { name: /Back to Projects/ }).click();
+
+		await expect(page).toHaveURL('/');
 	});
 });

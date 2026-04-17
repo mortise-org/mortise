@@ -144,13 +144,13 @@ test.describe('login page', () => {
 		await page.goto('/login');
 
 		await expect(page.getByRole('heading', { name: 'Mortise' })).toBeVisible();
-		await expect(page.getByText('Sign in to your account')).toBeVisible();
+		await expect(page.getByText('Sign in to your platform')).toBeVisible();
 		await expect(page.getByLabel('Email')).toBeVisible();
 		await expect(page.getByLabel('Password')).toBeVisible();
 		await expect(page.getByRole('button', { name: 'Sign in' })).toBeVisible();
 	});
 
-	test('successful login redirects to / and stores token', async ({ page }) => {
+	test('successful login redirects to / and stores mortise_token', async ({ page }) => {
 		await page.goto('/login');
 
 		await page.getByLabel('Email').fill(ADMIN_EMAIL);
@@ -161,7 +161,7 @@ test.describe('login page', () => {
 			page.getByRole('button', { name: 'Sign in' }).click()
 		]);
 
-		const token = await page.evaluate(() => localStorage.getItem('token'));
+		const token = await page.evaluate(() => localStorage.getItem('mortise_token'));
 		expect(token).toBeTruthy();
 	});
 
@@ -172,11 +172,9 @@ test.describe('login page', () => {
 		await page.getByLabel('Password').fill('wrongpassword');
 		await page.getByRole('button', { name: 'Sign in' }).click();
 
-		// The server returns an error; the page renders it in the error div.
-		const errorEl = page.locator('.bg-danger\\/10');
-		await expect(errorEl).toBeVisible({ timeout: 5_000 });
+		// The server returns an error; the page renders it as a text-danger paragraph.
+		await expect(page.locator('p.text-danger')).toBeVisible({ timeout: 5_000 });
 	});
-
 });
 
 // ---------------------------------------------------------------------------
@@ -191,7 +189,7 @@ test.describe('auth redirects', () => {
 	test('visiting / without a token redirects to /login', async ({ page }) => {
 		// Clear any existing token.
 		await page.goto('/login');
-		await page.evaluate(() => localStorage.removeItem('token'));
+		await page.evaluate(() => localStorage.removeItem('mortise_token'));
 
 		await page.goto('/');
 		await page.waitForURL('**/login');
@@ -199,7 +197,7 @@ test.describe('auth redirects', () => {
 
 	test('visiting /projects/default without a token redirects to /login', async ({ page }) => {
 		await page.goto('/login');
-		await page.evaluate(() => localStorage.removeItem('token'));
+		await page.evaluate(() => localStorage.removeItem('mortise_token'));
 
 		await page.goto('/projects/default');
 		await page.waitForURL('**/login');

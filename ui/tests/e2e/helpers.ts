@@ -61,12 +61,12 @@ export async function loginViaUI(page: Page): Promise<void> {
 }
 
 /**
- * Inject a JWT token into localStorage so subsequent page.goto() calls
- * are authenticated without needing the login UI.
+ * Inject a JWT token into localStorage (key: mortise_token) so subsequent
+ * page.goto() calls are authenticated without needing the login UI.
  */
 export async function injectToken(page: Page, token: string): Promise<void> {
 	await page.goto('/login');
-	await page.evaluate((t) => localStorage.setItem('token', t), token);
+	await page.evaluate((t) => localStorage.setItem('mortise_token', t), token);
 }
 
 /** Create a project via the API and wait for its namespace to be ready. */

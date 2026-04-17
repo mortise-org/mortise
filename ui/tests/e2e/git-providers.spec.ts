@@ -1,64 +1,17 @@
-import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
+import { expect, test } from '@playwright/test';
+import {
+	ensureAdmin,
+	loginViaAPI,
+	injectToken,
+	randomSuffix,
+	deleteGitProviderViaAPI
+} from './helpers';
 
 // End-to-end CRUD flow for GitProvider via the Mortise UI.
 //
-// Assumes an operator is reachable at MORTISE_BASE_URL and admin credentials
-// are supplied via MORTISE_ADMIN_EMAIL / MORTISE_ADMIN_PASSWORD.
-
-const BASE_URL = process.env.MORTISE_BASE_URL ?? 'http://127.0.0.1:8080';
-const ADMIN_EMAIL = process.env.MORTISE_ADMIN_EMAIL;
-const ADMIN_PASSWORD = process.env.MORTISE_ADMIN_PASSWORD;
-
-if (!ADMIN_EMAIL || !ADMIN_PASSWORD) {
-	throw new Error(
-		'MORTISE_ADMIN_EMAIL and MORTISE_ADMIN_PASSWORD must be set for the E2E suite.'
-	);
-}
-
-function randomSuffix(): string {
-	return Math.random().toString(36).slice(2, 8);
-}
-
-// Best-effort admin bootstrap. A 409 means setup has already run — we don't
-// care, we only need SOME admin present. Any other failure is surfaced so the
-// test fails fast rather than getting stuck at the login screen later.
-async function ensureAdmin(request: APIRequestContext): Promise<void> {
-	const res = await request.post('/api/auth/setup', {
-		data: { email: ADMIN_EMAIL, password: ADMIN_PASSWORD },
-		failOnStatusCode: false
-	});
-	if (res.status() === 409) {
-		return;
-	}
-	if (!res.ok()) {
-		const body = await res.text().catch(() => '');
-		throw new Error(`admin setup failed: HTTP ${res.status()} ${body}`);
-	}
-}
-
-async function loginViaAPI(request: APIRequestContext): Promise<string> {
-	const res = await request.post('/api/auth/login', {
-		data: { email: ADMIN_EMAIL, password: ADMIN_PASSWORD }
-	});
-	if (!res.ok()) {
-		throw new Error(`login failed: HTTP ${res.status()}`);
-	}
-	const body = await res.json();
-	if (!body.token) {
-		throw new Error('login response missing token');
-	}
-	return body.token as string;
-}
-
-async function loginViaUI(page: Page): Promise<void> {
-	await page.goto('/login');
-	await page.getByLabel('Email').fill(ADMIN_EMAIL!);
-	await page.getByLabel('Password').fill(ADMIN_PASSWORD!);
-	await Promise.all([
-		page.waitForURL((url) => url.pathname === '/'),
-		page.getByRole('button', { name: 'Sign in' }).click()
-	]);
-}
+// Platform settings (including Git Providers) are now at /admin/settings.
+// The old /settings/git-providers redirects to /admin/settings via a
+// client-side redirect.
 
 test.describe('git providers', () => {
 	let providerName: string;
@@ -74,63 +27,121 @@ test.describe('git providers', () => {
 			return;
 		}
 		try {
-			await request.delete(`/api/gitproviders/${providerName}`, {
-				headers: { Authorization: `Bearer ${adminToken}` },
-				failOnStatusCode: false
-			});
+			await deleteGitProviderViaAPI(request, adminToken, providerName);
 		} catch {
-			// swallow — the test-happy-path already deleted it, or the API is
-			// unreachable. Either way, don't mask the real failure.
+			// swallow — the test may have already deleted it
 		}
+	});
+
+	test('/settings/git-providers redirects to /admin/settings', async ({ page }) => {
+		await injectToken(page, adminToken);
+
+		await page.goto('/settings/git-providers');
+
+		// Should redirect to /admin/settings.
+		await expect(page).toHaveURL('/admin/settings', { timeout: 5_000 });
+	});
+
+	test('platform settings page renders with Git Providers section', async ({ page }) => {
+		await injectToken(page, adminToken);
+		await page.goto('/admin/settings');
+
+		await expect(
+			page.getByRole('heading', { name: 'Platform Settings' })
+		).toBeVisible({ timeout: 10_000 });
+
+		await expect(page.getByText('Git Providers')).toBeVisible();
+		await expect(page.getByRole('button', { name: 'Add Provider' })).toBeVisible();
 	});
 
 	test('create and delete a GitHub provider', async ({ page }) => {
 		providerName = `e2e-github-${randomSuffix()}`;
 
-		await loginViaUI(page);
+		await injectToken(page, adminToken);
+		await page.goto('/admin/settings');
 
-		await page.goto('/settings/git-providers');
-		await expect(page.getByRole('heading', { name: 'Git Providers' })).toBeVisible();
+		await expect(
+			page.getByRole('heading', { name: 'Platform Settings' })
+		).toBeVisible({ timeout: 10_000 });
 
-		// Empty state shows two options. Click "Show form" to open the manual
-		// OAuth provider creation form.
-		await expect(page.getByText('Use an existing OAuth App')).toBeVisible();
-		await page.getByRole('button', { name: 'Show form' }).click();
+		// Click "Add Provider" to show the form.
+		await page.getByRole('button', { name: 'Add Provider' }).click();
 
-		// Fill the form. getByLabel resolves against the <label for=...> pairs.
-		await page.getByLabel('Name').fill(providerName);
-		await page.getByLabel('Type').selectOption('github');
+		// Form appears with provider fields.
+		await expect(page.getByText('New Git Provider')).toBeVisible();
 
-		const hostInput = page.getByLabel('Host');
-		await expect(hostInput).toHaveValue('https://github.com');
+		// Fill in the form. The labels use xs text-gray-400 (getByText works
+		// since they are associated labels in the form grid).
+		await page.getByPlaceholder('github-main').fill(providerName);
 
-		await page.getByLabel('OAuth Client ID').fill('e2e-test-client-id');
-		await page.getByLabel('OAuth Client Secret').fill('e2e-test-client-secret');
+		// Type selector: default is github, keep it.
+		// Host URL.
+		await page.getByPlaceholder('https://github.com').fill('https://github.com');
 
-		// "Generate" button is inline with the Webhook Secret label. The
-		// secret input itself is type=password so we read its value directly.
-		const webhookSecretInput = page.getByLabel('Webhook Secret');
-		await page.getByRole('button', { name: 'Generate' }).click();
-		await expect(webhookSecretInput).not.toHaveValue('');
+		// OAuth fields.
+		await page.getByPlaceholder('github-main').fill(providerName); // name input has this placeholder
+		// The OAuth client ID and secret inputs don't have placeholders; use order.
+		const oauthClientIdInput = page.locator('input[type="text"]').nth(1);
+		const oauthClientSecretInput = page.locator('input[type="password"]').first();
+		await oauthClientIdInput.fill('e2e-test-client-id');
+		await oauthClientSecretInput.fill('e2e-test-client-secret');
 
-		await page.getByRole('button', { name: 'Create provider' }).click();
+		// Webhook secret.
+		const webhookInput = page.locator('input[type="text"]').last();
+		await webhookInput.fill('e2e-webhook-secret');
 
-		// The provider table should now render with our row. Phase may or may
-		// not have populated yet — assert the row exists and that a Delete
-		// action is wired up for it.
-		const row = page.getByRole('row').filter({ hasText: providerName });
-		await expect(row).toBeVisible({ timeout: 10_000 });
-		await expect(row.getByRole('cell').nth(1)).toHaveText(/github/i);
+		await page.getByRole('button', { name: 'Create' }).click();
 
-		// Confirm the browser dialog, then click Delete.
+		// The form should close and the provider list should show our provider.
+		await expect(page.getByText(providerName)).toBeVisible({ timeout: 10_000 });
+
+		// Delete the provider via the trash icon button.
+		// The provider row has a Trash2 icon button.
+		const providerRow = page.locator('div').filter({ hasText: providerName }).last();
+		await providerRow.getByRole('button').last().click();
+
+		// Dialog confirmation.
 		page.once('dialog', (dialog) => dialog.accept());
-		await row.getByRole('button', { name: 'Delete' }).click();
 
-		await expect(row).toHaveCount(0, { timeout: 5_000 });
-		// After deleting the last provider, the empty state reappears.
-		await expect(page.getByText('Use an existing OAuth App')).toBeVisible();
+		// Provider should be gone.
+		await expect(page.getByText(providerName)).toHaveCount(0, { timeout: 5_000 });
 
 		// Test passed — skip afterEach's delete fallback.
 		providerName = '';
+	});
+
+	test('platform settings shows General and DNS sections', async ({ page }) => {
+		await injectToken(page, adminToken);
+		await page.goto('/admin/settings');
+
+		await expect(
+			page.getByRole('heading', { name: 'Platform Settings' })
+		).toBeVisible({ timeout: 10_000 });
+
+		// General section.
+		await expect(page.getByText('General')).toBeVisible();
+		await expect(page.getByPlaceholder('yourdomain.com')).toBeVisible();
+
+		// DNS section.
+		await expect(page.getByText('DNS')).toBeVisible();
+
+		// Users section.
+		await expect(page.getByText('Users & Invites')).toBeVisible();
+	});
+
+	test('filter input narrows visible sections', async ({ page }) => {
+		await injectToken(page, adminToken);
+		await page.goto('/admin/settings');
+
+		await expect(
+			page.getByRole('heading', { name: 'Platform Settings' })
+		).toBeVisible({ timeout: 10_000 });
+
+		const filterInput = page.getByPlaceholder('Filter settings...');
+		await expect(filterInput).toBeVisible();
+
+		// Typing 'git' should keep the git providers section visible.
+		await filterInput.fill('git');
+		await expect(page.getByText('Git Providers')).toBeVisible();
 	});
 });

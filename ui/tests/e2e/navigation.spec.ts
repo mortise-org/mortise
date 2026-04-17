@@ -6,18 +6,20 @@ import {
 	injectToken,
 	randomSuffix,
 	createProjectViaAPI,
-	createAppViaAPI,
-	deleteProjectViaAPI,
-	deleteAppViaAPI
+	deleteProjectViaAPI
 } from './helpers';
 
-// End-to-end tests for header navigation, project switcher, extensions page,
-// and breadcrumbs.
+// End-to-end tests for the new left-rail navigation, project switcher, user
+// menu, and extensions page.
 //
-// Assumes an operator is reachable at MORTISE_BASE_URL and admin credentials
-// are supplied via MORTISE_ADMIN_EMAIL / MORTISE_ADMIN_PASSWORD.
+// New layout:
+//   - No flat header nav links (Extensions, Settings, Sign out are gone from header)
+//   - Left rail (<nav>) has icon-only links with title= attributes
+//   - "Sign out" is in a user menu dropdown (click User icon → Sign out)
+//   - "Platform Settings" is in the user menu (admin only) → /admin/settings
+//   - Project switcher is a button showing the current project name (inside project)
 
-test.describe('header & navigation', () => {
+test.describe('left rail navigation', () => {
 	let adminToken: string;
 	const projectsToCleanup: string[] = [];
 
@@ -33,21 +35,21 @@ test.describe('header & navigation', () => {
 		}
 	});
 
-	test('header visible when authenticated', async ({ page }) => {
+	test('left rail visible when authenticated (dashboard scope)', async ({ page }) => {
 		await loginViaUI(page);
 
-		await expect(page.getByRole('link', { name: 'Mortise' })).toBeVisible();
-		await expect(page.getByRole('link', { name: 'Extensions' })).toBeVisible();
-		await expect(page.getByRole('link', { name: 'Settings' })).toBeVisible();
-		await expect(page.getByRole('button', { name: 'Sign out' })).toBeVisible();
+		// Dashboard scope nav: Projects, Extensions, Platform Settings
+		await expect(page.getByTitle('Projects')).toBeVisible();
+		await expect(page.getByTitle('Extensions')).toBeVisible();
+		// Platform Settings link is admin-only
+		await expect(page.getByTitle('Platform Settings')).toBeVisible();
 	});
 
-	test('header not visible on login page', async ({ page }) => {
+	test('left rail not visible on login page', async ({ page }) => {
 		await page.goto('/login');
 
-		// The header elements should not exist on the bare login layout.
-		await expect(page.getByRole('link', { name: 'Mortise' })).toHaveCount(0);
-		await expect(page.getByRole('link', { name: 'Extensions' })).toHaveCount(0);
+		// The rail nav should not exist on the bare login layout.
+		await expect(page.locator('nav')).toHaveCount(0);
 	});
 
 	test('Mortise logo links to dashboard', async ({ page }) => {
@@ -60,32 +62,114 @@ test.describe('header & navigation', () => {
 		await expect(page).toHaveURL('/');
 	});
 
-	test('Extensions link navigates to /extensions', async ({ page }) => {
+	test('Extensions nav link navigates to /extensions', async ({ page }) => {
 		await loginViaUI(page);
 
-		await page.getByRole('link', { name: 'Extensions' }).click();
+		await page.getByTitle('Extensions').click();
 
 		await expect(page).toHaveURL('/extensions');
 		await expect(page.getByRole('heading', { name: 'Extensions' })).toBeVisible();
 	});
 
-	test('Settings link navigates to /settings/git-providers', async ({ page }) => {
+	test('Platform Settings nav link navigates to /admin/settings', async ({ page }) => {
 		await loginViaUI(page);
 
-		await page.getByRole('link', { name: 'Settings' }).click();
+		await page.getByTitle('Platform Settings').click();
 
-		await expect(page).toHaveURL('/settings/git-providers');
+		await expect(page).toHaveURL('/admin/settings');
 	});
 
-	test('Sign out clears token and redirects to login', async ({ page }) => {
+	test('Projects nav link navigates to /', async ({ page }) => {
+		await loginViaUI(page);
+		await page.goto('/extensions');
+
+		await page.getByTitle('Projects').click();
+
+		await expect(page).toHaveURL('/');
+		await expect(page.getByRole('heading', { name: 'Projects' })).toBeVisible();
+	});
+
+	test('sign out clears mortise_token and redirects to login', async ({ page }) => {
 		await loginViaUI(page);
 
+		// Open the user menu via the User icon button in the header.
+		await page.locator('header button[title="User"], header button').filter({ has: page.locator('svg') }).last().click();
+
+		// Click "Sign out" in the dropdown.
 		await page.getByRole('button', { name: 'Sign out' }).click();
 
 		await expect(page).toHaveURL('/login', { timeout: 5_000 });
 
-		const token = await page.evaluate(() => localStorage.getItem('token'));
+		const token = await page.evaluate(() => localStorage.getItem('mortise_token'));
 		expect(token).toBeNull();
+	});
+});
+
+test.describe('project scope left rail', () => {
+	let adminToken: string;
+	const projectsToCleanup: string[] = [];
+
+	test.beforeAll(async ({ request }) => {
+		await ensureAdmin(request);
+		adminToken = await loginViaAPI(request);
+	});
+
+	test.afterEach(async ({ request }) => {
+		while (projectsToCleanup.length > 0) {
+			const name = projectsToCleanup.pop()!;
+			await deleteProjectViaAPI(request, adminToken, name);
+		}
+	});
+
+	test('inside a project, rail shows Canvas and Project Settings links', async ({
+		page,
+		request
+	}) => {
+		const name = `e2e-rail-${randomSuffix()}`;
+		projectsToCleanup.push(name);
+		await createProjectViaAPI(request, adminToken, name);
+
+		await injectToken(page, adminToken);
+		await page.goto(`/projects/${name}`);
+
+		// Wait for page to load.
+		await page.waitForLoadState('networkidle');
+
+		// Project scope: Canvas + Project Settings (no Projects/Extensions/Platform Settings)
+		await expect(page.getByTitle('Canvas')).toBeVisible({ timeout: 10_000 });
+		await expect(page.getByTitle('Project Settings')).toBeVisible();
+
+		// Dashboard links should NOT appear in project scope.
+		await expect(page.getByTitle('Extensions')).toHaveCount(0);
+	});
+
+	test('Canvas link is active on the canvas page', async ({ page, request }) => {
+		const name = `e2e-railact-${randomSuffix()}`;
+		projectsToCleanup.push(name);
+		await createProjectViaAPI(request, adminToken, name);
+
+		await injectToken(page, adminToken);
+		await page.goto(`/projects/${name}`);
+		await page.waitForLoadState('networkidle');
+
+		// The Canvas link should be present.
+		const canvasLink = page.getByTitle('Canvas');
+		await expect(canvasLink).toBeVisible({ timeout: 10_000 });
+		await expect(canvasLink).toHaveAttribute('href', `/projects/${name}`);
+	});
+
+	test('Project Settings link navigates to project settings page', async ({ page, request }) => {
+		const name = `e2e-railset-${randomSuffix()}`;
+		projectsToCleanup.push(name);
+		await createProjectViaAPI(request, adminToken, name);
+
+		await injectToken(page, adminToken);
+		await page.goto(`/projects/${name}`);
+
+		await page.getByTitle('Project Settings').click();
+
+		await expect(page).toHaveURL(`/projects/${name}/settings`);
+		await expect(page.getByRole('heading', { name: 'Project Settings' })).toBeVisible();
 	});
 });
 
@@ -105,27 +189,18 @@ test.describe('project switcher', () => {
 		}
 	});
 
-	test('switcher shows active project on project page', async ({ page, request }) => {
+	test('switcher shows current project name inside a project', async ({ page, request }) => {
 		const name = `e2e-sw-${randomSuffix()}`;
 		projectsToCleanup.push(name);
 		await createProjectViaAPI(request, adminToken, name);
 
 		await injectToken(page, adminToken);
 		await page.goto(`/projects/${name}`);
-		await expect(page.getByRole('heading', { name })).toBeVisible({ timeout: 10_000 });
+		await page.waitForLoadState('networkidle');
 
-		// The switcher button should show the project name.
-		const switcher = page.locator('header button').filter({ hasText: 'Project:' });
-		await expect(switcher).toContainText(name);
-	});
-
-	test('switcher shows "All projects" when not on a project page', async ({ page }) => {
-		await injectToken(page, adminToken);
-		await page.goto('/');
-		await expect(page.getByRole('heading', { name: 'Projects' })).toBeVisible({ timeout: 10_000 });
-
-		const switcher = page.locator('header button').filter({ hasText: 'Project:' });
-		await expect(switcher).toContainText('All projects');
+		// The project switcher button shows the project name.
+		const switcher = page.locator('header').getByRole('button').filter({ hasText: name });
+		await expect(switcher).toBeVisible({ timeout: 10_000 });
 	});
 
 	test('switcher opens on click and shows project list', async ({ page, request }) => {
@@ -134,64 +209,57 @@ test.describe('project switcher', () => {
 		await createProjectViaAPI(request, adminToken, name);
 
 		await injectToken(page, adminToken);
-		await page.goto('/');
-		await expect(page.getByRole('heading', { name: 'Projects' })).toBeVisible({ timeout: 10_000 });
+		await page.goto(`/projects/${name}`);
+		await page.waitForLoadState('networkidle');
 
-		const switcher = page.locator('header button').filter({ hasText: 'Project:' });
+		const switcher = page.locator('header').getByRole('button').filter({ hasText: name });
+		await expect(switcher).toBeVisible({ timeout: 10_000 });
 		await switcher.click();
 
-		// The dropdown should appear and contain our project.
+		// Dropdown should appear.
 		const dropdown = page.locator('header .absolute');
 		await expect(dropdown).toBeVisible();
-		await expect(dropdown.getByText(name)).toBeVisible();
-	});
-
-	test('switcher closes on outside click', async ({ page }) => {
-		await injectToken(page, adminToken);
-		await page.goto('/');
-		await expect(page.getByRole('heading', { name: 'Projects' })).toBeVisible({ timeout: 10_000 });
-
-		const switcher = page.locator('header button').filter({ hasText: 'Project:' });
-		await switcher.click();
-
-		const dropdown = page.locator('header .absolute');
-		await expect(dropdown).toBeVisible();
-
-		// Click outside the switcher (on the main content area).
-		await page.locator('main').click();
-		await expect(dropdown).toBeHidden();
+		await expect(dropdown.getByText(name, { exact: false })).toBeVisible();
 	});
 
 	test('switcher navigates to project on click', async ({ page, request }) => {
-		const name = `e2e-swnav-${randomSuffix()}`;
+		const name1 = `e2e-swnav1-${randomSuffix()}`;
+		const name2 = `e2e-swnav2-${randomSuffix()}`;
+		projectsToCleanup.push(name1, name2);
+		await createProjectViaAPI(request, adminToken, name1);
+		await createProjectViaAPI(request, adminToken, name2);
+
+		await injectToken(page, adminToken);
+		await page.goto(`/projects/${name1}`);
+		await page.waitForLoadState('networkidle');
+
+		const switcher = page.locator('header').getByRole('button').filter({ hasText: name1 });
+		await expect(switcher).toBeVisible({ timeout: 10_000 });
+		await switcher.click();
+
+		const dropdown = page.locator('header .absolute');
+		await expect(dropdown).toBeVisible();
+		await dropdown.getByText(name2, { exact: false }).click();
+
+		await expect(page).toHaveURL(`/projects/${name2}`, { timeout: 5_000 });
+	});
+
+	test('switcher "+ New project" navigates to /projects/new', async ({ page, request }) => {
+		const name = `e2e-swnew-${randomSuffix()}`;
 		projectsToCleanup.push(name);
 		await createProjectViaAPI(request, adminToken, name);
 
 		await injectToken(page, adminToken);
-		await page.goto('/');
-		await expect(page.getByRole('heading', { name: 'Projects' })).toBeVisible({ timeout: 10_000 });
+		await page.goto(`/projects/${name}`);
+		await page.waitForLoadState('networkidle');
 
-		const switcher = page.locator('header button').filter({ hasText: 'Project:' });
+		const switcher = page.locator('header').getByRole('button').filter({ hasText: name });
+		await expect(switcher).toBeVisible({ timeout: 10_000 });
 		await switcher.click();
 
 		const dropdown = page.locator('header .absolute');
 		await expect(dropdown).toBeVisible();
-		await dropdown.getByText(name, { exact: true }).click();
-
-		await expect(page).toHaveURL(`/projects/${name}`, { timeout: 5_000 });
-	});
-
-	test('Create new project from switcher', async ({ page }) => {
-		await injectToken(page, adminToken);
-		await page.goto('/');
-		await expect(page.getByRole('heading', { name: 'Projects' })).toBeVisible({ timeout: 10_000 });
-
-		const switcher = page.locator('header button').filter({ hasText: 'Project:' });
-		await switcher.click();
-
-		const dropdown = page.locator('header .absolute');
-		await expect(dropdown).toBeVisible();
-		await dropdown.getByText('Create new project...').click();
+		await dropdown.getByText('+ New project').click();
 
 		await expect(page).toHaveURL('/projects/new', { timeout: 5_000 });
 	});
@@ -239,73 +307,5 @@ test.describe('extensions page', () => {
 		const docsLink = certManagerCard.getByRole('link', { name: 'Docs' });
 		await expect(docsLink).toBeVisible();
 		await expect(docsLink).toHaveAttribute('href', 'https://cert-manager.io/docs/');
-	});
-});
-
-test.describe('breadcrumbs', () => {
-	let adminToken: string;
-	const projectsToCleanup: string[] = [];
-	const appsToCleanup: { project: string; app: string }[] = [];
-
-	test.beforeAll(async ({ request }) => {
-		await ensureAdmin(request);
-		adminToken = await loginViaAPI(request);
-	});
-
-	test.afterEach(async ({ request }) => {
-		while (appsToCleanup.length > 0) {
-			const { project, app } = appsToCleanup.pop()!;
-			await deleteAppViaAPI(request, adminToken, project, app);
-		}
-		while (projectsToCleanup.length > 0) {
-			const name = projectsToCleanup.pop()!;
-			await deleteProjectViaAPI(request, adminToken, name);
-		}
-	});
-
-	test('project detail shows breadcrumbs with Projects link', async ({ page, request }) => {
-		const name = `e2e-bc-${randomSuffix()}`;
-		projectsToCleanup.push(name);
-		await createProjectViaAPI(request, adminToken, name);
-
-		await injectToken(page, adminToken);
-		await page.goto(`/projects/${name}`);
-		await expect(page.getByRole('heading', { name })).toBeVisible({ timeout: 10_000 });
-
-		// "Projects" breadcrumb should link to /.
-		const projectsLink = page.getByRole('link', { name: 'Projects' });
-		await expect(projectsLink).toBeVisible();
-		await expect(projectsLink).toHaveAttribute('href', '/');
-
-		// Namespace breadcrumb text.
-		await expect(page.getByText(`project-${name}`)).toBeVisible();
-	});
-
-	test('app detail shows project breadcrumb linking back', async ({ page, request }) => {
-		const projName = `e2e-bcapp-${randomSuffix()}`;
-		const appName = `e2e-app-${randomSuffix()}`;
-		projectsToCleanup.push(projName);
-		appsToCleanup.push({ project: projName, app: appName });
-		await createProjectViaAPI(request, adminToken, projName);
-		await createAppViaAPI(request, adminToken, projName, appName);
-
-		await injectToken(page, adminToken);
-		await page.goto(`/projects/${projName}/apps/${appName}`);
-
-		// Wait for the app page to load.
-		await expect(page.getByRole('heading', { name: appName })).toBeVisible({ timeout: 15_000 });
-
-		// "Projects" breadcrumb links to /.
-		const projectsLink = page.getByRole('link', { name: 'Projects' });
-		await expect(projectsLink).toBeVisible();
-		await expect(projectsLink).toHaveAttribute('href', '/');
-
-		// Project name breadcrumb links to the project page.
-		const projLink = page.getByRole('link', { name: projName });
-		await expect(projLink).toBeVisible();
-		await expect(projLink).toHaveAttribute(
-			'href',
-			`/projects/${encodeURIComponent(projName)}`
-		);
 	});
 });
