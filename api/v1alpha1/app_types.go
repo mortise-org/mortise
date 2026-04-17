@@ -285,6 +285,14 @@ type AppSpec struct {
 	// +optional
 	Credentials []Credential `json:"credentials,omitempty"`
 
+	// SharedVars are app-wide env vars visible to every environment of this
+	// App. They sit at priority level 3 in the variable resolution order
+	// (spec §5.8b): platform defaults < bound credentials < sharedVars <
+	// env-level vars. Use for values like LOG_LEVEL, SENTRY_DSN, or feature
+	// flags that should not be repeated per environment.
+	// +optional
+	SharedVars []EnvVar `json:"sharedVars,omitempty"`
+
 	Environments []Environment `json:"environments,omitempty"`
 
 	Preview *PreviewConfig `json:"preview,omitempty"`

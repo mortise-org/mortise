@@ -468,7 +468,9 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 		replicas = *env.Replicas
 	}
 
-	envVars := toEnvVars(env.Env)
+	// Build env vars in resolution order (spec §5.8b): bound credentials <
+	// sharedVars < env-level vars. Later slices override earlier on key conflict.
+	var layers [][]corev1.EnvVar
 
 	if len(env.Bindings) > 0 {
 		resolver := &bindings.Resolver{Client: r.Client}
@@ -476,8 +478,16 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 		if err != nil {
 			return fmt.Errorf("resolve bindings: %w", err)
 		}
-		envVars = append(boundVars, envVars...)
+		layers = append(layers, boundVars)
 	}
+
+	if len(app.Spec.SharedVars) > 0 {
+		layers = append(layers, toEnvVars(app.Spec.SharedVars))
+	}
+
+	layers = append(layers, toEnvVars(env.Env))
+
+	envVars := mergeEnvVars(layers...)
 
 	containers := []corev1.Container{
 		{
@@ -1213,6 +1223,24 @@ func toEnvVars(envs []mortisev1alpha1.EnvVar) []corev1.EnvVar {
 			ev.Value = ""
 		}
 		result = append(result, ev)
+	}
+	return result
+}
+
+// mergeEnvVars merges multiple env var slices in priority order. Each
+// successive layer overrides earlier layers when keys collide (spec §5.8b).
+func mergeEnvVars(layers ...[]corev1.EnvVar) []corev1.EnvVar {
+	seen := make(map[string]int) // name → index in result
+	var result []corev1.EnvVar
+	for _, layer := range layers {
+		for _, ev := range layer {
+			if idx, ok := seen[ev.Name]; ok {
+				result[idx] = ev
+			} else {
+				seen[ev.Name] = len(result)
+				result = append(result, ev)
+			}
+		}
 	}
 	return result
 }

@@ -2409,6 +2409,272 @@ var _ = Describe("App Controller — git source", func() {
 			Expect(dep.Spec.Template.Spec.Containers[0].Ports[0].ContainerPort).To(Equal(int32(3000)))
 		})
 	})
+
+	Context("sharedVars (spec §5.8b)", func() {
+		ctx := context.Background()
+
+		It("should inject sharedVars into every environment's Deployment", func() {
+			appName := "shared-vars-multi-env"
+			app := &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      appName,
+					Namespace: namespace,
+				},
+				Spec: mortisev1alpha1.AppSpec{
+					Source: mortisev1alpha1.AppSource{
+						Type:  mortisev1alpha1.SourceTypeImage,
+						Image: testImageNginx,
+					},
+					Network: mortisev1alpha1.NetworkConfig{Public: true},
+					SharedVars: []mortisev1alpha1.EnvVar{
+						{Name: "LOG_LEVEL", Value: "info"},
+						{Name: "SENTRY_DSN", Value: "https://sentry.example.com/1"},
+					},
+					Environments: []mortisev1alpha1.Environment{
+						{
+							Name:   "production",
+							Domain: "sv-prod.example.com",
+						},
+						{
+							Name:   "staging",
+							Domain: "sv-staging.example.com",
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			for _, envName := range []string{"production", "staging"} {
+				var dep appsv1.Deployment
+				Expect(k8sClient.Get(ctx, types.NamespacedName{
+					Name: appName + "-" + envName, Namespace: namespace,
+				}, &dep)).To(Succeed())
+
+				envVars := dep.Spec.Template.Spec.Containers[0].Env
+				logVar := findEnvVar(envVars, "LOG_LEVEL")
+				Expect(logVar).NotTo(BeNil(), "LOG_LEVEL missing in %s", envName)
+				Expect(logVar.Value).To(Equal("info"))
+
+				sentryVar := findEnvVar(envVars, "SENTRY_DSN")
+				Expect(sentryVar).NotTo(BeNil(), "SENTRY_DSN missing in %s", envName)
+				Expect(sentryVar.Value).To(Equal("https://sentry.example.com/1"))
+			}
+		})
+
+		It("should let env-level vars override sharedVars on key conflict", func() {
+			appName := "shared-vars-override"
+			app := &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      appName,
+					Namespace: namespace,
+				},
+				Spec: mortisev1alpha1.AppSpec{
+					Source: mortisev1alpha1.AppSource{
+						Type:  mortisev1alpha1.SourceTypeImage,
+						Image: testImageNginx,
+					},
+					Network: mortisev1alpha1.NetworkConfig{Public: true},
+					SharedVars: []mortisev1alpha1.EnvVar{
+						{Name: "LOG_LEVEL", Value: "info"},
+						{Name: "FEATURE_FLAG", Value: "off"},
+					},
+					Environments: []mortisev1alpha1.Environment{
+						{
+							Name:   "production",
+							Domain: "svo-prod.example.com",
+							Env: []mortisev1alpha1.EnvVar{
+								{Name: "LOG_LEVEL", Value: "warn"},
+							},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var dep appsv1.Deployment
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName + "-production", Namespace: namespace,
+			}, &dep)).To(Succeed())
+
+			envVars := dep.Spec.Template.Spec.Containers[0].Env
+
+			// Env-level LOG_LEVEL=warn should override sharedVars LOG_LEVEL=info
+			logVar := findEnvVar(envVars, "LOG_LEVEL")
+			Expect(logVar).NotTo(BeNil())
+			Expect(logVar.Value).To(Equal("warn"))
+
+			// FEATURE_FLAG from sharedVars should still be present
+			ffVar := findEnvVar(envVars, "FEATURE_FLAG")
+			Expect(ffVar).NotTo(BeNil())
+			Expect(ffVar.Value).To(Equal("off"))
+		})
+
+		It("should merge bound credentials, sharedVars, and env vars in priority order", func() {
+			dbAppName := "sv-db"
+			apiAppName := "sv-api"
+
+			dbApp := &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      dbAppName,
+					Namespace: namespace,
+				},
+				Spec: mortisev1alpha1.AppSpec{
+					Source: mortisev1alpha1.AppSource{
+						Type:  mortisev1alpha1.SourceTypeImage,
+						Image: "postgres:16",
+					},
+					Network: mortisev1alpha1.NetworkConfig{Public: false},
+					Credentials: []mortisev1alpha1.Credential{
+						{Name: "DATABASE_URL", Value: "postgres://sv-db/postgres"},
+						{Name: "host"},
+						{Name: "port"},
+					},
+					Environments: []mortisev1alpha1.Environment{
+						{Name: "production", Replicas: ptr.To[int32](1)},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, dbApp)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, dbApp)).To(Succeed()) }()
+
+			// Reconcile db first so its Service exists
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: dbAppName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			apiApp := &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      apiAppName,
+					Namespace: namespace,
+				},
+				Spec: mortisev1alpha1.AppSpec{
+					Source: mortisev1alpha1.AppSource{
+						Type:  mortisev1alpha1.SourceTypeImage,
+						Image: "my-api:v1",
+					},
+					Network: mortisev1alpha1.NetworkConfig{Public: true},
+					SharedVars: []mortisev1alpha1.EnvVar{
+						{Name: "LOG_LEVEL", Value: "info"},
+						// sharedVars should override bound "host" credential
+						{Name: "host", Value: "custom-host.example.com"},
+					},
+					Environments: []mortisev1alpha1.Environment{
+						{
+							Name:   "production",
+							Domain: "sv-api.example.com",
+							Bindings: []mortisev1alpha1.Binding{
+								{Ref: dbAppName},
+							},
+							Env: []mortisev1alpha1.EnvVar{
+								{Name: "NODE_ENV", Value: "production"},
+							},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, apiApp)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, apiApp)).To(Succeed()) }()
+
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: apiAppName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var dep appsv1.Deployment
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: apiAppName + "-production", Namespace: namespace,
+			}, &dep)).To(Succeed())
+
+			envVars := dep.Spec.Template.Spec.Containers[0].Env
+
+			// Bound credential: DATABASE_URL should be a secretKeyRef
+			dbURLVar := findEnvVar(envVars, "DATABASE_URL")
+			Expect(dbURLVar).NotTo(BeNil())
+			Expect(dbURLVar.ValueFrom).NotTo(BeNil())
+			Expect(dbURLVar.ValueFrom.SecretKeyRef.Name).To(Equal("sv-db-credentials"))
+
+			// sharedVars override bound credential: host should be the sharedVars value
+			hostVar := findEnvVar(envVars, "host")
+			Expect(hostVar).NotTo(BeNil())
+			Expect(hostVar.Value).To(Equal("custom-host.example.com"))
+			Expect(hostVar.ValueFrom).To(BeNil())
+
+			// sharedVars: LOG_LEVEL should be present
+			logVar := findEnvVar(envVars, "LOG_LEVEL")
+			Expect(logVar).NotTo(BeNil())
+			Expect(logVar.Value).To(Equal("info"))
+
+			// Env-level: NODE_ENV should be present
+			nodeVar := findEnvVar(envVars, "NODE_ENV")
+			Expect(nodeVar).NotTo(BeNil())
+			Expect(nodeVar.Value).To(Equal("production"))
+
+			// Bound credential: port should still be present (not overridden)
+			portVar := findEnvVar(envVars, "port")
+			Expect(portVar).NotTo(BeNil())
+			Expect(portVar.Value).To(Equal("80"))
+		})
+
+		It("should not change behavior when sharedVars is empty", func() {
+			appName := "shared-vars-empty"
+			app := &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      appName,
+					Namespace: namespace,
+				},
+				Spec: mortisev1alpha1.AppSpec{
+					Source: mortisev1alpha1.AppSource{
+						Type:  mortisev1alpha1.SourceTypeImage,
+						Image: testImageNginx,
+					},
+					Network: mortisev1alpha1.NetworkConfig{Public: true},
+					Environments: []mortisev1alpha1.Environment{
+						{
+							Name:   "production",
+							Domain: "sve-prod.example.com",
+							Env: []mortisev1alpha1.EnvVar{
+								{Name: "PORT", Value: "3000"},
+							},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var dep appsv1.Deployment
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName + "-production", Namespace: namespace,
+			}, &dep)).To(Succeed())
+
+			envVars := dep.Spec.Template.Spec.Containers[0].Env
+			Expect(envVars).To(HaveLen(1))
+			Expect(envVars[0].Name).To(Equal("PORT"))
+			Expect(envVars[0].Value).To(Equal("3000"))
+		})
+	})
 })
 
 func findEnvVar(envVars []corev1.EnvVar, name string) *corev1.EnvVar {

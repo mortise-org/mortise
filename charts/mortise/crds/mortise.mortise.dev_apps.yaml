@@ -286,6 +286,28 @@ spec:
                   ttl:
                     type: string
                 type: object
+              sharedVars:
+                description: |-
+                  SharedVars are app-wide env vars visible to every environment of this
+                  App. They sit at priority level 3 in the variable resolution order
+                  (spec §5.8b): platform defaults < bound credentials < sharedVars <
+                  env-level vars. Use for values like LOG_LEVEL, SENTRY_DSN, or feature
+                  flags that should not be repeated per environment.
+                items:
+                  properties:
+                    name:
+                      type: string
+                    value:
+                      type: string
+                    valueFrom:
+                      properties:
+                        secretRef:
+                          type: string
+                      type: object
+                  required:
+                  - name
+                  type: object
+                type: array
               source:
                 properties:
                   branch:

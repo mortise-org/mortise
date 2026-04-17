@@ -128,6 +128,13 @@ func (in *AppSpec) DeepCopyInto(out *AppSpec) {
 			(*in)[i].DeepCopyInto(&(*out)[i])
 		}
 	}
+	if in.SharedVars != nil {
+		in, out := &in.SharedVars, &out.SharedVars
+		*out = make([]EnvVar, len(*in))
+		for i := range *in {
+			(*in)[i].DeepCopyInto(&(*out)[i])
+		}
+	}
 	if in.Environments != nil {
 		in, out := &in.Environments, &out.Environments
 		*out = make([]Environment, len(*in))
