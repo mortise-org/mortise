@@ -3,18 +3,22 @@
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import { api } from '$lib/api';
+	import { store } from '$lib/store.svelte';
 	import type { App, AppPhase, Project } from '$lib/types';
+	import ProjectCanvas from '$lib/components/ProjectCanvas.svelte';
+	import { LayoutDashboard, List, Plus, GitBranch, Container, Cloud, Clock } from 'lucide-svelte';
 
 	const projectName = $derived(page.params.project ?? '');
+	// App name from URL (e.g. /projects/foo/apps/bar → 'bar')
+	const urlApp = $derived(page.params.app ?? null);
 
 	let project = $state<Project | null>(null);
 	let apps = $state<App[]>([]);
 	let loading = $state(true);
 	let error = $state('');
-	let deletingProject = $state(false);
 
 	onMount(async () => {
-		if (!localStorage.getItem('token')) {
+		if (!localStorage.getItem('mortise_token')) {
 			goto('/login');
 			return;
 		}
@@ -22,7 +26,6 @@
 	});
 
 	$effect(() => {
-		// Refetch if the user navigates between projects without remount.
 		void projectName;
 		if (!loading && projectName && projectName !== project?.name) {
 			void load();
@@ -37,6 +40,7 @@
 				api.getProject(projectName),
 				api.listApps(projectName)
 			]);
+			store.setProject(projectName);
 		} catch (err) {
 			error = err instanceof Error ? err.message : 'Failed to load project';
 		} finally {
@@ -44,178 +48,211 @@
 		}
 	}
 
-	async function handleDeleteProject() {
-		if (!project) return;
-		const confirmation = prompt(
-			`Deleting "${project.name}" will remove all ${project.appCount} app${
-				project.appCount === 1 ? '' : 's'
-			} inside it. This cannot be undone.\n\nType the project name to confirm:`
-		);
-		if (confirmation !== project.name) {
-			return;
-		}
-		deletingProject = true;
-		try {
-			await api.deleteProject(project.name);
-			await goto('/');
-		} catch (err) {
-			error = err instanceof Error ? err.message : 'Failed to delete project';
-			deletingProject = false;
-		}
+	function enc(s: string): string {
+		return encodeURIComponent(s);
+	}
+
+	function lastDeploy(app: App): string {
+		const envs = app.status?.environments;
+		if (!envs?.length) return '—';
+		const history = envs[0].deployHistory;
+		if (!history?.length) return 'Never';
+		const ts = history[history.length - 1].timestamp;
+		const d = new Date(ts);
+		const now = new Date();
+		const diff = (now.getTime() - d.getTime()) / 1000;
+		if (diff < 60) return 'just now';
+		if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+		if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+		return `${Math.floor(diff / 86400)}d ago`;
 	}
 
 	const phaseStyles: Record<AppPhase, { dot: string; text: string }> = {
 		Ready: { dot: 'bg-success', text: 'text-success' },
-		Deploying: { dot: 'bg-accent animate-pulse', text: 'text-accent' },
-		Building: { dot: 'bg-accent animate-pulse', text: 'text-accent' },
-		Pending: { dot: 'bg-warning', text: 'text-warning' },
+		Deploying: { dot: 'bg-warning animate-pulse', text: 'text-warning' },
+		Building: { dot: 'bg-warning animate-pulse', text: 'text-warning' },
+		Pending: { dot: 'bg-info', text: 'text-info' },
 		Failed: { dot: 'bg-danger', text: 'text-danger' }
 	};
 
-	function lastDeploy(app: App): string {
-		const envs = app.status?.environments;
-		if (!envs?.length) return 'Never';
-		const history = envs[0].deployHistory;
-		if (!history?.length) return 'Never';
-		const ts = history[history.length - 1].timestamp;
-		return new Date(ts).toLocaleDateString('en-US', {
-			month: 'short',
-			day: 'numeric',
-			hour: '2-digit',
-			minute: '2-digit'
-		});
-	}
-
-	function replicaSummary(app: App): string {
-		const env = app.spec.environments?.[0];
-		const envStatus = app.status?.environments?.find((e) => e.name === env?.name);
-		const ready = envStatus?.readyReplicas ?? 0;
-		const desired = env?.replicas ?? 1;
-		return `${ready} / ${desired}`;
+	function sourceIcon(app: App) {
+		const t = app.spec.source.type;
+		if (t === 'git') return GitBranch;
+		if (t === 'image') return Container;
+		return Cloud;
 	}
 </script>
 
-{#if loading}
-	<div class="animate-pulse">
-		<div class="mb-6 h-6 w-48 rounded bg-surface-700"></div>
-		<div class="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
-			{#each Array(3) as _}
-				<div class="h-28 rounded-lg bg-surface-800"></div>
-			{/each}
+<div class="flex h-full flex-col">
+	<!-- Top toolbar -->
+	<div class="flex shrink-0 items-center justify-between border-b border-surface-600 bg-surface-800 px-4 py-2">
+		<!-- Left: breadcrumb -->
+		<div class="flex items-center gap-2 text-sm">
+			<a href="/" class="text-gray-500 hover:text-white">Projects</a>
+			<span class="text-gray-600">/</span>
+			<span class="font-medium text-white">{projectName}</span>
 		</div>
-	</div>
-{:else if error && !project}
-	<div class="rounded-md bg-danger/10 px-3 py-2 text-sm text-danger">{error}</div>
-{:else if project}
-	<div>
-		{#if error}
-			<div class="mb-4 rounded-md bg-danger/10 px-3 py-2 text-sm text-danger">{error}</div>
-		{/if}
 
-		<!-- Header -->
-		<div class="mb-6 flex items-start justify-between gap-4">
-			<div class="min-w-0">
-				<div class="flex items-center gap-2 text-xs text-gray-500">
-					<a href="/" class="hover:text-white">Projects</a>
-					<span>/</span>
-					<span class="font-mono text-gray-400">{project.namespace}</span>
-				</div>
-				<h1 class="mt-1 truncate text-xl font-semibold text-white">{project.name}</h1>
-				{#if project.description}
-					<p class="mt-1 max-w-2xl text-sm text-gray-500">{project.description}</p>
-				{/if}
-			</div>
-			<div class="flex shrink-0 items-center gap-2">
-				<a
-					href="/projects/{encodeURIComponent(project.name)}/apps/new"
-					class="inline-flex items-center gap-2 rounded-md bg-accent px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-accent-hover"
-				>
-					<span aria-hidden="true">+</span>
-					Deploy app
-				</a>
+		<!-- Center: staged changes bar -->
+		{#if store.hasUnsavedChanges}
+			<div class="flex items-center gap-2 rounded-md border border-accent/30 bg-accent/10 px-3 py-1.5">
+				<span class="text-xs text-accent">
+					{store.stagedChangeCount} change{store.stagedChangeCount === 1 ? '' : 's'} to apply
+				</span>
 				<button
 					type="button"
-					onclick={handleDeleteProject}
-					disabled={deletingProject}
-					class="rounded-md border border-danger/30 px-3 py-2 text-xs text-danger transition-colors hover:bg-danger/10 disabled:opacity-50"
+					onclick={() => store.discardAll()}
+					class="text-xs text-gray-400 hover:text-white"
 				>
-					{deletingProject ? 'Deleting...' : 'Delete project'}
+					Discard
+				</button>
+				<button
+					type="button"
+					class="text-xs font-medium text-accent hover:text-accent-hover"
+				>
+					Deploy ⇧+Enter
 				</button>
 			</div>
-		</div>
+		{/if}
 
-		{#if apps.length === 0}
-			<div
-				class="rounded-lg border border-dashed border-surface-600 bg-surface-800/60 p-12 text-center"
-			>
-				<div
-					class="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-surface-700 text-accent"
-					aria-hidden="true"
+		<!-- Right: view toggle + add button -->
+		<div class="flex items-center gap-2">
+			<div class="flex overflow-hidden rounded-md border border-surface-600">
+				<button
+					type="button"
+					onclick={() => store.setViewMode('canvas')}
+					class="px-2 py-1.5 {store.viewMode === 'canvas' ? 'bg-surface-600 text-white' : 'text-gray-400 hover:bg-surface-700 hover:text-white'}"
+					title="Canvas view"
 				>
-					<svg
-						xmlns="http://www.w3.org/2000/svg"
-						fill="none"
-						viewBox="0 0 24 24"
-						stroke-width="1.5"
-						stroke="currentColor"
-						class="h-7 w-7"
-					>
-						<path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
-					</svg>
-				</div>
-				<h2 class="text-base font-medium text-white">No apps in this project</h2>
-				<p class="mx-auto mt-1 max-w-sm text-sm text-gray-500">
-					Deploy your first app — pick a template or start from a container image.
-				</p>
-				<a
-					href="/projects/{encodeURIComponent(project.name)}/apps/new"
-					class="mt-5 inline-block rounded-md bg-accent px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-accent-hover"
+					<LayoutDashboard class="h-4 w-4" />
+				</button>
+				<button
+					type="button"
+					onclick={() => store.setViewMode('list')}
+					class="px-2 py-1.5 {store.viewMode === 'list' ? 'bg-surface-600 text-white' : 'text-gray-400 hover:bg-surface-700 hover:text-white'}"
+					title="List view"
 				>
-					Deploy an app
-				</a>
+					<List class="h-4 w-4" />
+				</button>
 			</div>
-		{:else}
+			<a
+				href="/projects/{enc(projectName)}/apps/new"
+				class="flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-accent-hover"
+			>
+				<Plus class="h-4 w-4" /> Add
+			</a>
+		</div>
+	</div>
+
+	<!-- Content area -->
+	{#if loading}
+		<div class="flex-1 animate-pulse p-6">
+			<div class="mb-4 h-5 w-40 rounded bg-surface-700"></div>
 			<div class="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
-				{#each apps as app}
-					{@const phase = app.status?.phase}
-					{@const style = phase ? phaseStyles[phase] : undefined}
-					<a
-						href="/projects/{encodeURIComponent(project.name)}/apps/{encodeURIComponent(
-							app.metadata.name
-						)}"
-						class="group block rounded-lg border border-surface-600 bg-surface-800 p-5 transition-all duration-150 hover:-translate-y-0.5 hover:border-surface-500 hover:shadow-lg hover:shadow-black/20"
-					>
-						<div class="flex items-start justify-between gap-3">
-							<h2 class="truncate font-medium text-white group-hover:text-accent">
-								{app.metadata.name}
-							</h2>
-							{#if phase}
-								<span
-									class="inline-flex shrink-0 items-center gap-1.5 text-xs font-medium {style?.text ??
-										'text-gray-400'}"
-								>
-									<span class="h-1.5 w-1.5 rounded-full {style?.dot ?? 'bg-gray-500'}"></span>
-									{phase}
-								</span>
-							{/if}
-						</div>
-						<dl class="mt-4 space-y-1.5 text-xs">
-							<div class="flex justify-between">
-								<dt class="text-gray-500">Source</dt>
-								<dd class="text-gray-300">{app.spec.source.type}</dd>
-							</div>
-							<div class="flex justify-between">
-								<dt class="text-gray-500">Replicas</dt>
-								<dd class="text-gray-300">{replicaSummary(app)}</dd>
-							</div>
-							<div class="flex justify-between">
-								<dt class="text-gray-500">Last deploy</dt>
-								<dd class="text-gray-300">{lastDeploy(app)}</dd>
-							</div>
-						</dl>
-					</a>
+				{#each Array(3) as _}
+					<div class="h-28 rounded-lg bg-surface-800"></div>
 				{/each}
 			</div>
+		</div>
+	{:else if error && !project}
+		<div class="m-4 rounded-md bg-danger/10 px-3 py-2 text-sm text-danger">{error}</div>
+	{:else if project}
+		{#if error}
+			<div class="mx-4 mt-4 rounded-md bg-danger/10 px-3 py-2 text-sm text-danger">{error}</div>
 		{/if}
-	</div>
-{/if}
+
+		{#if store.viewMode === 'canvas'}
+			<!-- Canvas view -->
+			<div class="flex-1 overflow-hidden" style="height: calc(100vh - 114px)">
+				<ProjectCanvas
+					{projectName}
+					{apps}
+					selectedApp={urlApp}
+					onAppOpen={(name) => goto(`/projects/${enc(projectName)}/apps/${enc(name)}`)}
+				/>
+			</div>
+		{:else}
+			<!-- List view -->
+			<div class="flex-1 overflow-auto p-4">
+				{#if apps.length === 0}
+					<div class="rounded-lg border border-dashed border-surface-600 bg-surface-800/60 p-12 text-center">
+						<div class="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-surface-700 text-accent" aria-hidden="true">
+							<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="h-7 w-7">
+								<path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+							</svg>
+						</div>
+						<h2 class="text-base font-medium text-white">No apps in this project</h2>
+						<p class="mx-auto mt-1 max-w-sm text-sm text-gray-500">Deploy your first app — pick a template or start from a container image.</p>
+						<a
+							href="/projects/{enc(projectName)}/apps/new"
+							class="mt-5 inline-block rounded-md bg-accent px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-accent-hover"
+						>
+							Deploy an app
+						</a>
+					</div>
+				{:else}
+					<table class="w-full text-sm">
+						<thead>
+							<tr class="border-b border-surface-600 text-left text-xs text-gray-500">
+								<th class="pb-2 pr-4 font-medium">Name</th>
+								<th class="pb-2 pr-4 font-medium">Source</th>
+								<th class="pb-2 pr-4 font-medium">Kind</th>
+								<th class="pb-2 pr-4 font-medium">Status</th>
+								<th class="pb-2 pr-4 font-medium">Domain</th>
+								<th class="pb-2 font-medium">Last deploy</th>
+							</tr>
+						</thead>
+						<tbody>
+							{#each apps as app}
+								{@const phase = app.status?.phase}
+								{@const style = phase ? phaseStyles[phase] : undefined}
+								{@const Icon = sourceIcon(app)}
+								{@const domain = app.spec.environments?.[0]?.domain}
+								<tr
+									class="group border-b border-surface-700 hover:bg-surface-800/60 cursor-pointer"
+									onclick={() => goto(`/projects/${enc(projectName)}/apps/${enc(app.metadata.name)}`)}
+								>
+									<td class="py-3 pr-4">
+										<div class="flex items-center gap-2 font-medium text-white group-hover:text-accent">
+											{#if (app as { kind?: string }).kind === 'cron'}
+												<Clock class="h-3.5 w-3.5 shrink-0 text-gray-400" />
+											{/if}
+											{app.metadata.name}
+										</div>
+									</td>
+									<td class="py-3 pr-4">
+										<div class="flex items-center gap-1.5 text-gray-400">
+											<Icon class="h-3.5 w-3.5" />
+											<span>{app.spec.source.type}</span>
+										</div>
+									</td>
+									<td class="py-3 pr-4 text-gray-400 capitalize">
+										{(app as { kind?: string }).kind ?? 'web'}
+									</td>
+									<td class="py-3 pr-4">
+										{#if phase}
+											<span class="inline-flex items-center gap-1.5 text-xs font-medium {style?.text ?? 'text-gray-400'}">
+												<span class="h-1.5 w-1.5 rounded-full {style?.dot ?? 'bg-gray-500'}"></span>
+												{phase}
+											</span>
+										{:else}
+											<span class="text-gray-500">—</span>
+										{/if}
+									</td>
+									<td class="py-3 pr-4 font-mono text-xs text-gray-500">
+										{#if app.spec.network?.public === false}
+											<span class="text-gray-500">Private</span>
+										{:else}
+											{domain ?? '—'}
+										{/if}
+									</td>
+									<td class="py-3 text-gray-500">{lastDeploy(app)}</td>
+								</tr>
+							{/each}
+						</tbody>
+					</table>
+				{/if}
+			</div>
+		{/if}
+	{/if}
+</div>
