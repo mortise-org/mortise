@@ -28,6 +28,7 @@ import (
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -89,6 +90,8 @@ type AppReconciler struct {
 // +kubebuilder:rbac:groups=mortise.mortise.dev,resources=apps/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=mortise.mortise.dev,resources=apps/finalizers,verbs=update
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=batch,resources=cronjobs,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=ingresses,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch;delete
@@ -117,6 +120,8 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		}
 	case mortisev1alpha1.SourceTypeImage:
 		// image path: nothing extra needed before reconciling workloads
+	case mortisev1alpha1.SourceTypeExternal:
+		return r.reconcileExternalSource(ctx, &app)
 	default:
 		log.Info("skipping unsupported source type", "type", app.Spec.Source.Type)
 		return ctrl.Result{}, nil
@@ -137,6 +142,13 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 
 	for i := range app.Spec.Environments {
 		env := &app.Spec.Environments[i]
+
+		if app.Spec.Kind == mortisev1alpha1.AppKindCron {
+			if err := r.reconcileCronJob(ctx, &app, env, credentialsHash); err != nil {
+				return ctrl.Result{}, fmt.Errorf("reconcile cronjob for env %s: %w", env.Name, err)
+			}
+			continue
+		}
 
 		if err := r.reconcileDeployment(ctx, &app, env, credentialsHash); err != nil {
 			return ctrl.Result{}, fmt.Errorf("reconcile deployment for env %s: %w", env.Name, err)
@@ -566,6 +578,110 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 	}
 
 	var existing appsv1.Deployment
+	err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: app.Namespace}, &existing)
+	if errors.IsNotFound(err) {
+		return r.Create(ctx, desired)
+	}
+	if err != nil {
+		return err
+	}
+
+	existing.Annotations = desired.Annotations
+	existing.Spec = desired.Spec
+	return r.Update(ctx, &existing)
+}
+
+func (r *AppReconciler) reconcileCronJob(ctx context.Context, app *mortisev1alpha1.App, env *mortisev1alpha1.Environment, credentialsHash string) error {
+	name := cronJobName(app.Name, env.Name)
+
+	envVars := toEnvVars(env.Env)
+
+	if len(env.Bindings) > 0 {
+		resolver := &bindings.Resolver{Client: r.Client}
+		boundVars, err := resolver.Resolve(ctx, app.Namespace, env.Bindings)
+		if err != nil {
+			return fmt.Errorf("resolve bindings: %w", err)
+		}
+		envVars = append(boundVars, envVars...)
+	}
+
+	containers := []corev1.Container{
+		{
+			Name:  app.Name,
+			Image: app.Spec.Source.Image,
+			Env:   envVars,
+		},
+	}
+
+	if env.Resources.CPU != "" || env.Resources.Memory != "" {
+		containers[0].Resources = toResourceRequirements(env.Resources)
+	}
+
+	volumes, mounts := toVolumesAndMounts(app)
+
+	secretVols, secretMounts := toSecretVolumesAndMounts(env.SecretMounts)
+	volumes = append(volumes, secretVols...)
+	mounts = append(mounts, secretMounts...)
+
+	if len(mounts) > 0 {
+		containers[0].VolumeMounts = mounts
+	}
+
+	userAnno := mergeAnnotations(nil, env.Annotations)
+
+	podAnno := userAnno
+	if credentialsHash != "" {
+		podAnno = mergeAnnotations(podAnno, map[string]string{
+			"mortise.dev/credentials-hash": credentialsHash,
+		})
+	}
+
+	concurrencyPolicy := batchv1.AllowConcurrent
+	switch env.ConcurrencyPolicy {
+	case mortisev1alpha1.ConcurrencyPolicyForbid:
+		concurrencyPolicy = batchv1.ForbidConcurrent
+	case mortisev1alpha1.ConcurrencyPolicyReplace:
+		concurrencyPolicy = batchv1.ReplaceConcurrent
+	}
+
+	desired := &batchv1.CronJob{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        name,
+			Namespace:   app.Namespace,
+			Labels:      appLabels(app.Name, env.Name),
+			Annotations: userAnno,
+		},
+		Spec: batchv1.CronJobSpec{
+			Schedule:          env.Schedule,
+			ConcurrencyPolicy: concurrencyPolicy,
+			JobTemplate: batchv1.JobTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels:      appLabels(app.Name, env.Name),
+					Annotations: podAnno,
+				},
+				Spec: batchv1.JobSpec{
+					Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Labels:      appLabels(app.Name, env.Name),
+							Annotations: podAnno,
+						},
+						Spec: corev1.PodSpec{
+							ServiceAccountName: app.Name,
+							RestartPolicy:      corev1.RestartPolicyOnFailure,
+							Containers:         containers,
+							Volumes:            volumes,
+						},
+					},
+				},
+			},
+		},
+	}
+
+	if err := controllerutil.SetControllerReference(app, desired, r.Scheme); err != nil {
+		return err
+	}
+
+	var existing batchv1.CronJob
 	err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: app.Namespace}, &existing)
 	if errors.IsNotFound(err) {
 		return r.Create(ctx, desired)
@@ -1052,15 +1168,25 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 
 	envStatuses := make([]mortisev1alpha1.EnvironmentStatus, 0, len(app.Spec.Environments))
 
+	isCron := app.Spec.Kind == mortisev1alpha1.AppKindCron
+
 	for _, env := range app.Spec.Environments {
-		name := deploymentName(app.Name, env.Name)
-		var dep appsv1.Deployment
 		es := mortisev1alpha1.EnvironmentStatus{
 			Name:         env.Name,
 			CurrentImage: app.Spec.Source.Image,
 		}
-		if err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: app.Namespace}, &dep); err == nil {
-			es.ReadyReplicas = dep.Status.ReadyReplicas
+		if isCron {
+			// CronJobs don't have replicas; check existence via Get.
+			var cj batchv1.CronJob
+			if err := r.Get(ctx, types.NamespacedName{Name: cronJobName(app.Name, env.Name), Namespace: app.Namespace}, &cj); err == nil {
+				es.ReadyReplicas = 1
+			}
+		} else {
+			name := deploymentName(app.Name, env.Name)
+			var dep appsv1.Deployment
+			if err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: app.Namespace}, &dep); err == nil {
+				es.ReadyReplicas = dep.Status.ReadyReplicas
+			}
 		}
 
 		// Carry forward deploy history and append if image changed.
@@ -1085,9 +1211,11 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 	allReady := true
 	for _, es := range envStatuses {
 		expectedReplicas := int32(1)
-		for _, env := range app.Spec.Environments {
-			if env.Name == es.Name && env.Replicas != nil {
-				expectedReplicas = *env.Replicas
+		if !isCron {
+			for _, env := range app.Spec.Environments {
+				if env.Name == es.Name && env.Replicas != nil {
+					expectedReplicas = *env.Replicas
+				}
 			}
 		}
 		if es.ReadyReplicas < expectedReplicas {
@@ -1157,6 +1285,10 @@ func appPort(app *mortisev1alpha1.App) int32 {
 }
 
 func deploymentName(app, env string) string {
+	return fmt.Sprintf("%s-%s", app, env)
+}
+
+func cronJobName(app, env string) string {
 	return fmt.Sprintf("%s-%s", app, env)
 }
 
@@ -1336,11 +1468,86 @@ func toSecretVolumesAndMounts(mounts []mortisev1alpha1.SecretMount) ([]corev1.Vo
 	return volumes, vms
 }
 
+// reconcileExternalSource handles source.type=external apps. External apps
+// wrap an already-running service that Mortise did not deploy. No Deployment,
+// no ServiceAccount, no PVCs. The reconciler materialises the credentials
+// Secret (so other apps can bind) and, if network.public is true, creates an
+// ExternalName Service + Ingress to expose the external host through Mortise's
+// domain/TLS setup.
+func (r *AppReconciler) reconcileExternalSource(ctx context.Context, app *mortisev1alpha1.App) (ctrl.Result, error) {
+	if _, err := r.reconcileCredentialsSecret(ctx, app); err != nil {
+		return ctrl.Result{}, fmt.Errorf("reconcile credentials secret: %w", err)
+	}
+
+	for i := range app.Spec.Environments {
+		env := &app.Spec.Environments[i]
+
+		if app.Spec.Network.Public && env.Domain != "" {
+			if err := r.reconcileExternalNameService(ctx, app, env); err != nil {
+				return ctrl.Result{}, fmt.Errorf("reconcile externalname service for env %s: %w", env.Name, err)
+			}
+			if err := r.reconcileIngress(ctx, app, env); err != nil {
+				return ctrl.Result{}, fmt.Errorf("reconcile ingress for env %s: %w", env.Name, err)
+			}
+		}
+	}
+
+	// External apps are always Ready — there is no workload to wait for.
+	app.Status.Phase = mortisev1alpha1.AppPhaseReady
+	if err := r.Status().Update(ctx, app); err != nil {
+		return ctrl.Result{}, fmt.Errorf("update status: %w", err)
+	}
+	return ctrl.Result{}, nil
+}
+
+// reconcileExternalNameService creates an ExternalName Service that points at
+// the external host. Standard k8s Ingress requires a Service backend; an
+// ExternalName Service provides that without any pods.
+func (r *AppReconciler) reconcileExternalNameService(ctx context.Context, app *mortisev1alpha1.App, env *mortisev1alpha1.Environment) error {
+	name := serviceName(app.Name, env.Name)
+	host := app.Spec.Source.External.Host
+
+	desired := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        name,
+			Namespace:   app.Namespace,
+			Labels:      appLabels(app.Name, env.Name),
+			Annotations: mergeAnnotations(nil, env.Annotations),
+		},
+		Spec: corev1.ServiceSpec{
+			Type:         corev1.ServiceTypeExternalName,
+			ExternalName: host,
+		},
+	}
+
+	if err := controllerutil.SetControllerReference(app, desired, r.Scheme); err != nil {
+		return err
+	}
+
+	var existing corev1.Service
+	err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: app.Namespace}, &existing)
+	if errors.IsNotFound(err) {
+		return r.Create(ctx, desired)
+	}
+	if err != nil {
+		return err
+	}
+
+	existing.Annotations = desired.Annotations
+	existing.Spec.Type = desired.Spec.Type
+	existing.Spec.ExternalName = desired.Spec.ExternalName
+	// ExternalName services must not have a selector or ClusterIP.
+	existing.Spec.Selector = nil
+	existing.Spec.ClusterIP = ""
+	return r.Update(ctx, &existing)
+}
+
 // SetupWithManager sets up the controller with the Manager.
 func (r *AppReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&mortisev1alpha1.App{}).
 		Owns(&appsv1.Deployment{}).
+		Owns(&batchv1.CronJob{}).
 		Owns(&corev1.Service{}).
 		Owns(&corev1.PersistentVolumeClaim{}).
 		Owns(&corev1.Secret{}).

@@ -22,12 +22,32 @@ import (
 )
 
 // SourceType determines how an App is deployed.
-// +kubebuilder:validation:Enum=git;image
+// +kubebuilder:validation:Enum=git;image;external
 type SourceType string
 
 const (
-	SourceTypeGit   SourceType = "git"
-	SourceTypeImage SourceType = "image"
+	SourceTypeGit      SourceType = "git"
+	SourceTypeImage    SourceType = "image"
+	SourceTypeExternal SourceType = "external"
+)
+
+// AppKind determines the workload type an App reconciles to.
+// +kubebuilder:validation:Enum=service;cron
+type AppKind string
+
+const (
+	AppKindService AppKind = "service"
+	AppKindCron    AppKind = "cron"
+)
+
+// ConcurrencyPolicy mirrors batchv1.ConcurrencyPolicy for cron apps.
+// +kubebuilder:validation:Enum=Allow;Forbid;Replace
+type ConcurrencyPolicy string
+
+const (
+	ConcurrencyPolicyAllow   ConcurrencyPolicy = "Allow"
+	ConcurrencyPolicyForbid  ConcurrencyPolicy = "Forbid"
+	ConcurrencyPolicyReplace ConcurrencyPolicy = "Replace"
 )
 
 // BuildMode determines how source is built.
@@ -59,6 +79,25 @@ type AppSource struct {
 	// Image source fields (used when type=image)
 	Image         string `json:"image,omitempty"`
 	PullSecretRef string `json:"pullSecretRef,omitempty"`
+
+	// External source fields (used when type=external). Wraps an
+	// already-running service that Mortise did not deploy. Mortise creates
+	// no pods; the App exists primarily as a binding target.
+	External *ExternalSource `json:"external,omitempty"`
+}
+
+// ExternalSource describes an already-running service outside Mortise's
+// lifecycle management.
+type ExternalSource struct {
+	// Host is the DNS name or IP of the external service.
+	// +kubebuilder:validation:Required
+	Host string `json:"host"`
+
+	// Port is the port the external service listens on. Optional; used by
+	// the bindings resolver for the well-known "port" credential and by
+	// Ingress backends when network.public is true.
+	// +optional
+	Port int32 `json:"port,omitempty"`
 }
 
 type Build struct {
@@ -172,6 +211,18 @@ type Environment struct {
 	Domain        string               `json:"domain,omitempty"`
 	CustomDomains []string             `json:"customDomains,omitempty"`
 
+	// Schedule is a cron expression (e.g. "*/5 * * * *") that controls when
+	// the CronJob fires. Required when spec.kind is "cron"; ignored otherwise.
+	// +optional
+	Schedule string `json:"schedule,omitempty"`
+
+	// ConcurrencyPolicy controls whether concurrent executions of the CronJob
+	// are allowed. Valid values: Allow, Forbid, Replace. Default: Allow.
+	// Only used when spec.kind is "cron".
+	// +optional
+	// +kubebuilder:default="Allow"
+	ConcurrencyPolicy ConcurrencyPolicy `json:"concurrencyPolicy,omitempty"`
+
 	// SecretMounts mounts existing k8s Secrets in the App's namespace as
 	// files on the container filesystem. See spec §5.5b. Each entry becomes
 	// a `Volume` + `VolumeMount` on the Deployment's Pod template. Names
@@ -272,6 +323,12 @@ type PreviewConfig struct {
 
 // AppSpec defines the desired state of App
 type AppSpec struct {
+	// Kind selects the workload type: "service" (default) reconciles to a
+	// Deployment; "cron" reconciles to a CronJob.
+	// +optional
+	// +kubebuilder:default="service"
+	Kind AppKind `json:"kind,omitempty"`
+
 	// +kubebuilder:validation:Required
 	Source AppSource `json:"source"`
 

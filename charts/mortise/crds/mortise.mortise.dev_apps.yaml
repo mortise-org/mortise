@@ -127,6 +127,17 @@ spec:
                         - ref
                         type: object
                       type: array
+                    concurrencyPolicy:
+                      default: Allow
+                      description: |-
+                        ConcurrencyPolicy controls whether concurrent executions of the CronJob
+                        are allowed. Valid values: Allow, Forbid, Replace. Default: Allow.
+                        Only used when spec.kind is "cron".
+                      enum:
+                      - Allow
+                      - Forbid
+                      - Replace
+                      type: string
                     customDomains:
                       items:
                         type: string
@@ -161,6 +172,11 @@ spec:
                         memory:
                           type: string
                       type: object
+                    schedule:
+                      description: |-
+                        Schedule is a cron expression (e.g. "*/5 * * * *") that controls when
+                        the CronJob fires. Required when spec.kind is "cron"; ignored otherwise.
+                      type: string
                     secretMounts:
                       description: |-
                         SecretMounts mounts existing k8s Secrets in the App's namespace as
@@ -256,6 +272,15 @@ spec:
                   - name
                   type: object
                 type: array
+              kind:
+                default: service
+                description: |-
+                  Kind selects the workload type: "service" (default) reconciles to a
+                  Deployment; "cron" reconciles to a CronJob.
+                enum:
+                - service
+                - cron
+                type: string
               network:
                 properties:
                   port:
@@ -330,6 +355,25 @@ spec:
                         - railpack
                         type: string
                     type: object
+                  external:
+                    description: |-
+                      External source fields (used when type=external). Wraps an
+                      already-running service that Mortise did not deploy. Mortise creates
+                      no pods; the App exists primarily as a binding target.
+                    properties:
+                      host:
+                        description: Host is the DNS name or IP of the external service.
+                        type: string
+                      port:
+                        description: |-
+                          Port is the port the external service listens on. Optional; used by
+                          the bindings resolver for the well-known "port" credential and by
+                          Ingress backends when network.public is true.
+                        format: int32
+                        type: integer
+                    required:
+                    - host
+                    type: object
                   image:
                     description: Image source fields (used when type=image)
                     type: string
@@ -350,6 +394,7 @@ spec:
                     enum:
                     - git
                     - image
+                    - external
                     type: string
                   watchPaths:
                     items:

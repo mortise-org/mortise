@@ -26,7 +26,7 @@ RBAC remains admin/member — 5-role model deferred to v2 as Issue #9).
 | 4 — Build system (git source)    | §7.5        | **Done**         | All stacks wired end-to-end: webhook patches `mortise.dev/revision` annotation → App reconciler clones + builds + deploys. Operator entrypoint reads config from `PlatformConfig` (env-var fallback for first-boot). Builds run asynchronously in background goroutines; the reconciler returns `Building` immediately and polls on requeue. |
 | 5 — Monorepo support             | §7.6        | **Done**         | `source.path` plumbs into BuildKit context; `source.watchPaths` gates webhook rebuilds (prefix match). UI build grouping deferred. |
 | 6 — Preview environments        | §7.7        | **Done**         | `PreviewEnvironment` CRD with real types (PullRequestRef, PreviewPhase, TTL, domain). Controller reconciles Deployment + Service + Ingress with owner references; async build via buildTrackerStore (same pattern as App controller); TTL expiry auto-deletes. Webhook handler parses PR events (opened/synchronize/closed) for GitHub, GitLab, Gitea; creates/updates/deletes PreviewEnvironments with staging inheritance + preview overrides. Domain template resolution (`{number}`, `{app}`). Commit status posted on PR SHA. |
-| 7 — Polish & v1                  | §7.8        | **Partial**      | Rollback + promote full-stack (API, CLI, UI). Deploy tokens + env management surface (§5.9a) full-stack. Custom domains API/CLI/UI. First-run wizard (4-step). PlatformConfig PATCH API. `spec.network.port`. `oauthTokenExists` fix. Repos API (`ListRepos`/`ListBranches`). Railway-style new-app page. **GitHub device flow** (zero-config GitHub connection via device authorization grant). **GitHub App Manifest Flow** (`POST /api/github-app/manifest`, callback, `GitHubAppAPI` with JWT + installation tokens, CRD `spec.mode`/`spec.githubApp`). Missing: 5-role RBAC (deferred to v2, Issue #9), metrics-server UI, cron apps, `source.type: external`, `sharedVars`. |
+| 7 — Polish & v1                  | §7.8        | **Partial**      | Rollback + promote full-stack (API, CLI, UI). Deploy tokens + env management surface (§5.9a) full-stack. Custom domains API/CLI/UI. First-run wizard (4-step). PlatformConfig PATCH API. `spec.network.port`. `oauthTokenExists` fix. Repos API (`ListRepos`/`ListBranches`). Railway-style new-app page. **GitHub device flow** (zero-config GitHub connection via device authorization grant). **GitHub App Manifest Flow** (`POST /api/github-app/manifest`, callback, `GitHubAppAPI` with JWT + installation tokens, CRD `spec.mode`/`spec.githubApp`). `sharedVars` (§5.8b). Cron apps `kind: cron` with CronJob reconciliation (§5.8a). `source.type: external` with ExternalName Service + Ingress + bindings resolver (§5.1). Missing: 5-role RBAC (deferred to v2, Issue #9), metrics-server UI. |
 | 8 — Tenons & integration recipes | §7.9 / §13  | **Partial**      | Helm chart bundles Traefik/cert-manager/ExternalDNS/Zot as optional deps. 6 integration recipe docs in `docs/recipes/`. Extensions page in UI. Missing: actual reference tenon projects (cf-for-saas, backup-tenon) that spec §9 Phase 8 calls for. |
 
 ### Interface implementation coverage
@@ -49,7 +49,7 @@ Spec rule: every outward interface must have at least one real v1 impl
 | CRD                  | Types file        | Controller       | Status        |
 |----------------------|-------------------|------------------|---------------|
 | `Project`            | real              | real reconciler  | **Done** |
-| `App`                | real              | real (image + git) | **Partial** — no `kind: service\|cron`, `schedule`, `concurrencyPolicy`, or `valueFrom.fromBinding` from spec §5.2. Also missing: `source.type: external` (spec §5.1 v1) and the `importFrom` flavour of `spec.credentials` (§5.5a). `spec.credentials` Flavor A (inline value + valueFrom.secretRef) is implemented with Secret materialisation. `spec.sharedVars` (§5.8b) is implemented with map-based merge in priority order (bound credentials < sharedVars < env-level vars). `environments[].secretMounts` (§5.5b), `environments[].annotations` (§5.2a), and `environments[].tls.{secretName,clusterIssuer}` (§5.6) are implemented. `spec.network.port` configures container/target port (default 8080). Custom domains API surface (list/add/remove) patches `environments[].customDomains`. |
+| `App`                | real              | real (image + git + cron + external) | **Partial** — `kind: service\|cron` with CronJob reconciliation (§5.8a) implemented. `sharedVars` (§5.8b) with map-based priority merge implemented. `source.type: external` with ExternalName Service, Ingress, and bindings resolver (§5.1). Missing: `valueFrom.fromBinding` (§5.2), `importFrom` flavour of `spec.credentials` (§5.5a). `spec.credentials` Flavor A (inline value + valueFrom.secretRef) is implemented with Secret materialisation. `environments[].secretMounts` (§5.5b), `environments[].annotations` (§5.2a), and `environments[].tls.{secretName,clusterIssuer}` (§5.6) are implemented. `spec.network.port` configures container/target port (default 8080). Custom domains API surface (list/add/remove) patches `environments[].customDomains`. |
 | `GitProvider`        | real (`api/v1alpha1/gitprovider_types.go`) | real reconciler (`internal/controller/gitprovider_controller.go`) | **Done** |
 | `PlatformConfig`     | real (`api/v1alpha1/platformconfig_types.go`) | real reconciler (`internal/controller/platformconfig_controller.go`) | **Done** |
 | `PreviewEnvironment` | real (`api/v1alpha1/previewenvironment_types.go`) | real reconciler (`internal/controller/previewenvironment_controller.go`) | **Done** |
@@ -156,7 +156,11 @@ cluster via the `//go:build integration` tag.
 
 **Follow-up work (not blocking Phase 4):**
 - Pebble (ACME) for a TLS integration test.
-- UI Playwright tests.
+- ~~UI Playwright tests.~~ — **Done.** 64 Playwright E2E tests across 7 spec
+  files in `ui/tests/e2e/`. All tests hit the real API (no mocking of
+  business logic). Covers auth, projects, app deployment (Docker + templates),
+  app management (deploy, env vars, secrets, domains, logs, delete),
+  navigation, git provider CRUD, and full user lifecycle journeys.
 - `.github/` CI config.
 
 ### Phase 1 — Core operator (image source) — **Done**
@@ -643,9 +647,7 @@ Missing:
   grants have no env field. Decision: v1 ships admin/member only.
 - **Metrics in UI:** spec Phase 7 calls for CPU/memory per pod via
   metrics-server. Not implemented.
-- **Cron apps:** `kind: cron` with CronJob reconciliation (spec §5.8a).
-- **`source.type: external`:** wrap already-running services (spec §5.1).
-- **`sharedVars`:** cross-environment variables (spec §5.8b level 3).
+- **~~`source.type: external`:~~** Implemented. ExternalName Service + Ingress for public external apps; bindings resolver returns external host/port for well-known keys.
 
 ### Phase 8 — Tenons & integration recipes — **Partial**
 

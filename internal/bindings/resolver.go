@@ -57,12 +57,22 @@ func (r *Resolver) Resolve(ctx context.Context, namespace string, bindings []mor
 			continue
 		}
 
-		if len(boundApp.Spec.Environments) == 0 {
-			return nil, fmt.Errorf("bound app %q has no environments", b.Ref)
+		// Resolve host and port differently for external vs managed apps.
+		var hostValue, portValue string
+		if boundApp.Spec.Source.Type == mortisev1alpha1.SourceTypeExternal && boundApp.Spec.Source.External != nil {
+			hostValue = boundApp.Spec.Source.External.Host
+			if boundApp.Spec.Source.External.Port > 0 {
+				portValue = fmt.Sprintf("%d", boundApp.Spec.Source.External.Port)
+			}
+		} else {
+			if len(boundApp.Spec.Environments) == 0 {
+				return nil, fmt.Errorf("bound app %q has no environments", b.Ref)
+			}
+			svcName := fmt.Sprintf("%s-%s", boundApp.Name, boundApp.Spec.Environments[0].Name)
+			hostValue = fmt.Sprintf("%s.%s.svc.cluster.local", svcName, ns)
+			portValue = "80"
 		}
 
-		svcName := fmt.Sprintf("%s-%s", boundApp.Name, boundApp.Spec.Environments[0].Name)
-		svcHost := fmt.Sprintf("%s.%s.svc.cluster.local", svcName, ns)
 		secretName := fmt.Sprintf("%s-credentials", boundApp.Name)
 
 		for _, cred := range boundApp.Spec.Credentials {
@@ -70,12 +80,12 @@ func (r *Resolver) Resolve(ctx context.Context, namespace string, bindings []mor
 			case "host":
 				result = append(result, corev1.EnvVar{
 					Name:  "host",
-					Value: svcHost,
+					Value: hostValue,
 				})
 			case "port":
 				result = append(result, corev1.EnvVar{
 					Name:  "port",
-					Value: "80",
+					Value: portValue,
 				})
 			default:
 				result = append(result, corev1.EnvVar{

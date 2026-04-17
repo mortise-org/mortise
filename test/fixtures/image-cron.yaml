@@ -1,0 +1,16 @@
+apiVersion: mortise.mortise.dev/v1alpha1
+kind: App
+metadata:
+  name: test-cron
+spec:
+  kind: cron
+  source:
+    type: image
+    image: busybox:1.37
+  environments:
+    - name: production
+      schedule: "*/5 * * * *"
+      concurrencyPolicy: Forbid
+      resources:
+        cpu: "100m"
+        memory: "128Mi"

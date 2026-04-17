@@ -24,6 +24,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -2673,6 +2674,558 @@ var _ = Describe("App Controller — git source", func() {
 			Expect(envVars).To(HaveLen(1))
 			Expect(envVars[0].Name).To(Equal("PORT"))
 			Expect(envVars[0].Value).To(Equal("3000"))
+		})
+	})
+
+	Context("cron app (kind=cron, §5.8a)", func() {
+		const appName = "test-cron"
+		ctx := context.Background()
+
+		var app *mortisev1alpha1.App
+
+		AfterEach(func() {
+			if app != nil {
+				_ = k8sClient.Delete(ctx, app)
+				app = nil
+			}
+		})
+
+		It("should create a CronJob with correct schedule and concurrency policy", func() {
+			app = &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      appName,
+					Namespace: namespace,
+				},
+				Spec: mortisev1alpha1.AppSpec{
+					Kind: mortisev1alpha1.AppKindCron,
+					Source: mortisev1alpha1.AppSource{
+						Type:  mortisev1alpha1.SourceTypeImage,
+						Image: testImageNginx,
+					},
+					Environments: []mortisev1alpha1.Environment{
+						{
+							Name:              "production",
+							Schedule:          "*/5 * * * *",
+							ConcurrencyPolicy: mortisev1alpha1.ConcurrencyPolicyForbid,
+							Resources: mortisev1alpha1.ResourceRequirements{
+								CPU:    "100m",
+								Memory: "128Mi",
+							},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var cj batchv1.CronJob
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName + "-production", Namespace: namespace,
+			}, &cj)).To(Succeed())
+
+			Expect(cj.Spec.Schedule).To(Equal("*/5 * * * *"))
+			Expect(cj.Spec.ConcurrencyPolicy).To(Equal(batchv1.ForbidConcurrent))
+			Expect(cj.Spec.JobTemplate.Spec.Template.Spec.Containers).To(HaveLen(1))
+			Expect(cj.Spec.JobTemplate.Spec.Template.Spec.Containers[0].Image).To(Equal(testImageNginx))
+			Expect(cj.Spec.JobTemplate.Spec.Template.Spec.RestartPolicy).To(Equal(corev1.RestartPolicyOnFailure))
+			Expect(cj.Labels["app.kubernetes.io/managed-by"]).To(Equal("mortise"))
+			Expect(cj.Labels["mortise.dev/environment"]).To(Equal("production"))
+		})
+
+		It("should not create a Deployment, Service, or Ingress for cron apps", func() {
+			app = &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      appName,
+					Namespace: namespace,
+				},
+				Spec: mortisev1alpha1.AppSpec{
+					Kind: mortisev1alpha1.AppKindCron,
+					Source: mortisev1alpha1.AppSource{
+						Type:  mortisev1alpha1.SourceTypeImage,
+						Image: testImageNginx,
+					},
+					Network: mortisev1alpha1.NetworkConfig{Public: true},
+					Environments: []mortisev1alpha1.Environment{
+						{
+							Name:     "production",
+							Schedule: "*/5 * * * *",
+							Domain:   "cron.example.com",
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var dep appsv1.Deployment
+			err = k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName + "-production", Namespace: namespace,
+			}, &dep)
+			Expect(err).To(HaveOccurred())
+
+			var svc corev1.Service
+			err = k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName + "-production", Namespace: namespace,
+			}, &svc)
+			Expect(err).To(HaveOccurred())
+
+			var ing networkingv1.Ingress
+			err = k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName + "-production", Namespace: namespace,
+			}, &ing)
+			Expect(err).To(HaveOccurred())
+		})
+
+		It("should set owner reference on CronJob for garbage collection", func() {
+			app = &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      appName,
+					Namespace: namespace,
+				},
+				Spec: mortisev1alpha1.AppSpec{
+					Kind: mortisev1alpha1.AppKindCron,
+					Source: mortisev1alpha1.AppSource{
+						Type:  mortisev1alpha1.SourceTypeImage,
+						Image: testImageNginx,
+					},
+					Environments: []mortisev1alpha1.Environment{
+						{
+							Name:     "production",
+							Schedule: "0 3 * * *",
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var cj batchv1.CronJob
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName + "-production", Namespace: namespace,
+			}, &cj)).To(Succeed())
+
+			Expect(cj.OwnerReferences).To(HaveLen(1))
+			Expect(cj.OwnerReferences[0].Name).To(Equal(appName))
+			Expect(*cj.OwnerReferences[0].Controller).To(BeTrue())
+		})
+
+		It("should default concurrency policy to Allow", func() {
+			app = &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      appName,
+					Namespace: namespace,
+				},
+				Spec: mortisev1alpha1.AppSpec{
+					Kind: mortisev1alpha1.AppKindCron,
+					Source: mortisev1alpha1.AppSource{
+						Type:  mortisev1alpha1.SourceTypeImage,
+						Image: testImageNginx,
+					},
+					Environments: []mortisev1alpha1.Environment{
+						{
+							Name:     "production",
+							Schedule: "0 * * * *",
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var cj batchv1.CronJob
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName + "-production", Namespace: namespace,
+			}, &cj)).To(Succeed())
+
+			Expect(cj.Spec.ConcurrencyPolicy).To(Equal(batchv1.AllowConcurrent))
+		})
+
+		It("should update CronJob schedule on re-reconcile", func() {
+			app = &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      appName,
+					Namespace: namespace,
+				},
+				Spec: mortisev1alpha1.AppSpec{
+					Kind: mortisev1alpha1.AppKindCron,
+					Source: mortisev1alpha1.AppSource{
+						Type:  mortisev1alpha1.SourceTypeImage,
+						Image: testImageNginx,
+					},
+					Environments: []mortisev1alpha1.Environment{
+						{
+							Name:     "production",
+							Schedule: "*/5 * * * *",
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Update the schedule
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: appName, Namespace: namespace}, app)).To(Succeed())
+			app.Spec.Environments[0].Schedule = "0 3 * * *"
+			Expect(k8sClient.Update(ctx, app)).To(Succeed())
+
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var cj batchv1.CronJob
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName + "-production", Namespace: namespace,
+			}, &cj)).To(Succeed())
+
+			Expect(cj.Spec.Schedule).To(Equal("0 3 * * *"))
+		})
+
+		It("should support Replace concurrency policy", func() {
+			app = &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      appName,
+					Namespace: namespace,
+				},
+				Spec: mortisev1alpha1.AppSpec{
+					Kind: mortisev1alpha1.AppKindCron,
+					Source: mortisev1alpha1.AppSource{
+						Type:  mortisev1alpha1.SourceTypeImage,
+						Image: testImageNginx,
+					},
+					Environments: []mortisev1alpha1.Environment{
+						{
+							Name:              "production",
+							Schedule:          "*/10 * * * *",
+							ConcurrencyPolicy: mortisev1alpha1.ConcurrencyPolicyReplace,
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var cj batchv1.CronJob
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName + "-production", Namespace: namespace,
+			}, &cj)).To(Succeed())
+
+			Expect(cj.Spec.ConcurrencyPolicy).To(Equal(batchv1.ReplaceConcurrent))
+		})
+	})
+
+	Context("external source with credentials (no workload)", func() {
+		const appName = "ext-postgres"
+		ctx := context.Background()
+
+		var app *mortisev1alpha1.App
+
+		AfterEach(func() {
+			if app != nil {
+				_ = k8sClient.Delete(ctx, app)
+				app = nil
+			}
+		})
+
+		It("should create credentials Secret but no Deployment, Service, or ServiceAccount", func() {
+			app = &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{Name: appName, Namespace: namespace},
+				Spec: mortisev1alpha1.AppSpec{
+					Source: mortisev1alpha1.AppSource{
+						Type: mortisev1alpha1.SourceTypeExternal,
+						External: &mortisev1alpha1.ExternalSource{
+							Host: "db.provider.cloud",
+							Port: 5432,
+						},
+					},
+					Network: mortisev1alpha1.NetworkConfig{Public: false},
+					Credentials: []mortisev1alpha1.Credential{
+						{Name: "host"},
+						{Name: "port"},
+						{Name: "DATABASE_URL", Value: "postgres://user:pass@db.provider.cloud:5432/mydb"},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Credentials Secret must exist.
+			var sec corev1.Secret
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName + "-credentials", Namespace: namespace,
+			}, &sec)).To(Succeed())
+			Expect(sec.Data).To(HaveKeyWithValue("DATABASE_URL",
+				[]byte("postgres://user:pass@db.provider.cloud:5432/mydb")))
+			// Well-known keys are not stored in the Secret.
+			Expect(sec.Data).NotTo(HaveKey("host"))
+			Expect(sec.Data).NotTo(HaveKey("port"))
+
+			// No Deployment should exist.
+			var dep appsv1.Deployment
+			err = k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName + "-production", Namespace: namespace,
+			}, &dep)
+			Expect(err).To(HaveOccurred())
+
+			// No ClusterIP Service should exist.
+			var svc corev1.Service
+			err = k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName + "-production", Namespace: namespace,
+			}, &svc)
+			Expect(err).To(HaveOccurred())
+
+			// No ServiceAccount should exist.
+			var sa corev1.ServiceAccount
+			err = k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName, Namespace: namespace,
+			}, &sa)
+			Expect(err).To(HaveOccurred())
+		})
+
+		It("should set phase to Ready immediately", func() {
+			app = &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{Name: "ext-ready", Namespace: namespace},
+				Spec: mortisev1alpha1.AppSpec{
+					Source: mortisev1alpha1.AppSource{
+						Type: mortisev1alpha1.SourceTypeExternal,
+						External: &mortisev1alpha1.ExternalSource{
+							Host: "redis.provider.cloud",
+							Port: 6379,
+						},
+					},
+					Network: mortisev1alpha1.NetworkConfig{Public: false},
+					Credentials: []mortisev1alpha1.Credential{
+						{Name: "host"},
+						{Name: "port"},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: "ext-ready", Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: "ext-ready", Namespace: namespace,
+			}, app)).To(Succeed())
+			Expect(app.Status.Phase).To(Equal(mortisev1alpha1.AppPhaseReady))
+		})
+	})
+
+	Context("external source with network.public creates Ingress", func() {
+		const appName = "ext-public"
+		ctx := context.Background()
+
+		var app *mortisev1alpha1.App
+
+		AfterEach(func() {
+			if app != nil {
+				_ = k8sClient.Delete(ctx, app)
+				app = nil
+			}
+		})
+
+		It("should create an ExternalName Service and Ingress for the external host", func() {
+			app = &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{Name: appName, Namespace: namespace},
+				Spec: mortisev1alpha1.AppSpec{
+					Source: mortisev1alpha1.AppSource{
+						Type: mortisev1alpha1.SourceTypeExternal,
+						External: &mortisev1alpha1.ExternalSource{
+							Host: "admin.managed-db.example.com",
+							Port: 443,
+						},
+					},
+					Network: mortisev1alpha1.NetworkConfig{Public: true},
+					Environments: []mortisev1alpha1.Environment{
+						{
+							Name:   "production",
+							Domain: "db-admin.example.com",
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// ExternalName Service should exist.
+			var svc corev1.Service
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName + "-production", Namespace: namespace,
+			}, &svc)).To(Succeed())
+			Expect(svc.Spec.Type).To(Equal(corev1.ServiceTypeExternalName))
+			Expect(svc.Spec.ExternalName).To(Equal("admin.managed-db.example.com"))
+
+			// Ingress should exist with the correct host.
+			var ing networkingv1.Ingress
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName + "-production", Namespace: namespace,
+			}, &ing)).To(Succeed())
+			Expect(ing.Spec.Rules).To(HaveLen(1))
+			Expect(ing.Spec.Rules[0].Host).To(Equal("db-admin.example.com"))
+
+			// Ingress backend should point at the ExternalName Service.
+			backend := ing.Spec.Rules[0].HTTP.Paths[0].Backend
+			Expect(backend.Service.Name).To(Equal(appName + "-production"))
+
+			// Phase should be Ready.
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName, Namespace: namespace,
+			}, app)).To(Succeed())
+			Expect(app.Status.Phase).To(Equal(mortisev1alpha1.AppPhaseReady))
+		})
+	})
+
+	Context("external source credentials are resolvable by bindings", func() {
+		const (
+			extDBName  = "ext-db-bind"
+			apiAppName = "api-ext-bind"
+		)
+		ctx := context.Background()
+
+		var extApp, apiApp *mortisev1alpha1.App
+
+		BeforeEach(func() {
+			extApp = &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{Name: extDBName, Namespace: namespace},
+				Spec: mortisev1alpha1.AppSpec{
+					Source: mortisev1alpha1.AppSource{
+						Type: mortisev1alpha1.SourceTypeExternal,
+						External: &mortisev1alpha1.ExternalSource{
+							Host: "rds.us-east-1.amazonaws.com",
+							Port: 5432,
+						},
+					},
+					Network: mortisev1alpha1.NetworkConfig{Public: false},
+					Credentials: []mortisev1alpha1.Credential{
+						{Name: "host"},
+						{Name: "port"},
+						{Name: "DATABASE_URL", Value: "postgres://admin:secret@rds.us-east-1.amazonaws.com:5432/prod"},
+						{Name: "username", Value: "admin"},
+						{Name: "password", Value: "secret"},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, extApp)).To(Succeed())
+
+			// Reconcile the external app first so its credentials Secret exists.
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: extDBName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			apiApp = &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{Name: apiAppName, Namespace: namespace},
+				Spec: mortisev1alpha1.AppSpec{
+					Source: mortisev1alpha1.AppSource{
+						Type:  mortisev1alpha1.SourceTypeImage,
+						Image: "my-api:v1",
+					},
+					Network: mortisev1alpha1.NetworkConfig{Public: false},
+					Environments: []mortisev1alpha1.Environment{
+						{
+							Name:     "production",
+							Replicas: ptr.To[int32](1),
+							Bindings: []mortisev1alpha1.Binding{
+								{Ref: extDBName},
+							},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, apiApp)).To(Succeed())
+		})
+
+		AfterEach(func() {
+			_ = k8sClient.Delete(ctx, apiApp)
+			_ = k8sClient.Delete(ctx, extApp)
+		})
+
+		It("should inject external host and port as env vars in the binder Deployment", func() {
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: apiAppName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var dep appsv1.Deployment
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: apiAppName + "-production", Namespace: namespace,
+			}, &dep)).To(Succeed())
+
+			envVars := dep.Spec.Template.Spec.Containers[0].Env
+
+			// host should be the external host, not a Service DNS name.
+			hostVar := findEnvVar(envVars, "host")
+			Expect(hostVar).NotTo(BeNil())
+			Expect(hostVar.Value).To(Equal("rds.us-east-1.amazonaws.com"))
+
+			// port should be the external port.
+			portVar := findEnvVar(envVars, "port")
+			Expect(portVar).NotTo(BeNil())
+			Expect(portVar.Value).To(Equal("5432"))
+
+			// DATABASE_URL should be a secretKeyRef to the credentials Secret.
+			dbURLVar := findEnvVar(envVars, "DATABASE_URL")
+			Expect(dbURLVar).NotTo(BeNil())
+			Expect(dbURLVar.ValueFrom).NotTo(BeNil())
+			Expect(dbURLVar.ValueFrom.SecretKeyRef.Name).To(Equal(extDBName + "-credentials"))
+			Expect(dbURLVar.ValueFrom.SecretKeyRef.Key).To(Equal("DATABASE_URL"))
+
+			// username and password should be secretKeyRefs.
+			userVar := findEnvVar(envVars, "username")
+			Expect(userVar).NotTo(BeNil())
+			Expect(userVar.ValueFrom).NotTo(BeNil())
+			Expect(userVar.ValueFrom.SecretKeyRef.Name).To(Equal(extDBName + "-credentials"))
+
+			passVar := findEnvVar(envVars, "password")
+			Expect(passVar).NotTo(BeNil())
+			Expect(passVar.ValueFrom).NotTo(BeNil())
+			Expect(passVar.ValueFrom.SecretKeyRef.Name).To(Equal(extDBName + "-credentials"))
 		})
 	})
 })
