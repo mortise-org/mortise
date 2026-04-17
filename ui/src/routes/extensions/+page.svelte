@@ -1,4 +1,6 @@
 <script lang="ts">
+	import { ExternalLink, BookOpen, GitBranch } from 'lucide-svelte';
+
 	interface Extension {
 		name: string;
 		description: string;
@@ -97,9 +99,9 @@
 	<title>Extensions - Mortise</title>
 </svelte:head>
 
-<div class="mx-auto max-w-5xl">
+<div class="p-8">
 	<div class="mb-8">
-		<h1 class="text-2xl font-semibold text-white">Extensions</h1>
+		<h1 class="text-xl font-semibold text-white">Extensions</h1>
 		<p class="mt-2 text-sm text-gray-400">
 			Known integrations and tenons that work with Mortise. These are standard
 			Kubernetes tools — Mortise interoperates through native primitives, not a
@@ -109,27 +111,32 @@
 
 	{#each categories as category}
 		<section class="mb-10">
-			<h2 class="mb-1 text-lg font-medium text-white">{category}</h2>
-			<p class="mb-4 text-sm text-gray-500">{categoryDescriptions[category]}</p>
+			<h2 class="mb-1 text-sm font-medium text-gray-300">{category}</h2>
+			<p class="mb-4 text-xs text-gray-500">{categoryDescriptions[category]}</p>
 
 			<div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
 				{#each forCategory(category) as ext}
-					<div
-						class="flex flex-col justify-between rounded-lg border border-surface-600 bg-surface-800 p-4"
-					>
+					<div class="flex flex-col justify-between rounded-lg border border-surface-600 bg-surface-800 p-5 transition-all duration-150 hover:-translate-y-0.5 hover:border-surface-500 hover:shadow-lg hover:shadow-black/20">
 						<div>
-							<h3 class="text-sm font-semibold text-white">{ext.name}</h3>
-							<p class="mt-1 text-xs leading-relaxed text-gray-400">
+							<h3 class="text-sm font-medium text-white">{ext.name}</h3>
+							<p class="mt-1.5 text-xs leading-relaxed text-gray-400">
 								{ext.description}
 							</p>
 						</div>
-						<div class="mt-3">
+						<div class="mt-4">
 							<a
 								href={ext.action}
 								target={ext.action.startsWith('http') ? '_blank' : undefined}
 								rel={ext.action.startsWith('http') ? 'noopener noreferrer' : undefined}
-								class="inline-block rounded-md bg-surface-700 px-3 py-1.5 text-xs font-medium text-accent transition-colors hover:bg-surface-600"
+								class="inline-flex items-center gap-1.5 rounded-md border border-surface-600 px-3 py-1.5 text-xs font-medium text-accent transition-colors hover:border-accent/50 hover:bg-surface-700"
 							>
+								{#if ext.action.startsWith('http')}
+									<ExternalLink class="h-3 w-3" />
+								{:else if ext.actionLabel === 'Recipe'}
+									<BookOpen class="h-3 w-3" />
+								{:else}
+									<GitBranch class="h-3 w-3" />
+								{/if}
 								{ext.actionLabel}
 							</a>
 						</div>

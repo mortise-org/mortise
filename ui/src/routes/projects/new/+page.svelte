@@ -4,104 +4,78 @@
 
 	let name = $state('');
 	let description = $state('');
+	let loading = $state(false);
 	let error = $state('');
-	let submitting = $state(false);
 
 	// RFC 1123 DNS label: lowercase letters, digits, and hyphens;
 	// must start and end with an alphanumeric; max 63 chars.
 	const DNS_LABEL = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
 
-	async function handleSubmit(e: SubmitEvent) {
-		e.preventDefault();
+	async function handleCreate() {
+		if (!name) return;
 		error = '';
-
 		const trimmed = name.trim();
 		if (!DNS_LABEL.test(trimmed)) {
-			error =
-				'Project name must be 1-63 lowercase letters, digits, or hyphens, starting and ending with alphanumeric.';
+			error = 'Project name must be 1-63 lowercase letters, digits, or hyphens, starting and ending with alphanumeric.';
 			return;
 		}
-
-		submitting = true;
+		loading = true;
 		try {
-			const p = await api.createProject(trimmed, description.trim() || undefined);
-			await goto(`/projects/${encodeURIComponent(p.name)}`);
-		} catch (err) {
-			error = err instanceof Error ? err.message : 'Failed to create project';
+			const project = await api.createProject(trimmed, description.trim() || undefined);
+			await goto(`/projects/${encodeURIComponent(project.name)}`);
+		} catch(e) {
+			error = e instanceof Error ? e.message : 'Failed to create project';
 		} finally {
-			submitting = false;
+			loading = false;
 		}
 	}
 </script>
 
-<div class="mx-auto max-w-lg">
-	<a
-		href="/"
-		class="mb-4 inline-block text-sm text-gray-500 transition-colors hover:text-white"
-	>
-		&larr; Back to projects
-	</a>
-
+<div class="p-8 max-w-lg mx-auto">
 	<div class="mb-6">
-		<h1 class="text-xl font-semibold text-white">New project</h1>
-		<p class="mt-1 text-sm text-gray-500">
-			Projects group related apps under a shared namespace.
-		</p>
+		<a href="/" class="text-sm text-gray-500 hover:text-white">← Back to Projects</a>
+		<h1 class="mt-4 text-xl font-semibold text-white">New Project</h1>
+		<p class="mt-1 text-sm text-gray-500">Create a new project to group and deploy your apps.</p>
 	</div>
 
-	<form onsubmit={handleSubmit} class="space-y-5">
-		{#if error}
-			<div class="rounded-md bg-danger/10 px-3 py-2 text-sm text-danger">{error}</div>
-		{/if}
+	<div class="rounded-lg border border-surface-600 bg-surface-800 p-6">
+		<form onsubmit={(e) => { e.preventDefault(); handleCreate(); }} class="space-y-4">
+			<div>
+				<label for="name" class="block text-sm text-gray-400">Project name <span class="text-danger">*</span></label>
+				<input id="name" type="text" bind:value={name}
+					placeholder="my-project"
+					pattern="[a-z0-9][a-z0-9-]*[a-z0-9]"
+					maxlength="63"
+					autocomplete="off"
+					required
+					class="mt-1 w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 font-mono text-sm text-white placeholder-gray-500 outline-none focus:border-accent" />
+				<p class="mt-1 text-xs text-gray-500">
+					Lowercase letters, numbers, and hyphens only. Apps run in namespace <span class="font-mono">project-{name || '<name>'}</span>.
+				</p>
+			</div>
+			<div>
+				<label for="desc" class="block text-sm text-gray-400">Description <span class="text-gray-600">(optional)</span></label>
+				<textarea id="desc" bind:value={description}
+					rows="3"
+					maxlength="300"
+					placeholder="What lives in this project?"
+					class="mt-1 w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-white placeholder-gray-500 outline-none focus:border-accent"></textarea>
+			</div>
 
-		<div>
-			<label for="name" class="mb-1 block text-sm text-gray-400">Name</label>
-			<input
-				id="name"
-				type="text"
-				bind:value={name}
-				required
-				pattern="[a-z0-9]([a-z0-9-]{'{'}0,61{'}'}[a-z0-9])?"
-				maxlength="63"
-				autocomplete="off"
-				class="w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 font-mono text-sm text-white placeholder-gray-500 outline-none focus:border-accent"
-				placeholder="my-saas"
-			/>
-			<p class="mt-1 text-xs text-gray-500">
-				Used as a DNS label. Apps in this project run in namespace <span class="font-mono"
-					>project-{name || '&lt;name&gt;'}</span
-				>.
-			</p>
-		</div>
+			{#if error}
+				<p class="text-sm text-danger">{error}</p>
+			{/if}
 
-		<div>
-			<label for="description" class="mb-1 block text-sm text-gray-400">
-				Description <span class="text-gray-600">(optional)</span>
-			</label>
-			<textarea
-				id="description"
-				bind:value={description}
-				rows="3"
-				maxlength="300"
-				class="w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-white placeholder-gray-500 outline-none focus:border-accent"
-				placeholder="What lives in this project?"
-			></textarea>
-		</div>
-
-		<div class="flex gap-3 pt-2">
-			<button
-				type="submit"
-				disabled={submitting}
-				class="rounded-md bg-accent px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-accent-hover disabled:opacity-50"
-			>
-				{submitting ? 'Creating...' : 'Create project'}
-			</button>
-			<a
-				href="/"
-				class="rounded-md border border-surface-600 px-4 py-2 text-sm text-gray-400 transition-colors hover:text-white"
-			>
-				Cancel
-			</a>
-		</div>
-	</form>
+			<div class="flex gap-3 pt-2">
+				<button type="submit" disabled={loading || !name}
+					class="rounded-md bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent-hover disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
+					{loading ? 'Creating...' : 'Create project'}
+				</button>
+				<a href="/"
+					class="rounded-md border border-surface-600 px-4 py-2 text-sm text-gray-400 hover:bg-surface-700 hover:text-white transition-colors">
+					Cancel
+				</a>
+			</div>
+		</form>
+	</div>
 </div>

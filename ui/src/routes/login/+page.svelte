@@ -1,43 +1,31 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
+	import { store } from '$lib/store.svelte';
 
 	let email = $state('');
 	let password = $state('');
-	let error = $state('');
-	let flash = $state('');
 	let loading = $state(false);
+	let error = $state('');
 
-	onMount(() => {
-		const msg = sessionStorage.getItem('loginFlash');
-		if (msg) {
-			flash = msg;
-			sessionStorage.removeItem('loginFlash');
-		}
-	});
-
-	async function handleLogin(e: SubmitEvent) {
-		e.preventDefault();
-		error = '';
+	async function handleLogin() {
+		if (!email || !password) return;
 		loading = true;
-
+		error = '';
 		try {
 			const res = await fetch('/api/auth/login', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({ email, password })
 			});
-
 			if (!res.ok) {
-				const body = await res.json().catch(() => ({ error: 'Login failed' }));
-				throw new Error(body.error || 'Login failed');
+				const data = await res.json().catch(() => ({}));
+				throw new Error(data.error || 'Invalid credentials');
 			}
-
-			const data = await res.json();
-			localStorage.setItem('mortise_token', data.token);
-			goto('/');
-		} catch (err) {
-			error = err instanceof Error ? err.message : 'Login failed';
+			const data = await res.json() as { token: string; email: string; role: 'admin' | 'member' };
+			store.login(data.token, { email: data.email, role: data.role });
+			await goto('/');
+		} catch (e) {
+			error = e instanceof Error ? e.message : 'Login failed';
 		} finally {
 			loading = false;
 		}
@@ -47,48 +35,50 @@
 <div class="flex min-h-screen items-center justify-center bg-surface-900">
 	<div class="w-full max-w-sm">
 		<div class="mb-8 text-center">
-			<h1 class="text-2xl font-semibold text-white">Mortise</h1>
-			<p class="mt-1 text-sm text-gray-500">Sign in to your account</p>
+			<h1 class="text-2xl font-bold text-white">Mortise</h1>
+			<p class="mt-2 text-sm text-gray-500">Sign in to your platform</p>
 		</div>
 
-		<form onsubmit={handleLogin} class="space-y-4">
-			{#if flash}
-				<div class="rounded-md bg-accent/10 px-3 py-2 text-sm text-accent">{flash}</div>
-			{/if}
-			{#if error}
-				<div class="rounded-md bg-danger/10 px-3 py-2 text-sm text-danger">{error}</div>
-			{/if}
+		<div class="rounded-lg border border-surface-600 bg-surface-800 p-6">
+			<form onsubmit={(e) => { e.preventDefault(); handleLogin(); }} class="space-y-4">
+				<div>
+					<label for="email" class="block text-sm text-gray-400">Email</label>
+					<input
+						id="email"
+						type="email"
+						bind:value={email}
+						placeholder="admin@example.com"
+						autocomplete="email"
+						required
+						class="mt-1 w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-white placeholder-gray-500 outline-none focus:border-accent"
+					/>
+				</div>
 
-			<div>
-				<label for="email" class="mb-1 block text-sm text-gray-400">Email</label>
-				<input
-					id="email"
-					type="email"
-					bind:value={email}
-					required
-					class="w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-white placeholder-gray-500 outline-none focus:border-accent"
-					placeholder="you@example.com"
-				/>
-			</div>
+				<div>
+					<label for="password" class="block text-sm text-gray-400">Password</label>
+					<input
+						id="password"
+						type="password"
+						bind:value={password}
+						placeholder="••••••••"
+						autocomplete="current-password"
+						required
+						class="mt-1 w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-white placeholder-gray-500 outline-none focus:border-accent"
+					/>
+				</div>
 
-			<div>
-				<label for="password" class="mb-1 block text-sm text-gray-400">Password</label>
-				<input
-					id="password"
-					type="password"
-					bind:value={password}
-					required
-					class="w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-white placeholder-gray-500 outline-none focus:border-accent"
-				/>
-			</div>
+				{#if error}
+					<p class="text-sm text-danger">{error}</p>
+				{/if}
 
-			<button
-				type="submit"
-				disabled={loading}
-				class="w-full rounded-md bg-accent px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-accent-hover disabled:opacity-50"
-			>
-				{loading ? 'Signing in...' : 'Sign in'}
-			</button>
-		</form>
+				<button
+					type="submit"
+					disabled={loading || !email || !password}
+					class="w-full rounded-md bg-accent py-2.5 text-sm font-medium text-white hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50 transition-colors"
+				>
+					{loading ? 'Signing in...' : 'Sign in'}
+				</button>
+			</form>
+		</div>
 	</div>
 </div>

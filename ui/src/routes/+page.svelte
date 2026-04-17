@@ -2,128 +2,91 @@
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { api } from '$lib/api';
-	import type { Project, ProjectPhase } from '$lib/types';
+	import { store } from '$lib/store.svelte';
+	import type { Project } from '$lib/types';
+	import { Folder, Plus } from 'lucide-svelte';
 
 	let projects = $state<Project[]>([]);
 	let loading = $state(true);
 	let error = $state('');
 
 	onMount(async () => {
-		if (!localStorage.getItem('token')) {
+		if (!localStorage.getItem('mortise_token')) {
 			goto('/login');
 			return;
 		}
 		try {
 			projects = await api.listProjects();
-		} catch (err) {
-			error = err instanceof Error ? err.message : 'Failed to load projects';
+			store.setProjects(projects);
+		} catch(e) {
+			error = e instanceof Error ? e.message : 'Failed to load projects';
 		} finally {
 			loading = false;
 		}
 	});
 
-	const phaseStyles: Record<ProjectPhase, { dot: string; text: string }> = {
-		Ready: { dot: 'bg-success', text: 'text-success' },
-		Pending: { dot: 'bg-warning', text: 'text-warning' },
-		Terminating: { dot: 'bg-accent animate-pulse', text: 'text-accent' },
-		Failed: { dot: 'bg-danger', text: 'text-danger' }
-	};
+	function phaseColor(phase?: string): string {
+		if (phase === 'Ready') return 'text-success';
+		if (phase === 'Failed') return 'text-danger';
+		if (phase === 'Terminating') return 'text-warning';
+		return 'text-info';
+	}
 </script>
 
-<div>
+<div class="p-8">
 	<div class="mb-6 flex items-center justify-between">
 		<h1 class="text-xl font-semibold text-white">Projects</h1>
-		<a
-			href="/projects/new"
-			class="inline-flex items-center gap-2 rounded-md bg-accent px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-accent-hover"
-		>
-			<span aria-hidden="true">+</span>
-			New project
-		</a>
+		{#if store.isAdmin}
+			<a href="/projects/new"
+				class="flex items-center gap-1.5 rounded-md bg-accent px-3 py-2 text-sm font-medium text-white hover:bg-accent-hover transition-colors">
+				<Plus class="h-4 w-4" /> New Project
+			</a>
+		{/if}
 	</div>
 
 	{#if loading}
-		<div class="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
-			{#each Array(3) as _}
-				<div class="animate-pulse rounded-lg border border-surface-600 bg-surface-800 p-5">
-					<div class="flex items-start justify-between">
-						<div class="h-4 w-32 rounded bg-surface-700"></div>
-						<div class="h-5 w-16 rounded-full bg-surface-700"></div>
-					</div>
-					<div class="mt-4 space-y-2">
-						<div class="h-3 w-40 rounded bg-surface-700"></div>
-						<div class="h-3 w-28 rounded bg-surface-700"></div>
-					</div>
-				</div>
+		<div class="grid gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
+			{#each [1,2,3] as _}
+				<div class="h-28 animate-pulse rounded-lg bg-surface-800 border border-surface-600"></div>
 			{/each}
 		</div>
 	{:else if error}
 		<div class="rounded-md bg-danger/10 px-3 py-2 text-sm text-danger">{error}</div>
 	{:else if projects.length === 0}
-		<div
-			class="rounded-lg border border-dashed border-surface-600 bg-surface-800/60 p-12 text-center"
-		>
-			<div
-				class="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-surface-700 text-accent"
-				aria-hidden="true"
-			>
-				<svg
-					xmlns="http://www.w3.org/2000/svg"
-					fill="none"
-					viewBox="0 0 24 24"
-					stroke-width="1.5"
-					stroke="currentColor"
-					class="h-7 w-7"
-				>
-					<path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
-				</svg>
-			</div>
-			<h2 class="text-base font-medium text-white">No projects yet</h2>
-			<p class="mx-auto mt-1 max-w-sm text-sm text-gray-500">
-				Projects group your apps, domains, and secrets. Start by creating one.
+		<div class="rounded-lg border border-dashed border-surface-600 bg-surface-800/60 p-16 text-center">
+			<Folder class="mx-auto mb-4 h-12 w-12 text-gray-600" />
+			<h2 class="text-sm font-medium text-gray-400">No projects yet</h2>
+			<p class="mx-auto mt-1 max-w-sm text-xs text-gray-500">
+				Create your first project to start deploying apps.
 			</p>
-			<a
-				href="/projects/new"
-				class="mt-5 inline-block rounded-md bg-accent px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-accent-hover"
-			>
-				Create your first project
-			</a>
+			{#if store.isAdmin}
+				<a href="/projects/new"
+					class="mt-4 inline-flex items-center gap-1.5 rounded-md bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent-hover">
+					<Plus class="h-4 w-4" /> Create project
+				</a>
+			{/if}
 		</div>
 	{:else}
-		<div class="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
-			{#each projects as p}
-				{@const style = p.phase ? phaseStyles[p.phase] : undefined}
+		<div class="grid gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
+			{#each projects as project}
 				<a
-					href="/projects/{encodeURIComponent(p.name)}"
-					class="group block rounded-lg border border-surface-600 bg-surface-800 p-5 transition-all duration-150 hover:-translate-y-0.5 hover:border-surface-500 hover:shadow-lg hover:shadow-black/20"
+					href="/projects/{encodeURIComponent(project.name)}"
+					class="group block rounded-lg border border-surface-600 bg-surface-800 p-5 transition-all duration-150 hover:-translate-y-0.5 hover:border-surface-500 hover:shadow-lg hover:shadow-black/20 cursor-pointer"
 				>
-					<div class="flex items-start justify-between gap-3">
-						<h2 class="truncate font-medium text-white group-hover:text-accent">
-							{p.name}
-						</h2>
-						{#if p.phase}
-							<span
-								class="inline-flex shrink-0 items-center gap-1.5 text-xs font-medium {style?.text ??
-									'text-gray-400'}"
-							>
-								<span class="h-1.5 w-1.5 rounded-full {style?.dot ?? 'bg-gray-500'}"></span>
-								{p.phase}
-							</span>
-						{/if}
+					<div class="flex items-start justify-between gap-2">
+						<div class="flex items-center gap-2 min-w-0">
+							<Folder class="h-4 w-4 shrink-0 text-gray-400 group-hover:text-accent" />
+							<h2 class="truncate text-sm font-medium text-white group-hover:text-accent">{project.name}</h2>
+						</div>
+						<span class="shrink-0 text-xs {phaseColor(project.phase)}">{project.phase ?? 'Pending'}</span>
 					</div>
-					{#if p.description}
-						<p class="mt-2 line-clamp-2 text-sm text-gray-400">{p.description}</p>
+					{#if project.description}
+						<p class="mt-2 text-xs text-gray-500 line-clamp-2">{project.description}</p>
 					{/if}
-					<dl class="mt-4 space-y-1.5 text-xs">
-						<div class="flex justify-between">
-							<dt class="text-gray-500">Apps</dt>
-							<dd class="text-gray-300">{p.appCount}</dd>
-						</div>
-						<div class="flex justify-between">
-							<dt class="text-gray-500">Namespace</dt>
-							<dd class="font-mono text-gray-300">{p.namespace}</dd>
-						</div>
-					</dl>
+					<div class="mt-3 flex items-center justify-between text-xs text-gray-500">
+						<span class="font-mono">{project.namespace}</span>
+						<span>{project.appCount} app{project.appCount === 1 ? '' : 's'}</span>
+					</div>
 				</a>
 			{/each}
 		</div>

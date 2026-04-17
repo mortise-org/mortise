@@ -1,279 +1,140 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { api } from '$lib/api';
-	import type { PlatformResponse, CreateGitProviderRequest } from '$lib/types';
 
 	let step = $state(1);
-	let loading = $state(false);
 	let error = $state('');
+	let saving = $state(false);
 
-	// Step 1 — Platform domain
+	// Step 1: Domain
 	let domain = $state('');
-
-	// Step 2 — DNS provider
-	let dnsProvider = $state('none');
+	// Step 2: DNS
+	let dnsProvider = $state('cloudflare');
 	let dnsToken = $state('');
 
-	// Step 3 — Git provider
-	let gitProviderType = $state<'github' | 'gitlab' | 'gitea'>('github');
-	let gitProviderName = $state('');
-	let gitProviderHost = $state('https://github.com');
-	let gitClientID = $state('');
-	let gitClientSecret = $state('');
-	let gitWebhookSecret = $state('');
+	const steps = ['Domain', 'DNS', 'Git Provider', 'Done'];
 
-	onMount(async () => {
-		if (!localStorage.getItem('token')) {
-			goto('/login');
-			return;
-		}
-		// If PlatformConfig already exists with a domain, skip the wizard.
-		try {
-			const pc = await api.getPlatform();
-			if (pc && pc.domain) {
-				goto('/');
-				return;
-			}
-		} catch {
-			// PlatformConfig doesn't exist yet — continue with wizard.
-		}
-	});
-
-	async function saveStep1() {
-		if (!domain.trim()) {
-			error = 'Please enter a domain';
-			return;
-		}
-		loading = true;
+	async function next() {
 		error = '';
-		try {
-			await api.patchPlatform({ domain: domain.trim() });
+		if (step === 1) {
+			if (!domain) { error = 'Domain is required'; return; }
 			step = 2;
-		} catch (err) {
-			error = err instanceof Error ? err.message : 'Failed to save domain';
-		} finally {
-			loading = false;
-		}
-	}
-
-	async function saveStep2() {
-		if (dnsProvider === 'none') {
-			step = 3;
-			return;
-		}
-		loading = true;
-		error = '';
-		try {
-			await api.patchPlatform({
-				dns: { provider: dnsProvider, apiTokenSecretRef: dnsToken || '' }
-			});
-			step = 3;
-		} catch (err) {
-			error = err instanceof Error ? err.message : 'Failed to save DNS config';
-		} finally {
-			loading = false;
-		}
-	}
-
-	async function saveStep3() {
-		if (!gitProviderName.trim() || !gitClientID.trim() || !gitClientSecret.trim()) {
+		} else if (step === 2) {
+			saving = true;
+			try {
+				await api.patchPlatform({ domain, dns: { provider: dnsProvider, apiTokenSecretRef: dnsToken || 'placeholder' } });
+				step = 3;
+			} catch(e) {
+				error = e instanceof Error ? e.message : 'Failed to save';
+			} finally { saving = false; }
+		} else if (step === 3) {
 			step = 4;
-			return;
-		}
-		loading = true;
-		error = '';
-		try {
-			const body: CreateGitProviderRequest = {
-				name: gitProviderName.trim(),
-				type: gitProviderType,
-				host: gitProviderHost.trim(),
-				oauth: { clientID: gitClientID.trim(), clientSecret: gitClientSecret.trim() },
-				webhookSecret: gitWebhookSecret.trim() || 'change-me'
-			};
-			await api.createGitProvider(body);
-			step = 4;
-		} catch (err) {
-			error = err instanceof Error ? err.message : 'Failed to create git provider';
-		} finally {
-			loading = false;
 		}
 	}
 
-	const totalSteps = 4;
+	async function finish() {
+		await goto('/');
+	}
 </script>
 
 <div class="flex min-h-screen items-center justify-center bg-surface-900">
 	<div class="w-full max-w-md">
-		<!-- Progress -->
+		<div class="mb-8 text-center">
+			<h1 class="text-2xl font-bold text-white">Platform Setup</h1>
+			<p class="mt-2 text-sm text-gray-500">Configure your Mortise installation</p>
+		</div>
+
+		<!-- Step indicators -->
 		<div class="mb-6 flex items-center justify-center gap-2">
-			{#each Array(totalSteps) as _, i}
-				<div
-					class="h-1.5 w-12 rounded-full transition-colors {i + 1 <= step
-						? 'bg-accent'
-						: 'bg-surface-600'}"
-				></div>
+			{#each steps as s, i}
+				<div class="flex items-center gap-2">
+					<div class="flex h-6 w-6 items-center justify-center rounded-full text-xs font-medium {i + 1 < step ? 'bg-success text-white' : i + 1 === step ? 'bg-accent text-white' : 'bg-surface-700 text-gray-400'}">
+						{i + 1 < step ? '✓' : i + 1}
+					</div>
+					<span class="text-xs {i + 1 === step ? 'text-white' : 'text-gray-500'}">{s}</span>
+					{#if i < steps.length - 1}
+						<div class="h-px w-6 bg-surface-600"></div>
+					{/if}
+				</div>
 			{/each}
 		</div>
 
 		<div class="rounded-lg border border-surface-600 bg-surface-800 p-6">
-			{#if error}
-				<div class="mb-4 rounded-md bg-danger/10 px-3 py-2 text-sm text-danger">{error}</div>
-			{/if}
-
 			{#if step === 1}
-				<h2 class="mb-1 text-lg font-semibold text-white">Platform Domain</h2>
-				<p class="mb-4 text-sm text-gray-500">
-					Apps will receive subdomains under this domain (e.g. myapp.yourdomain.com).
-				</p>
-				<input
-					type="text"
-					bind:value={domain}
-					placeholder="yourdomain.com"
-					class="mb-4 w-full rounded-md border border-surface-600 bg-surface-700 px-3 py-2 text-sm text-white placeholder-gray-500 outline-none focus:border-accent"
-				/>
-				<div class="flex items-center justify-between">
-					<a href="/" class="text-xs text-gray-500 hover:text-gray-300">Skip for now</a>
-					<button
-						onclick={saveStep1}
-						disabled={loading}
-						class="rounded-md bg-accent px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-accent-hover disabled:opacity-50"
-					>
-						{loading ? 'Saving...' : 'Next'}
-					</button>
-				</div>
+				<h2 class="mb-4 text-base font-semibold text-white">Platform Domain</h2>
+				<p class="mb-4 text-sm text-gray-400">The base domain for all apps deployed to this platform (e.g. <span class="font-mono text-gray-300">apps.example.com</span>).</p>
+				<input type="text" bind:value={domain} placeholder="apps.example.com"
+					class="w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-white placeholder-gray-500 outline-none focus:border-accent" />
 
 			{:else if step === 2}
-				<h2 class="mb-1 text-lg font-semibold text-white">DNS Provider</h2>
-				<p class="mb-4 text-sm text-gray-500">
-					Optional. Mortise can create DNS records automatically via ExternalDNS.
-				</p>
-				<select
-					bind:value={dnsProvider}
-					class="mb-3 w-full rounded-md border border-surface-600 bg-surface-700 px-3 py-2 text-sm text-white outline-none focus:border-accent"
-				>
-					<option value="none">None (manual DNS)</option>
-					<option value="cloudflare">Cloudflare</option>
-					<option value="route53">AWS Route 53</option>
-				</select>
-				{#if dnsProvider !== 'none'}
-					<input
-						type="password"
-						bind:value={dnsToken}
-						placeholder="API token"
-						class="mb-4 w-full rounded-md border border-surface-600 bg-surface-700 px-3 py-2 text-sm text-white placeholder-gray-500 outline-none focus:border-accent"
-					/>
-				{/if}
-				<div class="flex items-center justify-between">
-					<button
-						onclick={() => (step = 3)}
-						class="text-xs text-gray-500 hover:text-gray-300"
-					>
-						Skip for now
-					</button>
-					<div class="flex gap-2">
-						<button
-							onclick={() => (step = 1)}
-							class="rounded-md border border-surface-600 px-3 py-2 text-sm text-gray-400 hover:text-white"
-						>
-							Back
-						</button>
-						<button
-							onclick={saveStep2}
-							disabled={loading}
-							class="rounded-md bg-accent px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-accent-hover disabled:opacity-50"
-						>
-							{loading ? 'Saving...' : 'Next'}
-						</button>
+				<h2 class="mb-4 text-base font-semibold text-white">DNS Provider</h2>
+				<div class="space-y-3">
+					<div>
+						<label for="dns-provider" class="text-sm text-gray-400">Provider</label>
+						<select id="dns-provider" bind:value={dnsProvider}
+							class="mt-1 w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-white outline-none focus:border-accent">
+							<option value="cloudflare">Cloudflare</option>
+							<option value="route53">Route 53</option>
+							<option value="externaldns-noop">ExternalDNS (skip DNS management)</option>
+						</select>
 					</div>
+					{#if dnsProvider !== 'externaldns-noop'}
+						<div>
+							<label for="dns-token" class="text-sm text-gray-400">API Token</label>
+							<input id="dns-token" type="password" bind:value={dnsToken} placeholder="API token for DNS management"
+								class="mt-1 w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-white placeholder-gray-500 outline-none focus:border-accent" />
+						</div>
+					{/if}
 				</div>
 
 			{:else if step === 3}
-				<h2 class="mb-1 text-lg font-semibold text-white">Git Provider</h2>
-				<p class="mb-4 text-sm text-gray-500">
-					Optional. Connect a git forge to deploy from repositories.
-				</p>
-				<select
-					bind:value={gitProviderType}
-					class="mb-3 w-full rounded-md border border-surface-600 bg-surface-700 px-3 py-2 text-sm text-white outline-none focus:border-accent"
-				>
-					<option value="github">GitHub</option>
-					<option value="gitlab">GitLab</option>
-					<option value="gitea">Gitea</option>
-				</select>
-				<input
-					type="text"
-					bind:value={gitProviderName}
-					placeholder="Provider name (e.g. github-main)"
-					class="mb-3 w-full rounded-md border border-surface-600 bg-surface-700 px-3 py-2 text-sm text-white placeholder-gray-500 outline-none focus:border-accent"
-				/>
-				<input
-					type="text"
-					bind:value={gitProviderHost}
-					placeholder="Host URL (e.g. https://github.com)"
-					class="mb-3 w-full rounded-md border border-surface-600 bg-surface-700 px-3 py-2 text-sm text-white placeholder-gray-500 outline-none focus:border-accent"
-				/>
-				<input
-					type="text"
-					bind:value={gitClientID}
-					placeholder="OAuth Client ID"
-					class="mb-3 w-full rounded-md border border-surface-600 bg-surface-700 px-3 py-2 text-sm text-white placeholder-gray-500 outline-none focus:border-accent"
-				/>
-				<input
-					type="password"
-					bind:value={gitClientSecret}
-					placeholder="OAuth Client Secret"
-					class="mb-3 w-full rounded-md border border-surface-600 bg-surface-700 px-3 py-2 text-sm text-white placeholder-gray-500 outline-none focus:border-accent"
-				/>
-				<input
-					type="text"
-					bind:value={gitWebhookSecret}
-					placeholder="Webhook Secret"
-					class="mb-4 w-full rounded-md border border-surface-600 bg-surface-700 px-3 py-2 text-sm text-white placeholder-gray-500 outline-none focus:border-accent"
-				/>
-				<div class="flex items-center justify-between">
-					<button
-						onclick={() => (step = 4)}
-						class="text-xs text-gray-500 hover:text-gray-300"
-					>
-						Skip for now
-					</button>
-					<div class="flex gap-2">
-						<button
-							onclick={() => (step = 2)}
-							class="rounded-md border border-surface-600 px-3 py-2 text-sm text-gray-400 hover:text-white"
-						>
-							Back
-						</button>
-						<button
-							onclick={saveStep3}
-							disabled={loading}
-							class="rounded-md bg-accent px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-accent-hover disabled:opacity-50"
-						>
-							{loading ? 'Saving...' : 'Next'}
-						</button>
-					</div>
+				<h2 class="mb-4 text-base font-semibold text-white">Connect Git Provider</h2>
+				<p class="mb-4 text-sm text-gray-400">Connect GitHub, GitLab, or Gitea to enable git-source apps. You can skip this and add providers later in Platform Settings.</p>
+				<div class="space-y-2">
+					<a href="/admin/settings#git-providers"
+						class="flex items-center gap-3 rounded-md border border-surface-600 p-3 hover:border-accent hover:bg-surface-700 transition-colors">
+						<span class="text-xl">🔀</span>
+						<div>
+							<p class="text-sm font-medium text-white">Configure Git Provider</p>
+							<p class="text-xs text-gray-500">Go to Platform Settings to add GitHub, GitLab, or Gitea</p>
+						</div>
+					</a>
 				</div>
 
 			{:else if step === 4}
-				<div class="text-center">
-					<h2 class="mb-2 text-lg font-semibold text-white">Your platform is ready!</h2>
-					<p class="mb-6 text-sm text-gray-500">
-						You can always change these settings later in the platform settings page.
-					</p>
-					<a
-						href="/projects/default/apps/new"
-						class="inline-block rounded-md bg-accent px-6 py-2.5 text-sm font-medium text-white transition-colors hover:bg-accent-hover"
-					>
-						Deploy your first app
-					</a>
-					<div class="mt-4">
-						<a href="/" class="text-xs text-gray-500 hover:text-gray-300">
-							Go to dashboard
-						</a>
-					</div>
+				<div class="py-4 text-center">
+					<div class="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-success/10 text-2xl text-success">✓</div>
+					<h2 class="mb-2 text-base font-semibold text-white">Platform Ready!</h2>
+					<p class="text-sm text-gray-400">Your Mortise platform is configured and ready to use.</p>
 				</div>
 			{/if}
+
+			{#if error}
+				<p class="mt-3 text-sm text-danger">{error}</p>
+			{/if}
+
+			<div class="mt-6 flex justify-between">
+				{#if step > 1 && step < 4}
+					<button type="button" onclick={() => step--}
+						class="rounded-md border border-surface-600 px-4 py-2 text-sm text-gray-400 hover:bg-surface-700 hover:text-white">
+						Back
+					</button>
+				{:else}
+					<div></div>
+				{/if}
+
+				{#if step < 4}
+					<button type="button" onclick={next} disabled={saving}
+						class="rounded-md bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent-hover disabled:opacity-50">
+						{saving ? 'Saving...' : step === 3 ? 'Skip for now' : 'Continue'}
+					</button>
+				{:else}
+					<button type="button" onclick={finish}
+						class="rounded-md bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent-hover">
+						Go to Dashboard →
+					</button>
+				{/if}
+			</div>
 		</div>
 	</div>
 </div>
