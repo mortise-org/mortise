@@ -244,3 +244,64 @@ export interface DeployToken {
 	lastUsed?: string;
 	token?: string; // only on create response
 }
+
+// Project environments management
+export interface EnvironmentSpec {
+	name: string;
+	replicas?: number;
+	resources?: ResourceRequirements;
+	env?: EnvVar[];
+	bindings?: Binding[];
+	domain?: string;
+	customDomains?: string[];
+	annotations?: Record<string, string>;
+	secretMounts?: SecretMount[];
+}
+
+export interface SecretMount {
+	name: string;
+	secretName: string;
+	mountPath: string;
+	readOnly?: boolean;
+	items?: { key: string; path: string }[];
+}
+
+// Shared variables
+export interface SharedVarEntry {
+	key: string;
+	value: string;
+}
+
+// Project member
+export interface ProjectMember {
+	email: string;
+	role: 'admin' | 'member';
+	createdAt?: string;
+}
+
+// Invite response
+export interface InviteResponse {
+	token: string;
+	link: string;
+}
+
+// Preview environment list item
+export interface PreviewSummary {
+	name: string;
+	appRef: string;
+	pr: { number: number; branch: string; sha: string };
+	phase: PreviewPhase;
+	url?: string;
+	expiresAt?: string;
+}
+
+// Notification item
+export interface Notification {
+	id: string;
+	type: 'deploy_success' | 'deploy_failed' | 'build_failed';
+	appName: string;
+	projectName: string;
+	message: string;
+	ts: string;
+	read: boolean;
+}

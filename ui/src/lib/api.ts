@@ -12,10 +12,15 @@ import type {
 	DomainsResponse,
 	GitHubAppManifestResponse,
 	GitProviderSummary,
+	InviteResponse,
+	Notification,
 	PlatformResponse,
+	PreviewSummary,
 	Project,
+	ProjectMember,
 	Repository,
-	SecretResponse
+	SecretResponse,
+	SharedVarEntry
 } from './types';
 
 const BASE = '/api';
@@ -238,5 +243,50 @@ export const api = {
 
 	// --- activity ---
 	listActivity: (project: string) =>
-		request<ActivityEvent[]>(`/projects/${enc(project)}/activity`)
+		request<ActivityEvent[]>(`/projects/${enc(project)}/activity`),
+
+	// --- shared variables ---
+	getSharedVars: (project: string, app: string) =>
+		request<Record<string, string>>(`/projects/${enc(project)}/apps/${enc(app)}/shared`),
+	setSharedVars: (project: string, app: string, vars: Record<string, string>) =>
+		request<void>(`/projects/${enc(project)}/apps/${enc(app)}/shared`, {
+			method: 'PUT',
+			body: JSON.stringify(vars)
+		}),
+
+	// --- preview environments ---
+	listPreviewEnvironments: (project: string) =>
+		request<PreviewSummary[]>(`/projects/${enc(project)}/previews`),
+
+	// --- project preview settings ---
+	setProjectPreview: (project: string, enabled: boolean, domainTemplate?: string, ttl?: string) =>
+		request<Project>(`/projects/${enc(project)}`, {
+			method: 'PATCH',
+			body: JSON.stringify({ preview: { enabled, domainTemplate, ttl } })
+		}),
+
+	// --- project members ---
+	listMembers: (project: string) =>
+		request<ProjectMember[]>(`/projects/${enc(project)}/members`),
+	inviteMember: (project: string, email: string, role: 'admin' | 'member') =>
+		request<InviteResponse>(`/projects/${enc(project)}/members`, {
+			method: 'POST',
+			body: JSON.stringify({ email, role })
+		}),
+	removeMember: (project: string, email: string) =>
+		request<void>(`/projects/${enc(project)}/members/${enc(email)}`, {
+			method: 'DELETE'
+		}),
+
+	// --- env patch (single var update without full replace) ---
+	patchEnvVar: (project: string, app: string, env: string, key: string, value: string) =>
+		request<void>(`/projects/${enc(project)}/apps/${enc(app)}/env/${enc(env)}`, {
+			method: 'PATCH',
+			body: JSON.stringify({ [key]: value })
+		}),
+	deleteEnvVar: (project: string, app: string, env: string, key: string) =>
+		request<void>(`/projects/${enc(project)}/apps/${enc(app)}/env/${enc(env)}`, {
+			method: 'PATCH',
+			body: JSON.stringify({ [key]: null })
+		})
 };
