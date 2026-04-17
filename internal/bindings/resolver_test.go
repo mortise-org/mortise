@@ -147,6 +147,156 @@ func TestResolveCrossProjectMissingReturnsError(t *testing.T) {
 	}
 }
 
+// TestResolveExternalSourceBinding verifies that host and port come from
+// source.external rather than the managed-service DNS formula.
+func TestResolveExternalSourceBinding(t *testing.T) {
+	redis := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "redis", Namespace: "project-web"},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{
+				Type: mortisev1alpha1.SourceTypeExternal,
+				External: &mortisev1alpha1.ExternalSource{
+					Host: "redis.example.com",
+					Port: 6379,
+				},
+			},
+			Credentials: []mortisev1alpha1.Credential{
+				{Name: "host"},
+				{Name: "port"},
+			},
+			Environments: []mortisev1alpha1.Environment{
+				{Name: "production"},
+			},
+		},
+	}
+	c := newFakeClient(t, redis)
+	r := &bindings.Resolver{Client: c}
+
+	envVars, err := r.Resolve(context.Background(), "project-web", []mortisev1alpha1.Binding{
+		{Ref: "redis"},
+	})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+
+	hostVar := findEnv(envVars, "host")
+	if hostVar == nil {
+		t.Fatal("expected host env var to be set")
+	}
+	if hostVar.Value != "redis.example.com" {
+		t.Errorf("expected external host, got %q", hostVar.Value)
+	}
+
+	portVar := findEnv(envVars, "port")
+	if portVar == nil {
+		t.Fatal("expected port env var to be set")
+	}
+	if portVar.Value != "6379" {
+		t.Errorf("expected port %q, got %q", "6379", portVar.Value)
+	}
+}
+
+// TestResolveExternalSourceNoPort verifies that a zero port produces an empty
+// port env var rather than "0".
+func TestResolveExternalSourceNoPort(t *testing.T) {
+	redis := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "redis", Namespace: "project-web"},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{
+				Type: mortisev1alpha1.SourceTypeExternal,
+				External: &mortisev1alpha1.ExternalSource{
+					Host: "redis.example.com",
+					Port: 0,
+				},
+			},
+			Credentials: []mortisev1alpha1.Credential{
+				{Name: "host"},
+				{Name: "port"},
+			},
+			Environments: []mortisev1alpha1.Environment{
+				{Name: "production"},
+			},
+		},
+	}
+	c := newFakeClient(t, redis)
+	r := &bindings.Resolver{Client: c}
+
+	envVars, err := r.Resolve(context.Background(), "project-web", []mortisev1alpha1.Binding{
+		{Ref: "redis"},
+	})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+
+	hostVar := findEnv(envVars, "host")
+	if hostVar == nil {
+		t.Fatal("expected host env var to be set")
+	}
+	if hostVar.Value != "redis.example.com" {
+		t.Errorf("expected external host, got %q", hostVar.Value)
+	}
+
+	portVar := findEnv(envVars, "port")
+	if portVar == nil {
+		t.Fatal("expected port env var to be set")
+	}
+	if portVar.Value != "" {
+		t.Errorf("expected empty port for zero port value, got %q", portVar.Value)
+	}
+}
+
+// TestResolveAppWithNoCredentials verifies that binding to an App with no
+// credentials is silently skipped — no error, empty result.
+func TestResolveAppWithNoCredentials(t *testing.T) {
+	svc := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "sidecar", Namespace: "project-web"},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: "nginx:1.25"},
+			Environments: []mortisev1alpha1.Environment{
+				{Name: "production"},
+			},
+		},
+	}
+	c := newFakeClient(t, svc)
+	r := &bindings.Resolver{Client: c}
+
+	envVars, err := r.Resolve(context.Background(), "project-web", []mortisev1alpha1.Binding{
+		{Ref: "sidecar"},
+	})
+	if err != nil {
+		t.Fatalf("expected no error for app with no credentials, got: %v", err)
+	}
+	if len(envVars) != 0 {
+		t.Errorf("expected empty env var slice, got %d vars", len(envVars))
+	}
+}
+
+// TestResolveAppWithNoEnvironments verifies that a managed (non-external) App
+// with no environments returns a descriptive error.
+func TestResolveAppWithNoEnvironments(t *testing.T) {
+	svc := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "db", Namespace: "project-web"},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: "postgres:16"},
+			Credentials: []mortisev1alpha1.Credential{
+				{Name: "host"},
+			},
+		},
+	}
+	c := newFakeClient(t, svc)
+	r := &bindings.Resolver{Client: c}
+
+	_, err := r.Resolve(context.Background(), "project-web", []mortisev1alpha1.Binding{
+		{Ref: "db"},
+	})
+	if err == nil {
+		t.Fatal("expected error for app with no environments, got nil")
+	}
+	if !strings.Contains(err.Error(), "no environments") {
+		t.Errorf("expected error to mention %q, got: %v", "no environments", err)
+	}
+}
+
 func findEnv(vars []corev1.EnvVar, name string) *corev1.EnvVar {
 	for i := range vars {
 		if vars[i].Name == name {

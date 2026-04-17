@@ -1,0 +1,21 @@
+apiVersion: mortise.mortise.dev/v1alpha1
+kind: App
+metadata:
+  name: test-external-db
+spec:
+  source:
+    type: external
+    external:
+      host: "db.example.com"
+      port: 5432
+  network:
+    public: false
+  credentials:
+    - name: host
+    - name: port
+    - name: user
+      value: pguser
+    - name: password
+      value: secret123
+  environments:
+    - name: production
