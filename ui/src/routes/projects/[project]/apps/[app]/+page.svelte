@@ -1,603 +1,105 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
+	import { onMount } from 'svelte';
 	import { api } from '$lib/api';
-	import EnvVarEditor from '$lib/components/EnvVarEditor.svelte';
-	import LogViewer from '$lib/components/LogViewer.svelte';
-	import type { App, DomainsResponse, EnvironmentStatus, EnvVar, SecretResponse } from '$lib/types';
+	import { store } from '$lib/store.svelte';
+	import AppDrawer from '$lib/components/AppDrawer.svelte';
+	import ProjectCanvas from '$lib/components/ProjectCanvas.svelte';
+	import { LayoutDashboard, List, Plus } from 'lucide-svelte';
+	import type { App } from '$lib/types';
 
 	const projectName = $derived(page.params.project ?? '');
 	const appName = $derived(page.params.app ?? '');
 
-	let app = $state<App | null>(null);
-	let secrets = $state<SecretResponse[]>([]);
+	let apps = $state<App[]>([]);
 	let loading = $state(true);
-	let error = $state('');
-	let deployImage = $state('');
-	let deploying = $state(false);
-	let activeTab = $state(0);
-	let copied = $state<string | null>(null);
-
-	// Env var editing
-	let envVars = $state<EnvVar[]>([]);
-	let envDirty = $state(false);
-	let savingEnv = $state(false);
-
-	// Secret form
-	let newSecretKey = $state('');
-	let newSecretValue = $state('');
-	let savingSecret = $state(false);
-
-	// Domains
-	let domains = $state<DomainsResponse | null>(null);
-	let newDomain = $state('');
-	let savingDomain = $state(false);
 
 	onMount(async () => {
-		if (!localStorage.getItem('token')) {
+		if (!localStorage.getItem('mortise_token')) {
 			goto('/login');
 			return;
 		}
-		await loadApp();
-	});
-
-	async function loadApp() {
-		loading = true;
-		error = '';
 		try {
-			app = await api.getApp(projectName, appName);
-			secrets = await api.listSecrets(projectName, appName);
-			syncEnvVarsFromApp();
-			await loadDomains();
-		} catch (err) {
-			error = err instanceof Error ? err.message : 'Failed to load app';
+			apps = await api.listApps(projectName);
+		} catch {
+			apps = [];
 		} finally {
 			loading = false;
 		}
-	}
-
-	function syncEnvVarsFromApp() {
-		const env = app?.spec.environments?.[activeTab]?.env ?? [];
-		envVars = env.map((e) => ({ name: e.name, value: e.value ?? '', valueFrom: e.valueFrom }));
-		envDirty = false;
-	}
-
-	$effect(() => {
-		// When the active tab changes and we aren't dirty, resync from the app.
-		activeTab;
-		if (!envDirty && app) syncEnvVarsFromApp();
 	});
 
-	function onEnvChange() {
-		const current = (app?.spec.environments?.[activeTab]?.env ?? []).map((e) => ({
-			name: e.name,
-			value: e.value ?? ''
-		}));
-		const next = envVars.map((e) => ({ name: e.name, value: e.value ?? '' }));
-		if (current.length !== next.length) {
-			envDirty = true;
-			return;
-		}
-		for (let i = 0; i < current.length; i++) {
-			if (current[i].name !== next[i].name || current[i].value !== next[i].value) {
-				envDirty = true;
-				return;
-			}
-		}
-		envDirty = false;
+	function closeDrawer() {
+		goto(`/projects/${encodeURIComponent(projectName)}`);
 	}
 
-	$effect(() => {
-		envVars;
-		if (app) onEnvChange();
-	});
-
-	async function saveEnvVars() {
-		if (!app) return;
-		savingEnv = true;
-		try {
-			const spec = structuredClone($state.snapshot(app.spec));
-			const envs = spec.environments ?? [];
-			if (envs[activeTab]) {
-				envs[activeTab].env = envVars.filter((v) => v.name.trim());
-				spec.environments = envs;
-			}
-			await api.updateApp(projectName, appName, spec);
-			await loadApp();
-		} catch (err) {
-			error = err instanceof Error ? err.message : 'Failed to save variables';
-		} finally {
-			savingEnv = false;
-		}
-	}
-
-	async function handleDeploy() {
-		if (!deployImage.trim() || !app) return;
-		const env = app.spec.environments?.[activeTab];
-		if (!env) return;
-		deploying = true;
-		try {
-			await api.deploy(projectName, appName, env.name, deployImage);
-			deployImage = '';
-			await loadApp();
-		} catch (err) {
-			error = err instanceof Error ? err.message : 'Deploy failed';
-		} finally {
-			deploying = false;
-		}
-	}
-
-	async function handleRollback(envStatus: EnvironmentStatus, index: number) {
-		const history = envStatus.deployHistory;
-		if (!history || index < 0) return;
-		const target = history[index];
-		if (!confirm(`Roll back to ${target.image}?`)) return;
-		try {
-			await api.rollback(projectName, appName, envStatus.name, index);
-			await loadApp();
-		} catch (err) {
-			error = err instanceof Error ? err.message : 'Rollback failed';
-		}
-	}
-
-	async function handlePromote(fromEnv: string, toEnv: string) {
-		if (!confirm(`Promote image from ${fromEnv} to ${toEnv}?`)) return;
-		try {
-			await api.promote(projectName, appName, fromEnv, toEnv);
-			await loadApp();
-		} catch (err) {
-			error = err instanceof Error ? err.message : 'Promote failed';
-		}
-	}
-
-	async function handleDeleteApp() {
-		if (!confirm(`Delete ${appName}? This cannot be undone.`)) return;
-		try {
-			await api.deleteApp(projectName, appName);
-			await goto(`/projects/${encodeURIComponent(projectName)}`);
-		} catch (err) {
-			error = err instanceof Error ? err.message : 'Delete failed';
-		}
-	}
-
-	async function handleAddSecret() {
-		if (!newSecretKey.trim()) return;
-		savingSecret = true;
-		try {
-			await api.createSecret(projectName, appName, newSecretKey, newSecretValue);
-			newSecretKey = '';
-			newSecretValue = '';
-			secrets = await api.listSecrets(projectName, appName);
-		} catch (err) {
-			error = err instanceof Error ? err.message : 'Failed to save secret';
-		} finally {
-			savingSecret = false;
-		}
-	}
-
-	async function handleDeleteSecret(name: string) {
-		try {
-			await api.deleteSecret(projectName, appName, name);
-			secrets = await api.listSecrets(projectName, appName);
-		} catch (err) {
-			error = err instanceof Error ? err.message : 'Failed to delete secret';
-		}
-	}
-
-	async function loadDomains() {
-		const envName = app?.spec.environments?.[activeTab]?.name;
-		if (!envName) {
-			domains = null;
-			return;
-		}
-		try {
-			domains = await api.listDomains(projectName, appName, envName);
-		} catch {
-			domains = null;
-		}
-	}
-
-	async function handleAddDomain() {
-		const envName = app?.spec.environments?.[activeTab]?.name;
-		if (!newDomain.trim() || !envName) return;
-		savingDomain = true;
-		try {
-			domains = await api.addDomain(projectName, appName, envName, newDomain.trim());
-			newDomain = '';
-		} catch (err) {
-			error = err instanceof Error ? err.message : 'Failed to add domain';
-		} finally {
-			savingDomain = false;
-		}
-	}
-
-	async function handleRemoveDomain(domain: string) {
-		const envName = app?.spec.environments?.[activeTab]?.name;
-		if (!envName) return;
-		try {
-			domains = await api.removeDomain(projectName, appName, envName, domain);
-		} catch (err) {
-			error = err instanceof Error ? err.message : 'Failed to remove domain';
-		}
-	}
-
-	async function copy(text: string, key: string) {
-		try {
-			await navigator.clipboard.writeText(text);
-			copied = key;
-			setTimeout(() => {
-				if (copied === key) copied = null;
-			}, 1500);
-		} catch {
-			// ignore
-		}
-	}
-
-	const phaseStyles: Record<string, { dot: string; pill: string }> = {
-		Ready: { dot: 'bg-success', pill: 'bg-success/15 text-success' },
-		Deploying: { dot: 'bg-accent animate-pulse', pill: 'bg-accent/15 text-accent' },
-		Building: { dot: 'bg-accent animate-pulse', pill: 'bg-accent/15 text-accent' },
-		Pending: { dot: 'bg-warning', pill: 'bg-warning/15 text-warning' },
-		Failed: { dot: 'bg-danger', pill: 'bg-danger/15 text-danger' }
-	};
-
-	function phase() {
-		return app?.status?.phase ?? 'Pending';
-	}
-
-	function currentImage(envName: string): string | undefined {
-		const s = app?.status?.environments?.find((e) => e.name === envName);
-		return s?.currentImage ?? app?.spec.source.image;
+	function enc(s: string) {
+		return encodeURIComponent(s);
 	}
 </script>
 
-{#if loading}
-	<div class="animate-pulse">
-		<div class="mb-6 flex items-center gap-3">
-			<div class="h-6 w-6 rounded bg-surface-700"></div>
-			<div class="h-6 w-40 rounded bg-surface-700"></div>
-			<div class="h-5 w-16 rounded-full bg-surface-700"></div>
-		</div>
-		<div class="mb-4 h-24 rounded-lg bg-surface-800"></div>
-		<div class="mb-4 h-10 rounded-lg bg-surface-800"></div>
-		<div class="h-64 rounded-lg bg-surface-800"></div>
-	</div>
-{:else if error && !app}
-	<div class="rounded-md bg-danger/10 px-3 py-2 text-sm text-danger">{error}</div>
-{:else if app}
-	<div>
-		{#if error}
-			<div class="mb-4 rounded-md bg-danger/10 px-3 py-2 text-sm text-danger">{error}</div>
-		{/if}
-
-		<!-- Header -->
-		<div class="mb-6">
-			<div class="flex items-center gap-2 text-xs text-gray-500">
-				<a href="/" class="hover:text-white">Projects</a>
-				<span>/</span>
-				<a href="/projects/{encodeURIComponent(projectName)}" class="hover:text-white">
-					{projectName}
-				</a>
-				<span>/</span>
-				<span class="text-gray-400">apps</span>
-			</div>
-			<div class="mt-1 flex items-center justify-between gap-3">
-				<div class="flex items-center gap-3">
-					<h1 class="text-xl font-semibold text-white">{app.metadata.name}</h1>
-					<span
-						class="inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium {phaseStyles[
-							phase()
-						]?.pill ?? 'bg-surface-700 text-gray-400'}"
-					>
-						<span
-							class="h-1.5 w-1.5 rounded-full {phaseStyles[phase()]?.dot ?? 'bg-gray-500'}"
-						></span>
-						{phase()}
-					</span>
-				</div>
-				<button
-					onclick={handleDeleteApp}
-					class="rounded-md border border-danger/30 px-3 py-1.5 text-xs text-danger transition-colors hover:bg-danger/10"
-				>
-					Delete App
-				</button>
-			</div>
+<!-- Full-height canvas layout -->
+<div class="flex h-full flex-col">
+	<!-- Toolbar -->
+	<div class="flex shrink-0 items-center justify-between border-b border-surface-600 bg-surface-800 px-4 py-2">
+		<!-- Breadcrumb -->
+		<div class="flex items-center gap-2 text-sm">
+			<a href="/" class="text-gray-500 hover:text-white">Projects</a>
+			<span class="text-gray-600">/</span>
+			<a href="/projects/{enc(projectName)}" class="text-gray-400 hover:text-white">{projectName}</a>
+			<span class="text-gray-600">/</span>
+			<span class="font-medium text-white">{appName}</span>
 		</div>
 
-		<!-- Overview -->
-		<section class="mb-6 grid grid-cols-1 gap-4 md:grid-cols-3">
-			<div class="rounded-lg border border-surface-600 bg-surface-800 p-4">
-				<div class="text-xs uppercase tracking-wide text-gray-500">Source</div>
-				<div class="mt-1 text-sm text-white">
-					{app.spec.source.type === 'image' ? 'Container Image' : 'Git Repository'}
-				</div>
-				{#if app.spec.source.image}
-					<div class="mt-1 break-all font-mono text-xs text-gray-400">
-						{currentImage(app.spec.environments?.[activeTab]?.name ?? '') ?? app.spec.source.image}
-					</div>
-				{/if}
-			</div>
-
-			<div class="rounded-lg border border-surface-600 bg-surface-800 p-4">
-				<div class="text-xs uppercase tracking-wide text-gray-500">Replicas</div>
-				{#if app.spec.environments?.[activeTab]}
-					{@const env = app.spec.environments[activeTab]}
-					{@const envStatus = app.status?.environments?.find((e) => e.name === env.name)}
-					<div class="mt-1 text-2xl font-semibold text-white">
-						{envStatus?.readyReplicas ?? 0}
-						<span class="text-sm font-normal text-gray-500">/ {env.replicas ?? 1}</span>
-					</div>
-					<div class="mt-1 text-xs text-gray-500">ready / desired</div>
-				{/if}
-			</div>
-
-			<div class="rounded-lg border border-surface-600 bg-surface-800 p-4">
-				<div class="text-xs uppercase tracking-wide text-gray-500">Domain</div>
-				{#if app.spec.environments?.[activeTab]?.domain}
-					{@const d = app.spec.environments[activeTab].domain!}
-					<div class="mt-1 flex items-center gap-2">
-						<a
-							href="https://{d}"
-							target="_blank"
-							rel="noopener noreferrer"
-							class="truncate text-sm text-accent hover:text-accent-hover"
-						>
-							{d}
-						</a>
-						<button
-							type="button"
-							onclick={() => copy(d, 'domain')}
-							class="shrink-0 text-xs text-gray-500 transition-colors hover:text-white"
-							aria-label="Copy domain"
-						>
-							{copied === 'domain' ? 'Copied!' : 'Copy'}
-						</button>
-					</div>
-				{:else}
-					<div class="mt-1 text-sm text-gray-500">Private</div>
-				{/if}
-			</div>
-		</section>
-
-		<!-- Deploy -->
-		<section class="mb-6 rounded-lg border border-surface-600 bg-surface-800 p-5">
-			<h2 class="mb-3 text-sm font-medium text-gray-300">Deploy new image</h2>
-			<div class="flex gap-2">
-				<input
-					type="text"
-					bind:value={deployImage}
-					placeholder="registry.example.com/app:v2.0.0"
-					class="flex-1 rounded-md border border-surface-600 bg-surface-700 px-3 py-2 font-mono text-sm text-white placeholder-gray-500 outline-none focus:border-accent"
-				/>
+		<!-- Right controls -->
+		<div class="flex items-center gap-2">
+			<div class="flex overflow-hidden rounded-md border border-surface-600">
 				<button
-					onclick={handleDeploy}
-					disabled={deploying || !deployImage.trim()}
-					class="rounded-md bg-accent px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-accent-hover disabled:opacity-50"
+					type="button"
+					onclick={() => store.setViewMode('canvas')}
+					class="px-2 py-1.5 {store.viewMode === 'canvas'
+						? 'bg-surface-600 text-white'
+						: 'text-gray-400 hover:bg-surface-700 hover:text-white'}"
+					title="Canvas view"
 				>
-					{deploying ? 'Deploying...' : 'Deploy'}
+					<LayoutDashboard class="h-4 w-4" />
+				</button>
+				<button
+					type="button"
+					onclick={() => store.setViewMode('list')}
+					class="px-2 py-1.5 {store.viewMode === 'list'
+						? 'bg-surface-600 text-white'
+						: 'text-gray-400 hover:bg-surface-700 hover:text-white'}"
+					title="List view"
+				>
+					<List class="h-4 w-4" />
 				</button>
 			</div>
-		</section>
-
-		<!-- Environment tabs -->
-		{#if app.spec.environments && app.spec.environments.length > 1}
-			<div class="mb-4 flex gap-1 border-b border-surface-600">
-				{#each app.spec.environments as env, i}
-					<button
-						onclick={() => (activeTab = i)}
-						class="px-4 py-2 text-sm transition-colors {activeTab === i
-							? 'border-b-2 border-accent text-white'
-							: 'text-gray-500 hover:text-gray-300'}"
-					>
-						{env.name}
-					</button>
-				{/each}
-			</div>
-		{/if}
-
-		<!-- Environment details -->
-		{#if app.spec.environments && app.spec.environments[activeTab]}
-			{@const env = app.spec.environments[activeTab]}
-			{@const envStatus = app.status?.environments?.find((e) => e.name === env.name)}
-
-			<div class="space-y-6">
-				<!-- Promote -->
-				{#if app.spec.environments && app.spec.environments.length > 1 && envStatus?.currentImage}
-					<section class="rounded-lg border border-surface-600 bg-surface-800 p-4">
-						<h2 class="mb-2 text-sm font-medium text-gray-300">Promote</h2>
-						<div class="flex flex-wrap gap-2">
-							{#each app.spec.environments.filter((e) => e.name !== env.name) as target}
-								<button
-									onclick={() => handlePromote(env.name, target.name)}
-									class="rounded-md border border-accent/30 px-3 py-1.5 text-xs text-accent transition-colors hover:bg-accent/10"
-								>
-									Promote to {target.name}
-								</button>
-							{/each}
-						</div>
-					</section>
-				{/if}
-
-				<!-- Env vars editor -->
-				<section>
-					<div class="mb-2 flex items-center justify-between">
-						<h2 class="text-sm font-medium text-gray-300">Environment Variables</h2>
-						{#if envDirty}
-							<div class="flex items-center gap-2">
-								<button
-									type="button"
-									onclick={syncEnvVarsFromApp}
-									disabled={savingEnv}
-									class="rounded-md border border-surface-600 px-3 py-1.5 text-xs text-gray-400 transition-colors hover:text-white"
-								>
-									Discard
-								</button>
-								<button
-									type="button"
-									onclick={saveEnvVars}
-									disabled={savingEnv}
-									class="rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-accent-hover disabled:opacity-50"
-								>
-									{savingEnv ? 'Saving...' : 'Save changes'}
-								</button>
-							</div>
-						{/if}
-					</div>
-					<EnvVarEditor bind:value={envVars} />
-				</section>
-
-				<!-- Logs -->
-				<LogViewer project={projectName} {appName} env={env.name} />
-
-				<!-- Deploy history -->
-				{#if envStatus?.deployHistory && envStatus.deployHistory.length > 0}
-					<section class="rounded-lg border border-surface-600 bg-surface-800 p-5">
-						<h2 class="mb-3 text-sm font-medium text-gray-300">Deploy History</h2>
-						<div class="space-y-2">
-							{#each envStatus.deployHistory.toReversed() as record, i}
-								<div class="flex items-center justify-between text-sm">
-									<div class="min-w-0 flex-1">
-										<span class="font-mono text-white">{record.image}</span>
-										{#if record.gitSHA}
-											<span class="ml-2 text-gray-500">{record.gitSHA.slice(0, 7)}</span>
-										{/if}
-									</div>
-									<div class="flex shrink-0 items-center gap-3">
-										<span class="text-xs text-gray-500">
-											{new Date(record.timestamp).toLocaleDateString('en-US', {
-												month: 'short',
-												day: 'numeric',
-												hour: '2-digit',
-												minute: '2-digit'
-											})}
-										</span>
-										{#if i > 0}
-											<button
-												onclick={() =>
-													handleRollback(envStatus, envStatus.deployHistory!.length - 1 - i)}
-												class="text-xs text-accent hover:text-accent-hover"
-											>
-												Rollback
-											</button>
-										{/if}
-									</div>
-								</div>
-							{/each}
-						</div>
-					</section>
-				{/if}
-			</div>
-		{/if}
-
-		<!-- Domains -->
-		{#if app.spec.environments?.[activeTab]}
-			{@const envForDomains = app.spec.environments[activeTab]}
-			<section class="mt-6 rounded-lg border border-surface-600 bg-surface-800 p-5">
-				<h2 class="mb-3 text-sm font-medium text-gray-300">Domains</h2>
-
-				{#if envForDomains.domain}
-					<div class="mb-3 rounded-md bg-surface-700 px-3 py-2 text-sm">
-						<div class="flex items-center justify-between">
-							<div>
-								<span class="text-xs uppercase text-gray-500">Primary</span>
-								<div class="font-mono text-white">{envForDomains.domain}</div>
-							</div>
-						</div>
-					</div>
-				{/if}
-
-				{#if domains?.custom && domains.custom.length > 0}
-					<div class="mb-3 space-y-2">
-						{#each domains.custom as customDomain}
-							<div
-								class="flex items-center justify-between rounded-md bg-surface-700 px-3 py-2 text-sm"
-							>
-								<div>
-									<span class="font-mono text-white">{customDomain}</span>
-									{#if envForDomains.domain}
-										<div class="text-xs text-gray-500">
-											CNAME {customDomain} &rarr; {envForDomains.domain}
-										</div>
-									{/if}
-								</div>
-								<button
-									onclick={() => handleRemoveDomain(customDomain)}
-									class="text-xs text-gray-500 hover:text-danger"
-								>
-									Remove
-								</button>
-							</div>
-						{/each}
-					</div>
-				{/if}
-
-				<div class="flex gap-2">
-					<input
-						type="text"
-						bind:value={newDomain}
-						placeholder="custom.example.com"
-						class="flex-1 rounded-md border border-surface-600 bg-surface-700 px-3 py-2 text-sm text-white placeholder-gray-500 outline-none focus:border-accent"
-					/>
-					<button
-						onclick={handleAddDomain}
-						disabled={savingDomain || !newDomain.trim()}
-						class="rounded-md bg-surface-600 px-3 py-2 text-sm text-white transition-colors hover:bg-surface-500 disabled:opacity-50"
-					>
-						{savingDomain ? 'Adding...' : 'Add'}
-					</button>
-				</div>
-			</section>
-		{/if}
-
-		<!-- Secrets -->
-		<section class="mt-6 rounded-lg border border-surface-600 bg-surface-800 p-5">
-			<h2 class="mb-3 text-sm font-medium text-gray-300">Secrets</h2>
-
-			{#if secrets.length > 0}
-				<div class="mb-4 space-y-2">
-					{#each secrets as secret}
-						<div
-							class="flex items-center justify-between rounded-md bg-surface-700 px-3 py-2 text-sm"
-						>
-							<div>
-								<span class="font-mono text-white">{secret.name}</span>
-								<span class="ml-2 text-xs text-gray-500"
-									>{secret.keys.length} key{secret.keys.length !== 1 ? 's' : ''}</span
-								>
-							</div>
-							<button
-								onclick={() => handleDeleteSecret(secret.name)}
-								class="text-xs text-gray-500 hover:text-danger"
-							>
-								Remove
-							</button>
-						</div>
-					{/each}
-				</div>
-			{/if}
-
-			<div class="flex gap-2">
-				<input
-					type="text"
-					bind:value={newSecretKey}
-					placeholder="SECRET_NAME"
-					class="w-40 rounded-md border border-surface-600 bg-surface-700 px-3 py-2 text-sm text-white placeholder-gray-500 outline-none focus:border-accent"
-				/>
-				<input
-					type="password"
-					bind:value={newSecretValue}
-					placeholder="value (write-only)"
-					class="flex-1 rounded-md border border-surface-600 bg-surface-700 px-3 py-2 text-sm text-white placeholder-gray-500 outline-none focus:border-accent"
-				/>
-				<button
-					onclick={handleAddSecret}
-					disabled={savingSecret || !newSecretKey.trim()}
-					class="rounded-md bg-surface-600 px-3 py-2 text-sm text-white transition-colors hover:bg-surface-500 disabled:opacity-50"
-				>
-					{savingSecret ? 'Saving...' : 'Add'}
-				</button>
-			</div>
-		</section>
+			<a
+				href="/projects/{enc(projectName)}/apps/new"
+				class="flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-accent-hover"
+			>
+				<Plus class="h-4 w-4" /> Add
+			</a>
+		</div>
 	</div>
-{/if}
+
+	<!-- Canvas behind the drawer -->
+	<div class="relative flex-1 overflow-hidden" style="height: calc(100vh - 114px)">
+		{#if !loading}
+			<ProjectCanvas
+				{projectName}
+				{apps}
+				selectedApp={appName}
+				onAppOpen={(name) => goto(`/projects/${enc(projectName)}/apps/${enc(name)}`)}
+			/>
+		{/if}
+
+		<!-- Drawer overlay -->
+		<AppDrawer
+			project={projectName}
+			{appName}
+			onClose={closeDrawer}
+		/>
+	</div>
+</div>

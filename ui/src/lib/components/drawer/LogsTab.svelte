@@ -1,0 +1,117 @@
+<script lang="ts">
+	import { onMount } from 'svelte';
+	import { api } from '$lib/api';
+	import type { App } from '$lib/types';
+
+	let { project, app }: { project: string; app: App } = $props();
+
+	let selectedEnv = $state(app.spec.environments?.[0]?.name ?? 'production');
+	let lines = $state<string[]>([]);
+	let following = $state(true);
+	let es: EventSource | null = null;
+	let logContainer: HTMLElement | null = $state(null);
+
+	function scrollToBottom() {
+		if (logContainer) {
+			logContainer.scrollTop = logContainer.scrollHeight;
+		}
+	}
+
+	function connect() {
+		es?.close();
+		lines = [];
+		const url = api.logsURL(project, app.metadata.name, selectedEnv);
+		es = new EventSource(url);
+		es.onmessage = (e: MessageEvent) => {
+			lines = [...lines.slice(-499), e.data as string];
+			if (following) {
+				// Defer scroll to after DOM update
+				setTimeout(scrollToBottom, 0);
+			}
+		};
+		es.onerror = () => {
+			// connection closed or error — don't retry automatically
+		};
+	}
+
+	onMount(() => {
+		connect();
+		return () => {
+			es?.close();
+			es = null;
+		};
+	});
+
+	$effect(() => {
+		void selectedEnv;
+		connect();
+	});
+
+	function clearLogs() {
+		lines = [];
+	}
+</script>
+
+<div class="flex h-full flex-col gap-3">
+	<!-- Top bar -->
+	<div class="flex items-center justify-between">
+		<!-- Environment tabs -->
+		{#if app.spec.environments && app.spec.environments.length > 1}
+			<div class="flex gap-1">
+				{#each app.spec.environments as env}
+					<button
+						type="button"
+						onclick={() => (selectedEnv = env.name)}
+						class="rounded px-2.5 py-1 text-xs transition-colors {selectedEnv === env.name
+							? 'bg-surface-600 text-white'
+							: 'text-gray-400 hover:text-white'}"
+					>
+						{env.name}
+					</button>
+				{/each}
+			</div>
+		{:else}
+			<span class="text-xs text-gray-500">{selectedEnv}</span>
+		{/if}
+
+		<div class="flex items-center gap-2">
+			<!-- Live tail toggle -->
+			<label class="flex cursor-pointer items-center gap-1.5 text-xs text-gray-400">
+				<span>Live tail</span>
+				<button
+					type="button"
+					role="switch"
+					aria-checked={following}
+					onclick={() => (following = !following)}
+					class="relative inline-flex h-4 w-7 items-center rounded-full transition-colors {following ? 'bg-accent' : 'bg-surface-600'}"
+				>
+					<span
+						class="inline-block h-3 w-3 transform rounded-full bg-white shadow transition-transform {following ? 'translate-x-3.5' : 'translate-x-0.5'}"
+					></span>
+				</button>
+			</label>
+			<button
+				type="button"
+				onclick={clearLogs}
+				class="rounded px-2 py-0.5 text-xs text-gray-500 hover:bg-surface-700 hover:text-white"
+			>
+				Clear
+			</button>
+		</div>
+	</div>
+
+	<!-- Log body -->
+	<div
+		bind:this={logContainer}
+		class="flex-1 overflow-y-auto rounded-md bg-surface-900 p-3"
+		style="min-height: 300px; max-height: calc(100vh - 280px)"
+	>
+		{#if lines.length === 0}
+			<p class="text-xs text-gray-600 italic">No logs yet…</p>
+		{:else}
+			{#each lines as line}
+				<div class="font-mono text-xs leading-5 text-gray-300 whitespace-pre-wrap break-all">{line}</div>
+			{/each}
+		{/if}
+	</div>
+</div>
