@@ -18,6 +18,9 @@
 	let apps = $state<App[]>([]);
 	let loading = $state(true);
 	let error = $state('');
+	let deploying = $state(false);
+	let deployError = $state('');
+	let showDetailsModal = $state(false);
 
 	onMount(async () => {
 		if (!localStorage.getItem('mortise_token')) {
@@ -25,6 +28,36 @@
 			return;
 		}
 		await load();
+	});
+
+	async function deployAll() {
+		if (deploying || !store.hasUnsavedChanges) return;
+		deploying = true;
+		deployError = '';
+		showDetailsModal = false;
+		try {
+			for (const [appName, change] of store.stagedChanges) {
+				await api.updateApp(projectName, appName, change.dirty);
+			}
+			store.discardAll();
+			await load();
+		} catch (e) {
+			deployError = e instanceof Error ? e.message : 'Deploy failed';
+		} finally {
+			deploying = false;
+		}
+	}
+
+	$effect(() => {
+		function handleKey(e: KeyboardEvent) {
+			if (e.key === 'Enter' && e.shiftKey && store.hasUnsavedChanges) {
+				e.preventDefault();
+				void deployAll();
+			}
+			if (e.key === 'Escape') showDetailsModal = false;
+		}
+		window.addEventListener('keydown', handleKey);
+		return () => window.removeEventListener('keydown', handleKey);
 	});
 
 	$effect(() => {
@@ -103,6 +136,13 @@
 				</span>
 				<button
 					type="button"
+					onclick={() => showDetailsModal = true}
+					class="text-xs text-gray-400 hover:text-white"
+				>
+					Details
+				</button>
+				<button
+					type="button"
 					onclick={() => store.discardAll()}
 					class="text-xs text-gray-400 hover:text-white"
 				>
@@ -110,11 +150,16 @@
 				</button>
 				<button
 					type="button"
-					class="text-xs font-medium text-accent hover:text-accent-hover"
+					onclick={deployAll}
+					disabled={deploying}
+					class="text-xs font-medium text-accent hover:text-accent-hover disabled:opacity-50"
 				>
-					Deploy ⇧+Enter
+					{deploying ? 'Deploying…' : 'Deploy ⇧+Enter'}
 				</button>
 			</div>
+		{/if}
+		{#if deployError}
+			<div class="text-xs text-danger">{deployError}</div>
 		{/if}
 
 		<!-- Right: view toggle + add button -->
@@ -172,6 +217,13 @@
 					{apps}
 					selectedApp={urlApp}
 					onAppOpen={(name) => goto(`/projects/${enc(projectName)}/apps/${enc(name)}`)}
+					onAddApp={() => showNewApp = true}
+					onDeleteApp={async (name) => {
+						if (confirm(`Delete app "${name}"? This cannot be undone.`)) {
+							await api.deleteApp(projectName, name);
+							await load();
+						}
+					}}
 				/>
 			</div>
 		{:else}
@@ -267,4 +319,38 @@
     onClose={() => showNewApp = false}
     onCreated={async (name) => { showNewApp = false; await load(); goto(`/projects/${enc(projectName)}/apps/${enc(name)}`); }}
   />
+{/if}
+
+{#if showDetailsModal}
+	<!-- Details modal -->
+	<div class="fixed inset-0 z-50 flex items-center justify-center bg-black/60" role="dialog" aria-modal="true">
+		<div class="w-full max-w-lg rounded-lg border border-surface-600 bg-surface-800 shadow-2xl">
+			<div class="flex items-center justify-between border-b border-surface-600 px-4 py-3">
+				<h2 class="text-sm font-semibold text-white">Pending changes</h2>
+				<button type="button" onclick={() => showDetailsModal = false} class="text-gray-500 hover:text-white">✕</button>
+			</div>
+			<div class="max-h-80 overflow-y-auto p-4 space-y-3">
+				{#each [...store.stagedChanges.entries()] as [appName, change]}
+					<div class="rounded-md border border-surface-600 p-3">
+						<div class="flex items-center justify-between">
+							<span class="text-sm font-medium text-white">{appName}</span>
+							<button type="button" onclick={() => store.discardChange(appName)} class="text-xs text-gray-500 hover:text-danger">Discard</button>
+						</div>
+						{#if change.original.source?.image !== change.dirty.source?.image}
+							<div class="mt-1 text-xs text-gray-400">Image: <span class="font-mono text-warning">{change.dirty.source?.image ?? '—'}</span></div>
+						{/if}
+						{#if (change.original.environments?.[0]?.replicas ?? 1) !== (change.dirty.environments?.[0]?.replicas ?? 1)}
+							<div class="mt-1 text-xs text-gray-400">Replicas: {change.original.environments?.[0]?.replicas ?? 1} → <span class="text-accent">{change.dirty.environments?.[0]?.replicas ?? 1}</span></div>
+						{/if}
+					</div>
+				{/each}
+			</div>
+			<div class="flex justify-end gap-2 border-t border-surface-600 px-4 py-3">
+				<button type="button" onclick={() => showDetailsModal = false} class="rounded px-3 py-1.5 text-sm text-gray-400 hover:text-white">Cancel</button>
+				<button type="button" onclick={deployAll} disabled={deploying} class="rounded bg-accent px-3 py-1.5 text-sm font-medium text-white hover:bg-accent-hover disabled:opacity-50">
+					{deploying ? 'Deploying…' : 'Deploy Changes'}
+				</button>
+			</div>
+		</div>
+	</div>
 {/if}

@@ -40,13 +40,29 @@ class MortiseStore {
 				(sessionStorage.getItem('mortise_tab') as typeof this.drawerTab) ?? 'deployments';
 			this.activityRailOpen =
 				sessionStorage.getItem('mortise_activity') === 'true';
+			const savedUser = localStorage.getItem('mortise_user');
+			if (savedUser) {
+				try { this.user = JSON.parse(savedUser); } catch { /* ignore */ }
+			}
+			// JWT decode fallback when token exists but no persisted user
+			if (!this.user && this.token) {
+				try {
+					const payload = JSON.parse(atob(this.token.split('.')[1]));
+					if (payload.email) {
+						this.user = { email: payload.email, role: payload.role ?? 'member' };
+					}
+				} catch { /* ignore */ }
+			}
 		}
 	}
 
 	login(token: string, user: { email: string; role: 'admin' | 'member' }) {
 		this.token = token;
 		this.user = user;
-		if (browser) localStorage.setItem('mortise_token', token);
+		if (browser) {
+			localStorage.setItem('mortise_token', token);
+			localStorage.setItem('mortise_user', JSON.stringify(user));
+		}
 	}
 
 	logout() {
@@ -58,6 +74,7 @@ class MortiseStore {
 		if (browser) {
 			localStorage.removeItem('mortise_token');
 			localStorage.removeItem('mortise_project');
+			localStorage.removeItem('mortise_user');
 		}
 	}
 

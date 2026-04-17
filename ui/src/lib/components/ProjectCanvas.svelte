@@ -18,12 +18,17 @@
 		apps: App[];
 		selectedApp?: string | null;
 		onAppOpen: (appName: string) => void;
+		onAddApp?: () => void;
+		onDeleteApp?: (appName: string) => void;
 	}
 
-	let { projectName, apps, selectedApp = null, onAppOpen }: Props = $props();
+	let { projectName, apps, selectedApp = null, onAppOpen, onAddApp, onDeleteApp }: Props = $props();
 
 	// Register custom node type
 	const nodeTypes = { app: AppNode };
+
+	// Context menu state
+	let ctxMenu = $state<{ x: number; y: number; appName: string } | null>(null);
 
 	function appsToNodes(appsArr: App[]): Node[] {
 		return appsArr.map((app, i) => {
@@ -88,7 +93,19 @@
 			localStorage.setItem(key, JSON.stringify(node.position));
 		}
 	}
+
+	function onNodeContextMenu(event: { event: MouseEvent; node: Node }) {
+		const { event: e, node } = event;
+		e.preventDefault();
+		ctxMenu = { x: e.clientX, y: e.clientY, appName: node.id };
+	}
+
+	function closeCtxMenu() {
+		ctxMenu = null;
+	}
 </script>
+
+<svelte:window onclick={closeCtxMenu} />
 
 <div class="h-full w-full">
 	{#if apps.length === 0}
@@ -102,12 +119,15 @@
 				<h2 class="text-base font-medium text-white">No apps yet</h2>
 				<p class="mt-1 text-sm text-gray-500">Deploy your first app to see it here.</p>
 			</div>
-			<a
-				href="/projects/{encodeURIComponent(projectName)}/apps/new"
-				class="flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-accent-hover"
-			>
-				<Plus class="h-4 w-4" /> Add app
-			</a>
+			{#if onAddApp}
+				<button
+					type="button"
+					onclick={onAddApp}
+					class="flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-accent-hover"
+				>
+					<Plus class="h-4 w-4" /> Add app
+				</button>
+			{/if}
 		</div>
 	{:else}
 		<SvelteFlow
@@ -118,11 +138,41 @@
 			snapGrid={[20, 20]}
 			onnodedragstop={({ nodes: n }) => onNodeDragStop({ nodes: n })}
 			onnodeclick={({ node }) => onAppOpen(node.id)}
+			onnodecontextmenu={onNodeContextMenu}
 			colorMode="dark"
 		>
 			<Background variant={BackgroundVariant.Dots} gap={20} patternColor="var(--color-surface-700)" />
 			<Controls />
 			<MiniMap nodeColor={nodeColor} class="bg-surface-800" />
 		</SvelteFlow>
+	{/if}
+
+	<!-- Context menu -->
+	{#if ctxMenu}
+		<div
+			class="fixed z-50 min-w-[160px] rounded-md border border-surface-600 bg-surface-800 py-1 shadow-xl"
+			style="left: {ctxMenu.x}px; top: {ctxMenu.y}px"
+			role="menu"
+		>
+			<button
+				type="button"
+				role="menuitem"
+				onclick={() => { onAppOpen(ctxMenu!.appName); closeCtxMenu(); }}
+				class="flex w-full items-center px-3 py-2 text-sm text-gray-300 hover:bg-surface-700 hover:text-white"
+			>
+				Open drawer
+			</button>
+			{#if onDeleteApp}
+				<div class="my-1 border-t border-surface-600"></div>
+				<button
+					type="button"
+					role="menuitem"
+					onclick={() => { onDeleteApp!(ctxMenu!.appName); closeCtxMenu(); }}
+					class="flex w-full items-center px-3 py-2 text-sm text-danger hover:bg-surface-700"
+				>
+					Delete app
+				</button>
+			{/if}
+		</div>
 	{/if}
 </div>

@@ -762,31 +762,20 @@ Per UI_SPEC.md §14 flow tracker — updated after the full rebuild:
 | Platform settings | 3.17 | **Partial** | `/admin/settings`: domain, DNS, git providers. Missing: Registry config, Build config, TLS/cert-manager section, real user list from API |
 | Project settings | 3.17p | **Partial** | Tabbed layout: General + PR toggle, Environments, Shared Variables info, Members + invite, Danger. Missing: Tokens tab, Webhooks tab, Integrations tab, per-app Remove in Danger |
 | Extensions | 3.18 | ✅ | `/extensions` page |
-| Activity rail | 12.22 | **Partial** | ActivityRail component with filter chips and relative timestamps; pulse button wired. **Does not fetch data** — `listActivity` API call missing from component |
-| Staged-changes bar | 12.2 | **Partial** | Bar renders when dirty; Discard works; Deploy button is cosmetic (no PUT fires; ⇧+Enter shortcut missing) |
-| Notifications bell | 2.1 | **Partial** | Bell + dropdown component exists; no unread badge count; no data source wired |
+| Activity rail | 12.22 | ✅ | ActivityRail fetches `api.listActivity(project)` on mount; filter chips; actor avatars; relative timestamps |
+| Staged-changes bar | 12.2 | ✅ | Bar renders when dirty; Discard works; Deploy calls `PUT /api/projects/{p}/apps/{a}` per change; ⇧+Enter shortcut; Details modal with per-change diff |
+| Notifications bell | 2.1 | **Partial** | Bell + dropdown derives from activity data; no unread badge count |
+| Canvas context menu | 12.21 | ✅ | Right-click on node shows context menu: Open drawer, Delete app |
+| User persistence | auth | ✅ | `store.user` persisted to `mortise_user` in localStorage; `isAdmin` correct after page refresh |
 
-**Remaining gaps for full UI_SPEC parity — prioritized:**
-
-### Critical (blocks core flows)
-1. **App detail drawer must be a slide-over** — currently full page (`/projects/{p}/apps/{a}`). Canvas stays visible behind it per §12.21. Requires mounting AppDrawer inside the project canvas page, not as a separate route.
-2. **Staged-changes Deploy button** — needs `PUT /api/projects/{p}/apps/{a}` + ⇧+Enter keyboard shortcut + "Details" modal with per-change diff
-3. **PR environments toggle** — `setProjectPreview()` not called; button flip is purely cosmetic
-
-### High (missing feature coverage)
-4. **Activity rail data** — `api.listActivity(project)` not called in ActivityRail.svelte
-5. **Platform settings: Registry + Build + TLS sections** — no UI forms for Zot config, BuildKit config, cert-manager cluster issuer
-6. **Credentials declaration UI** — `spec.credentials` block for database apps not editable; only template preset in NewAppModal
-7. **`SourceType` union missing 'external'** — types.ts defines `type SourceType = 'git' | 'image'` but external source uses `as any` cast
-8. **Cron schedule not included in spec output** — NewAppModal collects `schedule` but `buildSpec()` ignores it
+**Remaining gaps (post pass-3):**
 
 ### Medium
-9. Build cache toggle, build args editor, watchPaths input — NewAppModal gaps
-10. Pull-secret picker for image source — API exists (`listSecrets`), no UI
-11. Project settings: Tokens, Webhooks, Integrations tabs missing
-12. Per-env TLS overrides in Domains section
-13. Canvas right-click context menu
-14. Notifications unread badge + real data source
+- Notifications unread badge count
+- Metrics tab: real CPU/memory data (requires metrics-server; placeholder links to Extensions)
+- Command palette (⌘K) — deferred to v2 per spec §12.20
+- Canvas node positions sync to API annotations (currently localStorage only)
+- `patchEnvVar`/`deleteEnvVar` API endpoints unused (VariablesTab uses full replace — functional)
 
 ---
 
