@@ -1,8 +1,8 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { api } from '$lib/api';
-	import type { App, AppSpec, DeployToken, DomainsResponse } from '$lib/types';
-	import { Copy, Plus, Trash2 } from 'lucide-svelte';
+	import type { App, AppSpec, DeployToken, DomainsResponse, SecretMount } from '$lib/types';
+	import { Copy, Plus, Trash2, Link, ChevronDown } from 'lucide-svelte';
 
 	let {
 		project,
@@ -25,8 +25,11 @@
 	let srcBranch = $state(app.spec.source.branch ?? '');
 	let srcPath = $state(app.spec.source.path ?? '');
 	let srcImage = $state(app.spec.source.image ?? '');
-	let srcHost = $state('');
-	let srcPort = $state('');
+
+	// --- Build ---
+	let buildMode = $state<'auto' | 'dockerfile' | 'railpack'>(app.spec.source.build?.mode ?? 'auto');
+	let dockerfilePath = $state(app.spec.source.build?.dockerfilePath ?? '');
+	let savingBuild = $state(false);
 
 	// --- Networking ---
 	let netPublic = $state(app.spec.network?.public ?? true);
@@ -52,6 +55,35 @@
 	let newTokenEnv = $state(app.spec.environments?.[0]?.name ?? '');
 	let createdToken = $state<string | null>(null);
 	let copiedToken = $state(false);
+
+	// --- Bindings ---
+	let showAddBinding = $state(false);
+	let newBindingRef = $state('');
+	let savingBinding = $state(false);
+	let allApps = $state<App[]>([]);
+	$effect(() => {
+		api.listApps(project).then(a => allApps = a).catch(() => {});
+	});
+	const currentBindings = $derived(app.spec.environments?.[0]?.bindings ?? []);
+	const bindableApps = $derived(allApps.filter(a =>
+		a.metadata.name !== app.metadata.name &&
+		a.spec.credentials && a.spec.credentials.length > 0
+	));
+
+	// --- Advanced ---
+	let showAdvanced = $state(false);
+	// Environment type doesn't include annotations/secretMounts at the base type;
+	// cast to access the extended fields that the API may return.
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	const env0Ext = (app.spec.environments?.[0] as any) ?? {};
+	let annotations = $state<Record<string, string>>(
+		Object.fromEntries(Object.entries((env0Ext.annotations ?? {}) as Record<string, string>))
+	);
+	let savingAnnotations = $state(false);
+	let secretMounts = $state<SecretMount[]>((env0Ext.secretMounts ?? []) as SecretMount[]);
+	let showAddMount = $state(false);
+	let newMount = $state<{ secretName: string; mountPath: string }>({ secretName: '', mountPath: '' });
+	let savingMounts = $state(false);
 
 	// --- Danger ---
 	let confirmDelete = $state(false);
@@ -112,6 +144,26 @@
 			errorMsg = e instanceof Error ? e.message : 'Failed to save';
 		} finally {
 			saving = false;
+		}
+	}
+
+	async function saveBuild() {
+		savingBuild = true;
+		try {
+			const spec = structuredClone(app.spec);
+			spec.source = {
+				...spec.source,
+				build: {
+					mode: buildMode,
+					dockerfilePath: buildMode === 'dockerfile' ? dockerfilePath : undefined
+				}
+			};
+			const updated = await api.updateApp(project, app.metadata.name, spec);
+			onAppUpdated(updated);
+		} catch (e) {
+			errorMsg = e instanceof Error ? e.message : 'Failed to save build config';
+		} finally {
+			savingBuild = false;
 		}
 	}
 
@@ -192,6 +244,99 @@
 			tokens = tokens.filter((t) => t.id !== id);
 		} catch (e) {
 			errorMsg = e instanceof Error ? e.message : 'Failed to revoke token';
+		}
+	}
+
+	async function addBinding() {
+		if (!newBindingRef) return;
+		savingBinding = true;
+		try {
+			const envs = (app.spec.environments ?? []).map(e => ({
+				...e,
+				bindings: [...(e.bindings ?? []), { ref: newBindingRef }]
+			}));
+			const updated = await api.updateApp(project, app.metadata.name, { ...app.spec, environments: envs });
+			onAppUpdated(updated);
+			showAddBinding = false; newBindingRef = '';
+		} catch (e) {
+			errorMsg = e instanceof Error ? e.message : 'Failed to add binding';
+		} finally {
+			savingBinding = false;
+		}
+	}
+
+	async function removeBinding(ref: string) {
+		try {
+			const envs = (app.spec.environments ?? []).map(e => ({
+				...e,
+				bindings: (e.bindings ?? []).filter(b => b.ref !== ref)
+			}));
+			const updated = await api.updateApp(project, app.metadata.name, { ...app.spec, environments: envs });
+			onAppUpdated(updated);
+		} catch (e) {
+			errorMsg = e instanceof Error ? e.message : 'Failed to remove binding';
+		}
+	}
+
+	function addAnnotation() {
+		annotations = { ...annotations, '': '' };
+	}
+
+	function updateAnnotationKey(i: number, _oldKey: string, newKey: string) {
+		const entries = Object.entries(annotations);
+		entries[i] = [newKey, entries[i][1]];
+		annotations = Object.fromEntries(entries);
+	}
+
+	function updateAnnotationValue(key: string, val: string) {
+		annotations = { ...annotations, [key]: val };
+	}
+
+	function removeAnnotation(key: string) {
+		const { [key]: _, ...rest } = annotations;
+		annotations = rest;
+	}
+
+	async function saveAnnotations() {
+		savingAnnotations = true;
+		try {
+			const envs = (app.spec.environments ?? []).map((e, i) =>
+				i === 0 ? { ...e, annotations } : e
+			);
+			const updated = await api.updateApp(project, app.metadata.name, { ...app.spec, environments: envs });
+			onAppUpdated(updated);
+		} catch (e) {
+			errorMsg = e instanceof Error ? e.message : 'Failed to save annotations';
+		} finally {
+			savingAnnotations = false;
+		}
+	}
+
+	function addSecretMount() {
+		if (!newMount.secretName || !newMount.mountPath) return;
+		secretMounts = [...secretMounts, { name: newMount.secretName, secretName: newMount.secretName, mountPath: newMount.mountPath }];
+		newMount = { secretName: '', mountPath: '' };
+		showAddMount = false;
+		void saveSecretMounts();
+	}
+
+	function removeSecretMount(i: number) {
+		secretMounts = secretMounts.filter((_, idx) => idx !== i);
+		void saveSecretMounts();
+	}
+
+	async function saveSecretMounts() {
+		savingMounts = true;
+		try {
+			const envs = (app.spec.environments ?? []).map((e, i) =>
+				i === 0 ? { ...e, secretMounts } : e
+			);
+			const updated = await api.updateApp(project, app.metadata.name, { ...app.spec, environments: envs });
+			onAppUpdated(updated);
+		} catch (e) {
+			errorMsg = e instanceof Error ? e.message : 'Failed to save mounts';
+		} finally {
+			savingMounts = false;
 		}
 	}
 
@@ -282,6 +427,35 @@
 		</div>
 	{/if}
 
+	<!-- Build -->
+	{#if sectionVisible('build')}
+		<div class={sectionCls}>
+			<h3 class={headingCls}>Build</h3>
+			<div class="space-y-3">
+				<div>
+					<label class={labelCls} for="build-mode">Build mode</label>
+					<select id="build-mode" bind:value={buildMode}
+						class="mt-1 w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-white outline-none focus:border-accent">
+						<option value="auto">Auto-detect</option>
+						<option value="dockerfile">Dockerfile</option>
+						<option value="railpack">Railpack / Nixpacks</option>
+					</select>
+				</div>
+				{#if buildMode === 'dockerfile'}
+					<div>
+						<label class={labelCls} for="dockerfile-path">Dockerfile path</label>
+						<input id="dockerfile-path" type="text" bind:value={dockerfilePath} placeholder="Dockerfile"
+							class="mt-1 w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 font-mono text-sm text-white placeholder-gray-500 outline-none focus:border-accent" />
+					</div>
+				{/if}
+			</div>
+			<button type="button" onclick={saveBuild} disabled={savingBuild}
+				class={btnPrimary}>
+				{savingBuild ? 'Saving...' : 'Save build config'}
+			</button>
+		</div>
+	{/if}
+
 	<!-- Networking -->
 	{#if sectionVisible('networking')}
 		<div class={sectionCls}>
@@ -332,6 +506,73 @@
 					{saving ? 'Saving…' : 'Update'}
 				</button>
 			</div>
+		</div>
+	{/if}
+
+	<!-- Bindings -->
+	{#if sectionVisible('bindings')}
+		<div class={sectionCls}>
+			<div class="flex items-center justify-between">
+				<h3 class={headingCls} style="margin-bottom:0">Bindings</h3>
+				<button type="button" onclick={() => showAddBinding = true}
+					class="flex items-center gap-1 rounded-md border border-surface-600 px-2 py-1 text-xs text-gray-400 hover:bg-surface-700 hover:text-white">
+					<Plus class="h-3.5 w-3.5" /> Add binding
+				</button>
+			</div>
+
+			{#each currentBindings as binding}
+				<div class="flex items-center justify-between rounded-md border border-surface-600 px-3 py-2">
+					<div class="flex items-center gap-2">
+						<Link class="h-4 w-4 text-gray-400" />
+						<span class="text-sm text-white">{binding.ref}</span>
+						{#if binding.project}
+							<span class="rounded-full bg-info/10 px-1.5 py-0.5 text-xs text-info">{binding.project}</span>
+						{/if}
+					</div>
+					<button type="button" onclick={() => removeBinding(binding.ref)}
+						class="rounded p-1 text-gray-500 hover:bg-surface-600 hover:text-danger">
+						<Trash2 class="h-3.5 w-3.5" />
+					</button>
+				</div>
+			{/each}
+
+			{#if currentBindings.length === 0 && !showAddBinding}
+				<p class="text-xs text-gray-500">No bindings. Add a binding to inject credentials from another app.</p>
+			{/if}
+
+			{#if showAddBinding}
+				<div class="rounded-md border border-surface-600 bg-surface-700 p-3 space-y-2">
+					<p class="text-xs font-medium text-gray-300">Add binding</p>
+					<div>
+						<label class={labelCls} for="binding-ref">App to bind</label>
+						<select id="binding-ref" bind:value={newBindingRef}
+							class="mt-1 w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-white outline-none focus:border-accent">
+							<option value="">Select an app...</option>
+							{#each bindableApps as a}
+								<option value={a.metadata.name}>{a.metadata.name}</option>
+							{/each}
+						</select>
+					</div>
+					{#if newBindingRef}
+						<div class="rounded-md bg-surface-800 p-2 text-xs text-gray-400">
+							<p class="font-medium text-gray-300 mb-1">Will inject:</p>
+							{#each (allApps.find(a => a.metadata.name === newBindingRef)?.spec.credentials ?? []) as cred}
+								<span class="mr-2 font-mono text-gray-300">{cred.name}</span>
+							{/each}
+						</div>
+					{/if}
+					<div class="flex gap-2">
+						<button type="button" onclick={addBinding} disabled={!newBindingRef || savingBinding}
+							class={btnPrimary}>
+							{savingBinding ? 'Adding...' : 'Add'}
+						</button>
+						<button type="button" onclick={() => { showAddBinding = false; newBindingRef = ''; }}
+							class={btnSecondary}>
+							Cancel
+						</button>
+					</div>
+				</div>
+			{/if}
 		</div>
 	{/if}
 
@@ -521,6 +762,104 @@
 				>
 					<Plus class="h-3 w-3" /> Create token
 				</button>
+			{/if}
+		</div>
+	{/if}
+
+	<!-- Config-as-code -->
+	{#if sectionVisible('gitops config')}
+		<div class={sectionCls}>
+			<h3 class={headingCls}>Config-as-code (GitOps)</h3>
+			<div class="rounded-md border border-surface-600 bg-surface-700/50 p-3 text-xs text-gray-400">
+				<p>Managing this App via Argo CD or Flux? Add <code class="font-mono bg-surface-700 px-1 rounded">ignoreDifferences</code> for <code class="font-mono bg-surface-700 px-1 rounded">env</code> and <code class="font-mono bg-surface-700 px-1 rounded">sharedVars</code> fields to prevent drift conflicts.</p>
+				<a href="https://docs.mortise.dev/gitops" target="_blank" rel="noopener noreferrer" class="mt-2 inline-block text-accent hover:underline">View GitOps guide →</a>
+			</div>
+		</div>
+	{/if}
+
+	<!-- Advanced -->
+	{#if sectionVisible('advanced annotations mounts')}
+		<div class={sectionCls}>
+			<button type="button" onclick={() => showAdvanced = !showAdvanced}
+				class="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-gray-400 hover:text-white w-full">
+				<ChevronDown class="h-3.5 w-3.5 transition-transform {showAdvanced ? 'rotate-0' : '-rotate-90'}" />
+				Advanced
+			</button>
+			{#if showAdvanced}
+				<div class="rounded-md border border-warning/30 bg-warning/5 p-2 mt-2">
+					<p class="text-xs text-warning">Warning: incorrect annotations may break your deployment.</p>
+				</div>
+
+				<!-- Environment Annotations -->
+				<div class="mt-3">
+					<p class="text-sm text-gray-400 mb-1">Environment Annotations</p>
+					<p class="text-xs text-gray-500 mb-2">Arbitrary Kubernetes annotations on the Deployment (Linkerd injection, IRSA, rate limits, etc.)</p>
+					{#each Object.entries(annotations) as [k, v], i}
+						<div class="flex gap-2 mb-2">
+							<input type="text" value={k} oninput={(e) => updateAnnotationKey(i, k, (e.target as HTMLInputElement).value)}
+								placeholder="annotation.example.com/key"
+								class="flex-1 rounded-md border border-surface-600 bg-surface-800 px-2 py-1.5 font-mono text-xs text-white placeholder-gray-600 outline-none focus:border-accent" />
+							<input type="text" value={v} oninput={(e) => updateAnnotationValue(k, (e.target as HTMLInputElement).value)}
+								placeholder="value"
+								class="flex-1 rounded-md border border-surface-600 bg-surface-800 px-2 py-1.5 font-mono text-xs text-white placeholder-gray-600 outline-none focus:border-accent" />
+							<button type="button" onclick={() => removeAnnotation(k)}
+								class="rounded p-1 text-gray-500 hover:text-danger">
+								<Trash2 class="h-3.5 w-3.5" />
+							</button>
+						</div>
+					{/each}
+					<button type="button" onclick={addAnnotation}
+						class="text-xs text-accent hover:text-accent-hover flex items-center gap-1">
+						<Plus class="h-3 w-3" /> Add annotation
+					</button>
+					{#if Object.keys(annotations).length > 0}
+						<button type="button" onclick={saveAnnotations} disabled={savingAnnotations}
+							class="mt-2 {btnPrimary} block">
+							{savingAnnotations ? 'Saving...' : 'Save annotations'}
+						</button>
+					{/if}
+				</div>
+
+				<!-- Secret Mounts -->
+				<div class="mt-4">
+					<p class="text-sm text-gray-400 mb-1">Secret Mounts</p>
+					<p class="text-xs text-gray-500 mb-2">Mount k8s Secrets as files (Java keystores, mTLS certs, config files)</p>
+					{#each secretMounts as mount, i}
+						<div class="mb-2 rounded-md border border-surface-600 bg-surface-700 p-2 text-xs space-y-1.5">
+							<div class="flex justify-between">
+								<span class="font-mono text-gray-300">{mount.mountPath}</span>
+								<button type="button" onclick={() => removeSecretMount(i)}
+									class="text-gray-500 hover:text-danger"><Trash2 class="h-3 w-3" /></button>
+							</div>
+							<p class="text-gray-500">Secret: <span class="font-mono">{mount.secretName}</span></p>
+						</div>
+					{/each}
+					{#if showAddMount}
+						<div class="rounded-md border border-surface-600 p-2 space-y-2 bg-surface-700">
+							<input type="text" bind:value={newMount.secretName} placeholder="k8s-secret-name"
+								class="w-full rounded-md border border-surface-600 bg-surface-800 px-2 py-1.5 text-xs text-white placeholder-gray-500 outline-none focus:border-accent" />
+							<input type="text" bind:value={newMount.mountPath} placeholder="/etc/certs"
+								class="w-full rounded-md border border-surface-600 bg-surface-800 px-2 py-1.5 text-xs text-white placeholder-gray-500 outline-none focus:border-accent" />
+							<div class="flex gap-2">
+								<button type="button" onclick={addSecretMount} disabled={!newMount.secretName || !newMount.mountPath}
+									class="rounded-md bg-accent px-2 py-1 text-xs text-white hover:bg-accent-hover disabled:opacity-50">Add</button>
+								<button type="button" onclick={() => showAddMount = false}
+									class="rounded-md border border-surface-600 px-2 py-1 text-xs text-gray-400 hover:bg-surface-600">Cancel</button>
+							</div>
+						</div>
+					{:else}
+						<button type="button" onclick={() => showAddMount = true}
+							class="text-xs text-accent hover:text-accent-hover flex items-center gap-1">
+							<Plus class="h-3 w-3" /> Add secret mount
+						</button>
+					{/if}
+					{#if secretMounts.length > 0}
+						<button type="button" onclick={saveSecretMounts} disabled={savingMounts}
+							class="mt-2 {btnPrimary} block">
+							{savingMounts ? 'Saving...' : 'Save mounts'}
+						</button>
+					{/if}
+				</div>
 			{/if}
 		</div>
 	{/if}
