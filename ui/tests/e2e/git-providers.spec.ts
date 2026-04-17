@@ -91,11 +91,11 @@ test.describe('git providers', () => {
 
 		await page.goto('/settings/git-providers');
 		await expect(page.getByRole('heading', { name: 'Git Providers' })).toBeVisible();
-		// Empty-state entry button doubles as "open create form".
-		const createFromEmpty = page.getByRole('button', { name: 'Create git provider' });
-		await expect(createFromEmpty).toBeVisible();
-		await expect(page.getByText('No git providers configured')).toBeVisible();
-		await createFromEmpty.click();
+
+		// Empty state shows two options. Click "Show form" to open the manual
+		// OAuth provider creation form.
+		await expect(page.getByText('Use an existing OAuth App')).toBeVisible();
+		await page.getByRole('button', { name: 'Show form' }).click();
 
 		// Fill the form. getByLabel resolves against the <label for=...> pairs.
 		await page.getByLabel('Name').fill(providerName);
@@ -127,7 +127,8 @@ test.describe('git providers', () => {
 		await row.getByRole('button', { name: 'Delete' }).click();
 
 		await expect(row).toHaveCount(0, { timeout: 5_000 });
-		await expect(page.getByText('No git providers configured')).toBeVisible();
+		// After deleting the last provider, the empty state reappears.
+		await expect(page.getByText('Use an existing OAuth App')).toBeVisible();
 
 		// Test passed — skip afterEach's delete fallback.
 		providerName = '';

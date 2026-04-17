@@ -57,12 +57,17 @@ test.describe('new app page structure', () => {
 		await page.goto(`/projects/${project}/apps/new`);
 
 		await expect(
-			page.getByText('Connect a git provider to deploy from a repository')
+			page.getByText('Connect GitHub to deploy from a repository')
 		).toBeVisible({ timeout: 10_000 });
 
-		const connectLink = page.getByRole('link', { name: 'Connect GitHub' });
-		await expect(connectLink).toBeVisible();
-		await expect(connectLink).toHaveAttribute('href', '/settings/git-providers');
+		// The "Connect GitHub" element is a button that starts the device flow.
+		const connectBtn = page.getByRole('button', { name: 'Connect GitHub' });
+		await expect(connectBtn).toBeVisible();
+
+		// A link to the manual git-providers settings page is also present.
+		const manualLink = page.getByRole('link', { name: /connect GitLab \/ Gitea manually/ });
+		await expect(manualLink).toBeVisible();
+		await expect(manualLink).toHaveAttribute('href', '/settings/git-providers');
 	});
 });
 
@@ -158,10 +163,11 @@ test.describe('deploy postgres template', () => {
 		// Source should show Container Image (readonly).
 		await expect(page.getByText('Container Image')).toBeVisible();
 
-		// Storage should show pgdata volume.
-		await expect(page.locator('input[value="pgdata"]')).toBeVisible();
-		await expect(page.locator('input[value="/var/lib/postgresql/data"]')).toBeVisible();
-		await expect(page.locator('input[value="10Gi"]')).toBeVisible();
+		// Storage should show pgdata volume (bind:value sets DOM property, not attribute).
+		const pgStorageRow = page.locator('.flex.gap-2').filter({ has: page.getByPlaceholder('name') }).first();
+		await expect(pgStorageRow.getByPlaceholder('name')).toHaveValue('pgdata');
+		await expect(pgStorageRow.getByPlaceholder('/mount/path')).toHaveValue('/var/lib/postgresql/data');
+		await expect(pgStorageRow.getByPlaceholder('10Gi')).toHaveValue('10Gi');
 
 		// Credentials badges should be visible.
 		await expect(page.getByText('DATABASE_URL')).toBeVisible();
@@ -215,9 +221,10 @@ test.describe('deploy redis template', () => {
 		const imageInput = page.getByLabel('Image Reference');
 		await expect(imageInput).toHaveValue('redis:7-alpine');
 
-		// Storage should show redis-data.
-		await expect(page.locator('input[value="redis-data"]')).toBeVisible();
-		await expect(page.locator('input[value="/data"]')).toBeVisible();
+		// Storage should show redis-data (bind:value sets DOM property, not attribute).
+		const redisStorageRow = page.locator('.flex.gap-2').filter({ has: page.getByPlaceholder('name') }).first();
+		await expect(redisStorageRow.getByPlaceholder('name')).toHaveValue('redis-data');
+		await expect(redisStorageRow.getByPlaceholder('/mount/path')).toHaveValue('/data');
 
 		// Credentials badges.
 		await expect(page.getByText('REDIS_URL')).toBeVisible();
@@ -331,7 +338,7 @@ test.describe('app detail page', () => {
 
 		// Breadcrumbs.
 		await expect(page.getByText('Projects')).toBeVisible();
-		await expect(page.getByText(project)).toBeVisible();
+		await expect(page.getByRole('link', { name: project })).toBeVisible();
 		await expect(page.getByText('apps')).toBeVisible();
 
 		// Source card.
@@ -343,7 +350,7 @@ test.describe('app detail page', () => {
 		await expect(page.getByText('ready / desired')).toBeVisible();
 
 		// Domain card.
-		await expect(page.getByText('Domain')).toBeVisible();
+		await expect(page.getByText('Domain', { exact: true })).toBeVisible();
 	});
 
 	test('delete app redirects to project page', async ({ page }) => {

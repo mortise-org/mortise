@@ -68,7 +68,7 @@ test.describe("app detail page", () => {
     await expect(page.getByText("Source")).toBeVisible();
     await expect(page.getByText("Container Image")).toBeVisible();
     await expect(page.getByText("Replicas")).toBeVisible();
-    await expect(page.getByText("Domain")).toBeVisible();
+    await expect(page.getByText("Domain", { exact: true })).toBeVisible();
 
     // Deploy section
     await expect(page.getByText("Deploy new image")).toBeVisible();
@@ -187,7 +187,7 @@ test.describe("app detail page", () => {
 
     // KEY and value inputs should appear.
     const keyInput = page.getByPlaceholder("KEY");
-    const valueInput = page.getByPlaceholder("value");
+    const valueInput = page.getByPlaceholder("value", { exact: true });
     await expect(keyInput).toBeVisible();
     await expect(valueInput).toBeVisible();
 
@@ -243,7 +243,7 @@ test.describe("app detail page", () => {
     // Add a variable in form mode.
     await page.getByRole("button", { name: "+ Add variable" }).click();
     await page.getByPlaceholder("KEY").fill("FOO");
-    await page.getByPlaceholder("value").fill("bar");
+    await page.getByPlaceholder("value", { exact: true }).fill("bar");
 
     // Switch to Raw mode.
     await page.getByRole("button", { name: "Raw" }).click();
@@ -256,8 +256,8 @@ test.describe("app detail page", () => {
     await page.getByRole("button", { name: "Form" }).click();
 
     // KEY/value pair should be restored.
-    await expect(page.locator('input[value="FOO"]')).toBeVisible();
-    await expect(page.locator('input[value="bar"]')).toBeVisible();
+    await expect(page.getByPlaceholder("KEY")).toHaveValue("FOO");
+    await expect(page.getByPlaceholder("value", { exact: true })).toHaveValue("bar");
 
     await deleteAppViaAPI(request, adminToken, projectName, appName);
   });
@@ -284,7 +284,7 @@ test.describe("app detail page", () => {
     // Add a variable to make it dirty.
     await page.getByRole("button", { name: "+ Add variable" }).click();
     await page.getByPlaceholder("KEY").fill("DIRTY_VAR");
-    await page.getByPlaceholder("value").fill("dirty_value");
+    await page.getByPlaceholder("value", { exact: true }).fill("dirty_value");
 
     // Save changes and Discard buttons should appear.
     await expect(
@@ -336,8 +336,12 @@ test.describe("app detail page", () => {
     await page.getByPlaceholder("SECRET_NAME").fill(secretName);
     await page.getByPlaceholder("value (write-only)").fill("s3cr3t");
 
-    // Click Add.
-    await page.getByRole("button", { name: "Add" }).click();
+    // Click Add (scoped to secrets section to avoid matching the domains Add button).
+    await page
+      .getByPlaceholder("value (write-only)")
+      .locator("..")
+      .getByRole("button", { name: "Add" })
+      .click();
 
     // Secret should appear in the list.
     await expect(page.getByText(secretName).first()).toBeVisible({
@@ -430,16 +434,16 @@ test.describe("app detail page", () => {
     // Logs heading
     await expect(page.getByText("Logs", { exact: true })).toBeVisible();
 
-    // Pod filter dropdown (defaults to "All pods")
-    await expect(page.getByText("All pods")).toBeVisible();
+    // Pod filter dropdown (the select element is a combobox role)
+    await expect(page.getByRole("combobox")).toBeVisible();
 
     // Control buttons
     await expect(page.getByRole("button", { name: "Pause" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Clear" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Download" })).toBeVisible();
 
-    // Line count display
-    await expect(page.getByText(/\d+ lines?/)).toBeVisible();
+    // Line count display (status bar shows "connected · N lines" or similar)
+    await expect(page.getByText(/· \d+ lines?/)).toBeVisible();
 
     await deleteAppViaAPI(request, adminToken, projectName, appName);
   });

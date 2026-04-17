@@ -141,10 +141,13 @@ test.describe('projects', () => {
 		// Should redirect back to the dashboard.
 		await expect(page).toHaveURL('/', { timeout: 10_000 });
 
-		// The deleted project should no longer appear.
-		await expect(page.getByRole('link').filter({ hasText: name })).toHaveCount(0, {
-			timeout: 5_000
-		});
+		// The deleted project should no longer appear. Project deletion in
+		// Kubernetes may take several seconds to propagate, so allow a longer
+		// timeout and reload the list to get a fresh view.
+		await expect(async () => {
+			await page.reload();
+			await expect(page.getByRole('link').filter({ hasText: name })).toHaveCount(0);
+		}).toPass({ timeout: 15_000 });
 
 		// No cleanup needed -- project is already deleted.
 	});

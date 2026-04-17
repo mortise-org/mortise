@@ -69,7 +69,7 @@ export async function injectToken(page: Page, token: string): Promise<void> {
 	await page.evaluate((t) => localStorage.setItem('token', t), token);
 }
 
-/** Create a project via the API and return its name. */
+/** Create a project via the API and wait for its namespace to be ready. */
 export async function createProjectViaAPI(
 	request: APIRequestContext,
 	token: string,
@@ -84,7 +84,17 @@ export async function createProjectViaAPI(
 		const body = await res.text().catch(() => '');
 		throw new Error(`create project failed: HTTP ${res.status()} ${body}`);
 	}
-	return name;
+	// The project controller creates the namespace asynchronously.
+	// Poll until creating an app in this project would succeed (namespace exists).
+	for (let i = 0; i < 30; i++) {
+		const check = await request.get(
+			`/api/projects/${encodeURIComponent(name)}/apps`,
+			{ headers: { Authorization: `Bearer ${token}` }, failOnStatusCode: false }
+		);
+		if (check.ok()) return name;
+		await new Promise((r) => setTimeout(r, 500));
+	}
+	throw new Error(`project ${name}: namespace not ready after 15s`);
 }
 
 /** Create an image-source app via the API. */
@@ -172,4 +182,96 @@ export async function waitForVisible(page: Page, text: string, timeout = 10_000)
 	const loc = page.getByText(text);
 	await expect(loc).toBeVisible({ timeout });
 	return loc;
+}
+
+/** Fetch a single app via the API. Returns the full App CRD object. */
+export async function getAppViaAPI(
+	request: APIRequestContext,
+	token: string,
+	project: string,
+	appName: string
+): Promise<Record<string, unknown>> {
+	const res = await request.get(
+		`/api/projects/${encodeURIComponent(project)}/apps/${encodeURIComponent(appName)}`,
+		{ headers: { Authorization: `Bearer ${token}` } }
+	);
+	if (!res.ok()) {
+		const body = await res.text().catch(() => '');
+		throw new Error(`getAppViaAPI failed: HTTP ${res.status()} ${body}`);
+	}
+	return (await res.json()) as Record<string, unknown>;
+}
+
+/** Fetch env vars for an app's environment. Returns [{name, value}, ...]. */
+export async function getEnvViaAPI(
+	request: APIRequestContext,
+	token: string,
+	project: string,
+	appName: string,
+	environment: string = 'production'
+): Promise<Array<{ name: string; value: string }>> {
+	const res = await request.get(
+		`/api/projects/${encodeURIComponent(project)}/apps/${encodeURIComponent(appName)}/env?environment=${encodeURIComponent(environment)}`,
+		{ headers: { Authorization: `Bearer ${token}` } }
+	);
+	if (!res.ok()) {
+		const body = await res.text().catch(() => '');
+		throw new Error(`getEnvViaAPI failed: HTTP ${res.status()} ${body}`);
+	}
+	return (await res.json()) as Array<{ name: string; value: string }>;
+}
+
+/** List secrets for an app. Returns [{name, keys}, ...]. */
+export async function listSecretsViaAPI(
+	request: APIRequestContext,
+	token: string,
+	project: string,
+	appName: string
+): Promise<Array<{ name: string; keys: string[] }>> {
+	const res = await request.get(
+		`/api/projects/${encodeURIComponent(project)}/apps/${encodeURIComponent(appName)}/secrets`,
+		{ headers: { Authorization: `Bearer ${token}` } }
+	);
+	if (!res.ok()) {
+		const body = await res.text().catch(() => '');
+		throw new Error(`listSecretsViaAPI failed: HTTP ${res.status()} ${body}`);
+	}
+	return (await res.json()) as Array<{ name: string; keys: string[] }>;
+}
+
+/** List domains for an app's environment. Returns {primary, custom}. */
+export async function listDomainsViaAPI(
+	request: APIRequestContext,
+	token: string,
+	project: string,
+	appName: string,
+	environment: string = 'production'
+): Promise<{ primary: string; custom: string[] }> {
+	const res = await request.get(
+		`/api/projects/${encodeURIComponent(project)}/apps/${encodeURIComponent(appName)}/domains?environment=${encodeURIComponent(environment)}`,
+		{ headers: { Authorization: `Bearer ${token}` } }
+	);
+	if (!res.ok()) {
+		const body = await res.text().catch(() => '');
+		throw new Error(`listDomainsViaAPI failed: HTTP ${res.status()} ${body}`);
+	}
+	return (await res.json()) as { primary: string; custom: string[] };
+}
+
+/** Delete a secret via the API (best-effort, swallows errors). */
+export async function deleteSecretViaAPI(
+	request: APIRequestContext,
+	token: string,
+	project: string,
+	appName: string,
+	secretName: string
+): Promise<void> {
+	try {
+		await request.delete(
+			`/api/projects/${encodeURIComponent(project)}/apps/${encodeURIComponent(appName)}/secrets/${encodeURIComponent(secretName)}`,
+			{ headers: { Authorization: `Bearer ${token}` }, failOnStatusCode: false }
+		);
+	} catch {
+		// swallow
+	}
 }

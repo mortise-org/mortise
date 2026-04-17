@@ -225,9 +225,9 @@ test.describe('extensions page', () => {
 		await injectToken(page, adminToken);
 		await page.goto('/extensions');
 
-		await expect(page.getByText('cert-manager')).toBeVisible();
-		await expect(page.getByText('ExternalDNS')).toBeVisible();
-		await expect(page.getByText('Traefik')).toBeVisible();
+		await expect(page.getByRole('heading', { name: 'cert-manager' })).toBeVisible();
+		await expect(page.getByRole('heading', { name: 'ExternalDNS' })).toBeVisible();
+		await expect(page.getByRole('heading', { name: 'Traefik' })).toBeVisible();
 	});
 
 	test('extension card has action link', async ({ page }) => {
@@ -235,7 +235,7 @@ test.describe('extensions page', () => {
 		await page.goto('/extensions');
 
 		// cert-manager card should have a "Docs" link pointing to the cert-manager site.
-		const certManagerCard = page.locator('div').filter({ hasText: /^cert-manager/ }).first();
+		const certManagerCard = page.locator('.rounded-lg').filter({ has: page.getByRole('heading', { name: 'cert-manager' }) });
 		const docsLink = certManagerCard.getByRole('link', { name: 'Docs' });
 		await expect(docsLink).toBeVisible();
 		await expect(docsLink).toHaveAttribute('href', 'https://cert-manager.io/docs/');

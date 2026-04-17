@@ -4,7 +4,7 @@
 	import { api } from '$lib/api';
 	import EnvVarEditor from '$lib/components/EnvVarEditor.svelte';
 	import type { Template } from '$lib/templates';
-	import type { AppSource, AppSpec, Build, EnvVar, GitProviderSummary, SourceType, VolumeSpec } from '$lib/types';
+	import type { AppSource, AppSpec, Build, Credential, EnvVar, GitProviderSummary, SourceType, VolumeSpec } from '$lib/types';
 
 	let {
 		project,
@@ -353,7 +353,7 @@
 						<span
 							class="rounded-md bg-surface-700 px-2 py-1 font-mono text-xs text-gray-300"
 						>
-							{cred}
+							{cred.name}
 						</span>
 					{/each}
 				</div>

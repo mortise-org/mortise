@@ -42,7 +42,13 @@ export const templates: Template[] = [
 				storage: [
 					{ name: 'pgdata', mountPath: '/var/lib/postgresql/data', size: '10Gi' }
 				],
-				credentials: ['DATABASE_URL', 'host', 'port', 'user', 'password'],
+				credentials: [
+					{ name: 'DATABASE_URL' },
+					{ name: 'host' },
+					{ name: 'port' },
+					{ name: 'user' },
+					{ name: 'password' }
+				],
 				environments: [
 					{
 						name: 'production',
@@ -71,7 +77,11 @@ export const templates: Template[] = [
 				storage: [
 					{ name: 'redis-data', mountPath: '/data', size: '1Gi' }
 				],
-				credentials: ['REDIS_URL', 'host', 'port'],
+				credentials: [
+					{ name: 'REDIS_URL' },
+					{ name: 'host' },
+					{ name: 'port' }
+				],
 				environments: [
 					{
 						name: 'production',

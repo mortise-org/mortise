@@ -152,6 +152,7 @@ For multi-step tasks, state a brief plan:
 ```bash
 make test                 # unit + envtest, <10s, run before every commit
 make test-integration     # spins up k3d, installs chart, runs suite, tears down
+make test-e2e             # Playwright E2E against dev cluster (requires make dev-up)
 make dev-up               # persistent k3d + tilt live-reload for active dev
 make dev-down             # tear down dev cluster
 make test-integration-fast # run integration suite against existing dev cluster

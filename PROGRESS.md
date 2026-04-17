@@ -37,7 +37,7 @@ Spec rule: every outward interface must have at least one real v1 impl
 | Interface         | Impls                              | Status          |
 |-------------------|------------------------------------|-----------------|
 | `AuthProvider`    | `NativeAuthProvider` (k8s Secret + bcrypt + JWT) | **Done**    |
-| `PolicyEngine`    | `NativePolicyEngine` (roles: `admin` / `member`)   | **Partial** — role model does not match spec §5.10 (`platform-admin` / `team-admin` / `team-member`); no team concept. |
+| `PolicyEngine`    | `NativePolicyEngine` (roles: `admin` / `member`)   | **Done (v1)** — matches SPEC §5.10 v1 scope (admin / member). Implicit `default-team` stub lands as a forward-compat CRD; v2 will add team-scoped grants additively. |
 | `GitAPI`          | `GitHubAPI`, `GitHubAppAPI`, `GitLabAPI`, `GiteaAPI` (`internal/git/{github,github_app,gitlab,gitea}.go`); factory at `internal/git/factory.go` | **Done** |
 | `GitClient`       | `GoGitClient` (`internal/git/gogit_client.go`) — single impl per CLAUDE.md | **Done** |
 | `BuildClient`     | `BuildKitClient` (`internal/build/buildkit.go`) — mockable `solveClient` boundary for unit tests | **Done** |
@@ -53,6 +53,7 @@ Spec rule: every outward interface must have at least one real v1 impl
 | `GitProvider`        | real (`api/v1alpha1/gitprovider_types.go`) | real reconciler (`internal/controller/gitprovider_controller.go`) | **Done** |
 | `PlatformConfig`     | real (`api/v1alpha1/platformconfig_types.go`) | real reconciler (`internal/controller/platformconfig_controller.go`) | **Done** |
 | `PreviewEnvironment` | real (`api/v1alpha1/previewenvironment_types.go`) | real reconciler (`internal/controller/previewenvironment_controller.go`) | **Done** |
+| `Team`               | real (`api/v1alpha1/team_types.go`) | stub reconciler (`internal/controller/team_controller.go`) — singleton `default-team` enforcement only | **Done (v1 forward-compat stub)** — auto-created during first-run setup; every user's secret carries `team_ref: default-team`; UI renders zero team chrome. Exists so v2's multi-team model is additive (SPEC §5.10). |
 
 ---
 

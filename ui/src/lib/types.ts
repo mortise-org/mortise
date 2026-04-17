@@ -70,11 +70,17 @@ export interface Environment {
 	customDomains?: string[];
 }
 
+export interface Credential {
+	name: string;
+	value?: string;
+	valueFrom?: { secretRef?: string };
+}
+
 export interface AppSpec {
 	source: AppSource;
 	network?: NetworkConfig;
 	storage?: VolumeSpec[];
-	credentials?: string[];
+	credentials?: Credential[];
 	environments?: Environment[];
 }
 

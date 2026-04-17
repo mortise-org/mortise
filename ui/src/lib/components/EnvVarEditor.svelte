@@ -19,17 +19,17 @@
 	let rawText = $state('');
 	let rawErrors = $state<Map<number, string>>(new Map());
 
-	// Sync from incoming prop only if it differs from our own serialization.
-	// Avoids clobbering in-progress edits (e.g. empty key being typed).
-	let syncing = false;
+	// Track what we last emitted so we can distinguish "parent echoed our
+	// value back" from "parent pushed new server data".  Plain `let` (not
+	// $state) so it is invisible to the effect's dependency tracking.
+	let lastEmitted: EnvVar[] = [];
 	$effect(() => {
 		const incoming = value ?? [];
-		if (syncing) return;
-		// If what we'd emit already matches incoming, skip.
-		const emitted = pairsToEnvVars(pairs);
-		if (envVarsEqual(emitted, incoming)) return;
-		pairs = envVarsToPairs(incoming);
-		rawText = pairsToRaw(pairs);
+		if (envVarsEqual(incoming, lastEmitted)) return;
+		lastEmitted = incoming;
+		const synced = envVarsToPairs(incoming);
+		pairs = synced;
+		rawText = pairsToRaw(synced);
 	});
 
 	function envVarsEqual(a: EnvVar[], b: EnvVar[]): boolean {
@@ -93,13 +93,9 @@
 	}
 
 	function emit() {
-		syncing = true;
-		value = pairsToEnvVars(pairs);
-		// Release the guard on the next microtask so the effect above doesn't
-		// reset our local state from the freshly emitted value.
-		queueMicrotask(() => {
-			syncing = false;
-		});
+		const result = pairsToEnvVars(pairs);
+		lastEmitted = result;
+		value = result;
 	}
 
 	function switchMode(target: Mode) {

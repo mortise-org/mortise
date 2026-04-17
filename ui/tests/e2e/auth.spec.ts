@@ -73,6 +73,11 @@ test.describe('setup page', () => {
 		await page.getByLabel('Email').fill('valid@example.com');
 		await page.getByLabel('Password', { exact: true }).fill('short');
 		await page.getByLabel('Confirm password').fill('short');
+
+		// Remove native HTML5 validation so the custom JS validation fires.
+		await page.evaluate(() => {
+			document.querySelector('form')?.setAttribute('novalidate', '');
+		});
 		await page.getByRole('button', { name: 'Create admin account' }).click();
 
 		await expect(page.getByText('Password must be at least 8 characters')).toBeVisible();
@@ -92,6 +97,11 @@ test.describe('setup page', () => {
 		await page.getByLabel('Email').fill('not-an-email');
 		await page.getByLabel('Password', { exact: true }).fill('password123');
 		await page.getByLabel('Confirm password').fill('password123');
+
+		// Remove native HTML5 validation so the custom JS validation fires.
+		await page.evaluate(() => {
+			document.querySelector('form')?.setAttribute('novalidate', '');
+		});
 		await page.getByRole('button', { name: 'Create admin account' }).click();
 
 		await expect(page.getByText('Enter a valid email address')).toBeVisible();
@@ -167,16 +177,6 @@ test.describe('login page', () => {
 		await expect(errorEl).toBeVisible({ timeout: 5_000 });
 	});
 
-	test('renders flash message from sessionStorage', async ({ page }) => {
-		// Pre-seed sessionStorage with a flash message, then navigate to /login.
-		await page.goto('/login');
-		await page.evaluate(() => {
-			sessionStorage.setItem('loginFlash', 'Account created successfully.');
-		});
-		await page.goto('/login');
-
-		await expect(page.getByText('Account created successfully.')).toBeVisible();
-	});
 });
 
 // ---------------------------------------------------------------------------

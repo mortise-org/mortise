@@ -136,6 +136,12 @@ dev-up: ## Create k3d dev cluster, build image, install Mortise
 dev-down: ## Delete k3d dev cluster
 	k3d cluster delete $(DEV_CLUSTER)
 
+.PHONY: dev-reset
+dev-reset: ## Tear down dev cluster completely, rebuild, and start fresh
+	-k3d cluster delete $(DEV_CLUSTER) >/dev/null 2>&1
+	-pkill -f "port-forward.*mortise" >/dev/null 2>&1
+	$(MAKE) dev-up
+
 ##@ Integration Tests
 
 INT_CLUSTER ?= mortise-int
@@ -180,9 +186,31 @@ test-integration: ## Create k3d cluster, install chart + test deps, run integrat
 test-integration-fast: ## Run integration tests against the existing dev cluster (requires make dev-up + chart installed)
 	go test -tags integration -count=1 -timeout 5m ./test/integration/...
 
+E2E_PORT ?= 8091
+E2E_EMAIL ?= admin@local
+E2E_PASSWORD ?= admin123
+
 .PHONY: test-e2e
-test-e2e: ## Run Playwright E2E suite against existing dev cluster.
-	cd ui && npm install && npx playwright install --with-deps chromium && npm run test:e2e
+test-e2e: ## Run Playwright E2E suite against the dev cluster (requires make dev-up).
+	@kubectl -n mortise-system rollout status deployment/mortise --timeout=30s
+	@cd ui && npm install --silent && npx playwright install chromium
+	@kubectl port-forward -n mortise-system svc/mortise $(E2E_PORT):80 >/dev/null 2>&1 & PF_PID=$$!; \
+	trap "kill $$PF_PID 2>/dev/null || true" EXIT; \
+	echo "==> Waiting for API at http://localhost:$(E2E_PORT)..."; \
+	for i in $$(seq 1 30); do \
+		curl -sf http://localhost:$(E2E_PORT)/api/auth/status >/dev/null 2>&1 && break; \
+		sleep 1; \
+	done; \
+	curl -sf http://localhost:$(E2E_PORT)/api/auth/status >/dev/null 2>&1 || { echo "ERROR: API not reachable"; exit 1; }; \
+	echo "==> Bootstrapping admin account..."; \
+	curl -sf -X POST http://localhost:$(E2E_PORT)/api/auth/setup \
+		-H "Content-Type: application/json" \
+		-d '{"email":"$(E2E_EMAIL)","password":"$(E2E_PASSWORD)"}' >/dev/null 2>&1 || true; \
+	echo "==> Running Playwright tests..."; \
+	cd ui && MORTISE_BASE_URL=http://localhost:$(E2E_PORT) \
+		MORTISE_ADMIN_EMAIL=$(E2E_EMAIL) \
+		MORTISE_ADMIN_PASSWORD=$(E2E_PASSWORD) \
+		npx playwright test
 
 .PHONY: dev-reload
 dev-reload: ## Rebuild image, re-apply CRDs + chart, restart Mortise in existing cluster

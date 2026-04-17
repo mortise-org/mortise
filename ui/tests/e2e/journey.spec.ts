@@ -85,15 +85,19 @@ test.describe('full user journey', () => {
 			timeout: 10_000
 		});
 		await expect(page.getByText('Container Image')).toBeVisible();
-		await expect(page.getByText('nginx:1.27')).toBeVisible();
+		await expect(page.getByText('nginx:1.27').first()).toBeVisible();
 
 		// ── Step 5: Deploy a new image version ───────────────────────
 		const imageInput = page.getByPlaceholder('registry.example.com/app:v2.0.0');
 		await imageInput.fill('nginx:1.28');
 		await page.getByRole('button', { name: 'Deploy' }).click();
 
-		// New image should appear after reload.
-		await expect(page.getByText('nginx:1.28')).toBeVisible({ timeout: 15_000 });
+		// Wait for deploy to complete, then verify the image was updated.
+		// The page's loadApp() call might fetch before the operator updates, so poll.
+		await expect(async () => {
+			await page.reload();
+			await expect(page.getByText('nginx:1.28').first()).toBeVisible({ timeout: 3_000 });
+		}).toPass({ timeout: 20_000, intervals: [2_000, 3_000, 5_000] });
 		await expect(imageInput).toHaveValue('');
 
 		// Verify via API.
@@ -110,14 +114,16 @@ test.describe('full user journey', () => {
 		// ── Step 6: Add environment variables ────────────────────────
 		await page.getByRole('button', { name: '+ Add variable' }).click();
 		await page.getByPlaceholder('KEY').fill('APP_ENV');
-		await page.getByPlaceholder('value').fill('production');
+		await page.getByPlaceholder('value', { exact: true }).fill('production');
 
 		await page.getByRole('button', { name: 'Save changes' }).click();
 
-		// Wait for save to complete.
+		// Wait for save to complete — ensure page has fully reloaded (the
+		// save triggers loadApp() which briefly sets loading=true).
 		await expect(page.getByRole('button', { name: 'Save changes' })).toHaveCount(0, {
 			timeout: 10_000
 		});
+		await expect(page.getByRole('heading', { name: appImageName })).toBeVisible();
 
 		// Verify persisted via API.
 		const envVars = await getEnvViaAPI(request, adminToken, projectName, appImageName);
@@ -129,7 +135,11 @@ test.describe('full user journey', () => {
 		const secretName = `journey-secret-${randomSuffix()}`;
 		await page.getByPlaceholder('SECRET_NAME').fill(secretName);
 		await page.getByPlaceholder('value (write-only)').fill('super-secret');
-		await page.getByRole('button', { name: 'Add' }).click();
+		await page
+			.getByPlaceholder('value (write-only)')
+			.locator('..')
+			.getByRole('button', { name: 'Add' })
+			.click();
 
 		// Should appear in the list.
 		await expect(page.getByText(secretName).first()).toBeVisible({ timeout: 10_000 });
@@ -183,10 +193,12 @@ test.describe('full user journey', () => {
 		// Should redirect to dashboard.
 		await expect(page).toHaveURL('/', { timeout: 10_000 });
 
-		// Project should be gone from the list.
-		await expect(page.getByRole('link').filter({ hasText: projectName })).toHaveCount(0, {
-			timeout: 5_000
-		});
+		// Project should be gone from the list.  The operator may take a few
+		// seconds to finalise deletion, so poll with page reloads.
+		await expect(async () => {
+			await page.reload();
+			await expect(page.getByRole('link').filter({ hasText: projectName })).toHaveCount(0);
+		}).toPass({ timeout: 15_000, intervals: [2_000, 3_000, 5_000] });
 	});
 });
 
@@ -228,7 +240,8 @@ test.describe('template deploy journey', () => {
 
 		// Verify prefilled values.
 		await expect(page.getByLabel('Image Reference')).toHaveValue('postgres:16');
-		await expect(page.locator('input[value="pgdata"]')).toBeVisible();
+		const storageNameInput = page.locator('.flex.gap-2').filter({ has: page.getByPlaceholder('name') }).first().getByPlaceholder('name');
+		await expect(storageNameInput).toHaveValue('pgdata');
 		await expect(page.getByText('DATABASE_URL')).toBeVisible();
 
 		// Set custom app name.
@@ -250,7 +263,7 @@ test.describe('template deploy journey', () => {
 
 		// Verify source shows Container Image with postgres:16.
 		await expect(page.getByText('Container Image')).toBeVisible();
-		await expect(page.getByText('postgres:16')).toBeVisible();
+		await expect(page.getByText('postgres:16').first()).toBeVisible();
 
 		// Verify via API that storage was configured.
 		const app = await getAppViaAPI(request, adminToken, projectName, appName);
@@ -259,10 +272,12 @@ test.describe('template deploy journey', () => {
 		expect(storage).toBeDefined();
 		expect(storage.some((s) => s.name === 'pgdata')).toBeTruthy();
 
-		// Add an env var and save.
+		// Add an env var and save.  Use .last() because the template's existing
+		// POSTGRES_PASSWORD row also has a placeholder="KEY" input.
 		await page.getByRole('button', { name: '+ Add variable' }).click();
-		await page.getByPlaceholder('KEY').fill('POSTGRES_DB');
-		await page.getByPlaceholder('value').fill('mydb');
+		await page.getByPlaceholder('KEY').last().fill('POSTGRES_DB');
+		await page.waitForTimeout(200);
+		await page.getByPlaceholder('value', { exact: true }).last().fill('mydb');
 		await page.getByRole('button', { name: 'Save changes' }).click();
 
 		await expect(page.getByRole('button', { name: 'Save changes' })).toHaveCount(0, {
