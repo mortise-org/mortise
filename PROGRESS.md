@@ -21,7 +21,7 @@ ExternalDNS, no Go interface).
 | 0 — Foundation                   | §7.1 / §8   | **Done**         | kubebuilder scaffold, chart skeleton, Makefile, test helpers + fixtures. |
 | 1 — Core operator (image source) | §7.2        | **Done**         | Deployment / Service / Ingress / PVC / ServiceAccount reconciliation works for `source.type: image` and `source.type: git` (git builds asynchronously with a 30-min timeout). Ingress honours `environments[].annotations` passthrough (§5.2a), `environments[].tls.{secretName,clusterIssuer}` overrides (§5.6), `environments[].customDomains` (multi-host rules + TLS), and `IngressProvider`-driven annotations (`AnnotationProvider`: ExternalDNS hostname + cert-manager cluster-issuer). `ingressClassName` configurable via `MORTISE_INGRESS_CLASS` env var. ServiceAccount per App carries `imagePullSecrets` from `RegistryBackend.PullSecretRef()`. |
 | 2 — API + UI skeleton            | §7.3        | **Done**         | Auth, project CRUD, app CRUD, secrets CRUD, deploy webhook, SSE logs, SvelteKit UI. |
-| 3 — Bindings + secrets           | §7.4        | **Partial**      | Resolver writes env vars; `{app}-credentials` Secret is now materialised from `spec.credentials` (Flavor A, §5.5a) — inline `value` and `valueFrom.secretRef` both supported, with sha256 pod-template annotation for rotation. Cross-namespace `secretKeyRef` for cross-project bindings is still invalid in k8s (issue #2). No deploy tokens, no secret rotation endpoint. |
+| 3 — Bindings + secrets           | §7.4        | **Partial**      | Resolver writes env vars; `{app}-credentials` Secret is now materialised from `spec.credentials` (Flavor A, §5.5a) — inline `value` and `valueFrom.secretRef` both supported, with sha256 pod-template annotation for rotation. Cross-project bindings now return a clear error at reconcile time instead of silently failing (issue #2 guarded, #3). Same-project bindings have an integration test (`test/integration/bindings_test.go`, #5). No deploy tokens, no secret rotation endpoint. |
 | 3.5 — Projects                   | §5 / §5.10  | **Done**         | `Project` CRD + controller + REST API + CLI + UI routes + default-project seeding all landed. `spec.namespaceOverride` and admin-only `spec.adoptExistingNamespace` (spec §5.0) are implemented: controller resolves the target namespace name, enforces cross-Project uniqueness (`NamespaceConflict`), surfaces refusals via the `NamespaceReady` condition (`NamespaceAlreadyExists` / `NamespaceOwnedByAnotherProject`), and takes the adoption path only when explicitly opted in. |
 | 4 — Build system (git source)    | §7.5        | **Done**         | All stacks wired end-to-end: webhook patches `mortise.dev/revision` annotation → App reconciler clones + builds + deploys. Operator entrypoint reads config from `PlatformConfig` (env-var fallback for first-boot). Builds run asynchronously in background goroutines; the reconciler returns `Building` immediately and polls on requeue. |
 | 5 — Monorepo support             | §7.6        | **Done**         | `source.path` plumbs into BuildKit context; `source.watchPaths` gates webhook rebuilds (prefix match). UI build grouping deferred. |
@@ -110,6 +110,10 @@ cluster via the `//go:build integration` tag.
   an App from `test/fixtures/git-gitea-basic.yaml`, and asserts the App
   reaches `Ready`, the registry surfaces the built tag, and the Deployment
   runs the built image.
+- `bindings_test.go` — `TestSameProjectBindingInjectsEnv`: creates a
+  Postgres App and an API App bound to it in the same namespace, waits for
+  both Deployments to be ready, and asserts `DATABASE_URL`, `host`, and
+  `port` env vars are injected into the API container spec.
 - `gitprovider_admin_test.go` — `TestGitProviderAdminAPICRUD`: port-forwards
   the Mortise API, bootstraps / logs in as an admin, POSTs to
   `/api/gitproviders`, asserts the `GitProvider` CRD + managed OAuth
@@ -152,7 +156,6 @@ cluster via the `//go:build integration` tag.
 
 **Follow-up work (not blocking Phase 4):**
 - Pebble (ACME) for a TLS integration test.
-- `bindings_test.go` — pending fix for the `{app}-credentials` secret gap.
 - UI Playwright tests.
 - `.github/` CI config.
 
@@ -609,17 +612,16 @@ rollouts on Secret rotation. Cleanup honours the "Mortise owns only what it
 creates" rule. Envtest coverage: 7 cases under "credentials Secret
 materialization".
 
-### Issue #2 — Cross-project bindings can't use `secretKeyRef`
-`resolver.go:73-79` returns `EnvVar{ValueFrom: SecretKeyRef{...}}` for
-every credential key regardless of whether the binding is cross-project.
-`secretKeyRef` is resolved by the kubelet in the **Pod's** namespace — it
-cannot reach a Secret in another namespace. Cross-project-bound Pods will
-fail to start with `CreateContainerConfigError`.
+### Issue #2 — Cross-project bindings can't use `secretKeyRef` — **Guarded**
+`Resolve()` now returns a clear error when `binding.Project` differs from
+the binder App's project, surfaced as a reconcile error on the App's status
+conditions. This prevents the silent `CreateContainerConfigError` at pod
+start. Cross-project bindings remain unsupported in v1; a future version
+could use Secret replication or a projected-volume design.
 
-**Fix direction:** replicate the bound Secret into the consumer's namespace
-(ESO-style reflector), or switch cross-project bindings to a projected
-volume populated by an initContainer that calls the API with the consumer's
-ServiceAccount token.
+Unit tests: `TestCrossProjectBindingReturnsError`,
+`TestResolveCrossProjectMissingReturnsError` in
+`internal/bindings/resolver_test.go`.
 
 ### Issue #3 — Hard-coded cert-manager cluster-issuer — **Resolved**
 Previously, `internal/controller/app_controller.go` wrote

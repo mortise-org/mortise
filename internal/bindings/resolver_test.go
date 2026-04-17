@@ -2,6 +2,7 @@ package bindings_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -68,36 +69,47 @@ func TestResolveSameProjectBinding(t *testing.T) {
 	}
 }
 
-// TestCrossProjectBindingResolvesToOtherNamespace verifies that a binding with
-// Project set resolves the ref in the `project-{project}` namespace and the
-// injected host points at that namespace's Service DNS.
-func TestCrossProjectBindingResolvesToOtherNamespace(t *testing.T) {
+// TestCrossProjectBindingReturnsError verifies that a binding with
+// Project set to a different project than the binder's returns a clear error.
+// Cross-project bindings are not supported in v1 because secretKeyRef can only
+// resolve within the Pod's namespace.
+func TestCrossProjectBindingReturnsError(t *testing.T) {
 	sharedDB := newDB("shared-postgres", "project-infra")
 	c := newFakeClient(t, sharedDB)
 	r := &bindings.Resolver{Client: c}
 
-	envVars, err := r.Resolve(context.Background(), "project-web", []mortisev1alpha1.Binding{
+	_, err := r.Resolve(context.Background(), "project-web", []mortisev1alpha1.Binding{
 		{Ref: "shared-postgres", Project: "infra"},
 	})
+	if err == nil {
+		t.Fatal("expected error for cross-project binding, got nil")
+	}
+	want := "cross-project binding"
+	if !strings.Contains(err.Error(), want) {
+		t.Errorf("error should mention %q, got: %v", want, err)
+	}
+}
+
+// TestSameProjectExplicitProjectBinding verifies that a binding with Project
+// set to the SAME project as the binder still resolves successfully.
+func TestSameProjectExplicitProjectBinding(t *testing.T) {
+	db := newDB("db", "project-web")
+	c := newFakeClient(t, db)
+	r := &bindings.Resolver{Client: c}
+
+	envVars, err := r.Resolve(context.Background(), "project-web", []mortisev1alpha1.Binding{
+		{Ref: "db", Project: "web"},
+	})
 	if err != nil {
-		t.Fatalf("resolve cross-project: %v", err)
+		t.Fatalf("resolve same-project explicit: %v", err)
 	}
 
 	hostVar := findEnv(envVars, "host")
 	if hostVar == nil {
 		t.Fatal("expected host env var to be set")
 	}
-	if hostVar.Value != "shared-postgres-production.project-infra.svc.cluster.local" {
-		t.Errorf("expected host pointing at project-infra service, got %q", hostVar.Value)
-	}
-
-	// secretKeyRef for credentials must also still be emitted.
-	pwVar := findEnv(envVars, "password")
-	if pwVar == nil || pwVar.ValueFrom == nil || pwVar.ValueFrom.SecretKeyRef == nil {
-		t.Fatalf("expected password via secretKeyRef, got %+v", pwVar)
-	}
-	if pwVar.ValueFrom.SecretKeyRef.Name != "shared-postgres-credentials" {
-		t.Errorf("expected credentials secret name shared-postgres-credentials, got %q", pwVar.ValueFrom.SecretKeyRef.Name)
+	if hostVar.Value != "db-production.project-web.svc.cluster.local" {
+		t.Errorf("expected host pointing at same-project service, got %q", hostVar.Value)
 	}
 }
 
@@ -116,9 +128,10 @@ func TestResolveMissingBindingReturnsError(t *testing.T) {
 }
 
 // TestResolveCrossProjectMissingReturnsError verifies the resolver errors when
-// the cross-project ref doesn't live in the target namespace.
+// a cross-project binding is attempted (regardless of whether the ref exists).
 func TestResolveCrossProjectMissingReturnsError(t *testing.T) {
 	// DB lives in "project-other", but we'll ask for it in "project-infra".
+	// Either way, the cross-project guard fires first.
 	db := newDB("db", "project-other")
 	c := newFakeClient(t, db)
 	r := &bindings.Resolver{Client: c}
@@ -127,7 +140,10 @@ func TestResolveCrossProjectMissingReturnsError(t *testing.T) {
 		{Ref: "db", Project: "infra"},
 	})
 	if err == nil {
-		t.Fatal("expected error for cross-project ref in wrong namespace, got nil")
+		t.Fatal("expected error for cross-project binding, got nil")
+	}
+	if !strings.Contains(err.Error(), "cross-project binding") {
+		t.Errorf("expected cross-project error, got: %v", err)
 	}
 }
 

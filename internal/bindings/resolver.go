@@ -34,6 +34,16 @@ func (r *Resolver) Resolve(ctx context.Context, namespace string, bindings []mor
 	for _, b := range bindings {
 		ns := namespace
 		if b.Project != "" {
+			// Extract the binder's project name from its namespace.
+			binderProject := ""
+			if len(namespace) > len(projectNamespacePrefix) {
+				binderProject = namespace[len(projectNamespacePrefix):]
+			}
+			if b.Project != binderProject {
+				return nil, fmt.Errorf("cross-project binding to %q in project %q is not supported in v1; "+
+					"bindings can only reference Apps in the same project (see github.com/MC-Meesh/mortise/issues/2)",
+					b.Ref, b.Project)
+			}
 			ns = projectNamespacePrefix + b.Project
 		}
 
@@ -55,13 +65,6 @@ func (r *Resolver) Resolve(ctx context.Context, namespace string, bindings []mor
 		svcHost := fmt.Sprintf("%s.%s.svc.cluster.local", svcName, ns)
 		secretName := fmt.Sprintf("%s-credentials", boundApp.Name)
 
-		// NOTE: Issue #2 (cross-project bindings) remains open. When b.Project is
-		// set, we still emit a plain SecretKeyRef pointing at a Secret in the
-		// bound app's project namespace — the kubelet resolves secretKeyRef in
-		// the Pod's own namespace, so the Pod will fail to start with
-		// CreateContainerConfigError. Do not "fix" that here by renaming the
-		// Secret or dropping the ref; the resolution is a Secret-replication
-		// or projected-volume design, tracked separately.
 		for _, cred := range boundApp.Spec.Credentials {
 			switch cred.Name {
 			case "host":
