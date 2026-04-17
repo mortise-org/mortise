@@ -5,7 +5,7 @@
 	import { api } from '$lib/api';
 	import EnvVarEditor from '$lib/components/EnvVarEditor.svelte';
 	import LogViewer from '$lib/components/LogViewer.svelte';
-	import type { App, EnvironmentStatus, EnvVar, SecretResponse } from '$lib/types';
+	import type { App, DomainsResponse, EnvironmentStatus, EnvVar, SecretResponse } from '$lib/types';
 
 	const projectName = $derived(page.params.project ?? '');
 	const appName = $derived(page.params.app ?? '');
@@ -29,6 +29,11 @@
 	let newSecretValue = $state('');
 	let savingSecret = $state(false);
 
+	// Domains
+	let domains = $state<DomainsResponse | null>(null);
+	let newDomain = $state('');
+	let savingDomain = $state(false);
+
 	onMount(async () => {
 		if (!localStorage.getItem('token')) {
 			goto('/login');
@@ -44,6 +49,7 @@
 			app = await api.getApp(projectName, appName);
 			secrets = await api.listSecrets(projectName, appName);
 			syncEnvVarsFromApp();
+			await loadDomains();
 		} catch (err) {
 			error = err instanceof Error ? err.message : 'Failed to load app';
 		} finally {
@@ -126,11 +132,22 @@
 		const history = envStatus.deployHistory;
 		if (!history || index < 0) return;
 		const target = history[index];
+		if (!confirm(`Roll back to ${target.image}?`)) return;
 		try {
-			await api.deploy(projectName, appName, envStatus.name, target.image);
+			await api.rollback(projectName, appName, envStatus.name, index);
 			await loadApp();
 		} catch (err) {
 			error = err instanceof Error ? err.message : 'Rollback failed';
+		}
+	}
+
+	async function handlePromote(fromEnv: string, toEnv: string) {
+		if (!confirm(`Promote image from ${fromEnv} to ${toEnv}?`)) return;
+		try {
+			await api.promote(projectName, appName, fromEnv, toEnv);
+			await loadApp();
+		} catch (err) {
+			error = err instanceof Error ? err.message : 'Promote failed';
 		}
 	}
 
@@ -165,6 +182,43 @@
 			secrets = await api.listSecrets(projectName, appName);
 		} catch (err) {
 			error = err instanceof Error ? err.message : 'Failed to delete secret';
+		}
+	}
+
+	async function loadDomains() {
+		const envName = app?.spec.environments?.[activeTab]?.name;
+		if (!envName) {
+			domains = null;
+			return;
+		}
+		try {
+			domains = await api.listDomains(projectName, appName, envName);
+		} catch {
+			domains = null;
+		}
+	}
+
+	async function handleAddDomain() {
+		const envName = app?.spec.environments?.[activeTab]?.name;
+		if (!newDomain.trim() || !envName) return;
+		savingDomain = true;
+		try {
+			domains = await api.addDomain(projectName, appName, envName, newDomain.trim());
+			newDomain = '';
+		} catch (err) {
+			error = err instanceof Error ? err.message : 'Failed to add domain';
+		} finally {
+			savingDomain = false;
+		}
+	}
+
+	async function handleRemoveDomain(domain: string) {
+		const envName = app?.spec.environments?.[activeTab]?.name;
+		if (!envName) return;
+		try {
+			domains = await api.removeDomain(projectName, appName, envName, domain);
+		} catch (err) {
+			error = err instanceof Error ? err.message : 'Failed to remove domain';
 		}
 	}
 
@@ -348,6 +402,23 @@
 			{@const envStatus = app.status?.environments?.find((e) => e.name === env.name)}
 
 			<div class="space-y-6">
+				<!-- Promote -->
+				{#if app.spec.environments && app.spec.environments.length > 1 && envStatus?.currentImage}
+					<section class="rounded-lg border border-surface-600 bg-surface-800 p-4">
+						<h2 class="mb-2 text-sm font-medium text-gray-300">Promote</h2>
+						<div class="flex flex-wrap gap-2">
+							{#each app.spec.environments.filter((e) => e.name !== env.name) as target}
+								<button
+									onclick={() => handlePromote(env.name, target.name)}
+									class="rounded-md border border-accent/30 px-3 py-1.5 text-xs text-accent transition-colors hover:bg-accent/10"
+								>
+									Promote to {target.name}
+								</button>
+							{/each}
+						</div>
+					</section>
+				{/if}
+
 				<!-- Env vars editor -->
 				<section>
 					<div class="mb-2 flex items-center justify-between">
@@ -417,6 +488,66 @@
 					</section>
 				{/if}
 			</div>
+		{/if}
+
+		<!-- Domains -->
+		{#if app.spec.environments?.[activeTab]}
+			{@const envForDomains = app.spec.environments[activeTab]}
+			<section class="mt-6 rounded-lg border border-surface-600 bg-surface-800 p-5">
+				<h2 class="mb-3 text-sm font-medium text-gray-300">Domains</h2>
+
+				{#if envForDomains.domain}
+					<div class="mb-3 rounded-md bg-surface-700 px-3 py-2 text-sm">
+						<div class="flex items-center justify-between">
+							<div>
+								<span class="text-xs uppercase text-gray-500">Primary</span>
+								<div class="font-mono text-white">{envForDomains.domain}</div>
+							</div>
+						</div>
+					</div>
+				{/if}
+
+				{#if domains?.custom && domains.custom.length > 0}
+					<div class="mb-3 space-y-2">
+						{#each domains.custom as customDomain}
+							<div
+								class="flex items-center justify-between rounded-md bg-surface-700 px-3 py-2 text-sm"
+							>
+								<div>
+									<span class="font-mono text-white">{customDomain}</span>
+									{#if envForDomains.domain}
+										<div class="text-xs text-gray-500">
+											CNAME {customDomain} &rarr; {envForDomains.domain}
+										</div>
+									{/if}
+								</div>
+								<button
+									onclick={() => handleRemoveDomain(customDomain)}
+									class="text-xs text-gray-500 hover:text-danger"
+								>
+									Remove
+								</button>
+							</div>
+						{/each}
+					</div>
+				{/if}
+
+				<div class="flex gap-2">
+					<input
+						type="text"
+						bind:value={newDomain}
+						placeholder="custom.example.com"
+						class="flex-1 rounded-md border border-surface-600 bg-surface-700 px-3 py-2 text-sm text-white placeholder-gray-500 outline-none focus:border-accent"
+					/>
+					<button
+						onclick={handleAddDomain}
+						disabled={savingDomain || !newDomain.trim()}
+						class="rounded-md bg-surface-600 px-3 py-2 text-sm text-white transition-colors hover:bg-surface-500 disabled:opacity-50"
+					>
+						{savingDomain ? 'Adding...' : 'Add'}
+					</button>
+				</div>
+			</section>
 		{/if}
 
 		<!-- Secrets -->

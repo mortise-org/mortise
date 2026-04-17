@@ -55,9 +55,15 @@ func NewServer(c client.Client, cs kubernetes.Interface, authProvider auth.AuthP
 //	/api/projects/{project}/apps                                   list/create
 //	/api/projects/{project}/apps/{app}                             get/update/delete
 //	/api/projects/{project}/apps/{app}/deploy                      deploy webhook
+//	/api/projects/{project}/apps/{app}/rollback                   rollback to previous deploy
+//	/api/projects/{project}/apps/{app}/promote                    promote image between envs
 //	/api/projects/{project}/apps/{app}/logs                        SSE log stream
 //	/api/projects/{project}/apps/{app}/secrets                     list/create
 //	/api/projects/{project}/apps/{app}/secrets/{secretName}        delete
+//	/api/projects/{project}/apps/{app}/tokens                     list/create deploy tokens
+//	/api/projects/{project}/apps/{app}/tokens/{tokenName}         revoke deploy token
+//	/api/projects/{project}/apps/{app}/env                        get/put/patch env vars
+//	/api/projects/{project}/apps/{app}/env/import                 import .env file
 func (s *Server) Handler() http.Handler {
 	r := chi.NewRouter()
 
@@ -96,11 +102,36 @@ func (s *Server) Handler() http.Handler {
 			r.Put("/projects/{project}/apps/{app}", s.UpdateApp)
 			r.Delete("/projects/{project}/apps/{app}", s.DeleteApp)
 
-			r.Post("/projects/{project}/apps/{app}/deploy", s.Deploy)
+			r.Post("/projects/{project}/apps/{app}/rollback", s.Rollback)
+			r.Post("/projects/{project}/apps/{app}/promote", s.Promote)
 
 			r.Post("/projects/{project}/apps/{app}/secrets", s.CreateSecret)
 			r.Get("/projects/{project}/apps/{app}/secrets", s.ListSecrets)
 			r.Delete("/projects/{project}/apps/{app}/secrets/{secretName}", s.DeleteSecret)
+
+			r.Post("/projects/{project}/apps/{app}/tokens", s.CreateToken)
+			r.Get("/projects/{project}/apps/{app}/tokens", s.ListTokens)
+			r.Delete("/projects/{project}/apps/{app}/tokens/{tokenName}", s.DeleteToken)
+
+			r.Get("/projects/{project}/apps/{app}/env", s.GetEnv)
+			r.Put("/projects/{project}/apps/{app}/env", s.PutEnv)
+			r.Patch("/projects/{project}/apps/{app}/env", s.PatchEnv)
+			r.Post("/projects/{project}/apps/{app}/env/import", s.ImportEnv)
+
+			r.Get("/projects/{project}/apps/{app}/domains", s.ListDomains)
+			r.Post("/projects/{project}/apps/{app}/domains", s.AddDomain)
+			r.Delete("/projects/{project}/apps/{app}/domains/{domain}", s.RemoveDomain)
+
+			r.Get("/platform", s.GetPlatform)
+			r.Patch("/platform", s.PatchPlatform)
+		})
+
+		// /deploy: accepts JWT OR deploy token (mrt_...) for CI systems.
+		// The Deploy handler checks auth internally — if no JWT principal is
+		// present it falls back to deploy token validation.
+		r.Group(func(r chi.Router) {
+			r.Use(s.optionalJWTMiddleware)
+			r.Post("/projects/{project}/apps/{app}/deploy", s.Deploy)
 		})
 
 		// /logs: JWT may come via `?token=` query param as an EventSource

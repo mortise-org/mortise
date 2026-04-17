@@ -21,6 +21,19 @@ export interface Build {
 
 export interface NetworkConfig {
 	public?: boolean;
+	port?: number;
+}
+
+export interface DomainsResponse {
+	primary: string;
+	custom: string[];
+}
+
+export interface PlatformResponse {
+	domain: string;
+	dns: { provider: string; apiTokenSecretRef?: { namespace?: string; name?: string; key?: string } };
+	tls: { certManagerClusterIssuer?: string };
+	phase?: string;
 }
 
 export interface VolumeSpec {

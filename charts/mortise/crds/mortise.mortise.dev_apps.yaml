@@ -258,6 +258,14 @@ spec:
                 type: array
               network:
                 properties:
+                  port:
+                    default: 8080
+                    description: |-
+                      Port is the container port the app listens on. Defaults to 8080.
+                      The Service always exposes port 80 for HTTP; this controls the
+                      targetPort on the Service and containerPort on the Deployment.
+                    format: int32
+                    type: integer
                   public:
                     default: true
                     type: boolean

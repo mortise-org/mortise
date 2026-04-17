@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -375,5 +376,281 @@ func TestGetAppInNonexistentProjectIs404(t *testing.T) {
 	_ = json.NewDecoder(w.Body).Decode(&resp)
 	if resp["error"] == "" {
 		t.Errorf("expected error body in 404 response")
+	}
+}
+
+func TestRollback(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+	ns := seedProject(t, k8sClient, "default")
+
+	// Create an app with deploy history in status.
+	ctx := context.Background()
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "rollback-app", Namespace: ns},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: "nginx:1.27"},
+			Environments: []mortisev1alpha1.Environment{
+				{Name: "production"},
+			},
+		},
+	}
+	if err := k8sClient.Create(ctx, app); err != nil {
+		t.Fatalf("create app: %v", err)
+	}
+
+	// Create the Deployment the handler will patch.
+	dep := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: "rollback-app-production", Namespace: ns},
+		Spec: appsv1.DeploymentSpec{
+			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "rollback-app"}},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "rollback-app"}},
+				Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "app", Image: "nginx:1.27"}}},
+			},
+		},
+	}
+	if err := k8sClient.Create(ctx, dep); err != nil {
+		t.Fatalf("create deployment: %v", err)
+	}
+
+	// Seed deploy history on app status.
+	app.Status.Environments = []mortisev1alpha1.EnvironmentStatus{
+		{
+			Name:         "production",
+			CurrentImage: "nginx:1.27",
+			DeployHistory: []mortisev1alpha1.DeployRecord{
+				{Image: "nginx:1.26", Timestamp: metav1.Now()},
+				{Image: "nginx:1.27", Timestamp: metav1.Now()},
+			},
+		},
+	}
+	if err := k8sClient.Status().Update(ctx, app); err != nil {
+		t.Fatalf("update app status: %v", err)
+	}
+
+	// Rollback to index 0 (nginx:1.26).
+	w := doRequest(h, http.MethodPost, "/api/projects/default/apps/rollback-app/rollback", map[string]any{
+		"environment": "production",
+		"index":       0,
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("rollback: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var record mortisev1alpha1.DeployRecord
+	_ = json.NewDecoder(w.Body).Decode(&record)
+	if record.Image != "nginx:1.26" {
+		t.Errorf("expected rollback to nginx:1.26, got %s", record.Image)
+	}
+
+	// Verify Deployment was patched.
+	if err := k8sClient.Get(ctx, types.NamespacedName{Name: "rollback-app-production", Namespace: ns}, dep); err != nil {
+		t.Fatalf("get deployment: %v", err)
+	}
+	if dep.Spec.Template.Spec.Containers[0].Image != "nginx:1.26" {
+		t.Errorf("expected deployment image nginx:1.26, got %s", dep.Spec.Template.Spec.Containers[0].Image)
+	}
+}
+
+func TestRollbackInvalidIndex(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+	ns := seedProject(t, k8sClient, "default")
+
+	ctx := context.Background()
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "rollback-bad", Namespace: ns},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: "nginx:1.27"},
+			Environments: []mortisev1alpha1.Environment{
+				{Name: "production"},
+			},
+		},
+	}
+	if err := k8sClient.Create(ctx, app); err != nil {
+		t.Fatalf("create app: %v", err)
+	}
+	app.Status.Environments = []mortisev1alpha1.EnvironmentStatus{
+		{Name: "production", DeployHistory: []mortisev1alpha1.DeployRecord{
+			{Image: "nginx:1.26", Timestamp: metav1.Now()},
+		}},
+	}
+	if err := k8sClient.Status().Update(ctx, app); err != nil {
+		t.Fatalf("update status: %v", err)
+	}
+
+	w := doRequest(h, http.MethodPost, "/api/projects/default/apps/rollback-bad/rollback", map[string]any{
+		"environment": "production",
+		"index":       5,
+	})
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for invalid index, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestRollbackInvalidEnv(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+	ns := seedProject(t, k8sClient, "default")
+
+	ctx := context.Background()
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "rollback-noenv", Namespace: ns},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: "nginx:1.27"},
+		},
+	}
+	if err := k8sClient.Create(ctx, app); err != nil {
+		t.Fatalf("create app: %v", err)
+	}
+
+	w := doRequest(h, http.MethodPost, "/api/projects/default/apps/rollback-noenv/rollback", map[string]any{
+		"environment": "staging",
+		"index":       0,
+	})
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404 for nonexistent env, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestRollbackRequiresAuth(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+
+	w := doRequestWithToken(h, http.MethodPost, "/api/projects/default/apps/x/rollback", map[string]any{
+		"environment": "production",
+		"index":       0,
+	}, "")
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401, got %d", w.Code)
+	}
+}
+
+func TestPromote(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+	ns := seedProject(t, k8sClient, "default")
+
+	ctx := context.Background()
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "promote-app", Namespace: ns},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: "nginx:1.27"},
+			Environments: []mortisev1alpha1.Environment{
+				{Name: "staging"},
+				{Name: "production"},
+			},
+		},
+	}
+	if err := k8sClient.Create(ctx, app); err != nil {
+		t.Fatalf("create app: %v", err)
+	}
+
+	// Create Deployments for both envs.
+	for _, envName := range []string{"staging", "production"} {
+		dep := &appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{Name: "promote-app-" + envName, Namespace: ns},
+			Spec: appsv1.DeploymentSpec{
+				Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "promote-app", "env": envName}},
+				Template: corev1.PodTemplateSpec{
+					ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "promote-app", "env": envName}},
+					Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "app", Image: "nginx:1.25"}}},
+				},
+			},
+		}
+		if err := k8sClient.Create(ctx, dep); err != nil {
+			t.Fatalf("create deployment %s: %v", envName, err)
+		}
+	}
+
+	// Seed staging with a current image.
+	app.Status.Environments = []mortisev1alpha1.EnvironmentStatus{
+		{Name: "staging", CurrentImage: "nginx:1.27", CurrentDigest: "sha256:abc123"},
+		{Name: "production", CurrentImage: "nginx:1.25"},
+	}
+	if err := k8sClient.Status().Update(ctx, app); err != nil {
+		t.Fatalf("update status: %v", err)
+	}
+
+	w := doRequest(h, http.MethodPost, "/api/projects/default/apps/promote-app/promote", map[string]any{
+		"from": "staging",
+		"to":   "production",
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("promote: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Verify production Deployment has the staging image.
+	var dep appsv1.Deployment
+	if err := k8sClient.Get(ctx, types.NamespacedName{Name: "promote-app-production", Namespace: ns}, &dep); err != nil {
+		t.Fatalf("get production deployment: %v", err)
+	}
+	if dep.Spec.Template.Spec.Containers[0].Image != "sha256:abc123" {
+		t.Errorf("expected production image sha256:abc123, got %s", dep.Spec.Template.Spec.Containers[0].Image)
+	}
+}
+
+func TestPromoteInvalidEnv(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+	ns := seedProject(t, k8sClient, "default")
+
+	ctx := context.Background()
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "promote-bad", Namespace: ns},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: "nginx:1.27"},
+			Environments: []mortisev1alpha1.Environment{
+				{Name: "staging"},
+			},
+		},
+	}
+	if err := k8sClient.Create(ctx, app); err != nil {
+		t.Fatalf("create app: %v", err)
+	}
+
+	// No status at all — source env not found.
+	w := doRequest(h, http.MethodPost, "/api/projects/default/apps/promote-bad/promote", map[string]any{
+		"from": "staging",
+		"to":   "production",
+	})
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404 for missing source env status, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestPromoteSameEnv(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+	seedProject(t, k8sClient, "default")
+
+	w := doRequest(h, http.MethodPost, "/api/projects/default/apps/any-app/promote", map[string]any{
+		"from": "staging",
+		"to":   "staging",
+	})
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for same env, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestPromoteRequiresAuth(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+
+	w := doRequestWithToken(h, http.MethodPost, "/api/projects/default/apps/x/promote", map[string]any{
+		"from": "staging",
+		"to":   "production",
+	}, "")
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401, got %d", w.Code)
 	}
 }

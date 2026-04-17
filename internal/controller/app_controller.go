@@ -484,6 +484,13 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 			Name:  app.Name,
 			Image: app.Spec.Source.Image,
 			Env:   envVars,
+			Ports: []corev1.ContainerPort{
+				{
+					Name:          "http",
+					ContainerPort: appPort(app),
+					Protocol:      corev1.ProtocolTCP,
+				},
+			},
 		},
 	}
 
@@ -578,7 +585,7 @@ func (r *AppReconciler) reconcileService(ctx context.Context, app *mortisev1alph
 				{
 					Name:       "http",
 					Port:       80,
-					TargetPort: intstr.FromInt32(8080),
+					TargetPort: intstr.FromInt32(appPort(app)),
 					Protocol:   corev1.ProtocolTCP,
 				},
 			},
@@ -1129,6 +1136,14 @@ func (r *AppReconciler) RollbackDeployment(ctx context.Context, app *mortisev1al
 
 	dep.Spec.Template.Spec.Containers[0].Image = rollbackImage
 	return r.Update(ctx, &dep)
+}
+
+// appPort returns the container port for the app, defaulting to 8080.
+func appPort(app *mortisev1alpha1.App) int32 {
+	if app.Spec.Network.Port > 0 {
+		return app.Spec.Network.Port
+	}
+	return 8080
 }
 
 func deploymentName(app, env string) string {

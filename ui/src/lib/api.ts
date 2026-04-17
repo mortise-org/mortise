@@ -3,7 +3,10 @@ import type {
 	App,
 	AppSpec,
 	CreateGitProviderRequest,
+	DeployRecord,
+	DomainsResponse,
 	GitProviderSummary,
+	PlatformResponse,
 	Project,
 	SecretResponse
 } from './types';
@@ -91,6 +94,23 @@ export const api = {
 			}
 		),
 
+	// --- rollback ---
+	rollback: (project: string, app: string, environment: string, index: number) =>
+		request<DeployRecord>(`/projects/${enc(project)}/apps/${enc(app)}/rollback`, {
+			method: 'POST',
+			body: JSON.stringify({ environment, index })
+		}),
+
+	// --- promote ---
+	promote: (project: string, app: string, from: string, to: string) =>
+		request<{ status: string; from: string; to: string; image: string }>(
+			`/projects/${enc(project)}/apps/${enc(app)}/promote`,
+			{
+				method: 'POST',
+				body: JSON.stringify({ from, to })
+			}
+		),
+
 	// --- logs: returns a ready-to-use SSE URL including the JWT ---
 	logsURL: (project: string, app: string, env: string, tail = 200): string => {
 		const token = localStorage.getItem('token') ?? '';
@@ -127,5 +147,32 @@ export const api = {
 		request<{ status: string }>(
 			`/projects/${enc(project)}/apps/${enc(app)}/secrets/${enc(secretName)}`,
 			{ method: 'DELETE' }
-		)
+		),
+
+	// --- domains ---
+	listDomains: (project: string, app: string, environment: string) =>
+		request<DomainsResponse>(
+			`/projects/${enc(project)}/apps/${enc(app)}/domains?environment=${enc(environment)}`
+		),
+	addDomain: (project: string, app: string, environment: string, domain: string) =>
+		request<DomainsResponse>(
+			`/projects/${enc(project)}/apps/${enc(app)}/domains?environment=${enc(environment)}`,
+			{
+				method: 'POST',
+				body: JSON.stringify({ domain })
+			}
+		),
+	removeDomain: (project: string, app: string, environment: string, domain: string) =>
+		request<DomainsResponse>(
+			`/projects/${enc(project)}/apps/${enc(app)}/domains/${enc(domain)}?environment=${enc(environment)}`,
+			{ method: 'DELETE' }
+		),
+
+	// --- platform config ---
+	getPlatform: () => request<PlatformResponse>('/platform'),
+	patchPlatform: (body: Partial<{ domain: string; dns: { provider: string; apiTokenSecretRef: string }; tls: { certManagerClusterIssuer: string } }>) =>
+		request<PlatformResponse>('/platform', {
+			method: 'PATCH',
+			body: JSON.stringify(body)
+		})
 };

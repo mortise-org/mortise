@@ -2353,6 +2353,62 @@ var _ = Describe("App Controller — git source", func() {
 			Expect(sec.Data).To(HaveKeyWithValue("external", []byte("data")))
 		})
 	})
+
+	Context("custom network port", func() {
+		const appName = "custom-port-app"
+		ctx := context.Background()
+
+		var app *mortisev1alpha1.App
+
+		AfterEach(func() {
+			if app != nil {
+				_ = k8sClient.Delete(ctx, app)
+				app = nil
+			}
+		})
+
+		It("should use spec.network.port as Service targetPort and container port", func() {
+			app = &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      appName,
+					Namespace: namespace,
+				},
+				Spec: mortisev1alpha1.AppSpec{
+					Source: mortisev1alpha1.AppSource{
+						Type:  mortisev1alpha1.SourceTypeImage,
+						Image: testImageNginx,
+					},
+					Network: mortisev1alpha1.NetworkConfig{Public: true, Port: 3000},
+					Environments: []mortisev1alpha1.Environment{
+						{
+							Name:   "production",
+							Domain: "custom-port.example.com",
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var svc corev1.Service
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName + "-production", Namespace: namespace,
+			}, &svc)).To(Succeed())
+			Expect(svc.Spec.Ports[0].Port).To(Equal(int32(80)))
+			Expect(svc.Spec.Ports[0].TargetPort.IntVal).To(Equal(int32(3000)))
+
+			var dep appsv1.Deployment
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName + "-production", Namespace: namespace,
+			}, &dep)).To(Succeed())
+			Expect(dep.Spec.Template.Spec.Containers[0].Ports[0].ContainerPort).To(Equal(int32(3000)))
+		})
+	})
 })
 
 func findEnvVar(envVars []corev1.EnvVar, name string) *corev1.EnvVar {

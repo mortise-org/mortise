@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"k8s.io/apimachinery/pkg/types"
@@ -20,6 +21,10 @@ type deployRequest struct {
 // Deploy handles the deploy webhook for a given App. It patches the App CRD's
 // source.image field, which triggers the controller to reconcile a new
 // deployment.
+//
+// Auth: accepts either a valid JWT (user session) or a deploy token (CI).
+// Deploy tokens are scoped to a specific app+environment; the handler rejects
+// mismatches.
 func (s *Server) Deploy(w http.ResponseWriter, r *http.Request) {
 	ns, ok := s.resolveProject(w, r)
 	if !ok {
@@ -35,6 +40,25 @@ func (s *Server) Deploy(w http.ResponseWriter, r *http.Request) {
 	if req.Image == "" {
 		writeJSON(w, http.StatusBadRequest, errorResponse{"image is required"})
 		return
+	}
+
+	// Check auth: JWT principal already set by middleware, or deploy token.
+	if PrincipalFromContext(r.Context()) == nil {
+		// No JWT principal — try deploy token auth.
+		header := r.Header.Get("Authorization")
+		token := strings.TrimPrefix(header, "Bearer ")
+		if !strings.HasPrefix(token, deployTokenPrefix) {
+			writeJSON(w, http.StatusUnauthorized, errorResponse{"missing or invalid authorization"})
+			return
+		}
+		if req.Environment == "" {
+			writeJSON(w, http.StatusBadRequest, errorResponse{"environment is required when using a deploy token"})
+			return
+		}
+		if !s.validateDeployToken(r, ns, appName, req.Environment) {
+			writeJSON(w, http.StatusUnauthorized, errorResponse{"invalid deploy token"})
+			return
+		}
 	}
 
 	var app mortisev1alpha1.App

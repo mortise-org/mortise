@@ -1,0 +1,15 @@
+dependencies:
+- name: traefik
+  repository: https://traefik.github.io/charts
+  version: 34.0.0
+- name: cert-manager
+  repository: https://charts.jetstack.io
+  version: v1.17.4
+- name: external-dns
+  repository: https://kubernetes-sigs.github.io/external-dns
+  version: 1.16.1
+- name: zot
+  repository: https://zotregistry.dev/helm-charts
+  version: 0.1.104
+digest: sha256:9a5d7ea3d5a2026f764a273a278ac8f133014782bc705b3aac36c8d3e4cc558c
+generated: "2026-04-16T18:12:06.579308-07:00"

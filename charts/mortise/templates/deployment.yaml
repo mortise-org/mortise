@@ -41,3 +41,31 @@ spec:
               port: 8081
             initialDelaySeconds: 5
             periodSeconds: 10
+---
+{{- if .Values.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: mortise
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: mortise
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  {{- if and .Values.traefik.enabled (not .Values.ingress.className) }}
+  ingressClassName: traefik
+  {{- else if .Values.ingress.className }}
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.ingress.host }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: mortise
+                port:
+                  number: {{ .Values.service.port }}
+{{- end }}

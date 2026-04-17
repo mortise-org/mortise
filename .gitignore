@@ -38,6 +38,9 @@ cover.out
 .logs/
 __pycache__/
 
+# Vendored Helm dependency charts (downloaded by helm dep update)
+charts/mortise/charts/
+
 # UI
 ui/node_modules/
 ui/.svelte-kit/

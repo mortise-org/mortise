@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 
 	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
 )
@@ -111,6 +112,18 @@ func (c *Client) doJSON(method, fullURL string, body, dest any) error {
 	return nil
 }
 
+func (c *Client) doRaw(method, fullURL, contentType string, body io.Reader) (*http.Response, error) {
+	req, err := http.NewRequest(method, fullURL, body)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", contentType)
+	if c.Token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.Token)
+	}
+	return c.HTTPClient.Do(req)
+}
+
 // ---------- Project methods ----------
 
 // ProjectResponse mirrors internal/api.projectResponse.
@@ -211,6 +224,34 @@ func (c *Client) Deploy(project, app, env, image string) error {
 	return c.doJSON(http.MethodPost, u, deployRequest{Environment: env, Image: image}, nil)
 }
 
+// ---------- Rollback ----------
+
+type rollbackRequest struct {
+	Environment string `json:"environment"`
+	Index       int    `json:"index"`
+}
+
+func (c *Client) Rollback(project, app, env string, index int) (*mortisev1alpha1.DeployRecord, error) {
+	var record mortisev1alpha1.DeployRecord
+	u := c.appBase(project, app) + "/rollback"
+	if err := c.doJSON(http.MethodPost, u, rollbackRequest{Environment: env, Index: index}, &record); err != nil {
+		return nil, err
+	}
+	return &record, nil
+}
+
+// ---------- Promote ----------
+
+type promoteRequest struct {
+	From string `json:"from"`
+	To   string `json:"to"`
+}
+
+func (c *Client) Promote(project, app, from, to string) error {
+	u := c.appBase(project, app) + "/promote"
+	return c.doJSON(http.MethodPost, u, promoteRequest{From: from, To: to}, nil)
+}
+
 // ---------- Logs ----------
 
 // StreamLogs opens the SSE log stream for (project, app) and copies the raw
@@ -268,4 +309,85 @@ func (c *Client) SetSecret(project, app, name, value string) error {
 func (c *Client) DeleteSecret(project, app, secretName string) error {
 	u := fmt.Sprintf("%s/secrets/%s", c.appBase(project, app), url.PathEscape(secretName))
 	return c.doJSON(http.MethodDelete, u, nil, nil)
+}
+
+// ---------- Deploy Tokens ----------
+
+// TokenResponse mirrors internal/api.tokenResponse.
+type TokenResponse struct {
+	Token       string `json:"token,omitempty"`
+	Name        string `json:"name"`
+	Environment string `json:"environment"`
+	CreatedAt   string `json:"createdAt,omitempty"`
+}
+
+type cliCreateTokenRequest struct {
+	Environment string `json:"environment"`
+	Name        string `json:"name"`
+}
+
+func (c *Client) CreateToken(project, app, env, name string) (*TokenResponse, error) {
+	var resp TokenResponse
+	u := c.appBase(project, app) + "/tokens"
+	req := cliCreateTokenRequest{Environment: env, Name: name}
+	if err := c.doJSON(http.MethodPost, u, req, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+func (c *Client) ListTokens(project, app string) ([]TokenResponse, error) {
+	var resp []TokenResponse
+	u := c.appBase(project, app) + "/tokens"
+	if err := c.doJSON(http.MethodGet, u, nil, &resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+func (c *Client) RevokeToken(project, app, name string) error {
+	u := fmt.Sprintf("%s/tokens/%s", c.appBase(project, app), url.PathEscape(name))
+	return c.doJSON(http.MethodDelete, u, nil, nil)
+}
+
+// ---------- Env Vars ----------
+
+// EnvVarResponse mirrors internal/api.envVarResponse.
+type EnvVarResponse struct {
+	Name  string `json:"name"`
+	Value string `json:"value"`
+}
+
+type cliPatchEnvRequest struct {
+	Set   map[string]string `json:"set,omitempty"`
+	Unset []string          `json:"unset,omitempty"`
+}
+
+func (c *Client) GetEnv(project, app, env string) ([]EnvVarResponse, error) {
+	var resp []EnvVarResponse
+	u := c.appBase(project, app) + "/env?environment=" + url.QueryEscape(env)
+	if err := c.doJSON(http.MethodGet, u, nil, &resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+func (c *Client) PatchEnv(project, app, env string, set map[string]string, unset []string) error {
+	u := c.appBase(project, app) + "/env?environment=" + url.QueryEscape(env)
+	req := cliPatchEnvRequest{Set: set, Unset: unset}
+	return c.doJSON(http.MethodPatch, u, req, nil)
+}
+
+func (c *Client) ImportEnv(project, app, env, content string) error {
+	u := c.appBase(project, app) + "/env/import?environment=" + url.QueryEscape(env)
+	resp, err := c.doRaw(http.MethodPost, u, "text/plain", strings.NewReader(content))
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode >= 400 {
+		b, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("API error %d: %s", resp.StatusCode, string(b))
+	}
+	return nil
 }

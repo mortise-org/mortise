@@ -46,6 +46,30 @@ func (s *Server) jwtAuthMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+// optionalJWTMiddleware validates a Bearer JWT if present and non-mrt_. If
+// the token is a deploy token (mrt_ prefix) or absent, the request proceeds
+// without a principal — the handler is responsible for checking deploy token
+// auth itself.
+func (s *Server) optionalJWTMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		header := r.Header.Get("Authorization")
+		if header != "" && strings.HasPrefix(header, "Bearer ") {
+			token := strings.TrimPrefix(header, "Bearer ")
+			if token != "" && !strings.HasPrefix(token, "mrt_") {
+				principal, err := s.jwt.ValidateToken(r.Context(), token)
+				if err != nil {
+					writeJSON(w, http.StatusUnauthorized, errorResponse{"invalid token"})
+					return
+				}
+				ctx := context.WithValue(r.Context(), principalKey, &principal)
+				next.ServeHTTP(w, r.WithContext(ctx))
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 // maxBytesMiddleware limits the size of incoming request bodies. Requests
 // that exceed the limit receive 413 Request Entity Too Large.
 func maxBytesMiddleware(maxBytes int64) func(http.Handler) http.Handler {

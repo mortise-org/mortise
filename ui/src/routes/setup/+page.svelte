@@ -47,7 +47,7 @@
 
 			const data = await res.json();
 			localStorage.setItem('token', data.token);
-			goto('/');
+			goto('/setup/wizard');
 		} catch (err) {
 			error = err instanceof Error ? err.message : 'Setup failed';
 		} finally {

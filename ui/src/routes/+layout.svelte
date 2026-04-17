@@ -187,6 +187,12 @@
 
 			<div class="flex items-center gap-2">
 				<a
+					href="/extensions"
+					class="rounded-md px-3 py-1.5 text-sm text-gray-400 transition-colors hover:bg-surface-700 hover:text-white"
+				>
+					Extensions
+				</a>
+				<a
 					href="/settings/git-providers"
 					class="rounded-md px-3 py-1.5 text-sm text-gray-400 transition-colors hover:bg-surface-700 hover:text-white"
 				>

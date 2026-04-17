@@ -265,5 +265,5 @@ func (s *Server) oauthTokenExists(ctx context.Context, providerName string) bool
 		Namespace: tokenSecretNamespace,
 		Name:      "gitprovider-token-" + providerName,
 	}, &secret)
-	return err == nil || !errors.IsNotFound(err)
+	return err == nil
 }

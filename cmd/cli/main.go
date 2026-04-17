@@ -29,8 +29,13 @@ Quickstart:
 	cmd.AddCommand(newProjectCmd())
 	cmd.AddCommand(newAppCmd())
 	cmd.AddCommand(newDeployCmd())
+	cmd.AddCommand(newRollbackCmd())
+	cmd.AddCommand(newPromoteCmd())
 	cmd.AddCommand(newLogsCmd())
 	cmd.AddCommand(newStatusCmd())
+	cmd.AddCommand(newDomainCmd())
+	cmd.AddCommand(newTokenCmd())
+	cmd.AddCommand(newEnvCmd())
 	return cmd
 }
 

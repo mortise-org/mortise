@@ -71,6 +71,13 @@ type Build struct {
 type NetworkConfig struct {
 	// +kubebuilder:default=true
 	Public bool `json:"public,omitempty"`
+
+	// Port is the container port the app listens on. Defaults to 8080.
+	// The Service always exposes port 80 for HTTP; this controls the
+	// targetPort on the Service and containerPort on the Deployment.
+	// +optional
+	// +kubebuilder:default=8080
+	Port int32 `json:"port,omitempty"`
 }
 
 type VolumeSpec struct {

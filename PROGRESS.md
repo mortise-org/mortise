@@ -21,12 +21,12 @@ ExternalDNS, no Go interface).
 | 0 — Foundation                   | §7.1 / §8   | **Done**         | kubebuilder scaffold, chart skeleton, Makefile, test helpers + fixtures. |
 | 1 — Core operator (image source) | §7.2        | **Done**         | Deployment / Service / Ingress / PVC / ServiceAccount reconciliation works for `source.type: image` and `source.type: git` (git builds asynchronously with a 30-min timeout). Ingress honours `environments[].annotations` passthrough (§5.2a), `environments[].tls.{secretName,clusterIssuer}` overrides (§5.6), `environments[].customDomains` (multi-host rules + TLS), and `IngressProvider`-driven annotations (`AnnotationProvider`: ExternalDNS hostname + cert-manager cluster-issuer). `ingressClassName` configurable via `MORTISE_INGRESS_CLASS` env var. ServiceAccount per App carries `imagePullSecrets` from `RegistryBackend.PullSecretRef()`. |
 | 2 — API + UI skeleton            | §7.3        | **Done**         | Auth, project CRUD, app CRUD, secrets CRUD, deploy webhook, SSE logs, SvelteKit UI. |
-| 3 — Bindings + secrets           | §7.4        | **Partial**      | Resolver writes env vars; `{app}-credentials` Secret is now materialised from `spec.credentials` (Flavor A, §5.5a) — inline `value` and `valueFrom.secretRef` both supported, with sha256 pod-template annotation for rotation. Cross-project bindings now return a clear error at reconcile time instead of silently failing (issue #2 guarded, #3). Same-project bindings have an integration test (`test/integration/bindings_test.go`, #5). No deploy tokens, no secret rotation endpoint. |
+| 3 — Bindings + secrets           | §7.4        | **Partial**      | Resolver writes env vars; `{app}-credentials` Secret is now materialised from `spec.credentials` (Flavor A, §5.5a) — inline `value` and `valueFrom.secretRef` both supported, with sha256 pod-template annotation for rotation. Cross-project bindings now return a clear error at reconcile time instead of silently failing (issue #2 guarded, #3). Same-project bindings have an integration test (`test/integration/bindings_test.go`, #5). **Deploy tokens landed** (§5.4): `mrt_` prefixed, per-app+env scoped, stored as hashed k8s Secrets; deploy webhook accepts both JWT and deploy token auth; token CRUD API + CLI (`mortise token {create,list,revoke}`). **Env management surface landed** (§5.14): focused GET/PUT/PATCH/import endpoints for `environments[].env`; `mortise.dev/env-hash` annotation triggers rolling restarts; CLI (`mortise env {list,set,unset,import,pull}`). No secret rotation endpoint. |
 | 3.5 — Projects                   | §5 / §5.10  | **Done**         | `Project` CRD + controller + REST API + CLI + UI routes + default-project seeding all landed. `spec.namespaceOverride` and admin-only `spec.adoptExistingNamespace` (spec §5.0) are implemented: controller resolves the target namespace name, enforces cross-Project uniqueness (`NamespaceConflict`), surfaces refusals via the `NamespaceReady` condition (`NamespaceAlreadyExists` / `NamespaceOwnedByAnotherProject`), and takes the adoption path only when explicitly opted in. |
 | 4 — Build system (git source)    | §7.5        | **Done**         | All stacks wired end-to-end: webhook patches `mortise.dev/revision` annotation → App reconciler clones + builds + deploys. Operator entrypoint reads config from `PlatformConfig` (env-var fallback for first-boot). Builds run asynchronously in background goroutines; the reconciler returns `Building` immediately and polls on requeue. |
 | 5 — Monorepo support             | §7.6        | **Done**         | `source.path` plumbs into BuildKit context; `source.watchPaths` gates webhook rebuilds (prefix match). UI build grouping deferred. |
 | 6 — Preview environments        | §7.7        | **Done**         | `PreviewEnvironment` CRD with real types (PullRequestRef, PreviewPhase, TTL, domain). Controller reconciles Deployment + Service + Ingress with owner references; async build via buildTrackerStore (same pattern as App controller); TTL expiry auto-deletes. Webhook handler parses PR events (opened/synchronize/closed) for GitHub, GitLab, Gitea; creates/updates/deletes PreviewEnvironments with staging inheritance + preview overrides. Domain template resolution (`{number}`, `{app}`). Commit status posted on PR SHA. |
-| 7 — Polish & v1                  | §7.8        | **Partial**      | Controller-side `RollbackDeployment` exists, but no CLI/UI for rollback, no promote, no first-run wizard, no custom-domain UI. |
+| 7 — Polish & v1                  | §7.8        | **Partial**      | Rollback + promote implemented full-stack (API, CLI, UI). Controller-side `RollbackDeployment` exists. Deploy tokens and env management surface implemented (API + CLI). Missing: first-run wizard, authz role upgrade, env-hash annotation for auto-roll. |
 | 8 — Tenons & integration recipes | §7.9 / §13  | **Not started**  | No bundled Traefik/cert-manager/ExternalDNS/Zot subcharts; no ESO / OPA / Prometheus recipes. |
 
 ### Interface implementation coverage
@@ -590,6 +590,18 @@ landed and what each deferred.
 Present:
 - Controller-level rollback helper
   (`app_controller.go RollbackDeployment`).
+- **Rollback — full stack:** API `POST /rollback` reads deploy history and
+  patches the Deployment (`internal/api/rollback.go`). CLI `mortise rollback
+  <app> --env production [--index N]`. UI rollback button on each non-current
+  deploy history entry with confirmation modal.
+- **Promote — full stack:** API `POST /promote` copies the current image
+  digest from the source environment's status to the target Deployment and
+  appends a DeployRecord (`internal/api/rollback.go`). CLI `mortise promote
+  <app> --from staging --to production`. UI promote buttons between
+  environments in the app detail page.
+- API tests (envtest): rollback valid/invalid index/env, auth required;
+  promote valid/invalid env, same-env rejection, auth required.
+- CLI tests: command parsing + client method HTTP path/body verification.
 
 Missing:
 - **Env-management surface (spec §5.9a):** no `PATCH/PUT /env` or
@@ -598,10 +610,6 @@ Missing:
   one-line `env set` from §5.14 is not yet implemented). No Variables tab
   in the App detail UI. No `mortise.dev/env-hash` annotation on the pod
   template, so env-only changes don't auto-roll the Deployment.
-- CLI `mortise rollback <app> [--env]` — not registered in `newRootCmd`.
-- CLI `mortise promote <app> --from staging --to production` — not
-  implemented.
-- UI rollback / promote / history view.
 - First-run setup wizard UI beyond the existing `setup` admin bootstrap
   route.
 - Custom-domain attach flow (UI + API).

@@ -28,3 +28,26 @@ resources:
 serviceAccount:
   create: true
   name: mortise-controller
+
+# ---------------------------------------------------------------------------
+# Bundled infrastructure — disable if your cluster already has these
+# ---------------------------------------------------------------------------
+traefik:
+  enabled: true
+  # Traefik values passthrough (users can configure any traefik chart value here)
+
+cert-manager:
+  enabled: true
+  crds:
+    enabled: true    # install CRDs automatically
+
+external-dns:
+  enabled: true
+  provider:
+    name: cloudflare  # default; override in values
+  # env passthrough for provider credentials
+
+# Built-in OCI registry (Zot). Disable if using an external registry.
+registry:
+  builtin:
+    enabled: true
