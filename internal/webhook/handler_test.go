@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
@@ -549,6 +550,817 @@ func TestWebhook_WatchPathsGating(t *testing.T) {
 	}
 	if _, skipped := kr.patched["project-a/worker"]; skipped {
 		t.Errorf("worker app should have been gated out, but was patched: %v", kr.patched)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// PR event tests
+// ---------------------------------------------------------------------------
+
+// githubPRPayloadJSON returns a GitHub pull_request event body.
+func githubPRPayloadJSON(action string, number int, branch, sha, fullName string) []byte {
+	p := map[string]interface{}{
+		"action": action,
+		"number": number,
+		"pull_request": map[string]interface{}{
+			"number": number,
+			"head": map[string]string{
+				"ref": branch,
+				"sha": sha,
+			},
+		},
+		"repository": map[string]string{
+			"full_name": fullName,
+		},
+	}
+	b, _ := json.Marshal(p)
+	return b
+}
+
+// gitlabMRPayloadJSON returns a GitLab Merge Request Hook body.
+func gitlabMRPayloadJSON(action, state string, iid int, sourceBranch, sha, fullName string) []byte {
+	p := map[string]interface{}{
+		"object_attributes": map[string]interface{}{
+			"action":        action,
+			"state":         state,
+			"iid":           iid,
+			"source_branch": sourceBranch,
+			"last_commit": map[string]string{
+				"id": sha,
+			},
+		},
+		"repository": map[string]string{
+			"full_name": fullName,
+		},
+	}
+	b, _ := json.Marshal(p)
+	return b
+}
+
+// makePreviewGitApp builds an App plus a Project with preview enabled. The
+// Project name is derived by stripping the "project-" prefix from ns.
+func makePreviewGitApp(name, ns, repo, branch string, domain, ttl string) (mortisev1alpha1.App, *mortisev1alpha1.Project) {
+	app := makeGitApp(name, ns, repo, branch)
+	projectName := strings.TrimPrefix(ns, "project-")
+	proj := &mortisev1alpha1.Project{
+		ObjectMeta: metav1.ObjectMeta{Name: projectName},
+		Spec: mortisev1alpha1.ProjectSpec{
+			Preview: &mortisev1alpha1.PreviewConfig{
+				Enabled: true,
+				Domain:  domain,
+				TTL:     ttl,
+			},
+		},
+	}
+	return app, proj
+}
+
+// makeProject builds a Project CR with optional preview config.
+func makeProject(name string, preview *mortisev1alpha1.PreviewConfig) *mortisev1alpha1.Project {
+	return &mortisev1alpha1.Project{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Spec:       mortisev1alpha1.ProjectSpec{Preview: preview},
+	}
+}
+
+func TestGitHubPREvent_Opened_CreatesPreviewEnvironment(t *testing.T) {
+	const secret = "prsecret"
+	const providerName = "github-main"
+
+	body := githubPRPayloadJSON("opened", 42, "feature/x", "shaopened", "org/repo")
+
+	gp := makeGitProvider(mortisev1alpha1.GitProviderTypeGitHub, "mortise-system", "wh-secret", "value")
+	app, proj := makePreviewGitApp("my-app", "project-default", "https://github.com/org/repo", "main", "pr-{number}.{app}.example.com", "24h")
+	kr := &fakeK8sReader{
+		provider: gp,
+		secrets:  map[string]string{"mortise-system/wh-secret/value": secret},
+		apps:     []mortisev1alpha1.App{app},
+		projects: map[string]*mortisev1alpha1.Project{"default": proj},
+	}
+	h := New(kr)
+
+	req := httptest.NewRequest(http.MethodPost, "/"+providerName, bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-GitHub-Event", "pull_request")
+	req.Header.Set("X-Hub-Signature-256", githubSignature(body, secret))
+
+	rr := httptest.NewRecorder()
+	h.Routes().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if len(kr.createdPreviews) != 1 {
+		t.Fatalf("expected 1 PE created, got %d", len(kr.createdPreviews))
+	}
+	pe := kr.createdPreviews[0]
+	if pe.Name != "my-app-preview-pr-42" {
+		t.Errorf("unexpected PE name: %q", pe.Name)
+	}
+	if pe.Namespace != "project-default" {
+		t.Errorf("unexpected PE namespace: %q", pe.Namespace)
+	}
+	if pe.Spec.AppRef != "my-app" {
+		t.Errorf("appRef mismatch: %q", pe.Spec.AppRef)
+	}
+	if pe.Spec.PullRequest.Number != 42 {
+		t.Errorf("PR number mismatch: %d", pe.Spec.PullRequest.Number)
+	}
+	if pe.Spec.PullRequest.Branch != "feature/x" {
+		t.Errorf("branch mismatch: %q", pe.Spec.PullRequest.Branch)
+	}
+	if pe.Spec.PullRequest.SHA != "shaopened" {
+		t.Errorf("sha mismatch: %q", pe.Spec.PullRequest.SHA)
+	}
+	if pe.Spec.Domain != "pr-42.my-app.example.com" {
+		t.Errorf("domain template not resolved: %q", pe.Spec.Domain)
+	}
+	if pe.Spec.TTL.Duration.Hours() != 24 {
+		t.Errorf("ttl mismatch: %v", pe.Spec.TTL.Duration)
+	}
+}
+
+func TestGiteaPREvent_Opened_CreatesPreviewEnvironment(t *testing.T) {
+	const secret = "giteaprsecret"
+	const providerName = "gitea-homelab"
+
+	body := githubPRPayloadJSON("opened", 7, "topic/feat", "gitasha", "user/myrepo")
+
+	gp := makeGitProvider(mortisev1alpha1.GitProviderTypeGitea, "mortise-system", "wh-secret", "value")
+	gp.Spec.Host = "https://gitea.example.com"
+	app, proj := makePreviewGitApp("myrepo-app", "project-gitea", "https://gitea.example.com/user/myrepo", "main", "pr-{number}.example.com", "")
+	kr := &fakeK8sReader{
+		provider: gp,
+		secrets:  map[string]string{"mortise-system/wh-secret/value": secret},
+		apps:     []mortisev1alpha1.App{app},
+		projects: map[string]*mortisev1alpha1.Project{"gitea": proj},
+	}
+	h := New(kr)
+
+	req := httptest.NewRequest(http.MethodPost, "/"+providerName, bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Gitea-Event", "pull_request")
+	req.Header.Set("X-Gitea-Signature", giteaSignature(body, secret))
+
+	rr := httptest.NewRecorder()
+	h.Routes().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if len(kr.createdPreviews) != 1 {
+		t.Fatalf("expected 1 PE created, got %d", len(kr.createdPreviews))
+	}
+	pe := kr.createdPreviews[0]
+	if pe.Name != "myrepo-app-preview-pr-7" {
+		t.Errorf("unexpected PE name: %q", pe.Name)
+	}
+	if pe.Spec.PullRequest.Number != 7 || pe.Spec.PullRequest.SHA != "gitasha" {
+		t.Errorf("PR ref mismatch: %+v", pe.Spec.PullRequest)
+	}
+	// Default TTL is 72h when unset.
+	if pe.Spec.TTL.Duration.Hours() != 72 {
+		t.Errorf("expected default 72h TTL, got %v", pe.Spec.TTL.Duration)
+	}
+}
+
+func TestGitLabPREvent_Opened_CreatesPreviewEnvironment(t *testing.T) {
+	const secret = "gitlabprsecret"
+	const providerName = "gitlab-com"
+
+	body := gitlabMRPayloadJSON("open", "opened", 11, "feat/branch", "mrsha1", "ns/project")
+
+	gp := makeGitProvider(mortisev1alpha1.GitProviderTypeGitLab, "mortise-system", "wh-secret", "value")
+	gp.Spec.Host = "https://gitlab.com"
+	app, proj := makePreviewGitApp("gl-app", "project-gl", "https://gitlab.com/ns/project", "main", "pr-{number}.{app}.gl.example.com", "")
+	kr := &fakeK8sReader{
+		provider: gp,
+		secrets:  map[string]string{"mortise-system/wh-secret/value": secret},
+		apps:     []mortisev1alpha1.App{app},
+		projects: map[string]*mortisev1alpha1.Project{"gl": proj},
+	}
+	h := New(kr)
+
+	req := httptest.NewRequest(http.MethodPost, "/"+providerName, bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Gitlab-Event", "Merge Request Hook")
+	req.Header.Set("X-Gitlab-Token", secret)
+
+	rr := httptest.NewRecorder()
+	h.Routes().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if len(kr.createdPreviews) != 1 {
+		t.Fatalf("expected 1 PE created, got %d", len(kr.createdPreviews))
+	}
+	pe := kr.createdPreviews[0]
+	if pe.Name != "gl-app-preview-pr-11" {
+		t.Errorf("unexpected PE name: %q", pe.Name)
+	}
+	if pe.Spec.PullRequest.Number != 11 || pe.Spec.PullRequest.Branch != "feat/branch" || pe.Spec.PullRequest.SHA != "mrsha1" {
+		t.Errorf("PR ref mismatch: %+v", pe.Spec.PullRequest)
+	}
+	if pe.Spec.Domain != "pr-11.gl-app.gl.example.com" {
+		t.Errorf("domain mismatch: %q", pe.Spec.Domain)
+	}
+}
+
+func TestPREvent_ProjectPreviewDisabled_NoPECreated(t *testing.T) {
+	const secret = "prsecret"
+	const providerName = "github-main"
+
+	body := githubPRPayloadJSON("opened", 5, "f", "sha", "org/repo")
+
+	gp := makeGitProvider(mortisev1alpha1.GitProviderTypeGitHub, "mortise-system", "wh-secret", "value")
+	app := makeGitApp("no-preview", "project-default", "https://github.com/org/repo", "main")
+	// preview nil → disabled.
+	kr := &fakeK8sReader{
+		provider: gp,
+		secrets:  map[string]string{"mortise-system/wh-secret/value": secret},
+		apps:     []mortisev1alpha1.App{app},
+	}
+	h := New(kr)
+
+	req := httptest.NewRequest(http.MethodPost, "/"+providerName, bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-GitHub-Event", "pull_request")
+	req.Header.Set("X-Hub-Signature-256", githubSignature(body, secret))
+
+	rr := httptest.NewRecorder()
+	h.Routes().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if len(kr.createdPreviews) != 0 {
+		t.Errorf("expected no PE created, got %d", len(kr.createdPreviews))
+	}
+
+	// Now test with preview explicitly disabled on the Project.
+	app2 := makeGitApp("also-no-preview", "project-default", "https://github.com/org/repo", "main")
+	proj2 := makeProject("default", &mortisev1alpha1.PreviewConfig{Enabled: false, Domain: "pr-{number}.example.com"})
+	kr2 := &fakeK8sReader{
+		provider: gp,
+		secrets:  map[string]string{"mortise-system/wh-secret/value": secret},
+		apps:     []mortisev1alpha1.App{app2},
+		projects: map[string]*mortisev1alpha1.Project{"default": proj2},
+	}
+	h2 := New(kr2)
+
+	req2 := httptest.NewRequest(http.MethodPost, "/"+providerName, bytes.NewReader(body))
+	req2.Header.Set("Content-Type", "application/json")
+	req2.Header.Set("X-GitHub-Event", "pull_request")
+	req2.Header.Set("X-Hub-Signature-256", githubSignature(body, secret))
+
+	rr2 := httptest.NewRecorder()
+	h2.Routes().ServeHTTP(rr2, req2)
+
+	if rr2.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", rr2.Code, rr2.Body.String())
+	}
+	if len(kr2.createdPreviews) != 0 {
+		t.Errorf("expected no PE created with preview.enabled=false, got %d", len(kr2.createdPreviews))
+	}
+}
+
+func TestPREvent_DomainTemplate_Resolved(t *testing.T) {
+	const secret = "prsecret"
+	const providerName = "github-main"
+
+	body := githubPRPayloadJSON("opened", 99, "br", "sha99", "org/repo")
+
+	gp := makeGitProvider(mortisev1alpha1.GitProviderTypeGitHub, "mortise-system", "wh-secret", "value")
+	app, proj := makePreviewGitApp("web", "project-default", "https://github.com/org/repo", "main", "pr-{number}-{app}.preview.example.com", "")
+	kr := &fakeK8sReader{
+		provider: gp,
+		secrets:  map[string]string{"mortise-system/wh-secret/value": secret},
+		apps:     []mortisev1alpha1.App{app},
+		projects: map[string]*mortisev1alpha1.Project{"default": proj},
+	}
+	h := New(kr)
+
+	req := httptest.NewRequest(http.MethodPost, "/"+providerName, bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-GitHub-Event", "pull_request")
+	req.Header.Set("X-Hub-Signature-256", githubSignature(body, secret))
+
+	rr := httptest.NewRecorder()
+	h.Routes().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if len(kr.createdPreviews) != 1 {
+		t.Fatalf("expected 1 PE, got %d", len(kr.createdPreviews))
+	}
+	if got, want := kr.createdPreviews[0].Spec.Domain, "pr-99-web.preview.example.com"; got != want {
+		t.Errorf("domain template mismatch: got %q, want %q", got, want)
+	}
+}
+
+func TestPREvent_StagingInheritance(t *testing.T) {
+	const secret = "prsecret"
+	const providerName = "github-main"
+
+	body := githubPRPayloadJSON("opened", 8, "br", "sha8", "org/repo")
+
+	replicas := int32(2)
+	app, proj := makePreviewGitApp("svc", "project-default", "https://github.com/org/repo", "main", "pr-{number}.example.com", "")
+	app.Spec.Environments = []mortisev1alpha1.Environment{
+		{
+			Name:     "production",
+			Replicas: func() *int32 { r := int32(5); return &r }(),
+		},
+		{
+			Name:      "staging",
+			Replicas:  &replicas,
+			Resources: mortisev1alpha1.ResourceRequirements{CPU: "250m", Memory: "128Mi"},
+			Env: []mortisev1alpha1.EnvVar{
+				{Name: "LOG_LEVEL", Value: "debug"},
+			},
+			Bindings: []mortisev1alpha1.Binding{
+				{Ref: "my-db"},
+			},
+		},
+	}
+
+	gp := makeGitProvider(mortisev1alpha1.GitProviderTypeGitHub, "mortise-system", "wh-secret", "value")
+	kr := &fakeK8sReader{
+		provider: gp,
+		secrets:  map[string]string{"mortise-system/wh-secret/value": secret},
+		apps:     []mortisev1alpha1.App{app},
+		projects: map[string]*mortisev1alpha1.Project{"default": proj},
+	}
+	h := New(kr)
+
+	req := httptest.NewRequest(http.MethodPost, "/"+providerName, bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-GitHub-Event", "pull_request")
+	req.Header.Set("X-Hub-Signature-256", githubSignature(body, secret))
+
+	rr := httptest.NewRecorder()
+	h.Routes().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if len(kr.createdPreviews) != 1 {
+		t.Fatalf("expected 1 PE, got %d", len(kr.createdPreviews))
+	}
+	pe := kr.createdPreviews[0]
+	if pe.Spec.Replicas == nil || *pe.Spec.Replicas != 2 {
+		t.Errorf("replicas not inherited from staging: %v", pe.Spec.Replicas)
+	}
+	if pe.Spec.Resources.CPU != "250m" || pe.Spec.Resources.Memory != "128Mi" {
+		t.Errorf("resources not inherited from staging: %+v", pe.Spec.Resources)
+	}
+	if len(pe.Spec.Env) != 1 || pe.Spec.Env[0].Name != "LOG_LEVEL" {
+		t.Errorf("env not inherited from staging: %+v", pe.Spec.Env)
+	}
+	if len(pe.Spec.Bindings) != 1 || pe.Spec.Bindings[0].Ref != "my-db" {
+		t.Errorf("bindings not inherited from staging: %+v", pe.Spec.Bindings)
+	}
+}
+
+func TestPREvent_PreviewResourcesOverride(t *testing.T) {
+	const secret = "prsecret"
+	const providerName = "github-main"
+
+	body := githubPRPayloadJSON("opened", 3, "br", "sha3", "org/repo")
+
+	replicas := int32(2)
+	app, proj := makePreviewGitApp("svc", "project-default", "https://github.com/org/repo", "main", "pr-{number}.example.com", "12h")
+	app.Spec.Environments = []mortisev1alpha1.Environment{
+		{
+			Name:      "staging",
+			Replicas:  &replicas,
+			Resources: mortisev1alpha1.ResourceRequirements{CPU: "500m", Memory: "256Mi"},
+		},
+	}
+	// Preview-level resource override (set on the Project's preview config).
+	proj.Spec.Preview.Resources = mortisev1alpha1.ResourceRequirements{CPU: "100m", Memory: "64Mi"}
+
+	gp := makeGitProvider(mortisev1alpha1.GitProviderTypeGitHub, "mortise-system", "wh-secret", "value")
+	kr := &fakeK8sReader{
+		provider: gp,
+		secrets:  map[string]string{"mortise-system/wh-secret/value": secret},
+		apps:     []mortisev1alpha1.App{app},
+		projects: map[string]*mortisev1alpha1.Project{"default": proj},
+	}
+	h := New(kr)
+
+	req := httptest.NewRequest(http.MethodPost, "/"+providerName, bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-GitHub-Event", "pull_request")
+	req.Header.Set("X-Hub-Signature-256", githubSignature(body, secret))
+
+	rr := httptest.NewRecorder()
+	h.Routes().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if len(kr.createdPreviews) != 1 {
+		t.Fatalf("expected 1 PE, got %d", len(kr.createdPreviews))
+	}
+	pe := kr.createdPreviews[0]
+	if pe.Spec.Resources.CPU != "100m" || pe.Spec.Resources.Memory != "64Mi" {
+		t.Errorf("expected preview resources override to win, got %+v", pe.Spec.Resources)
+	}
+	if pe.Spec.TTL.Duration.Hours() != 12 {
+		t.Errorf("ttl override mismatch: %v", pe.Spec.TTL.Duration)
+	}
+}
+
+func TestGitHubPREvent_Synchronize_UpdatesExistingPE(t *testing.T) {
+	const secret = "prsecret"
+	const providerName = "github-main"
+
+	body := githubPRPayloadJSON("synchronize", 42, "feature/x", "newsha", "org/repo")
+
+	gp := makeGitProvider(mortisev1alpha1.GitProviderTypeGitHub, "mortise-system", "wh-secret", "value")
+	app, proj := makePreviewGitApp("my-app", "project-default", "https://github.com/org/repo", "main", "pr-{number}.example.com", "")
+	existing := mortisev1alpha1.PreviewEnvironment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "my-app-preview-pr-42",
+			Namespace: "project-default",
+		},
+		Spec: mortisev1alpha1.PreviewEnvironmentSpec{
+			AppRef: "my-app",
+			PullRequest: mortisev1alpha1.PullRequestRef{
+				Number: 42,
+				Branch: "feature/x",
+				SHA:    "oldsha",
+			},
+		},
+	}
+	kr := &fakeK8sReader{
+		provider:    gp,
+		secrets:     map[string]string{"mortise-system/wh-secret/value": secret},
+		apps:        []mortisev1alpha1.App{app},
+		projects:    map[string]*mortisev1alpha1.Project{"default": proj},
+		previewEnvs: []mortisev1alpha1.PreviewEnvironment{existing},
+	}
+	h := New(kr)
+
+	req := httptest.NewRequest(http.MethodPost, "/"+providerName, bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-GitHub-Event", "pull_request")
+	req.Header.Set("X-Hub-Signature-256", githubSignature(body, secret))
+
+	rr := httptest.NewRecorder()
+	h.Routes().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if len(kr.createdPreviews) != 0 {
+		t.Errorf("expected no PE created on synchronize, got %d", len(kr.createdPreviews))
+	}
+	if len(kr.updatedPreviews) != 1 {
+		t.Fatalf("expected 1 PE updated, got %d", len(kr.updatedPreviews))
+	}
+	if got := kr.updatedPreviews[0].Spec.PullRequest.SHA; got != "newsha" {
+		t.Errorf("expected SHA updated to newsha, got %q", got)
+	}
+}
+
+func TestGitHubPREvent_Synchronize_NoExistingPE_Creates(t *testing.T) {
+	const secret = "prsecret"
+	const providerName = "github-main"
+
+	body := githubPRPayloadJSON("synchronize", 42, "feature/x", "sync-sha", "org/repo")
+
+	gp := makeGitProvider(mortisev1alpha1.GitProviderTypeGitHub, "mortise-system", "wh-secret", "value")
+	app, proj := makePreviewGitApp("my-app", "project-default", "https://github.com/org/repo", "main", "pr-{number}.example.com", "")
+	kr := &fakeK8sReader{
+		provider: gp,
+		secrets:  map[string]string{"mortise-system/wh-secret/value": secret},
+		apps:     []mortisev1alpha1.App{app},
+		projects: map[string]*mortisev1alpha1.Project{"default": proj},
+		// No existing PE.
+	}
+	h := New(kr)
+
+	req := httptest.NewRequest(http.MethodPost, "/"+providerName, bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-GitHub-Event", "pull_request")
+	req.Header.Set("X-Hub-Signature-256", githubSignature(body, secret))
+
+	rr := httptest.NewRecorder()
+	h.Routes().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if len(kr.createdPreviews) != 1 {
+		t.Fatalf("expected 1 PE created (idempotent sync), got %d", len(kr.createdPreviews))
+	}
+	if got := kr.createdPreviews[0].Spec.PullRequest.SHA; got != "sync-sha" {
+		t.Errorf("expected SHA sync-sha, got %q", got)
+	}
+}
+
+func TestGitHubPREvent_Closed_DeletesPE(t *testing.T) {
+	const secret = "prsecret"
+	const providerName = "github-main"
+
+	body := githubPRPayloadJSON("closed", 42, "feature/x", "anysha", "org/repo")
+
+	gp := makeGitProvider(mortisev1alpha1.GitProviderTypeGitHub, "mortise-system", "wh-secret", "value")
+	app, proj := makePreviewGitApp("my-app", "project-default", "https://github.com/org/repo", "main", "pr-{number}.example.com", "")
+	existing := mortisev1alpha1.PreviewEnvironment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "my-app-preview-pr-42",
+			Namespace: "project-default",
+		},
+	}
+	kr := &fakeK8sReader{
+		provider:    gp,
+		secrets:     map[string]string{"mortise-system/wh-secret/value": secret},
+		apps:        []mortisev1alpha1.App{app},
+		projects:    map[string]*mortisev1alpha1.Project{"default": proj},
+		previewEnvs: []mortisev1alpha1.PreviewEnvironment{existing},
+	}
+	h := New(kr)
+
+	req := httptest.NewRequest(http.MethodPost, "/"+providerName, bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-GitHub-Event", "pull_request")
+	req.Header.Set("X-Hub-Signature-256", githubSignature(body, secret))
+
+	rr := httptest.NewRecorder()
+	h.Routes().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if len(kr.deletedPreviews) != 1 {
+		t.Fatalf("expected 1 PE deleted, got %d", len(kr.deletedPreviews))
+	}
+	if kr.deletedPreviews[0].Name != "my-app-preview-pr-42" {
+		t.Errorf("wrong PE deleted: %q", kr.deletedPreviews[0].Name)
+	}
+}
+
+func TestGiteaPREvent_Closed_DeletesPE(t *testing.T) {
+	const secret = "giteaprsecret"
+	const providerName = "gitea-homelab"
+
+	body := githubPRPayloadJSON("closed", 9, "br", "sha", "user/myrepo")
+
+	gp := makeGitProvider(mortisev1alpha1.GitProviderTypeGitea, "mortise-system", "wh-secret", "value")
+	gp.Spec.Host = "https://gitea.example.com"
+	app, proj := makePreviewGitApp("myrepo-app", "project-gitea", "https://gitea.example.com/user/myrepo", "main", "pr-{number}.example.com", "")
+	existing := mortisev1alpha1.PreviewEnvironment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "myrepo-app-preview-pr-9",
+			Namespace: "project-gitea",
+		},
+	}
+	kr := &fakeK8sReader{
+		provider:    gp,
+		secrets:     map[string]string{"mortise-system/wh-secret/value": secret},
+		apps:        []mortisev1alpha1.App{app},
+		projects:    map[string]*mortisev1alpha1.Project{"gitea": proj},
+		previewEnvs: []mortisev1alpha1.PreviewEnvironment{existing},
+	}
+	h := New(kr)
+
+	req := httptest.NewRequest(http.MethodPost, "/"+providerName, bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Gitea-Event", "pull_request")
+	req.Header.Set("X-Gitea-Signature", giteaSignature(body, secret))
+
+	rr := httptest.NewRecorder()
+	h.Routes().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if len(kr.deletedPreviews) != 1 {
+		t.Fatalf("expected 1 PE deleted, got %d", len(kr.deletedPreviews))
+	}
+}
+
+func TestGitLabPREvent_Closed_DeletesPE(t *testing.T) {
+	const secret = "gitlabprsecret"
+	const providerName = "gitlab-com"
+
+	tests := []struct {
+		name   string
+		action string
+		state  string
+	}{
+		{name: "close action", action: "close", state: "closed"},
+		{name: "merge action", action: "merge", state: "merged"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			body := gitlabMRPayloadJSON(tc.action, tc.state, 17, "br", "sha17", "ns/project")
+
+			gp := makeGitProvider(mortisev1alpha1.GitProviderTypeGitLab, "mortise-system", "wh-secret", "value")
+			gp.Spec.Host = "https://gitlab.com"
+			app, proj := makePreviewGitApp("gl-app", "project-gl", "https://gitlab.com/ns/project", "main", "pr-{number}.example.com", "")
+			existing := mortisev1alpha1.PreviewEnvironment{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "gl-app-preview-pr-17",
+					Namespace: "project-gl",
+				},
+			}
+			kr := &fakeK8sReader{
+				provider:    gp,
+				secrets:     map[string]string{"mortise-system/wh-secret/value": secret},
+				apps:        []mortisev1alpha1.App{app},
+				projects:    map[string]*mortisev1alpha1.Project{"gl": proj},
+				previewEnvs: []mortisev1alpha1.PreviewEnvironment{existing},
+			}
+			h := New(kr)
+
+			req := httptest.NewRequest(http.MethodPost, "/"+providerName, bytes.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("X-Gitlab-Event", "Merge Request Hook")
+			req.Header.Set("X-Gitlab-Token", secret)
+
+			rr := httptest.NewRecorder()
+			h.Routes().ServeHTTP(rr, req)
+
+			if rr.Code != http.StatusAccepted {
+				t.Fatalf("expected 202, got %d: %s", rr.Code, rr.Body.String())
+			}
+			if len(kr.deletedPreviews) != 1 {
+				t.Fatalf("expected 1 PE deleted, got %d", len(kr.deletedPreviews))
+			}
+		})
+	}
+}
+
+func TestPREvent_Closed_NoExistingPE_Idempotent(t *testing.T) {
+	const secret = "prsecret"
+	const providerName = "github-main"
+
+	body := githubPRPayloadJSON("closed", 42, "br", "sha", "org/repo")
+
+	gp := makeGitProvider(mortisev1alpha1.GitProviderTypeGitHub, "mortise-system", "wh-secret", "value")
+	app, proj := makePreviewGitApp("my-app", "project-default", "https://github.com/org/repo", "main", "pr-{number}.example.com", "")
+	kr := &fakeK8sReader{
+		provider: gp,
+		secrets:  map[string]string{"mortise-system/wh-secret/value": secret},
+		apps:     []mortisev1alpha1.App{app},
+		projects: map[string]*mortisev1alpha1.Project{"default": proj},
+		// No existing PE.
+	}
+	h := New(kr)
+
+	req := httptest.NewRequest(http.MethodPost, "/"+providerName, bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-GitHub-Event", "pull_request")
+	req.Header.Set("X-Hub-Signature-256", githubSignature(body, secret))
+
+	rr := httptest.NewRecorder()
+	h.Routes().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if len(kr.deletedPreviews) != 0 {
+		t.Errorf("expected no PE deleted (none existed), got %d", len(kr.deletedPreviews))
+	}
+	if len(kr.createdPreviews) != 0 {
+		t.Errorf("expected no PE created on close, got %d", len(kr.createdPreviews))
+	}
+}
+
+func TestGitHubPREvent_InvalidSignature_Unauthorized(t *testing.T) {
+	const secret = "prsecret"
+	const providerName = "github-main"
+
+	body := githubPRPayloadJSON("opened", 1, "br", "sha", "org/repo")
+
+	gp := makeGitProvider(mortisev1alpha1.GitProviderTypeGitHub, "mortise-system", "wh-secret", "value")
+	app, proj := makePreviewGitApp("my-app", "project-default", "https://github.com/org/repo", "main", "pr-{number}.example.com", "")
+	kr := &fakeK8sReader{
+		provider: gp,
+		secrets:  map[string]string{"mortise-system/wh-secret/value": secret},
+		apps:     []mortisev1alpha1.App{app},
+		projects: map[string]*mortisev1alpha1.Project{"default": proj},
+	}
+	h := New(kr)
+
+	req := httptest.NewRequest(http.MethodPost, "/"+providerName, bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-GitHub-Event", "pull_request")
+	req.Header.Set("X-Hub-Signature-256", "sha256=bogus")
+
+	rr := httptest.NewRecorder()
+	h.Routes().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", rr.Code)
+	}
+	if len(kr.createdPreviews) != 0 {
+		t.Errorf("expected no PE created on invalid signature, got %d", len(kr.createdPreviews))
+	}
+}
+
+func TestGiteaPREvent_InvalidSignature_Unauthorized(t *testing.T) {
+	const secret = "prsecret"
+	const providerName = "gitea-homelab"
+
+	body := githubPRPayloadJSON("opened", 1, "br", "sha", "user/myrepo")
+
+	gp := makeGitProvider(mortisev1alpha1.GitProviderTypeGitea, "mortise-system", "wh-secret", "value")
+	gp.Spec.Host = "https://gitea.example.com"
+	app, proj := makePreviewGitApp("myrepo-app", "project-gitea", "https://gitea.example.com/user/myrepo", "main", "pr-{number}.example.com", "")
+	kr := &fakeK8sReader{
+		provider: gp,
+		secrets:  map[string]string{"mortise-system/wh-secret/value": secret},
+		apps:     []mortisev1alpha1.App{app},
+		projects: map[string]*mortisev1alpha1.Project{"gitea": proj},
+	}
+	h := New(kr)
+
+	req := httptest.NewRequest(http.MethodPost, "/"+providerName, bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Gitea-Event", "pull_request")
+	req.Header.Set("X-Gitea-Signature", "not-a-real-hmac")
+
+	rr := httptest.NewRecorder()
+	h.Routes().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", rr.Code)
+	}
+	if len(kr.createdPreviews) != 0 {
+		t.Errorf("expected no PE created on invalid signature, got %d", len(kr.createdPreviews))
+	}
+}
+
+func TestGitLabPREvent_InvalidToken_Unauthorized(t *testing.T) {
+	const secret = "gitlabprsecret"
+	const providerName = "gitlab-com"
+
+	body := gitlabMRPayloadJSON("open", "opened", 1, "br", "sha", "ns/project")
+
+	gp := makeGitProvider(mortisev1alpha1.GitProviderTypeGitLab, "mortise-system", "wh-secret", "value")
+	gp.Spec.Host = "https://gitlab.com"
+	app, proj := makePreviewGitApp("gl-app", "project-gl", "https://gitlab.com/ns/project", "main", "pr-{number}.example.com", "")
+	kr := &fakeK8sReader{
+		provider: gp,
+		secrets:  map[string]string{"mortise-system/wh-secret/value": secret},
+		apps:     []mortisev1alpha1.App{app},
+		projects: map[string]*mortisev1alpha1.Project{"gl": proj},
+	}
+	h := New(kr)
+
+	req := httptest.NewRequest(http.MethodPost, "/"+providerName, bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Gitlab-Event", "Merge Request Hook")
+	req.Header.Set("X-Gitlab-Token", "wrong-token")
+
+	rr := httptest.NewRecorder()
+	h.Routes().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", rr.Code)
+	}
+	if len(kr.createdPreviews) != 0 {
+		t.Errorf("expected no PE created on invalid token, got %d", len(kr.createdPreviews))
+	}
+}
+
+func TestPREvent_NoMatchingRepo_NoPECreated(t *testing.T) {
+	const secret = "prsecret"
+	const providerName = "github-main"
+
+	body := githubPRPayloadJSON("opened", 1, "br", "sha", "org/unrelated")
+
+	gp := makeGitProvider(mortisev1alpha1.GitProviderTypeGitHub, "mortise-system", "wh-secret", "value")
+	app, proj := makePreviewGitApp("my-app", "project-default", "https://github.com/org/repo", "main", "pr-{number}.example.com", "")
+	kr := &fakeK8sReader{
+		provider: gp,
+		secrets:  map[string]string{"mortise-system/wh-secret/value": secret},
+		apps:     []mortisev1alpha1.App{app},
+		projects: map[string]*mortisev1alpha1.Project{"default": proj},
+	}
+	h := New(kr)
+
+	req := httptest.NewRequest(http.MethodPost, "/"+providerName, bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-GitHub-Event", "pull_request")
+	req.Header.Set("X-Hub-Signature-256", githubSignature(body, secret))
+
+	rr := httptest.NewRecorder()
+	h.Routes().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if len(kr.createdPreviews) != 0 {
+		t.Errorf("expected no PE created for non-matching repo, got %d", len(kr.createdPreviews))
 	}
 }
 
