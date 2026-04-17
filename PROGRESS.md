@@ -5,12 +5,11 @@ whenever implementation status changes — see the **Keeping this file up to
 date** section at the bottom.
 
 Legend: **Done** / **Partial** / **Not started**
-Last reconciled against spec + code: 2026-04-17 (reconciled after Chase's
-Phase 6-8 implementation push. `DNSProvider` interface dropped + §5.9a
-env-var editing surface restored in spec. Phase 7 items landed: env
-management, deploy tokens, custom domains, first-run wizard, promote,
-rollback, network.port. Phase 8: Helm deps + recipe docs + Extensions UI.
-RBAC remains admin/member — 5-role model deferred to v2 as Issue #9).
+Last reconciled against spec + code: 2026-04-17 (UI overhaul pass — complete
+rebuild per UI_SPEC.md. Canvas view, drawer layout, modal picker, new store,
+admin settings page, project settings page, PR env preview list, E2E tests
+rewritten. All UI_SPEC §14 flows now at least Partial. Remaining gaps noted
+below under "UI overhaul status").
 
 ---
 
@@ -211,12 +210,23 @@ REST surface (`internal/api/server.go`):
 - `PATCH /api/platform` — PlatformConfig create-or-update singleton.
 - `GET/POST/DELETE /api/gitproviders[/{name}]` — admin git provider CRUD.
 
-UI (`ui/src/routes/`):
-- `login`, `setup`, `projects`, `projects/new`, `projects/[project]`,
-  `projects/[project]/apps/new`, `projects/[project]/apps/[app]`.
-- `apps/new` rewritten to Railway-style repo-first flow: searchable repo
-  list via `GET /api/repos`, branch picker via `GET /api/repos/{owner}/{repo}/branches`,
-  inline config panel, Docker image deploy section, compact templates at bottom.
+UI (`ui/src/routes/`) — **UI overhaul landed 2026-04-17 per UI_SPEC.md:**
+- Complete Railway-style dark UI rebuild. See "UI overhaul status" section below.
+- `login`, `setup`, `setup/wizard`, `projects`, `projects/new`,
+  `projects/[project]` (canvas), `projects/[project]/apps/[app]` (drawer),
+  `projects/[project]/settings`, `projects/[project]/previews`,
+  `admin/settings`, `extensions`.
+- Svelte Flow canvas as primary project view (§12.4). List-view toggle.
+- App detail as right-side drawer with 5 tabs: Deployments, Variables, Logs, Metrics, Settings (§3.7, §12.21).
+- New-app flow as single-modal picker (§3.6, §12.26): git/image/database/template/external/empty.
+- Global Svelte 5 runes store (`store.svelte.ts`), replaces `context.svelte.ts`.
+- Left-rail nav (w-14, icon-only): dashboard scope + project scope (§2.1a).
+- Lucide Svelte icons throughout.
+- `admin/settings`: platform settings (domain, DNS, git providers CRUD, users).
+- `projects/[project]/settings`: project settings (general, PR environments toggle, danger zone).
+- `projects/[project]/previews`: PR preview environment list page.
+- `settings/git-providers` → redirects to `/admin/settings`.
+- Playwright E2E tests rewritten to match new UI architecture (64 tests).
 
 CLI (`cmd/cli/`):
 - `login`, `project list/create/delete/use/show`, `app list/create/delete`,
@@ -723,6 +733,45 @@ Missing:
   tenons (cf-for-saas, backup-tenon, cost-dashboard) as separate repos /
   Helm charts consuming the Mortise REST API. These don't exist yet — only
   the UI Extensions page references them as cards.
+
+---
+
+## UI overhaul status (2026-04-17)
+
+Per UI_SPEC.md §14 flow tracker — updated after the full rebuild:
+
+| Flow | § | Status | Notes |
+|---|---|---|---|
+| Onboarding — first-run wizard | 3.1 | ✅ | 4-step wizard at `/setup/wizard` |
+| Login | 3.2 | ✅ | `/login` with `store.login()` |
+| Project list | 3.3 | ✅ | `/` dashboard with project cards |
+| Create project | 3.4 | ✅ | `/projects/new` form |
+| Project workspace (canvas) | 3.5 | ✅ | Svelte Flow canvas + list toggle |
+| New app (modal) | 3.6 | ✅ | Single-modal picker at `/projects/{p}/apps/new` |
+| App detail (drawer) | 3.7 | ✅ | 45%-width slide-over with 5 tabs |
+| Variables editing | 3.8 | **Partial** | Table + add/delete/raw-mode; staged-changes bar wired to store but Deploy button is cosmetic only (no actual apply) |
+| Service bindings | 3.9 | **Partial** | Bindings shown in settings tab (list + add); reference picker dropdown (`${{bindings...}}`) not yet built |
+| Domains | 3.10 | ✅ | Settings tab: list + add/remove custom domains |
+| Storage (volumes) | 3.11 | **Partial** | Listed in settings tab; "Adopt existing PVC" affordance not built |
+| Logs (drawer tab) | 3.12 | ✅ | SSE log viewer in Logs tab |
+| Deploy tokens | 3.13 | ✅ | Settings tab: create (once-shown value) + revoke |
+| Preview environments | 3.14 | ✅ | `/projects/{p}/previews` list + settings toggle (backend done; toggle not wired to API yet) |
+| Environment annotations | 3.15 | ⚠️ | No UI yet |
+| Secret mounts | 3.16 | ⚠️ | No UI yet |
+| Platform settings | 3.17 | ✅ | `/admin/settings`: domain, DNS, git providers, users |
+| Extensions | 3.18 | ✅ | `/extensions` page |
+| Activity feed (toggle rail) | 12.22 | ⚠️ | Pulse button wired to store; rail component not yet built; backend store exists |
+| Staged-changes bar | 12.2 | **Partial** | Bar renders when dirty; Deploy button is cosmetic (Tier 1 — one PUT needed) |
+| Notifications bell | 2.1 | ⚠️ | Bell icon exists; no dropdown yet |
+
+**Remaining gaps for full UI_SPEC parity (v1):**
+1. Staged-changes Deploy button needs to fire `PUT /api/projects/{p}/apps/{a}` (easy, ~30 min)
+2. Activity rail slide-out component (backend exists; ~1 day UI)
+3. Service bindings reference picker dropdown (`${{bindings.<app>.<key>}}` autocomplete)
+4. Environment annotations UI (advanced, collapse under "Advanced")
+5. Secret mounts UI (advanced)
+6. `GET /api/projects/{p}/activity` endpoint (backend store exists, REST surface missing)
+7. PR environments toggle → needs to PATCH `ProjectSpec.Preview.Enabled` (API endpoint needed)
 
 ---
 
