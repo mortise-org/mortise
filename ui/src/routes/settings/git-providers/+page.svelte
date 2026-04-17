@@ -14,7 +14,7 @@
 	let loading = $state(true);
 	let error = $state('');
 
-	// Create-form state.
+	// Create-form state (OAuth manual form).
 	let showForm = $state(false);
 	let formName = $state('');
 	let formType = $state<GitProviderType>('github');
@@ -27,6 +27,10 @@
 	// Tracks whether the user has manually edited host so we don't clobber their value.
 	let hostDirty = $state(false);
 
+	// GitHub App flow state.
+	let creatingGitHubApp = $state(false);
+	let githubAppError = $state('');
+
 	const DEFAULT_HOSTS: Record<GitProviderType, string> = {
 		github: 'https://github.com',
 		gitlab: 'https://gitlab.com',
@@ -36,6 +40,12 @@
 	// Show a success banner when ?connected=<name> is present (set by the
 	// OAuth callback redirect).
 	const connectedName = $derived(page.url.searchParams.get('connected'));
+	const githubAppCreated = $derived(page.url.searchParams.get('github-app-created') === 'true');
+	const githubAppInstalled = $derived(page.url.searchParams.get('github-app-installed') === 'true');
+
+	// Derived: does a github-app provider already exist?
+	const githubAppProvider = $derived(providers.find((p) => p.mode === 'github-app'));
+	const hasGitHubProvider = $derived(providers.some((p) => p.type === 'github'));
 
 	onMount(async () => {
 		if (!localStorage.getItem('token')) {
@@ -122,6 +132,28 @@
 		}
 	}
 
+	async function createGitHubApp() {
+		creatingGitHubApp = true;
+		githubAppError = '';
+		try {
+			const resp = await api.githubAppManifest();
+			// Create a hidden form and POST the manifest to GitHub.
+			const form = document.createElement('form');
+			form.method = 'POST';
+			form.action = resp.redirectUrl;
+			const input = document.createElement('input');
+			input.type = 'hidden';
+			input.name = 'manifest';
+			input.value = JSON.stringify(resp.manifest);
+			form.appendChild(input);
+			document.body.appendChild(form);
+			form.submit();
+		} catch (err) {
+			githubAppError = err instanceof Error ? err.message : 'Failed to start GitHub App creation';
+			creatingGitHubApp = false;
+		}
+	}
+
 	const phaseStyles: Record<GitProviderPhase, { dot: string; text: string }> = {
 		Ready: { dot: 'bg-success', text: 'text-success' },
 		Pending: { dot: 'bg-warning', text: 'text-warning' },
@@ -169,16 +201,39 @@
 			</div>
 		</div>
 
-		<!-- Success banner from OAuth callback redirect -->
+		<!-- Success banners -->
 		{#if connectedName}
 			<div class="mb-4 rounded-md bg-success/10 px-4 py-3 text-sm text-success">
 				<strong>{connectedName}</strong> connected successfully.
 			</div>
 		{/if}
+		{#if githubAppCreated}
+			<div class="mb-4 rounded-md bg-success/10 px-4 py-3 text-sm text-success">
+				GitHub App created successfully. Install it on your repos to start deploying.
+				{#if githubAppProvider?.githubAppSlug}
+					<a
+						href="https://github.com/apps/{githubAppProvider.githubAppSlug}/installations/new"
+						target="_blank"
+						rel="noopener noreferrer"
+						class="ml-1 font-medium underline"
+					>
+						Install on repos
+					</a>
+				{/if}
+			</div>
+		{/if}
+		{#if githubAppInstalled}
+			<div class="mb-4 rounded-md bg-success/10 px-4 py-3 text-sm text-success">
+				GitHub App installed on your repos.
+			</div>
+		{/if}
 
-		<!-- Error banner -->
+		<!-- Error banners -->
 		{#if error}
 			<div class="mb-4 rounded-md bg-danger/10 px-4 py-3 text-sm text-danger">{error}</div>
+		{/if}
+		{#if githubAppError}
+			<div class="mb-4 rounded-md bg-danger/10 px-4 py-3 text-sm text-danger">{githubAppError}</div>
 		{/if}
 
 		{#if showForm}
@@ -327,41 +382,42 @@
 		{/if}
 
 		{#if providers.length === 0 && !error && !showForm}
-			<!-- Empty state -->
-			<div
-				class="rounded-lg border border-dashed border-surface-600 bg-surface-800/60 p-12 text-center"
-			>
-				<div
-					class="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-surface-700 text-accent"
-					aria-hidden="true"
-				>
-					<svg
-						xmlns="http://www.w3.org/2000/svg"
-						fill="none"
-						viewBox="0 0 24 24"
-						stroke-width="1.5"
-						stroke="currentColor"
-						class="h-7 w-7"
+			<!-- Empty state: two-option layout -->
+			<div class="space-y-4">
+				<!-- Recommended: GitHub App -->
+				{#if !hasGitHubProvider}
+					<div class="rounded-lg border border-accent/30 bg-surface-800/60 p-6">
+						<div class="mb-1 text-xs font-medium uppercase tracking-wide text-accent">Recommended</div>
+						<h2 class="text-base font-medium text-white">Create a GitHub App (2 clicks)</h2>
+						<p class="mt-1 text-sm text-gray-500">
+							Mortise generates the app for you. Granular permissions, per-repo access.
+						</p>
+						<button
+							type="button"
+							onclick={createGitHubApp}
+							disabled={creatingGitHubApp}
+							class="mt-4 rounded-md bg-accent px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-accent-hover disabled:opacity-50"
+						>
+							{creatingGitHubApp ? 'Redirecting to GitHub...' : 'Create GitHub App'}
+						</button>
+					</div>
+				{/if}
+
+				<!-- Advanced: OAuth manual form -->
+				<div class="rounded-lg border border-surface-600 bg-surface-800/60 p-6">
+					<div class="mb-1 text-xs font-medium uppercase tracking-wide text-gray-500">Advanced</div>
+					<h2 class="text-base font-medium text-white">Use an existing OAuth App</h2>
+					<p class="mt-1 text-sm text-gray-500">
+						Paste client ID + secret from your own OAuth app on GitHub, GitLab, or Gitea.
+					</p>
+					<button
+						type="button"
+						onclick={openForm}
+						class="mt-4 rounded-md border border-surface-600 px-4 py-2 text-sm text-gray-400 transition-colors hover:bg-surface-700 hover:text-white"
 					>
-						<path
-							stroke-linecap="round"
-							stroke-linejoin="round"
-							d="M17.25 6.75L22.5 12l-5.25 5.25m-10.5 0L1.5 12l5.25-5.25m7.5-3l-4.5 16.5"
-						/>
-					</svg>
+						Show form
+					</button>
 				</div>
-				<h2 class="text-base font-medium text-white">No git providers configured</h2>
-				<p class="mx-auto mt-2 max-w-sm text-sm text-gray-500">
-					Register a git forge with its OAuth app credentials so Mortise can clone repositories
-					and receive webhook events.
-				</p>
-				<button
-					type="button"
-					onclick={openForm}
-					class="mt-5 rounded-md bg-accent px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-accent-hover"
-				>
-					Create git provider
-				</button>
 			</div>
 		{:else if !error && providers.length > 0}
 			<!-- Provider table -->
@@ -401,7 +457,19 @@
 									{/if}
 								</td>
 								<td class="px-4 py-3">
-									{#if provider.hasToken}
+									{#if provider.mode === 'github-app'}
+										{#if provider.githubAppInstallationID}
+											<span class="inline-flex items-center gap-1.5 text-xs font-medium text-success">
+												<span class="h-1.5 w-1.5 rounded-full bg-success"></span>
+												Installed
+											</span>
+										{:else}
+											<span class="inline-flex items-center gap-1.5 text-xs font-medium text-warning">
+												<span class="h-1.5 w-1.5 rounded-full bg-warning"></span>
+												App created
+											</span>
+										{/if}
+									{:else if provider.hasToken}
 										<span
 											class="inline-flex items-center gap-1.5 text-xs font-medium text-success"
 										>
@@ -413,16 +481,29 @@
 									{/if}
 								</td>
 								<td class="px-4 py-3">
-									<!--
-										Full-page navigation (not fetch) — the OAuth authorize endpoint
-										issues a browser-level redirect to the forge consent page.
-									-->
-									<a
-										href="/api/oauth/{provider.name}/authorize"
-										class="inline-flex items-center rounded-md border border-accent/50 px-3 py-1 text-xs font-medium text-accent transition-colors hover:bg-accent/10"
-									>
-										{provider.hasToken ? 'Reconnect' : 'Connect'}
-									</a>
+									{#if provider.mode === 'github-app'}
+										{#if provider.githubAppSlug}
+											<a
+												href="https://github.com/apps/{provider.githubAppSlug}/installations/new"
+												target="_blank"
+												rel="noopener noreferrer"
+												class="inline-flex items-center rounded-md border border-accent/50 px-3 py-1 text-xs font-medium text-accent transition-colors hover:bg-accent/10"
+											>
+												{provider.githubAppInstallationID ? 'Manage installs' : 'Install on repos'}
+											</a>
+										{/if}
+									{:else}
+										<!--
+											Full-page navigation (not fetch) — the OAuth authorize endpoint
+											issues a browser-level redirect to the forge consent page.
+										-->
+										<a
+											href="/api/oauth/{provider.name}/authorize"
+											class="inline-flex items-center rounded-md border border-accent/50 px-3 py-1 text-xs font-medium text-accent transition-colors hover:bg-accent/10"
+										>
+											{provider.hasToken ? 'Reconnect' : 'Connect'}
+										</a>
+									{/if}
 								</td>
 								<td class="px-4 py-3">
 									<button

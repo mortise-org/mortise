@@ -129,12 +129,23 @@ export interface Project {
 export type GitProviderType = 'github' | 'gitlab' | 'gitea';
 export type GitProviderPhase = 'Pending' | 'Ready' | 'Failed';
 
+export type GitProviderMode = 'oauth' | 'github-app';
+
 export interface GitProviderSummary {
 	name: string;
 	type: GitProviderType;
 	host: string;
+	mode: GitProviderMode;
 	phase: GitProviderPhase;
 	hasToken: boolean;
+	githubAppSlug?: string;
+	githubAppInstallationID?: number;
+}
+
+export interface GitHubAppManifestResponse {
+	redirectUrl: string;
+	manifest: Record<string, unknown>;
+	state: string;
 }
 
 export interface CreateGitProviderRequest {
@@ -159,4 +170,17 @@ export interface Repository {
 export interface Branch {
 	name: string;
 	default: boolean;
+}
+
+export interface DeviceCodeResponse {
+	device_code: string;
+	user_code: string;
+	verification_uri: string;
+	expires_in: number;
+	interval: number;
+}
+
+export interface DevicePollResponse {
+	status: 'pending' | 'slow_down' | 'complete' | 'expired' | 'denied' | 'error';
+	access_token?: string;
 }

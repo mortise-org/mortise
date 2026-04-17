@@ -67,12 +67,26 @@ func (s *Server) ListBranches(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, branches)
 }
 
-// gitAPIForProvider resolves a GitProvider CRD + stored OAuth token and
-// constructs the appropriate GitAPI implementation.
+// gitAPIForProvider resolves a GitProvider CRD + stored credentials and
+// constructs the appropriate GitAPI implementation. For github-app mode
+// providers, it reads the private key from the credentials secret; for
+// oauth mode it reads the stored OAuth token.
 func (s *Server) gitAPIForProvider(ctx context.Context, providerName string) (git.GitAPI, error) {
 	var gp mortisev1alpha1.GitProvider
 	if err := s.client.Get(ctx, types.NamespacedName{Name: providerName}, &gp); err != nil {
 		return nil, fmt.Errorf("get git provider %q: %w", providerName, err)
+	}
+
+	if gp.Spec.Mode == "github-app" && gp.Spec.GitHubApp != nil {
+		privateKey, webhookSecret, err := git.ResolveGitHubAppCredentials(ctx, s.client, &gp)
+		if err != nil {
+			return nil, fmt.Errorf("resolve github app credentials for %q: %w", providerName, err)
+		}
+		api, err := git.NewGitHubAppAPIFromProvider(&gp, privateKey, webhookSecret)
+		if err != nil {
+			return nil, fmt.Errorf("create github app api for %q: %w", providerName, err)
+		}
+		return api, nil
 	}
 
 	token, err := git.ResolveProviderToken(ctx, s.client, &gp)

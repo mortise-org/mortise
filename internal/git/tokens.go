@@ -31,3 +31,22 @@ func ResolveProviderToken(ctx context.Context, r client.Reader, gp *mortisev1alp
 	}
 	return string(v), nil
 }
+
+// ResolveGitHubAppCredentials reads the private key and webhook secret from
+// the credentials secret referenced by the GitProvider's githubApp config.
+func ResolveGitHubAppCredentials(ctx context.Context, r client.Reader, gp *mortisev1alpha1.GitProvider) (privateKey []byte, webhookSecret string, err error) {
+	if gp.Spec.GitHubApp == nil {
+		return nil, "", fmt.Errorf("gitProvider %q has no githubApp config", gp.Name)
+	}
+	ref := gp.Spec.GitHubApp.CredentialsSecretRef
+	var s corev1.Secret
+	if err := r.Get(ctx, types.NamespacedName{Namespace: ref.Namespace, Name: ref.Name}, &s); err != nil {
+		return nil, "", fmt.Errorf("get github app credentials secret %s/%s: %w", ref.Namespace, ref.Name, err)
+	}
+	pk, ok := s.Data["private_key"]
+	if !ok || len(pk) == 0 {
+		return nil, "", fmt.Errorf("credentials secret %s/%s has no \"private_key\" key", ref.Namespace, ref.Name)
+	}
+	ws := string(s.Data["webhook_secret"])
+	return pk, ws, nil
+}

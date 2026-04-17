@@ -1,18 +1,23 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { onMount, onDestroy } from 'svelte';
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import { api } from '$lib/api';
 	import AppForm from '$lib/AppForm.svelte';
 	import { templates, getTemplate } from '$lib/templates';
-	import type { GitProviderSummary, Repository, Branch, AppSpec } from '$lib/types';
+	import type { GitProviderSummary, Repository, Branch, AppSpec, DeviceCodeResponse } from '$lib/types';
 
 	const projectName = $derived(page.params.project ?? '');
 
 	// --- provider + repo state ---
 	let providers = $state<GitProviderSummary[]>([]);
 	let providersLoaded = $state(false);
-	const connectedProvider = $derived(providers.find((p) => p.hasToken && p.phase === 'Ready'));
+	const connectedProvider = $derived(
+		providers.find((p) => {
+			if (p.mode === 'github-app') return p.phase === 'Ready';
+			return p.hasToken && p.phase === 'Ready';
+		})
+	);
 
 	let repos = $state<Repository[]>([]);
 	let reposLoading = $state(false);
@@ -80,6 +85,68 @@
 		return `${months}mo ago`;
 	}
 
+	// --- device flow state ---
+	let deviceFlowActive = $state(false);
+	let deviceUserCode = $state('');
+	let deviceVerificationURI = $state('');
+	let deviceCode = $state('');
+	let devicePollInterval = $state(5);
+	let deviceFlowError = $state('');
+	let devicePollTimer: ReturnType<typeof setInterval> | null = null;
+
+	async function startDeviceFlow() {
+		deviceFlowActive = true;
+		deviceFlowError = '';
+		try {
+			const resp = await api.githubDeviceCode();
+			deviceUserCode = resp.user_code;
+			deviceVerificationURI = resp.verification_uri;
+			deviceCode = resp.device_code;
+			devicePollInterval = resp.interval || 5;
+			window.open(resp.verification_uri, '_blank');
+			devicePollTimer = setInterval(pollDeviceFlow, devicePollInterval * 1000);
+		} catch (err) {
+			deviceFlowError = err instanceof Error ? err.message : 'Failed to start device flow';
+			deviceFlowActive = false;
+		}
+	}
+
+	async function pollDeviceFlow() {
+		try {
+			const resp = await api.githubDevicePoll(deviceCode);
+			if (resp.status === 'complete') {
+				if (devicePollTimer) clearInterval(devicePollTimer);
+				devicePollTimer = null;
+				deviceFlowActive = false;
+				// Reload providers — the device flow auto-created the GitProvider.
+				const list = await api.listGitProviders();
+				providers = list ?? [];
+			} else if (resp.status === 'expired' || resp.status === 'denied') {
+				if (devicePollTimer) clearInterval(devicePollTimer);
+				devicePollTimer = null;
+				deviceFlowError =
+					resp.status === 'expired'
+						? 'Authorization timed out. Try again.'
+						: 'Authorization was denied.';
+				deviceFlowActive = false;
+			} else if (resp.status === 'slow_down') {
+				devicePollInterval += 5;
+				if (devicePollTimer) clearInterval(devicePollTimer);
+				devicePollTimer = setInterval(pollDeviceFlow, devicePollInterval * 1000);
+			}
+		} catch {
+			// transient — keep polling
+		}
+	}
+
+	function cancelDeviceFlow() {
+		if (devicePollTimer) clearInterval(devicePollTimer);
+		devicePollTimer = null;
+		deviceFlowActive = false;
+		deviceFlowError = '';
+		deviceUserCode = '';
+	}
+
 	// --- lifecycle ---
 	onMount(async () => {
 		try {
@@ -90,6 +157,10 @@
 		} finally {
 			providersLoaded = true;
 		}
+	});
+
+	onDestroy(() => {
+		if (devicePollTimer) clearInterval(devicePollTimer);
 	});
 
 	$effect(() => {
@@ -233,21 +304,61 @@
 					Loading providers...
 				</div>
 			{:else if !connectedProvider}
-				<!-- No provider connected -->
+				<!-- No provider connected — inline device flow -->
 				<div class="flex flex-col items-center gap-3 rounded-md border border-dashed border-surface-500 bg-surface-900/50 px-6 py-10 text-center">
-					<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="h-8 w-8 text-gray-500">
-						<path stroke-linecap="round" stroke-linejoin="round" d="M13.19 8.688a4.5 4.5 0 0 1 1.242 7.244l-4.5 4.5a4.5 4.5 0 0 1-6.364-6.364l1.757-1.757m13.35-.622 1.757-1.757a4.5 4.5 0 0 0-6.364-6.364l-4.5 4.5a4.5 4.5 0 0 0 1.242 7.244" />
-					</svg>
-					<p class="text-sm text-gray-400">Connect a git provider to deploy from a repository</p>
-					<a
-						href="/settings/git-providers"
-						class="mt-1 inline-flex items-center gap-1 rounded-md bg-accent px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-accent-hover"
-					>
-						Connect GitHub
-						<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="h-3.5 w-3.5">
-							<path stroke-linecap="round" stroke-linejoin="round" d="M13.5 4.5 21 12m0 0-7.5 7.5M21 12H3" />
+					{#if deviceFlowActive}
+						<h3 class="text-base font-medium text-white">Authorize Mortise on GitHub</h3>
+						<p class="text-sm text-gray-400">
+							Go to <a href={deviceVerificationURI} target="_blank" rel="noopener noreferrer" class="font-medium text-accent hover:underline">{deviceVerificationURI}</a> and enter:
+						</p>
+						<div class="inline-block rounded-lg border border-surface-500 bg-surface-900 px-5 py-2.5 font-mono text-xl font-bold tracking-widest text-white">
+							{deviceUserCode}
+						</div>
+						<p class="text-xs text-gray-500">Waiting for authorization...</p>
+						<button
+							type="button"
+							onclick={cancelDeviceFlow}
+							class="text-sm text-gray-400 transition-colors hover:text-white"
+						>
+							Cancel
+						</button>
+					{:else}
+						<svg viewBox="0 0 24 24" fill="currentColor" class="h-8 w-8 text-gray-500">
+							<path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/>
 						</svg>
-					</a>
+						<p class="text-sm text-gray-400">Connect GitHub to deploy from a repository</p>
+						{#if deviceFlowError}
+							<div class="w-full rounded-md bg-danger/10 px-3 py-2 text-sm text-danger">{deviceFlowError}</div>
+						{/if}
+						<button
+							type="button"
+							onclick={startDeviceFlow}
+							class="mt-1 inline-flex items-center gap-1 rounded-md bg-accent px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-accent-hover"
+						>
+							Connect GitHub
+						</button>
+						<a
+							href="/settings/git-providers"
+							class="text-xs text-gray-500 hover:text-accent"
+						>
+							Or connect GitLab / Gitea manually
+						</a>
+					{/if}
+				</div>
+			{:else if connectedProvider?.mode === 'github-app' && !connectedProvider?.githubAppInstallationID}
+				<!-- GitHub App exists but not installed on repos -->
+				<div class="flex flex-col items-center gap-3 rounded-md border border-dashed border-surface-500 bg-surface-900/50 px-6 py-10 text-center">
+					<p class="text-sm text-gray-400">Install the GitHub App on your repos first</p>
+					{#if connectedProvider.githubAppSlug}
+						<a
+							href="https://github.com/apps/{connectedProvider.githubAppSlug}/installations/new"
+							target="_blank"
+							rel="noopener noreferrer"
+							class="inline-flex items-center gap-1 rounded-md bg-accent px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-accent-hover"
+						>
+							Install on repos
+						</a>
+					{/if}
 				</div>
 			{:else if selectedRepo}
 				<!-- Repo config panel -->

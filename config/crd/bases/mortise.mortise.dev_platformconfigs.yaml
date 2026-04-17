@@ -127,6 +127,18 @@ spec:
                   Domain is the base domain for the platform. Apps receive subdomains under
                   this domain automatically (e.g. yourdomain.com → app.yourdomain.com).
                 type: string
+              github:
+                description: |-
+                  GitHub holds optional overrides for the project-maintained GitHub App.
+                  Admins who want to use their own GitHub OAuth App can specify the client
+                  ID here; otherwise the device flow uses the built-in default.
+                properties:
+                  clientID:
+                    description: |-
+                      ClientID is the OAuth client ID for a self-hosted GitHub App.
+                      When set, the device flow uses this instead of the project-maintained default.
+                    type: string
+                type: object
               registry:
                 description: Registry configures the OCI registry used to store built
                   App images.

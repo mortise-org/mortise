@@ -16,13 +16,15 @@ import (
 
 // Server is the REST API server that translates HTTP requests into CRD operations.
 type Server struct {
-	client    client.Client
-	clientset kubernetes.Interface
-	auth      auth.AuthProvider
-	jwt       *auth.JWTHelper
-	ui        fs.FS
-	webhook   *webhook.Handler
-	oauth     *OAuthHandler
+	client     client.Client
+	clientset  kubernetes.Interface
+	auth       auth.AuthProvider
+	jwt        *auth.JWTHelper
+	ui         fs.FS
+	webhook    *webhook.Handler
+	oauth      *OAuthHandler
+	deviceFlow *DeviceFlowHandler
+	githubApp  *GitHubAppHandler
 }
 
 // NewServer creates a new API server.
@@ -31,14 +33,18 @@ func NewServer(c client.Client, cs kubernetes.Interface, authProvider auth.AuthP
 	kr := webhook.NewK8sReader(c)
 	wh := webhook.New(kr)
 	oh := newOAuthHandler(c)
+	df := newDeviceFlowHandler(c)
+	ga := newGitHubAppHandler(c)
 	return &Server{
-		client:    c,
-		clientset: cs,
-		auth:      authProvider,
-		jwt:       jwt,
-		ui:        ui,
-		webhook:   wh,
-		oauth:     oh,
+		client:     c,
+		clientset:  cs,
+		auth:       authProvider,
+		jwt:        jwt,
+		ui:         ui,
+		webhook:    wh,
+		oauth:      oh,
+		deviceFlow: df,
+		githubApp:  ga,
 	}
 }
 
@@ -47,8 +53,12 @@ func NewServer(c client.Client, cs kubernetes.Interface, authProvider auth.AuthP
 // URL scheme:
 //
 //	/api/auth/{status|setup|login}                                 unauthenticated
+//	/api/auth/github/device                                       unauthenticated — device flow initiation
+//	/api/auth/github/device/poll                                  unauthenticated — device flow polling
 //	/api/oauth/{provider}/authorize                                unauthenticated — OAuth redirect
 //	/api/oauth/{provider}/callback                                 unauthenticated — OAuth callback
+//	/api/github-app/manifest                                       authenticated — generate manifest
+//	/api/github-app/callback                                       unauthenticated — GitHub redirects here
 //	/api/webhooks/{provider}                                       unauthenticated — HMAC-verified
 //	/api/projects                                                  list/create
 //	/api/projects/{project}                                        get/delete
@@ -81,6 +91,13 @@ func (s *Server) Handler() http.Handler {
 	r.Get("/api/oauth/{provider}/authorize", s.oauth.Authorize)
 	r.Get("/api/oauth/{provider}/callback", s.oauth.Callback)
 
+	// Unauthenticated GitHub device flow endpoints.
+	r.Post("/api/auth/github/device", s.deviceFlow.RequestCode)
+	r.Post("/api/auth/github/device/poll", s.deviceFlow.Poll)
+
+	// Unauthenticated GitHub App manifest callback (GitHub redirects here).
+	r.Get("/api/github-app/callback", s.githubApp.Callback)
+
 	// Authenticated /api routes.
 	r.Route("/api", func(r chi.Router) {
 		r.Use(maxBytesMiddleware(1 << 20)) // 1 MB body limit
@@ -90,6 +107,8 @@ func (s *Server) Handler() http.Handler {
 			r.Get("/gitproviders", s.ListGitProviders)
 			r.Post("/gitproviders", s.CreateGitProvider)
 			r.Delete("/gitproviders/{name}", s.DeleteGitProvider)
+
+			r.Post("/github-app/manifest", s.githubApp.GenerateManifest)
 
 			r.Post("/projects", s.CreateProject)
 			r.Get("/projects", s.ListProjects)

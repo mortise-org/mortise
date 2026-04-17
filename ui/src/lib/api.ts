@@ -5,7 +5,10 @@ import type {
 	Branch,
 	CreateGitProviderRequest,
 	DeployRecord,
+	DeviceCodeResponse,
+	DevicePollResponse,
 	DomainsResponse,
+	GitHubAppManifestResponse,
 	GitProviderSummary,
 	PlatformResponse,
 	Project,
@@ -126,6 +129,19 @@ export const api = {
 		}
 		return `/api/projects/${enc(project)}/apps/${enc(app)}/logs?${params.toString()}`;
 	},
+
+	// --- GitHub device flow ---
+	githubDeviceCode: () =>
+		request<DeviceCodeResponse>('/auth/github/device', { method: 'POST' }),
+	githubDevicePoll: (deviceCode: string) =>
+		request<DevicePollResponse>('/auth/github/device/poll', {
+			method: 'POST',
+			body: JSON.stringify({ device_code: deviceCode })
+		}),
+
+	// --- github app manifest flow ---
+	githubAppManifest: () =>
+		request<GitHubAppManifestResponse>('/github-app/manifest', { method: 'POST' }),
 
 	// --- git providers ---
 	listGitProviders: () => request<GitProviderSummary[]>('/gitproviders'),

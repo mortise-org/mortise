@@ -141,6 +141,20 @@ type PlatformConfigSpec struct {
 	// TLS configures TLS certificate issuance for App Ingresses.
 	// +optional
 	TLS TLSConfig `json:"tls,omitempty"`
+
+	// GitHub holds optional overrides for the project-maintained GitHub App.
+	// Admins who want to use their own GitHub OAuth App can specify the client
+	// ID here; otherwise the device flow uses the built-in default.
+	// +optional
+	GitHub *GitHubConfig `json:"github,omitempty"`
+}
+
+// GitHubConfig holds optional GitHub OAuth App overrides.
+type GitHubConfig struct {
+	// ClientID is the OAuth client ID for a self-hosted GitHub App.
+	// When set, the device flow uses this instead of the project-maintained default.
+	// +optional
+	ClientID string `json:"clientID,omitempty"`
 }
 
 // PlatformConfigStatus defines the observed state of PlatformConfig.
