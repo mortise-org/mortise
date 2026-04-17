@@ -25,5 +25,9 @@
 		"tailwindcss": "^4.2.2",
 		"typescript": "^6.0.2",
 		"vite": "^8.0.7"
+	},
+	"dependencies": {
+		"@xyflow/svelte": "^1.5.2",
+		"lucide-svelte": "^1.0.1"
 	}
 }

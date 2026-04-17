@@ -190,3 +190,57 @@ export interface DevicePollResponse {
 	status: 'pending' | 'slow_down' | 'complete' | 'expired' | 'denied' | 'error';
 	access_token?: string;
 }
+
+// Canvas position (stored in localStorage for v1)
+export interface CanvasPosition {
+	x: number;
+	y: number;
+}
+
+// Shared variables (sharedVars spec §5.8b)
+export interface SharedVar {
+	key: string;
+	value: string;
+	environments?: string[]; // which envs this applies to; empty = all
+}
+
+// App with extended metadata for canvas
+export interface AppMeta {
+	uiX?: number;
+	uiY?: number;
+}
+
+// Preview environment
+export type PreviewPhase = 'Pending' | 'Building' | 'Ready' | 'Failed' | 'Expired';
+
+export interface PreviewEnvironment {
+	name: string;
+	appRef: string;
+	pr: { number: number; branch: string; sha: string };
+	phase: PreviewPhase;
+	url?: string;
+	ttl?: string;
+	expiresAt?: string;
+}
+
+// Activity event (§5.11)
+export interface ActivityEvent {
+	ts: string;
+	actor: string;
+	action: string;
+	kind: string;
+	resource: string;
+	project: string;
+	msg: string;
+}
+
+// Deploy token
+export interface DeployToken {
+	id: string;
+	name: string;
+	app: string;
+	environment: string;
+	createdAt: string;
+	lastUsed?: string;
+	token?: string; // only on create response
+}

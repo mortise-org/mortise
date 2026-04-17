@@ -34,7 +34,7 @@
 			}
 
 			const data = await res.json();
-			localStorage.setItem('token', data.token);
+			localStorage.setItem('mortise_token', data.token);
 			goto('/');
 		} catch (err) {
 			error = err instanceof Error ? err.message : 'Login failed';

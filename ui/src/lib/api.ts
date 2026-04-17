@@ -2,9 +2,11 @@ import { goto } from '$app/navigation';
 import type {
 	App,
 	AppSpec,
+	ActivityEvent,
 	Branch,
 	CreateGitProviderRequest,
 	DeployRecord,
+	DeployToken,
 	DeviceCodeResponse,
 	DevicePollResponse,
 	DomainsResponse,
@@ -19,7 +21,7 @@ import type {
 const BASE = '/api';
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-	const token = localStorage.getItem('token');
+	const token = localStorage.getItem('mortise_token');
 	const headers: Record<string, string> = {
 		'Content-Type': 'application/json',
 		...(init?.headers as Record<string, string>)
@@ -31,7 +33,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 	const res = await fetch(`${BASE}${path}`, { ...init, headers });
 
 	if (res.status === 401) {
-		localStorage.removeItem('token');
+		localStorage.removeItem('mortise_token');
 		goto('/login');
 		throw new Error('Unauthorized');
 	}
@@ -118,7 +120,7 @@ export const api = {
 
 	// --- logs: returns a ready-to-use SSE URL including the JWT ---
 	logsURL: (project: string, app: string, env: string, tail = 200): string => {
-		const token = localStorage.getItem('token') ?? '';
+		const token = localStorage.getItem('mortise_token') ?? '';
 		const params = new URLSearchParams({
 			env,
 			follow: 'true',
@@ -198,5 +200,43 @@ export const api = {
 		request<PlatformResponse>('/platform', {
 			method: 'PATCH',
 			body: JSON.stringify(body)
-		})
+		}),
+
+	// --- env management ---
+	getEnv: (project: string, app: string, env: string) =>
+		request<Record<string, string>>(`/projects/${enc(project)}/apps/${enc(app)}/env/${enc(env)}`),
+	setEnv: (project: string, app: string, env: string, vars: Record<string, string>) =>
+		request<void>(`/projects/${enc(project)}/apps/${enc(app)}/env/${enc(env)}`, {
+			method: 'PUT',
+			body: JSON.stringify(vars)
+		}),
+	importEnv: (project: string, app: string, env: string, raw: string) =>
+		request<void>(`/projects/${enc(project)}/apps/${enc(app)}/env/import`, {
+			method: 'POST',
+			body: JSON.stringify({ env, content: raw })
+		}),
+
+	// --- deploy tokens ---
+	listTokens: (project: string, app: string) =>
+		request<DeployToken[]>(`/projects/${enc(project)}/apps/${enc(app)}/tokens`),
+	createToken: (project: string, app: string, name: string, environment: string) =>
+		request<DeployToken>(`/projects/${enc(project)}/apps/${enc(app)}/tokens`, {
+			method: 'POST',
+			body: JSON.stringify({ name, environment })
+		}),
+	revokeToken: (project: string, app: string, id: string) =>
+		request<void>(`/projects/${enc(project)}/apps/${enc(app)}/tokens/${enc(id)}`, {
+			method: 'DELETE'
+		}),
+
+	// --- project settings ---
+	updateProject: (name: string, body: { description?: string }) =>
+		request<Project>(`/projects/${enc(name)}`, {
+			method: 'PATCH',
+			body: JSON.stringify(body)
+		}),
+
+	// --- activity ---
+	listActivity: (project: string) =>
+		request<ActivityEvent[]>(`/projects/${enc(project)}/activity`)
 };
