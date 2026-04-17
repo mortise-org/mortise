@@ -1,4 +1,4 @@
-export type SourceType = 'git' | 'image';
+export type SourceType = 'git' | 'image' | 'external';
 
 export interface AppSource {
 	type: SourceType;
@@ -10,6 +10,9 @@ export interface AppSource {
 	providerRef?: string;
 	image?: string;
 	pullSecretRef?: string;
+	// external source fields
+	host?: string;
+	port?: number;
 }
 
 export interface Build {
@@ -34,6 +37,20 @@ export interface PlatformResponse {
 	dns: { provider: string; apiTokenSecretRef?: { namespace?: string; name?: string; key?: string } };
 	tls: { certManagerClusterIssuer?: string };
 	phase?: string;
+}
+
+export interface RegistryConfig {
+	url: string;
+	namespace?: string;
+	username?: string;
+	password?: string;
+	pullSecretRef?: string;
+}
+
+export interface BuildConfig {
+	address?: string;
+	tlsSecretRef?: string;
+	platform?: string;
 }
 
 export interface VolumeSpec {
@@ -68,6 +85,8 @@ export interface Environment {
 	bindings?: Binding[];
 	domain?: string;
 	customDomains?: string[];
+	annotations?: Record<string, string>;
+	secretMounts?: SecretMount[];
 }
 
 export interface Credential {
@@ -82,6 +101,7 @@ export interface AppSpec {
 	storage?: VolumeSpec[];
 	credentials?: Credential[];
 	environments?: Environment[];
+	kind?: 'service' | 'cron';
 }
 
 export interface DeployRecord {

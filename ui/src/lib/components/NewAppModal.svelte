@@ -48,6 +48,19 @@
 	let externalHost = $state('');
 	let externalPort = $state(80);
 
+	// Build config
+	let buildMode = $state<'auto' | 'dockerfile' | 'railpack'>('auto');
+	let buildCache = $state(false);
+	let dockerfilePath = $state('Dockerfile');
+	let buildArgs = $state<Record<string, string>>({});
+
+	// Git-specific
+	let watchPathsText = $state(''); // newline-separated
+	let pullSecret = $state(''); // for image source
+
+	// External credentials
+	let externalCredentials = $state<Array<{ name: string; value: string }>>([]);
+
 	// Database/Template presets
 	type DbTemplate = { name: string; image: string; icon: string; description: string };
 	const DB_TEMPLATES: DbTemplate[] = [
@@ -112,34 +125,56 @@
 	}
 
 	function buildSpec(): AppSpec {
-		const baseEnv = [{ name: 'production', replicas: 1 }];
+		const baseEnv: AppSpec['environments'] = [{ name: 'production', replicas: 1 }];
 
 		if (selectedType === 'git') {
 			return {
 				source: {
-					type: 'git',
+					type: 'git' as const,
 					repo: selectedRepo?.cloneURL ?? '',
 					branch: gitBranch,
 					path: gitPath || undefined,
-					providerRef: gitProvider || undefined
+					providerRef: gitProvider || undefined,
+					watchPaths: watchPathsText.trim() ? watchPathsText.split('\n').map(s => s.trim()).filter(Boolean) : undefined,
+					build: {
+						mode: buildMode,
+						cache: buildCache || undefined,
+						dockerfilePath: buildMode === 'dockerfile' ? dockerfilePath : undefined,
+						args: Object.keys(buildArgs).length > 0 ? buildArgs : undefined
+					}
 				},
 				network: { public: true },
-				environments: baseEnv
-			};
+				environments: appKind === 'cron'
+					? [{ name: 'production', replicas: 0, annotations: { 'mortise.dev/schedule': schedule } }]
+					: baseEnv,
+				...(appKind === 'cron' ? { kind: 'cron' as const } : {})
+			} as AppSpec;
 		}
 		if (selectedType === 'image' || selectedType === 'database' || selectedType === 'template') {
 			return {
-				source: { type: 'image', image: imageRef || 'nginx:latest' },
+				source: {
+					type: 'image' as const,
+					image: imageRef || 'nginx:latest',
+					pullSecretRef: pullSecret || undefined
+				},
 				network: { public: selectedType === 'image' },
-				environments: baseEnv
-			};
+				environments: appKind === 'cron'
+					? [{ name: 'production', replicas: 0, annotations: { 'mortise.dev/schedule': schedule } }]
+					: baseEnv,
+				...(appKind === 'cron' ? { kind: 'cron' as const } : {})
+			} as AppSpec;
 		}
 		if (selectedType === 'external') {
 			return {
-				source: { type: 'external' as any, host: externalHost, port: externalPort } as any,
+				source: {
+					type: 'external' as const,
+					host: externalHost,
+					port: externalPort
+				},
 				network: { public: true },
+				credentials: externalCredentials.filter(c => c.name),
 				environments: baseEnv
-			};
+			} as AppSpec;
 		}
 		// empty
 		return {
@@ -287,6 +322,42 @@
 								{/if}
 							</select>
 						</div>
+
+						<!-- Watch paths -->
+						<div>
+							<label class="text-sm text-gray-400">Watch paths <span class="text-gray-600">(optional)</span></label>
+							<textarea
+								bind:value={watchPathsText}
+								placeholder="src/&#10;package.json"
+								rows="3"
+								class="mt-1 w-full resize-y rounded-md border border-surface-600 bg-surface-700 px-3 py-2 font-mono text-sm text-white placeholder-gray-500 outline-none focus:border-accent"
+							></textarea>
+							<p class="mt-0.5 text-xs text-gray-500">One path prefix per line. Leave empty to rebuild on any push.</p>
+						</div>
+
+						<!-- Build mode -->
+						<div>
+							<label class="text-sm text-gray-400">Build mode</label>
+							<select bind:value={buildMode}
+								class="mt-1 w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-white outline-none focus:border-accent">
+								<option value="auto">Auto-detect</option>
+								<option value="dockerfile">Dockerfile</option>
+								<option value="railpack">Railpack / Nixpacks</option>
+							</select>
+						</div>
+						{#if buildMode === 'dockerfile'}
+							<div>
+								<label class="text-sm text-gray-400">Dockerfile path</label>
+								<input type="text" bind:value={dockerfilePath} placeholder="Dockerfile"
+									class="mt-1 w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 font-mono text-sm text-white placeholder-gray-500 outline-none focus:border-accent" />
+							</div>
+						{/if}
+
+						<!-- Build cache -->
+						<label class="flex items-center gap-2 cursor-pointer">
+							<input type="checkbox" bind:checked={buildCache} class="rounded border-surface-600 bg-surface-800 text-accent" />
+							<span class="text-sm text-gray-400">Enable build cache</span>
+						</label>
 					</div>
 				{:else if selectedType === 'image'}
 					<div class="space-y-4">
@@ -298,6 +369,12 @@
 								placeholder="nginx:1.27 or ghcr.io/org/app:latest"
 								class="mt-1 w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-white placeholder-gray-500 outline-none focus:border-accent"
 							/>
+						</div>
+						<div>
+							<label class="text-sm text-gray-400">Pull secret name <span class="text-gray-600">(optional)</span></label>
+							<input type="text" bind:value={pullSecret} placeholder="my-registry-secret"
+								class="mt-1 w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-white placeholder-gray-500 outline-none focus:border-accent" />
+							<p class="mt-0.5 text-xs text-gray-500">Name of a k8s Secret in the project namespace for private registries.</p>
 						</div>
 					</div>
 				{:else if selectedType === 'database'}
@@ -342,6 +419,22 @@
 								max="65535"
 								class="mt-1 w-24 rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-white outline-none focus:border-accent"
 							/>
+						</div>
+						<div>
+							<label class="text-sm text-gray-400">Credentials (binding contract)</label>
+							<p class="mt-0.5 text-xs text-gray-500 mb-2">Declare which credential keys this external service exposes for other apps to bind.</p>
+							{#each externalCredentials as cred, i}
+								<div class="flex gap-2 mb-1.5">
+									<input type="text" bind:value={cred.name} placeholder="DATABASE_URL"
+										class="flex-1 rounded-md border border-surface-600 bg-surface-800 px-2 py-1.5 text-xs text-white placeholder-gray-500 outline-none focus:border-accent" />
+									<input type="text" bind:value={cred.value} placeholder="value or leave empty"
+										class="flex-1 rounded-md border border-surface-600 bg-surface-800 px-2 py-1.5 text-xs text-white placeholder-gray-500 outline-none focus:border-accent" />
+									<button type="button" onclick={() => externalCredentials = externalCredentials.filter((_, idx) => idx !== i)}
+										class="rounded px-1.5 py-1 text-gray-500 hover:text-danger text-xs">✕</button>
+								</div>
+							{/each}
+							<button type="button" onclick={() => externalCredentials = [...externalCredentials, { name: '', value: '' }]}
+								class="text-xs text-accent hover:text-accent-hover">+ Add credential key</button>
 						</div>
 					</div>
 				{/if}
