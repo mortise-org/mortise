@@ -5,11 +5,12 @@ whenever implementation status changes — see the **Keeping this file up to
 date** section at the bottom.
 
 Legend: **Done** / **Partial** / **Not started**
-Last reconciled against spec + code: 2026-04-17 (UI overhaul pass — complete
-rebuild per UI_SPEC.md. Canvas view, drawer layout, modal picker, new store,
-admin settings page, project settings page, PR env preview list, E2E tests
-rewritten. All UI_SPEC §14 flows now at least Partial. Remaining gaps noted
-below under "UI overhaul status").
+Last reconciled against spec + code: 2026-04-17 (UI overhaul pass 2 — Storage/Volumes
+section added to SettingsTab; Promote button in DeploymentsTab; log search/filter/copy;
+project settings rewritten with full tabbed layout (General, Environments, Shared Variables,
+Members, Danger); canvas "+ Add" button now opens inline NewAppModal; 6 new E2E spec files
+(volumes, bindings, domains, deploy-tokens, project-settings, deployments). See UI overhaul
+status table below for current per-flow status).
 
 ---
 
@@ -746,32 +747,46 @@ Per UI_SPEC.md §14 flow tracker — updated after the full rebuild:
 | Login | 3.2 | ✅ | `/login` with `store.login()` |
 | Project list | 3.3 | ✅ | `/` dashboard with project cards |
 | Create project | 3.4 | ✅ | `/projects/new` form |
-| Project workspace (canvas) | 3.5 | ✅ | Svelte Flow canvas + list toggle |
-| New app (modal) | 3.6 | ✅ | Single-modal picker at `/projects/{p}/apps/new` |
-| App detail (drawer) | 3.7 | ✅ | 45%-width slide-over with 5 tabs |
-| Variables editing | 3.8 | **Partial** | Table + add/delete/raw-mode; staged-changes bar wired to store but Deploy button is cosmetic only (no actual apply) |
-| Service bindings | 3.9 | **Partial** | Bindings shown in settings tab (list + add); reference picker dropdown (`${{bindings...}}`) not yet built |
-| Domains | 3.10 | ✅ | Settings tab: list + add/remove custom domains |
-| Storage (volumes) | 3.11 | **Partial** | Listed in settings tab; "Adopt existing PVC" affordance not built |
-| Logs (drawer tab) | 3.12 | ✅ | SSE log viewer in Logs tab |
-| Deploy tokens | 3.13 | ✅ | Settings tab: create (once-shown value) + revoke |
-| Preview environments | 3.14 | ✅ | `/projects/{p}/previews` list + settings toggle (backend done; toggle not wired to API yet) |
-| Environment annotations | 3.15 | ⚠️ | No UI yet |
-| Secret mounts | 3.16 | ⚠️ | No UI yet |
-| Platform settings | 3.17 | ✅ | `/admin/settings`: domain, DNS, git providers, users |
+| Project workspace (canvas) | 3.5 | **Partial** | Svelte Flow canvas + list toggle. Missing: right-click context menu, edge hover tooltips, node position sync to API annotations |
+| New app (modal) | 3.6 | **Partial** | Inline modal on canvas. Missing: pull-secret picker, build cache toggle, build args editor, watchPaths input |
+| App detail (drawer) | 3.7 | **Partial** | 5-tab drawer exists. **Critical:** mounted as full page, not slide-over canvas overlay (§12.21 drawer-over-canvas not implemented) |
+| Variables editing | 3.8 | **Partial** | Table + add/delete/raw-mode; `${{ref}}` syntax shown. Staged-changes Deploy button is cosmetic only (no PUT fires) |
+| Service bindings | 3.9 | **Partial** | Bindings list + add/remove in Settings tab (§3.9b). BindingsPicker dropdown in Variables tab (§3.9a) exists but not integrated as inline autocomplete on `${{` trigger |
+| Domains | 3.10 | ✅ | Settings tab: list + add/remove. Missing: per-env TLS override fields (§5.6) |
+| Storage (volumes) | 3.11 | **Partial** | Add/remove volumes in Settings tab. "Adopt existing PVC" affordance not built (deferred) |
+| Logs (drawer tab) | 3.12 | **Partial** | SSE viewer + search filter + copy. Missing: category toggle (runtime/build/deploy), replica picker |
+| Deploy tokens | 3.13 | ✅ | Settings tab: create (once-shown value) + revoke; Promote button in Deployments tab |
+| Preview environments | 3.14 | **Partial** | `/projects/{p}/previews` list exists; project settings PR toggle exists but does not fire `setProjectPreview` API call |
+| Environment annotations | 3.15 | **Partial** | Key/value editor in Advanced section of SettingsTab. Missing: standalone Environments settings sub-page (§3.15) |
+| Secret mounts | 3.16 | **Partial** | Add/remove secret mounts in Advanced section of SettingsTab |
+| Platform settings | 3.17 | **Partial** | `/admin/settings`: domain, DNS, git providers. Missing: Registry config, Build config, TLS/cert-manager section, real user list from API |
+| Project settings | 3.17p | **Partial** | Tabbed layout: General + PR toggle, Environments, Shared Variables info, Members + invite, Danger. Missing: Tokens tab, Webhooks tab, Integrations tab, per-app Remove in Danger |
 | Extensions | 3.18 | ✅ | `/extensions` page |
-| Activity feed (toggle rail) | 12.22 | ⚠️ | Pulse button wired to store; rail component not yet built; backend store exists |
-| Staged-changes bar | 12.2 | **Partial** | Bar renders when dirty; Deploy button is cosmetic (Tier 1 — one PUT needed) |
-| Notifications bell | 2.1 | ⚠️ | Bell icon exists; no dropdown yet |
+| Activity rail | 12.22 | **Partial** | ActivityRail component with filter chips and relative timestamps; pulse button wired. **Does not fetch data** — `listActivity` API call missing from component |
+| Staged-changes bar | 12.2 | **Partial** | Bar renders when dirty; Discard works; Deploy button is cosmetic (no PUT fires; ⇧+Enter shortcut missing) |
+| Notifications bell | 2.1 | **Partial** | Bell + dropdown component exists; no unread badge count; no data source wired |
 
-**Remaining gaps for full UI_SPEC parity (v1):**
-1. Staged-changes Deploy button needs to fire `PUT /api/projects/{p}/apps/{a}` (easy, ~30 min)
-2. Activity rail slide-out component (backend exists; ~1 day UI)
-3. Service bindings reference picker dropdown (`${{bindings.<app>.<key>}}` autocomplete)
-4. Environment annotations UI (advanced, collapse under "Advanced")
-5. Secret mounts UI (advanced)
-6. `GET /api/projects/{p}/activity` endpoint (backend store exists, REST surface missing)
-7. PR environments toggle → needs to PATCH `ProjectSpec.Preview.Enabled` (API endpoint needed)
+**Remaining gaps for full UI_SPEC parity — prioritized:**
+
+### Critical (blocks core flows)
+1. **App detail drawer must be a slide-over** — currently full page (`/projects/{p}/apps/{a}`). Canvas stays visible behind it per §12.21. Requires mounting AppDrawer inside the project canvas page, not as a separate route.
+2. **Staged-changes Deploy button** — needs `PUT /api/projects/{p}/apps/{a}` + ⇧+Enter keyboard shortcut + "Details" modal with per-change diff
+3. **PR environments toggle** — `setProjectPreview()` not called; button flip is purely cosmetic
+
+### High (missing feature coverage)
+4. **Activity rail data** — `api.listActivity(project)` not called in ActivityRail.svelte
+5. **Platform settings: Registry + Build + TLS sections** — no UI forms for Zot config, BuildKit config, cert-manager cluster issuer
+6. **Credentials declaration UI** — `spec.credentials` block for database apps not editable; only template preset in NewAppModal
+7. **`SourceType` union missing 'external'** — types.ts defines `type SourceType = 'git' | 'image'` but external source uses `as any` cast
+8. **Cron schedule not included in spec output** — NewAppModal collects `schedule` but `buildSpec()` ignores it
+
+### Medium
+9. Build cache toggle, build args editor, watchPaths input — NewAppModal gaps
+10. Pull-secret picker for image source — API exists (`listSecrets`), no UI
+11. Project settings: Tokens, Webhooks, Integrations tabs missing
+12. Per-env TLS overrides in Domains section
+13. Canvas right-click context menu
+14. Notifications unread badge + real data source
 
 ---
 
