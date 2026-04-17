@@ -20,38 +20,75 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
-// NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
+// PreviewPhase represents the lifecycle phase of a preview environment.
+// +kubebuilder:validation:Enum=Pending;Building;Ready;Failed;Expired
+type PreviewPhase string
 
-// PreviewEnvironmentSpec defines the desired state of PreviewEnvironment
+const (
+	PreviewPhasePending  PreviewPhase = "Pending"
+	PreviewPhaseBuilding PreviewPhase = "Building"
+	PreviewPhaseReady    PreviewPhase = "Ready"
+	PreviewPhaseFailed   PreviewPhase = "Failed"
+	PreviewPhaseExpired  PreviewPhase = "Expired"
+)
+
+// PullRequestRef identifies the PR that triggered this preview.
+type PullRequestRef struct {
+	Number int    `json:"number"`
+	Branch string `json:"branch"`
+	SHA    string `json:"sha"`
+}
+
+// PreviewEnvironmentSpec defines the desired state of PreviewEnvironment.
 type PreviewEnvironmentSpec struct {
-	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
-	// The following markers will use OpenAPI v3 schema to validate the value
-	// More info: https://book.kubebuilder.io/reference/markers/crd-validation.html
+	// AppRef is the name of the parent App this previews (same namespace).
+	// +kubebuilder:validation:Required
+	AppRef string `json:"appRef"`
 
-	// foo is an example field of PreviewEnvironment. Edit previewenvironment_types.go to remove/update
+	// PullRequest identifies the PR that triggered this preview.
+	// +kubebuilder:validation:Required
+	PullRequest PullRequestRef `json:"pullRequest"`
+
+	// Replicas for the preview Deployment. Inherited from staging, overridable.
 	// +optional
-	Foo *string `json:"foo,omitempty"`
+	Replicas *int32 `json:"replicas,omitempty"`
+
+	// Resources for the preview Deployment. Inherited from staging, overridable.
+	// +optional
+	Resources ResourceRequirements `json:"resources,omitempty"`
+
+	// Env vars for the preview Deployment. Inherited from staging, overridable.
+	// +optional
+	Env []EnvVar `json:"env,omitempty"`
+
+	// Bindings inherited from the staging environment.
+	// +optional
+	Bindings []Binding `json:"bindings,omitempty"`
+
+	// Domain for this preview (resolved from App.spec.preview.domain template).
+	// +optional
+	Domain string `json:"domain,omitempty"`
+
+	// TTL after which the preview is auto-deleted if the PR is still open.
+	// +optional
+	TTL metav1.Duration `json:"ttl,omitempty"`
 }
 
 // PreviewEnvironmentStatus defines the observed state of PreviewEnvironment.
 type PreviewEnvironmentStatus struct {
-	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
+	// Phase is the current lifecycle phase.
+	Phase PreviewPhase `json:"phase,omitempty"`
 
-	// For Kubernetes API conventions, see:
-	// https://github.com/kubernetes/community/blob/master/contributors/devel/sig-architecture/api-conventions.md#typical-status-properties
+	// URL is the HTTPS endpoint for the preview.
+	URL string `json:"url,omitempty"`
 
-	// conditions represent the current state of the PreviewEnvironment resource.
-	// Each condition has a unique type and reflects the status of a specific aspect of the resource.
-	//
-	// Standard condition types include:
-	// - "Available": the resource is fully functional
-	// - "Progressing": the resource is being created or updated
-	// - "Degraded": the resource failed to reach or maintain its desired state
-	//
-	// The status of each condition is one of True, False, or Unknown.
+	// Image is the built container image reference.
+	Image string `json:"image,omitempty"`
+
+	// ExpiresAt is when this preview will be auto-deleted.
+	// +optional
+	ExpiresAt *metav1.Time `json:"expiresAt,omitempty"`
+
 	// +listType=map
 	// +listMapKey=type
 	// +optional
@@ -60,6 +97,11 @@ type PreviewEnvironmentStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:printcolumn:name="App",type=string,JSONPath=`.spec.appRef`
+// +kubebuilder:printcolumn:name="PR",type=integer,JSONPath=`.spec.pullRequest.number`
+// +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
+// +kubebuilder:printcolumn:name="URL",type=string,JSONPath=`.status.url`
+// +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // PreviewEnvironment is the Schema for the previewenvironments API
 type PreviewEnvironment struct {

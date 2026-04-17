@@ -14,7 +14,23 @@ spec:
     singular: previewenvironment
   scope: Namespaced
   versions:
-  - name: v1alpha1
+  - additionalPrinterColumns:
+    - jsonPath: .spec.appRef
+      name: App
+      type: string
+    - jsonPath: .spec.pullRequest.number
+      name: PR
+      type: integer
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.url
+      name: URL
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
     schema:
       openAPIV3Schema:
         description: PreviewEnvironment is the Schema for the previewenvironments
@@ -40,25 +56,92 @@ spec:
           spec:
             description: spec defines the desired state of PreviewEnvironment
             properties:
-              foo:
-                description: foo is an example field of PreviewEnvironment. Edit previewenvironment_types.go
-                  to remove/update
+              appRef:
+                description: AppRef is the name of the parent App this previews (same
+                  namespace).
                 type: string
+              bindings:
+                description: Bindings inherited from the staging environment.
+                items:
+                  properties:
+                    project:
+                      description: |-
+                        Project, if set, resolves the ref in the namespace of the named Project
+                        (`project-{project}`) instead of the binder's own namespace. Enables
+                        cross-project bindings (e.g. binding app in `web` project to a db in
+                        `infra` project).
+                      type: string
+                    ref:
+                      description: |-
+                        Ref is the name of the bound App. By default the ref is resolved within
+                        the binder's own project namespace.
+                      type: string
+                  required:
+                  - ref
+                  type: object
+                type: array
+              domain:
+                description: Domain for this preview (resolved from App.spec.preview.domain
+                  template).
+                type: string
+              env:
+                description: Env vars for the preview Deployment. Inherited from staging,
+                  overridable.
+                items:
+                  properties:
+                    name:
+                      type: string
+                    value:
+                      type: string
+                    valueFrom:
+                      properties:
+                        secretRef:
+                          type: string
+                      type: object
+                  required:
+                  - name
+                  type: object
+                type: array
+              pullRequest:
+                description: PullRequest identifies the PR that triggered this preview.
+                properties:
+                  branch:
+                    type: string
+                  number:
+                    type: integer
+                  sha:
+                    type: string
+                required:
+                - branch
+                - number
+                - sha
+                type: object
+              replicas:
+                description: Replicas for the preview Deployment. Inherited from staging,
+                  overridable.
+                format: int32
+                type: integer
+              resources:
+                description: Resources for the preview Deployment. Inherited from
+                  staging, overridable.
+                properties:
+                  cpu:
+                    type: string
+                  memory:
+                    type: string
+                type: object
+              ttl:
+                description: TTL after which the preview is auto-deleted if the PR
+                  is still open.
+                type: string
+            required:
+            - appRef
+            - pullRequest
             type: object
           status:
             description: status defines the observed state of PreviewEnvironment
             properties:
               conditions:
-                description: |-
-                  conditions represent the current state of the PreviewEnvironment resource.
-                  Each condition has a unique type and reflects the status of a specific aspect of the resource.
-
-                  Standard condition types include:
-                  - "Available": the resource is fully functional
-                  - "Progressing": the resource is being created or updated
-                  - "Degraded": the resource failed to reach or maintain its desired state
-
-                  The status of each condition is one of True, False, or Unknown.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -117,6 +200,25 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              expiresAt:
+                description: ExpiresAt is when this preview will be auto-deleted.
+                format: date-time
+                type: string
+              image:
+                description: Image is the built container image reference.
+                type: string
+              phase:
+                description: Phase is the current lifecycle phase.
+                enum:
+                - Pending
+                - Building
+                - Ready
+                - Failed
+                - Expired
+                type: string
+              url:
+                description: URL is the HTTPS endpoint for the preview.
+                type: string
             type: object
         required:
         - spec

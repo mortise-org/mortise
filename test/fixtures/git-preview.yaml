@@ -1,0 +1,28 @@
+# Fixture for preview environment integration tests. The test overrides
+# metadata.namespace, spec.source.repo, and spec.source.providerRef.
+apiVersion: mortise.mortise.dev/v1alpha1
+kind: App
+metadata:
+  name: test-preview-app
+  annotations:
+    mortise.dev/revision: ""
+spec:
+  source:
+    type: git
+    repo: http://gitea.mortise-test-deps.svc:3000/mortise-test/testrepo.git
+    branch: main
+    providerRef: gitea-int
+    build:
+      dockerfilePath: Dockerfile
+  network:
+    public: true
+  environments:
+    - name: staging
+      replicas: 1
+      resources:
+        cpu: "50m"
+        memory: "64Mi"
+  preview:
+    enabled: true
+    domain: "pr-{number}-test-preview-app.test.local"
+    ttl: "1h"

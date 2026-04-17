@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/rand"
 	"net/http"
 	"strings"
 	"testing"
@@ -326,4 +327,88 @@ func (g *GiteaBootstrap) DeleteOAuthApp(t *testing.T, id int64) {
 		b, _ := io.ReadAll(resp.Body)
 		t.Logf("gitea: delete oauth app %d: status %d: %s", id, resp.StatusCode, string(b))
 	}
+}
+
+// GetBranchSHA returns the HEAD commit SHA for a branch via Gitea's branch API.
+func GetBranchSHA(t *testing.T, baseURL, token, owner, repo, branch string) string {
+	t.Helper()
+	url := fmt.Sprintf("%s/api/v1/repos/%s/%s/branches/%s", baseURL, owner, repo, branch)
+	req, _ := http.NewRequest(http.MethodGet, url, nil)
+	req.Header.Set("Authorization", "token "+token)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("gitea: get branch %s: %v", branch, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("gitea: get branch %s status %d: %s", branch, resp.StatusCode, string(b))
+	}
+	var out struct {
+		Commit struct {
+			ID string `json:"id"`
+		} `json:"commit"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("gitea: decode branch response: %v", err)
+	}
+	if out.Commit.ID == "" {
+		t.Fatalf("gitea: empty commit id for branch %s", branch)
+	}
+	return out.Commit.ID
+}
+
+// PushNewCommit updates README.md in the repo to create a new commit, returning
+// the new HEAD SHA. Uses the Gitea contents API.
+func PushNewCommit(t *testing.T, baseURL, token, owner, repo string) string {
+	t.Helper()
+
+	path := "README.md"
+	// Fetch existing file SHA for the update.
+	getSHAURL := fmt.Sprintf("%s/api/v1/repos/%s/%s/contents/%s", baseURL, owner, repo, path)
+	req, _ := http.NewRequest(http.MethodGet, getSHAURL, nil)
+	req.Header.Set("Authorization", "token "+token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("gitea: get file SHA: %v", err)
+	}
+	defer resp.Body.Close()
+
+	var fileMeta struct {
+		SHA string `json:"sha"`
+	}
+	if resp.StatusCode == http.StatusOK {
+		_ = json.NewDecoder(resp.Body).Decode(&fileMeta)
+	}
+
+	newContent := fmt.Sprintf("Updated by integration test at %d rand=%d\n", time.Now().UnixNano(), rand.Int())
+	encoded := base64.StdEncoding.EncodeToString([]byte(newContent))
+	payload := map[string]any{
+		"message": "integration test: update " + path,
+		"content": encoded,
+		"branch":  "main",
+	}
+	if fileMeta.SHA != "" {
+		payload["sha"] = fileMeta.SHA
+	}
+
+	body, _ := json.Marshal(payload)
+	putURL := fmt.Sprintf("%s/api/v1/repos/%s/%s/contents/%s", baseURL, owner, repo, path)
+	req, _ = http.NewRequest(http.MethodPut, putURL, bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "token "+token)
+
+	resp2, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("gitea: update file: %v", err)
+	}
+	defer resp2.Body.Close()
+	if resp2.StatusCode >= 300 {
+		b, _ := io.ReadAll(resp2.Body)
+		t.Fatalf("gitea: update file status %d: %s", resp2.StatusCode, string(b))
+	}
+
+	// Return the new HEAD SHA.
+	return GetBranchSHA(t, baseURL, token, owner, repo, "main")
 }
