@@ -144,3 +144,19 @@ export interface CreateGitProviderRequest {
 	oauth: { clientID: string; clientSecret: string };
 	webhookSecret: string;
 }
+
+export interface Repository {
+	fullName: string;
+	name: string;
+	description: string;
+	defaultBranch: string;
+	cloneURL: string;
+	updatedAt: string;
+	language: string;
+	private: boolean;
+}
+
+export interface Branch {
+	name: string;
+	default: boolean;
+}

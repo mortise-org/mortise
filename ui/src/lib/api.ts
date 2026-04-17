@@ -2,12 +2,14 @@ import { goto } from '$app/navigation';
 import type {
 	App,
 	AppSpec,
+	Branch,
 	CreateGitProviderRequest,
 	DeployRecord,
 	DomainsResponse,
 	GitProviderSummary,
 	PlatformResponse,
 	Project,
+	Repository,
 	SecretResponse
 } from './types';
 
@@ -134,6 +136,12 @@ export const api = {
 		}),
 	deleteGitProvider: (name: string) =>
 		request<void>(`/gitproviders/${enc(name)}`, { method: 'DELETE' }),
+
+	// --- repos (git provider) ---
+	listRepos: (provider: string) =>
+		request<Repository[]>(`/repos?provider=${enc(provider)}`),
+	listBranches: (owner: string, repo: string, provider: string) =>
+		request<Branch[]>(`/repos/${enc(owner)}/${enc(repo)}/branches?provider=${enc(provider)}`),
 
 	// --- secrets ---
 	listSecrets: (project: string, app: string) =>

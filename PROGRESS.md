@@ -201,6 +201,9 @@ REST surface (`internal/api/server.go`):
 UI (`ui/src/routes/`):
 - `login`, `setup`, `projects`, `projects/new`, `projects/[project]`,
   `projects/[project]/apps/new`, `projects/[project]/apps/[app]`.
+- `apps/new` rewritten to Railway-style repo-first flow: searchable repo
+  list via `GET /api/repos`, branch picker via `GET /api/repos/{owner}/{repo}/branches`,
+  inline config panel, Docker image deploy section, compact templates at bottom.
 
 CLI (`cmd/cli/`):
 - `login`, `project list/create/delete/use/show`, `app list/create/delete`,
