@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -12,6 +13,15 @@ import (
 
 	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
 )
+
+// maxAppNameLen caps app names. App names are suffixed with "-{env}" in
+// Deployment names; the longest env suffix is ~10 chars, and k8s names max
+// at 63, so 53 keeps the composed name safe.
+const maxAppNameLen = 53
+
+// maxEnvNameLen caps environment names. These appear as suffixes in
+// Deployment names (e.g. "myapp-production").
+const maxEnvNameLen = 63
 
 // createAppRequest is the JSON body for POST /api/projects/{project}/apps.
 // Namespace is NOT caller-specified — it's always the project's namespace.
@@ -31,9 +41,15 @@ func (s *Server) CreateApp(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errorResponse{"invalid JSON: " + err.Error()})
 		return
 	}
-	if req.Name == "" {
-		writeJSON(w, http.StatusBadRequest, errorResponse{"name is required"})
+	if msg := validateDNSLabel("name", req.Name, maxAppNameLen); msg != "" {
+		writeJSON(w, http.StatusBadRequest, errorResponse{msg})
 		return
+	}
+	for i, env := range req.Spec.Environments {
+		if msg := validateDNSLabel(fmt.Sprintf("environments[%d].name", i), env.Name, maxEnvNameLen); msg != "" {
+			writeJSON(w, http.StatusBadRequest, errorResponse{msg})
+			return
+		}
 	}
 
 	app := &mortisev1alpha1.App{

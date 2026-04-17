@@ -2,8 +2,12 @@ package api
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/subtle"
+	"encoding/hex"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"golang.org/x/oauth2"
@@ -22,6 +26,12 @@ import (
 const (
 	// oauthStateParam is the query param name for the CSRF state token.
 	oauthStateParam = "state"
+
+	// oauthStateCookieName is the cookie used to store the CSRF state.
+	oauthStateCookieName = "mortise_oauth_state"
+
+	// oauthStateTTL is how long the state cookie is valid.
+	oauthStateTTL = 10 * time.Minute
 
 	// tokenSecretNamespace is where OAuth token secrets are stored.
 	// Tokens are platform-scoped, not project-scoped.
@@ -51,10 +61,23 @@ func (o *OAuthHandler) Authorize(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	// Use the provider name as the state token for simplicity. A production
-	// implementation would use a cryptographically random, short-lived state
-	// stored in a cookie or session. Deferred to a follow-up.
-	state := providerName
+	state, err := generateOAuthState()
+	if err != nil {
+		log.Error(err, "generate oauth state")
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	http.SetCookie(w, &http.Cookie{
+		Name:     oauthStateCookieName,
+		Value:    state,
+		Path:     "/api/oauth/" + providerName + "/callback",
+		MaxAge:   int(oauthStateTTL.Seconds()),
+		HttpOnly: true,
+		Secure:   true,
+		SameSite: http.SameSiteLaxMode,
+	})
+
 	http.Redirect(w, req, cfg.AuthCodeURL(state, oauth2.AccessTypeOnline), http.StatusFound)
 }
 
@@ -65,6 +88,28 @@ func (o *OAuthHandler) Authorize(w http.ResponseWriter, req *http.Request) {
 func (o *OAuthHandler) Callback(w http.ResponseWriter, req *http.Request) {
 	log := logf.FromContext(req.Context())
 	providerName := chi.URLParam(req, "provider")
+
+	// Validate CSRF state: compare cookie value against query param.
+	stateCookie, err := req.Cookie(oauthStateCookieName)
+	if err != nil {
+		http.Error(w, "missing oauth state cookie", http.StatusForbidden)
+		return
+	}
+	queryState := req.URL.Query().Get(oauthStateParam)
+	if subtle.ConstantTimeCompare([]byte(stateCookie.Value), []byte(queryState)) != 1 {
+		http.Error(w, "oauth state mismatch", http.StatusForbidden)
+		return
+	}
+	// Delete the state cookie now that it's been consumed.
+	http.SetCookie(w, &http.Cookie{
+		Name:     oauthStateCookieName,
+		Value:    "",
+		Path:     "/api/oauth/" + providerName + "/callback",
+		MaxAge:   -1,
+		HttpOnly: true,
+		Secure:   true,
+		SameSite: http.SameSiteLaxMode,
+	})
 
 	code := req.URL.Query().Get("code")
 	if code == "" {
@@ -185,6 +230,15 @@ func (o *OAuthHandler) storeToken(ctx context.Context, providerName, token strin
 	// Update existing secret.
 	existing.Data = desired.Data
 	return o.client.Update(ctx, &existing)
+}
+
+// generateOAuthState returns 32 cryptographically random bytes, hex-encoded.
+func generateOAuthState() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("read crypto/rand: %w", err)
+	}
+	return hex.EncodeToString(b), nil
 }
 
 func (o *OAuthHandler) resolveSecretRef(ctx context.Context, ref mortisev1alpha1.SecretRef) (string, error) {

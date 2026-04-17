@@ -46,6 +46,17 @@ func (s *Server) jwtAuthMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+// maxBytesMiddleware limits the size of incoming request bodies. Requests
+// that exceed the limit receive 413 Request Entity Too Large.
+func maxBytesMiddleware(maxBytes int64) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
 // sseTokenQueryParamMiddleware allows the SSE log-stream endpoint to accept
 // a `?token=<jwt>` query param as an alternative to the Authorization header.
 // This is the standard workaround for EventSource, which cannot set custom

@@ -33,16 +33,7 @@ var dns1123LabelRegex = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
 // validateProjectName returns an error message describing why name is invalid,
 // or "" if it's acceptable.
 func validateProjectName(name string) string {
-	if name == "" {
-		return "name is required"
-	}
-	if len(name) > maxProjectNameLen {
-		return fmt.Sprintf("name must be %d characters or fewer", maxProjectNameLen)
-	}
-	if !dns1123LabelRegex.MatchString(name) {
-		return "name must be a DNS-1123 label: lowercase alphanumerics and '-', starting and ending with an alphanumeric"
-	}
-	return ""
+	return validateDNSLabel("name", name, maxProjectNameLen)
 }
 
 // projectNamespace returns the backing namespace name for a Project.

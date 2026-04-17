@@ -67,6 +67,8 @@ func (s *Server) Handler() http.Handler {
 	r.Post("/api/auth/login", s.Login)
 
 	// Unauthenticated git forge webhook receiver (auth is via HMAC).
+	// Webhook handler has its own 10MB limit via io.LimitReader; no global
+	// body cap applied.
 	r.Mount("/api/webhooks", s.webhook.Routes())
 
 	// Unauthenticated OAuth endpoints.
@@ -75,6 +77,7 @@ func (s *Server) Handler() http.Handler {
 
 	// Authenticated /api routes.
 	r.Route("/api", func(r chi.Router) {
+		r.Use(maxBytesMiddleware(1 << 20)) // 1 MB body limit
 		r.Group(func(r chi.Router) {
 			r.Use(s.jwtAuthMiddleware)
 
