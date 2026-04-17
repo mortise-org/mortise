@@ -5,6 +5,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"net/http"
 	"testing"
 
@@ -154,12 +155,13 @@ func TestSplitRepo(t *testing.T) {
 func TestFactory(t *testing.T) {
 	ref := mortisev1alpha1.SecretRef{Namespace: "ns", Name: "s", Key: "k"}
 	for _, tt := range []struct {
-		t    mortisev1alpha1.GitProviderType
-		host string
+		t        mortisev1alpha1.GitProviderType
+		host     string
+		wantType string
 	}{
-		{mortisev1alpha1.GitProviderTypeGitHub, "https://github.com"},
-		{mortisev1alpha1.GitProviderTypeGitLab, "https://gitlab.com"},
-		{mortisev1alpha1.GitProviderTypeGitea, "https://gitea.example.com"},
+		{mortisev1alpha1.GitProviderTypeGitHub, "https://github.com", "*git.GitHubAPI"},
+		{mortisev1alpha1.GitProviderTypeGitLab, "https://gitlab.com", "*git.GitLabAPI"},
+		{mortisev1alpha1.GitProviderTypeGitea, "https://gitea.example.com", "*git.GiteaAPI"},
 	} {
 		gp := &mortisev1alpha1.GitProvider{
 			Spec: mortisev1alpha1.GitProviderSpec{
@@ -179,6 +181,31 @@ func TestFactory(t *testing.T) {
 		}
 		if api == nil {
 			t.Errorf("NewGitAPIFromProvider(%s): got nil api", tt.t)
+			continue
 		}
+		got := fmt.Sprintf("%T", api)
+		if got != tt.wantType {
+			t.Errorf("NewGitAPIFromProvider(%s): got type %s, want %s", tt.t, got, tt.wantType)
+		}
+	}
+}
+
+// TestFactory_UnknownType verifies that an unsupported provider type returns an error.
+func TestFactory_UnknownType(t *testing.T) {
+	ref := mortisev1alpha1.SecretRef{Namespace: "ns", Name: "s", Key: "k"}
+	gp := &mortisev1alpha1.GitProvider{
+		Spec: mortisev1alpha1.GitProviderSpec{
+			Type: mortisev1alpha1.GitProviderType("bitbucket"),
+			Host: "https://bitbucket.org",
+			OAuth: mortisev1alpha1.OAuthConfig{
+				ClientIDSecretRef:     ref,
+				ClientSecretSecretRef: ref,
+			},
+			WebhookSecretRef: ref,
+		},
+	}
+	_, err := NewGitAPIFromProvider(gp, "tok", "wh-secret")
+	if err == nil {
+		t.Error("expected error for unsupported provider type")
 	}
 }
