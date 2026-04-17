@@ -92,7 +92,7 @@ test.describe('deploy tokens', () => {
 		await tokEnvSelect.selectOption('production');
 
 		// Click Create.
-		await page.getByRole('button', { name: 'Create' }).click();
+		await page.getByRole('button', { name: 'Create', exact: true }).click();
 
 		// The token value banner should appear with the secret value.
 		await expect(page.getByText('Token created')).toBeVisible({ timeout: 5_000 });
@@ -215,13 +215,13 @@ test.describe('deploy tokens', () => {
 		// Create a token.
 		await page.getByRole('button', { name: 'Create token' }).click();
 		await page.locator('#tok-name').fill('temp-token');
-		await page.getByRole('button', { name: 'Create' }).click();
+		await page.getByRole('button', { name: 'Create', exact: true }).click();
 
 		// Token value is shown once.
 		await expect(page.getByText(tokenValue)).toBeVisible({ timeout: 5_000 });
 
 		// Click "Dismiss" to hide the banner.
-		await page.getByRole('button', { name: 'Dismiss' }).click();
+		await page.getByRole('button', { name: 'Dismiss', exact: true }).click();
 
 		// Token value should no longer be visible.
 		await expect(page.getByText(tokenValue)).not.toBeVisible({ timeout: 3_000 });

@@ -204,6 +204,51 @@ This is the expected workflow. Tests should be boring and repetitive, not
 clever. If a test requires novel infrastructure, that's a sign the harness
 needs extending — fix the harness first.
 
+### UI E2E (Playwright) standards
+
+**Coverage requirement:** Every button, link, input, toggle, and interactive
+element that exists in the UI must be exercised by at least one test. Every
+user-facing feature must have end-to-end coverage. No exceptions.
+
+**Real API only:** E2E tests call the real backend API — no `page.route()`
+mocking of Mortise business logic. Use `loginViaAPI`, `createProjectViaAPI`,
+`createAppViaAPI`, etc. from `tests/e2e/helpers.ts`. The only acceptable
+mocks are OAuth redirect flows and external third-party services.
+
+**Selector discipline — these are bugs, not style preferences:**
+
+- Always use `{ exact: true }` with `getByRole('button', { name: 'X' })`.
+  Canvas AppNode divs have `tabindex="0" role="button"` and their accessible
+  name is `"Handle Handle {app-name}"`. Playwright's `getByRole` does
+  case-insensitive substring matching, so any app whose name contains "x"
+  silently matches `{ name: 'X' }`. Without `exact: true`, tests pick the
+  wrong element and time out instead of failing with a clear error.
+
+- Use `getByRole('heading', { name: 'X' })` instead of `getByText('X')` for
+  section headings. `getByText` does partial substring matching and will match
+  description paragraphs, option values, and nav links in addition to the
+  heading — causing strict-mode violations.
+
+- Use `getByTitle('X', { exact: true })` when there are multiple elements
+  with similar title= attributes (e.g., "Activity" vs "Activity rail").
+
+- Variable name placeholder is `'VARIABLE_NAME'` (not `'KEY'`).
+  Variable value placeholder is `'value or binding ref'` (not `'value'`).
+
+- Project settings has a tabbed layout — click `getByRole('button', { name:
+  'Danger' })` before asserting on danger-zone content.
+
+- `page.locator('div').filter({ hasText: 'X' }).last()` picks the innermost
+  div containing X, which may have no child buttons. Scope to a known
+  container (e.g., `page.locator('section#git-providers')`) instead.
+
+**Run a targeted subset while iterating:**
+```bash
+cd ui && MORTISE_BASE_URL=http://127.0.0.1:8080 \
+  MORTISE_ADMIN_EMAIL=admin@local MORTISE_ADMIN_PASSWORD=admin123 \
+  npx playwright test tests/e2e/myfile.spec.ts --reporter=list
+```
+
 ## Repo layout
 
 ```

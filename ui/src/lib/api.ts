@@ -208,13 +208,22 @@ export const api = {
 		}),
 
 	// --- env management ---
-	getEnv: (project: string, app: string, env: string) =>
-		request<Record<string, string>>(`/projects/${enc(project)}/apps/${enc(app)}/env/${enc(env)}`),
+	getEnv: async (project: string, app: string, env: string): Promise<Record<string, string>> => {
+		const rows = await request<Array<{ name: string; value: string }>>(
+			`/projects/${enc(project)}/apps/${enc(app)}/env?environment=${enc(env)}`
+		);
+		return Object.fromEntries((rows ?? []).map((r) => [r.name, r.value]));
+	},
 	setEnv: (project: string, app: string, env: string, vars: Record<string, string>) =>
-		request<void>(`/projects/${enc(project)}/apps/${enc(app)}/env/${enc(env)}`, {
-			method: 'PUT',
-			body: JSON.stringify(vars)
-		}),
+		request<void>(
+			`/projects/${enc(project)}/apps/${enc(app)}/env?environment=${enc(env)}`,
+			{
+				method: 'PUT',
+				body: JSON.stringify(
+					Object.entries(vars).map(([name, value]) => ({ name, value }))
+				)
+			}
+		),
 	importEnv: (project: string, app: string, env: string, raw: string) =>
 		request<void>(`/projects/${enc(project)}/apps/${enc(app)}/env/import`, {
 			method: 'POST',

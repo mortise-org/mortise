@@ -136,8 +136,9 @@ test.describe('project scope left rail', () => {
 		await page.waitForLoadState('networkidle');
 
 		// Project scope: Canvas + Project Settings (no Projects/Extensions/Platform Settings)
-		await expect(page.getByTitle('Canvas')).toBeVisible({ timeout: 10_000 });
-		await expect(page.getByTitle('Project Settings')).toBeVisible();
+		// Use exact title to avoid matching "Canvas view" toolbar button.
+		await expect(page.getByTitle('Canvas', { exact: true })).toBeVisible({ timeout: 10_000 });
+		await expect(page.getByTitle('Project Settings', { exact: true })).toBeVisible();
 
 		// Dashboard links should NOT appear in project scope.
 		await expect(page.getByTitle('Extensions')).toHaveCount(0);
@@ -152,8 +153,8 @@ test.describe('project scope left rail', () => {
 		await page.goto(`/projects/${name}`);
 		await page.waitForLoadState('networkidle');
 
-		// The Canvas link should be present.
-		const canvasLink = page.getByTitle('Canvas');
+		// The Canvas nav link (exact title to avoid matching "Canvas view" toolbar button).
+		const canvasLink = page.getByTitle('Canvas', { exact: true });
 		await expect(canvasLink).toBeVisible({ timeout: 10_000 });
 		await expect(canvasLink).toHaveAttribute('href', `/projects/${name}`);
 	});

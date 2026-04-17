@@ -80,7 +80,7 @@ test.describe("app drawer detail", () => {
       page.getByRole("button", { name: "Metrics" }),
     ).toBeVisible();
     await expect(
-      page.getByRole("button", { name: "Settings" }),
+      page.getByRole("button", { name: "Settings", exact: true }),
     ).toBeVisible();
 
     await deleteAppViaAPI(request, adminToken, projectName, appName);
@@ -123,8 +123,8 @@ test.describe("app drawer detail", () => {
 
     await page.getByRole("button", { name: "Variables" }).click();
 
-    // Empty state.
-    await expect(page.getByText("No variables yet")).toBeVisible({
+    // Empty state — actual text is "No variables set. Click..."
+    await expect(page.getByText(/No variables set/)).toBeVisible({
       timeout: 5_000,
     });
 
@@ -151,19 +151,19 @@ test.describe("app drawer detail", () => {
     // Click "New variable" to show inline form.
     await page.getByRole("button", { name: "New variable" }).click();
 
-    // KEY and value inputs appear.
-    await expect(page.getByPlaceholder("KEY")).toBeVisible();
-    await expect(page.getByPlaceholder("value")).toBeVisible();
+    // VARIABLE_NAME and value inputs appear.
+    await expect(page.getByPlaceholder("VARIABLE_NAME")).toBeVisible();
+    await expect(page.getByPlaceholder("value or binding ref")).toBeVisible();
 
     // Fill key/value.
-    await page.getByPlaceholder("KEY").fill("MY_VAR");
-    await page.getByPlaceholder("value").fill("my_value");
+    await page.getByPlaceholder("VARIABLE_NAME").fill("MY_VAR");
+    await page.getByPlaceholder("value or binding ref").fill("my_value");
 
     // Cancel to discard without saving.
     await page.getByRole("button", { name: "Cancel" }).last().click();
 
-    // "No variables yet" should reappear.
-    await expect(page.getByText("No variables yet")).toBeVisible();
+    // Empty state should reappear.
+    await expect(page.getByText(/No variables set/)).toBeVisible();
 
     await deleteAppViaAPI(request, adminToken, projectName, appName);
   });
@@ -186,13 +186,13 @@ test.describe("app drawer detail", () => {
     // Click "Raw / Import" to switch modes.
     await page.getByRole("button", { name: "Raw / Import" }).click();
 
-    // Textarea with placeholder should appear.
-    const textarea = page.getByPlaceholder(/KEY=value/);
+    // Textarea with placeholder should appear (e.g. DATABASE_URL=postgres://...).
+    const textarea = page.getByPlaceholder(/DATABASE_URL/);
     await expect(textarea).toBeVisible();
 
     // Cancel returns to form view.
     await page.getByRole("button", { name: "Cancel" }).click();
-    await expect(page.getByText("No variables yet")).toBeVisible();
+    await expect(page.getByText(/No variables set/)).toBeVisible();
 
     await deleteAppViaAPI(request, adminToken, projectName, appName);
   });
@@ -201,7 +201,7 @@ test.describe("app drawer detail", () => {
     page,
     request,
   }) => {
-    const appName = `e2e-settingstab-${randomSuffix()}`;
+    const appName = `e2e-setsrc-${randomSuffix()}`;
     await createAppViaAPI(request, adminToken, projectName, appName);
 
     await injectToken(page, adminToken);
@@ -210,20 +210,21 @@ test.describe("app drawer detail", () => {
       page.getByRole("heading", { name: appName }),
     ).toBeVisible({ timeout: 10_000 });
 
-    await page.getByRole("button", { name: "Settings" }).click();
+    await page.getByRole("button", { name: "Settings", exact: true }).click();
 
     // Filter input.
     await expect(page.getByPlaceholder("Filter settings…")).toBeVisible();
 
-    // Source section.
-    await expect(page.getByText("Source")).toBeVisible();
+    // Source section heading.
+    await expect(page.getByRole("heading", { name: "Source" })).toBeVisible();
 
     // Networking section.
-    await expect(page.getByText("Networking")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Networking" })).toBeVisible();
 
-    // Danger Zone.
+    // Danger Zone section.
     await expect(page.getByText("Danger Zone")).toBeVisible();
-    await expect(page.getByRole("button", { name: "Delete" })).toBeVisible();
+    // Initial "Delete" button (before confirmation).
+    await expect(page.getByRole("button", { name: "Delete", exact: true })).toBeVisible();
 
     await deleteAppViaAPI(request, adminToken, projectName, appName);
   });
@@ -241,14 +242,14 @@ test.describe("app drawer detail", () => {
       page.getByRole("heading", { name: appName }),
     ).toBeVisible({ timeout: 10_000 });
 
-    await page.getByRole("button", { name: "Settings" }).click();
+    await page.getByRole("button", { name: "Settings", exact: true }).click();
 
     // Click "Delete" button in danger zone.
-    await page.getByRole("button", { name: "Delete" }).click();
+    await page.getByRole("button", { name: "Delete", exact: true }).click();
 
-    // Confirmation UI appears: input must match app name.
+    // Confirmation UI: "Type [appName] to confirm deletion."
     await expect(
-      page.getByText(`Type`).or(page.getByText("to confirm deletion")),
+      page.getByText(/to confirm deletion/),
     ).toBeVisible();
 
     const confirmInput = page.getByPlaceholder(appName);
@@ -278,7 +279,7 @@ test.describe("app drawer detail", () => {
       page.getByRole("heading", { name: appName }),
     ).toBeVisible({ timeout: 10_000 });
 
-    await page.getByRole("button", { name: "Settings" }).click();
+    await page.getByRole("button", { name: "Settings", exact: true }).click();
 
     // Domains section has an input for adding custom domains.
     const domainInput = page.getByPlaceholder("custom.example.com");
@@ -298,7 +299,7 @@ test.describe("app drawer detail", () => {
     });
 
     await domainInput.fill(customDomain);
-    await page.getByRole("button", { name: "Add" }).click();
+    await page.getByRole("button", { name: "Add", exact: true }).click();
 
     // Custom domain should appear.
     await expect(page.getByText(customDomain)).toBeVisible({ timeout: 5_000 });
@@ -316,7 +317,7 @@ test.describe("app drawer detail", () => {
       page.getByRole("heading", { name: appName }),
     ).toBeVisible({ timeout: 10_000 });
 
-    await page.getByRole("button", { name: "Logs" }).click();
+    await page.getByRole("button", { name: "Logs", exact: true }).click();
 
     // Logs tab renders the log viewer.
     // Live tail toggle.

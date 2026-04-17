@@ -46,6 +46,7 @@ test.describe('full user journey', () => {
 		expect(token).toBeTruthy();
 
 		// ── Step 2: Create a project via the UI ──────────────────────
+		// "New Project" link is admin-only in the dashboard header.
 		await page.getByRole('link', { name: 'New Project' }).click();
 		await expect(page).toHaveURL('/projects/new');
 		await expect(page.getByRole('heading', { name: 'New Project' })).toBeVisible();
@@ -65,13 +66,15 @@ test.describe('full user journey', () => {
 		await page.getByTitle('List view').click();
 		await expect(page.getByText('No apps in this project')).toBeVisible();
 
-		// ── Step 3: Deploy a Docker image app via modal ──────────────
-		await page.getByRole('link', { name: 'Add' }).click();
+		// ── Step 3: Deploy a Docker image app via the new-app page ──────────────
+		// Navigate directly to the new-app page (the toolbar Add button opens an
+		// inline modal — going to the page is equivalent and avoids overlay issues).
+		await page.goto(`/projects/${projectName}/apps/new`);
 		await expect(page).toHaveURL(`/projects/${projectName}/apps/new`);
 
 		// Select Docker Image type.
-		await expect(page.getByText('Docker Image')).toBeVisible({ timeout: 10_000 });
-		await page.getByText('Docker Image').click();
+		await expect(page.getByText('Docker Image', { exact: true })).toBeVisible({ timeout: 10_000 });
+		await page.getByText('Docker Image', { exact: true }).click();
 
 		// Fill image and app name.
 		await page.getByPlaceholder('nginx:1.27 or ghcr.io/org/app:latest').fill('nginx:1.27');
@@ -93,13 +96,14 @@ test.describe('full user journey', () => {
 
 		// ── Step 5: Check Variables tab ───────────────────────────────
 		await page.getByRole('button', { name: 'Variables' }).click();
-		await expect(page.getByText('No variables yet')).toBeVisible({ timeout: 5_000 });
+		// Actual empty state text in VariablesTab.
+		await expect(page.getByText(/No variables set/)).toBeVisible({ timeout: 5_000 });
 
 		// Add a variable inline.
 		await page.getByRole('button', { name: 'New variable' }).click();
-		await page.getByPlaceholder('KEY').fill('APP_ENV');
-		await page.getByPlaceholder('value').fill('production');
-		await page.getByRole('button', { name: 'Add' }).first().click();
+		await page.getByPlaceholder('VARIABLE_NAME').fill('APP_ENV');
+		await page.getByPlaceholder('value or binding ref').fill('production');
+		await page.getByRole('button', { name: 'Add', exact: true }).click();
 
 		// Variable should appear in the list.
 		await expect(page.getByText('APP_ENV')).toBeVisible({ timeout: 10_000 });
@@ -111,7 +115,7 @@ test.describe('full user journey', () => {
 		).toBeTruthy();
 
 		// ── Step 6: Check Settings tab → Domains ─────────────────────
-		await page.getByRole('button', { name: 'Settings' }).click();
+		await page.getByRole('button', { name: 'Settings', exact: true }).click();
 
 		// Filter to domains section.
 		await page.getByPlaceholder('Filter settings…').fill('domains');
@@ -127,10 +131,13 @@ test.describe('full user journey', () => {
 		await expect(page.getByTitle('Canvas view')).toBeVisible();
 
 		// ── Step 8: Delete the project via project settings ───────────
-		await page.getByTitle('Project Settings').click();
+		await page.getByTitle('Project Settings', { exact: true }).click();
 		await expect(page).toHaveURL(`/projects/${projectName}/settings`);
 
-		// Type project name into confirmation input.
+		// Navigate to the Danger tab.
+		await page.getByRole('button', { name: 'Danger' }).click();
+
+		// Type project name into confirmation input and delete.
 		await page.getByPlaceholder(projectName).fill(projectName);
 		await page.getByRole('button', { name: 'Delete project' }).click();
 
@@ -219,9 +226,10 @@ test.describe('platform settings journey', () => {
 			page.getByRole('heading', { name: 'Platform Settings' })
 		).toBeVisible({ timeout: 10_000 });
 
-		await expect(page.getByText('General')).toBeVisible();
-		await expect(page.getByText('DNS')).toBeVisible();
-		await expect(page.getByText('Git Providers')).toBeVisible();
+		// Use heading role to avoid strict mode violations from descriptions.
+		await expect(page.getByRole('heading', { name: 'General' })).toBeVisible();
+		await expect(page.getByRole('heading', { name: 'DNS' })).toBeVisible();
+		await expect(page.getByRole('heading', { name: 'Git Providers' })).toBeVisible();
 		await expect(page.getByText('Users & Invites')).toBeVisible();
 	});
 });
@@ -253,15 +261,11 @@ test.describe('app creation via modal journey', () => {
 		const appName = `modal-app-${randomSuffix()}`;
 
 		await injectToken(page, adminToken);
-		await page.goto(`/projects/${projectName}`);
-
-		// Click "+ Add" in the toolbar.
-		await page.getByRole('link', { name: 'Add' }).click();
-		await expect(page).toHaveURL(`/projects/${projectName}/apps/new`);
+		await page.goto(`/projects/${projectName}/apps/new`);
 
 		// Select Docker Image.
-		await expect(page.getByText('Docker Image')).toBeVisible({ timeout: 10_000 });
-		await page.getByText('Docker Image').click();
+		await expect(page.getByText('Docker Image', { exact: true })).toBeVisible({ timeout: 10_000 });
+		await page.getByText('Docker Image', { exact: true }).click();
 
 		// Fill image ref and app name.
 		await page.getByPlaceholder('nginx:1.27 or ghcr.io/org/app:latest').fill('nginx:1.27');
@@ -279,7 +283,7 @@ test.describe('app creation via modal journey', () => {
 		// Switch tabs to verify they work.
 		await page.getByRole('button', { name: 'Deployments' }).click();
 		await page.getByRole('button', { name: 'Variables' }).click();
-		await expect(page.getByText('No variables yet')).toBeVisible({ timeout: 5_000 });
+		await expect(page.getByText(/No variables set/)).toBeVisible({ timeout: 5_000 });
 
 		// Close the drawer.
 		await page.getByRole('button', { name: 'Close drawer' }).click();

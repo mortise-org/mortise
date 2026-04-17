@@ -14,7 +14,8 @@ export default defineConfig({
 	retries: process.env.CI ? 2 : 0,
 	workers: 1,
 	reporter: 'html',
-	globalTimeout: 5 * 60 * 1000,
+	globalTimeout: 30 * 60 * 1000,
+	timeout: 30_000,
 	use: {
 		baseURL,
 		trace: 'retain-on-failure',

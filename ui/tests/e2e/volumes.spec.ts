@@ -76,11 +76,18 @@ test.describe('storage volumes', () => {
 		await page.locator('#vol-mount').fill('/data');
 		await page.locator('#vol-size').fill('5Gi');
 
-		// Submit.
-		await page.getByRole('button', { name: 'Add' }).click();
+		// Submit — find the form container and click Add within it.
+		const volForm = page.locator('#vol-name').locator('xpath=ancestor::div[4]');
+		const addBtn = volForm.getByRole('button', { name: 'Add', exact: true });
+		await expect(addBtn).toBeEnabled({ timeout: 5_000 });
+		const addResponsePromise = page.waitForResponse((r) =>
+			r.url().includes(`/apps/${appName}`) && r.request().method() === 'PUT'
+		);
+		await addBtn.click();
+		await addResponsePromise;
 
 		// Volume should appear in the list.
-		await expect(page.getByText('data')).toBeVisible({ timeout: 5_000 });
+		await expect(page.getByText('data', { exact: true })).toBeVisible({ timeout: 5_000 });
 		await expect(page.getByText('/data')).toBeVisible();
 		await expect(page.getByText('5Gi')).toBeVisible();
 
@@ -142,16 +149,20 @@ test.describe('storage volumes', () => {
 		await expect(page.getByText('Storage')).toBeVisible({ timeout: 5_000 });
 
 		// The pre-existing volume should be visible.
-		await expect(page.getByText('cache')).toBeVisible({ timeout: 5_000 });
+		await expect(page.getByText('cache', { exact: true })).toBeVisible({ timeout: 5_000 });
 		await expect(page.getByText('/cache')).toBeVisible();
 
 		// Click the trash icon on the volume row.
 		// Trash button is the only Trash2 icon inside the volume list row.
 		const volumeRow = page.locator('.rounded-md.border').filter({ hasText: 'cache' });
+		const removeResponsePromise = page.waitForResponse((r) =>
+			r.url().includes(`/apps/${appName}`) && r.request().method() === 'PUT'
+		);
 		await volumeRow.locator('button').click();
+		await removeResponsePromise;
 
-		// After deletion the volume should disappear.
-		await expect(page.getByText('cache')).not.toBeVisible({ timeout: 5_000 });
+		// After deletion the volume row should disappear.
+		await expect(volumeRow).not.toBeVisible({ timeout: 5_000 });
 
 		await deleteAppViaAPI(request, adminToken, projectName, appName);
 	});
@@ -168,7 +179,7 @@ test.describe('storage volumes', () => {
 		await page.getByText('Database').click();
 
 		// Postgres preset prefills the app name.
-		await page.getByText('Postgres').click();
+		await page.getByText('Postgres', { exact: true }).click();
 		const appNameInput = page.getByPlaceholder('my-app');
 		const pgAppName = `postgres-${randomSuffix()}`;
 		await appNameInput.clear();
@@ -213,7 +224,11 @@ test.describe('storage volumes', () => {
 		await page.locator('#vol-name').fill('pgdata');
 		await page.locator('#vol-mount').fill('/var/lib/postgresql/data');
 		await page.locator('#vol-size').fill('10Gi');
-		await page.getByRole('button', { name: 'Add' }).click();
+		const pgdataResponsePromise = page.waitForResponse((r) =>
+			r.url().includes(`/apps/${pgAppName}`) && r.request().method() === 'PUT'
+		);
+		await page.getByRole('button', { name: 'Add', exact: true }).click();
+		await pgdataResponsePromise;
 
 		await expect(page.getByText('pgdata')).toBeVisible({ timeout: 5_000 });
 		await expect(page.getByText('/var/lib/postgresql/data')).toBeVisible();

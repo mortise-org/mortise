@@ -76,8 +76,8 @@ test.describe('domains', () => {
 		await expect(domainInput).toBeVisible();
 		await domainInput.fill(customDomain);
 
-		// Click Add.
-		await page.getByRole('button', { name: 'Add' }).click();
+		// Click Add — exact: true excludes AppNodes whose accessible name contains "add" as a substring.
+		await page.getByRole('button', { name: 'Add', exact: true }).click();
 
 		// The domain should appear in the list.
 		await expect(page.getByText(customDomain)).toBeVisible({ timeout: 5_000 });

@@ -107,7 +107,7 @@ test.describe('Previews page', () => {
 		await injectAuth(page);
 		await page.goto('/projects/my-project/previews');
 
-		await expect(page.getByRole('heading', { name: 'PR Environments' })).toBeVisible({
+		await expect(page.getByRole('heading', { name: 'PR Environments' }).first()).toBeVisible({
 			timeout: 5000
 		});
 	});
@@ -188,7 +188,7 @@ test.describe('Previews page', () => {
 		await page.getByRole('link', { name: /View active PR environments/ }).click();
 
 		await expect(page).toHaveURL('/projects/my-project/previews', { timeout: 5000 });
-		await expect(page.getByRole('heading', { name: 'PR Environments' })).toBeVisible({
+		await expect(page.getByRole('heading', { name: 'PR Environments' }).first()).toBeVisible({
 			timeout: 5000
 		});
 	});

@@ -208,7 +208,7 @@ test.describe('build and deploy', () => {
 		// The drawer header shows the phase badge
 		// Phase chip renders as a <span> with the phase text
 		await expect(
-			page.locator('span').filter({ hasText: 'Building' })
+			page.locator('span').filter({ hasText: 'Building' }).first()
 		).toBeVisible({ timeout: 5000 });
 	});
 

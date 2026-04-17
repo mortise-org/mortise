@@ -116,7 +116,7 @@ test.describe('NewAppModal — all source types', () => {
 
 		await expect(page.getByText('Git Repository')).toBeVisible();
 		await expect(page.getByText('Database')).toBeVisible();
-		await expect(page.getByText('Template')).toBeVisible();
+		await expect(page.getByText('Template', { exact: true })).toBeVisible();
 		await expect(page.getByText('Docker Image')).toBeVisible();
 		await expect(page.getByText('External Service')).toBeVisible();
 		await expect(page.getByText('Empty App')).toBeVisible();
@@ -185,8 +185,8 @@ test.describe('NewAppModal — all source types', () => {
 		await expect(page.getByText('org/web-app')).toBeVisible({ timeout: 5000 });
 		await page.getByText('org/web-app').click();
 
-		// Branch select should show the mock branches
-		const branchSelect = page.locator('select').filter({ hasText: /main/ });
+		// Branch select should show the mock branches — scope to the Branch label's sibling
+		const branchSelect = page.locator('select').filter({ hasText: /main/ }).last();
 		await expect(branchSelect).toBeVisible({ timeout: 5000 });
 		// feature/new-ui should appear as an option
 		await expect(page.locator('option', { hasText: 'feature/new-ui' })).toHaveCount(1);
@@ -308,8 +308,8 @@ test.describe('NewAppModal — all source types', () => {
 		await page.getByText('Database').click();
 
 		// DB template grid — click Postgres card
-		await expect(page.getByText('Postgres')).toBeVisible({ timeout: 3000 });
-		await page.getByText('Postgres').click();
+		await expect(page.getByText('Postgres', { exact: true })).toBeVisible({ timeout: 3000 });
+		await page.getByText('Postgres', { exact: true }).click();
 
 		// App name should be prefilled to 'postgres'
 		const appNameInput = page.getByPlaceholder('my-app');

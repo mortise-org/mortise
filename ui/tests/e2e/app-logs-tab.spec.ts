@@ -83,7 +83,10 @@ async function goToLogsTab(page: Page) {
   await injectAuth(page);
   await setupCommonMocks(page);
   await page.goto('/projects/my-project/apps/web-app');
-  await page.getByRole('button', { name: 'Logs' }).click();
+  // Wait for drawer to appear before clicking tabs, to avoid strict-mode
+  // conflicts with canvas app nodes and ensure the drawer is rendered.
+  await expect(page.getByRole('button', { name: 'Close drawer' })).toBeVisible({ timeout: 8_000 });
+  await page.getByRole('button', { name: 'Logs', exact: true }).click();
   // Wait for the logs tab content to render.
   await expect(page.getByText('Live tail')).toBeVisible({ timeout: 8_000 });
 }
@@ -96,8 +99,10 @@ test('logs tab shows environment tab buttons for each environment', async ({ pag
 
   // Both environment buttons must be present (when there are multiple envs, the
   // LogsTab renders buttons rather than a plain text label).
-  await expect(page.getByRole('button', { name: 'production' })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'staging' })).toBeVisible();
+  // Scope to main to avoid matching the global environment-switcher in the header.
+  const main = page.getByRole('main');
+  await expect(main.getByRole('button', { name: 'production', exact: true })).toBeVisible();
+  await expect(main.getByRole('button', { name: 'staging', exact: true })).toBeVisible();
 });
 
 // ---------------------------------------------------------------------------
@@ -127,7 +132,9 @@ test('switching environment tab updates the selected button state', async ({ pag
   await goToLogsTab(page);
 
   // Staging button starts unselected; clicking it should give it the active style.
-  const stagingBtn = page.getByRole('button', { name: 'staging' });
+  // Scope to main to avoid matching the global environment-switcher in the header.
+  const main = page.getByRole('main');
+  const stagingBtn = main.getByRole('button', { name: 'staging', exact: true });
   await stagingBtn.click();
 
   // After click, the staging button acquires bg-surface-600 (the active class).
@@ -136,7 +143,7 @@ test('switching environment tab updates the selected button state', async ({ pag
   await expect(stagingBtn).toBeVisible();
 
   // Production button should now look inactive (text-gray-400 class present).
-  const productionBtn = page.getByRole('button', { name: 'production' });
+  const productionBtn = main.getByRole('button', { name: 'production', exact: true });
   await expect(productionBtn).toBeVisible();
   // Verify the class attribute reflects inactive state.
   const prodClass = await productionBtn.getAttribute('class');
@@ -191,7 +198,8 @@ test('filter input hides non-matching log lines', async ({ page }) => {
   );
 
   await page.goto('/projects/my-project/apps/web-app');
-  await page.getByRole('button', { name: 'Logs' }).click();
+  await expect(page.getByRole('button', { name: 'Close drawer' })).toBeVisible({ timeout: 8_000 });
+  await page.getByRole('button', { name: 'Logs', exact: true }).click();
   await expect(page.getByText('Live tail')).toBeVisible({ timeout: 8_000 });
 
   // Type a filter that only matches one of the lines.

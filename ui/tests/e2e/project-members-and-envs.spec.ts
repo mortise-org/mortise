@@ -221,7 +221,8 @@ test('removing a member calls DELETE /members/{email}', async ({ page }) => {
   await expect(page.getByText('user@example.com')).toBeVisible({ timeout: 5_000 });
 
   // Click the Remove button next to that member.
-  const memberRow = page.locator('div').filter({ hasText: /user@example\.com/ }).last();
+  // Find the row that contains both the email text and a Remove button.
+  const memberRow = page.locator('div').filter({ hasText: /user@example\.com/ }).filter({ has: page.getByRole('button', { name: 'Remove' }) }).first();
   await memberRow.getByRole('button', { name: 'Remove' }).click();
 
   await expect(async () => {

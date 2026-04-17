@@ -75,12 +75,14 @@ test.describe('git providers oauth', () => {
 	test('Test 2: Admin can add a GitHub OAuth provider', async ({ page }) => {
 		await setupBaseRoutes(page);
 
-		// Start with empty providers list
+		// Start with empty providers list; single route handler captures POST body
 		let providersPayload: object[] = [];
+		let capturedBody: Record<string, unknown> | null = null;
 		await page.route('/api/gitproviders', async (r) => {
 			if (r.request().method() === 'GET') {
 				await r.fulfill({ json: providersPayload });
 			} else if (r.request().method() === 'POST') {
+				capturedBody = JSON.parse(r.request().postData() ?? '{}');
 				providersPayload = [mockGitProvider];
 				await r.fulfill({ status: 201, json: mockGitProvider });
 			}
@@ -94,17 +96,6 @@ test.describe('git providers oauth', () => {
 				}
 			})
 		);
-
-		// Capture the POST request body
-		let capturedBody: Record<string, unknown> | null = null;
-		await page.route('/api/gitproviders', async (r) => {
-			if (r.request().method() === 'POST') {
-				capturedBody = JSON.parse(r.request().postData() ?? '{}');
-				await r.fulfill({ status: 201, json: mockGitProvider });
-			} else {
-				await r.fulfill({ json: providersPayload });
-			}
-		});
 
 		await injectAuth(page, true);
 		await page.goto('/admin/settings');
@@ -125,10 +116,10 @@ test.describe('git providers oauth', () => {
 		// Fill host URL
 		await page.getByPlaceholder('https://github.com').fill('https://github.com');
 
-		// Fill OAuth credentials
-		const clientIdInput = page.getByLabel('OAuth Client ID');
+		// Fill OAuth credentials — labels lack `for` attributes so use adjacent sibling CSS
+		const clientIdInput = page.locator('label:has-text("OAuth Client ID") + input');
 		await clientIdInput.fill('test-id');
-		const clientSecretInput = page.getByLabel('OAuth Client Secret');
+		const clientSecretInput = page.locator('label:has-text("OAuth Client Secret") + input');
 		await clientSecretInput.fill('test-secret');
 
 		// Click "Create" to submit
@@ -145,12 +136,6 @@ test.describe('git providers oauth', () => {
 		await page.route('/api/gitproviders', async (r) => {
 			await r.fulfill({ json: providersPayload });
 		});
-		await page.route('/api/gitproviders/github-main', async (r) => {
-			if (r.request().method() === 'DELETE') {
-				providersPayload = [];
-				await r.fulfill({ status: 204, body: '' });
-			}
-		});
 		await page.route('/api/platform', (r) =>
 			r.fulfill({
 				json: {
@@ -161,7 +146,6 @@ test.describe('git providers oauth', () => {
 			})
 		);
 
-		// Track DELETE call
 		let deleteCalled = false;
 		await page.route('/api/gitproviders/github-main', async (r) => {
 			if (r.request().method() === 'DELETE') {
@@ -179,9 +163,9 @@ test.describe('git providers oauth', () => {
 		// Override dialog confirmation (window.confirm) to return true
 		page.on('dialog', (dialog) => dialog.accept());
 
-		// Click the delete button (Trash2 icon button next to github-main)
-		const providerRow = page.locator('div').filter({ hasText: /github-main/ }).last();
-		await providerRow.getByRole('button').last().click();
+		// Click the delete (Trash2) button — section#git-providers has "Add Provider" (nth 0)
+		// then the trash icon button for the first provider (nth 1)
+		await page.locator('section#git-providers').getByRole('button').nth(1).click();
 
 		// Provider should be removed from the list
 		await expect(page.getByText('github-main')).toHaveCount(0, { timeout: 5000 });

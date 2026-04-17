@@ -105,7 +105,7 @@
 		if (!newVol.name || !newVol.mountPath) return;
 		savingVolume = true;
 		try {
-			const spec = structuredClone(app.spec);
+			const spec = JSON.parse(JSON.stringify(app.spec));
 			spec.storage = [...(spec.storage ?? []), {
 				name: newVol.name,
 				mountPath: newVol.mountPath,
@@ -125,7 +125,7 @@
 
 	async function removeVolume(idx: number) {
 		try {
-			const spec = structuredClone(app.spec);
+			const spec = JSON.parse(JSON.stringify(app.spec));
 			spec.storage = (spec.storage ?? []).filter((_, i) => i !== idx);
 			const updated = await api.updateApp(project, app.metadata.name, spec);
 			onAppUpdated(updated);
@@ -159,7 +159,7 @@
 	}
 
 	function buildUpdatedSpec(): AppSpec {
-		const spec = structuredClone(app.spec);
+		const spec = JSON.parse(JSON.stringify(app.spec));
 
 		// Source
 		if (spec.source.type === 'git') {
@@ -194,7 +194,7 @@
 	async function saveBuild() {
 		savingBuild = true;
 		try {
-			const spec = structuredClone(app.spec);
+			const spec = JSON.parse(JSON.stringify(app.spec));
 			spec.source = {
 				...spec.source,
 				build: {
@@ -228,7 +228,7 @@
 		saving = true;
 		errorMsg = '';
 		try {
-			const spec = structuredClone(app.spec);
+			const spec = JSON.parse(JSON.stringify(app.spec));
 			const envIdx = (spec.environments ?? []).findIndex((e) => e.name === scaleEnv);
 			if (envIdx >= 0 && spec.environments) {
 				spec.environments[envIdx].replicas = parseInt(scaleReplicas, 10) || 1;
@@ -269,7 +269,7 @@
 	async function saveTlsOverride() {
 		savingTls = true;
 		try {
-			const spec = structuredClone(app.spec);
+			const spec = JSON.parse(JSON.stringify(app.spec));
 			if (spec.environments?.[0]) {
 				(spec.environments[0] as { tls?: { clusterIssuer?: string; secretName?: string } }).tls = {
 					clusterIssuer: tlsClusterIssuer || undefined,

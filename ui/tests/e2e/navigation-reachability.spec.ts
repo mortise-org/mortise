@@ -157,7 +157,7 @@ test.describe('navigation reachability', () => {
 		await injectAuth(page);
 		await page.goto('/');
 
-		await expect(page.getByText('my-project')).toBeVisible({ timeout: 5000 });
+		await expect(page.getByText('my-project').first()).toBeVisible({ timeout: 5000 });
 		// Left rail: Projects, Extensions, Platform Settings (admin)
 		await expect(page.getByTitle('Projects')).toBeVisible({ timeout: 5000 });
 		await expect(page.getByTitle('Extensions')).toBeVisible({ timeout: 5000 });
@@ -196,7 +196,7 @@ test.describe('navigation reachability', () => {
 		await userMenuBtn.click();
 
 		// Click "Platform Settings" in the dropdown
-		await page.getByRole('link', { name: 'Platform Settings' }).click();
+		await page.getByRole('link', { name: 'Platform Settings' }).first().click();
 		await expect(page).toHaveURL('/admin/settings');
 	});
 

@@ -39,21 +39,21 @@ test.describe('new app modal structure', () => {
 			page.getByRole('heading', { name: 'What would you like to create?' })
 		).toBeVisible({ timeout: 10_000 });
 
-		// All type options in the picker.
-		await expect(page.getByText('Git Repository')).toBeVisible();
-		await expect(page.getByText('Database')).toBeVisible();
-		await expect(page.getByText('Template')).toBeVisible();
-		await expect(page.getByText('Docker Image')).toBeVisible();
-		await expect(page.getByText('External Service')).toBeVisible();
-		await expect(page.getByText('Empty App')).toBeVisible();
+		// All type options in the picker — use exact to avoid matching descriptions.
+		await expect(page.getByText('Git Repository', { exact: true })).toBeVisible();
+		await expect(page.getByText('Database', { exact: true })).toBeVisible();
+		await expect(page.getByText('Template', { exact: true })).toBeVisible();
+		await expect(page.getByText('Docker Image', { exact: true })).toBeVisible();
+		await expect(page.getByText('External Service', { exact: true })).toBeVisible();
+		await expect(page.getByText('Empty App', { exact: true })).toBeVisible();
 	});
 
 	test('selecting Docker Image shows image input and Create app button', async ({ page }) => {
 		await injectToken(page, token);
 		await page.goto(`/projects/${project}/apps/new`);
 
-		await expect(page.getByText('Docker Image')).toBeVisible({ timeout: 10_000 });
-		await page.getByText('Docker Image').click();
+		await expect(page.getByText('Docker Image', { exact: true })).toBeVisible({ timeout: 10_000 });
+		await page.getByText('Docker Image', { exact: true }).click();
 
 		// Configure pane shows image reference input.
 		await expect(page.getByText('Image Reference')).toBeVisible();
@@ -68,22 +68,22 @@ test.describe('new app modal structure', () => {
 		await injectToken(page, token);
 		await page.goto(`/projects/${project}/apps/new`);
 
-		await expect(page.getByText('Database')).toBeVisible({ timeout: 10_000 });
-		await page.getByText('Database').click();
+		await expect(page.getByText('Database', { exact: true })).toBeVisible({ timeout: 10_000 });
+		await page.getByText('Database', { exact: true }).click();
 
 		// Database presets should be visible.
-		await expect(page.getByText('Postgres')).toBeVisible();
-		await expect(page.getByText('Redis')).toBeVisible();
-		await expect(page.getByText('MinIO')).toBeVisible();
-		await expect(page.getByText('MySQL')).toBeVisible();
+		await expect(page.getByText('Postgres', { exact: true })).toBeVisible();
+		await expect(page.getByText('Redis', { exact: true })).toBeVisible();
+		await expect(page.getByText('MinIO', { exact: true })).toBeVisible();
+		await expect(page.getByText('MySQL', { exact: true })).toBeVisible();
 	});
 
 	test('Back button returns to type picker', async ({ page }) => {
 		await injectToken(page, token);
 		await page.goto(`/projects/${project}/apps/new`);
 
-		await expect(page.getByText('Docker Image')).toBeVisible({ timeout: 10_000 });
-		await page.getByText('Docker Image').click();
+		await expect(page.getByText('Docker Image', { exact: true })).toBeVisible({ timeout: 10_000 });
+		await page.getByText('Docker Image', { exact: true }).click();
 
 		// Configure pane is shown.
 		await expect(page.getByRole('button', { name: 'Create app' })).toBeVisible();
@@ -100,8 +100,8 @@ test.describe('new app modal structure', () => {
 		await injectToken(page, token);
 		await page.goto(`/projects/${project}/apps/new`);
 
-		await expect(page.getByText('Docker Image')).toBeVisible({ timeout: 10_000 });
-		await page.getByText('Docker Image').click();
+		await expect(page.getByText('Docker Image', { exact: true })).toBeVisible({ timeout: 10_000 });
+		await page.getByText('Docker Image', { exact: true }).click();
 
 		await page.getByRole('button', { name: 'Cancel' }).click();
 
@@ -131,8 +131,8 @@ test.describe('deploy docker image', () => {
 		await injectToken(page, token);
 		await page.goto(`/projects/${project}/apps/new`);
 
-		await expect(page.getByText('Docker Image')).toBeVisible({ timeout: 10_000 });
-		await page.getByText('Docker Image').click();
+		await expect(page.getByText('Docker Image', { exact: true })).toBeVisible({ timeout: 10_000 });
+		await page.getByText('Docker Image', { exact: true }).click();
 
 		// Create button should be disabled when no app name is provided.
 		const createBtn = page.getByRole('button', { name: 'Create app' });
@@ -145,8 +145,8 @@ test.describe('deploy docker image', () => {
 		await injectToken(page, token);
 		await page.goto(`/projects/${project}/apps/new`);
 
-		await expect(page.getByText('Docker Image')).toBeVisible({ timeout: 10_000 });
-		await page.getByText('Docker Image').click();
+		await expect(page.getByText('Docker Image', { exact: true })).toBeVisible({ timeout: 10_000 });
+		await page.getByText('Docker Image', { exact: true }).click();
 
 		await page.getByPlaceholder('nginx:1.27 or ghcr.io/org/app:latest').fill('nginx:1.27');
 		await page.getByPlaceholder('my-app').fill(appName);
@@ -182,11 +182,11 @@ test.describe('deploy database preset', () => {
 		await injectToken(page, token);
 		await page.goto(`/projects/${project}/apps/new`);
 
-		await expect(page.getByText('Database')).toBeVisible({ timeout: 10_000 });
-		await page.getByText('Database').click();
+		await expect(page.getByText('Database', { exact: true })).toBeVisible({ timeout: 10_000 });
+		await page.getByText('Database', { exact: true }).click();
 
 		// Click Postgres in the grid.
-		await page.getByText('Postgres').click();
+		await page.getByText('Postgres', { exact: true }).click();
 
 		// App name should be prefilled to 'postgres'.
 		const appNameInput = page.getByPlaceholder('my-app');
@@ -200,10 +200,10 @@ test.describe('deploy database preset', () => {
 		await injectToken(page, token);
 		await page.goto(`/projects/${project}/apps/new`);
 
-		await expect(page.getByText('Database')).toBeVisible({ timeout: 10_000 });
-		await page.getByText('Database').click();
+		await expect(page.getByText('Database', { exact: true })).toBeVisible({ timeout: 10_000 });
+		await page.getByText('Database', { exact: true }).click();
 
-		await page.getByText('Redis').click();
+		await page.getByText('Redis', { exact: true }).click();
 
 		const appNameInput = page.getByPlaceholder('my-app');
 		await expect(appNameInput).toHaveValue('redis');
@@ -334,10 +334,8 @@ test.describe('app drawer', () => {
 
 		await page.getByRole('button', { name: 'Variables' }).click();
 
-		// Variables tab content should appear (env var editor).
-		await expect(page.getByRole('button', { name: 'Variables' })).toBeVisible();
-		// The tab content area should load (no error).
-		await expect(page.locator('.flex-1.overflow-y-auto')).toBeVisible();
+		// Variables tab content should appear — "New variable" button is always visible.
+		await expect(page.getByRole('button', { name: 'New variable' })).toBeVisible({ timeout: 5_000 });
 	});
 
 	test('tab switching works — Settings tab shows content', async ({ page }) => {
@@ -346,10 +344,10 @@ test.describe('app drawer', () => {
 
 		await expect(page.getByRole('heading', { name: appName })).toBeVisible({ timeout: 10_000 });
 
-		await page.getByRole('button', { name: 'Settings' }).click();
+		await page.getByRole('button', { name: 'Settings', exact: true }).click();
 
-		// Settings tab renders some content.
-		await expect(page.locator('.flex-1.overflow-y-auto')).toBeVisible();
+		// Settings tab renders the filter input.
+		await expect(page.getByPlaceholder('Filter settings…')).toBeVisible({ timeout: 5_000 });
 	});
 
 	test('phase badge is visible in drawer header', async ({ page }) => {

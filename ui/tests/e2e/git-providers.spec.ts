@@ -50,7 +50,7 @@ test.describe('git providers', () => {
 			page.getByRole('heading', { name: 'Platform Settings' })
 		).toBeVisible({ timeout: 10_000 });
 
-		await expect(page.getByText('Git Providers')).toBeVisible();
+		await expect(page.getByRole('heading', { name: 'Git Providers' })).toBeVisible();
 		await expect(page.getByRole('button', { name: 'Add Provider' })).toBeVisible();
 	});
 
@@ -70,33 +70,26 @@ test.describe('git providers', () => {
 		// Form appears with provider fields.
 		await expect(page.getByText('New Git Provider')).toBeVisible();
 
-		// Fill in the form. The labels use xs text-gray-400 (getByText works
-		// since they are associated labels in the form grid).
-		await page.getByPlaceholder('github-main').fill(providerName);
+		// Fill in the form. Scope inputs to the form section to avoid matching
+		// other inputs on the page.
+		const formSection = page.locator('section#git-providers, div').filter({ hasText: 'New Git Provider' }).last();
+		await formSection.getByPlaceholder('github-main').fill(providerName);
+		await formSection.getByPlaceholder('https://github.com').fill('https://github.com');
 
-		// Type selector: default is github, keep it.
-		// Host URL.
-		await page.getByPlaceholder('https://github.com').fill('https://github.com');
+		// Fill required OAuth fields (backend validates these).
+		// The form has: Name, Host URL, OAuth Client ID, OAuth Client Secret, Webhook Secret
+		// Use label text to locate the inputs.
+		await formSection.locator('label').filter({ hasText: 'OAuth Client ID' }).locator('~ input').fill('test-client-id');
+		await formSection.locator('label').filter({ hasText: 'OAuth Client Secret' }).locator('~ input').fill('test-client-secret');
+		await formSection.locator('label').filter({ hasText: 'Webhook Secret' }).locator('~ input').fill('test-webhook-secret');
 
-		// OAuth fields.
-		await page.getByPlaceholder('github-main').fill(providerName); // name input has this placeholder
-		// The OAuth client ID and secret inputs don't have placeholders; use order.
-		const oauthClientIdInput = page.locator('input[type="text"]').nth(1);
-		const oauthClientSecretInput = page.locator('input[type="password"]').first();
-		await oauthClientIdInput.fill('e2e-test-client-id');
-		await oauthClientSecretInput.fill('e2e-test-client-secret');
-
-		// Webhook secret.
-		const webhookInput = page.locator('input[type="text"]').last();
-		await webhookInput.fill('e2e-webhook-secret');
-
-		await page.getByRole('button', { name: 'Create' }).click();
+		// Submit the form.
+		await page.getByRole('button', { name: 'Create', exact: true }).click();
 
 		// The form should close and the provider list should show our provider.
 		await expect(page.getByText(providerName)).toBeVisible({ timeout: 10_000 });
 
-		// Delete the provider via the trash icon button.
-		// The provider row has a Trash2 icon button.
+		// Delete the provider via the trash icon button next to the provider row.
 		const providerRow = page.locator('div').filter({ hasText: providerName }).last();
 		await providerRow.getByRole('button').last().click();
 
@@ -119,11 +112,11 @@ test.describe('git providers', () => {
 		).toBeVisible({ timeout: 10_000 });
 
 		// General section.
-		await expect(page.getByText('General')).toBeVisible();
+		await expect(page.getByRole('heading', { name: 'General' })).toBeVisible();
 		await expect(page.getByPlaceholder('yourdomain.com')).toBeVisible();
 
 		// DNS section.
-		await expect(page.getByText('DNS')).toBeVisible();
+		await expect(page.getByRole('heading', { name: 'DNS' })).toBeVisible();
 
 		// Users section.
 		await expect(page.getByText('Users & Invites')).toBeVisible();
@@ -142,6 +135,6 @@ test.describe('git providers', () => {
 
 		// Typing 'git' should keep the git providers section visible.
 		await filterInput.fill('git');
-		await expect(page.getByText('Git Providers')).toBeVisible();
+		await expect(page.getByRole('heading', { name: 'Git Providers' })).toBeVisible();
 	});
 });

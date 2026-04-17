@@ -149,6 +149,22 @@
 			savingTls = false;
 		}
 	}
+
+	// Section visibility based on filter text
+	const sectionKeywords: Record<string, string[]> = {
+		general: ['general', 'domain', 'platform'],
+		dns: ['dns', 'cloudflare', 'route53'],
+		registry: ['registry', 'oci', 'zot', 'image'],
+		build: ['build', 'buildkit', 'container'],
+		tls: ['tls', 'cert', 'issuer', 'ssl'],
+		'git-providers': ['git', 'provider', 'github', 'gitlab', 'gitea', 'oauth'],
+		users: ['users', 'invite', 'admin']
+	};
+	function sectionVisible(id: string): boolean {
+		if (!filterText) return true;
+		const q = filterText.toLowerCase();
+		return (sectionKeywords[id] ?? [id]).some((k) => k.includes(q));
+	}
 </script>
 
 <div class="mx-auto max-w-3xl p-8">
@@ -169,7 +185,7 @@
 	{/if}
 
 	<!-- General -->
-	<section class="mb-8 space-y-4" id="general">
+	<section class="mb-8 space-y-4" id="general" style:display={sectionVisible('general') ? '' : 'none'}>
 		<h2 class="border-b border-surface-600 pb-2 text-sm font-medium text-gray-300">General</h2>
 		<div>
 			<label class="text-sm text-gray-400">Platform Domain</label>
@@ -191,7 +207,7 @@
 	</section>
 
 	<!-- DNS -->
-	<section class="mb-8 space-y-4" id="dns">
+	<section class="mb-8 space-y-4" id="dns" style:display={sectionVisible('dns') ? '' : 'none'}>
 		<h2 class="border-b border-surface-600 pb-2 text-sm font-medium text-gray-300">DNS</h2>
 		<div>
 			<label class="text-sm text-gray-400">Provider</label>
@@ -207,7 +223,7 @@
 	</section>
 
 	<!-- Registry -->
-	<section id="registry" class="mb-8 space-y-4">
+	<section id="registry" class="mb-8 space-y-4" style:display={sectionVisible('registry') ? '' : 'none'}>
 		<h2 class="border-b border-surface-600 pb-2 text-sm font-medium text-gray-300">Registry</h2>
 		<p class="text-xs text-gray-500">OCI registry for storing built images. Defaults to the bundled Zot registry.</p>
 		<div class="space-y-3 rounded-md border border-surface-600 bg-surface-800/50 p-4">
@@ -242,7 +258,7 @@
 	</section>
 
 	<!-- Build -->
-	<section id="build" class="mb-8 space-y-4">
+	<section id="build" class="mb-8 space-y-4" style:display={sectionVisible('build') ? '' : 'none'}>
 		<h2 class="border-b border-surface-600 pb-2 text-sm font-medium text-gray-300">Build</h2>
 		<p class="text-xs text-gray-500">BuildKit configuration for building container images from source.</p>
 		<div class="space-y-3 rounded-md border border-surface-600 bg-surface-800/50 p-4">
@@ -269,7 +285,7 @@
 	</section>
 
 	<!-- TLS -->
-	<section id="tls" class="mb-8 space-y-4">
+	<section id="tls" class="mb-8 space-y-4" style:display={sectionVisible('tls') ? '' : 'none'}>
 		<h2 class="border-b border-surface-600 pb-2 text-sm font-medium text-gray-300">TLS</h2>
 		<p class="text-xs text-gray-500">cert-manager configuration for automatic TLS certificate provisioning.</p>
 		<div class="space-y-3 rounded-md border border-surface-600 bg-surface-800/50 p-4">
@@ -288,7 +304,7 @@
 	</section>
 
 	<!-- Git Providers -->
-	<section class="mb-8 space-y-4" id="git-providers">
+	<section class="mb-8 space-y-4" id="git-providers" style:display={sectionVisible('git-providers') ? '' : 'none'}>
 		<div class="flex items-center justify-between border-b border-surface-600 pb-2">
 			<h2 class="text-sm font-medium text-gray-300">Git Providers</h2>
 			<button
@@ -336,16 +352,18 @@
 				</div>
 				<div class="grid grid-cols-2 gap-3">
 					<div>
-						<label class="text-xs text-gray-400">OAuth Client ID</label>
+						<label class="text-xs text-gray-400" for="new-provider-client-id">OAuth Client ID</label>
 						<input
+							id="new-provider-client-id"
 							type="text"
 							bind:value={newProviderClientID}
 							class="mt-1 w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-white placeholder-gray-500 outline-none focus:border-accent"
 						/>
 					</div>
 					<div>
-						<label class="text-xs text-gray-400">OAuth Client Secret</label>
+						<label class="text-xs text-gray-400" for="new-provider-client-secret">OAuth Client Secret</label>
 						<input
+							id="new-provider-client-secret"
 							type="password"
 							bind:value={newProviderClientSecret}
 							class="mt-1 w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-white placeholder-gray-500 outline-none focus:border-accent"
@@ -353,8 +371,9 @@
 					</div>
 				</div>
 				<div>
-					<label class="text-xs text-gray-400">Webhook Secret</label>
+					<label class="text-xs text-gray-400" for="new-provider-webhook-secret">Webhook Secret</label>
 					<input
+						id="new-provider-webhook-secret"
 						type="text"
 						bind:value={newProviderWebhookSecret}
 						class="mt-1 w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-white placeholder-gray-500 outline-none focus:border-accent"
@@ -428,7 +447,7 @@
 	</section>
 
 	<!-- Users section -->
-	<section id="users" class="mb-8 space-y-4">
+	<section id="users" class="mb-8 space-y-4" style:display={sectionVisible('users') ? '' : 'none'}>
 		<h2 class="border-b border-surface-600 pb-2 text-sm font-medium text-gray-300">Users &amp; Invites</h2>
 		<div class="rounded-md border border-surface-600 bg-surface-800/50 p-4 text-sm text-gray-400">
 			<p>User management is handled per-project. To invite users to a project, go to <strong class="text-white">Project Settings → Members</strong>.</p>

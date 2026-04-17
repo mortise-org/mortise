@@ -10,6 +10,7 @@
   let project = $state<Project | null>(null);
   let loading = $state(true);
   let activeTab = $state<'general' | 'environments' | 'shared-vars' | 'members' | 'tokens' | 'webhooks' | 'integrations' | 'danger'>('general');
+  let filterText = $state('');
 
   // --- General ---
   let editDesc = $state('');
@@ -210,6 +211,16 @@
       <button type="button" class={tabCls('integrations')} onclick={() => switchTab('integrations')}>Integrations</button>
       <button type="button" class={tabCls('danger')} onclick={() => switchTab('danger')}>Danger</button>
     </nav>
+  </div>
+
+  <!-- Filter input -->
+  <div class="border-b border-surface-600 bg-surface-800 px-6 pb-3">
+    <input
+      type="text"
+      bind:value={filterText}
+      placeholder="Filter settings..."
+      class="w-full rounded-md border border-surface-600 bg-surface-700 px-3 py-1.5 text-sm text-white placeholder-gray-500 outline-none focus:border-accent"
+    />
   </div>
 
   <!-- Tab content -->

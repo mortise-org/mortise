@@ -107,8 +107,8 @@ test.describe('projects', () => {
 		await expect(page.getByRole('link', { name: 'Projects' })).toBeVisible({ timeout: 10_000 });
 		await expect(page.getByText(name, { exact: false }).first()).toBeVisible();
 
-		// "+ Add" button in the toolbar.
-		await expect(page.getByRole('link', { name: 'Add' })).toBeVisible();
+		// "+ Add" button in the toolbar (it's a button, not a link).
+		await expect(page.getByRole('button', { name: 'Add', exact: false }).first()).toBeVisible();
 
 		// View toggle buttons.
 		await expect(page.getByTitle('Canvas view')).toBeVisible();
@@ -127,7 +127,8 @@ test.describe('projects', () => {
 		await page.getByTitle('List view').click();
 
 		await expect(page.getByText('No apps in this project')).toBeVisible({ timeout: 10_000 });
-		await expect(page.getByRole('link', { name: 'Deploy an app' })).toBeVisible();
+		// "Deploy an app" is a button (not a link) that opens the new app modal.
+		await expect(page.getByRole('button', { name: 'Deploy an app' })).toBeVisible();
 	});
 
 	test('project settings page renders with delete section', async ({ page, request }) => {
@@ -142,8 +143,9 @@ test.describe('projects', () => {
 			timeout: 10_000
 		});
 
-		// Danger zone with delete button.
-		await expect(page.getByText('Delete Project')).toBeVisible();
+		// Navigate to the Danger tab to see the delete section.
+		await page.getByRole('button', { name: 'Danger' }).click();
+		await expect(page.getByText('Delete Project', { exact: true })).toBeVisible();
 		await expect(page.getByRole('button', { name: 'Delete project' })).toBeVisible();
 	});
 
@@ -158,6 +160,9 @@ test.describe('projects', () => {
 		await expect(page.getByRole('heading', { name: 'Project Settings' })).toBeVisible({
 			timeout: 10_000
 		});
+
+		// Navigate to the Danger tab.
+		await page.getByRole('button', { name: 'Danger' }).click();
 
 		// The delete button is disabled until the user types the project name.
 		const deleteBtn = page.getByRole('button', { name: 'Delete project' });

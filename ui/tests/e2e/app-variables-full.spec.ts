@@ -68,8 +68,22 @@ async function setupCommonMocks(page: Page) {
 async function goToVariablesTab(page: Page) {
   await injectAuth(page);
   await setupCommonMocks(page);
+  // Default env mocks so VariablesTab doesn't fail to load when used without
+  // per-test overrides.
+  await page.route('**/api/projects/my-project/apps/web-app/env/production', (r) =>
+    r.fulfill({ json: {} })
+  );
+  await page.route('**/api/projects/my-project/apps/web-app/env/staging', (r) =>
+    r.fulfill({ json: {} })
+  );
+  await page.route('**/api/projects/my-project/apps/web-app/shared', (r) =>
+    r.fulfill({ json: {} })
+  );
   await page.goto('/projects/my-project/apps/web-app');
-  await page.getByRole('button', { name: 'Variables' }).click();
+  // Wait for drawer heading to be visible before clicking tabs.
+  // Wait for drawer tab bar (always rendered) to confirm the drawer is visible.
+  await expect(page.getByRole('button', { name: 'Deployments', exact: true })).toBeVisible({ timeout: 8_000 });
+  await page.getByRole('button', { name: 'Variables', exact: true }).click();
 }
 
 // ---------------------------------------------------------------------------
@@ -87,7 +101,9 @@ test('variables tab shows existing variables loaded from env/production', async 
   );
 
   await page.goto('/projects/my-project/apps/web-app');
-  await page.getByRole('button', { name: 'Variables' }).click();
+  // Wait for drawer tab bar (always rendered) to confirm the drawer is visible.
+  await expect(page.getByRole('button', { name: 'Deployments', exact: true })).toBeVisible({ timeout: 8_000 });
+  await page.getByRole('button', { name: 'Variables', exact: true }).click();
 
   // Both variable keys must be visible in the table.
   await expect(page.getByText('APP_ENV')).toBeVisible({ timeout: 8_000 });
@@ -115,7 +131,9 @@ test('add new variable via form calls PUT with the new key', async ({ page }) =>
   );
 
   await page.goto('/projects/my-project/apps/web-app');
-  await page.getByRole('button', { name: 'Variables' }).click();
+  // Wait for drawer tab bar (always rendered) to confirm the drawer is visible.
+  await expect(page.getByRole('button', { name: 'Deployments', exact: true })).toBeVisible({ timeout: 8_000 });
+  await page.getByRole('button', { name: 'Variables', exact: true }).click();
 
   // Expand the new variable row.
   await page.getByRole('button', { name: 'New variable' }).click();
@@ -154,7 +172,9 @@ test('delete a variable calls PUT without the deleted key', async ({ page }) => 
   );
 
   await page.goto('/projects/my-project/apps/web-app');
-  await page.getByRole('button', { name: 'Variables' }).click();
+  // Wait for drawer tab bar (always rendered) to confirm the drawer is visible.
+  await expect(page.getByRole('button', { name: 'Deployments', exact: true })).toBeVisible({ timeout: 8_000 });
+  await page.getByRole('button', { name: 'Variables', exact: true }).click();
 
   // Wait for variables to appear.
   await expect(page.getByText('DELETE_ME')).toBeVisible({ timeout: 8_000 });
@@ -193,7 +213,9 @@ test('inline edit calls PUT with updated value via Save changes button', async (
   );
 
   await page.goto('/projects/my-project/apps/web-app');
-  await page.getByRole('button', { name: 'Variables' }).click();
+  // Wait for drawer tab bar (always rendered) to confirm the drawer is visible.
+  await expect(page.getByRole('button', { name: 'Deployments', exact: true })).toBeVisible({ timeout: 8_000 });
+  await page.getByRole('button', { name: 'Variables', exact: true }).click();
 
   // Wait for the value input to appear.
   await expect(page.getByText('APP_ENV')).toBeVisible({ timeout: 8_000 });
@@ -227,7 +249,9 @@ test('switching to Raw/Import mode shows the textarea', async ({ page }) => {
   );
 
   await page.goto('/projects/my-project/apps/web-app');
-  await page.getByRole('button', { name: 'Variables' }).click();
+  // Wait for drawer tab bar (always rendered) to confirm the drawer is visible.
+  await expect(page.getByRole('button', { name: 'Deployments', exact: true })).toBeVisible({ timeout: 8_000 });
+  await page.getByRole('button', { name: 'Variables', exact: true }).click();
 
   // Click the "Raw / Import" mode button.
   await page.getByRole('button', { name: 'Raw / Import' }).click();
@@ -237,7 +261,7 @@ test('switching to Raw/Import mode shows the textarea', async ({ page }) => {
   await expect(textarea).toBeVisible({ timeout: 5_000 });
 
   // The Import button should also appear.
-  await expect(page.getByRole('button', { name: 'Import' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Import', exact: true })).toBeVisible();
 });
 
 // ---------------------------------------------------------------------------
@@ -263,7 +287,9 @@ test('raw import calls POST env/import with correct body', async ({ page }) => {
   });
 
   await page.goto('/projects/my-project/apps/web-app');
-  await page.getByRole('button', { name: 'Variables' }).click();
+  // Wait for drawer tab bar (always rendered) to confirm the drawer is visible.
+  await expect(page.getByRole('button', { name: 'Deployments', exact: true })).toBeVisible({ timeout: 8_000 });
+  await page.getByRole('button', { name: 'Variables', exact: true }).click();
 
   // Switch to raw mode.
   await page.getByRole('button', { name: 'Raw / Import' }).click();
@@ -272,7 +298,7 @@ test('raw import calls POST env/import with correct body', async ({ page }) => {
   await expect(textarea).toBeVisible({ timeout: 5_000 });
   await textarea.fill('KEY=value\nFOO=bar');
 
-  await page.getByRole('button', { name: 'Import' }).click();
+  await page.getByRole('button', { name: 'Import', exact: true }).click();
 
   await expect(async () => {
     expect(capturedImportBody).toMatchObject({ env: 'production', content: 'KEY=value\nFOO=bar' });
@@ -300,7 +326,9 @@ test('switching to Shared tab loads shared vars endpoint', async ({ page }) => {
   });
 
   await page.goto('/projects/my-project/apps/web-app');
-  await page.getByRole('button', { name: 'Variables' }).click();
+  // Wait for drawer tab bar (always rendered) to confirm the drawer is visible.
+  await expect(page.getByRole('button', { name: 'Deployments', exact: true })).toBeVisible({ timeout: 8_000 });
+  await page.getByRole('button', { name: 'Variables', exact: true }).click();
 
   // Click the "Shared" tab button.
   await page.getByRole('button', { name: 'Shared' }).click();
@@ -338,7 +366,9 @@ test('adding a shared variable calls PUT /shared with correct body', async ({ pa
   });
 
   await page.goto('/projects/my-project/apps/web-app');
-  await page.getByRole('button', { name: 'Variables' }).click();
+  // Wait for drawer tab bar (always rendered) to confirm the drawer is visible.
+  await expect(page.getByRole('button', { name: 'Deployments', exact: true })).toBeVisible({ timeout: 8_000 });
+  await page.getByRole('button', { name: 'Variables', exact: true }).click();
 
   // Switch to Shared tab.
   await page.getByRole('button', { name: 'Shared' }).click();
@@ -374,13 +404,15 @@ test('switching environment tab changes the active tab highlight', async ({ page
   );
 
   await page.goto('/projects/my-project/apps/web-app');
-  await page.getByRole('button', { name: 'Variables' }).click();
+  // Wait for drawer tab bar (always rendered) to confirm the drawer is visible.
+  await expect(page.getByRole('button', { name: 'Deployments', exact: true })).toBeVisible({ timeout: 8_000 });
+  await page.getByRole('button', { name: 'Variables', exact: true }).click();
 
   // Production is selected by default.
   await expect(page.getByText('PROD_VAR')).toBeVisible({ timeout: 8_000 });
 
   // Click staging tab.
-  await page.getByRole('button', { name: 'staging' }).click();
+  await page.getByRole('button', { name: 'staging', exact: true }).click();
 
   // Staging vars should now load.
   await expect(page.getByText('STAGE_VAR')).toBeVisible({ timeout: 5_000 });

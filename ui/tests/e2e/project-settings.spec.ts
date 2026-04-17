@@ -123,16 +123,16 @@ test.describe('project settings', () => {
 		});
 
 		// PR Environments section.
-		await expect(page.getByText('PR Environments')).toBeVisible();
+		await expect(page.getByRole('heading', { name: 'PR Environments' })).toBeVisible();
 		await expect(page.getByText('Enable PR Environments')).toBeVisible();
 
-		// The checkbox toggle for PR environments.
-		const prToggle = page.locator('input[type="checkbox"]').first();
+		// The toggle switch for PR environments.
+		const prToggle = page.getByRole('switch');
 		await expect(prToggle).toBeVisible();
 
 		// Toggle it on.
-		await prToggle.check();
-		await expect(prToggle).toBeChecked();
+		await prToggle.click();
+		await expect(prToggle).toHaveAttribute('aria-checked', 'true');
 	});
 
 	test('project admin sees Danger Zone with delete section', async ({ page }) => {
@@ -143,9 +143,12 @@ test.describe('project settings', () => {
 			timeout: 10_000
 		});
 
+		// Navigate to the Danger tab to see the danger zone content.
+		await page.getByRole('button', { name: 'Danger' }).click();
+
 		// Danger Zone section.
 		await expect(page.getByText('Danger Zone')).toBeVisible();
-		await expect(page.getByText('Delete Project')).toBeVisible();
+		await expect(page.getByText('Delete Project', { exact: true })).toBeVisible();
 
 		// Confirmation input — placeholder is the project name.
 		await expect(page.getByPlaceholder(projectName)).toBeVisible();
@@ -172,6 +175,6 @@ test.describe('project settings', () => {
 		// Clear filter — all sections visible.
 		await filterInput.fill('');
 		await expect(page.getByText('General')).toBeVisible();
-		await expect(page.getByText('PR Environments')).toBeVisible();
+		await expect(page.getByRole('heading', { name: 'PR Environments' })).toBeVisible();
 	});
 });

@@ -107,6 +107,12 @@ async function setupCommonMocks(page: Page) {
 	await page.route('/api/projects/other-project', (r) => r.fulfill({ json: mockProject2 }));
 	await page.route('/api/projects/other-project/apps', (r) => r.fulfill({ json: [] }));
 	await page.route('/api/projects/other-project/activity', (r) => r.fulfill({ json: [] }));
+	// Mock the "new" project routes so navigating to /projects/new doesn't
+	// trigger a real API call with the fake test-token (which returns 401 and
+	// redirects to /login).
+	await page.route('/api/projects/new', (r) => r.fulfill({ status: 404, json: { error: 'not found' } }));
+	await page.route('/api/projects/new/apps', (r) => r.fulfill({ json: [] }));
+	await page.route('/api/projects/new/activity', (r) => r.fulfill({ json: [] }));
 	await page.route('/api/platform', (r) =>
 		r.fulfill({ json: { domain: 'example.com', dns: { provider: 'cloudflare' }, tls: {} } })
 	);
@@ -236,7 +242,7 @@ test.describe('activity rail', () => {
 		await expect(page.getByText('my-project', { exact: false }).first()).toBeVisible({ timeout: 10_000 });
 
 		// Activity button has title="Activity" in the header
-		await page.getByTitle('Activity').click();
+		await page.getByTitle('Activity', { exact: true }).click();
 
 		// Rail panel appears with "Activity" heading
 		await expect(page.getByRole('heading', { name: 'Activity' })).toBeVisible({ timeout: 5_000 });
@@ -249,7 +255,7 @@ test.describe('activity rail', () => {
 
 		await expect(page.getByText('my-project', { exact: false }).first()).toBeVisible({ timeout: 10_000 });
 
-		await page.getByTitle('Activity').click();
+		await page.getByTitle('Activity', { exact: true }).click();
 
 		// Both activity messages from mockActivity should appear
 		await expect(page.getByText('Deployed web-app to production')).toBeVisible({ timeout: 5_000 });
@@ -262,7 +268,7 @@ test.describe('activity rail', () => {
 		await page.goto('/projects/my-project');
 
 		await expect(page.getByText('my-project', { exact: false }).first()).toBeVisible({ timeout: 10_000 });
-		await page.getByTitle('Activity').click();
+		await page.getByTitle('Activity', { exact: true }).click();
 
 		await expect(page.getByRole('heading', { name: 'Activity' })).toBeVisible({ timeout: 5_000 });
 
@@ -279,7 +285,7 @@ test.describe('activity rail', () => {
 		await page.goto('/projects/my-project');
 
 		await expect(page.getByText('my-project', { exact: false }).first()).toBeVisible({ timeout: 10_000 });
-		await page.getByTitle('Activity').click();
+		await page.getByTitle('Activity', { exact: true }).click();
 
 		await expect(page.getByRole('heading', { name: 'Activity' })).toBeVisible({ timeout: 5_000 });
 
@@ -308,7 +314,7 @@ test.describe('activity rail', () => {
 		await page.goto('/projects/my-project');
 
 		await expect(page.getByText('my-project', { exact: false }).first()).toBeVisible({ timeout: 10_000 });
-		await page.getByTitle('Activity').click();
+		await page.getByTitle('Activity', { exact: true }).click();
 
 		await expect(page.getByRole('heading', { name: 'Activity' })).toBeVisible({ timeout: 5_000 });
 
@@ -329,7 +335,7 @@ test.describe('activity rail', () => {
 		await page.goto('/projects/my-project');
 
 		await expect(page.getByText('my-project', { exact: false }).first()).toBeVisible({ timeout: 10_000 });
-		await page.getByTitle('Activity').click();
+		await page.getByTitle('Activity', { exact: true }).click();
 
 		await expect(page.getByRole('heading', { name: 'Activity' })).toBeVisible({ timeout: 5_000 });
 

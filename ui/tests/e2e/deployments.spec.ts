@@ -167,7 +167,7 @@ test.describe('deployments tab', () => {
 
 		// Deployments tab is active by default.
 		// Redeploy button should be enabled since we have a current image.
-		const redeployBtn = page.getByRole('button', { name: 'Redeploy' });
+		const redeployBtn = page.getByRole('button', { name: 'Redeploy', exact: true });
 		await expect(redeployBtn).toBeVisible({ timeout: 5_000 });
 		await expect(redeployBtn).toBeEnabled();
 
@@ -227,7 +227,7 @@ test.describe('deployments tab', () => {
 		await expect(page.getByRole('heading', { name: appName })).toBeVisible({ timeout: 10_000 });
 
 		// History section: second entry should have a Rollback button.
-		const historyRollback = page.getByRole('button', { name: 'Rollback' }).first();
+		const historyRollback = page.getByRole('button', { name: 'Rollback', exact: true }).first();
 		await expect(historyRollback).toBeVisible({ timeout: 5_000 });
 		await historyRollback.click();
 
@@ -264,14 +264,16 @@ test.describe('deployments tab', () => {
 		await expect(page.getByRole('heading', { name: appName })).toBeVisible({ timeout: 10_000 });
 
 		// Environment tabs should be visible when there are multiple environments.
-		await expect(page.getByRole('button', { name: 'production' })).toBeVisible({ timeout: 5_000 });
-		await expect(page.getByRole('button', { name: 'staging' })).toBeVisible();
+		// Scope to main content to avoid matching the project switcher in the header.
+		const mainContent = page.getByRole('main');
+		await expect(mainContent.getByRole('button', { name: 'production', exact: true })).toBeVisible({ timeout: 5_000 });
+		await expect(mainContent.getByRole('button', { name: 'staging', exact: true })).toBeVisible();
 
 		// Production is selected by default — verify its image is shown.
 		await expect(page.getByText('abc123', { exact: false })).toBeVisible({ timeout: 3_000 });
 
 		// Switch to staging.
-		await page.getByRole('button', { name: 'staging' }).click();
+		await mainContent.getByRole('button', { name: 'staging', exact: true }).click();
 
 		// Staging image should now be visible.
 		await expect(page.getByText('staging-111', { exact: false })).toBeVisible({ timeout: 3_000 });
@@ -322,15 +324,15 @@ test.describe('deployments tab', () => {
 		await page.goto(`/projects/${projectName}/apps/${appName}`);
 		await expect(page.getByRole('heading', { name: appName })).toBeVisible({ timeout: 10_000 });
 
-		// Switch to staging environment tab.
-		await page.getByRole('button', { name: 'staging' }).click();
+		// Switch to staging environment tab — scope to main to avoid header project switcher.
+		await page.getByRole('main').getByRole('button', { name: 'staging', exact: true }).click();
 		await expect(page.getByText('staging-111', { exact: false })).toBeVisible({ timeout: 3_000 });
 
 		// The Rollback button in the current deploy block acts as the promote trigger
 		// when there's a multi-env setup. The UI shows a Rollback/Redeploy; the
 		// promote action is invoked when we trigger the promote modal.
 		// Check for the Redeploy button which is always present with a current image.
-		const redeployBtn = page.getByRole('button', { name: 'Redeploy' });
+		const redeployBtn = page.getByRole('button', { name: 'Redeploy', exact: true });
 		await expect(redeployBtn).toBeVisible({ timeout: 5_000 });
 
 		// The rollback button may also be present if there is history.

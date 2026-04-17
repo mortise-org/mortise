@@ -213,7 +213,7 @@
 
 <!-- Modal panel -->
 <div class="fixed inset-0 z-50 flex items-center justify-center p-4">
-	<div class="w-full max-w-lg rounded-lg border border-surface-600 bg-surface-800 p-6 shadow-xl">
+	<div class="w-full max-w-lg max-h-[calc(100vh-2rem)] overflow-y-auto rounded-lg border border-surface-600 bg-surface-800 p-6 shadow-xl">
 		<div class="mb-5 flex items-center justify-between">
 			<h2 class="text-lg font-semibold text-white">
 				{selectedType ? getTypeName(selectedType) : 'What would you like to create?'}

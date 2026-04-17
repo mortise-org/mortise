@@ -208,15 +208,15 @@ test.describe('platform settings actions', () => {
 		await page.getByPlaceholder('github-main').fill('new-github');
 		await page.getByPlaceholder('https://github.com').fill('https://github.com');
 
-		// OAuth Client ID — first unlabelled text input inside the provider form grid
-		const oauthClientIdInput = page.locator('input[type="text"]').nth(1);
+		// OAuth Client ID — scoped to the provider form
+		const oauthClientIdInput = page.locator('#new-provider-client-id');
 		await oauthClientIdInput.fill('test-client-id');
 
-		const oauthClientSecretInput = page.locator('input[type="password"]').first();
+		const oauthClientSecretInput = page.locator('#new-provider-client-secret');
 		await oauthClientSecretInput.fill('test-client-secret');
 
-		// Webhook secret — last text input in the form
-		const webhookInput = page.locator('input[type="text"]').last();
+		// Webhook secret
+		const webhookInput = page.locator('#new-provider-webhook-secret');
 		await webhookInput.fill('my-webhook-secret');
 
 		await page.getByRole('button', { name: 'Create' }).click();
@@ -250,9 +250,9 @@ test.describe('platform settings actions', () => {
 		await expect(page.getByText('github-main')).toBeVisible({ timeout: 5000 });
 
 		// Click the trash/delete icon button in the provider row
-		const providerRow = page.locator('div').filter({ hasText: 'github-main' }).last();
+		// Use the git-providers section to find the delete button (nth(0) is "Add Provider", nth(1) is the trash icon)
 		page.once('dialog', (dialog) => dialog.accept());
-		await providerRow.getByRole('button').last().click();
+		await page.locator('section#git-providers').getByRole('button').nth(1).click();
 
 		await expect.poll(() => deleteWasCalled).toBe(true);
 	});
@@ -293,7 +293,7 @@ test.describe('platform settings actions', () => {
 		await filterInput.fill('registry');
 
 		// Registry section should still be visible
-		await expect(page.getByText('Registry')).toBeVisible({ timeout: 3000 });
+		await expect(page.getByRole('heading', { name: 'Registry' })).toBeVisible({ timeout: 3000 });
 
 		// General section heading should not be visible (filtered out)
 		// The section id="general" has h2 "General" — it should be hidden
