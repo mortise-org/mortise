@@ -73,8 +73,9 @@ controller  →  GitClient        →  go-git (single impl)
 controller  →  BuildClient      →  BuildKit (single impl)
 controller  →  RegistryBackend  →  generic OCI (config-driven)
 controller  →  IngressProvider  →  generic annotation-driven
-controller  →  DNSProvider      →  ExternalDNS annotation-driven
 ```
+
+DNS is annotation-driven via ExternalDNS (no Go interface — see SPEC §11.1).
 
 No interface without a real v1 implementation behind it.
 
@@ -222,7 +223,6 @@ internal/
   registry/                  # RegistryBackend interface + OCI impl
   ingress/                   # IngressProvider interface + impl
   git/                       # GitAPI interface (per-forge) + GitClient (shared)
-  dns/                       # DNSProvider interface + ExternalDNS impl
   bindings/                  # credential resolution logic
   webhook/                   # git webhook receiver + HMAC verification
   api/                       # REST API handlers

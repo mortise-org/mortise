@@ -57,7 +57,7 @@ flowchart TB
     Operator -->|BuildClient iface| BuildKit
     Operator -->|RegistryBackend iface| Zot
     Operator -->|IngressProvider iface| Traefik
-    Operator -->|DNSProvider iface| ExtDNS
+    Operator -.annotation-driven.-> ExtDNS
     Operator --- MetaDB
 
     BuildKit -->|push image| Zot
@@ -106,9 +106,10 @@ flowchart TB
   the ExternalSecrets Operator, which produces k8s Secrets that Mortise
   reads like any other. See SPEC §5.9.
 - **"Optional" labels** on Traefik, cert-manager, ExternalDNS, Zot: each
-  corresponds to an outward interface (`IngressProvider`, `DNSProvider`,
-  `RegistryBackend`) and can be turned off at install via chart values when
-  the cluster already has the component. See SPEC §8.3.
+  corresponds to an outward interface (`IngressProvider`,
+  `RegistryBackend`) or an annotation-driven integration (ExternalDNS)
+  and can be turned off at install via chart values when the cluster
+  already has the component. See SPEC §8.3.
 
 ### Component Roles & Scopes
 
@@ -214,8 +215,7 @@ flowchart TB
     RBImpl["generic OCI - 1 config-driven impl"]
     IP["IngressProvider iface"]
     IPImpl["generic annotation-driven - 1 impl"]
-    DP["DNSProvider iface"]
-    DPImpl["ExternalDNS annotations - 1 impl"]
+    ExtDNSNote["ExternalDNS - annotation-driven, no Go iface"]
 
     ESO["ExternalSecrets Operator - writes k8s Secrets from Vault or AWS SM"]
     K8sSec["k8s Secrets - Mortise reads natively"]
@@ -229,7 +229,7 @@ flowchart TB
     Ctrl --> BC --> BCImpl
     Ctrl --> RB --> RBImpl
     Ctrl --> IP --> IPImpl
-    Ctrl --> DP --> DPImpl
+    Ctrl -.Ingress annotations.-> ExtDNSNote
 
     Ctrl --> K8sSec
     ESO --> K8sSec
@@ -245,7 +245,7 @@ flowchart TB
 - **Middle chains** (Ctrl → each iface → impl) = internal abstractions.
   Go interfaces used for test seams and for keeping third-party SDKs out
   of controller code. **Not plug-in APIs** — third parties do not implement
-  these. ~11 in-tree impls total across all contracts.
+  these. ~10 in-tree impls total across all contracts.
 - **Bottom path** (Ctrl → k8s Secrets ← ESO) = the real third-party
   integration path. External secret managers reach Mortise through
   ExternalSecrets Operator, which writes a standard k8s Secret that

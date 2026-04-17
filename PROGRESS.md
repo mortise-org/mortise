@@ -5,12 +5,12 @@ whenever implementation status changes — see the **Keeping this file up to
 date** section at the bottom.
 
 Legend: **Done** / **Partial** / **Not started**
-Last reconciled against spec + code: 2026-04-16 (SPEC §5 expanded:
-`namespaceOverride`/`adoptExistingNamespace`, `external` source promoted to v1,
-`secretMounts`, `environments[].annotations` passthrough, `tls.secretName`/
-`tls.clusterIssuer` overrides, 5-role RBAC + env-scoped grants. Also:
-`DNSProvider` interface dropped from spec — DNS is now annotation-only via
-ExternalDNS, no Go interface).
+Last reconciled against spec + code: 2026-04-17 (reconciled after Chase's
+Phase 6-8 implementation push. `DNSProvider` interface dropped + §5.9a
+env-var editing surface restored in spec. Phase 7 items landed: env
+management, deploy tokens, custom domains, first-run wizard, promote,
+rollback, network.port. Phase 8: Helm deps + recipe docs + Extensions UI.
+RBAC remains admin/member — 5-role model deferred to v2 as Issue #9).
 
 ---
 
@@ -21,13 +21,13 @@ ExternalDNS, no Go interface).
 | 0 — Foundation                   | §7.1 / §8   | **Done**         | kubebuilder scaffold, chart skeleton, Makefile, test helpers + fixtures. |
 | 1 — Core operator (image source) | §7.2        | **Done**         | Deployment / Service / Ingress / PVC / ServiceAccount reconciliation works for `source.type: image` and `source.type: git` (git builds asynchronously with a 30-min timeout). Ingress honours `environments[].annotations` passthrough (§5.2a), `environments[].tls.{secretName,clusterIssuer}` overrides (§5.6), `environments[].customDomains` (multi-host rules + TLS), and `IngressProvider`-driven annotations (`AnnotationProvider`: ExternalDNS hostname + cert-manager cluster-issuer). `ingressClassName` configurable via `MORTISE_INGRESS_CLASS` env var. ServiceAccount per App carries `imagePullSecrets` from `RegistryBackend.PullSecretRef()`. |
 | 2 — API + UI skeleton            | §7.3        | **Done**         | Auth, project CRUD, app CRUD, secrets CRUD, deploy webhook, SSE logs, SvelteKit UI. |
-| 3 — Bindings + secrets           | §7.4        | **Partial**      | Resolver writes env vars; `{app}-credentials` Secret is now materialised from `spec.credentials` (Flavor A, §5.5a) — inline `value` and `valueFrom.secretRef` both supported, with sha256 pod-template annotation for rotation. Cross-project bindings now return a clear error at reconcile time instead of silently failing (issue #2 guarded, #3). Same-project bindings have an integration test (`test/integration/bindings_test.go`, #5). **Deploy tokens landed** (§5.4): `mrt_` prefixed, per-app+env scoped, stored as hashed k8s Secrets; deploy webhook accepts both JWT and deploy token auth; token CRUD API + CLI (`mortise token {create,list,revoke}`). **Env management surface landed** (§5.14): focused GET/PUT/PATCH/import endpoints for `environments[].env`; `mortise.dev/env-hash` annotation triggers rolling restarts; CLI (`mortise env {list,set,unset,import,pull}`). No secret rotation endpoint. |
+| 3 — Bindings + secrets           | §7.4        | **Partial**      | Resolver writes env vars; `{app}-credentials` Secret materialised (Flavor A, §5.5a) with sha256 pod-template annotation. Cross-project bindings guarded with error (issue #2). Deploy tokens landed: `mrt_` prefixed, per-app+env scoped, hashed k8s Secrets, deploy webhook accepts both JWT and deploy token. Env management surface landed (§5.9a): GET/PUT/PATCH/import + `mortise.dev/env-hash` + CLI. Missing: secret rotation endpoint, cross-project bindings (post-v1). |
 | 3.5 — Projects                   | §5 / §5.10  | **Done**         | `Project` CRD + controller + REST API + CLI + UI routes + default-project seeding all landed. `spec.namespaceOverride` and admin-only `spec.adoptExistingNamespace` (spec §5.0) are implemented: controller resolves the target namespace name, enforces cross-Project uniqueness (`NamespaceConflict`), surfaces refusals via the `NamespaceReady` condition (`NamespaceAlreadyExists` / `NamespaceOwnedByAnotherProject`), and takes the adoption path only when explicitly opted in. |
 | 4 — Build system (git source)    | §7.5        | **Done**         | All stacks wired end-to-end: webhook patches `mortise.dev/revision` annotation → App reconciler clones + builds + deploys. Operator entrypoint reads config from `PlatformConfig` (env-var fallback for first-boot). Builds run asynchronously in background goroutines; the reconciler returns `Building` immediately and polls on requeue. |
 | 5 — Monorepo support             | §7.6        | **Done**         | `source.path` plumbs into BuildKit context; `source.watchPaths` gates webhook rebuilds (prefix match). UI build grouping deferred. |
 | 6 — Preview environments        | §7.7        | **Done**         | `PreviewEnvironment` CRD with real types (PullRequestRef, PreviewPhase, TTL, domain). Controller reconciles Deployment + Service + Ingress with owner references; async build via buildTrackerStore (same pattern as App controller); TTL expiry auto-deletes. Webhook handler parses PR events (opened/synchronize/closed) for GitHub, GitLab, Gitea; creates/updates/deletes PreviewEnvironments with staging inheritance + preview overrides. Domain template resolution (`{number}`, `{app}`). Commit status posted on PR SHA. |
-| 7 — Polish & v1                  | §7.8        | **Partial**      | Rollback + promote implemented full-stack (API, CLI, UI). Controller-side `RollbackDeployment` exists. Deploy tokens and env management surface implemented (API + CLI). Custom domains API/CLI/UI implemented (list/add/remove, §5.6). First-run wizard implemented (4-step: domain, DNS, git provider, done). PlatformConfig PATCH API (create-or-update singleton). `spec.network.port` added to App CRD (configurable container/target port, default 8080). `oauthTokenExists` bug fixed. **GitHub device flow** implemented: zero-config GitHub connection via device authorization grant (`POST /api/auth/github/device` + `POST /api/auth/github/device/poll`); auto-creates GitProvider CRD + token Secret on success; client ID resolved from PlatformConfig `spec.github.clientID` > `MORTISE_GITHUB_CLIENT_ID` env var > placeholder constant. UI: git-providers page shows prominent "Connect GitHub" button with device flow when no GitHub provider exists; new-app page shows inline device flow. **GitHub App Manifest Flow** implemented: `POST /api/github-app/manifest` generates manifest JSON + redirect URL; `GET /api/github-app/callback` exchanges code with GitHub, stores credentials in `github-app-credentials` Secret, creates GitProvider CRD with `mode: github-app`; `GitHubAppAPI` implementation authenticates via JWT + installation tokens (RS256, 10min expiry, token caching); factory routes `mode=github-app` providers to `GitHubAppAPI`; UI shows two-option layout (recommended GitHub App vs advanced OAuth); CRD extended with `spec.mode`, `spec.githubApp` (appID, slug, installationID, credentialsSecretRef). Missing: authz role upgrade, env-hash annotation for auto-roll. |
-| 8 — Tenons & integration recipes | §7.9 / §13  | **Not started**  | No bundled Traefik/cert-manager/ExternalDNS/Zot subcharts; no ESO / OPA / Prometheus recipes. |
+| 7 — Polish & v1                  | §7.8        | **Partial**      | Rollback + promote full-stack (API, CLI, UI). Deploy tokens + env management surface (§5.9a) full-stack. Custom domains API/CLI/UI. First-run wizard (4-step). PlatformConfig PATCH API. `spec.network.port`. `oauthTokenExists` fix. Repos API (`ListRepos`/`ListBranches`). Railway-style new-app page. **GitHub device flow** (zero-config GitHub connection via device authorization grant). **GitHub App Manifest Flow** (`POST /api/github-app/manifest`, callback, `GitHubAppAPI` with JWT + installation tokens, CRD `spec.mode`/`spec.githubApp`). Missing: 5-role RBAC (deferred to v2, Issue #9), metrics-server UI, cron apps, `source.type: external`, `sharedVars`. |
+| 8 — Tenons & integration recipes | §7.9 / §13  | **Partial**      | Helm chart bundles Traefik/cert-manager/ExternalDNS/Zot as optional deps. 6 integration recipe docs in `docs/recipes/`. Extensions page in UI. Missing: actual reference tenon projects (cf-for-saas, backup-tenon) that spec §9 Phase 8 calls for. |
 
 ### Interface implementation coverage
 
@@ -193,10 +193,18 @@ REST surface (`internal/api/server.go`):
 - `GET/POST /api/auth/{status,setup,login}` — unauthenticated.
 - `POST/GET/GET/DELETE /api/projects[/{project}]`.
 - `POST/GET/GET/PUT/DELETE /api/projects/{project}/apps[/{app}]`.
-- `POST /api/projects/{project}/apps/{app}/deploy` — deploy webhook.
+- `POST /api/projects/{project}/apps/{app}/deploy` — deploy webhook (JWT + deploy token auth).
 - `POST/GET/DELETE /api/projects/{project}/apps/{app}/secrets[/{secretName}]`.
-- `GET /api/projects/{project}/apps/{app}/logs` — SSE log stream with
-  multi-pod aggregation and new-pod-watching on rollout.
+- `GET /api/projects/{project}/apps/{app}/logs` — SSE log stream.
+- `GET/PUT/PATCH /api/projects/{project}/apps/{app}/env[/{env}]` — env management (§5.9a).
+- `POST /api/projects/{project}/apps/{app}/env/import` — bulk .env import.
+- `POST /api/projects/{project}/apps/{app}/rollback` — rollback to deploy history index.
+- `POST /api/projects/{project}/apps/{app}/promote` — promote image between environments.
+- `POST/GET/DELETE /api/projects/{project}/apps/{app}/tokens[/{id}]` — deploy token CRUD.
+- `GET/POST/DELETE /api/projects/{project}/apps/{app}/domains/{env}[/{domain}]` — custom domains.
+- `GET /api/repos` + `GET /api/repos/{owner}/{repo}/branches` — repo listing for new-app flow.
+- `PATCH /api/platform` — PlatformConfig create-or-update singleton.
+- `GET/POST/DELETE /api/gitproviders[/{name}]` — admin git provider CRUD.
 
 UI (`ui/src/routes/`):
 - `login`, `setup`, `projects`, `projects/new`, `projects/[project]`,
@@ -208,11 +216,12 @@ UI (`ui/src/routes/`):
 CLI (`cmd/cli/`):
 - `login`, `project list/create/delete/use/show`, `app list/create/delete`,
   `deploy`, `logs`, `status`.
-- `app_test.go` and `project_test.go` exercise the CLI layer.
+- Phase 7 verbs: `rollback`, `promote`, `env {list,set,unset,import,pull}`,
+  `token {create,list,revoke}`, `domain {list,add,remove}`.
+- `app_test.go`, `project_test.go`, `env_test.go`, `rollback_test.go`,
+  `promote_test.go`, `token_test.go` exercise the CLI layer.
 
-**Gaps:** none for the skeleton itself — the missing CLI verbs
-(`promote`, `rollback`, `secret`, `env`, `domain`, `token`, `preview`)
-belong to later phases and are tracked there.
+**Gaps:** `secret` and `preview` CLI verbs not yet implemented.
 
 ### Phase 3 — Bindings & secrets — **Partial**
 
@@ -232,15 +241,20 @@ Works:
   (only if Mortise-managed). Tests: envtest Context "credentials Secret
   materialization" (7 cases). Fixture: `test/fixtures/image-credentials.yaml`.
 
+- **Deploy tokens landed** (`internal/api/tokens.go`, `cmd/cli/token.go`):
+  `mrt_` prefixed, per-app+env scoped via k8s Secret labels, SHA-256 hashed
+  storage, raw token returned only on creation. Deploy webhook
+  (`internal/api/deploy.go`) accepts both JWT and deploy token auth.
+  CRUD API + CLI (`mortise token {create,list,revoke}`).
+- **Env management surface landed** (`internal/api/env.go`, `cmd/cli/env.go`):
+  GET/PUT/PATCH/import endpoints for `environments[].env`. `mortise.dev/env-hash`
+  annotation on pod template triggers rolling restarts on env change.
+  CLI: `mortise env {list,set,unset,import,pull}`.
+
 Missing:
-- **Issue #2** — the resolver emits plain
-  `SecretKeyRef{Name: {app}-credentials}` for cross-project bindings
-  (`resolver.go:73-79`). Kubernetes `envFrom`/`env.valueFrom.secretKeyRef`
-  only resolves within the Pod's own namespace. Cross-project bindings will
-  silently fail at Pod create. Needs either Secret replication (ESO-style),
-  projected-volume mount, or an initContainer fetch.
-- No deploy tokens (`mortise token create/list/revoke`, `Authorization:
-  Bearer mrt_...`) from spec §5.1 / §7.8 phase 7.
+- **Issue #2** — cross-project bindings guarded with clear error at reconcile
+  time (prevents silent `CreateContainerConfigError`). Full fix (Secret
+  replication or projected-volume) deferred to post-v1.
 - No rotation endpoint for user secrets.
 
 ### Phase 3.5 — Projects — **Done**
@@ -262,13 +276,12 @@ Missing:
 - First-run seeds a `default` project (`internal/api/auth.go`
   `ensureDefaultProject`).
 
-### Phase 4 — Build system (git source) — **Partial**
+### Phase 4 — Build system (git source) — **Done**
 
 All three foundational stacks (Registry / Build / Git provider) have real
-v1 impls behind their interfaces. The remaining work is the **integration
-edge**: getting a git push to actually run through the reconciler, produce
-an image, and trigger a deploy. See sub-sections below for what each stack
-landed and what each deferred.
+v1 impls behind their interfaces. The integration edge is complete: git
+push → webhook → clone → build → push → deploy works end-to-end.
+Integration test proves it against in-cluster Gitea + BuildKit + registry.
 
 **Cross-stack deferred work (tracked here, not duplicated in sub-sections):**
 - ~~**App controller git path**~~ — **Done.** `internal/controller/app_controller.go`
@@ -502,9 +515,9 @@ landed and what each deferred.
 - BuildKit TLS PEM (`ca.crt`/`tls.crt`/`tls.key` keys in `spec.build.tlsSecretRef`) is materialised to a temp dir since `bkclient` expects file paths.
 - No hot reload: changes to the PlatformConfig CRD require a restart to take effect. Acceptable for v1; tracked if demand warrants.
 
-**Still deferred:**
-- `IngressProvider` impl and cert-manager wiring (`spec.tls.certManagerClusterIssuer`) — Phase 1 follow-up.
-- ExternalDNS annotation emission on Ingress — Phase 1 follow-up. (No `DNSProvider` interface — annotation-only per spec §11.1.)
+**Previously deferred, now done:**
+- ~~`IngressProvider` impl~~ — `AnnotationProvider` landed in Phase 1 completion.
+- ~~ExternalDNS annotation~~ — emitted by `AnnotationProvider`. No `DNSProvider` interface — annotation-only per spec §11.1.
 
 ### Git provider UI — **Done**
 
@@ -606,23 +619,35 @@ Present:
   promote valid/invalid env, same-env rejection, auth required.
 - CLI tests: command parsing + client method HTTP path/body verification.
 
-Missing:
-- **Env-management surface (spec §5.9a):** no `PATCH/PUT /env` or
-  `POST /env/import` API endpoints (env edits today require a full PUT on
-  the App). No `mortise env list/set/unset/import/pull` CLI verbs (the
-  one-line `env set` from §5.14 is not yet implemented). No Variables tab
-  in the App detail UI. No `mortise.dev/env-hash` annotation on the pod
-  template, so env-only changes don't auto-roll the Deployment.
-- First-run setup wizard UI beyond the existing `setup` admin bootstrap
-  route.
-- Custom-domain attach flow (UI + API).
-- Deploy-token verbs (see Phase 3 gaps).
-- Authz role upgrade: current roles are `admin` / `member`. Spec §5.10
-  expects five roles (`platform-admin`, `platform-viewer`, `team-admin`,
-  `team-deployer`, `team-viewer`) + a `Team` abstraction + per-grant
-  environment scoping. No `Team` CRD exists; grants have no env field.
+- **Env-management surface (spec §5.9a) — Done:** GET/PUT/PATCH/import
+  endpoints (`internal/api/env.go`), `mortise.dev/env-hash` annotation for
+  auto-roll, CLI `mortise env {list,set,unset,import,pull}` (`cmd/cli/env.go`).
+- **First-run wizard — Done:** 4-step wizard at `/setup/wizard` (domain →
+  DNS provider → git provider → done). `ui/src/routes/setup/wizard/+page.svelte`.
+- **Custom domains — Done:** list/add/remove API (`internal/api/domains.go`),
+  CLI (`cmd/cli/domain.go`), UI integration.
+- **Deploy tokens — Done:** see Phase 3 detail.
+- **PlatformConfig PATCH API — Done:** `internal/api/platform.go`
+  create-or-update singleton.
+- **Repos API — Done:** `GET /api/repos` + `GET /api/repos/{owner}/{repo}/branches`
+  (`internal/api/repos.go`). `ListRepos`/`ListBranches` on all three GitAPI
+  impls (`internal/git/{github,gitlab,gitea}.go`).
+- **Railway-style new-app page — Done:** repo-first flow with searchable repo
+  list, branch picker, inline config, Docker image secondary.
 
-### Phase 8 — Tenons & integration recipes — **Done**
+Missing:
+- **Authz role upgrade (Issue #9, deferred to v2):** current roles are
+  `admin` / `member`. Spec §5.10 expects five roles (`platform-admin`,
+  `platform-viewer`, `team-admin`, `team-deployer`, `team-viewer`) + a
+  `Team` abstraction + per-grant environment scoping. No `Team` CRD exists;
+  grants have no env field. Decision: v1 ships admin/member only.
+- **Metrics in UI:** spec Phase 7 calls for CPU/memory per pod via
+  metrics-server. Not implemented.
+- **Cron apps:** `kind: cron` with CronJob reconciliation (spec §5.8a).
+- **`source.type: external`:** wrap already-running services (spec §5.1).
+- **`sharedVars`:** cross-environment variables (spec §5.8b level 3).
+
+### Phase 8 — Tenons & integration recipes — **Partial**
 
 - `charts/mortise/Chart.yaml` declares optional Helm dependencies:
   Traefik (~34.0), cert-manager (~v1.17), external-dns (~1.16), Zot (~0.1).
@@ -640,6 +665,12 @@ Missing:
   categorized cards (Infrastructure, Security, Tenons) and nav link in
   the header.
 - `helm lint`, `helm template`, `npm run build`, `make test` all pass.
+
+Missing:
+- **Reference tenon projects:** spec §9 Phase 8 calls for 2-3 shipping
+  tenons (cf-for-saas, backup-tenon, cost-dashboard) as separate repos /
+  Helm charts consuming the Mortise REST API. These don't exist yet — only
+  the UI Extensions page references them as cards.
 
 ---
 
@@ -669,22 +700,19 @@ Unit tests: `TestCrossProjectBindingReturnsError`,
 ### Issue #3 — Hard-coded cert-manager cluster-issuer — **Resolved**
 Previously, `internal/controller/app_controller.go` wrote
 `cert-manager.io/cluster-issuer: letsencrypt-prod` as an Ingress annotation
-regardless of operator configuration. The default now comes from
-`PlatformConfig.spec.tls.certManagerClusterIssuer` (empty by default →
-annotation omitted, so operators without cert-manager get a plain Ingress),
-with per-env `tls.clusterIssuer` / `tls.secretName` overrides honoured per
-spec §5.6. User annotations on the environment win over Mortise's default
-cert-manager annotation (spec §5.2a). An `IngressProvider` interface is
-still the longer-term home for this logic but is not required to unblock
-multi-issuer installs.
+regardless of operator configuration. Now handled by `AnnotationProvider`
+(`internal/ingress/annotation_provider.go`) which reads the cluster issuer
+from config and emits cert-manager + ExternalDNS annotations. Per-env
+`tls.clusterIssuer` / `tls.secretName` overrides honoured per spec §5.6.
+User annotations win on key conflict (spec §5.2a).
 
-### Issue #4 — Authz role model doesn't match spec
-`internal/authz/native.go` uses `admin` / `member`. Spec §5.10 now calls
-for five roles: `platform-admin`, `platform-viewer`, `team-admin`,
+### Issue #4 / #9 — Authz role model doesn't match spec — **Deferred to v2**
+`internal/authz/native.go` uses `admin` / `member`. Spec §5.10 calls for
+five roles: `platform-admin`, `platform-viewer`, `team-admin`,
 `team-deployer`, `team-viewer`, with a `Team` scope and per-grant
-environment scoping (e.g. a team-deployer restricted to `[staging]`).
-Project ownership and admin-only gates in the API currently key off the
-two-role model. No `Team` CRD exists, and grants have no env field.
+environment scoping. No `Team` CRD exists; grants have no env field.
+**Decision: v1 ships admin/member only.** The 5-role team model is tracked
+as Issue #9 for v2.
 
 ---
 
@@ -694,10 +722,13 @@ Items in `CLAUDE.md` that no longer reflect reality — fix these opportunistica
 
 - **`CRDs: App, PlatformConfig, GitProvider, PreviewEnvironment`** — missing
   `Project`. `Project` has been the top-level grouping since Phase 3.5.
+- **Operator registers "5 controllers" / "three no-op stubs"** — all 5
+  controllers (App, Project, PlatformConfig, GitProvider, PreviewEnvironment)
+  are now real reconcilers with tests. No stubs remain.
 
-`README.md` says "Phases 1–3 of the spec are complete"; Phase 3.5
-(Projects) is also complete but Phase 3 (bindings) is actually **Partial**
-because of issues #1 and #2. Prefer this file over README for status.
+`README.md` says "Phases 1–3 of the spec are complete"; this is outdated.
+Phases 0–7 are Done or Partial; Phase 8 is Partial. Prefer this file over
+README for status.
 
 ---
 

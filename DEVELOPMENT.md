@@ -130,7 +130,6 @@ internal/
   bindings/                   Credential resolution for App-to-App bindings
   build/                      BuildClient interface (BuildKit impl — WIP)
   controller/                 Reconcilers (App, PlatformConfig, GitProvider, PreviewEnvironment)
-  dns/                        DNSProvider interface (ExternalDNS-driven)
   git/                        GitAPI + GitClient interfaces (GitHub/GitLab/Gitea — WIP)
   ingress/                    IngressProvider interface (annotation-driven)
   registry/                   RegistryBackend interface (generic OCI)
