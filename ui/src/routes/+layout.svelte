@@ -39,7 +39,7 @@
 	let currentEnv = $state<string>('production');
 	let envSwitcherOpen = $state(false);
 	let envSwitcherEl: HTMLDivElement | null = $state(null);
-	const defaultEnvs = ['production', 'staging'];
+	let projectEnvs = $state<string[]>(['production', 'staging']);
 
 	async function checkSetupStatus() {
 		try {
@@ -83,6 +83,25 @@
 		if (bareLayout || checking) return;
 		if (!store.token) return;
 		if (!projectsLoaded) void loadProjects();
+	});
+
+	$effect(() => {
+		const proj = urlProject;
+		if (!proj || !store.token) return;
+		api.listApps(proj)
+			.then(apps => {
+				const envNames = new Set<string>();
+				envNames.add('production'); // always include production
+				for (const app of apps) {
+					for (const env of app.spec.environments ?? []) {
+						envNames.add(env.name);
+					}
+				}
+				projectEnvs = [...envNames];
+			})
+			.catch(() => {
+				projectEnvs = ['production', 'staging'];
+			});
 	});
 
 	function logout() {
@@ -186,7 +205,7 @@
 							<div
 								class="absolute left-0 top-full z-50 mt-1 w-40 rounded-md border border-surface-600 bg-surface-800 shadow-xl"
 							>
-								{#each defaultEnvs as env}
+								{#each projectEnvs as env}
 									<button
 										type="button"
 										onclick={() => {
