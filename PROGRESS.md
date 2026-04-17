@@ -619,13 +619,24 @@ Missing:
   `team-deployer`, `team-viewer`) + a `Team` abstraction + per-grant
   environment scoping. No `Team` CRD exists; grants have no env field.
 
-### Phase 8 — Tenons & integration recipes — **Not started**
+### Phase 8 — Tenons & integration recipes — **Done**
 
-- `charts/mortise/Chart.yaml` has no `dependencies:` — no bundled
-  Traefik / cert-manager / ExternalDNS / Zot subcharts.
-- `charts/mortise/values.yaml` exposes only operator image / resources /
-  service. No toggles for bundled components (spec §13).
-- No documented recipes for ESO / OPA / Prometheus.
+- `charts/mortise/Chart.yaml` declares optional Helm dependencies:
+  Traefik (~34.0), cert-manager (~v1.17), external-dns (~1.16), Zot (~0.1).
+  Each is enabled by default and conditional (`traefik.enabled`,
+  `cert-manager.enabled`, `external-dns.enabled`, `registry.builtin.enabled`).
+- `charts/mortise/values.yaml` exposes toggles for all bundled components
+  with sensible defaults (cert-manager CRDs auto-installed, ExternalDNS
+  defaults to Cloudflare provider).
+- Deployment template includes an Ingress resource that references Traefik's
+  IngressClass when the bundled Traefik is enabled.
+- Vendored dependency charts gitignored (`charts/mortise/charts/`).
+- Integration recipe docs in `docs/recipes/`: external-ci, oidc,
+  monitoring, external-secrets, backup, cloudflare-tunnel.
+- UI Extensions page (`ui/src/routes/extensions/+page.svelte`) with
+  categorized cards (Infrastructure, Security, Tenons) and nav link in
+  the header.
+- `helm lint`, `helm template`, `npm run build`, `make test` all pass.
 
 ---
 

@@ -21,6 +21,15 @@ primitives.
 - [`CLAUDE.md`](./CLAUDE.md) — project conventions and architecture rules
 - [`DEVELOPMENT.md`](./DEVELOPMENT.md) — local dev loop, tests, troubleshooting
 
+### Integration recipes
+
+- [External CI](./docs/recipes/external-ci.md) — build in GitHub Actions / GitLab CI, deploy via webhook
+- [OIDC](./docs/recipes/oidc.md) — SSO with Authentik, Keycloak, Okta, Google
+- [Monitoring](./docs/recipes/monitoring.md) — Prometheus + Grafana setup
+- [External Secrets](./docs/recipes/external-secrets.md) — Vault, AWS SM, GCP SM via ESO
+- [Backup](./docs/recipes/backup.md) — Velero backup and restore
+- [Cloudflare Tunnel](./docs/recipes/cloudflare-tunnel.md) — access without a public IP
+
 ## Try it locally (one command)
 
 Requires Docker, Go 1.25+, Node 22+, kubebuilder, k3d, kubectl, helm.
@@ -37,6 +46,6 @@ troubleshooting.
 
 ## Status
 
-Pre-v1. Phases 1–3 of the spec are complete (operator, API, auth, UI
-skeleton, bindings, secrets). Remaining work tracked as Phase 4–8 in the
-spec.
+Pre-v1. Phases 1–7 of the spec are implemented. Phase 8 (infrastructure
+bundle, integration recipes, extensions page) is complete. See
+[`PROGRESS.md`](./PROGRESS.md) for detailed status.
