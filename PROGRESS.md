@@ -25,7 +25,7 @@ ExternalDNS, no Go interface).
 | 3.5 — Projects                   | §5 / §5.10  | **Done**         | `Project` CRD + controller + REST API + CLI + UI routes + default-project seeding all landed. `spec.namespaceOverride` and admin-only `spec.adoptExistingNamespace` (spec §5.0) are implemented: controller resolves the target namespace name, enforces cross-Project uniqueness (`NamespaceConflict`), surfaces refusals via the `NamespaceReady` condition (`NamespaceAlreadyExists` / `NamespaceOwnedByAnotherProject`), and takes the adoption path only when explicitly opted in. |
 | 4 — Build system (git source)    | §7.5        | **Done**         | All stacks wired end-to-end: webhook patches `mortise.dev/revision` annotation → App reconciler clones + builds + deploys. Operator entrypoint reads config from `PlatformConfig` (env-var fallback for first-boot). Builds run asynchronously in background goroutines; the reconciler returns `Building` immediately and polls on requeue. |
 | 5 — Monorepo support             | §7.6        | **Done**         | `source.path` plumbs into BuildKit context; `source.watchPaths` gates webhook rebuilds (prefix match). UI build grouping deferred. |
-| 6 — Preview environments        | §7.7        | **Partial**      | CRD types fleshed out; controller + webhook handler WIP (parallel agent). Integration test covering full lifecycle written. |
+| 6 — Preview environments        | §7.7        | **Done**         | `PreviewEnvironment` CRD with real types (PullRequestRef, PreviewPhase, TTL, domain). Controller reconciles Deployment + Service + Ingress with owner references; async build via buildTrackerStore (same pattern as App controller); TTL expiry auto-deletes. Webhook handler parses PR events (opened/synchronize/closed) for GitHub, GitLab, Gitea; creates/updates/deletes PreviewEnvironments with staging inheritance + preview overrides. Domain template resolution (`{number}`, `{app}`). Commit status posted on PR SHA. |
 | 7 — Polish & v1                  | §7.8        | **Partial**      | Controller-side `RollbackDeployment` exists, but no CLI/UI for rollback, no promote, no first-run wizard, no custom-domain UI. |
 | 8 — Tenons & integration recipes | §7.9 / §13  | **Not started**  | No bundled Traefik/cert-manager/ExternalDNS/Zot subcharts; no ESO / OPA / Prometheus recipes. |
 
@@ -52,7 +52,7 @@ Spec rule: every outward interface must have at least one real v1 impl
 | `App`                | real              | real (image + git) | **Partial** — no `kind: service\|cron`, `schedule`, `concurrencyPolicy`, `sharedVars`, or `valueFrom.fromBinding` from spec §5.2. Also missing: `source.type: external` (spec §5.1 v1) and the `importFrom` flavour of `spec.credentials` (§5.5a). `spec.credentials` Flavor A (inline value + valueFrom.secretRef) is implemented with Secret materialisation. `environments[].secretMounts` (§5.5b), `environments[].annotations` (§5.2a), and `environments[].tls.{secretName,clusterIssuer}` (§5.6) are implemented. |
 | `GitProvider`        | real (`api/v1alpha1/gitprovider_types.go`) | real reconciler (`internal/controller/gitprovider_controller.go`) | **Done** |
 | `PlatformConfig`     | real (`api/v1alpha1/platformconfig_types.go`) | real reconciler (`internal/controller/platformconfig_controller.go`) | **Done** |
-| `PreviewEnvironment` | real (`api/v1alpha1/previewenvironment_types.go`) | WIP (parallel agent) | **Partial** |
+| `PreviewEnvironment` | real (`api/v1alpha1/previewenvironment_types.go`) | real reconciler (`internal/controller/previewenvironment_controller.go`) | **Done** |
 
 ---
 
@@ -558,16 +558,31 @@ landed and what each deferred.
 - UI build grouping (the fourth bullet in SPEC.md §7.6) is deferred
   — backend-only landing.
 
-### Phase 6 — Preview environments — **Partial**
+### Phase 6 — Preview environments — **Done**
 
-- `api/v1alpha1/previewenvironment_types.go` fleshed out with real spec/status
-  types (`PreviewPhase`, `PullRequestRef`, `AppRef`, `Domain`, `TTL`, etc.).
-- `internal/controller/previewenvironment_controller.go` WIP by parallel agent.
-- `internal/webhook/handler.go` has PR-event handling (WIP, has compile errors).
-- Integration test `test/integration/preview_test.go` covers full lifecycle
-  (create, build, update SHA, delete + cleanup), disabled-preview rejection,
-  and staging-binding inheritance.
-- Gitea helpers extended: `GetBranchSHA`, `PushNewCommit` in `test/helpers/gitea.go`.
+- `api/v1alpha1/previewenvironment_types.go`: real CRD types — `PreviewPhase`
+  (Pending/Building/Ready/Failed/Expired), `PullRequestRef` (number/branch/SHA),
+  spec fields for appRef, replicas, resources, env, bindings, domain, TTL.
+  Status has phase, URL, image, expiresAt, conditions.
+- `internal/controller/previewenvironment_controller.go`: full reconciler —
+  parent App lookup + validation (git source, preview.enabled), async build via
+  `buildTrackerStore` (same pattern as App controller), Deployment + Service +
+  Ingress creation with owner references, TTL expiry auto-delete, commit status
+  posting via GitAPI.PostCommitStatus. `ResolvePreviewDomain` helper for
+  `{number}`/`{app}` template expansion. Injectable clock for TTL tests.
+- `internal/webhook/handler.go`: PR event parsing for all three forges
+  (GitHub X-GitHub-Event: pull_request, GitLab X-Gitlab-Event: Merge Request
+  Hook, Gitea X-Gitea-Event: pull_request). Actions: opened → create PE,
+  synchronize → update SHA, closed → delete PE. Staging env inheritance +
+  preview resource overrides. Domain template resolution. k8sReader interface
+  extended with listPreviewEnvironments/create/update/delete.
+- `internal/webhook/k8s.go`: K8sReader implements the new PE CRUD methods.
+- `cmd/main.go`: PreviewEnvironmentReconciler wired with BuildClient, GitClient,
+  RegistryBackend, IngressProvider dependencies.
+- Envtest tests: preview-disabled rejection, app-not-found, non-git-source
+  rejection, Deployment/Service/Ingress creation with correct names + overrides,
+  TTL expiry, SHA update, delete cleanup, domain template resolution.
+- Integration test `test/integration/preview_test.go` covers full lifecycle.
 - Fixture: `test/fixtures/git-preview.yaml`.
 
 ### Phase 7 — Polish & v1 — **Partial**

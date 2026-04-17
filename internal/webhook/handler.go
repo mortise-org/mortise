@@ -2,20 +2,23 @@
 //
 // The handler is mounted at /api/webhooks/{provider} (unauthenticated; auth is
 // via HMAC). It verifies the payload signature using the secret stored in the
-// GitProvider CRD's webhookSecretRef, parses push events, then patches the
-// annotation mortise.dev/revision on every matching App so the App reconciler
-// picks up the new commit SHA and triggers a rebuild.
+// GitProvider CRD's webhookSecretRef, parses push and pull_request events, then
+// patches the annotation mortise.dev/revision on every matching App (push), or
+// creates/updates/deletes PreviewEnvironment CRDs (pull_request).
 package webhook
 
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
@@ -34,6 +37,10 @@ type k8sReader interface {
 	getSecret(ctx context.Context, namespace, name, key string) (string, error)
 	listGitApps(ctx context.Context) ([]mortisev1alpha1.App, error)
 	patchAppRevision(ctx context.Context, app *mortisev1alpha1.App, sha string) error
+	listPreviewEnvironments(ctx context.Context, namespace string) ([]mortisev1alpha1.PreviewEnvironment, error)
+	createPreviewEnvironment(ctx context.Context, pe *mortisev1alpha1.PreviewEnvironment) error
+	updatePreviewEnvironment(ctx context.Context, pe *mortisev1alpha1.PreviewEnvironment) error
+	deletePreviewEnvironment(ctx context.Context, pe *mortisev1alpha1.PreviewEnvironment) error
 }
 
 // New creates a Handler.
@@ -90,17 +97,26 @@ func (h *Handler) handleWebhook(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	br, ok := parsePushEvent(gp.Spec.Type, body)
-	if !ok {
-		// Not a push event (e.g. ping); acknowledge silently.
+	// Try parsing as a PR event first (PR payloads can also contain ref/after
+	// fields that parsePushEvent would match).
+	pr, ok := parsePREvent(gp.Spec.Type, body, req.Header)
+	if ok {
+		pr.Provider = providerName
+		h.dispatchPREvent(req.Context(), pr)
 		w.WriteHeader(http.StatusAccepted)
 		return
 	}
-	br.Provider = providerName
 
-	// Dispatch: find all Apps whose git repo + branch match, patch revision annotation.
-	h.dispatchToApps(req.Context(), br)
+	// Try parsing as a push event.
+	br, ok := parsePushEvent(gp.Spec.Type, body)
+	if ok {
+		br.Provider = providerName
+		h.dispatchToApps(req.Context(), br)
+		w.WriteHeader(http.StatusAccepted)
+		return
+	}
 
+	// Not a push or PR event (e.g. ping); acknowledge silently.
 	w.WriteHeader(http.StatusAccepted)
 }
 
@@ -156,6 +172,154 @@ func (h *Handler) dispatchToApps(ctx context.Context, br BuildRequest) {
 	}
 }
 
+// dispatchPREvent handles pull_request events: creates, updates, or deletes
+// PreviewEnvironment CRDs for matching Apps.
+func (h *Handler) dispatchPREvent(ctx context.Context, pr PREvent) {
+	log := logf.FromContext(ctx)
+
+	apps, err := h.k8s.listGitApps(ctx)
+	if err != nil {
+		log.Error(err, "list git apps for PR dispatch")
+		return
+	}
+
+	matched := 0
+	for i := range apps {
+		app := &apps[i]
+		src := app.Spec.Source
+		if src.Type != mortisev1alpha1.SourceTypeGit {
+			continue
+		}
+		if !repoMatches(src.Repo, pr.Repo) {
+			continue
+		}
+		if app.Spec.Preview == nil || !app.Spec.Preview.Enabled {
+			continue
+		}
+
+		switch pr.Action {
+		case "opened", "synchronize":
+			h.handlePROpenOrSync(ctx, app, pr)
+		case "closed":
+			h.handlePRClosed(ctx, app, pr)
+		default:
+			log.Info("ignoring PR action", "action", pr.Action)
+		}
+		matched++
+	}
+
+	if matched == 0 {
+		log.Info("no matching apps for PR event", "repo", pr.Repo, "number", pr.Number)
+	}
+}
+
+func (h *Handler) handlePROpenOrSync(ctx context.Context, app *mortisev1alpha1.App, pr PREvent) {
+	log := logf.FromContext(ctx)
+
+	peName := previewEnvName(app.Name, pr.Number)
+
+	// Resolve domain from template.
+	domain := ""
+	if app.Spec.Preview != nil {
+		domain = resolvePreviewDomainTemplate(app.Spec.Preview.Domain, app.Name, pr.Number)
+	}
+
+	// Default TTL: 72h.
+	ttlDuration := 72 * time.Hour
+	if app.Spec.Preview != nil && app.Spec.Preview.TTL != "" {
+		if parsed, err := time.ParseDuration(app.Spec.Preview.TTL); err == nil {
+			ttlDuration = parsed
+		} else {
+			log.Error(err, "parse TTL, using default 72h", "ttl", app.Spec.Preview.TTL)
+		}
+	}
+
+	// Find staging environment to inherit from.
+	staging := findStagingEnv(app)
+
+	// Check if PreviewEnvironment already exists.
+	existing, err := h.k8s.listPreviewEnvironments(ctx, app.Namespace)
+	if err != nil {
+		log.Error(err, "list preview environments")
+		return
+	}
+
+	for j := range existing {
+		if existing[j].Name == peName {
+			// Update SHA to trigger rebuild.
+			existing[j].Spec.PullRequest.SHA = pr.SHA
+			existing[j].Spec.PullRequest.Branch = pr.Branch
+			if err := h.k8s.updatePreviewEnvironment(ctx, &existing[j]); err != nil {
+				log.Error(err, "update preview environment", "name", peName)
+			} else {
+				log.Info("updated preview environment SHA", "name", peName, "sha", pr.SHA)
+			}
+			return
+		}
+	}
+
+	// Create new PreviewEnvironment.
+	pe := &mortisev1alpha1.PreviewEnvironment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      peName,
+			Namespace: app.Namespace,
+		},
+		Spec: mortisev1alpha1.PreviewEnvironmentSpec{
+			AppRef: app.Name,
+			PullRequest: mortisev1alpha1.PullRequestRef{
+				Number: pr.Number,
+				Branch: pr.Branch,
+				SHA:    pr.SHA,
+			},
+			Domain: domain,
+			TTL:    metav1.Duration{Duration: ttlDuration},
+		},
+	}
+
+	// Inherit from staging.
+	if staging != nil {
+		pe.Spec.Replicas = staging.Replicas
+		pe.Spec.Resources = staging.Resources
+		pe.Spec.Env = staging.Env
+		pe.Spec.Bindings = staging.Bindings
+	}
+
+	// Apply preview overrides.
+	if app.Spec.Preview != nil {
+		if app.Spec.Preview.Resources.CPU != "" || app.Spec.Preview.Resources.Memory != "" {
+			pe.Spec.Resources = app.Spec.Preview.Resources
+		}
+	}
+
+	if err := h.k8s.createPreviewEnvironment(ctx, pe); err != nil {
+		log.Error(err, "create preview environment", "name", peName)
+	} else {
+		log.Info("created preview environment", "name", peName, "pr", pr.Number)
+	}
+}
+
+func (h *Handler) handlePRClosed(ctx context.Context, app *mortisev1alpha1.App, pr PREvent) {
+	log := logf.FromContext(ctx)
+
+	existing, err := h.k8s.listPreviewEnvironments(ctx, app.Namespace)
+	if err != nil {
+		log.Error(err, "list preview environments for cleanup")
+		return
+	}
+
+	peName := previewEnvName(app.Name, pr.Number)
+	for j := range existing {
+		if existing[j].Name == peName {
+			if err := h.k8s.deletePreviewEnvironment(ctx, &existing[j]); err != nil {
+				log.Error(err, "delete preview environment", "name", peName)
+			} else {
+				log.Info("deleted preview environment", "name", peName)
+			}
+			return
+		}
+	}
+}
+
 // branchFromRef strips the "refs/heads/" prefix from a git ref string.
 // "refs/heads/main" → "main". Non-branch refs (tags) are returned as-is.
 func branchFromRef(ref string) string {
@@ -164,16 +328,6 @@ func branchFromRef(ref string) string {
 
 // repoMatches returns true if the App's configured repo URL and the webhook
 // event's repo identifier refer to the same repository.
-//
-// The event may carry either "owner/repo" (short form from full_name) or a
-// full HTTPS URL (from html_url). The App always stores a full URL.
-//
-// Normalization rules:
-//   - Strip trailing ".git" from both sides.
-//   - Lowercase everything.
-//   - If both are full URLs, compare host+path.
-//   - If one is a short path ("owner/repo"), check whether the other's URL path
-//     ends with "/" + that short path (e.g. "github.com/org/repo" ends with "/org/repo").
 func repoMatches(appRepo, eventRepo string) bool {
 	if appRepo == "" || eventRepo == "" {
 		return false
@@ -183,8 +337,6 @@ func repoMatches(appRepo, eventRepo string) bool {
 	if a == b {
 		return true
 	}
-	// One may be a short path; check suffix containment.
-	// Add a "/" prefix to avoid partial segment matches.
 	if strings.HasSuffix(a, "/"+b) || strings.HasSuffix(b, "/"+a) {
 		return true
 	}
@@ -192,15 +344,12 @@ func repoMatches(appRepo, eventRepo string) bool {
 }
 
 // normalizeRepo returns a canonical lowercased string for comparison.
-// Full URLs are reduced to "host/path" (no scheme, no leading slash on path).
-// Short "owner/repo" style strings are returned lowercased.
 func normalizeRepo(raw string) string {
 	raw = strings.TrimSuffix(raw, ".git")
 
 	if strings.Contains(raw, "://") {
 		u, err := url.Parse(raw)
 		if err == nil {
-			// e.g. "github.com/org/repo"
 			return strings.ToLower(u.Host) + "/" + strings.ToLower(strings.TrimPrefix(u.Path, "/"))
 		}
 	}
@@ -216,9 +365,17 @@ type BuildRequest struct {
 	ChangedPaths []string // deduped union of added/modified/removed paths across all commits; nil when the payload carries no commits[]
 }
 
+// PREvent is the parsed pull_request event payload.
+type PREvent struct {
+	Provider string
+	Repo     string
+	Number   int
+	Action   string // opened, synchronize, closed
+	Branch   string // source branch
+	SHA      string // head commit SHA
+}
+
 // pushPayload is the minimal common shape we extract from all three forges.
-// All three forges (GitHub, GitLab, Gitea) use compatible commits[].{added,
-// modified, removed} shapes, so one struct covers them all.
 type pushPayload struct {
 	Ref  string `json:"ref"`
 	SHA  string `json:"after"`
@@ -233,18 +390,45 @@ type pushPayload struct {
 	} `json:"commits"`
 }
 
+// prPayload is the minimal shape for pull_request events across forges.
+type prPayload struct {
+	Action      string `json:"action"`
+	Number      int    `json:"number"`
+	PullRequest struct {
+		Number int `json:"number"`
+		Head   struct {
+			Ref string `json:"ref"`
+			SHA string `json:"sha"`
+		} `json:"head"`
+	} `json:"pull_request"`
+	ObjectAttributes struct {
+		Action       string `json:"action"`
+		IID          int    `json:"iid"`
+		SourceBranch string `json:"source_branch"`
+		LastCommit   struct {
+			ID string `json:"id"`
+		} `json:"last_commit"`
+		State string `json:"state"`
+	} `json:"object_attributes"`
+	Repo struct {
+		FullName string `json:"full_name"`
+		HTMLURL  string `json:"html_url"`
+	} `json:"repository"`
+}
+
 // parsePushEvent extracts a BuildRequest from a push payload.
 // Returns false when the payload is not a push event or cannot be parsed.
 func parsePushEvent(providerType mortisev1alpha1.GitProviderType, body []byte) (BuildRequest, bool) {
-	// All three forges (GitHub, GitLab, Gitea) use compatible push payload shapes
-	// for the fields we need (ref, after/checkout_sha, repository.full_name).
-	// GitLab uses "checkout_sha" instead of "after"; handle both.
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(body, &raw); err != nil {
 		return BuildRequest{}, false
 	}
 
-	// GitLab uses checkout_sha; GitHub and Gitea use "after".
+	// If this looks like a PR event, don't parse as push.
+	if _, hasPR := raw["pull_request"]; hasPR {
+		return BuildRequest{}, false
+	}
+
 	shaKey := "after"
 	if providerType == mortisev1alpha1.GitProviderTypeGitLab {
 		shaKey = "checkout_sha"
@@ -256,7 +440,6 @@ func parsePushEvent(providerType mortisev1alpha1.GitProviderType, body []byte) (
 	}
 	sha := p.SHA
 	if shaKey == "checkout_sha" {
-		// Re-unmarshal from the raw map.
 		if v, ok := raw[shaKey]; ok {
 			_ = json.Unmarshal(v, &sha)
 		}
@@ -270,9 +453,6 @@ func parsePushEvent(providerType mortisev1alpha1.GitProviderType, body []byte) (
 		repo = p.Repo.HTMLURL
 	}
 
-	// Collect a deduped union of added/modified/removed paths across all
-	// commits. If commits[] is absent, leave ChangedPaths nil — the watchPaths
-	// gate treats that as "unknown, don't filter".
 	var changed []string
 	if p.Commits != nil {
 		seen := make(map[string]struct{})
@@ -291,8 +471,6 @@ func parsePushEvent(providerType mortisev1alpha1.GitProviderType, body []byte) (
 			}
 		}
 		if changed == nil {
-			// Commits present but empty — still distinguishable from "no
-			// commits key" so the gate can apply.
 			changed = []string{}
 		}
 	}
@@ -305,17 +483,158 @@ func parsePushEvent(providerType mortisev1alpha1.GitProviderType, body []byte) (
 	}, true
 }
 
+// parsePREvent extracts a PREvent from a pull_request / merge_request payload.
+func parsePREvent(providerType mortisev1alpha1.GitProviderType, body []byte, header http.Header) (PREvent, bool) {
+	switch providerType {
+	case mortisev1alpha1.GitProviderTypeGitHub:
+		return parseGitHubPREvent(body, header)
+	case mortisev1alpha1.GitProviderTypeGitea:
+		return parseGiteaPREvent(body, header)
+	case mortisev1alpha1.GitProviderTypeGitLab:
+		return parseGitLabPREvent(body, header)
+	default:
+		return PREvent{}, false
+	}
+}
+
+func parseGitHubPREvent(body []byte, header http.Header) (PREvent, bool) {
+	eventType := header.Get("X-GitHub-Event")
+	if eventType != "pull_request" {
+		return PREvent{}, false
+	}
+
+	var p prPayload
+	if err := json.Unmarshal(body, &p); err != nil {
+		return PREvent{}, false
+	}
+
+	action := normalizeAction(p.Action)
+	if action == "" {
+		return PREvent{}, false
+	}
+
+	number := p.PullRequest.Number
+	if number == 0 {
+		number = p.Number
+	}
+
+	repo := p.Repo.FullName
+	if repo == "" {
+		repo = p.Repo.HTMLURL
+	}
+
+	return PREvent{
+		Repo:   repo,
+		Number: number,
+		Action: action,
+		Branch: p.PullRequest.Head.Ref,
+		SHA:    p.PullRequest.Head.SHA,
+	}, true
+}
+
+func parseGiteaPREvent(body []byte, header http.Header) (PREvent, bool) {
+	eventType := header.Get("X-Gitea-Event")
+	if eventType == "" {
+		eventType = header.Get("X-GitHub-Event")
+	}
+	if eventType != "pull_request" {
+		return PREvent{}, false
+	}
+
+	var p prPayload
+	if err := json.Unmarshal(body, &p); err != nil {
+		return PREvent{}, false
+	}
+
+	action := normalizeAction(p.Action)
+	if action == "" {
+		return PREvent{}, false
+	}
+
+	number := p.PullRequest.Number
+	if number == 0 {
+		number = p.Number
+	}
+
+	repo := p.Repo.FullName
+	if repo == "" {
+		repo = p.Repo.HTMLURL
+	}
+
+	return PREvent{
+		Repo:   repo,
+		Number: number,
+		Action: action,
+		Branch: p.PullRequest.Head.Ref,
+		SHA:    p.PullRequest.Head.SHA,
+	}, true
+}
+
+func parseGitLabPREvent(body []byte, header http.Header) (PREvent, bool) {
+	eventType := header.Get("X-Gitlab-Event")
+	if eventType != "Merge Request Hook" {
+		return PREvent{}, false
+	}
+
+	var p prPayload
+	if err := json.Unmarshal(body, &p); err != nil {
+		return PREvent{}, false
+	}
+
+	action := normalizeGitLabAction(p.ObjectAttributes.Action, p.ObjectAttributes.State)
+	if action == "" {
+		return PREvent{}, false
+	}
+
+	repo := p.Repo.FullName
+	if repo == "" {
+		repo = p.Repo.HTMLURL
+	}
+
+	return PREvent{
+		Repo:   repo,
+		Number: p.ObjectAttributes.IID,
+		Action: action,
+		Branch: p.ObjectAttributes.SourceBranch,
+		SHA:    p.ObjectAttributes.LastCommit.ID,
+	}, true
+}
+
+// normalizeAction maps forge-specific PR actions to our internal set.
+func normalizeAction(action string) string {
+	switch action {
+	case "opened":
+		return "opened"
+	case "synchronize", "synchronized":
+		return "synchronize"
+	case "closed", "merged":
+		return "closed"
+	default:
+		return ""
+	}
+}
+
+func normalizeGitLabAction(action, state string) string {
+	switch action {
+	case "open":
+		return "opened"
+	case "update":
+		return "synchronize"
+	case "close", "merge":
+		return "closed"
+	default:
+		switch state {
+		case "opened":
+			return "opened"
+		case "closed", "merged":
+			return "closed"
+		}
+		return ""
+	}
+}
+
 // matchesWatchPaths returns true when the push should trigger a rebuild for an
 // App with the given watchPaths.
-//
-// Rules:
-//   - Empty watchPaths → always true (no filter configured).
-//   - Nil changedPaths → always true (payload had no commits[]; we can't
-//     reason about what changed, so fall back to rebuild-on-any-push).
-//   - Otherwise: any changed path that has any watchPath as a prefix → true.
-//
-// Leading slashes on watchPaths are stripped before comparison so users can
-// write either "services/api" or "/services/api".
 func matchesWatchPaths(watchPaths, changedPaths []string) bool {
 	if len(watchPaths) == 0 {
 		return true
@@ -335,4 +654,32 @@ func matchesWatchPaths(watchPaths, changedPaths []string) bool {
 		}
 	}
 	return false
+}
+
+// previewEnvName returns the name for a PreviewEnvironment CRD.
+func previewEnvName(appName string, prNumber int) string {
+	return fmt.Sprintf("%s-preview-pr-%d", appName, prNumber)
+}
+
+// resolvePreviewDomainTemplate replaces {number} and {app} in a domain template.
+func resolvePreviewDomainTemplate(template, appName string, prNumber int) string {
+	if template == "" {
+		return ""
+	}
+	result := strings.ReplaceAll(template, "{number}", fmt.Sprintf("%d", prNumber))
+	result = strings.ReplaceAll(result, "{app}", appName)
+	return result
+}
+
+// findStagingEnv returns the staging environment from the App, or the first env.
+func findStagingEnv(app *mortisev1alpha1.App) *mortisev1alpha1.Environment {
+	for i := range app.Spec.Environments {
+		if app.Spec.Environments[i].Name == "staging" {
+			return &app.Spec.Environments[i]
+		}
+	}
+	if len(app.Spec.Environments) > 0 {
+		return &app.Spec.Environments[0]
+	}
+	return nil
 }

@@ -25,6 +25,12 @@ type fakeK8sReader struct {
 
 	// patched records calls to patchAppRevision: app namespace/name -> sha
 	patched map[string]string
+
+	// preview environment tracking
+	previewEnvs     []mortisev1alpha1.PreviewEnvironment
+	createdPreviews []mortisev1alpha1.PreviewEnvironment
+	updatedPreviews []mortisev1alpha1.PreviewEnvironment
+	deletedPreviews []mortisev1alpha1.PreviewEnvironment
 }
 
 func (f *fakeK8sReader) getGitProvider(_ context.Context, name string) (*mortisev1alpha1.GitProvider, error) {
@@ -61,6 +67,28 @@ func (f *fakeK8sReader) patchAppRevision(_ context.Context, app *mortisev1alpha1
 		f.patched = make(map[string]string)
 	}
 	f.patched[app.Namespace+"/"+app.Name] = sha
+	return nil
+}
+
+func (f *fakeK8sReader) listPreviewEnvironments(_ context.Context, _ string) ([]mortisev1alpha1.PreviewEnvironment, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.previewEnvs, nil
+}
+
+func (f *fakeK8sReader) createPreviewEnvironment(_ context.Context, pe *mortisev1alpha1.PreviewEnvironment) error {
+	f.createdPreviews = append(f.createdPreviews, *pe)
+	return nil
+}
+
+func (f *fakeK8sReader) updatePreviewEnvironment(_ context.Context, pe *mortisev1alpha1.PreviewEnvironment) error {
+	f.updatedPreviews = append(f.updatedPreviews, *pe)
+	return nil
+}
+
+func (f *fakeK8sReader) deletePreviewEnvironment(_ context.Context, pe *mortisev1alpha1.PreviewEnvironment) error {
+	f.deletedPreviews = append(f.deletedPreviews, *pe)
 	return nil
 }
 

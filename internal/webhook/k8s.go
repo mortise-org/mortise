@@ -73,3 +73,27 @@ func (r *K8sReader) patchAppRevision(ctx context.Context, app *mortisev1alpha1.A
 	}
 	return r.client.Patch(ctx, app, client.RawPatch(types.MergePatchType, data))
 }
+
+// listPreviewEnvironments returns all PreviewEnvironments in the given namespace.
+func (r *K8sReader) listPreviewEnvironments(ctx context.Context, namespace string) ([]mortisev1alpha1.PreviewEnvironment, error) {
+	var list mortisev1alpha1.PreviewEnvironmentList
+	if err := r.client.List(ctx, &list, client.InNamespace(namespace)); err != nil {
+		return nil, fmt.Errorf("list preview environments in %s: %w", namespace, err)
+	}
+	return list.Items, nil
+}
+
+// createPreviewEnvironment creates a PreviewEnvironment CRD.
+func (r *K8sReader) createPreviewEnvironment(ctx context.Context, pe *mortisev1alpha1.PreviewEnvironment) error {
+	return r.client.Create(ctx, pe)
+}
+
+// updatePreviewEnvironment updates a PreviewEnvironment CRD.
+func (r *K8sReader) updatePreviewEnvironment(ctx context.Context, pe *mortisev1alpha1.PreviewEnvironment) error {
+	return r.client.Update(ctx, pe)
+}
+
+// deletePreviewEnvironment deletes a PreviewEnvironment CRD.
+func (r *K8sReader) deletePreviewEnvironment(ctx context.Context, pe *mortisev1alpha1.PreviewEnvironment) error {
+	return r.client.Delete(ctx, pe)
+}
