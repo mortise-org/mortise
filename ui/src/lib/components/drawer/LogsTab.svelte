@@ -50,6 +50,21 @@
 	function clearLogs() {
 		lines = [];
 	}
+
+	let searchQuery = $state('');
+	const filteredLines = $derived(
+		searchQuery.trim()
+			? lines.filter(l => l.toLowerCase().includes(searchQuery.toLowerCase()))
+			: lines
+	);
+
+	async function copyLogs() {
+		try {
+			await navigator.clipboard.writeText(lines.join('\n'));
+		} catch {
+			// ignore
+		}
+	}
 </script>
 
 <div class="flex h-full flex-col gap-3">
@@ -92,6 +107,13 @@
 			</label>
 			<button
 				type="button"
+				onclick={copyLogs}
+				class="rounded px-2 py-0.5 text-xs text-gray-500 hover:bg-surface-700 hover:text-white"
+			>
+				Copy
+			</button>
+			<button
+				type="button"
 				onclick={clearLogs}
 				class="rounded px-2 py-0.5 text-xs text-gray-500 hover:bg-surface-700 hover:text-white"
 			>
@@ -100,16 +122,24 @@
 		</div>
 	</div>
 
+	<!-- Search -->
+	<input
+		type="text"
+		bind:value={searchQuery}
+		placeholder="Filter logs…"
+		class="w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-1.5 text-xs text-white placeholder-gray-500 outline-none focus:border-accent"
+	/>
+
 	<!-- Log body -->
 	<div
 		bind:this={logContainer}
 		class="flex-1 overflow-y-auto rounded-md bg-surface-900 p-3"
 		style="min-height: 300px; max-height: calc(100vh - 280px)"
 	>
-		{#if lines.length === 0}
-			<p class="text-xs text-gray-600 italic">No logs yet…</p>
+		{#if filteredLines.length === 0}
+			<p class="text-xs text-gray-600 italic">{searchQuery.trim() ? 'No matching lines.' : 'No logs yet…'}</p>
 		{:else}
-			{#each lines as line}
+			{#each filteredLines as line}
 				<div class="font-mono text-xs leading-5 text-gray-300 whitespace-pre-wrap break-all">{line}</div>
 			{/each}
 		{/if}
