@@ -30,6 +30,15 @@ func (r *K8sReader) getGitProvider(ctx context.Context, name string) (*mortisev1
 	return &gp, nil
 }
 
+// getProject fetches the cluster-scoped Project CR by name.
+func (r *K8sReader) getProject(ctx context.Context, name string) (*mortisev1alpha1.Project, error) {
+	var project mortisev1alpha1.Project
+	if err := r.client.Get(ctx, types.NamespacedName{Name: name}, &project); err != nil {
+		return nil, fmt.Errorf("get Project %q: %w", name, err)
+	}
+	return &project, nil
+}
+
 func (r *K8sReader) getSecret(ctx context.Context, namespace, name, key string) (string, error) {
 	var s corev1.Secret
 	if err := r.client.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, &s); err != nil {

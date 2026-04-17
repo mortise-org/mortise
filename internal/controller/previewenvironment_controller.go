@@ -65,6 +65,22 @@ type PreviewEnvironmentReconciler struct {
 // +kubebuilder:rbac:groups=mortise.mortise.dev,resources=previewenvironments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=mortise.mortise.dev,resources=previewenvironments/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=mortise.mortise.dev,resources=previewenvironments/finalizers,verbs=update
+// +kubebuilder:rbac:groups=mortise.mortise.dev,resources=projects,verbs=get;list;watch
+
+// getProjectForApp resolves the parent Project for an App by stripping the
+// `project-` prefix off the App's namespace. Returns an error if the App is
+// not in a project-scoped namespace or the Project cannot be fetched.
+func (r *PreviewEnvironmentReconciler) getProjectForApp(ctx context.Context, app *mortisev1alpha1.App) (*mortisev1alpha1.Project, error) {
+	projectName := strings.TrimPrefix(app.Namespace, "project-")
+	if projectName == app.Namespace || projectName == "" {
+		return nil, fmt.Errorf("App %q is not in a project-scoped namespace (%q)", app.Name, app.Namespace)
+	}
+	var project mortisev1alpha1.Project
+	if err := r.Get(ctx, types.NamespacedName{Name: projectName}, &project); err != nil {
+		return nil, fmt.Errorf("get Project %q: %w", projectName, err)
+	}
+	return &project, nil
+}
 
 func (r *PreviewEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
@@ -96,12 +112,16 @@ func (r *PreviewEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.R
 		return ctrl.Result{}, err
 	}
 
-	// Preview only works for git-source apps with preview enabled.
+	// Preview only works for git-source apps with preview enabled on the parent Project.
 	if app.Spec.Source.Type != mortisev1alpha1.SourceTypeGit {
 		return ctrl.Result{}, r.setPreviewFailed(ctx, &pe, "NotGitSource", "previews only work for git source apps")
 	}
-	if app.Spec.Preview == nil || !app.Spec.Preview.Enabled {
-		return ctrl.Result{}, r.setPreviewFailed(ctx, &pe, "PreviewDisabled", "App does not have preview.enabled: true")
+	project, err := r.getProjectForApp(ctx, &app)
+	if err != nil {
+		return ctrl.Result{}, r.setPreviewFailed(ctx, &pe, "ProjectNotFound", err.Error())
+	}
+	if project.Spec.Preview == nil || !project.Spec.Preview.Enabled {
+		return ctrl.Result{}, r.setPreviewFailed(ctx, &pe, "PreviewDisabledOnProject", fmt.Sprintf("Project %q does not have preview.enabled: true", project.Name))
 	}
 
 	// Calculate expiresAt if not set.

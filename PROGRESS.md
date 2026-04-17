@@ -585,26 +585,75 @@ Integration test proves it against in-cluster Gitea + BuildKit + registry.
   (Pending/Building/Ready/Failed/Expired), `PullRequestRef` (number/branch/SHA),
   spec fields for appRef, replicas, resources, env, bindings, domain, TTL.
   Status has phase, URL, image, expiresAt, conditions.
+- Preview is a **project-level** toggle (SPEC §5.8) — `PreviewConfig` lives
+  on `ProjectSpec.Preview`, not on `AppSpec`. Every App in a Project whose
+  preview is enabled participates in each open PR's preview namespace; there
+  is no per-App opt-out in v1.
 - `internal/controller/previewenvironment_controller.go`: full reconciler —
-  parent App lookup + validation (git source, preview.enabled), async build via
-  `buildTrackerStore` (same pattern as App controller), Deployment + Service +
-  Ingress creation with owner references, TTL expiry auto-delete, commit status
-  posting via GitAPI.PostCommitStatus. `ResolvePreviewDomain` helper for
-  `{number}`/`{app}` template expansion. Injectable clock for TTL tests.
+  parent App lookup, parent Project lookup (derived from `project-` namespace
+  prefix) + validation (git source, `project.spec.preview.enabled`), async
+  build via `buildTrackerStore` (same pattern as App controller), Deployment +
+  Service + Ingress creation with owner references, TTL expiry auto-delete,
+  commit status posting via GitAPI.PostCommitStatus. `ResolvePreviewDomain`
+  helper for `{number}`/`{app}` template expansion. Injectable clock for TTL
+  tests.
 - `internal/webhook/handler.go`: PR event parsing for all three forges
   (GitHub X-GitHub-Event: pull_request, GitLab X-Gitlab-Event: Merge Request
   Hook, Gitea X-Gitea-Event: pull_request). Actions: opened → create PE,
-  synchronize → update SHA, closed → delete PE. Staging env inheritance +
-  preview resource overrides. Domain template resolution. k8sReader interface
-  extended with listPreviewEnvironments/create/update/delete.
+  synchronize → update SHA, closed → delete PE. Project-level preview gate;
+  staging env inheritance + project preview resource overrides. Domain template
+  resolution. k8sReader interface extended with
+  getProject/listPreviewEnvironments/create/update/delete.
 - `internal/webhook/k8s.go`: K8sReader implements the new PE CRUD methods.
 - `cmd/main.go`: PreviewEnvironmentReconciler wired with BuildClient, GitClient,
   RegistryBackend, IngressProvider dependencies.
-- Envtest tests: preview-disabled rejection, app-not-found, non-git-source
-  rejection, Deployment/Service/Ingress creation with correct names + overrides,
-  TTL expiry, SHA update, delete cleanup, domain template resolution.
+- Envtest tests: project-level preview-disabled rejection, app-not-found,
+  non-git-source rejection, Deployment/Service/Ingress creation with correct
+  names + overrides, TTL expiry, SHA update, delete cleanup, domain template
+  resolution.
 - Integration test `test/integration/preview_test.go` covers full lifecycle.
 - Fixture: `test/fixtures/git-preview.yaml`.
+
+### Activity event store (§5.11) — **Partial (foundation only)**
+
+Per-project audit event log. SPEC §5.11 defines a ring-buffer store capped
+at 500 events per project, backed by a ConfigMap
+`activity-{project}` in namespace `project-{project}`, with every write
+also emitting a JSON line to stdout for external log-pipeline scrape.
+
+Landed (foundation):
+- `internal/activity/event.go` — `Event` struct (ts, actor, action, kind,
+  resource, project, msg, meta).
+- `internal/activity/store.go` — `Store` interface (`Append`, `List`).
+- `internal/activity/configmap_store.go` — `ConfigMapStore`: load → append
+  → truncate-to-Cap (500) → write, with exponential-backoff retry on
+  `IsConflict`. On first write in a project creates the ConfigMap with
+  `app.kubernetes.io/managed-by: mortise` and `mortise.dev/kind: activity`
+  labels (GC'd with the project namespace — no owner reference needed).
+  Missing namespace (project mid-teardown) is a warn-and-return-nil path
+  so callers are not blocked on eventual-consistency ordering.
+- `internal/activity/configmap_store_test.go` — unit tests with
+  controller-runtime fake client: create-on-first-append, append-to-
+  existing, truncate-at-cap, newest-first ordering, missing ConfigMap
+  returns empty, limit honored, missing-namespace is not an error.
+- RBAC: `charts/mortise/templates/rbac.yaml` grants
+  get/list/watch/create/update/patch on `configmaps` (no delete; GC by
+  namespace).
+
+Missing (not this pass):
+- Handler instrumentation: API write handlers do not yet capture the
+  acting `Principal` and emit Events. Every write path under
+  `internal/api/*.go` (project CRUD, app CRUD, env/secret mutations,
+  deploy/rollback/promote, domain add/remove, token issue/revoke) needs
+  to call `store.Append` with an Event derived from the authenticated
+  principal.
+- Read surface: no `GET /api/projects/{p}/activity` endpoint yet.
+  Pagination contract (per SPEC §5.11) is cursor-over-timestamp.
+- UI Activity rail (UI_SPEC §12.22): pulse-button toggled right-rail
+  slide-out has not been built. Out of scope for the backend pass.
+- Scale note: ConfigMap at ~250KB (500 events × ~500 bytes) is fine for
+  v1. SPEC §10 Open Question #6 tracks whether to swap in a richer store
+  once demand appears.
 
 ### Phase 7 — Polish & v1 — **Partial**
 
@@ -721,17 +770,11 @@ as Issue #9 for v2.
 
 ## Documentation drift
 
-Items in `CLAUDE.md` that no longer reflect reality — fix these opportunistically:
+Items in other docs that no longer reflect reality — fix these opportunistically:
 
-- **`CRDs: App, PlatformConfig, GitProvider, PreviewEnvironment`** — missing
-  `Project`. `Project` has been the top-level grouping since Phase 3.5.
-- **Operator registers "5 controllers" / "three no-op stubs"** — all 5
-  controllers (App, Project, PlatformConfig, GitProvider, PreviewEnvironment)
-  are now real reconcilers with tests. No stubs remain.
-
-`README.md` says "Phases 1–3 of the spec are complete"; this is outdated.
-Phases 0–7 are Done or Partial; Phase 8 is Partial. Prefer this file over
-README for status.
+- `README.md` says "Phases 1–3 of the spec are complete"; this is outdated.
+  Phases 0–7 are Done or Partial; Phase 8 is Partial. Prefer this file over
+  README for status.
 
 ---
 

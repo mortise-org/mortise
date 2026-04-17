@@ -295,22 +295,6 @@ spec:
                     default: true
                     type: boolean
                 type: object
-              preview:
-                properties:
-                  domain:
-                    type: string
-                  enabled:
-                    type: boolean
-                  resources:
-                    properties:
-                      cpu:
-                        type: string
-                      memory:
-                        type: string
-                    type: object
-                  ttl:
-                    type: string
-                type: object
               sharedVars:
                 description: |-
                   SharedVars are app-wide env vars visible to every environment of this

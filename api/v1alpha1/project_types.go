@@ -20,6 +20,37 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+// PreviewConfig is the project-level PR environments toggle (SPEC §5.8).
+// When set with Enabled=true, every App inside the Project reconciles into
+// each open PR's preview namespace — there is no per-App opt-out.
+// Domain, TTL, and Resources act as defaults shared across every PR preview
+// spawned from this Project's Apps.
+type PreviewConfig struct {
+	// Enabled turns PR environments on for every App in the Project.
+	Enabled bool `json:"enabled,omitempty"`
+
+	// Domain is a template for preview hostnames. Supports {number} and {app}
+	// placeholders (e.g. "pr-{number}-{app}.example.com"). If empty, the
+	// controller falls back to a platform-domain-derived default.
+	// +optional
+	Domain string `json:"domain,omitempty"`
+
+	// TTL is a Go duration string (e.g. "72h") after which an idle preview is
+	// garbage-collected. Empty string means "use controller default".
+	// +optional
+	TTL string `json:"ttl,omitempty"`
+
+	// Resources caps the CPU / memory each PR preview's Pod requests. Empty
+	// fields inherit from the staging environment of the source App.
+	// +optional
+	Resources ResourceRequirements `json:"resources,omitempty"`
+
+	// BotPR, when true, lets PRs opened by bot accounts also spawn previews.
+	// Defaults to false — previews only spawn for human-authored PRs.
+	// +optional
+	BotPR bool `json:"botPR,omitempty"`
+}
+
 // ProjectSpec defines the desired state of a Project — the top-level grouping
 // above Apps. Each Project owns a Kubernetes namespace (by default
 // `project-{metadata.name}`) into which its Apps are placed.
@@ -27,6 +58,12 @@ type ProjectSpec struct {
 	// Description is a short, human-readable note about the project.
 	// +optional
 	Description string `json:"description,omitempty"`
+
+	// Preview controls PR-driven preview environments at the Project scope
+	// (SPEC §5.8). When Enabled=true, every App in this Project participates
+	// in each open PR's preview namespace. There is no per-App opt-out in v1.
+	// +optional
+	Preview *PreviewConfig `json:"preview,omitempty"`
 
 	// NamespaceOverride, when set, makes the controller use this name verbatim
 	// for the Project's backing namespace instead of the default

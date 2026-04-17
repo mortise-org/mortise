@@ -27,6 +27,7 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	storagev1 "k8s.io/api/storage/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/types"
 	clocktesting "k8s.io/utils/clock/testing"
@@ -927,6 +928,61 @@ var _ = Describe("App Controller", func() {
 			Expect(dep.Spec.Template.Spec.Volumes[0].PersistentVolumeClaim.ClaimName).To(Equal("test-pvc-mount-data"))
 			Expect(dep.Spec.Template.Spec.Containers[0].VolumeMounts).To(HaveLen(1))
 			Expect(dep.Spec.Template.Spec.Containers[0].VolumeMounts[0].MountPath).To(Equal("/var/lib/postgresql/data"))
+		})
+
+		It("should expand PVC size when spec.storage[].size is increased", func() {
+			// PVC resize is only permitted by the apiserver when the claim is
+			// Bound AND its StorageClass has AllowVolumeExpansion=true. envtest
+			// has no binder or storage classes, so create both by hand.
+			scName := "expandable-sc"
+			allowExpand := true
+			sc := &storagev1.StorageClass{
+				ObjectMeta:           metav1.ObjectMeta{Name: scName},
+				Provisioner:          "kubernetes.io/no-provisioner",
+				AllowVolumeExpansion: &allowExpand,
+			}
+			Expect(k8sClient.Create(ctx, sc)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, sc)).To(Succeed()) }()
+
+			app := newStorageApp("test-pvc-expand", []mortisev1alpha1.VolumeSpec{
+				{Name: "data", MountPath: "/data", Size: resource.MustParse("10Gi"), StorageClass: scName},
+			})
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: app.Name, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			pvcKey := types.NamespacedName{Name: "test-pvc-expand-data", Namespace: namespace}
+
+			var pvc corev1.PersistentVolumeClaim
+			Expect(k8sClient.Get(ctx, pvcKey, &pvc)).To(Succeed())
+			storageReq := pvc.Spec.Resources.Requests[corev1.ResourceStorage]
+			Expect(storageReq.Equal(resource.MustParse("10Gi"))).To(BeTrue())
+
+			// envtest has no binder, so mark the claim Bound via status so
+			// the apiserver will permit the resize.
+			pvc.Status.Phase = corev1.ClaimBound
+			Expect(k8sClient.Status().Update(ctx, &pvc)).To(Succeed())
+
+			// Bump the size on the App and re-reconcile.
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: app.Name, Namespace: namespace,
+			}, app)).To(Succeed())
+			app.Spec.Storage[0].Size = resource.MustParse("20Gi")
+			Expect(k8sClient.Update(ctx, app)).To(Succeed())
+
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: app.Name, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Get(ctx, pvcKey, &pvc)).To(Succeed())
+			storageReq = pvc.Spec.Resources.Requests[corev1.ResourceStorage]
+			Expect(storageReq.Equal(resource.MustParse("20Gi"))).To(BeTrue())
 		})
 	})
 

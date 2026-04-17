@@ -35,6 +35,7 @@ type Handler struct {
 type k8sReader interface {
 	getGitProvider(ctx context.Context, name string) (*mortisev1alpha1.GitProvider, error)
 	getSecret(ctx context.Context, namespace, name, key string) (string, error)
+	getProject(ctx context.Context, name string) (*mortisev1alpha1.Project, error)
 	listGitApps(ctx context.Context) ([]mortisev1alpha1.App, error)
 	patchAppRevision(ctx context.Context, app *mortisev1alpha1.App, sha string) error
 	listPreviewEnvironments(ctx context.Context, namespace string) ([]mortisev1alpha1.PreviewEnvironment, error)
@@ -173,7 +174,9 @@ func (h *Handler) dispatchToApps(ctx context.Context, br BuildRequest) {
 }
 
 // dispatchPREvent handles pull_request events: creates, updates, or deletes
-// PreviewEnvironment CRDs for matching Apps.
+// PreviewEnvironment CRDs for matching Apps. Preview is gated at the Project
+// level (SPEC §5.8): every App in a Project with preview.enabled=true
+// participates in each open PR's preview namespace.
 func (h *Handler) dispatchPREvent(ctx context.Context, pr PREvent) {
 	log := logf.FromContext(ctx)
 
@@ -182,6 +185,11 @@ func (h *Handler) dispatchPREvent(ctx context.Context, pr PREvent) {
 		log.Error(err, "list git apps for PR dispatch")
 		return
 	}
+
+	// Cache project preview state so we don't re-fetch for every App in the
+	// same project.
+	projectPreview := make(map[string]*mortisev1alpha1.PreviewConfig)
+	projectKnown := make(map[string]bool)
 
 	matched := 0
 	for i := range apps {
@@ -193,13 +201,34 @@ func (h *Handler) dispatchPREvent(ctx context.Context, pr PREvent) {
 		if !repoMatches(src.Repo, pr.Repo) {
 			continue
 		}
-		if app.Spec.Preview == nil || !app.Spec.Preview.Enabled {
+
+		projectName := strings.TrimPrefix(app.Namespace, "project-")
+		if projectName == app.Namespace || projectName == "" {
+			log.Info("skipping app not in project namespace", "app", app.Name, "namespace", app.Namespace)
+			continue
+		}
+
+		var preview *mortisev1alpha1.PreviewConfig
+		if projectKnown[projectName] {
+			preview = projectPreview[projectName]
+		} else {
+			project, err := h.k8s.getProject(ctx, projectName)
+			projectKnown[projectName] = true
+			if err != nil {
+				log.Error(err, "get Project for PR dispatch", "project", projectName)
+				projectPreview[projectName] = nil
+				continue
+			}
+			preview = project.Spec.Preview
+			projectPreview[projectName] = preview
+		}
+		if preview == nil || !preview.Enabled {
 			continue
 		}
 
 		switch pr.Action {
 		case "opened", "synchronize":
-			h.handlePROpenOrSync(ctx, app, pr)
+			h.handlePROpenOrSync(ctx, app, preview, pr)
 		case "closed":
 			h.handlePRClosed(ctx, app, pr)
 		default:
@@ -213,24 +242,24 @@ func (h *Handler) dispatchPREvent(ctx context.Context, pr PREvent) {
 	}
 }
 
-func (h *Handler) handlePROpenOrSync(ctx context.Context, app *mortisev1alpha1.App, pr PREvent) {
+func (h *Handler) handlePROpenOrSync(ctx context.Context, app *mortisev1alpha1.App, preview *mortisev1alpha1.PreviewConfig, pr PREvent) {
 	log := logf.FromContext(ctx)
 
 	peName := previewEnvName(app.Name, pr.Number)
 
 	// Resolve domain from template.
 	domain := ""
-	if app.Spec.Preview != nil {
-		domain = resolvePreviewDomainTemplate(app.Spec.Preview.Domain, app.Name, pr.Number)
+	if preview != nil {
+		domain = resolvePreviewDomainTemplate(preview.Domain, app.Name, pr.Number)
 	}
 
 	// Default TTL: 72h.
 	ttlDuration := 72 * time.Hour
-	if app.Spec.Preview != nil && app.Spec.Preview.TTL != "" {
-		if parsed, err := time.ParseDuration(app.Spec.Preview.TTL); err == nil {
+	if preview != nil && preview.TTL != "" {
+		if parsed, err := time.ParseDuration(preview.TTL); err == nil {
 			ttlDuration = parsed
 		} else {
-			log.Error(err, "parse TTL, using default 72h", "ttl", app.Spec.Preview.TTL)
+			log.Error(err, "parse TTL, using default 72h", "ttl", preview.TTL)
 		}
 	}
 
@@ -284,10 +313,10 @@ func (h *Handler) handlePROpenOrSync(ctx context.Context, app *mortisev1alpha1.A
 		pe.Spec.Bindings = staging.Bindings
 	}
 
-	// Apply preview overrides.
-	if app.Spec.Preview != nil {
-		if app.Spec.Preview.Resources.CPU != "" || app.Spec.Preview.Resources.Memory != "" {
-			pe.Spec.Resources = app.Spec.Preview.Resources
+	// Apply project-level preview overrides.
+	if preview != nil {
+		if preview.Resources.CPU != "" || preview.Resources.Memory != "" {
+			pe.Spec.Resources = preview.Resources
 		}
 	}
 

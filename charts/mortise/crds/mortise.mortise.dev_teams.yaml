@@ -4,26 +4,20 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.20.1
-  name: projects.mortise.mortise.dev
+  name: teams.mortise.mortise.dev
 spec:
   group: mortise.mortise.dev
   names:
-    kind: Project
-    listKind: ProjectList
-    plural: projects
-    singular: project
+    kind: Team
+    listKind: TeamList
+    plural: teams
+    singular: team
   scope: Cluster
   versions:
   - additionalPrinterColumns:
     - jsonPath: .status.phase
       name: Phase
       type: string
-    - jsonPath: .status.namespace
-      name: Namespace
-      type: string
-    - jsonPath: .status.appCount
-      name: Apps
-      type: integer
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
@@ -31,8 +25,9 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          Project is the Schema for the projects API. It is cluster-scoped; deleting a
-          Project cascades to its namespace and every App inside.
+          Team is the Schema for the teams API. v1 runs with one singleton
+          `default-team`; the reconciler rejects any other name. See SPEC.md §5.10
+          for the v1→v2 forward-compat rationale.
         properties:
           apiVersion:
             description: |-
@@ -53,86 +48,21 @@ spec:
             type: object
           spec:
             description: |-
-              ProjectSpec defines the desired state of a Project — the top-level grouping
-              above Apps. Each Project owns a Kubernetes namespace (by default
-              `project-{metadata.name}`) into which its Apps are placed.
-            properties:
-              adoptExistingNamespace:
-                description: |-
-                  AdoptExistingNamespace, when true, tells the controller to adopt a
-                  pre-existing Kubernetes namespace that matches the resolved namespace
-                  name (default or `namespaceOverride`) by adding this Project's owner
-                  reference and `app.kubernetes.io/managed-by: mortise` label. Mortise
-                  will never mutate resources it did not create inside the adopted
-                  namespace, but deleting the Project will cascade-delete the namespace
-                  and everything in it — adoption is a deliberate, admin-only operation.
+              TeamSpec defines the desired state of a Team.
 
-                  When false (the default), encountering a pre-existing namespace with no
-                  Mortise ownership causes the Project to transition to Failed.
-                type: boolean
+              v1 intentionally ships only the singleton `default-team` auto-created at
+              first-run setup. Every user is implicitly bound to it; the UI surfaces no
+              team chrome. The CRD exists so v2 (multi-team installs, per-team roles,
+              env-scoped grants) is additive rather than a data migration.
+            properties:
               description:
                 description: Description is a short, human-readable note about the
-                  project.
+                  team.
                 type: string
-              namespaceOverride:
-                description: |-
-                  NamespaceOverride, when set, makes the controller use this name verbatim
-                  for the Project's backing namespace instead of the default
-                  `project-{name}` form. The value must be a valid DNS-1123 label.
-
-                  This is an admin-only field (enforced at the REST API layer) intended for
-                  regulated or enterprise clusters where namespace naming is governed by
-                  OPA policies, naming standards, or pre-existing IAM bindings (e.g.
-                  cloud IRSA roles keyed off namespace name).
-                maxLength: 63
-                pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
-                type: string
-              preview:
-                description: |-
-                  Preview controls PR-driven preview environments at the Project scope
-                  (SPEC §5.8). When Enabled=true, every App in this Project participates
-                  in each open PR's preview namespace. There is no per-App opt-out in v1.
-                properties:
-                  botPR:
-                    description: |-
-                      BotPR, when true, lets PRs opened by bot accounts also spawn previews.
-                      Defaults to false — previews only spawn for human-authored PRs.
-                    type: boolean
-                  domain:
-                    description: |-
-                      Domain is a template for preview hostnames. Supports {number} and {app}
-                      placeholders (e.g. "pr-{number}-{app}.example.com"). If empty, the
-                      controller falls back to a platform-domain-derived default.
-                    type: string
-                  enabled:
-                    description: Enabled turns PR environments on for every App in
-                      the Project.
-                    type: boolean
-                  resources:
-                    description: |-
-                      Resources caps the CPU / memory each PR preview's Pod requests. Empty
-                      fields inherit from the staging environment of the source App.
-                    properties:
-                      cpu:
-                        type: string
-                      memory:
-                        type: string
-                    type: object
-                  ttl:
-                    description: |-
-                      TTL is a Go duration string (e.g. "72h") after which an idle preview is
-                      garbage-collected. Empty string means "use controller default".
-                    type: string
-                type: object
             type: object
           status:
-            description: ProjectStatus defines the observed state of a Project.
+            description: TeamStatus defines the observed state of a Team.
             properties:
-              appCount:
-                description: AppCount is the number of Apps currently inside this
-                  Project's namespace.
-                format: int32
-                type: integer
               conditions:
                 items:
                   description: Condition contains details for one aspect of the current
@@ -192,16 +122,11 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
-              namespace:
-                description: Namespace is the name of the Kubernetes namespace backing
-                  this Project.
-                type: string
               phase:
                 description: Phase is the overall lifecycle phase.
                 enum:
                 - Pending
                 - Ready
-                - Terminating
                 - Failed
                 type: string
             type: object

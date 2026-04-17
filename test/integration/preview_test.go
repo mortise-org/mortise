@@ -98,11 +98,13 @@ func TestPreviewEnvironmentLifecycle(t *testing.T) {
 		app.Annotations = map[string]string{}
 	}
 	app.Annotations["mortise.dev/revision"] = "main"
-	app.Spec.Preview = &mortisev1alpha1.PreviewConfig{
+
+	// Project-level preview toggle (SPEC §5.8).
+	enableProjectPreview(t, projectName, &mortisev1alpha1.PreviewConfig{
 		Enabled: true,
 		Domain:  fmt.Sprintf("pr-{number}-%s.test.local", app.Name),
 		TTL:     "1h",
-	}
+	})
 
 	if err := k8sClient.Create(context.Background(), app); err != nil {
 		t.Fatalf("create App: %v", err)
@@ -234,18 +236,19 @@ func TestPreviewDisabledAppRejectsPreview(t *testing.T) {
 	projectName := "prev-disabled-" + randSuffix()
 	ns := createProjectForTest(t, projectName)
 
-	// Create an App with no preview config (defaults to disabled).
+	// Create an App inside a Project whose preview is disabled by default —
+	// project-level preview is the gate (SPEC §5.8).
 	app := helpers.LoadFixture(t, filepath.Join(fixturesDir(), "image-basic.yaml"))
 	app.Namespace = ns
 	app.Name = "no-preview-app"
-	app.Spec.Preview = nil
 
 	if err := k8sClient.Create(context.Background(), app); err != nil {
 		t.Fatalf("create App: %v", err)
 	}
 	helpers.WaitForAppReady(t, k8sClient, ns, app.Name, 2*time.Minute)
 
-	// Create a PreviewEnvironment referencing the preview-disabled App.
+	// Create a PreviewEnvironment referencing an App whose Project has
+	// project-level preview disabled.
 	pe := createPreviewEnvironment(t, ns, app.Name, 99, "abc123deadbeef", "pr-99-no-preview.test.local")
 	if err := k8sClient.Create(context.Background(), pe); err != nil {
 		t.Fatalf("create PreviewEnvironment: %v", err)
@@ -348,11 +351,13 @@ func TestPreviewInheritsStagingBindings(t *testing.T) {
 		apiApp.Annotations = map[string]string{}
 	}
 	apiApp.Annotations["mortise.dev/revision"] = "main"
-	apiApp.Spec.Preview = &mortisev1alpha1.PreviewConfig{
+
+	// Project-level preview toggle (SPEC §5.8).
+	enableProjectPreview(t, projectName, &mortisev1alpha1.PreviewConfig{
 		Enabled: true,
 		Domain:  fmt.Sprintf("pr-{number}-%s.test.local", apiApp.Name),
 		TTL:     "1h",
-	}
+	})
 	// Add binding to postgres in the staging environment.
 	apiApp.Spec.Environments[0].Bindings = []mortisev1alpha1.Binding{
 		{Ref: pgApp.Name},
@@ -421,6 +426,21 @@ func TestPreviewInheritsStagingBindings(t *testing.T) {
 
 // --- Helpers ---
 
+// enableProjectPreview fetches the named Project and sets its Spec.Preview
+// to the provided config. Used to flip on project-level PR environments
+// (SPEC §5.8) in integration tests.
+func enableProjectPreview(t *testing.T, projectName string, cfg *mortisev1alpha1.PreviewConfig) {
+	t.Helper()
+	var project mortisev1alpha1.Project
+	if err := k8sClient.Get(context.Background(), types.NamespacedName{Name: projectName}, &project); err != nil {
+		t.Fatalf("get Project %q: %v", projectName, err)
+	}
+	project.Spec.Preview = cfg
+	if err := k8sClient.Update(context.Background(), &project); err != nil {
+		t.Fatalf("update Project %q: %v", projectName, err)
+	}
+}
+
 // createPreviewEnvironment builds a PreviewEnvironment CRD object (not yet applied).
 func createPreviewEnvironment(t *testing.T, namespace, appName string, prNumber int, sha, domain string) *mortisev1alpha1.PreviewEnvironment {
 	t.Helper()
@@ -483,16 +503,16 @@ func assertPreviewHasURL(t *testing.T, pe *mortisev1alpha1.PreviewEnvironment) {
 }
 
 // assertPreviewHasFailedCondition checks that the PE has a condition explaining
-// why it failed (e.g. preview disabled on the parent App).
+// why it failed (e.g. project-level preview disabled).
 func assertPreviewHasFailedCondition(t *testing.T, pe *mortisev1alpha1.PreviewEnvironment) {
 	t.Helper()
 	if len(pe.Status.Conditions) == 0 {
 		t.Error("expected at least one condition on failed PreviewEnvironment")
 		return
 	}
-	// Look for a condition with status=False or reason indicating preview is disabled.
+	// Look for a condition with status=False or reason indicating project-level preview is disabled.
 	for _, c := range pe.Status.Conditions {
-		if c.Status == metav1.ConditionFalse || c.Reason == "PreviewDisabled" {
+		if c.Status == metav1.ConditionFalse || c.Reason == "PreviewDisabledOnProject" {
 			t.Logf("found expected condition: type=%s reason=%s message=%s", c.Type, c.Reason, c.Message)
 			return
 		}

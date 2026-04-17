@@ -387,6 +387,13 @@ func main() {
 		setupLog.Error(err, "Failed to create controller", "controller", "PlatformConfig")
 		os.Exit(1)
 	}
+	if err := (&controller.TeamReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "Failed to create controller", "controller", "Team")
+		os.Exit(1)
+	}
 	if err := (&controller.GitProviderReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),

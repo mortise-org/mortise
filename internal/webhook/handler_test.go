@@ -21,6 +21,7 @@ type fakeK8sReader struct {
 	provider *mortisev1alpha1.GitProvider
 	secrets  map[string]string // "ns/name/key" -> value
 	apps     []mortisev1alpha1.App
+	projects map[string]*mortisev1alpha1.Project // name -> project
 	err      error
 
 	// patched records calls to patchAppRevision: app namespace/name -> sha
@@ -41,6 +42,17 @@ func (f *fakeK8sReader) getGitProvider(_ context.Context, name string) (*mortise
 		return nil, fmt.Errorf("not found")
 	}
 	return f.provider, nil
+}
+
+func (f *fakeK8sReader) getProject(_ context.Context, name string) (*mortisev1alpha1.Project, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	p, ok := f.projects[name]
+	if !ok {
+		return nil, fmt.Errorf("project %q not found", name)
+	}
+	return p, nil
 }
 
 func (f *fakeK8sReader) getSecret(_ context.Context, namespace, name, key string) (string, error) {

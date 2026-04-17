@@ -314,13 +314,6 @@ type EnvTLSConfig struct {
 	ClusterIssuer string `json:"clusterIssuer,omitempty"`
 }
 
-type PreviewConfig struct {
-	Enabled   bool                 `json:"enabled,omitempty"`
-	Domain    string               `json:"domain,omitempty"`
-	TTL       string               `json:"ttl,omitempty"`
-	Resources ResourceRequirements `json:"resources,omitempty"`
-}
-
 // AppSpec defines the desired state of App
 type AppSpec struct {
 	// Kind selects the workload type: "service" (default) reconciles to a
@@ -351,8 +344,6 @@ type AppSpec struct {
 	SharedVars []EnvVar `json:"sharedVars,omitempty"`
 
 	Environments []Environment `json:"environments,omitempty"`
-
-	Preview *PreviewConfig `json:"preview,omitempty"`
 }
 
 // DeployRecord tracks a single deployment for rollback.

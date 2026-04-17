@@ -36,19 +36,38 @@ import (
 	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
 )
 
-// helper: create a test namespace and return its name.
-func createPreviewTestNS(ctx context.Context) string {
+// helper: create a test Project + its backing namespace. The namespace follows
+// the `project-{name}` convention so the preview controller can resolve the
+// Project from the App's namespace. Returns the Project and the namespace name.
+func createPreviewTestProject(ctx context.Context, previewEnabled bool) (*mortisev1alpha1.Project, string) {
+	// Use a random suffix for the project name; namespace derives from it.
+	projectName := fmt.Sprintf("prevtest-%d", time.Now().UnixNano())
+	nsName := "project-" + projectName
+
 	ns := &corev1.Namespace{
-		ObjectMeta: metav1.ObjectMeta{
-			GenerateName: "preview-test-",
-		},
+		ObjectMeta: metav1.ObjectMeta{Name: nsName},
 	}
 	ExpectWithOffset(1, k8sClient.Create(ctx, ns)).To(Succeed())
-	return ns.Name
+
+	project := &mortisev1alpha1.Project{
+		ObjectMeta: metav1.ObjectMeta{Name: projectName},
+		Spec:       mortisev1alpha1.ProjectSpec{},
+	}
+	if previewEnabled {
+		project.Spec.Preview = &mortisev1alpha1.PreviewConfig{
+			Enabled: true,
+			Domain:  "pr-{number}-{app}.example.com",
+			TTL:     "72h",
+		}
+	}
+	ExpectWithOffset(1, k8sClient.Create(ctx, project)).To(Succeed())
+	return project, nsName
 }
 
-// helper: create a minimal App with preview enabled in the given namespace.
-func createPreviewApp(ctx context.Context, name, namespace string, previewEnabled bool, staging *mortisev1alpha1.Environment) *mortisev1alpha1.App {
+// helper: create a minimal App in the given namespace. Project-level preview
+// is controlled via createPreviewTestProject; Apps no longer carry preview
+// config (SPEC §5.8).
+func createPreviewApp(ctx context.Context, name, namespace string, staging *mortisev1alpha1.Environment) *mortisev1alpha1.App {
 	envs := []mortisev1alpha1.Environment{}
 	if staging != nil {
 		envs = append(envs, *staging)
@@ -67,13 +86,6 @@ func createPreviewApp(ctx context.Context, name, namespace string, previewEnable
 			},
 			Environments: envs,
 		},
-	}
-	if previewEnabled {
-		app.Spec.Preview = &mortisev1alpha1.PreviewConfig{
-			Enabled: true,
-			Domain:  "pr-{number}-{app}.example.com",
-			TTL:     "72h",
-		}
 	}
 	ExpectWithOffset(1, k8sClient.Create(ctx, app)).To(Succeed())
 	return app
@@ -102,13 +114,13 @@ func createPreviewEnv(ctx context.Context, name, namespace, appRef string, prNum
 }
 
 var _ = Describe("PreviewEnvironment Controller", func() {
-	Context("when the parent App has preview disabled", func() {
+	Context("when the parent Project has project-level preview disabled", func() {
 		It("should set the PreviewEnvironment to Failed", func() {
 			ctx := context.Background()
-			ns := createPreviewTestNS(ctx)
+			_, ns := createPreviewTestProject(ctx, false)
 
-			// Create app with preview disabled.
-			createPreviewApp(ctx, "myapp", ns, false, nil)
+			// Create app in a project whose preview is disabled.
+			createPreviewApp(ctx, "myapp", ns, nil)
 
 			// Create PreviewEnvironment.
 			pe := createPreviewEnv(ctx, "myapp-preview-pr-1", ns, "myapp", 1, "abc123", "feature", "pr-1-myapp.example.com", 72*time.Hour)
@@ -124,7 +136,7 @@ var _ = Describe("PreviewEnvironment Controller", func() {
 				NamespacedName: types.NamespacedName{Name: pe.Name, Namespace: ns},
 			})
 			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("PreviewDisabled"))
+			Expect(err.Error()).To(ContainSubstring("PreviewDisabledOnProject"))
 
 			// Verify status is Failed.
 			var updated mortisev1alpha1.PreviewEnvironment
@@ -136,7 +148,7 @@ var _ = Describe("PreviewEnvironment Controller", func() {
 	Context("when the parent App does not exist", func() {
 		It("should set the PreviewEnvironment to Failed", func() {
 			ctx := context.Background()
-			ns := createPreviewTestNS(ctx)
+			_, ns := createPreviewTestProject(ctx, true)
 
 			pe := createPreviewEnv(ctx, "orphan-preview-pr-1", ns, "nonexistent-app", 1, "abc123", "feature", "pr-1.example.com", 72*time.Hour)
 
@@ -162,9 +174,10 @@ var _ = Describe("PreviewEnvironment Controller", func() {
 	Context("when the parent App source is image (not git)", func() {
 		It("should set the PreviewEnvironment to Failed", func() {
 			ctx := context.Background()
-			ns := createPreviewTestNS(ctx)
+			_, ns := createPreviewTestProject(ctx, true)
 
-			// Create image-source app.
+			// Create image-source app (project-level preview is enabled but
+			// image sources can't produce previews).
 			app := &mortisev1alpha1.App{
 				ObjectMeta: metav1.ObjectMeta{Name: "imgapp", Namespace: ns},
 				Spec: mortisev1alpha1.AppSpec{
@@ -172,7 +185,6 @@ var _ = Describe("PreviewEnvironment Controller", func() {
 						Type:  mortisev1alpha1.SourceTypeImage,
 						Image: "nginx:1.25",
 					},
-					Preview: &mortisev1alpha1.PreviewConfig{Enabled: true},
 				},
 			}
 			Expect(k8sClient.Create(ctx, app)).To(Succeed())
@@ -195,9 +207,9 @@ var _ = Describe("PreviewEnvironment Controller", func() {
 	})
 
 	Context("when build clients are nil (skip build path) and image is pre-set", func() {
-		It("should create Deployment, Service, and Ingress with correct names and preview overrides", func() {
+		It("should create Deployment, Service, and Ingress with correct names and project-level preview overrides", func() {
 			ctx := context.Background()
-			ns := createPreviewTestNS(ctx)
+			project, ns := createPreviewTestProject(ctx, true)
 
 			staging := &mortisev1alpha1.Environment{
 				Name:     "staging",
@@ -211,12 +223,12 @@ var _ = Describe("PreviewEnvironment Controller", func() {
 				},
 			}
 
-			app := createPreviewApp(ctx, "webapp", ns, true, staging)
-			app.Spec.Preview.Resources = mortisev1alpha1.ResourceRequirements{
+			createPreviewApp(ctx, "webapp", ns, staging)
+			project.Spec.Preview.Resources = mortisev1alpha1.ResourceRequirements{
 				CPU:    "250m",
 				Memory: "256Mi",
 			}
-			Expect(k8sClient.Update(ctx, app)).To(Succeed())
+			Expect(k8sClient.Update(ctx, project)).To(Succeed())
 
 			pe := createPreviewEnv(ctx, "webapp-preview-pr-42", ns, "webapp", 42, "deadbeef", "feat-x", "pr-42-webapp.example.com", 72*time.Hour)
 
@@ -290,9 +302,9 @@ var _ = Describe("PreviewEnvironment Controller", func() {
 	Context("when TTL expires", func() {
 		It("should delete the PreviewEnvironment", func() {
 			ctx := context.Background()
-			ns := createPreviewTestNS(ctx)
+			_, ns := createPreviewTestProject(ctx, true)
 
-			createPreviewApp(ctx, "ttlapp", ns, true, nil)
+			createPreviewApp(ctx, "ttlapp", ns, nil)
 
 			pe := createPreviewEnv(ctx, "ttlapp-preview-pr-5", ns, "ttlapp", 5, "sha123", "feat", "pr-5-ttlapp.example.com", 1*time.Hour)
 
@@ -323,9 +335,9 @@ var _ = Describe("PreviewEnvironment Controller", func() {
 	Context("when SHA changes (update triggers rebuild)", func() {
 		It("should transition back to Building phase", func() {
 			ctx := context.Background()
-			ns := createPreviewTestNS(ctx)
+			_, ns := createPreviewTestProject(ctx, true)
 
-			createPreviewApp(ctx, "rebuildapp", ns, true, nil)
+			createPreviewApp(ctx, "rebuildapp", ns, nil)
 
 			pe := createPreviewEnv(ctx, "rebuildapp-preview-pr-10", ns, "rebuildapp", 10, "sha-v1", "feature", "pr-10-rebuildapp.example.com", 72*time.Hour)
 
@@ -370,9 +382,9 @@ var _ = Describe("PreviewEnvironment Controller", func() {
 	Context("when the PreviewEnvironment is deleted", func() {
 		It("should clean up owned resources via garbage collection", func() {
 			ctx := context.Background()
-			ns := createPreviewTestNS(ctx)
+			_, ns := createPreviewTestProject(ctx, true)
 
-			createPreviewApp(ctx, "cleanapp", ns, true, nil)
+			createPreviewApp(ctx, "cleanapp", ns, nil)
 
 			pe := createPreviewEnv(ctx, "cleanapp-preview-pr-99", ns, "cleanapp", 99, "sha999", "cleanup-branch", "pr-99-cleanapp.example.com", 72*time.Hour)
 

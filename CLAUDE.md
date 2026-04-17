@@ -35,7 +35,7 @@ Do not write progress info into this file (`CLAUDE.md`) or into
 - **UI:** SvelteKit + TypeScript (embedded in operator binary via embed.FS)
 - **CLI:** Go (cobra)
 - **Helm chart:** charts/mortise/
-- **CRDs:** Project, App, PlatformConfig, GitProvider, PreviewEnvironment
+- **CRDs:** Project, App, PlatformConfig, GitProvider, PreviewEnvironment, Team (v2 forward-compat stub)
 - **Bundled tools:** BuildKit (image builds), Zot (OCI registry), Traefik
   (ingress), cert-manager (TLS), ExternalDNS (DNS records)
 

@@ -412,3 +412,146 @@ func PushNewCommit(t *testing.T, baseURL, token, owner, repo string) string {
 	// Return the new HEAD SHA.
 	return GetBranchSHA(t, baseURL, token, owner, repo, "main")
 }
+
+// PullRequest identifies a Gitea pull request created by test helpers.
+// Only the fields test assertions actually use are exposed.
+type PullRequest struct {
+	Number  int
+	HeadSHA string
+	HeadRef string
+	BaseRef string
+}
+
+// CreateBranch creates a new branch copied from fromBranch using Gitea's
+// branch creation API. Idempotent: a 409 (branch already exists) is treated
+// as success so rerunning a test against a dirty cluster works.
+func CreateBranch(t *testing.T, baseURL, token, owner, repo, newBranch, fromBranch string) {
+	t.Helper()
+
+	url := fmt.Sprintf("%s/api/v1/repos/%s/%s/branches", baseURL, owner, repo)
+	body, _ := json.Marshal(map[string]any{
+		"new_branch_name": newBranch,
+		"old_branch_name": fromBranch,
+	})
+	req, _ := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "token "+token)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("gitea: create branch %s: %v", newBranch, err)
+	}
+	defer resp.Body.Close()
+	// 201 created; 409 branch exists; 422 "branch already exists" on some versions.
+	if resp.StatusCode >= 300 && resp.StatusCode != http.StatusConflict && resp.StatusCode != http.StatusUnprocessableEntity {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("gitea: create branch %s status %d: %s", newBranch, resp.StatusCode, string(b))
+	}
+}
+
+// UpdateBranchFile modifies the given file on the given branch to produce a new
+// commit, returning the new HEAD SHA of that branch. Mirrors PushNewCommit but
+// targets an arbitrary branch rather than main — useful for simulating a PR
+// author pushing a follow-up commit.
+func UpdateBranchFile(t *testing.T, baseURL, token, owner, repo, branch, path string) string {
+	t.Helper()
+
+	// Look up the file's current blob SHA on this branch; if it doesn't exist
+	// yet we'll create it in place of the update.
+	getURL := fmt.Sprintf("%s/api/v1/repos/%s/%s/contents/%s?ref=%s",
+		baseURL, owner, repo, path, branch)
+	req, _ := http.NewRequest(http.MethodGet, getURL, nil)
+	req.Header.Set("Authorization", "token "+token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("gitea: lookup file %s on %s: %v", path, branch, err)
+	}
+	var fileMeta struct {
+		SHA string `json:"sha"`
+	}
+	if resp.StatusCode == http.StatusOK {
+		_ = json.NewDecoder(resp.Body).Decode(&fileMeta)
+	}
+	resp.Body.Close()
+
+	newContent := fmt.Sprintf("Webhook integration test update at %d rand=%d\n",
+		time.Now().UnixNano(), rand.Int())
+	encoded := base64.StdEncoding.EncodeToString([]byte(newContent))
+	payload := map[string]any{
+		"message": fmt.Sprintf("integration test: update %s on %s", path, branch),
+		"content": encoded,
+		"branch":  branch,
+	}
+	if fileMeta.SHA != "" {
+		payload["sha"] = fileMeta.SHA
+	}
+
+	body, _ := json.Marshal(payload)
+	putURL := fmt.Sprintf("%s/api/v1/repos/%s/%s/contents/%s", baseURL, owner, repo, path)
+	req, _ = http.NewRequest(http.MethodPut, putURL, bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "token "+token)
+
+	resp2, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("gitea: update file on %s: %v", branch, err)
+	}
+	defer resp2.Body.Close()
+	if resp2.StatusCode >= 300 {
+		b, _ := io.ReadAll(resp2.Body)
+		t.Fatalf("gitea: update file on %s status %d: %s", branch, resp2.StatusCode, string(b))
+	}
+
+	return GetBranchSHA(t, baseURL, token, owner, repo, branch)
+}
+
+// CreatePullRequest opens a pull request via Gitea's REST API, returning the
+// PR metadata the caller needs to construct a matching webhook payload.
+// head and base are branch names (not SHAs).
+func CreatePullRequest(t *testing.T, baseURL, token, owner, repo, head, base, title string) *PullRequest {
+	t.Helper()
+
+	url := fmt.Sprintf("%s/api/v1/repos/%s/%s/pulls", baseURL, owner, repo)
+	body, _ := json.Marshal(map[string]any{
+		"title": title,
+		"head":  head,
+		"base":  base,
+		"body":  "Opened by Mortise integration test",
+	})
+	req, _ := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "token "+token)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("gitea: create PR: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("gitea: create PR status %d: %s", resp.StatusCode, string(b))
+	}
+
+	var out struct {
+		Number int `json:"number"`
+		Head   struct {
+			Ref string `json:"ref"`
+			SHA string `json:"sha"`
+		} `json:"head"`
+		Base struct {
+			Ref string `json:"ref"`
+		} `json:"base"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("gitea: decode PR response: %v", err)
+	}
+	if out.Number == 0 {
+		t.Fatal("gitea: PR response missing number")
+	}
+	return &PullRequest{
+		Number:  out.Number,
+		HeadSHA: out.Head.SHA,
+		HeadRef: out.Head.Ref,
+		BaseRef: out.Base.Ref,
+	}
+}
