@@ -8,6 +8,8 @@
 	import { currentProject } from '$lib/context.svelte';
 	// Lucide icons
 	import { Folder, Puzzle, Settings, LayoutDashboard, List, Bell, Activity, User, LogOut, ChevronDown } from 'lucide-svelte';
+	import ActivityRail from '$lib/components/ActivityRail.svelte';
+	import NotificationDropdown from '$lib/components/NotificationDropdown.svelte';
 
 	let { children } = $props();
 
@@ -32,6 +34,12 @@
 	let userMenuOpen = $state(false);
 	let switcherEl: HTMLDivElement | null = $state(null);
 	let userMenuEl: HTMLDivElement | null = $state(null);
+	let notificationsOpen = $state(false);
+	let notificationsEl: HTMLDivElement | null = $state(null);
+	let currentEnv = $state<string>('production');
+	let envSwitcherOpen = $state(false);
+	let envSwitcherEl: HTMLDivElement | null = $state(null);
+	const defaultEnvs = ['production', 'staging'];
 
 	async function checkSetupStatus() {
 		try {
@@ -94,6 +102,8 @@
 	function handleDocClick(ev: MouseEvent) {
 		if (switcherEl && !switcherEl.contains(ev.target as Node)) switcherOpen = false;
 		if (userMenuEl && !userMenuEl.contains(ev.target as Node)) userMenuOpen = false;
+		if (notificationsEl && !notificationsEl.contains(ev.target as Node)) notificationsOpen = false;
+		if (envSwitcherEl && !envSwitcherEl.contains(ev.target as Node)) envSwitcherOpen = false;
 	}
 
 	// Left-rail icon classes
@@ -160,6 +170,44 @@
 							</div>
 						{/if}
 					</div>
+
+					<!-- Environment switcher -->
+					<div class="relative" bind:this={envSwitcherEl}>
+						<button
+							type="button"
+							onclick={() => (envSwitcherOpen = !envSwitcherOpen)}
+							class="flex items-center gap-1.5 rounded-md px-2 py-1 text-sm text-gray-400 hover:bg-surface-700 hover:text-white transition-colors"
+						>
+							<span class="h-2 w-2 rounded-full bg-success"></span>
+							<span>{currentEnv}</span>
+							<ChevronDown class="h-3.5 w-3.5 text-gray-500" />
+						</button>
+						{#if envSwitcherOpen}
+							<div
+								class="absolute left-0 top-full z-50 mt-1 w-40 rounded-md border border-surface-600 bg-surface-800 shadow-xl"
+							>
+								{#each defaultEnvs as env}
+									<button
+										type="button"
+										onclick={() => {
+											currentEnv = env;
+											envSwitcherOpen = false;
+										}}
+										class="flex w-full items-center gap-2 px-3 py-2 text-sm {currentEnv === env
+											? 'bg-surface-600 text-white'
+											: 'text-gray-300 hover:bg-surface-700 hover:text-white'}"
+									>
+										<span
+											class="h-1.5 w-1.5 rounded-full {env === 'production'
+												? 'bg-success'
+												: 'bg-info'}"
+										></span>
+										{env}
+									</button>
+								{/each}
+							</div>
+						{/if}
+					</div>
 				{/if}
 			</div>
 
@@ -176,13 +224,21 @@
 						<Activity class="h-4 w-4" />
 					</button>
 					<!-- Notifications bell -->
-					<button
-						type="button"
-						class="rounded-md p-2 text-gray-500 hover:bg-surface-700 hover:text-white transition-colors"
-						title="Notifications"
-					>
-						<Bell class="h-4 w-4" />
-					</button>
+					<div class="relative" bind:this={notificationsEl}>
+						<button
+							type="button"
+							onclick={() => (notificationsOpen = !notificationsOpen)}
+							class="rounded-md p-2 text-gray-500 hover:bg-surface-700 hover:text-white transition-colors {notificationsOpen
+								? 'bg-surface-700 text-white'
+								: ''}"
+							title="Notifications"
+						>
+							<Bell class="h-4 w-4" />
+						</button>
+						{#if notificationsOpen}
+							<NotificationDropdown onClose={() => (notificationsOpen = false)} />
+						{/if}
+					</div>
 				{/if}
 
 				<!-- User menu -->
@@ -272,5 +328,9 @@
 				{@render children()}
 			</main>
 		</div>
+
+		{#if inProject && activeProject}
+			<ActivityRail project={activeProject} />
+		{/if}
 	</div>
 {/if}
