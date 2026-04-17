@@ -179,6 +179,19 @@ spec:
   description: "Core customer-facing SaaS"
   # namespaceOverride: corp-team-acme-prod  # optional; use this name instead of project-my-saas
   # adoptExistingNamespace: false           # optional; admin-only; adopt an existing namespace
+
+  # PR Environments are a project-level toggle (not per-App). When
+  # enabled, every git-source App in the project gets a preview per PR.
+  # See §5.8 for scope semantics; cron and non-public Apps still
+  # reconcile into the preview namespace so bindings resolve, but they
+  # don't get a public URL.
+  preview:
+    enabled: true
+    domain: "pr-{number}-{app}.yourdomain.com"  # `{app}` renders per-App
+    ttl: 72h
+    resources: { cpu: 250m, memory: 256Mi }     # preview default; apps can't override
+    botPR: false                                 # opt-in: preview bots' PRs (dependabot etc.)
+
   # v2+: team, quota, default-domain-suffix, retention policy
 status:
   phase: Ready               # Pending | Ready | Terminating | Failed
@@ -423,11 +436,8 @@ spec:
       replicas: 1
       domain: my-app-staging.yourdomain.com
 
-  preview:
-    enabled: true
-    domain: "pr-{number}-my-app.yourdomain.com"
-    ttl: 72h
-    resources: { cpu: 250m, memory: 256Mi }
+  # PR Environments are configured on the parent Project (§5.0), not on
+  # the App. There is no `spec.preview` on an App in v1.
 ```
 
 ### 5.2a Annotations — the escape hatch
@@ -769,10 +779,21 @@ cluster's default SC). For v1:
 - Independent Deployments, isolated by namespace
 - **Promote:** staging → production with no rebuild
 - **Rollback:** deploy history (digest + timestamp + SHA); one-click
-- **Preview environments (git source only):** PR opens → operator creates
-  `PreviewEnvironment`, clones staging's config, DNS + TLS handled automatically,
-  bindings live-resolved through staging (no credential copy). PR closes or TTL
-  expires → everything deleted. URL posted as PR comment.
+- **Preview environments (project-level toggle, §5.0 `spec.preview.enabled`).**
+  When enabled on the parent Project, PR opens → operator creates one
+  `PreviewEnvironment` per App in the project, clones staging's config,
+  DNS + TLS handled automatically, bindings live-resolved through the
+  preview namespace (no credential copy). PR closes or TTL expires →
+  everything deleted. URL posted as PR comment.
+
+  **Scope semantics (option a).** *Every* App in the project reconciles
+  into the preview namespace — including `kind: cron` Apps and Apps
+  with `network.public: false`. They just don't get a public URL
+  (nothing to route to). This keeps bindings coherent: a preview API
+  can reach its preview DB and preview worker's cache without manual
+  stitching. Users whose crons hit external systems and shouldn't
+  run per-PR should split them into a sibling project with previews
+  off. A per-App opt-out may be added in v2 as a visible UI toggle.
 
 ### 5.8a Cron Apps
 
@@ -797,8 +818,14 @@ spec:
 Constraints:
 - `network.public` is ignored; no Ingress, no domain, no TLS.
 - `replicas` is ignored (CronJobs don't replicate; concurrency is controlled by `concurrencyPolicy`).
-- Preview environments skip cron Apps by default (they'd fire in PRs, usually
-  unwanted). Opt in per-App via `preview.includeCron: true`.
+- **Preview environments include cron Apps.** When the parent project
+  has `spec.preview.enabled: true`, cron Apps reconcile into each
+  preview namespace alongside every other App — they just don't get a
+  public URL. They *do* run per their schedule, which means real
+  side-effects if the cron hits external systems. Users with
+  heavy or side-effecting crons should split them into a sibling
+  project with previews off. A per-App preview exclusion toggle may
+  arrive in v2.
 - Logs and run history are surfaced in the UI the same way as Deployment
   rollouts — per-run stdout/stderr, exit code, duration.
 
@@ -931,61 +958,26 @@ demand appears.
 
 **Roles and RBAC (v1):**
 
-Five roles in two scopes. Two platform-wide, three per-team:
+Two roles, platform-wide:
 
-| Role | Scope | Can do |
-|---|---|---|
-| **platform-admin** | Global | Everything — users, teams, providers, DNS, platform settings, all Apps |
-| **platform-viewer** | Global | Read-only visibility across every team and App. Audit, support, compliance. No writes. |
-| **team-admin** | Per-team | Create/delete Apps, manage team membership, edit all team Apps' config/secrets/domains, grant roles within the team |
-| **team-deployer** | Per-team (optionally env-scoped) | Deploy, rollback, view logs, edit env/secrets on Apps they have access to. Cannot create/delete Apps or manage team membership. |
-| **team-viewer** | Per-team | Read-only access to Apps, deploy history, logs. No writes, no secret values. Stakeholder / customer-shared access. |
+| Role | Can do |
+|---|---|
+| **admin** | Everything — users, providers, DNS, platform settings, all Projects and Apps. Create/delete Projects. |
+| **member** | Create/edit/delete Apps within any Project; view logs and metrics; edit env/secrets; deploy, rollback, promote. Cannot create/delete Projects, manage users, or edit platform settings. |
 
-A **team** is a lightweight grouping: a name, a list of members with
-roles, and a list of Projects. Stored as a `Team` CRD in
-`mortise-system`. A user can belong to multiple teams with different
-roles.
+**Implicit default team (v1 forward-compat stub).** The operator creates
+a single `Team` CRD named `default-team` at first-run setup and binds
+every user to it. The UI renders no team chrome in v1 — users never see
+or interact with the Team. The stub exists purely so v2's richer team
+model (see below) is additive: splitting the implicit team into N
+teams, adding per-team roles, and adding env-scoped grants all happen
+without a data migration.
 
-**Grants are env-scopable.** A team-deployer grant optionally lists which
-environments it applies to — the junior engineer ships to staging, the
-release manager promotes to production, the CI robot deploys to
-preview-* only. Scope is a list of environment names; empty / absent
-means "all envs for this team."
-
-```yaml
-# Team CRD (sketch)
-apiVersion: mortise.dev/v1alpha1
-kind: Team
-metadata:
-  name: acme
-spec:
-  members:
-    - email: jane@co.com
-      role: team-admin                       # all envs by default
-    - email: junior@co.com
-      role: team-deployer
-      environments: [staging, preview-*]     # cannot deploy production
-    - email: client@external.com
-      role: team-viewer                      # read-only, all envs
-    - email: ci-robot@svc
-      role: team-deployer                    # all envs; used with a deploy token
-```
-
-Platform-level roles ignore the `environments` field — `platform-admin`
-and `platform-viewer` are global by definition.
-
-- Platform-admin creates teams and assigns the first team-admin.
-- Team-admin invites members (via generated link or OIDC group mapping).
-- A user with no team membership sees nothing.
-- Solo users (homelab): one team, one platform-admin. The UI hides team
-  chrome when there's only one team.
-
-This is deliberately not full RBAC — no custom roles, no per-resource
-policies, no deny rules, no Project-scoped grants (granularity stops at
-team + environment). Five fixed roles plus env scoping cover the
-real-world shapes: cluster owner, read-only auditor, tech lead, shipping
-engineer, and outside stakeholder. Custom roles and per-App grants are
-post-v1 if demand appears.
+**Deferred to v2 (not in v1 scope):** multi-team installs, the
+5-role team model (`platform-admin` / `platform-viewer` / `team-admin` /
+`team-deployer` / `team-viewer`), per-grant environment scoping, OIDC
+group → team mapping, team-scoped invites. v2 introduces these as
+additive extensions on the `Team` CRD already present in v1.
 
 **SSO for user apps is not a Mortise concern.** Mortise-v1's job is what
 Railway's is: hand users env vars and a URL. A user who wants their Gitea
@@ -1026,6 +1018,21 @@ only. This is the trade-off of the no-PVC architecture.
 cluster collects them. Mortise does not proxy, aggregate, or store user
 app logs. The UI surfaces live `kubectl logs` output via SSE —
 same as a `stern` tail. Historical log search requires a log agent.
+
+**Per-project Activity store (convenience, not source of truth).** In
+addition to the stdout audit stream, the operator maintains a small
+in-cluster store of recent audit events *per project* so the UI
+Activity rail (UI_SPEC §12.22) can render history without a log
+agent. v1 store: a ConfigMap named `activity-{project-name}` in
+`mortise-system`, capped at the last 500 events per project with a
+simple ring-buffer trim; event body is JSON (`{timestamp, actor,
+verb, resource, summary}`). Written by every write handler in the
+REST API (see §5.13). The stdout stream remains authoritative for
+compliance retention; the ConfigMap is a cache for UX. If a project
+exceeds 500 events/day and the rail starts to feel sparse, users
+point a log agent at the stream and get full history — no Mortise
+change required. A dedicated `ActivityEvent` CRD or annotation ring
+is deferred until real demand; see §10.
 
 ### 5.12 Git Providers (v1)
 
@@ -1077,9 +1084,22 @@ OAuth is the v1 path — no third-party infrastructure required.
 - **Create project** — name + description
 - **Secret store** — list by app/env, write-only values, rotation
 - **Platform settings** — domain, DNS, git providers, user management
+- **Activity rail** (project scope only) — toggled by a pulse button in
+  the top bar. Closed by default; opens as a slide-out over the
+  canvas/drawer. Renders the per-project activity store (§5.11) merged
+  with synthesized deploy rows from App `status.deploys` history.
+  Filter chips: Deploys / Changes / Members / All. See UI_SPEC §12.22.
 
 Top-bar project switcher lets users jump between projects without
 returning to the dashboard.
+
+**Actor capture.** Every write handler in the REST API (POST / PATCH /
+PUT / DELETE) captures the authenticated `Principal` and stamps it
+into an `actor` field on the resulting audit log line (§5.11) and the
+per-project activity store entry. Unauthenticated or service-account
+writes (controllers, webhooks) are stamped `system`. This is the
+backend foundation for the Activity rail, deploy-history authorship,
+and any future per-user audit surface.
 
 UX standard: Railway-quality. Source types abstracted — users see "your apps."
 
@@ -1636,16 +1656,23 @@ touching only one subdir rebuilds only that App.
 
 ### Phase 6 — Preview Environments
 
+- **Project-level toggle** — `ProjectSpec.Preview.Enabled`. No per-App
+  opt-in. When enabled, every App in the project participates (§5.8).
 - `PreviewEnvironment` CRD auto-managed by a dedicated controller
-- PR open → clone staging env config; apply `preview.*` overrides; DNS + TLS
-  handled by existing ExternalDNS/cert-manager plumbing
-- Bindings live-resolved through staging (no credential copy)
-- PR comment with preview URL(s); monorepo fan-out respected (one preview per
-  matching App, grouped comment)
+- PR open → for each App in the project with previews enabled,
+  clone staging env config; apply project-level `preview.*` overrides;
+  DNS + TLS handled by existing ExternalDNS/cert-manager plumbing
+- Cron and non-public Apps reconcile into the preview namespace but get
+  no public URL (§5.8a, §5.8 scope semantics)
+- Bindings live-resolved within the preview namespace (no credential copy)
+- PR comment with preview URL(s); monorepo fan-out respected (only Apps
+  whose `watchPaths` match the PR's changed files rebuild; every App in
+  the project still reconciles into the preview namespace)
 - PR close → delete; TTL fallback (72h default)
 
-**Exit criteria:** open a PR, get a live preview URL in the PR comment, close
-the PR, preview disappears.
+**Exit criteria:** open a PR on a project with `spec.preview.enabled: true`,
+get a live preview URL in the PR comment, close the PR, preview
+disappears.
 
 ### Phase 7 — Polish & v1 Release
 
@@ -1782,6 +1809,14 @@ new install surface. Order depends on user demand after v1 ships.
    direction; ghcr.io fits if the source lives on GitHub.
 5. **Minimum supported Kubernetes version.** Propose 1.28+ (matches k3s latest
    and all cloud-managed providers).
+6. **Activity store scale.** v1 stores the last 500 events per project
+   in a ConfigMap (§5.11). A project that generates >500 events/day
+   will see entries fall off the rail faster than users can read them.
+   Defer a richer store (dedicated `ActivityEvent` CRD, sharded
+   ConfigMaps, or a Postgres projection) until real demand — until
+   then, users who need long-range audit point a log agent at the
+   stdout stream, which is already the source of truth. Flag for
+   re-evaluation once first large deployment lands.
 
 ---
 
