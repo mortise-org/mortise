@@ -6,12 +6,14 @@
 	import { store } from '$lib/store.svelte';
 	import type { App, AppPhase, Project } from '$lib/types';
 	import ProjectCanvas from '$lib/components/ProjectCanvas.svelte';
+	import NewAppModal from '$lib/components/NewAppModal.svelte';
 	import { LayoutDashboard, List, Plus, GitBranch, Container, Cloud, Clock } from 'lucide-svelte';
 
 	const projectName = $derived(page.params.project ?? '');
 	// App name from URL (e.g. /projects/foo/apps/bar → 'bar')
 	const urlApp = $derived(page.params.app ?? null);
 
+	let showNewApp = $state(false);
 	let project = $state<Project | null>(null);
 	let apps = $state<App[]>([]);
 	let loading = $state(true);
@@ -135,12 +137,13 @@
 					<List class="h-4 w-4" />
 				</button>
 			</div>
-			<a
-				href="/projects/{enc(projectName)}/apps/new"
+			<button
+				type="button"
+				onclick={() => showNewApp = true}
 				class="flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-accent-hover"
 			>
 				<Plus class="h-4 w-4" /> Add
-			</a>
+			</button>
 		</div>
 	</div>
 
@@ -183,12 +186,13 @@
 						</div>
 						<h2 class="text-base font-medium text-white">No apps in this project</h2>
 						<p class="mx-auto mt-1 max-w-sm text-sm text-gray-500">Deploy your first app — pick a template or start from a container image.</p>
-						<a
-							href="/projects/{enc(projectName)}/apps/new"
+						<button
+							type="button"
+							onclick={() => showNewApp = true}
 							class="mt-5 inline-block rounded-md bg-accent px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-accent-hover"
 						>
 							Deploy an app
-						</a>
+						</button>
 					</div>
 				{:else}
 					<table class="w-full text-sm">
@@ -256,3 +260,11 @@
 		{/if}
 	{/if}
 </div>
+
+{#if showNewApp}
+  <NewAppModal
+    project={projectName}
+    onClose={() => showNewApp = false}
+    onCreated={async (name) => { showNewApp = false; await load(); goto(`/projects/${enc(projectName)}/apps/${enc(name)}`); }}
+  />
+{/if}

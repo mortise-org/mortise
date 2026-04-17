@@ -90,6 +90,44 @@
 	let deleteConfirmText = $state('');
 	let deleting = $state(false);
 
+	// --- Storage ---
+	let showAddVolume = $state(false);
+	let newVol = $state({ name: '', mountPath: '', size: '', storageClass: '' });
+	let savingVolume = $state(false);
+
+	async function addVolume() {
+		if (!newVol.name || !newVol.mountPath) return;
+		savingVolume = true;
+		try {
+			const spec = structuredClone(app.spec);
+			spec.storage = [...(spec.storage ?? []), {
+				name: newVol.name,
+				mountPath: newVol.mountPath,
+				size: newVol.size || undefined,
+				storageClass: newVol.storageClass || undefined
+			}];
+			const updated = await api.updateApp(project, app.metadata.name, spec);
+			onAppUpdated(updated);
+			showAddVolume = false;
+			newVol = { name: '', mountPath: '', size: '', storageClass: '' };
+		} catch (e) {
+			errorMsg = e instanceof Error ? e.message : 'Failed to add volume';
+		} finally {
+			savingVolume = false;
+		}
+	}
+
+	async function removeVolume(idx: number) {
+		try {
+			const spec = structuredClone(app.spec);
+			spec.storage = (spec.storage ?? []).filter((_, i) => i !== idx);
+			const updated = await api.updateApp(project, app.metadata.name, spec);
+			onAppUpdated(updated);
+		} catch (e) {
+			errorMsg = e instanceof Error ? e.message : 'Failed to remove volume';
+		}
+	}
+
 	onMount(async () => {
 		await Promise.all([loadDomains(), loadTokens()]);
 	});
@@ -611,6 +649,75 @@
 					{saving ? 'Saving…' : 'Update'}
 				</button>
 			</div>
+		</div>
+	{/if}
+
+	<!-- Storage -->
+	{#if sectionVisible('storage volumes')}
+		<div class={sectionCls}>
+			<div class="flex items-center justify-between">
+				<h3 class={headingCls} style="margin-bottom:0">Storage</h3>
+				<button type="button" onclick={() => showAddVolume = true}
+					class="flex items-center gap-1 rounded-md border border-surface-600 px-2 py-1 text-xs text-gray-400 hover:bg-surface-700 hover:text-white">
+					<Plus class="h-3.5 w-3.5" /> Add volume
+				</button>
+			</div>
+
+			{#each app.spec.storage ?? [] as vol, i}
+				<div class="mt-3 rounded-md border border-surface-600 bg-surface-700/50 p-3 text-xs">
+					<div class="flex items-center justify-between">
+						<span class="font-medium text-white">{vol.name}</span>
+						<button type="button" onclick={() => removeVolume(i)}
+							class="rounded p-1 text-gray-500 hover:bg-surface-600 hover:text-danger">
+							<Trash2 class="h-3.5 w-3.5" />
+						</button>
+					</div>
+					<div class="mt-1.5 grid grid-cols-2 gap-1 text-gray-500">
+						<span>Mount: <span class="font-mono text-gray-300">{vol.mountPath}</span></span>
+						{#if vol.size}<span>Size: <span class="text-gray-300">{vol.size}</span></span>{/if}
+						{#if vol.storageClass}<span>Class: <span class="text-gray-300">{vol.storageClass}</span></span>{/if}
+						{#if vol.accessMode}<span>Mode: <span class="text-gray-300">{vol.accessMode}</span></span>{/if}
+					</div>
+				</div>
+			{/each}
+
+			{#if !app.spec.storage?.length && !showAddVolume}
+				<p class="mt-2 text-xs text-gray-500">No volumes. Add a persistent volume to store data across deploys.</p>
+			{/if}
+
+			{#if showAddVolume}
+				<div class="mt-3 rounded-md border border-surface-600 bg-surface-700 p-3 space-y-2">
+					<p class="text-xs font-medium text-gray-300">New volume</p>
+					<div class="grid grid-cols-2 gap-2">
+						<div>
+							<label class={labelCls} for="vol-name">Name</label>
+							<input id="vol-name" type="text" bind:value={newVol.name} placeholder="data" class={inputCls} />
+						</div>
+						<div>
+							<label class={labelCls} for="vol-mount">Mount path</label>
+							<input id="vol-mount" type="text" bind:value={newVol.mountPath} placeholder="/data" class={inputCls} />
+						</div>
+						<div>
+							<label class={labelCls} for="vol-size">Size</label>
+							<input id="vol-size" type="text" bind:value={newVol.size} placeholder="5Gi" class={inputCls} />
+						</div>
+						<div>
+							<label class={labelCls} for="vol-class">Storage class</label>
+							<input id="vol-class" type="text" bind:value={newVol.storageClass} placeholder="standard" class={inputCls} />
+						</div>
+					</div>
+					<div class="flex gap-2">
+						<button type="button" onclick={addVolume} disabled={!newVol.name || !newVol.mountPath || savingVolume}
+							class={btnPrimary}>
+							{savingVolume ? 'Adding...' : 'Add'}
+						</button>
+						<button type="button" onclick={() => { showAddVolume = false; newVol = { name: '', mountPath: '', size: '', storageClass: '' }; }}
+							class={btnSecondary}>
+							Cancel
+						</button>
+					</div>
+				</div>
+			{/if}
 		</div>
 	{/if}
 
