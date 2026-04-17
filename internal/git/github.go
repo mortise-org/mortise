@@ -97,6 +97,61 @@ func (g *GitHubAPI) ResolveCloneCredentials(_ context.Context, _ string) (GitCre
 	return GitCredentials{Token: g.token}, nil
 }
 
+func (g *GitHubAPI) ListRepos(ctx context.Context) ([]Repository, error) {
+	opts := &gogithub.RepositoryListOptions{
+		Sort:      "pushed",
+		Direction: "desc",
+		ListOptions: gogithub.ListOptions{
+			PerPage: 100,
+		},
+	}
+	repos, _, err := g.client.Repositories.List(ctx, "", opts)
+	if err != nil {
+		return nil, fmt.Errorf("list github repos: %w", err)
+	}
+	result := make([]Repository, 0, len(repos))
+	for _, r := range repos {
+		result = append(result, Repository{
+			FullName:      r.GetFullName(),
+			Name:          r.GetName(),
+			Description:   r.GetDescription(),
+			DefaultBranch: r.GetDefaultBranch(),
+			CloneURL:      r.GetCloneURL(),
+			UpdatedAt:     r.GetUpdatedAt().Format("2006-01-02T15:04:05Z"),
+			Language:      r.GetLanguage(),
+			Private:       r.GetPrivate(),
+		})
+	}
+	return result, nil
+}
+
+func (g *GitHubAPI) ListBranches(ctx context.Context, repo string) ([]Branch, error) {
+	owner, name, err := splitRepo(repo)
+	if err != nil {
+		return nil, err
+	}
+	branches, _, err := g.client.Repositories.ListBranches(ctx, owner, name, &gogithub.BranchListOptions{
+		ListOptions: gogithub.ListOptions{PerPage: 100},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list github branches: %w", err)
+	}
+	// Fetch default branch name.
+	r, _, err := g.client.Repositories.Get(ctx, owner, name)
+	if err != nil {
+		return nil, fmt.Errorf("get github repo: %w", err)
+	}
+	defaultBranch := r.GetDefaultBranch()
+	result := make([]Branch, 0, len(branches))
+	for _, b := range branches {
+		result = append(result, Branch{
+			Name:    b.GetName(),
+			Default: b.GetName() == defaultBranch,
+		})
+	}
+	return result, nil
+}
+
 // splitRepo splits "owner/repo" into two parts.
 func splitRepo(repo string) (string, string, error) {
 	// Strip scheme/host if provided as full URL.

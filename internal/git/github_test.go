@@ -242,6 +242,107 @@ func TestGitHub_ResolveCloneCredentials(t *testing.T) {
 	}
 }
 
+func TestGitHub_ListRepos(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/api/v3/user/repos" {
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode([]map[string]interface{}{
+				{
+					"id":             1,
+					"full_name":      "octo/hello-world",
+					"name":           "hello-world",
+					"description":    "My first repo",
+					"default_branch": "main",
+					"clone_url":      "https://github.com/octo/hello-world.git",
+					"updated_at":     "2025-03-01T12:00:00Z",
+					"language":       "Go",
+					"private":        false,
+					"owner":          map[string]interface{}{"login": "octo"},
+				},
+				{
+					"id":             2,
+					"full_name":      "octo/private-app",
+					"name":           "private-app",
+					"description":    "",
+					"default_branch": "develop",
+					"clone_url":      "https://github.com/octo/private-app.git",
+					"updated_at":     "2025-04-01T08:30:00Z",
+					"language":       "TypeScript",
+					"private":        true,
+					"owner":          map[string]interface{}{"login": "octo"},
+				},
+			})
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	api := newTestGitHubAPI(t, srv.URL)
+	repos, err := api.ListRepos(context.Background())
+	if err != nil {
+		t.Fatalf("ListRepos: %v", err)
+	}
+	if len(repos) != 2 {
+		t.Fatalf("expected 2 repos, got %d", len(repos))
+	}
+	if repos[0].FullName != "octo/hello-world" {
+		t.Errorf("repos[0].FullName: got %q", repos[0].FullName)
+	}
+	if repos[0].Language != "Go" {
+		t.Errorf("repos[0].Language: got %q", repos[0].Language)
+	}
+	if repos[0].Private != false {
+		t.Errorf("repos[0].Private: expected false")
+	}
+	if repos[1].Private != true {
+		t.Errorf("repos[1].Private: expected true")
+	}
+	if repos[1].DefaultBranch != "develop" {
+		t.Errorf("repos[1].DefaultBranch: got %q", repos[1].DefaultBranch)
+	}
+}
+
+func TestGitHub_ListBranches(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v3/repos/octo/repo/branches":
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode([]map[string]interface{}{
+				{"name": "main", "protected": true},
+				{"name": "feature-x", "protected": false},
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v3/repos/octo/repo":
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"id":             1,
+				"name":           "repo",
+				"full_name":      "octo/repo",
+				"default_branch": "main",
+				"owner":          map[string]interface{}{"login": "octo"},
+			})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	api := newTestGitHubAPI(t, srv.URL)
+	branches, err := api.ListBranches(context.Background(), "octo/repo")
+	if err != nil {
+		t.Fatalf("ListBranches: %v", err)
+	}
+	if len(branches) != 2 {
+		t.Fatalf("expected 2 branches, got %d", len(branches))
+	}
+	if branches[0].Name != "main" || !branches[0].Default {
+		t.Errorf("branches[0]: got %+v, want main/default=true", branches[0])
+	}
+	if branches[1].Name != "feature-x" || branches[1].Default {
+		t.Errorf("branches[1]: got %+v, want feature-x/default=false", branches[1])
+	}
+}
+
 func TestGitHub_RegisterWebhook_InvalidRepo(t *testing.T) {
 	api := &GitHubAPI{}
 	err := api.RegisterWebhook(context.Background(), "noslash", WebhookConfig{URL: "https://example.com"})

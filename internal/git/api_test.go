@@ -14,11 +14,15 @@ import (
 
 // fakeGitAPI is a test double satisfying GitAPI.
 type fakeGitAPI struct {
-	webhookErr error
-	statusErr  error
-	sigErr     error
-	creds      GitCredentials
-	credsErr   error
+	webhookErr  error
+	statusErr   error
+	sigErr      error
+	creds       GitCredentials
+	credsErr    error
+	repos       []Repository
+	reposErr    error
+	branches    []Branch
+	branchesErr error
 }
 
 func (f *fakeGitAPI) RegisterWebhook(_ context.Context, _ string, _ WebhookConfig) error {
@@ -35,6 +39,14 @@ func (f *fakeGitAPI) VerifyWebhookSignature(_ []byte, _ http.Header) error {
 
 func (f *fakeGitAPI) ResolveCloneCredentials(_ context.Context, _ string) (GitCredentials, error) {
 	return f.creds, f.credsErr
+}
+
+func (f *fakeGitAPI) ListRepos(_ context.Context) ([]Repository, error) {
+	return f.repos, f.reposErr
+}
+
+func (f *fakeGitAPI) ListBranches(_ context.Context, _ string) ([]Branch, error) {
+	return f.branches, f.branchesErr
 }
 
 var _ GitAPI = (*fakeGitAPI)(nil)
@@ -187,6 +199,35 @@ func TestFactory(t *testing.T) {
 		if got != tt.wantType {
 			t.Errorf("NewGitAPIFromProvider(%s): got type %s, want %s", tt.t, got, tt.wantType)
 		}
+	}
+}
+
+// TestFakeGitAPI_ListRepos verifies the fake returns configured repos.
+func TestFakeGitAPI_ListRepos(t *testing.T) {
+	fake := &fakeGitAPI{repos: []Repository{
+		{FullName: "org/repo", Name: "repo", Private: true},
+	}}
+	repos, err := fake.ListRepos(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(repos) != 1 || repos[0].FullName != "org/repo" {
+		t.Errorf("unexpected repos: %+v", repos)
+	}
+}
+
+// TestFakeGitAPI_ListBranches verifies the fake returns configured branches.
+func TestFakeGitAPI_ListBranches(t *testing.T) {
+	fake := &fakeGitAPI{branches: []Branch{
+		{Name: "main", Default: true},
+		{Name: "dev", Default: false},
+	}}
+	branches, err := fake.ListBranches(context.Background(), "org/repo")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(branches) != 2 || branches[0].Name != "main" || !branches[0].Default {
+		t.Errorf("unexpected branches: %+v", branches)
 	}
 }
 

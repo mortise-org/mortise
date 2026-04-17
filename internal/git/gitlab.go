@@ -76,6 +76,61 @@ func (g *GitLabAPI) ResolveCloneCredentials(_ context.Context, _ string) (GitCre
 	return GitCredentials{Token: g.token}, nil
 }
 
+func (g *GitLabAPI) ListRepos(ctx context.Context) ([]Repository, error) {
+	membership := true
+	orderBy := "last_activity_at"
+	sortDir := "desc"
+	opts := &gogitlab.ListProjectsOptions{
+		Membership: gogitlab.Ptr(membership),
+		OrderBy:    gogitlab.Ptr(orderBy),
+		Sort:       gogitlab.Ptr(sortDir),
+		ListOptions: gogitlab.ListOptions{
+			PerPage: 100,
+		},
+	}
+	projects, _, err := g.client.Projects.ListProjects(opts)
+	if err != nil {
+		return nil, fmt.Errorf("list gitlab projects: %w", err)
+	}
+	result := make([]Repository, 0, len(projects))
+	for _, p := range projects {
+		updatedAt := ""
+		if p.LastActivityAt != nil {
+			updatedAt = p.LastActivityAt.Format("2006-01-02T15:04:05Z")
+		}
+		// GitLab uses Visibility to indicate public/internal/private.
+		private := p.Visibility == gogitlab.PrivateVisibility
+		result = append(result, Repository{
+			FullName:      p.PathWithNamespace,
+			Name:          p.Name,
+			Description:   p.Description,
+			DefaultBranch: p.DefaultBranch,
+			CloneURL:      p.HTTPURLToRepo,
+			UpdatedAt:     updatedAt,
+			Language:      "",
+			Private:       private,
+		})
+	}
+	return result, nil
+}
+
+func (g *GitLabAPI) ListBranches(ctx context.Context, repo string) ([]Branch, error) {
+	branches, _, err := g.client.Branches.ListBranches(repo, &gogitlab.ListBranchesOptions{
+		ListOptions: gogitlab.ListOptions{PerPage: 100},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list gitlab branches: %w", err)
+	}
+	result := make([]Branch, 0, len(branches))
+	for _, b := range branches {
+		result = append(result, Branch{
+			Name:    b.Name,
+			Default: b.Default,
+		})
+	}
+	return result, nil
+}
+
 // gitlabState maps Mortise's CommitStatusState to GitLab build state strings.
 func gitlabState(s CommitStatusState) string {
 	switch s {

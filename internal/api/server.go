@@ -122,6 +122,9 @@ func (s *Server) Handler() http.Handler {
 			r.Post("/projects/{project}/apps/{app}/domains", s.AddDomain)
 			r.Delete("/projects/{project}/apps/{app}/domains/{domain}", s.RemoveDomain)
 
+			r.Get("/repos", s.ListRepos)
+			r.Get("/repos/{owner}/{repo}/branches", s.ListBranches)
+
 			r.Get("/platform", s.GetPlatform)
 			r.Patch("/platform", s.PatchPlatform)
 		})

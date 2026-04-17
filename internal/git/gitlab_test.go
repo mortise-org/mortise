@@ -135,6 +135,77 @@ func TestGitLab_PostCommitStatus(t *testing.T) {
 	}
 }
 
+func TestGitLab_ListRepos(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/api/v4/projects" {
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode([]map[string]interface{}{
+				{
+					"id":                  1,
+					"path_with_namespace": "myorg/myrepo",
+					"name":                "myrepo",
+					"description":         "My repo",
+					"default_branch":      "main",
+					"http_url_to_repo":    "https://gitlab.com/myorg/myrepo.git",
+					"last_activity_at":    "2025-03-15T10:00:00Z",
+					"visibility":          "private",
+				},
+			})
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	api := newTestGitLabAPI(t, srv.URL)
+	repos, err := api.ListRepos(context.Background())
+	if err != nil {
+		t.Fatalf("ListRepos: %v", err)
+	}
+	if len(repos) != 1 {
+		t.Fatalf("expected 1 repo, got %d", len(repos))
+	}
+	if repos[0].FullName != "myorg/myrepo" {
+		t.Errorf("FullName: got %q", repos[0].FullName)
+	}
+	if repos[0].CloneURL != "https://gitlab.com/myorg/myrepo.git" {
+		t.Errorf("CloneURL: got %q", repos[0].CloneURL)
+	}
+	if repos[0].Private != true {
+		t.Errorf("Private: expected true")
+	}
+}
+
+func TestGitLab_ListBranches(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/api/v4/projects/myorg/myrepo/repository/branches" {
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode([]map[string]interface{}{
+				{"name": "main", "default": true, "protected": true},
+				{"name": "dev", "default": false, "protected": false},
+			})
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	api := newTestGitLabAPI(t, srv.URL)
+	branches, err := api.ListBranches(context.Background(), "myorg/myrepo")
+	if err != nil {
+		t.Fatalf("ListBranches: %v", err)
+	}
+	if len(branches) != 2 {
+		t.Fatalf("expected 2 branches, got %d", len(branches))
+	}
+	if branches[0].Name != "main" || !branches[0].Default {
+		t.Errorf("branches[0]: got %+v", branches[0])
+	}
+	if branches[1].Name != "dev" || branches[1].Default {
+		t.Errorf("branches[1]: got %+v", branches[1])
+	}
+}
+
 func TestGitLab_VerifyWebhookSignature_Valid(t *testing.T) {
 	api := &GitLabAPI{secret: "gl-token-abc"}
 

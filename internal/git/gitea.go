@@ -90,6 +90,59 @@ func (g *GiteaAPI) ResolveCloneCredentials(_ context.Context, _ string) (GitCred
 	return GitCredentials{Token: g.token}, nil
 }
 
+func (g *GiteaAPI) ListRepos(ctx context.Context) ([]Repository, error) {
+	repos, _, err := g.client.ListMyRepos(gogitea.ListReposOptions{
+		ListOptions: gogitea.ListOptions{PageSize: 100},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list gitea repos: %w", err)
+	}
+	result := make([]Repository, 0, len(repos))
+	for _, r := range repos {
+		updatedAt := ""
+		if !r.Updated.IsZero() {
+			updatedAt = r.Updated.Format("2006-01-02T15:04:05Z")
+		}
+		result = append(result, Repository{
+			FullName:      r.FullName,
+			Name:          r.Name,
+			Description:   r.Description,
+			DefaultBranch: r.DefaultBranch,
+			CloneURL:      r.CloneURL,
+			UpdatedAt:     updatedAt,
+			Language:      r.Language,
+			Private:       r.Private,
+		})
+	}
+	return result, nil
+}
+
+func (g *GiteaAPI) ListBranches(ctx context.Context, repo string) ([]Branch, error) {
+	owner, name, err := splitRepo(repo)
+	if err != nil {
+		return nil, err
+	}
+	branches, _, err := g.client.ListRepoBranches(owner, name, gogitea.ListRepoBranchesOptions{
+		ListOptions: gogitea.ListOptions{PageSize: 100},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list gitea branches: %w", err)
+	}
+	// Fetch repo to determine default branch.
+	r, _, err := g.client.GetRepo(owner, name)
+	if err != nil {
+		return nil, fmt.Errorf("get gitea repo: %w", err)
+	}
+	result := make([]Branch, 0, len(branches))
+	for _, b := range branches {
+		result = append(result, Branch{
+			Name:    b.Name,
+			Default: b.Name == r.DefaultBranch,
+		})
+	}
+	return result, nil
+}
+
 func giteaState(s CommitStatusState) gogitea.StatusState {
 	switch s {
 	case StatusPending:
