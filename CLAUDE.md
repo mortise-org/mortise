@@ -35,7 +35,7 @@ Do not write progress info into this file (`CLAUDE.md`) or into
 - **UI:** SvelteKit + TypeScript (embedded in operator binary via embed.FS)
 - **CLI:** Go (cobra)
 - **Helm chart:** charts/mortise/
-- **CRDs:** App, PlatformConfig, GitProvider, PreviewEnvironment
+- **CRDs:** Project, App, PlatformConfig, GitProvider, PreviewEnvironment
 - **Bundled tools:** BuildKit (image builds), Zot (OCI registry), Traefik
   (ingress), cert-manager (TLS), ExternalDNS (DNS records)
 
@@ -211,6 +211,7 @@ cmd/
   cli/                       # CLI entrypoint
 api/v1alpha1/                # CRD type definitions
 controllers/                 # reconcile logic
+  project_controller.go
   app_controller.go
   app_controller_test.go     # envtest beside controllers
   platformconfig_controller.go
@@ -312,7 +313,7 @@ spec:
 ## What Mortise creates per App
 
 When an App is reconciled, the operator creates and manages:
-- Namespace (one per App)
+- Namespace (one per Project, shared by all Apps in that project)
 - Deployment (image, replicas, resources, env vars, volume mounts)
 - Service (stable internal DNS for the pods)
 - Ingress (domain routing, TLS annotations, ingress class)

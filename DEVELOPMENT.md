@@ -100,19 +100,33 @@ make test
   (JWT + bcrypt), CLI command parsing, binding resolution, deploy
   history, storage reconciliation
 
+### Integration tests (real cluster)
+
+```bash
+make test-integration       # ephemeral k3d cluster: create, install, test, tear down
+make test-integration-fast  # run suite against existing dev cluster (requires make dev-up)
+```
+
+- `make test-integration` creates a dedicated k3d cluster (`mortise-int`),
+  builds and loads the operator image, installs CRDs and test dependencies
+  (Zot, Gitea, BuildKit), installs the Helm chart, runs the suite, and
+  tears down.
+- `make test-integration-fast` runs the same Go tests against whatever
+  cluster your kubeconfig points at (typically the `make dev-up` cluster).
+- Tests live in `test/integration/`: `app_image_source_test.go`,
+  `app_git_source_test.go`, `bindings_test.go`, `ingress_test.go`,
+  `project_lifecycle_test.go`, `preview_test.go`, `gitprovider_admin_test.go`.
+- `TestMain` in `suite_test.go` asserts the cluster is reachable and the
+  Mortise Deployment is available before any test runs.
+- Each test creates its own namespace via `createTestNamespace(t)` and
+  cleans up via `t.Cleanup`.
+
 ### Live cluster (manual smoke test)
 
 After `make dev-up`, port-forward and drive the UI / CLI / API by hand
 against a real cluster. This catches integration issues envtest can't
 (kubelet behavior, image pulls, Ingress controller wiring, real pod
 scheduling).
-
-### Integration tests (planned, not yet wired)
-
-Future `make test-integration` target will spin up an ephemeral k3d
-cluster, install the chart, run an integration suite against it, and
-tear down. The harness exists in spirit in the Makefile; wiring is
-tracked in the spec as part of the remaining v1 work.
 
 ---
 
@@ -128,9 +142,9 @@ internal/
   auth/                       NativeAuthProvider, JWT helper
   authz/                      NativePolicyEngine (admin/member roles)
   bindings/                   Credential resolution for App-to-App bindings
-  build/                      BuildClient interface (BuildKit impl — WIP)
-  controller/                 Reconcilers (App, PlatformConfig, GitProvider, PreviewEnvironment)
-  git/                        GitAPI + GitClient interfaces (GitHub/GitLab/Gitea — WIP)
+  build/                      BuildClient interface (BuildKit impl)
+  controller/                 Reconcilers (Project, App, PlatformConfig, GitProvider, PreviewEnvironment)
+  git/                        GitAPI + GitClient interfaces (GitHub/GitLab/Gitea)
   ingress/                    IngressProvider interface (annotation-driven)
   registry/                   RegistryBackend interface (generic OCI)
   ui/                         SvelteKit static files embedded via //go:embed
