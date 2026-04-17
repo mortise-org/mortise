@@ -9,7 +9,7 @@
   const projectName = $derived(page.params.project ?? '');
   let project = $state<Project | null>(null);
   let loading = $state(true);
-  let activeTab = $state<'general' | 'environments' | 'shared-vars' | 'members' | 'danger'>('general');
+  let activeTab = $state<'general' | 'environments' | 'shared-vars' | 'members' | 'tokens' | 'webhooks' | 'integrations' | 'danger'>('general');
 
   // --- General ---
   let editDesc = $state('');
@@ -42,6 +42,10 @@
   // --- Danger ---
   let confirmDeleteText = $state('');
   let deleting = $state(false);
+  let projectApps = $state<Array<{ name: string }>>([]);
+  let loadingApps = $state(false);
+  let deletingApp = $state('');
+  let appDeleteError = $state('');
 
   onMount(async () => {
     try {
@@ -54,11 +58,50 @@
     }
   });
 
+  // --- Shared vars (lazy load) ---
+  let sharedVars = $state<Record<string, string>>({});
+  let loadingShared = $state(false);
+  async function loadSharedVars() {
+    loadingShared = true;
+    try {
+      // shared vars are per-app; nothing to load at project level
+      sharedVars = {};
+    } finally {
+      loadingShared = false;
+    }
+  }
+
+  async function loadAppsForDanger() {
+    loadingApps = true;
+    try {
+      const apps = await api.listApps(projectName);
+      projectApps = apps.map(a => ({ name: a.metadata.name }));
+    } catch {
+      projectApps = [];
+    } finally {
+      loadingApps = false;
+    }
+  }
+
+  async function removeApp(appName: string) {
+    if (deletingApp) return;
+    deletingApp = appName;
+    appDeleteError = '';
+    try {
+      await api.deleteApp(projectName, appName);
+      projectApps = projectApps.filter(a => a.name !== appName);
+    } catch (e) {
+      appDeleteError = e instanceof Error ? e.message : 'Failed to remove app';
+    } finally {
+      deletingApp = '';
+    }
+  }
+
   async function switchTab(tab: typeof activeTab) {
     activeTab = tab;
-    if (tab === 'members' && members.length === 0 && !loadingMembers) {
-      await loadMembers();
-    }
+    if (tab === 'members' && members.length === 0 && !loadingMembers) await loadMembers();
+    if (tab === 'shared-vars' && Object.keys(sharedVars).length === 0 && !loadingShared) await loadSharedVars();
+    if (tab === 'danger' && projectApps.length === 0 && !loadingApps) await loadAppsForDanger();
   }
 
   async function saveGeneral() {
@@ -162,6 +205,9 @@
       <button type="button" class={tabCls('environments')} onclick={() => switchTab('environments')}>Environments</button>
       <button type="button" class={tabCls('shared-vars')} onclick={() => switchTab('shared-vars')}>Shared Variables</button>
       <button type="button" class={tabCls('members')} onclick={() => switchTab('members')}>Members</button>
+      <button type="button" class={tabCls('tokens')} onclick={() => switchTab('tokens')}>Tokens</button>
+      <button type="button" class={tabCls('webhooks')} onclick={() => switchTab('webhooks')}>Webhooks</button>
+      <button type="button" class={tabCls('integrations')} onclick={() => switchTab('integrations')}>Integrations</button>
       <button type="button" class={tabCls('danger')} onclick={() => switchTab('danger')}>Danger</button>
     </nav>
   </div>
@@ -202,34 +248,32 @@
               <p class="mt-1 text-xs text-gray-500">Automatically create preview deployments for pull requests.</p>
             </div>
             <button type="button" role="switch" aria-checked={prEnabled}
-              onclick={() => prEnabled = !prEnabled}
+              onclick={async () => { prEnabled = !prEnabled; await savePR(); }}
               class="relative inline-flex h-5 w-9 items-center rounded-full transition-colors {prEnabled ? 'bg-accent' : 'bg-surface-600'}">
               <span class="inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform {prEnabled ? 'translate-x-4.5' : 'translate-x-0.5'}"></span>
             </button>
           </div>
-          {#if prEnabled}
-            <div class="mt-3 space-y-3">
-              <div>
-                <label class={labelCls} for="pr-domain">Domain template</label>
-                <input id="pr-domain" type="text" bind:value={prDomainTemplate}
-                  placeholder="pr-{'{number}'}.{'{app}'}.example.com" class={inputCls} />
-                <p class="mt-1 text-xs text-gray-500">Tokens: {'{number}'}, {'{app}'}</p>
-              </div>
-              <div>
-                <label class={labelCls} for="pr-ttl">TTL after PR close</label>
-                <select id="pr-ttl" bind:value={prTtl}
-                  class="w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-white outline-none focus:border-accent">
-                  <option value="1h">1 hour</option>
-                  <option value="24h">24 hours</option>
-                  <option value="72h">3 days</option>
-                  <option value="168h">1 week</option>
-                </select>
-              </div>
-              <button type="button" onclick={savePR} disabled={savingPR} class={btnPrimary}>
-                {savingPR ? 'Saving…' : 'Save PR config'}
-              </button>
+          <div class="mt-3 space-y-3">
+            <div>
+              <label class={labelCls} for="pr-domain">Domain template</label>
+              <input id="pr-domain" type="text" bind:value={prDomainTemplate}
+                placeholder="pr-{'{number}'}.{'{app}'}.example.com" class={inputCls} />
+              <p class="mt-1 text-xs text-gray-500">Tokens: {'{number}'}, {'{app}'}</p>
             </div>
-          {/if}
+            <div>
+              <label class={labelCls} for="pr-ttl">TTL after PR close</label>
+              <select id="pr-ttl" bind:value={prTtl}
+                class="w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-white outline-none focus:border-accent">
+                <option value="1h">1 hour</option>
+                <option value="24h">24 hours</option>
+                <option value="72h">3 days</option>
+                <option value="168h">1 week</option>
+              </select>
+            </div>
+            <button type="button" onclick={savePR} disabled={savingPR} class={btnPrimary}>
+              {savingPR ? 'Saving…' : 'Save PR config'}
+            </button>
+          </div>
         </div>
       </div>
 
@@ -380,8 +424,85 @@
         {/if}
       </div>
 
+    {:else if activeTab === 'tokens'}
+      <div class="max-w-lg">
+        <div class="mb-4">
+          <h2 class="text-sm font-medium text-white">Deploy Tokens</h2>
+          <p class="text-xs text-gray-500 mt-1">Project-level deploy tokens provide CI access to all apps in this project. App-specific tokens can be managed per-app in App Settings → Deploy Tokens.</p>
+        </div>
+        <div class="rounded-md border border-surface-600 bg-surface-800/50 p-5">
+          <p class="text-sm text-gray-400">Per-app deploy tokens are managed in each app's Settings tab.</p>
+          <a href="/projects/{projectName}" class="mt-2 inline-block text-xs text-accent hover:underline">Go to project canvas →</a>
+        </div>
+        <div class="mt-4 rounded-md border border-info/20 bg-info/5 p-3 text-xs text-info">
+          CI snippet: <code class="font-mono">curl -X POST https://your-domain/api/projects/{projectName}/apps/APP_NAME/deploy -H "Authorization: Bearer TOKEN" -d '&#123;"environment":"production","image":"IMAGE"&#125;'</code>
+        </div>
+      </div>
+
+    {:else if activeTab === 'webhooks'}
+      <div class="max-w-lg">
+        <div class="mb-4">
+          <h2 class="text-sm font-medium text-white">Webhooks</h2>
+          <p class="text-xs text-gray-500 mt-1">Outgoing webhooks for deploy events.</p>
+        </div>
+        <div class="rounded-md border border-surface-600 bg-surface-800/50 p-5 text-center">
+          <p class="text-sm text-gray-400">Outgoing webhooks are coming in v2.</p>
+          <p class="text-xs text-gray-500 mt-2">For now, use the Activity rail to monitor deploy events, or integrate with your observability stack via the Extensions page.</p>
+          <a href="/extensions" class="mt-3 inline-block text-xs text-accent hover:underline">View Extensions →</a>
+        </div>
+      </div>
+
+    {:else if activeTab === 'integrations'}
+      <div class="max-w-lg">
+        <div class="mb-4">
+          <h2 class="text-sm font-medium text-white">Integrations</h2>
+          <p class="text-xs text-gray-500 mt-1">Connected git providers and platform integrations.</p>
+        </div>
+        <div class="rounded-md border border-surface-600 bg-surface-800/50 p-5">
+          <p class="text-sm text-gray-300 font-medium">Git Providers</p>
+          <p class="text-xs text-gray-500 mt-1">Git providers are configured at the platform level and available to all projects.</p>
+          <a href="/admin/settings#git-providers" class="mt-2 inline-block text-xs text-accent hover:underline">Manage git providers →</a>
+        </div>
+        <div class="mt-3 rounded-md border border-surface-600 bg-surface-800/50 p-5">
+          <p class="text-sm text-gray-300 font-medium">Extensions</p>
+          <p class="text-xs text-gray-500 mt-1">OIDC, external secrets, monitoring, and backup integrations.</p>
+          <a href="/extensions" class="mt-2 inline-block text-xs text-accent hover:underline">View Extensions →</a>
+        </div>
+      </div>
+
     {:else if activeTab === 'danger'}
       <div class="max-w-lg">
+        <!-- Manage Apps -->
+        <div class="mb-5 rounded-md border border-surface-600 bg-surface-800/50 p-4">
+          <h3 class="mb-3 text-sm font-medium text-white">Manage Apps</h3>
+          {#if appDeleteError}
+            <div class="mb-2 rounded bg-danger/10 px-3 py-2 text-xs text-danger">{appDeleteError}</div>
+          {/if}
+          {#if loadingApps}
+            <div class="space-y-2">
+              {#each Array(3) as _}
+                <div class="h-10 animate-pulse rounded bg-surface-700"></div>
+              {/each}
+            </div>
+          {:else if projectApps.length === 0}
+            <p class="text-xs text-gray-500">No apps in this project.</p>
+          {:else}
+            <div class="space-y-1.5">
+              {#each projectApps as app}
+                <div class="flex items-center justify-between rounded-md border border-surface-600 bg-surface-900 px-3 py-2">
+                  <span class="text-sm text-white">{app.name}</span>
+                  <button type="button"
+                    onclick={() => removeApp(app.name)}
+                    disabled={deletingApp === app.name}
+                    class="text-xs text-gray-500 hover:text-danger disabled:opacity-50">
+                    {deletingApp === app.name ? 'Removing…' : 'Remove'}
+                  </button>
+                </div>
+              {/each}
+            </div>
+          {/if}
+        </div>
+
         <div class="rounded-md border border-danger/30 bg-danger/5 p-5 space-y-4">
           <h2 class="text-sm font-medium text-danger">Danger Zone</h2>
           <div>

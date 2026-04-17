@@ -47,6 +47,12 @@
 	let newDomain = $state('');
 	let savingDomain = $state(false);
 
+	// --- TLS overrides ---
+	const env0Tls = (app.spec.environments?.[0] as { tls?: { clusterIssuer?: string; secretName?: string } })?.tls;
+	let tlsClusterIssuer = $state(env0Tls?.clusterIssuer ?? '');
+	let tlsSecretName = $state(env0Tls?.secretName ?? '');
+	let savingTls = $state(false);
+
 	// --- Deploy tokens ---
 	let tokens = $state<DeployToken[]>([]);
 	let loadingTokens = $state(true);
@@ -257,6 +263,25 @@
 			domains = await api.removeDomain(project, app.metadata.name, domainsEnv, domain);
 		} catch (e) {
 			errorMsg = e instanceof Error ? e.message : 'Failed to remove domain';
+		}
+	}
+
+	async function saveTlsOverride() {
+		savingTls = true;
+		try {
+			const spec = structuredClone(app.spec);
+			if (spec.environments?.[0]) {
+				(spec.environments[0] as { tls?: { clusterIssuer?: string; secretName?: string } }).tls = {
+					clusterIssuer: tlsClusterIssuer || undefined,
+					secretName: tlsSecretName || undefined
+				};
+			}
+			const updated = await api.updateApp(project, app.metadata.name, spec);
+			onAppUpdated(updated);
+		} catch (e) {
+			errorMsg = e instanceof Error ? e.message : 'Failed to save TLS config';
+		} finally {
+			savingTls = false;
 		}
 	}
 
@@ -780,6 +805,33 @@
 					{savingDomain ? 'Adding…' : 'Add'}
 				</button>
 			</div>
+
+			<!-- TLS overrides (advanced) -->
+			<details class="mt-3">
+				<summary class="cursor-pointer text-xs text-gray-500 hover:text-gray-300">TLS overrides (advanced)</summary>
+				<div class="mt-2 space-y-2 rounded-md border border-surface-600 bg-surface-700/50 p-3">
+					<div class="rounded-md border border-warning/20 bg-warning/5 p-2 text-xs text-warning">
+						These override the platform-wide cert-manager issuer for this app only.
+					</div>
+					<div>
+						<label class={labelCls} for="tls-issuer-ovr">Cluster issuer override</label>
+						<input id="tls-issuer-ovr" type="text" bind:value={tlsClusterIssuer}
+							placeholder="letsencrypt-staging"
+							class={inputCls} />
+					</div>
+					<div>
+						<label class={labelCls} for="tls-secret-ovr">TLS secret name override</label>
+						<input id="tls-secret-ovr" type="text" bind:value={tlsSecretName}
+							placeholder="my-tls-secret"
+							class={inputCls} />
+						<p class="text-xs text-gray-500 mt-0.5">Mutually exclusive with cluster issuer</p>
+					</div>
+					<button type="button" onclick={saveTlsOverride} disabled={savingTls}
+						class={btnPrimary}>
+						{savingTls ? 'Saving…' : 'Save TLS overrides'}
+					</button>
+				</div>
+			</details>
 		</div>
 	{/if}
 
