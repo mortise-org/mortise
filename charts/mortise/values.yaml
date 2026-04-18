@@ -29,6 +29,11 @@ serviceAccount:
   create: true
   name: mortise-controller
 
+# GitHub OAuth App client ID for device flow.
+# This is the Mortise project's public OAuth App — safe to ship.
+github:
+  clientID: "Iv23li9i99OFLFc3nDVh"
+
 # ---------------------------------------------------------------------------
 # Bundled infrastructure — disable if your cluster already has these
 # ---------------------------------------------------------------------------

@@ -27,6 +27,9 @@ spec:
               protocol: TCP
           args:
             - --api-bind-address=:{{ .Values.api.port }}
+          env:
+            - name: MORTISE_GITHUB_CLIENT_ID
+              value: {{ .Values.github.clientID | quote }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           livenessProbe:
