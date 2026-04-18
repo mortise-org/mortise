@@ -334,19 +334,10 @@
 					<a
 						href="/admin/settings"
 						class="{isActive('/admin') ? railIconActive : railIcon}"
-						title="People"
+						title="Settings"
 					>
-						<Users class="h-5 w-5" />
+						<Settings class="h-5 w-5" />
 					</a>
-					{#if store.isAdmin}
-						<a
-							href="/admin/settings"
-							class="{isActive('/admin') ? railIconActive : railIcon}"
-							title="Platform Settings"
-						>
-							<Settings class="h-5 w-5" />
-						</a>
-					{/if}
 				{/if}
 			</nav>
 
