@@ -28,42 +28,43 @@
 		}
 	}
 
-	let ghDeviceCode = '';
-
-	async function ghPollOnce() {
-		if (!ghDeviceCode) return;
-		try {
-			const pd = await api.gitDevicePoll('github', ghDeviceCode);
-			if (pd.status === 'complete') {
-				if (githubPollTimer) clearInterval(githubPollTimer);
-				githubFlowActive = false;
-				githubUserCode = '';
-				store.githubConnected = true;
-			} else if (pd.status === 'expired' || pd.status === 'denied') {
-				if (githubPollTimer) clearInterval(githubPollTimer);
-				githubError = `Authorization ${pd.status}. Try again.`;
-				githubFlowActive = false;
-				githubUserCode = '';
-			}
-		} catch { /* network hiccup, keep polling */ }
-	}
-
 	async function connectGitHub() {
 		githubError = '';
 		githubFlowActive = true;
 		try {
 			const data = await api.gitDeviceCode('github');
 			githubUserCode = data.user_code;
-			ghDeviceCode = data.device_code;
+			const dc = data.device_code;
 			try { await navigator.clipboard.writeText(githubUserCode); } catch {}
 
-			const interval = (data.interval || 5) * 1000;
-			githubPollTimer = setInterval(() => void ghPollOnce(), interval);
+			let currentInterval = (data.interval || 5) * 1000;
+			let polling = false;
 
-			// Poll immediately when tab regains focus.
-			document.addEventListener('visibilitychange', () => {
-				if (!document.hidden && githubFlowActive) void ghPollOnce();
-			});
+			const doPoll = async () => {
+				if (polling) return;
+				polling = true;
+				try {
+					const pd = await api.gitDevicePoll('github', dc);
+					if (pd.status === 'complete') {
+						if (githubPollTimer) clearInterval(githubPollTimer);
+						githubFlowActive = false;
+						githubUserCode = '';
+						store.githubConnected = true;
+					} else if (pd.status === 'slow_down') {
+						if (githubPollTimer) clearInterval(githubPollTimer);
+						currentInterval += 5000;
+						githubPollTimer = setInterval(doPoll, currentInterval);
+					} else if (pd.status === 'expired' || pd.status === 'denied') {
+						if (githubPollTimer) clearInterval(githubPollTimer);
+						githubError = `Authorization ${pd.status}. Try again.`;
+						githubFlowActive = false;
+						githubUserCode = '';
+					}
+				} catch { /* network hiccup, keep polling */ }
+				finally { polling = false; }
+			};
+
+			githubPollTimer = setInterval(doPoll, currentInterval);
 		} catch (e) {
 			githubError = e instanceof Error ? e.message : 'Connection failed';
 			githubFlowActive = false;
