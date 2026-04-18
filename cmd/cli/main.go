@@ -36,6 +36,10 @@ Quickstart:
 	cmd.AddCommand(newDomainCmd())
 	cmd.AddCommand(newTokenCmd())
 	cmd.AddCommand(newEnvCmd())
+	cmd.AddCommand(newSecretCmd())
+	cmd.AddCommand(newGitProviderCmd())
+	cmd.AddCommand(newPlatformCmd())
+	cmd.AddCommand(newRepoCmd())
 	return cmd
 }
 

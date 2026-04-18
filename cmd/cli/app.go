@@ -17,6 +17,7 @@ func newAppCmd() *cobra.Command {
 	}
 	cmd.AddCommand(newAppListCmd())
 	cmd.AddCommand(newAppCreateCmd())
+	cmd.AddCommand(newAppUpdateCmd())
 	cmd.AddCommand(newAppDeleteCmd())
 	return cmd
 }
@@ -85,6 +86,56 @@ func newAppCreateCmd() *cobra.Command {
 	cmd.Flags().StringVar(&image, "image", "", "Container image reference (for source=image)")
 	cmd.Flags().StringVar(&name, "name", "", "App name")
 	_ = cmd.MarkFlagRequired("name")
+	return cmd
+}
+
+func newAppUpdateCmd() *cobra.Command {
+	var project, image, env string
+	var replicas int32
+	cmd := &cobra.Command{
+		Use:   "update <name>",
+		Short: "Update an app (read-modify-write)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, err := newClientFromConfig()
+			if err != nil {
+				return err
+			}
+			p := c.ResolveProject(project)
+			app, err := c.GetApp(p, args[0])
+			if err != nil {
+				return fmt.Errorf("fetching app: %w", err)
+			}
+			if cmd.Flags().Changed("image") {
+				app.Spec.Source.Image = image
+			}
+			if cmd.Flags().Changed("replicas") {
+				found := false
+				for i := range app.Spec.Environments {
+					if app.Spec.Environments[i].Name == env {
+						app.Spec.Environments[i].Replicas = &replicas
+						found = true
+						break
+					}
+				}
+				if !found {
+					app.Spec.Environments = append(app.Spec.Environments, mortisev1alpha1.Environment{
+						Name:     env,
+						Replicas: &replicas,
+					})
+				}
+			}
+			if _, err := c.UpdateApp(p, args[0], app.Spec); err != nil {
+				return err
+			}
+			fmt.Printf("App %q updated.\n", args[0])
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&project, "project", "", "Project (default: current project)")
+	cmd.Flags().StringVar(&image, "image", "", "Container image reference")
+	cmd.Flags().Int32Var(&replicas, "replicas", 0, "Replica count")
+	cmd.Flags().StringVar(&env, "env", "production", "Environment name (used with --replicas)")
 	return cmd
 }
 

@@ -235,10 +235,13 @@ CLI (`cmd/cli/`):
   `deploy`, `logs`, `status`.
 - Phase 7 verbs: `rollback`, `promote`, `env {list,set,unset,import,pull}`,
   `token {create,list,revoke}`, `domain {list,add,remove}`.
+- Phase 8 verbs: `secret {list,set,delete}`, `git-provider {list,create,delete,connect-github}`,
+  `platform {get,set}`, `repo {list,branches}`, `app update`.
 - `app_test.go`, `project_test.go`, `env_test.go`, `rollback_test.go`,
-  `promote_test.go`, `token_test.go` exercise the CLI layer.
+  `promote_test.go`, `token_test.go`, `secret_test.go`, `gitprovider_test.go`,
+  `platform_test.go`, `repo_test.go` exercise the CLI layer.
 
-**Gaps:** `secret` and `preview` CLI verbs not yet implemented.
+**Gaps:** `preview` CLI verbs not yet implemented.
 
 ### Phase 3 — Bindings & secrets — **Partial**
 
