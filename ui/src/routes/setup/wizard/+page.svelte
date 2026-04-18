@@ -11,8 +11,14 @@
 	// Step 2: DNS
 	let dnsProvider = $state('cloudflare');
 	let dnsToken = $state('');
+	// Step 3: GitHub connection
+	let gitStep = $state<'start' | 'polling' | 'authorized' | 'installed'>('start');
+	let userCode = $state('');
+	let gitError = $state('');
+	let pollTimer: ReturnType<typeof setInterval> | null = null;
 
 	const steps = ['Domain', 'DNS', 'Git Provider', 'Done'];
+	const githubInstallUrl = 'https://github.com/apps/mortise-deploy/installations/new';
 
 	async function next() {
 		error = '';
@@ -29,6 +35,45 @@
 			} finally { saving = false; }
 		} else if (step === 3) {
 			step = 4;
+		}
+	}
+
+	async function startDeviceFlow() {
+		gitError = '';
+		gitStep = 'polling';
+		try {
+			const resp = await fetch('/api/auth/github/device', { method: 'POST' });
+			if (!resp.ok) {
+				gitError = await resp.text() || 'Failed to start connection';
+				gitStep = 'start';
+				return;
+			}
+			const data = await resp.json();
+			userCode = data.user_code;
+			try { await navigator.clipboard.writeText(userCode); } catch {}
+
+			const interval = (data.interval || 5) * 1000;
+			pollTimer = setInterval(async () => {
+				try {
+					const pr = await fetch('/api/auth/github/device/poll', {
+						method: 'POST',
+						headers: { 'Content-Type': 'application/json' },
+						body: JSON.stringify({ device_code: data.device_code })
+					});
+					const pd = await pr.json();
+					if (pd.status === 'complete') {
+						if (pollTimer) clearInterval(pollTimer);
+						gitStep = 'authorized';
+					} else if (pd.status === 'expired' || pd.status === 'denied') {
+						if (pollTimer) clearInterval(pollTimer);
+						gitError = `Authorization ${pd.status}. Try again.`;
+						gitStep = 'start';
+					}
+				} catch { /* network hiccup, keep polling */ }
+			}, interval);
+		} catch (e) {
+			gitError = e instanceof Error ? e.message : 'Connection failed';
+			gitStep = 'start';
 		}
 	}
 
@@ -88,16 +133,76 @@
 				</div>
 
 			{:else if step === 3}
-				<h2 class="mb-4 text-base font-semibold text-white">Connect Git Provider</h2>
-				<p class="mb-4 text-sm text-gray-400">Connect GitHub to deploy from your repos. You can skip this and connect later in Settings.</p>
-				<div class="rounded-md border border-surface-600 bg-surface-700 p-4">
-					<p class="text-sm text-gray-400 mb-2">GitHub connection requires two quick steps done in Settings after setup:</p>
-					<ol class="text-sm text-gray-400 list-decimal list-inside space-y-1">
-						<li>Authorize Mortise (device code flow — works on localhost)</li>
+				<h2 class="mb-4 text-base font-semibold text-white">Connect GitHub</h2>
+
+				{#if gitStep === 'installed'}
+					<!-- All done -->
+					<div class="space-y-3">
+						<div class="flex items-center gap-2">
+							<span class="text-success font-medium">✓ GitHub connected and installed</span>
+						</div>
+						<p class="text-sm text-gray-400">You're all set — deploy from any of your repos.</p>
+					</div>
+
+				{:else if gitStep === 'authorized'}
+					<!-- Step 2: install on repos -->
+					<div class="space-y-3">
+						<div class="flex items-center gap-2 mb-2">
+							<span class="rounded-full bg-success/10 px-2 py-0.5 text-xs font-medium text-success">Step 1 ✓</span>
+							<span class="text-xs text-gray-500">Authorized</span>
+						</div>
+						<div class="flex items-center gap-2 mb-2">
+							<span class="rounded-full bg-accent/10 px-2 py-0.5 text-xs font-medium text-accent">Step 2</span>
+							<span class="text-xs text-white">Install on your repos</span>
+						</div>
+						<p class="text-sm text-gray-400">Mortise is authorized. Now install the app on your GitHub repos so it can access them.</p>
+						<a href={githubInstallUrl} target="_blank" rel="noopener noreferrer"
+							class="inline-flex items-center gap-1.5 rounded-md bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent-hover">
+							Install on GitHub →
+						</a>
+						<p class="text-xs text-gray-500 mt-2">After installing, come back and click the button below.</p>
+						<button type="button" onclick={() => { gitStep = 'installed'; }}
+							class="rounded-md border border-surface-600 px-3 py-1.5 text-sm text-gray-400 hover:bg-surface-700 hover:text-white">
+							I've installed it
+						</button>
+					</div>
+
+				{:else if gitStep === 'polling'}
+					<!-- Step 1: device code -->
+					<div class="space-y-3">
+						<div class="flex items-center gap-2 mb-2">
+							<span class="rounded-full bg-accent/10 px-2 py-0.5 text-xs font-medium text-accent">Step 1</span>
+							<span class="text-xs text-white">Authorize Mortise</span>
+						</div>
+						<p class="text-sm text-gray-400">Enter this code on GitHub to authorize Mortise:</p>
+						<div class="flex items-center gap-3">
+							<code class="rounded bg-surface-900 px-4 py-2 text-2xl font-mono font-bold text-white tracking-widest">{userCode}</code>
+							<span class="text-xs text-gray-500">Copied to clipboard</span>
+						</div>
+						<a href="https://github.com/login/device" target="_blank" rel="noopener noreferrer"
+							class="inline-flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white hover:bg-accent-hover">
+							Open github.com/login/device →
+						</a>
+						<p class="text-xs text-gray-500 mt-1">Paste the code and authorize. This page updates automatically.</p>
+					</div>
+
+				{:else}
+					<!-- Start: explain and begin -->
+					<p class="mb-4 text-sm text-gray-400">Connect GitHub to deploy directly from your repos. Two quick steps:</p>
+					<ol class="text-sm text-gray-400 list-decimal list-inside space-y-1 mb-4">
+						<li>Authorize Mortise with a one-time code</li>
 						<li>Install the app on your repos</li>
 					</ol>
-					<p class="text-xs text-gray-500 mt-3">You'll find this in <strong class="text-gray-300">Settings → Git Providers</strong> once setup completes.</p>
-				</div>
+					<button type="button" onclick={startDeviceFlow}
+						class="rounded-md bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent-hover">
+						Connect GitHub
+					</button>
+					<p class="text-xs text-gray-500 mt-3">For GitLab or Gitea, add a provider in Settings after setup.</p>
+				{/if}
+
+				{#if gitError}
+					<p class="mt-3 text-xs text-danger">{gitError}</p>
+				{/if}
 
 			{:else if step === 4}
 				<div class="py-4 text-center">
@@ -113,7 +218,7 @@
 
 			<div class="mt-6 flex justify-between">
 				{#if step > 1 && step < 4}
-					<button type="button" onclick={() => step--}
+					<button type="button" onclick={() => { if (step === 3 && pollTimer) clearInterval(pollTimer); step--; }}
 						class="rounded-md border border-surface-600 px-4 py-2 text-sm text-gray-400 hover:bg-surface-700 hover:text-white">
 						Back
 					</button>
@@ -122,10 +227,18 @@
 				{/if}
 
 				{#if step < 4}
-					<button type="button" onclick={next} disabled={saving}
-						class="rounded-md bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent-hover disabled:opacity-50">
-						{saving ? 'Saving...' : step === 3 ? 'Skip for now' : 'Continue'}
-					</button>
+					{#if step === 3 && gitStep !== 'start'}
+						<!-- During git flow, "Continue" only shows after completion or as skip -->
+						<button type="button" onclick={next}
+							class="rounded-md {gitStep === 'installed' ? 'bg-accent' : 'border border-surface-600'} px-4 py-2 text-sm font-medium {gitStep === 'installed' ? 'text-white hover:bg-accent-hover' : 'text-gray-400 hover:bg-surface-700 hover:text-white'}">
+							{gitStep === 'installed' ? 'Continue' : 'Skip for now'}
+						</button>
+					{:else}
+						<button type="button" onclick={next} disabled={saving}
+							class="rounded-md bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent-hover disabled:opacity-50">
+							{saving ? 'Saving...' : step === 3 ? 'Skip for now' : 'Continue'}
+						</button>
+					{/if}
 				{:else}
 					<button type="button" onclick={finish}
 						class="rounded-md bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent-hover">
