@@ -21,11 +21,12 @@ import {
 
 test.describe('bindings', () => {
 	let adminToken: string;
-	const projectName = `e2e-bind-${randomSuffix()}`;
+	let projectName: string;
 
 	test.beforeAll(async ({ request }) => {
 		await ensureAdmin(request);
 		adminToken = await loginViaAPI(request);
+		projectName = `e2e-bind-${randomSuffix()}`;
 		await createProjectViaAPI(request, adminToken, projectName, 'Bindings E2E tests');
 	});
 
@@ -150,33 +151,15 @@ test.describe('bindings', () => {
 		await page.goto(`/projects/${projectName}/apps/${appName}`);
 		await expect(page.getByRole('heading', { name: appName })).toBeVisible({ timeout: 10_000 });
 
-		// Mock the env PATCH endpoint.
-		await page.route(
-			`**/api/projects/${projectName}/apps/${appName}/env/**`,
-			async (route) => {
-				if (route.request().method() === 'PATCH') {
-					return route.fulfill({ status: 204 });
-				}
-				if (route.request().method() === 'GET') {
-					return route.fulfill({
-						status: 200,
-						contentType: 'application/json',
-						body: JSON.stringify({ DATABASE_URL: '${{bindings.postgres.DATABASE_URL}}' })
-					});
-				}
-				return route.continue();
-			}
-		);
-
 		// Open Variables tab.
 		await page.getByRole('button', { name: 'Variables' }).click();
 
 		// Click "New variable".
-		await page.getByRole('button', { name: 'New variable' }).click();
+		await page.getByRole('button', { name: 'New variable', exact: true }).click();
 
 		// Fill the key and the reference value.
 		await page.getByPlaceholder('VARIABLE_NAME').fill('DATABASE_URL');
-		await page.getByPlaceholder('value').fill('${{bindings.postgres.DATABASE_URL}}');
+		await page.getByPlaceholder('value or binding ref').fill('${{bindings.postgres.DATABASE_URL}}');
 
 		// The Add button should be visible.
 		const addBtn = page.getByRole('button', { name: 'Add' }).first();
