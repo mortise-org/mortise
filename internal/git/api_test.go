@@ -49,6 +49,10 @@ func (f *fakeGitAPI) ListBranches(_ context.Context, _ string) ([]Branch, error)
 	return f.branches, f.branchesErr
 }
 
+func (f *fakeGitAPI) ListTree(_ context.Context, _, _, _, _ string) ([]TreeEntry, error) {
+	return nil, nil
+}
+
 var _ GitAPI = (*fakeGitAPI)(nil)
 
 // TestFakeGitAPI verifies the fakeGitAPI satisfies the interface and returns configured values.

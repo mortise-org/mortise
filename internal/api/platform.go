@@ -17,9 +17,9 @@ const platformConfigName = "platform"
 // patchPlatformRequest is the JSON body accepted by PATCH /api/platform.
 // All fields are optional; only non-zero fields overwrite the existing value.
 type patchPlatformRequest struct {
-	Domain  string              `json:"domain,omitempty"`
-	DNS     *patchPlatformDNS  `json:"dns,omitempty"`
-	TLS     *patchPlatformTLS  `json:"tls,omitempty"`
+	Domain  string                `json:"domain,omitempty"`
+	DNS     *patchPlatformDNS     `json:"dns,omitempty"`
+	TLS     *patchPlatformTLS     `json:"tls,omitempty"`
 	Storage *patchPlatformStorage `json:"storage,omitempty"`
 }
 
