@@ -326,8 +326,9 @@
 						</div>
 
 						<!-- Repo search -->
+						<div class="min-h-[14rem]">
 						{#if reposLoading}
-							<div class="text-sm text-gray-500">Loading repositories...</div>
+							<div class="flex items-center justify-center h-[14rem] text-sm text-gray-500">Loading repositories...</div>
 						{:else if repos.length > 0}
 							<div>
 								<label class="text-sm text-gray-400">Repository</label>
@@ -337,7 +338,7 @@
 									placeholder="Search repos..."
 									class="mt-1 w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-white placeholder-gray-500 outline-none focus:border-accent"
 								/>
-								<div class="mt-1 max-h-40 overflow-y-auto rounded-md border border-surface-600">
+								<div class="mt-1 max-h-48 overflow-y-auto rounded-md border border-surface-600">
 									{#each filteredRepos as repo}
 										<button
 											type="button"
@@ -351,6 +352,7 @@
 								</div>
 							</div>
 						{/if}
+						</div>
 
 						<!-- Branch -->
 						<div>
