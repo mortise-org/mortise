@@ -11,6 +11,7 @@ class MortiseStore {
 	// Auth
 	token = $state<string | null>(null);
 	user = $state<{ email: string; role: 'admin' | 'member' } | null>(null);
+	githubConnected = $state<boolean | null>(null);
 
 	get isAdmin(): boolean { return this.user?.role === 'admin'; }
 	get isAuthenticated(): boolean { return this.token !== null; }

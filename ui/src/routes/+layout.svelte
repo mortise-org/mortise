@@ -7,11 +7,57 @@
 	import { store } from '$lib/store.svelte';
 	import { currentProject } from '$lib/context.svelte';
 	// Lucide icons
-	import { Folder, Puzzle, Settings, LayoutDashboard, List, Bell, Activity, User, LogOut, ChevronDown, Users } from 'lucide-svelte';
+	import { Folder, Puzzle, Settings, LayoutDashboard, List, Bell, Activity, User, LogOut, ChevronDown, Users, Github } from 'lucide-svelte';
 	import ActivityRail from '$lib/components/ActivityRail.svelte';
 	import NotificationDropdown from '$lib/components/NotificationDropdown.svelte';
 
 	let { children } = $props();
+
+	// GitHub connection state (per-user device flow)
+	let githubFlowActive = $state(false);
+	let githubUserCode = $state('');
+	let githubError = $state('');
+	let githubPollTimer: ReturnType<typeof setInterval> | null = null;
+
+	async function checkGitHubStatus() {
+		try {
+			const resp = await api.githubStatus();
+			store.githubConnected = resp.connected;
+		} catch {
+			store.githubConnected = null;
+		}
+	}
+
+	async function connectGitHub() {
+		githubError = '';
+		githubFlowActive = true;
+		try {
+			const data = await api.githubDeviceCode();
+			githubUserCode = data.user_code;
+			try { await navigator.clipboard.writeText(githubUserCode); } catch {}
+
+			const interval = (data.interval || 5) * 1000;
+			githubPollTimer = setInterval(async () => {
+				try {
+					const pd = await api.githubDevicePoll(data.device_code);
+					if (pd.status === 'complete') {
+						if (githubPollTimer) clearInterval(githubPollTimer);
+						githubFlowActive = false;
+						githubUserCode = '';
+						store.githubConnected = true;
+					} else if (pd.status === 'expired' || pd.status === 'denied') {
+						if (githubPollTimer) clearInterval(githubPollTimer);
+						githubError = `Authorization ${pd.status}. Try again.`;
+						githubFlowActive = false;
+						githubUserCode = '';
+					}
+				} catch { /* network hiccup, keep polling */ }
+			}, interval);
+		} catch (e) {
+			githubError = e instanceof Error ? e.message : 'Connection failed';
+			githubFlowActive = false;
+		}
+	}
 
 	// Determine layout type from URL
 	const isLogin = $derived(page.url.pathname === '/login');
@@ -83,6 +129,7 @@
 		if (bareLayout || checking) return;
 		if (!store.token) return;
 		if (!projectsLoaded) void loadProjects();
+		if (store.githubConnected === null) void checkGitHubStatus();
 	});
 
 	$effect(() => {

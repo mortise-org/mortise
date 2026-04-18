@@ -54,55 +54,9 @@ spec:
           spec:
             description: spec defines the desired state of GitProvider
             properties:
-              githubApp:
-                description: GitHubApp holds GitHub App credentials (only when mode=github-app).
-                properties:
-                  appID:
-                    description: AppID is the numeric GitHub App ID returned from
-                      the manifest flow.
-                    format: int64
-                    type: integer
-                  credentialsSecretRef:
-                    description: |-
-                      CredentialsSecretRef references the secret containing the GitHub App
-                      private key, webhook secret, client ID, and client secret.
-                    properties:
-                      key:
-                        description: Key within the secret.
-                        type: string
-                      name:
-                        description: Name of the secret.
-                        type: string
-                      namespace:
-                        description: Namespace of the secret.
-                        type: string
-                    required:
-                    - key
-                    - name
-                    - namespace
-                    type: object
-                  installationID:
-                    description: InstallationID is set after the user installs the
-                      app on their repos/org.
-                    format: int64
-                    type: integer
-                  slug:
-                    description: Slug is the URL-friendly name of the GitHub App (used
-                      in install links).
-                    type: string
-                type: object
               host:
                 description: Host is the base URL of the forge (e.g. https://github.com
                   or https://gitea.internal.example).
-                type: string
-              mode:
-                default: oauth
-                description: |-
-                  Mode determines the auth mechanism. GitHub supports both "oauth" and
-                  "github-app". GitLab and Gitea only support "oauth".
-                enum:
-                - oauth
-                - github-app
                 type: string
               oauth:
                 description: |-

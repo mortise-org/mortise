@@ -235,53 +235,6 @@ func TestFakeGitAPI_ListBranches(t *testing.T) {
 	}
 }
 
-// TestFactory_GitHubApp verifies that NewGitHubAppAPIFromProvider returns a
-// GitHubAppAPI when mode=github-app.
-func TestFactory_GitHubApp(t *testing.T) {
-	pemBytes := generateTestPEM(t)
-	gp := &mortisev1alpha1.GitProvider{
-		Spec: mortisev1alpha1.GitProviderSpec{
-			Type: mortisev1alpha1.GitProviderTypeGitHub,
-			Host: "https://github.com",
-			Mode: "github-app",
-			GitHubApp: &mortisev1alpha1.GitHubAppConfig{
-				AppID:          123,
-				Slug:           "mortise-test",
-				InstallationID: 456,
-			},
-		},
-	}
-	api, err := NewGitHubAppAPIFromProvider(gp, pemBytes, "wh-secret")
-	if err != nil {
-		t.Fatalf("NewGitHubAppAPIFromProvider: %v", err)
-	}
-	got := fmt.Sprintf("%T", api)
-	if got != "*git.GitHubAppAPI" {
-		t.Errorf("got type %s, want *git.GitHubAppAPI", got)
-	}
-	// Verify the installation ID was set.
-	ghApp := api.(*GitHubAppAPI)
-	if ghApp.installationID != 456 {
-		t.Errorf("installationID: got %d, want 456", ghApp.installationID)
-	}
-}
-
-// TestFactory_GitHubApp_NoConfig verifies that NewGitHubAppAPIFromProvider
-// returns an error when githubApp config is nil.
-func TestFactory_GitHubApp_NoConfig(t *testing.T) {
-	gp := &mortisev1alpha1.GitProvider{
-		Spec: mortisev1alpha1.GitProviderSpec{
-			Type: mortisev1alpha1.GitProviderTypeGitHub,
-			Host: "https://github.com",
-			Mode: "github-app",
-		},
-	}
-	_, err := NewGitHubAppAPIFromProvider(gp, nil, "")
-	if err == nil {
-		t.Error("expected error when githubApp is nil")
-	}
-}
-
 // TestFactory_UnknownType verifies that an unsupported provider type returns an error.
 func TestFactory_UnknownType(t *testing.T) {
 	ref := mortisev1alpha1.SecretRef{Namespace: "ns", Name: "s", Key: "k"}

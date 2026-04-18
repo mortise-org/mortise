@@ -10,7 +10,7 @@ import type {
 	DeviceCodeResponse,
 	DevicePollResponse,
 	DomainsResponse,
-	GitHubAppManifestResponse,
+	GitHubStatusResponse,
 	GitProviderSummary,
 	InviteResponse,
 	Notification,
@@ -137,7 +137,7 @@ export const api = {
 		return `/api/projects/${enc(project)}/apps/${enc(app)}/logs?${params.toString()}`;
 	},
 
-	// --- GitHub device flow ---
+	// --- GitHub device flow (per-user, requires JWT) ---
 	githubDeviceCode: () =>
 		request<DeviceCodeResponse>('/auth/github/device', { method: 'POST' }),
 	githubDevicePoll: (deviceCode: string) =>
@@ -145,12 +145,10 @@ export const api = {
 			method: 'POST',
 			body: JSON.stringify({ device_code: deviceCode })
 		}),
+	githubStatus: () =>
+		request<GitHubStatusResponse>('/auth/github/status'),
 
-	// --- github app manifest flow ---
-	githubAppManifest: () =>
-		request<GitHubAppManifestResponse>('/github-app/manifest', { method: 'POST' }),
-
-	// --- git providers ---
+	// --- git providers (GitLab/Gitea, admin-configured) ---
 	listGitProviders: () => request<GitProviderSummary[]>('/gitproviders'),
 	createGitProvider: (body: CreateGitProviderRequest) =>
 		request<GitProviderSummary>('/gitproviders', {
@@ -160,14 +158,16 @@ export const api = {
 	deleteGitProvider: (name: string) =>
 		request<void>(`/gitproviders/${enc(name)}`, { method: 'DELETE' }),
 
-	// --- repos (git provider) ---
-	listRepos: (provider: string) =>
-		request<Repository[]>(`/repos?provider=${enc(provider)}`),
-	listBranches: (owner: string, repo: string, provider: string) =>
-		request<Branch[]>(`/repos/${enc(owner)}/${enc(repo)}/branches?provider=${enc(provider)}`),
-	listRepoTree: (owner: string, repo: string, provider: string, branch: string, path = '') =>
+	// --- repos ---
+	// GitHub: no provider param needed (uses per-user token).
+	// GitLab/Gitea: pass ?provider=name.
+	listRepos: (provider?: string) =>
+		request<Repository[]>(`/repos${provider ? `?provider=${enc(provider)}` : ''}`),
+	listBranches: (owner: string, repo: string, provider?: string) =>
+		request<Branch[]>(`/repos/${enc(owner)}/${enc(repo)}/branches${provider ? `?provider=${enc(provider)}` : ''}`),
+	listRepoTree: (owner: string, repo: string, provider: string | undefined, branch: string, path = '') =>
 		request<Array<{ name: string; type: string; path: string }>>(
-			`/repos/${enc(owner)}/${enc(repo)}/tree?provider=${enc(provider)}&branch=${enc(branch)}${path ? `&path=${enc(path)}` : ''}`
+			`/repos/${enc(owner)}/${enc(repo)}/tree?branch=${enc(branch)}${provider ? `&provider=${enc(provider)}` : ''}${path ? `&path=${enc(path)}` : ''}`
 		),
 
 	// --- secrets ---

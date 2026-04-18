@@ -66,26 +66,6 @@ type OAuthConfig struct {
 	ClientSecretSecretRef SecretRef `json:"clientSecretSecretRef"`
 }
 
-// GitHubAppConfig holds credentials and metadata for a GitHub App integration.
-type GitHubAppConfig struct {
-	// AppID is the numeric GitHub App ID returned from the manifest flow.
-	// +optional
-	AppID int64 `json:"appID,omitempty"`
-
-	// CredentialsSecretRef references the secret containing the GitHub App
-	// private key, webhook secret, client ID, and client secret.
-	// +optional
-	CredentialsSecretRef SecretRef `json:"credentialsSecretRef,omitempty"`
-
-	// Slug is the URL-friendly name of the GitHub App (used in install links).
-	// +optional
-	Slug string `json:"slug,omitempty"`
-
-	// InstallationID is set after the user installs the app on their repos/org.
-	// +optional
-	InstallationID int64 `json:"installationID,omitempty"`
-}
-
 // GitProviderSpec defines the desired state of GitProvider.
 type GitProviderSpec struct {
 	// Type is the git forge type.
@@ -96,21 +76,10 @@ type GitProviderSpec struct {
 	// +required
 	Host string `json:"host"`
 
-	// Mode determines the auth mechanism. GitHub supports both "oauth" and
-	// "github-app". GitLab and Gitea only support "oauth".
-	// +kubebuilder:validation:Enum=oauth;github-app
-	// +kubebuilder:default=oauth
-	// +optional
-	Mode string `json:"mode,omitempty"`
-
 	// OAuth holds the OAuth application credentials used to authenticate users and
 	// register webhooks on their behalf.
 	// +optional
 	OAuth OAuthConfig `json:"oauth,omitempty"`
-
-	// GitHubApp holds GitHub App credentials (only when mode=github-app).
-	// +optional
-	GitHubApp *GitHubAppConfig `json:"githubApp,omitempty"`
 
 	// WebhookSecretRef references the secret used to verify HMAC signatures on
 	// inbound webhook payloads from this forge.

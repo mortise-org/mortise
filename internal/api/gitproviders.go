@@ -21,12 +21,8 @@ type gitProviderSummary struct {
 	Name     string                           `json:"name"`
 	Type     mortisev1alpha1.GitProviderType  `json:"type"`
 	Host     string                           `json:"host"`
-	Mode     string                           `json:"mode"`
 	Phase    mortisev1alpha1.GitProviderPhase `json:"phase"`
 	HasToken bool                             `json:"hasToken"`
-	// GitHubApp fields (only populated when mode=github-app).
-	GitHubAppSlug           string `json:"githubAppSlug,omitempty"`
-	GitHubAppInstallationID int64  `json:"githubAppInstallationID,omitempty"`
 }
 
 // createGitProviderRequest is the JSON body for creating a GitProvider.
@@ -60,21 +56,12 @@ func (s *Server) ListGitProviders(w http.ResponseWriter, r *http.Request) {
 
 	resp := make([]gitProviderSummary, 0, len(list.Items))
 	for _, gp := range list.Items {
-		mode := gp.Spec.Mode
-		if mode == "" {
-			mode = "oauth"
-		}
 		summary := gitProviderSummary{
 			Name:     gp.Name,
 			Type:     gp.Spec.Type,
 			Host:     gp.Spec.Host,
-			Mode:     mode,
 			Phase:    gp.Status.Phase,
-			HasToken: mode == "github-app" || s.oauthTokenExists(r.Context(), gp.Name),
-		}
-		if gp.Spec.GitHubApp != nil {
-			summary.GitHubAppSlug = gp.Spec.GitHubApp.Slug
-			summary.GitHubAppInstallationID = gp.Spec.GitHubApp.InstallationID
+			HasToken: s.oauthTokenExists(r.Context(), gp.Name),
 		}
 		resp = append(resp, summary)
 	}
@@ -171,7 +158,6 @@ func (s *Server) CreateGitProvider(w http.ResponseWriter, r *http.Request) {
 		Name:     gp.Name,
 		Type:     gp.Spec.Type,
 		Host:     gp.Spec.Host,
-		Mode:     "oauth",
 		Phase:    gp.Status.Phase,
 		HasToken: false,
 	})
@@ -221,20 +207,6 @@ func (s *Server) DeleteGitProvider(w http.ResponseWriter, r *http.Request) {
 	if err := s.client.Delete(r.Context(), tokenSecret); err != nil && !errors.IsNotFound(err) {
 		writeError(w, err)
 		return
-	}
-
-	// Best-effort cleanup of GitHub App credentials Secret (manifest flow).
-	if gp.Spec.Mode == "github-app" && gp.Spec.GitHubApp != nil {
-		appSecret := &corev1.Secret{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      gp.Spec.GitHubApp.CredentialsSecretRef.Name,
-				Namespace: gp.Spec.GitHubApp.CredentialsSecretRef.Namespace,
-			},
-		}
-		if err := s.client.Delete(r.Context(), appSecret); err != nil && !errors.IsNotFound(err) {
-			writeError(w, err)
-			return
-		}
 	}
 
 	w.WriteHeader(http.StatusNoContent)

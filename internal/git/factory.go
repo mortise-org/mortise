@@ -22,20 +22,3 @@ func NewGitAPIFromProvider(gp *mortisev1alpha1.GitProvider, token, webhookSecret
 		return nil, fmt.Errorf("unsupported git provider type: %q", gp.Spec.Type)
 	}
 }
-
-// NewGitHubAppAPIFromProvider constructs a GitHubAppAPI from a GitProvider CRD
-// with mode=github-app. privateKeyPEM and webhookSecret are read from the
-// credentials secret referenced by spec.githubApp.credentialsSecretRef.
-func NewGitHubAppAPIFromProvider(gp *mortisev1alpha1.GitProvider, privateKeyPEM []byte, webhookSecret string) (GitAPI, error) {
-	if gp.Spec.GitHubApp == nil {
-		return nil, fmt.Errorf("gitProvider %q has no githubApp config", gp.Name)
-	}
-	api, err := NewGitHubAppAPI(gp.Spec.Host, gp.Spec.GitHubApp.AppID, privateKeyPEM, webhookSecret)
-	if err != nil {
-		return nil, err
-	}
-	if gp.Spec.GitHubApp.InstallationID != 0 {
-		api.SetInstallationID(gp.Spec.GitHubApp.InstallationID)
-	}
-	return api, nil
-}

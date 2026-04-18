@@ -2,6 +2,7 @@ package api_test
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"testing"
@@ -13,16 +14,22 @@ import (
 	"github.com/MC-Meesh/mortise/internal/git"
 )
 
-// TestListReposMissingProvider verifies that omitting the provider query param
-// returns 400.
-func TestListReposMissingProvider(t *testing.T) {
+// TestListReposNoGitHubToken verifies that when no per-user GitHub token is
+// stored and no provider is specified, the endpoint returns 404.
+func TestListReposNoGitHubToken(t *testing.T) {
 	k8sClient := setupEnvtest(t)
 	srv := newAdminServer(t, k8sClient)
 	h := srv.Handler()
 
 	w := doRequest(h, http.MethodGet, "/api/repos", nil)
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("expected 400, got %d: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]string
+	_ = json.NewDecoder(w.Body).Decode(&resp)
+	if resp["error"] == "" {
+		t.Error("expected error message about GitHub not connected")
 	}
 }
 
@@ -73,16 +80,16 @@ func TestListReposNoToken(t *testing.T) {
 	}
 }
 
-// TestListBranchesMissingProvider verifies that omitting the provider query
-// param returns 400.
-func TestListBranchesMissingProvider(t *testing.T) {
+// TestListBranchesNoGitHubToken verifies that omitting the provider query
+// param returns 404 when no per-user GitHub token is stored.
+func TestListBranchesNoGitHubToken(t *testing.T) {
 	k8sClient := setupEnvtest(t)
 	srv := newAdminServer(t, k8sClient)
 	h := srv.Handler()
 
 	w := doRequest(h, http.MethodGet, "/api/repos/octo/myrepo/branches", nil)
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("expected 400, got %d: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404, got %d: %s", w.Code, w.Body.String())
 	}
 }
 
@@ -93,7 +100,7 @@ func TestListReposRequiresAuth(t *testing.T) {
 	srv := newAdminServer(t, k8sClient)
 	h := srv.Handler()
 
-	w := doRequestWithToken(h, http.MethodGet, "/api/repos?provider=x", nil, "")
+	w := doRequestWithToken(h, http.MethodGet, "/api/repos", nil, "")
 	if w.Code != http.StatusUnauthorized {
 		t.Errorf("expected 401, got %d", w.Code)
 	}
@@ -106,7 +113,7 @@ func TestListBranchesRequiresAuth(t *testing.T) {
 	srv := newAdminServer(t, k8sClient)
 	h := srv.Handler()
 
-	w := doRequestWithToken(h, http.MethodGet, "/api/repos/o/r/branches?provider=x", nil, "")
+	w := doRequestWithToken(h, http.MethodGet, "/api/repos/o/r/branches", nil, "")
 	if w.Code != http.StatusUnauthorized {
 		t.Errorf("expected 401, got %d", w.Code)
 	}
@@ -142,16 +149,16 @@ func TestBranchJSON(t *testing.T) {
 	}
 }
 
-// TestGetRepoTreeMissingProvider verifies that omitting the provider query
-// param returns 400.
-func TestGetRepoTreeMissingProvider(t *testing.T) {
+// TestGetRepoTreeNoGitHubToken verifies that omitting the provider query
+// param returns 404 when no per-user GitHub token exists.
+func TestGetRepoTreeNoGitHubToken(t *testing.T) {
 	k8sClient := setupEnvtest(t)
 	srv := newAdminServer(t, k8sClient)
 	h := srv.Handler()
 
 	w := doRequest(h, http.MethodGet, "/api/repos/octo/myrepo/tree", nil)
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("expected 400, got %d: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404, got %d: %s", w.Code, w.Body.String())
 	}
 }
 
@@ -189,5 +196,41 @@ func TestTreeEntryJSON(t *testing.T) {
 	_ = json.Unmarshal(data, &got)
 	if got.Name != entry.Name || got.Type != entry.Type || got.Path != entry.Path {
 		t.Errorf("round-trip mismatch: got %+v", got)
+	}
+}
+
+// TestReposWithPerUserToken verifies that the repo endpoint uses the calling
+// user's per-user GitHub token when no provider is specified.
+func TestReposWithPerUserToken(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	ctx := context.Background()
+
+	_ = k8sClient.Create(ctx, &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: "mortise-system"},
+	})
+
+	// Store a per-user GitHub token for the test user.
+	email := "test@example.com"
+	secretName := "user-github-token-" + hex.EncodeToString([]byte(email))
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      secretName,
+			Namespace: "mortise-system",
+		},
+		Data: map[string][]byte{"token": []byte("gho_test_token")},
+	}
+	if err := k8sClient.Create(ctx, secret); err != nil {
+		t.Fatalf("create token secret: %v", err)
+	}
+
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+
+	// The request should NOT return 404 (no token) since we stored one.
+	// It will try to call GitHub API (and fail with 502 since it's a real
+	// endpoint in tests), which confirms the token was found.
+	w := doRequest(h, http.MethodGet, "/api/repos", nil)
+	if w.Code == http.StatusNotFound {
+		t.Fatalf("should not get 404 when user has a stored GitHub token")
 	}
 }

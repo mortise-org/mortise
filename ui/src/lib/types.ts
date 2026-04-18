@@ -157,23 +157,16 @@ export interface Project {
 export type GitProviderType = 'github' | 'gitlab' | 'gitea';
 export type GitProviderPhase = 'Pending' | 'Ready' | 'Failed';
 
-export type GitProviderMode = 'oauth' | 'github-app';
-
 export interface GitProviderSummary {
 	name: string;
 	type: GitProviderType;
 	host: string;
-	mode: GitProviderMode;
 	phase: GitProviderPhase;
 	hasToken: boolean;
-	githubAppSlug?: string;
-	githubAppInstallationID?: number;
 }
 
-export interface GitHubAppManifestResponse {
-	redirectUrl: string;
-	manifest: Record<string, unknown>;
-	state: string;
+export interface GitHubStatusResponse {
+	connected: boolean;
 }
 
 export interface CreateGitProviderRequest {

@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -24,9 +25,6 @@ const (
 	// client ID. Replaced at release time with the real value.
 	defaultGitHubClientID = "MORTISE_GITHUB_CLIENT_ID_PLACEHOLDER"
 
-	// deviceFlowProviderName is the GitProvider name auto-created by the device flow.
-	deviceFlowProviderName = "github"
-
 	// githubDeviceCodeURL is the GitHub device authorization endpoint.
 	githubDeviceCodeURL = "https://github.com/login/device/code"
 
@@ -34,10 +32,10 @@ const (
 	githubTokenURL = "https://github.com/login/oauth/access_token"
 
 	// deviceFlowScopes are the OAuth scopes requested via device flow.
-	deviceFlowScopes = "repo,admin:repo_hook"
+	deviceFlowScopes = "repo,admin:repo_hook,read:org"
 )
 
-// DeviceFlowHandler handles the GitHub device flow for zero-config GitHub
+// DeviceFlowHandler handles the GitHub device flow for per-user GitHub
 // connections.
 type DeviceFlowHandler struct {
 	client     client.Client
@@ -69,11 +67,11 @@ type devicePollRequest struct {
 
 // devicePollResponse is the JSON body returned from the poll endpoint.
 type devicePollResponse struct {
-	Status      string `json:"status"`
-	AccessToken string `json:"access_token,omitempty"`
+	Status string `json:"status"`
 }
 
 // RequestCode initiates the GitHub device flow by requesting a device code.
+// Requires JWT auth — the user must be logged in.
 //
 // POST /api/auth/github/device
 func (d *DeviceFlowHandler) RequestCode(w http.ResponseWriter, r *http.Request) {
@@ -82,7 +80,7 @@ func (d *DeviceFlowHandler) RequestCode(w http.ResponseWriter, r *http.Request) 
 	clientID := d.resolveClientID(r.Context())
 	if clientID == defaultGitHubClientID {
 		writeJSON(w, http.StatusServiceUnavailable, errorResponse{
-			"GitHub App not configured. An admin must set spec.github.clientID in PlatformConfig or the MORTISE_GITHUB_CLIENT_ID environment variable.",
+			"GitHub not configured. An admin must set spec.github.clientID in PlatformConfig or the MORTISE_GITHUB_CLIENT_ID environment variable.",
 		})
 		return
 	}
@@ -126,10 +124,18 @@ func (d *DeviceFlowHandler) RequestCode(w http.ResponseWriter, r *http.Request) 
 }
 
 // Poll checks whether the user has completed the device flow authorization.
+// On success, stores the token keyed to the calling user.
+// Requires JWT auth.
 //
 // POST /api/auth/github/device/poll
 func (d *DeviceFlowHandler) Poll(w http.ResponseWriter, r *http.Request) {
 	log := logf.FromContext(r.Context())
+
+	principal := PrincipalFromContext(r.Context())
+	if principal == nil {
+		writeJSON(w, http.StatusUnauthorized, errorResponse{"authentication required"})
+		return
+	}
 
 	var body devicePollRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -204,17 +210,35 @@ func (d *DeviceFlowHandler) Poll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Store the token and auto-create the GitProvider.
-	if err := d.storeTokenAndCreateProvider(r.Context(), ghResp.AccessToken); err != nil {
-		log.Error(err, "store device flow token")
+	// Store the token keyed to the calling user.
+	if err := d.storeUserToken(r.Context(), principal.Email, ghResp.AccessToken); err != nil {
+		log.Error(err, "store user github token")
 		http.Error(w, "failed to store credentials", http.StatusInternalServerError)
 		return
 	}
 
-	writeJSON(w, http.StatusOK, devicePollResponse{
-		Status:      "complete",
-		AccessToken: ghResp.AccessToken,
-	})
+	writeJSON(w, http.StatusOK, devicePollResponse{Status: "complete"})
+}
+
+// GitHubStatus returns whether the calling user has a stored GitHub token.
+//
+// GET /api/auth/github/status
+func (d *DeviceFlowHandler) GitHubStatus(w http.ResponseWriter, r *http.Request) {
+	principal := PrincipalFromContext(r.Context())
+	if principal == nil {
+		writeJSON(w, http.StatusUnauthorized, errorResponse{"authentication required"})
+		return
+	}
+
+	secretName := userGitHubTokenSecretName(principal.Email)
+	var s corev1.Secret
+	err := d.client.Get(r.Context(), types.NamespacedName{
+		Namespace: tokenSecretNamespace,
+		Name:      secretName,
+	}, &s)
+
+	connected := err == nil && len(s.Data["token"]) > 0
+	writeJSON(w, http.StatusOK, map[string]bool{"connected": connected})
 }
 
 // resolveClientID reads the GitHub client ID from: PlatformConfig -> env var -> default constant.
@@ -236,18 +260,23 @@ func (d *DeviceFlowHandler) resolveClientID(ctx context.Context) string {
 	return defaultGitHubClientID
 }
 
-// storeTokenAndCreateProvider persists the access token in a k8s Secret and
-// creates or updates the GitProvider CRD for the default device-flow connection.
-func (d *DeviceFlowHandler) storeTokenAndCreateProvider(ctx context.Context, token string) error {
-	// Store the token secret (same pattern as OAuthHandler.storeToken).
-	secretName := "gitprovider-token-" + deviceFlowProviderName
+// userGitHubTokenSecretName returns the k8s Secret name for a user's GitHub token.
+// Uses the same hex-encoded email scheme as user secrets.
+func userGitHubTokenSecretName(email string) string {
+	return "user-github-token-" + hex.EncodeToString([]byte(email))
+}
+
+// storeUserToken persists the GitHub access token in a k8s Secret keyed to the user.
+func (d *DeviceFlowHandler) storeUserToken(ctx context.Context, email, token string) error {
+	secretName := userGitHubTokenSecretName(email)
 	desired := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      secretName,
 			Namespace: tokenSecretNamespace,
 			Labels: map[string]string{
 				"app.kubernetes.io/managed-by": "mortise",
-				"mortise.dev/git-provider":     deviceFlowProviderName,
+				"mortise.dev/github-token":     "true",
+				"mortise.dev/user":             email,
 			},
 		},
 		Data: map[string][]byte{
@@ -258,48 +287,26 @@ func (d *DeviceFlowHandler) storeTokenAndCreateProvider(ctx context.Context, tok
 	var existing corev1.Secret
 	err := d.client.Get(ctx, types.NamespacedName{Namespace: tokenSecretNamespace, Name: secretName}, &existing)
 	if errors.IsNotFound(err) {
-		if err := d.client.Create(ctx, desired); err != nil {
-			return fmt.Errorf("create token secret: %w", err)
-		}
-	} else if err != nil {
-		return fmt.Errorf("get token secret: %w", err)
-	} else {
-		existing.Data = desired.Data
-		if err := d.client.Update(ctx, &existing); err != nil {
-			return fmt.Errorf("update token secret: %w", err)
-		}
+		return d.client.Create(ctx, desired)
 	}
-
-	// Create or update the GitProvider CRD.
-	var gp mortisev1alpha1.GitProvider
-	err = d.client.Get(ctx, types.NamespacedName{Name: deviceFlowProviderName}, &gp)
-	if errors.IsNotFound(err) {
-		gp = mortisev1alpha1.GitProvider{
-			ObjectMeta: metav1.ObjectMeta{Name: deviceFlowProviderName},
-			Spec: mortisev1alpha1.GitProviderSpec{
-				Type: mortisev1alpha1.GitProviderTypeGitHub,
-				Host: "https://github.com",
-				// Device flow is a public client — no OAuth secret needed.
-				// Provide empty refs so the CRD validates.
-				OAuth: mortisev1alpha1.OAuthConfig{
-					ClientIDSecretRef:     mortisev1alpha1.SecretRef{Namespace: tokenSecretNamespace, Name: secretName, Key: "token"},
-					ClientSecretSecretRef: mortisev1alpha1.SecretRef{Namespace: tokenSecretNamespace, Name: secretName, Key: "token"},
-				},
-				WebhookSecretRef: mortisev1alpha1.SecretRef{Namespace: tokenSecretNamespace, Name: secretName, Key: "token"},
-			},
-		}
-		if err := d.client.Create(ctx, &gp); err != nil {
-			return fmt.Errorf("create GitProvider: %w", err)
-		}
-	} else if err != nil {
-		return fmt.Errorf("get GitProvider: %w", err)
+	if err != nil {
+		return fmt.Errorf("get user token secret: %w", err)
 	}
+	existing.Data = desired.Data
+	return d.client.Update(ctx, &existing)
+}
 
-	// Set status to Ready.
-	gp.Status.Phase = mortisev1alpha1.GitProviderPhaseReady
-	if err := d.client.Status().Update(ctx, &gp); err != nil {
-		return fmt.Errorf("update GitProvider status: %w", err)
+// ResolveUserGitHubToken looks up the calling user's stored GitHub token.
+// Returns the token string or an error if not found.
+func ResolveUserGitHubToken(ctx context.Context, r client.Reader, email string) (string, error) {
+	secretName := userGitHubTokenSecretName(email)
+	var s corev1.Secret
+	if err := r.Get(ctx, types.NamespacedName{Namespace: tokenSecretNamespace, Name: secretName}, &s); err != nil {
+		return "", fmt.Errorf("get user github token: %w", err)
 	}
-
-	return nil
+	v, ok := s.Data["token"]
+	if !ok || len(v) == 0 {
+		return "", fmt.Errorf("user github token secret has no \"token\" key")
+	}
+	return string(v), nil
 }
