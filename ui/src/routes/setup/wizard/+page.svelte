@@ -89,16 +89,17 @@
 
 			{:else if step === 3}
 				<h2 class="mb-4 text-base font-semibold text-white">Connect Git Provider</h2>
-				<p class="mb-4 text-sm text-gray-400">Connect GitHub, GitLab, or Gitea to enable git-source apps. You can skip this and add providers later in Platform Settings.</p>
-				<div class="space-y-2">
-					<a href="/admin/settings#git-providers"
-						class="flex items-center gap-3 rounded-md border border-surface-600 p-3 hover:border-accent hover:bg-surface-700 transition-colors">
-						<span class="text-xl">🔀</span>
+				<p class="mb-4 text-sm text-gray-400">Install the Mortise app on GitHub to deploy from your repos. You can skip this and connect later in Settings.</p>
+				<div class="space-y-3">
+					<a href="https://github.com/apps/mortise-deploy/installations/new" target="_blank" rel="noopener noreferrer"
+						class="flex items-center justify-between rounded-md border border-accent/30 bg-surface-700 p-4 hover:border-accent hover:bg-surface-600 transition-colors">
 						<div>
-							<p class="text-sm font-medium text-white">Configure Git Provider</p>
-							<p class="text-xs text-gray-500">Go to Platform Settings to add GitHub, GitLab, or Gitea</p>
+							<p class="text-sm font-medium text-white">Connect GitHub</p>
+							<p class="text-xs text-gray-500">One click — install the Mortise app on your repos</p>
 						</div>
+						<span class="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white">Install →</span>
 					</a>
+					<p class="text-xs text-gray-500 text-center">For GitLab or Gitea, add a provider manually in Settings after setup.</p>
 				</div>
 
 			{:else if step === 4}
