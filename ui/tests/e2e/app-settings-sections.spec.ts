@@ -113,8 +113,8 @@ test.describe('app drawer settings tab sections', () => {
 		await expect(filterInput).toBeVisible();
 
 		// Key sections should be present
-		await expect(page.getByText('Source')).toBeVisible({ timeout: 3000 });
-		await expect(page.getByText('Networking')).toBeVisible({ timeout: 3000 });
+		await expect(page.getByRole('heading', { name: 'Source' })).toBeVisible({ timeout: 3000 });
+		await expect(page.getByRole('heading', { name: 'Networking' })).toBeVisible({ timeout: 3000 });
 	});
 
 	test('Test 2: Update git source (repo + branch) → verifies PUT body has updated source', async ({ page }) => {

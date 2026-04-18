@@ -100,7 +100,7 @@ test.describe('full user journey', () => {
 		await expect(page.getByText(/No variables set/)).toBeVisible({ timeout: 5_000 });
 
 		// Add a variable inline.
-		await page.getByRole('button', { name: 'New variable' }).click();
+		await page.getByRole('button', { name: 'New variable', exact: true }).click();
 		await page.getByPlaceholder('VARIABLE_NAME').fill('APP_ENV');
 		await page.getByPlaceholder('value or binding ref').fill('production');
 		await page.getByRole('button', { name: 'Add', exact: true }).click();

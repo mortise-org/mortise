@@ -23,17 +23,24 @@ export function randomSuffix(): string {
 
 /**
  * Idempotent admin bootstrap. 409 = already set up, which is fine.
+ *
+ * Global admin setup runs once per suite via Playwright globalSetup; this
+ * per-worker memo short-circuits the redundant 28× per-beforeAll call so
+ * parallel workers don't pile onto the API.
  */
+let adminEnsured = false;
 export async function ensureAdmin(request: APIRequestContext): Promise<void> {
+	if (adminEnsured) return;
 	const res = await request.post('/api/auth/setup', {
 		data: { email: ADMIN_EMAIL, password: ADMIN_PASSWORD },
 		failOnStatusCode: false
 	});
-	if (res.status() === 409) return;
-	if (!res.ok()) {
-		const body = await res.text().catch(() => '');
-		throw new Error(`admin setup failed: HTTP ${res.status()} ${body}`);
+	if (res.status() === 409 || res.ok()) {
+		adminEnsured = true;
+		return;
 	}
+	const body = await res.text().catch(() => '');
+	throw new Error(`admin setup failed: HTTP ${res.status()} ${body}`);
 }
 
 /** Get a JWT token via the login API. */

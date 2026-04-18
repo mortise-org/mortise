@@ -18,11 +18,12 @@ import {
 
 test.describe("app drawer detail", () => {
   let adminToken: string;
-  const projectName = `e2e-appdet-${randomSuffix()}`;
+  let projectName: string;
 
   test.beforeAll(async ({ request }) => {
     await ensureAdmin(request);
     adminToken = await loginViaAPI(request);
+    projectName = `e2e-appdet-${randomSuffix()}`;
     await createProjectViaAPI(
       request,
       adminToken,
@@ -130,7 +131,7 @@ test.describe("app drawer detail", () => {
 
     // "New variable" button.
     await expect(
-      page.getByRole("button", { name: "New variable" }),
+      page.getByRole("button", { name: "New variable", exact: true }),
     ).toBeVisible();
 
     await deleteAppViaAPI(request, adminToken, projectName, appName);
@@ -149,7 +150,7 @@ test.describe("app drawer detail", () => {
     await page.getByRole("button", { name: "Variables" }).click();
 
     // Click "New variable" to show inline form.
-    await page.getByRole("button", { name: "New variable" }).click();
+    await page.getByRole("button", { name: "New variable", exact: true }).click();
 
     // VARIABLE_NAME and value inputs appear.
     await expect(page.getByPlaceholder("VARIABLE_NAME")).toBeVisible();

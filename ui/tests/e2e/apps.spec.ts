@@ -335,7 +335,7 @@ test.describe('app drawer', () => {
 		await page.getByRole('button', { name: 'Variables' }).click();
 
 		// Variables tab content should appear — "New variable" button is always visible.
-		await expect(page.getByRole('button', { name: 'New variable' })).toBeVisible({ timeout: 5_000 });
+		await expect(page.getByRole('button', { name: 'New variable', exact: true })).toBeVisible({ timeout: 5_000 });
 	});
 
 	test('tab switching works — Settings tab shows content', async ({ page }) => {

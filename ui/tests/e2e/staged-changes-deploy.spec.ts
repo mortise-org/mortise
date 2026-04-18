@@ -305,10 +305,10 @@ test.describe('staged changes deploy flow', () => {
 		await expect(page.getByPlaceholder('Filter settings…')).toBeVisible({ timeout: 5000 });
 
 		// Verify key settings sections are rendered
-		await expect(page.getByText('Source')).toBeVisible({ timeout: 5000 });
-		await expect(page.getByText('Scale')).toBeVisible({ timeout: 5000 });
-		await expect(page.getByText('Networking')).toBeVisible({ timeout: 5000 });
-		await expect(page.getByText('Domains')).toBeVisible({ timeout: 5000 });
+		await expect(page.getByRole('heading', { name: 'Source' })).toBeVisible({ timeout: 5000 });
+		await expect(page.getByRole('heading', { name: 'Scale' })).toBeVisible({ timeout: 5000 });
+		await expect(page.getByRole('heading', { name: 'Networking' })).toBeVisible({ timeout: 5000 });
+		await expect(page.getByRole('heading', { name: 'Domains' })).toBeVisible({ timeout: 5000 });
 
 		// Change branch and click Update in Source section
 		const branchInput = page.getByLabel('Branch');

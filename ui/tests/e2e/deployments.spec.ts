@@ -111,11 +111,12 @@ function buildAppFixture(
 
 test.describe('deployments tab', () => {
 	let adminToken: string;
-	const projectName = `e2e-deploys-${randomSuffix()}`;
+	let projectName: string;
 
 	test.beforeAll(async ({ request }) => {
 		await ensureAdmin(request);
 		adminToken = await loginViaAPI(request);
+		projectName = `e2e-deploys-${randomSuffix()}`;
 		await createProjectViaAPI(request, adminToken, projectName, 'Deployments E2E tests');
 	});
 
@@ -270,13 +271,13 @@ test.describe('deployments tab', () => {
 		await expect(mainContent.getByRole('button', { name: 'staging', exact: true })).toBeVisible();
 
 		// Production is selected by default — verify its image is shown.
-		await expect(page.getByText('abc123', { exact: false })).toBeVisible({ timeout: 3_000 });
+		await expect(page.getByText('abc123', { exact: false }).first()).toBeVisible({ timeout: 3_000 });
 
 		// Switch to staging.
 		await mainContent.getByRole('button', { name: 'staging', exact: true }).click();
 
 		// Staging image should now be visible.
-		await expect(page.getByText('staging-111', { exact: false })).toBeVisible({ timeout: 3_000 });
+		await expect(page.getByText('staging-111', { exact: false }).first()).toBeVisible({ timeout: 3_000 });
 
 		await deleteAppViaAPI(request, adminToken, projectName, appName);
 	});

@@ -407,7 +407,7 @@
 				{#if !shared.rawMode}
 					<button type="button" onclick={() => { sections['shared'].showNewRow = true; }}
 						class="flex items-center gap-1 rounded-md border border-surface-600 px-2 py-1 text-xs text-gray-400 hover:bg-surface-700 hover:text-white">
-						<Plus class="h-3.5 w-3.5" /> New variable
+						<Plus class="h-3.5 w-3.5" /> New shared variable
 					</button>
 				{/if}
 			</div>
@@ -476,7 +476,7 @@
 				<!-- Shared variable rows -->
 				{#if Object.keys(shared.vars).length === 0 && !shared.showNewRow}
 					<div class="py-8 text-center text-xs text-gray-500">
-						No vars set here yet. Click "New variable" to add one.
+						No vars set here yet. Click "New shared variable" to add one.
 					</div>
 				{:else}
 					{#each Object.entries(shared.vars) as [varKey, value]}
