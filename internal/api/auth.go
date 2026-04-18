@@ -94,13 +94,7 @@ func (s *Server) Setup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Seed the `default` Project so the workspace is never empty. If it
-	// already exists (e.g. re-run after a partial setup), that's fine.
-	if err := s.ensureDefaultProject(r.Context()); err != nil {
-		slog.Error("setup: failed to seed default project", "err", err)
-		writeJSON(w, http.StatusInternalServerError, errorResponse{"failed to create default project: " + err.Error()})
-		return
-	}
+	// No default project seeded — users create their first project explicitly.
 
 	principal, err := s.auth.Authenticate(r.Context(), auth.Credentials{Email: req.Email, Password: req.Password})
 	if err != nil {

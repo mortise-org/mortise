@@ -37,6 +37,13 @@
 		}
 	}
 
+	// Auto-advance to step 4 if GitHub is already connected
+	$effect(() => {
+		if (step === 3 && gitStep === 'done') {
+			step = 4;
+		}
+	});
+
 	async function startDeviceFlow() {
 		gitError = '';
 		gitStep = 'polling';
@@ -159,10 +166,10 @@
 				{/if}
 
 			{:else if step === 4}
-				<div class="py-4 text-center">
-					<div class="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-success/10 text-2xl text-success">✓</div>
-					<h2 class="mb-2 text-base font-semibold text-white">Platform Ready!</h2>
-					<p class="text-sm text-gray-400">Your Mortise platform is configured and ready to use.</p>
+				<div class="py-6 text-center">
+					<div class="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-success/10 text-3xl">🚀</div>
+					<h2 class="mb-2 text-lg font-semibold text-white">All set! Go ship something awesome.</h2>
+					<p class="text-sm text-gray-400">Your platform is ready. Create a project and deploy your first app.</p>
 				</div>
 			{/if}
 
