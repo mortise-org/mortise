@@ -2,7 +2,7 @@
 	import { onMount } from 'svelte';
 	import type { NodeProps } from '@xyflow/svelte';
 	import { Handle, Position } from '@xyflow/svelte';
-	import { GitBranch, Container, Cloud, Clock, HardDrive, Loader2 } from 'lucide-svelte';
+	import { GitBranch, Container, Cloud, Clock, HardDrive } from 'lucide-svelte';
 	import type { App, AppPhase } from '$lib/types';
 
 	interface AppNodeData {
@@ -115,9 +115,6 @@
 	<!-- Status chip -->
 	{#if phase}
 		<div class="flex items-center gap-1.5">
-			{#if phase === 'Building'}
-				<Loader2 class="h-3 w-3 animate-spin text-warning" />
-			{/if}
 			<span class="rounded px-1.5 py-0.5 text-xs font-medium {phaseClass[phase] ?? 'bg-surface-700 text-gray-400'}">
 				{phase}
 			</span>

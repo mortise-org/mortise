@@ -143,10 +143,7 @@
 	<!-- Build status banner -->
 	{#if isBuilding}
 		<div class="mx-4 mt-3 flex items-center justify-between rounded-md border border-warning/30 bg-warning/10 px-3 py-2">
-			<div class="flex items-center gap-2">
-				<Loader2 class="h-4 w-4 animate-spin text-warning" />
-				<span class="text-sm text-warning">Build in progress...</span>
-			</div>
+			<span class="text-sm text-warning">Building...</span>
 			{#if buildElapsed}
 				<span class="font-mono text-xs text-warning/70">{buildElapsed}</span>
 			{/if}
