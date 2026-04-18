@@ -7,6 +7,7 @@
 	import type { App, AppPhase, Project } from '$lib/types';
 	import ProjectCanvas from '$lib/components/ProjectCanvas.svelte';
 	import NewAppModal from '$lib/components/NewAppModal.svelte';
+	import AppDrawer from '$lib/components/AppDrawer.svelte';
 	import { LayoutDashboard, List, Plus, GitBranch, Container, Cloud, Clock } from 'lucide-svelte';
 
 	const projectName = $derived(page.params.project ?? '');
@@ -14,6 +15,7 @@
 	const urlApp = $derived(page.params.app ?? null);
 
 	let showNewApp = $state(false);
+	let selectedApp = $state<string | null>(null);
 	let project = $state<Project | null>(null);
 	let apps = $state<App[]>([]);
 	let loading = $state(true);
@@ -83,10 +85,6 @@
 		}
 	}
 
-	function enc(s: string): string {
-		return encodeURIComponent(s);
-	}
-
 	function lastDeploy(app: App): string {
 		const envs = app.status?.environments;
 		if (!envs?.length) return '—';
@@ -119,16 +117,9 @@
 </script>
 
 <div class="flex h-full flex-col">
-	<!-- Top toolbar -->
-	<div class="flex shrink-0 items-center justify-between border-b border-surface-600 bg-surface-800 px-4 py-2">
-		<!-- Left: breadcrumb -->
-		<div class="flex items-center gap-2 text-sm">
-			<a href="/" class="text-gray-500 hover:text-white">Projects</a>
-			<span class="text-gray-600">/</span>
-			<span class="font-medium text-white">{projectName}</span>
-		</div>
-
-		<!-- Center: staged changes bar -->
+	<!-- Top toolbar: staged-changes bar only -->
+	{#if store.hasUnsavedChanges || deployError}
+	<div class="flex shrink-0 items-center justify-center border-b border-surface-600 bg-surface-800 px-4 py-2 gap-2">
 		{#if store.hasUnsavedChanges}
 			<div class="flex items-center gap-2 rounded-md border border-accent/30 bg-accent/10 px-3 py-1.5">
 				<span class="text-xs text-accent">
@@ -161,36 +152,8 @@
 		{#if deployError}
 			<div class="text-xs text-danger">{deployError}</div>
 		{/if}
-
-		<!-- Right: view toggle + add button -->
-		<div class="flex items-center gap-2">
-			<div class="flex overflow-hidden rounded-md border border-surface-600">
-				<button
-					type="button"
-					onclick={() => store.setViewMode('canvas')}
-					class="px-2 py-1.5 {store.viewMode === 'canvas' ? 'bg-surface-600 text-white' : 'text-gray-400 hover:bg-surface-700 hover:text-white'}"
-					title="Canvas view"
-				>
-					<LayoutDashboard class="h-4 w-4" />
-				</button>
-				<button
-					type="button"
-					onclick={() => store.setViewMode('list')}
-					class="px-2 py-1.5 {store.viewMode === 'list' ? 'bg-surface-600 text-white' : 'text-gray-400 hover:bg-surface-700 hover:text-white'}"
-					title="List view"
-				>
-					<List class="h-4 w-4" />
-				</button>
-			</div>
-			<button
-				type="button"
-				onclick={() => showNewApp = true}
-				class="flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-accent-hover"
-			>
-				<Plus class="h-4 w-4" /> Add
-			</button>
-		</div>
 	</div>
+	{/if}
 
 	<!-- Content area -->
 	{#if loading}
@@ -211,12 +174,40 @@
 
 		{#if store.viewMode === 'canvas'}
 			<!-- Canvas view -->
-			<div class="flex-1 overflow-hidden" style="height: calc(100vh - 114px)">
+			<div class="relative flex-1 overflow-hidden" style="height: calc(100vh - 57px)">
+				<!-- Floating controls overlay -->
+				<div class="absolute top-3 right-3 z-10 flex items-center gap-2">
+					<div class="flex overflow-hidden rounded-md border border-surface-600 bg-surface-800/90 backdrop-blur-sm">
+						<button
+							type="button"
+							onclick={() => store.setViewMode('canvas')}
+							class="px-2 py-1.5 {store.viewMode === 'canvas' ? 'bg-surface-600 text-white' : 'text-gray-400 hover:bg-surface-700 hover:text-white'}"
+							title="Canvas view"
+						>
+							<LayoutDashboard class="h-4 w-4" />
+						</button>
+						<button
+							type="button"
+							onclick={() => store.setViewMode('list')}
+							class="px-2 py-1.5 {store.viewMode === 'list' ? 'bg-surface-600 text-white' : 'text-gray-400 hover:bg-surface-700 hover:text-white'}"
+							title="List view"
+						>
+							<List class="h-4 w-4" />
+						</button>
+					</div>
+					<button
+						type="button"
+						onclick={() => showNewApp = true}
+						class="flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-accent-hover shadow"
+					>
+						<Plus class="h-4 w-4" /> Add
+					</button>
+				</div>
 				<ProjectCanvas
 					{projectName}
 					{apps}
 					selectedApp={urlApp}
-					onAppOpen={(name) => goto(`/projects/${enc(projectName)}/apps/${enc(name)}`)}
+					onAppOpen={(name) => selectedApp = name}
 					onAddApp={() => showNewApp = true}
 					onDeleteApp={async (name) => {
 						if (confirm(`Delete app "${name}"? This cannot be undone.`)) {
@@ -228,7 +219,35 @@
 			</div>
 		{:else}
 			<!-- List view -->
-			<div class="flex-1 overflow-auto p-4">
+			<div class="relative flex-1 overflow-auto p-4">
+				<!-- Floating controls overlay -->
+				<div class="absolute top-3 right-3 z-10 flex items-center gap-2">
+					<div class="flex overflow-hidden rounded-md border border-surface-600 bg-surface-800/90">
+						<button
+							type="button"
+							onclick={() => store.setViewMode('canvas')}
+							class="px-2 py-1.5 {store.viewMode === 'canvas' ? 'bg-surface-600 text-white' : 'text-gray-400 hover:bg-surface-700 hover:text-white'}"
+							title="Canvas view"
+						>
+							<LayoutDashboard class="h-4 w-4" />
+						</button>
+						<button
+							type="button"
+							onclick={() => store.setViewMode('list')}
+							class="px-2 py-1.5 {store.viewMode === 'list' ? 'bg-surface-600 text-white' : 'text-gray-400 hover:bg-surface-700 hover:text-white'}"
+							title="List view"
+						>
+							<List class="h-4 w-4" />
+						</button>
+					</div>
+					<button
+						type="button"
+						onclick={() => showNewApp = true}
+						class="flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-accent-hover shadow"
+					>
+						<Plus class="h-4 w-4" /> Add
+					</button>
+				</div>
 				{#if apps.length === 0}
 					<div class="rounded-lg border border-dashed border-surface-600 bg-surface-800/60 p-12 text-center">
 						<div class="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-surface-700 text-accent" aria-hidden="true">
@@ -266,7 +285,7 @@
 								{@const domain = app.spec.environments?.[0]?.domain}
 								<tr
 									class="group border-b border-surface-700 hover:bg-surface-800/60 cursor-pointer"
-									onclick={() => goto(`/projects/${enc(projectName)}/apps/${enc(app.metadata.name)}`)}
+									onclick={() => selectedApp = app.metadata.name}
 								>
 									<td class="py-3 pr-4">
 										<div class="flex items-center gap-2 font-medium text-white group-hover:text-accent">
@@ -313,11 +332,15 @@
 	{/if}
 </div>
 
+{#if selectedApp}
+	<AppDrawer project={projectName} appName={selectedApp} onClose={() => selectedApp = null} />
+{/if}
+
 {#if showNewApp}
   <NewAppModal
     project={projectName}
     onClose={() => showNewApp = false}
-    onCreated={async (name) => { showNewApp = false; await load(); goto(`/projects/${enc(projectName)}/apps/${enc(name)}`); }}
+    onCreated={async (name) => { showNewApp = false; await load(); selectedApp = name; }}
   />
 {/if}
 

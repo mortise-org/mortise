@@ -5,10 +5,15 @@ whenever implementation status changes — see the **Keeping this file up to
 date** section at the bottom.
 
 Legend: **Done** / **Partial** / **Not started**
-Last reconciled against spec + code: 2026-04-17 (UI overhaul pass 3 — E2E suite expanded
-to 26 spec files ~222 tests covering every UI flow; selector fixes across all files;
-admin settings filter + form IDs added; project settings filter input added;
-154/222 tests passing, 68 failing — see "E2E test status" section below for details).
+Last reconciled against spec + code: 2026-04-17 (UI overhaul pass 4 — UX bug-fix pass
+based on live review: app-detail drawer now opens in-place (no navigation), breadcrumbs
+removed, view-toggle/Add floated as overlay, notifications bell on all pages, storage
+config in platform settings, `ListTree` added to GitAPI + all impls + `/repos/:owner/:repo/tree`
+endpoint for watch-paths picker, domain field in new-app modal, shared-vars reads from
+app.spec (not broken /shared endpoint), VariablesTab restructured to stacked sections,
+SettingsTab spread-proxy bug fixed, env switcher always shows production+staging floor,
+canvas dot grid improved. E2E: canvas-interactions 14/14, app-variables-full 11/11,
+admin-settings 21/21, new-app-all-sources 14/14 passing after selector fixes.)
 
 ---
 
@@ -696,10 +701,26 @@ Present:
 - **PlatformConfig PATCH API — Done:** `internal/api/platform.go`
   create-or-update singleton.
 - **Repos API — Done:** `GET /api/repos` + `GET /api/repos/{owner}/{repo}/branches`
-  (`internal/api/repos.go`). `ListRepos`/`ListBranches` on all three GitAPI
-  impls (`internal/git/{github,gitlab,gitea}.go`).
+  + **`GET /api/repos/{owner}/{repo}/tree`** (`internal/api/repos.go`).
+  `ListRepos`/`ListBranches`/`ListTree` on all three GitAPI impls
+  (`internal/git/{github,gitlab,gitea,github_app}.go`). Tree endpoint returns
+  top-level directory entries used by the watch-paths picker in the new-app modal.
 - **Railway-style new-app page — Done:** repo-first flow with searchable repo
   list, branch picker, inline config, Docker image secondary.
+- **New-app modal — watch-paths picker:** interactive directory tree picker calls
+  `/repos/:owner/:repo/tree`, multi-select with manual-add fallback. Domain field
+  added (sets `environments[0].domain`).
+- **Platform settings — Storage section:** `defaultStorageClass` field wired through
+  frontend → `PATCH /api/platform` → `PlatformConfig.spec.storage`. Backend
+  `platform.go` patched to read/write the `storage` field.
+- **UI UX pass 4 (2026-04-17):** app-detail drawer opens in-place (no page
+  navigation); breadcrumbs removed from project + app views; view-toggle/Add
+  button floated as overlay on canvas; notifications bell visible on all pages;
+  env switcher always shows production+staging floor; canvas dot grid improved;
+  git-provider configure link admin-gated; VariablesTab reads `app.spec.sharedVars`
+  directly (removed broken `/shared` API call); VariablesTab restructured to stacked
+  env sections; SettingsTab proxy-spread bug fixed (all `api.updateApp` calls
+  now go through `JSON.parse(JSON.stringify(spec))`).
 
 Missing:
 - **Authz role upgrade (Issue #9, deferred to v2):** current roles are
@@ -832,7 +853,7 @@ Items in other docs that no longer reflect reality — fix these opportunistical
 
 ---
 
-## E2E test status (2026-04-17)
+## E2E test status (2026-04-17, pass 4)
 
 26 spec files, ~222 tests. Run with:
 ```bash
@@ -841,8 +862,10 @@ cd ui && MORTISE_BASE_URL=http://127.0.0.1:8080 \
   npx playwright test --reporter=list
 ```
 
-Last full run: **154 pass / 68 fail** (before platform-settings/project-settings
-selector fixes from pass 3 — those 10 failures are now fixed, leaving ~58).
+Last full run (pass 4, per-file spot checks): **canvas-interactions 14/14,
+app-variables-full 11/11, admin-settings 21/21, new-app-all-sources 14/14,
+dashboard 21/21**. Remaining failures in other files are pre-existing
+selector/mock issues documented below.
 
 ### Passing spec files (no known failures)
 

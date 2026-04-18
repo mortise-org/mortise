@@ -143,6 +143,7 @@ func (s *Server) Handler() http.Handler {
 
 			r.Get("/repos", s.ListRepos)
 			r.Get("/repos/{owner}/{repo}/branches", s.ListBranches)
+			r.Get("/repos/{owner}/{repo}/tree", s.GetRepoTree)
 
 			r.Get("/platform", s.GetPlatform)
 			r.Patch("/platform", s.PatchPlatform)

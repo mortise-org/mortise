@@ -314,11 +314,12 @@
 		if (!newBindingRef) return;
 		savingBinding = true;
 		try {
-			const envs = (app.spec.environments ?? []).map(e => ({
+			const spec = JSON.parse(JSON.stringify(app.spec));
+			spec.environments = (spec.environments ?? []).map((e: typeof spec.environments[0]) => ({
 				...e,
 				bindings: [...(e.bindings ?? []), { ref: newBindingRef }]
 			}));
-			const updated = await api.updateApp(project, app.metadata.name, { ...app.spec, environments: envs });
+			const updated = await api.updateApp(project, app.metadata.name, spec);
 			onAppUpdated(updated);
 			showAddBinding = false; newBindingRef = '';
 		} catch (e) {
@@ -330,11 +331,12 @@
 
 	async function removeBinding(ref: string) {
 		try {
-			const envs = (app.spec.environments ?? []).map(e => ({
+			const spec = JSON.parse(JSON.stringify(app.spec));
+			spec.environments = (spec.environments ?? []).map((e: typeof spec.environments[0]) => ({
 				...e,
-				bindings: (e.bindings ?? []).filter(b => b.ref !== ref)
+				bindings: (e.bindings ?? []).filter((b: { ref: string }) => b.ref !== ref)
 			}));
-			const updated = await api.updateApp(project, app.metadata.name, { ...app.spec, environments: envs });
+			const updated = await api.updateApp(project, app.metadata.name, spec);
 			onAppUpdated(updated);
 		} catch (e) {
 			errorMsg = e instanceof Error ? e.message : 'Failed to remove binding';
@@ -363,10 +365,11 @@
 	async function saveAnnotations() {
 		savingAnnotations = true;
 		try {
-			const envs = (app.spec.environments ?? []).map((e, i) =>
+			const spec = JSON.parse(JSON.stringify(app.spec));
+			spec.environments = (spec.environments ?? []).map((e: typeof spec.environments[0], i: number) =>
 				i === 0 ? { ...e, annotations } : e
 			);
-			const updated = await api.updateApp(project, app.metadata.name, { ...app.spec, environments: envs });
+			const updated = await api.updateApp(project, app.metadata.name, spec);
 			onAppUpdated(updated);
 		} catch (e) {
 			errorMsg = e instanceof Error ? e.message : 'Failed to save annotations';
@@ -391,10 +394,11 @@
 	async function saveSecretMounts() {
 		savingMounts = true;
 		try {
-			const envs = (app.spec.environments ?? []).map((e, i) =>
+			const spec = JSON.parse(JSON.stringify(app.spec));
+			spec.environments = (spec.environments ?? []).map((e: typeof spec.environments[0], i: number) =>
 				i === 0 ? { ...e, secretMounts } : e
 			);
-			const updated = await api.updateApp(project, app.metadata.name, { ...app.spec, environments: envs });
+			const updated = await api.updateApp(project, app.metadata.name, spec);
 			onAppUpdated(updated);
 		} catch (e) {
 			errorMsg = e instanceof Error ? e.message : 'Failed to save mounts';

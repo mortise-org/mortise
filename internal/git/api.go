@@ -48,6 +48,13 @@ type Branch struct {
 	Default bool   `json:"default"`
 }
 
+// TreeEntry represents a single entry in a repository tree listing.
+type TreeEntry struct {
+	Name string `json:"name"`
+	Type string `json:"type"` // "tree" (directory) or "blob" (file)
+	Path string `json:"path"`
+}
+
 // GitAPI handles forge-specific REST API calls. One implementation per forge.
 type GitAPI interface {
 	RegisterWebhook(ctx context.Context, repo string, cfg WebhookConfig) error
@@ -56,4 +63,5 @@ type GitAPI interface {
 	ResolveCloneCredentials(ctx context.Context, repo string) (GitCredentials, error)
 	ListRepos(ctx context.Context) ([]Repository, error)
 	ListBranches(ctx context.Context, repo string) ([]Branch, error)
+	ListTree(ctx context.Context, owner, repo, branch, path string) ([]TreeEntry, error)
 }

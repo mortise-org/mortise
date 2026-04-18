@@ -67,6 +67,39 @@ func (s *Server) ListBranches(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, branches)
 }
 
+// GetRepoTree returns the immediate children of a path in a repository.
+//
+// GET /api/repos/{owner}/{repo}/tree?provider=X&branch=Y&path=Z
+func (s *Server) GetRepoTree(w http.ResponseWriter, r *http.Request) {
+	providerName := r.URL.Query().Get("provider")
+	if providerName == "" {
+		writeJSON(w, http.StatusBadRequest, errorResponse{"provider query param is required"})
+		return
+	}
+
+	owner := chi.URLParam(r, "owner")
+	repo := chi.URLParam(r, "repo")
+	branch := r.URL.Query().Get("branch")
+	if branch == "" {
+		branch = "main"
+	}
+	path := r.URL.Query().Get("path")
+
+	api, err := s.gitAPIForProvider(r.Context(), providerName)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse{err.Error()})
+		return
+	}
+
+	entries, err := api.ListTree(r.Context(), owner, repo, branch, path)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, errorResponse{fmt.Sprintf("list tree: %s", err)})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, entries)
+}
+
 // gitAPIForProvider resolves a GitProvider CRD + stored credentials and
 // constructs the appropriate GitAPI implementation. For github-app mode
 // providers, it reads the private key from the credentials secret; for

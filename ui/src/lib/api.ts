@@ -165,6 +165,10 @@ export const api = {
 		request<Repository[]>(`/repos?provider=${enc(provider)}`),
 	listBranches: (owner: string, repo: string, provider: string) =>
 		request<Branch[]>(`/repos/${enc(owner)}/${enc(repo)}/branches?provider=${enc(provider)}`),
+	listRepoTree: (owner: string, repo: string, provider: string, branch: string, path = '') =>
+		request<Array<{ name: string; type: string; path: string }>>(
+			`/repos/${enc(owner)}/${enc(repo)}/tree?provider=${enc(provider)}&branch=${enc(branch)}${path ? `&path=${enc(path)}` : ''}`
+		),
 
 	// --- secrets ---
 	listSecrets: (project: string, app: string) =>
@@ -201,7 +205,7 @@ export const api = {
 
 	// --- platform config ---
 	getPlatform: () => request<PlatformResponse>('/platform'),
-	patchPlatform: (body: Partial<{ domain: string; dns: { provider: string; apiTokenSecretRef: string }; tls: { certManagerClusterIssuer: string } }>) =>
+	patchPlatform: (body: Partial<{ domain: string; dns: { provider: string; apiTokenSecretRef: string }; tls: { certManagerClusterIssuer: string }; storage: { defaultStorageClass: string } }>) =>
 		request<PlatformResponse>('/platform', {
 			method: 'PATCH',
 			body: JSON.stringify(body)

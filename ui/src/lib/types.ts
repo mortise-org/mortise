@@ -36,6 +36,7 @@ export interface PlatformResponse {
 	domain: string;
 	dns: { provider: string; apiTokenSecretRef?: { namespace?: string; name?: string; key?: string } };
 	tls: { certManagerClusterIssuer?: string };
+	storage?: { defaultStorageClass?: string };
 	phase?: string;
 }
 
@@ -101,6 +102,7 @@ export interface AppSpec {
 	storage?: VolumeSpec[];
 	credentials?: Credential[];
 	environments?: Environment[];
+	sharedVars?: Array<{ name: string; value: string }>;
 	kind?: 'service' | 'cron';
 }
 

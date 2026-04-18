@@ -141,3 +141,53 @@ func TestBranchJSON(t *testing.T) {
 		t.Errorf("round-trip mismatch: got %+v", got)
 	}
 }
+
+// TestGetRepoTreeMissingProvider verifies that omitting the provider query
+// param returns 400.
+func TestGetRepoTreeMissingProvider(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+
+	w := doRequest(h, http.MethodGet, "/api/repos/octo/myrepo/tree", nil)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestGetRepoTreeProviderNotFound verifies that requesting a tree for a
+// non-existent provider returns an error.
+func TestGetRepoTreeProviderNotFound(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+
+	w := doRequest(h, http.MethodGet, "/api/repos/octo/myrepo/tree?provider=ghost&branch=main", nil)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestGetRepoTreeRequiresAuth verifies that unauthenticated requests are
+// rejected with 401.
+func TestGetRepoTreeRequiresAuth(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+
+	w := doRequestWithToken(h, http.MethodGet, "/api/repos/o/r/tree?provider=x", nil, "")
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401, got %d", w.Code)
+	}
+}
+
+// TestTreeEntryJSON verifies that TreeEntry round-trips through JSON correctly.
+func TestTreeEntryJSON(t *testing.T) {
+	entry := git.TreeEntry{Name: "src", Type: "tree", Path: "src"}
+	data, _ := json.Marshal(entry)
+	var got git.TreeEntry
+	_ = json.Unmarshal(data, &got)
+	if got.Name != entry.Name || got.Type != entry.Type || got.Path != entry.Path {
+		t.Errorf("round-trip mismatch: got %+v", got)
+	}
+}

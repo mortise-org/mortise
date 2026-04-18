@@ -17,9 +17,10 @@ const platformConfigName = "platform"
 // patchPlatformRequest is the JSON body accepted by PATCH /api/platform.
 // All fields are optional; only non-zero fields overwrite the existing value.
 type patchPlatformRequest struct {
-	Domain string            `json:"domain,omitempty"`
-	DNS    *patchPlatformDNS `json:"dns,omitempty"`
-	TLS    *patchPlatformTLS `json:"tls,omitempty"`
+	Domain  string              `json:"domain,omitempty"`
+	DNS     *patchPlatformDNS  `json:"dns,omitempty"`
+	TLS     *patchPlatformTLS  `json:"tls,omitempty"`
+	Storage *patchPlatformStorage `json:"storage,omitempty"`
 }
 
 type patchPlatformDNS struct {
@@ -31,12 +32,17 @@ type patchPlatformTLS struct {
 	CertManagerClusterIssuer string `json:"certManagerClusterIssuer,omitempty"`
 }
 
+type patchPlatformStorage struct {
+	DefaultStorageClass string `json:"defaultStorageClass,omitempty"`
+}
+
 // platformResponse is the JSON shape returned from GET and PATCH.
 type platformResponse struct {
-	Domain string                              `json:"domain"`
-	DNS    mortisev1alpha1.DNSConfig           `json:"dns"`
-	TLS    mortisev1alpha1.TLSConfig           `json:"tls"`
-	Phase  mortisev1alpha1.PlatformConfigPhase `json:"phase,omitempty"`
+	Domain  string                              `json:"domain"`
+	DNS     mortisev1alpha1.DNSConfig           `json:"dns"`
+	TLS     mortisev1alpha1.TLSConfig           `json:"tls"`
+	Storage mortisev1alpha1.StorageConfig       `json:"storage,omitempty"`
+	Phase   mortisev1alpha1.PlatformConfigPhase `json:"phase,omitempty"`
 }
 
 // GetPlatform returns the current PlatformConfig.
@@ -55,10 +61,11 @@ func (s *Server) GetPlatform(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, platformResponse{
-		Domain: pc.Spec.Domain,
-		DNS:    pc.Spec.DNS,
-		TLS:    pc.Spec.TLS,
-		Phase:  pc.Status.Phase,
+		Domain:  pc.Spec.Domain,
+		DNS:     pc.Spec.DNS,
+		TLS:     pc.Spec.TLS,
+		Storage: pc.Spec.Storage,
+		Phase:   pc.Status.Phase,
 	})
 }
 
@@ -90,10 +97,11 @@ func (s *Server) PatchPlatform(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusCreated, platformResponse{
-			Domain: pc.Spec.Domain,
-			DNS:    pc.Spec.DNS,
-			TLS:    pc.Spec.TLS,
-			Phase:  pc.Status.Phase,
+			Domain:  pc.Spec.Domain,
+			DNS:     pc.Spec.DNS,
+			TLS:     pc.Spec.TLS,
+			Storage: pc.Spec.Storage,
+			Phase:   pc.Status.Phase,
 		})
 		return
 	}
@@ -110,10 +118,11 @@ func (s *Server) PatchPlatform(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, platformResponse{
-		Domain: pc.Spec.Domain,
-		DNS:    pc.Spec.DNS,
-		TLS:    pc.Spec.TLS,
-		Phase:  pc.Status.Phase,
+		Domain:  pc.Spec.Domain,
+		DNS:     pc.Spec.DNS,
+		TLS:     pc.Spec.TLS,
+		Storage: pc.Spec.Storage,
+		Phase:   pc.Status.Phase,
 	})
 }
 
@@ -136,6 +145,9 @@ func buildPlatformSpec(base mortisev1alpha1.PlatformConfigSpec, req *patchPlatfo
 	}
 	if req.TLS != nil && req.TLS.CertManagerClusterIssuer != "" {
 		base.TLS.CertManagerClusterIssuer = req.TLS.CertManagerClusterIssuer
+	}
+	if req.Storage != nil {
+		base.Storage.DefaultStorageClass = req.Storage.DefaultStorageClass
 	}
 	return base
 }

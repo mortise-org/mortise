@@ -6,7 +6,7 @@
 	import { store } from '$lib/store.svelte';
 	import AppDrawer from '$lib/components/AppDrawer.svelte';
 	import ProjectCanvas from '$lib/components/ProjectCanvas.svelte';
-	import { LayoutDashboard, List, Plus } from 'lucide-svelte';
+	import { LayoutDashboard, List } from 'lucide-svelte';
 	import type { App } from '$lib/types';
 
 	const projectName = $derived(page.params.project ?? '');
@@ -40,26 +40,15 @@
 
 <!-- Full-height canvas layout -->
 <div class="flex h-full flex-col">
-	<!-- Toolbar -->
-	<div class="flex shrink-0 items-center justify-between border-b border-surface-600 bg-surface-800 px-4 py-2">
-		<!-- Breadcrumb -->
-		<div class="flex items-center gap-2 text-sm">
-			<a href="/" class="text-gray-500 hover:text-white">Projects</a>
-			<span class="text-gray-600">/</span>
-			<a href="/projects/{enc(projectName)}" class="text-gray-400 hover:text-white">{projectName}</a>
-			<span class="text-gray-600">/</span>
-			<span class="font-medium text-white">{appName}</span>
-		</div>
-
-		<!-- Right controls -->
-		<div class="flex items-center gap-2">
-			<div class="flex overflow-hidden rounded-md border border-surface-600">
+	<!-- Canvas behind the drawer -->
+	<div class="relative flex-1 overflow-hidden" style="height: calc(100vh - 57px)">
+		<!-- Floating controls overlay -->
+		<div class="absolute top-3 right-3 z-10 flex items-center gap-2">
+			<div class="flex overflow-hidden rounded-md border border-surface-600 bg-surface-800/90 backdrop-blur-sm">
 				<button
 					type="button"
 					onclick={() => store.setViewMode('canvas')}
-					class="px-2 py-1.5 {store.viewMode === 'canvas'
-						? 'bg-surface-600 text-white'
-						: 'text-gray-400 hover:bg-surface-700 hover:text-white'}"
+					class="px-2 py-1.5 {store.viewMode === 'canvas' ? 'bg-surface-600 text-white' : 'text-gray-400 hover:bg-surface-700 hover:text-white'}"
 					title="Canvas view"
 				>
 					<LayoutDashboard class="h-4 w-4" />
@@ -67,25 +56,13 @@
 				<button
 					type="button"
 					onclick={() => store.setViewMode('list')}
-					class="px-2 py-1.5 {store.viewMode === 'list'
-						? 'bg-surface-600 text-white'
-						: 'text-gray-400 hover:bg-surface-700 hover:text-white'}"
+					class="px-2 py-1.5 {store.viewMode === 'list' ? 'bg-surface-600 text-white' : 'text-gray-400 hover:bg-surface-700 hover:text-white'}"
 					title="List view"
 				>
 					<List class="h-4 w-4" />
 				</button>
 			</div>
-			<a
-				href="/projects/{enc(projectName)}/apps/new"
-				class="flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-accent-hover"
-			>
-				<Plus class="h-4 w-4" /> Add
-			</a>
 		</div>
-	</div>
-
-	<!-- Canvas behind the drawer -->
-	<div class="relative flex-1 overflow-hidden" style="height: calc(100vh - 114px)">
 		{#if !loading}
 			<ProjectCanvas
 				{projectName}

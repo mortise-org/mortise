@@ -141,7 +141,7 @@
 			onnodecontextmenu={onNodeContextMenu}
 			colorMode="dark"
 		>
-			<Background variant={BackgroundVariant.Dots} gap={20} patternColor="var(--color-surface-700)" />
+			<Background variant={BackgroundVariant.Dots} gap={24} size={1.5} patternColor="#252530" />
 			<Controls />
 			<MiniMap nodeColor={nodeColor} class="bg-surface-800" />
 		</SvelteFlow>

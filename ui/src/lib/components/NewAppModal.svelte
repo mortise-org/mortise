@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { api } from '$lib/api';
+	import { store } from '$lib/store.svelte';
 	import type { AppSpec, GitProviderSummary, Repository, Branch } from '$lib/types';
 	import { X } from 'lucide-svelte';
 
@@ -54,8 +55,14 @@
 	let dockerfilePath = $state('Dockerfile');
 	let buildArgs = $state<Record<string, string>>({});
 
-	// Git-specific
-	let watchPathsText = $state(''); // newline-separated
+	// Domain (optional, for git/image/database/empty)
+	let domain = $state('');
+
+	// Git-specific — watch paths picker
+	let repoTree = $state<Array<{ name: string; type: string; path: string }>>([]);
+	let treeLoading = $state(false);
+	let selectedPaths = $state<Set<string>>(new Set());
+	let customPath = $state('');
 	let pullSecret = $state(''); // for image source
 
 	// External credentials
@@ -110,9 +117,42 @@
 		}
 	}
 
+	async function loadRepoTree() {
+		if (!selectedRepo || !gitProvider) return;
+		treeLoading = true;
+		const [owner, name] = selectedRepo.fullName.split('/');
+		try {
+			repoTree = await api.listRepoTree(owner, name, gitProvider, gitBranch);
+		} catch {
+			repoTree = [];
+		} finally {
+			treeLoading = false;
+		}
+	}
+
+	function togglePath(p: string) {
+		const next = new Set(selectedPaths);
+		if (next.has(p)) {
+			next.delete(p);
+		} else {
+			next.add(p);
+		}
+		selectedPaths = next;
+	}
+
+	function addCustomPath() {
+		const trimmed = customPath.trim();
+		if (!trimmed) return;
+		selectedPaths = new Set([...selectedPaths, trimmed]);
+		customPath = '';
+	}
+
 	function selectRepo(repo: Repository) {
 		selectedRepo = repo;
 		gitBranch = repo.defaultBranch;
+		selectedPaths = new Set();
+		customPath = '';
+		repoTree = [];
 		if (!appName) {
 			appName = repo.name.toLowerCase().replace(/[^a-z0-9-]/g, '-');
 		}
@@ -122,10 +162,11 @@
 			.listBranches(owner, name, gitProvider)
 			.then((list) => { branches = list ?? []; })
 			.catch(() => { branches = [{ name: repo.defaultBranch, default: true }]; });
+		void loadRepoTree();
 	}
 
 	function buildSpec(): AppSpec {
-		const baseEnv: AppSpec['environments'] = [{ name: 'production', replicas: 1 }];
+		const baseEnv: AppSpec['environments'] = [{ name: 'production', replicas: 1, ...(domain ? { domain } : {}) }];
 
 		if (selectedType === 'git') {
 			return {
@@ -135,7 +176,7 @@
 					branch: gitBranch,
 					path: gitPath || undefined,
 					providerRef: gitProvider || undefined,
-					watchPaths: watchPathsText.trim() ? watchPathsText.split('\n').map(s => s.trim()).filter(Boolean) : undefined,
+					watchPaths: [...selectedPaths, customPath.trim()].filter(Boolean).length > 0 ? [...selectedPaths, customPath.trim()].filter(Boolean) : undefined,
 					build: {
 						mode: buildMode,
 						cache: buildCache || undefined,
@@ -145,7 +186,7 @@
 				},
 				network: { public: true },
 				environments: appKind === 'cron'
-					? [{ name: 'production', replicas: 0, annotations: { 'mortise.dev/schedule': schedule } }]
+					? [{ name: 'production', replicas: 0, annotations: { 'mortise.dev/schedule': schedule }, ...(domain ? { domain } : {}) }]
 					: baseEnv,
 				...(appKind === 'cron' ? { kind: 'cron' as const } : {})
 			} as AppSpec;
@@ -159,7 +200,7 @@
 				},
 				network: { public: selectedType === 'image' },
 				environments: appKind === 'cron'
-					? [{ name: 'production', replicas: 0, annotations: { 'mortise.dev/schedule': schedule } }]
+					? [{ name: 'production', replicas: 0, annotations: { 'mortise.dev/schedule': schedule }, ...(domain ? { domain } : {}) }]
 					: baseEnv,
 				...(appKind === 'cron' ? { kind: 'cron' as const } : {})
 			} as AppSpec;
@@ -265,7 +306,11 @@
 							{#if providers.length === 0}
 								<p class="mt-1 text-sm text-gray-500">
 									No git providers connected.
-									<a href="/admin/settings#git-providers" class="text-accent hover:underline">Configure one</a>.
+									{#if store.isAdmin}
+										<a href="/admin/settings#git-providers" class="text-accent hover:underline">Configure one</a>.
+									{:else}
+										Ask your admin to connect a git provider.
+									{/if}
 								</p>
 							{:else}
 								<select
@@ -323,16 +368,64 @@
 							</select>
 						</div>
 
-						<!-- Watch paths -->
+						<!-- Watch paths picker -->
 						<div>
 							<label class="text-sm text-gray-400">Watch paths <span class="text-gray-600">(optional)</span></label>
-							<textarea
-								bind:value={watchPathsText}
-								placeholder="src/&#10;package.json"
-								rows="3"
-								class="mt-1 w-full resize-y rounded-md border border-surface-600 bg-surface-700 px-3 py-2 font-mono text-sm text-white placeholder-gray-500 outline-none focus:border-accent"
-							></textarea>
-							<p class="mt-0.5 text-xs text-gray-500">One path prefix per line. Leave empty to rebuild on any push.</p>
+							{#if treeLoading}
+								<div class="mt-1 rounded-md border border-surface-600 bg-surface-700 px-3 py-3 text-xs text-gray-500">
+									Loading repository tree…
+								</div>
+							{:else if repoTree.length > 0}
+								<div class="mt-1 max-h-36 overflow-y-auto rounded-md border border-surface-600 bg-surface-700">
+									{#each repoTree.slice().sort((a, b) => {
+										if (a.type === b.type) return a.name.localeCompare(b.name);
+										return a.type === 'tree' ? -1 : 1;
+									}) as entry}
+										<label class="flex cursor-pointer items-center gap-2 px-3 py-1.5 hover:bg-surface-600">
+											<input
+												type="checkbox"
+												checked={selectedPaths.has(entry.path)}
+												onchange={() => togglePath(entry.path)}
+												class="rounded border-surface-600 bg-surface-800 text-accent"
+											/>
+											<span class="font-mono text-xs text-gray-300">{entry.name}{entry.type === 'tree' ? '/' : ''}</span>
+										</label>
+									{/each}
+								</div>
+							{:else if selectedRepo}
+								<div class="mt-1 rounded-md border border-surface-600 bg-surface-700 px-3 py-2 text-xs text-gray-500">
+									No paths found. Enter paths manually below.
+								</div>
+							{/if}
+
+							<!-- Custom path input -->
+							<div class="mt-1.5 flex gap-2">
+								<input
+									type="text"
+									bind:value={customPath}
+									placeholder="Add custom path (e.g. src/)"
+									onkeydown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addCustomPath(); } }}
+									class="flex-1 rounded-md border border-surface-600 bg-surface-700 px-3 py-1.5 font-mono text-sm text-white placeholder-gray-500 outline-none focus:border-accent"
+								/>
+								<button type="button" onclick={addCustomPath}
+									class="rounded-md border border-surface-600 px-2.5 py-1.5 text-xs text-gray-400 hover:bg-surface-600 hover:text-white">
+									Add
+								</button>
+							</div>
+
+							<!-- Selected paths display -->
+							{#if selectedPaths.size > 0}
+								<div class="mt-1.5 flex flex-wrap gap-1">
+									{#each [...selectedPaths] as p}
+										<span class="flex items-center gap-1 rounded-full bg-accent/10 px-2 py-0.5 font-mono text-xs text-accent">
+											{p}
+											<button type="button" onclick={() => togglePath(p)} class="ml-0.5 opacity-60 hover:opacity-100">✕</button>
+										</span>
+									{/each}
+								</div>
+							{/if}
+
+							<p class="mt-0.5 text-xs text-gray-500">Select paths to watch. Leave empty to rebuild on any push.</p>
 						</div>
 
 						<!-- Build mode -->
@@ -451,6 +544,20 @@
 							class="mt-1 w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-white placeholder-gray-500 outline-none focus:border-accent"
 						/>
 					</div>
+
+					<!-- Domain (optional, not shown for external service) -->
+					{#if selectedType !== 'external'}
+						<div>
+							<label class="text-sm text-gray-400">Domain <span class="text-gray-600">(optional)</span></label>
+							<input
+								type="text"
+								bind:value={domain}
+								placeholder="app.yourdomain.com"
+								class="mt-1 w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-white placeholder-gray-500 outline-none focus:border-accent"
+							/>
+							<p class="mt-0.5 text-xs text-gray-500">Leave blank to auto-assign a subdomain.</p>
+						</div>
+					{/if}
 
 					<!-- Kind selector (git + image only) -->
 					{#if selectedType === 'git' || selectedType === 'image'}

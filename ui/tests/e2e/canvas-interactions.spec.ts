@@ -10,7 +10,9 @@
  *  - View mode toggle (canvas ↔ list)
  *  - Add button → NewAppModal type picker
  *  - Right-click context menu on canvas node
- *  - Context menu "Open drawer" navigation
+ *  - Context menu "Open drawer" opens drawer in-place
+ *  - List view row click opens drawer in-place
+ *  - Env switcher always shows production and staging
  *  - Staged changes bar visibility and interactions
  *  - Details modal open/close and deploy
  */
@@ -212,7 +214,7 @@ test.describe('canvas interactions', () => {
 		await expect(page.getByRole('menuitem', { name: 'Open drawer' })).toBeVisible({ timeout: 5_000 });
 	});
 
-	test('context menu Open drawer navigates to app drawer URL', async ({ page }) => {
+	test('context menu Open drawer opens drawer in-place without navigating away', async ({ page }) => {
 		await setupCommonMocks(page);
 		await injectAuth(page);
 		await page.goto('/projects/my-project');
@@ -225,8 +227,52 @@ test.describe('canvas interactions', () => {
 		await expect(page.getByRole('menuitem', { name: 'Open drawer' })).toBeVisible({ timeout: 5_000 });
 		await page.getByRole('menuitem', { name: 'Open drawer' }).click();
 
-		// Should navigate to the app drawer URL
-		await expect(page).toHaveURL('/projects/my-project/apps/web-app', { timeout: 5_000 });
+		// URL should stay on the project page — drawer opens in-place
+		await expect(page).toHaveURL('/projects/my-project', { timeout: 5_000 });
+		// Drawer heading should appear
+		await expect(page.getByRole('heading', { name: 'web-app', exact: true })).toBeVisible({ timeout: 5_000 });
+	});
+
+	test('list view row click opens drawer in-place without navigating away', async ({ page }) => {
+		await setupCommonMocks(page);
+		await injectAuth(page);
+		await page.goto('/projects/my-project');
+
+		// Switch to list view
+		await page.getByTitle('List view').click();
+		await expect(page.getByRole('cell', { name: 'web-app' })).toBeVisible({ timeout: 5_000 });
+
+		// Click the app row
+		await page.getByRole('cell', { name: 'web-app' }).click();
+
+		// URL should stay on the project page — drawer opens in-place
+		await expect(page).toHaveURL('/projects/my-project', { timeout: 5_000 });
+		// Drawer heading should appear
+		await expect(page.getByRole('heading', { name: 'web-app', exact: true })).toBeVisible({ timeout: 5_000 });
+	});
+
+	test('env switcher always shows production and staging', async ({ page }) => {
+		await setupCommonMocks(page);
+		// App with only production env — staging should still appear in switcher
+		await page.route('/api/projects/my-project/apps', (r) =>
+			r.fulfill({
+				json: [{
+					...mockApp,
+					spec: { ...mockApp.spec, environments: [{ name: 'production', replicas: 1 }] }
+				}]
+			})
+		);
+
+		await injectAuth(page);
+		await page.goto('/projects/my-project');
+		await expect(page.getByText('web-app')).toBeVisible({ timeout: 10_000 });
+
+		// Open env switcher
+		await page.getByRole('button', { name: 'production' }).click();
+
+		// Both production and staging should be present
+		await expect(page.getByRole('button', { name: 'production', exact: true })).toBeVisible();
+		await expect(page.getByRole('button', { name: 'staging', exact: true })).toBeVisible();
 	});
 
 	test('staged changes bar hidden when no changes (initial state)', async ({ page }) => {

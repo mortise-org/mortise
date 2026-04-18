@@ -152,6 +152,27 @@ func (g *GitHubAPI) ListBranches(ctx context.Context, repo string) ([]Branch, er
 	return result, nil
 }
 
+func (g *GitHubAPI) ListTree(ctx context.Context, owner, repo, branch, path string) ([]TreeEntry, error) {
+	opts := &gogithub.RepositoryContentGetOptions{Ref: branch}
+	_, contents, _, err := g.client.Repositories.GetContents(ctx, owner, repo, path, opts)
+	if err != nil {
+		return nil, fmt.Errorf("list github tree: %w", err)
+	}
+	result := make([]TreeEntry, 0, len(contents))
+	for _, item := range contents {
+		entryType := "blob"
+		if item.GetType() == "dir" {
+			entryType = "tree"
+		}
+		result = append(result, TreeEntry{
+			Name: item.GetName(),
+			Type: entryType,
+			Path: item.GetPath(),
+		})
+	}
+	return result, nil
+}
+
 // splitRepo splits "owner/repo" into two parts.
 func splitRepo(repo string) (string, string, error) {
 	// Strip scheme/host if provided as full URL.

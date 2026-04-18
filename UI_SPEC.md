@@ -10,6 +10,121 @@
 
 ---
 
+## 0a-patch. Implementation corrections (2026-04-17)
+
+Behavioral corrections captured from live UX review. These override any
+contradictory language elsewhere in this document.
+
+### Notifications bell
+The bell icon (`<Bell>`) and its unread-count badge must appear in the
+top-bar **on every authenticated page** (dashboard, project workspace,
+admin, etc.), not only when `inProject` is true. Move it outside the
+`{#if inProject}` guard in `+layout.svelte`.
+
+### Dashboard left-rail nav
+The dashboard nav (shown when NOT inside a project) must include a
+**People** icon linking to `/admin/settings` (the Users & Invites section).
+This makes the admin user-management flow discoverable from `/`.
+
+### Platform settings — Storage section
+`/admin/settings` must include a **Storage** section (below Build, above
+TLS) that exposes:
+- Default storage class name (maps to `PlatformConfig.spec.storage.defaultStorageClass`)
+- Optional additional storage classes the operator may provision (free-text list, one per line)
+This is required for users to set up storage before creating apps that use volumes.
+
+### Project workspace toolbar
+The toolbar row at the top of `/projects/{p}` (breadcrumb + staged-changes
+bar + view-toggle + Add) must:
+- **Remove the `Projects / {name}` breadcrumb.** The top navbar already
+  shows the project name via the project-switcher dropdown. The second
+  breadcrumb is redundant.
+- **Float the view-toggle and Add button as an overlay** positioned in the
+  top-right corner of the canvas/table content area (absolute or fixed,
+  over the content, not in a dedicated toolbar row that pushes content down).
+  Use `absolute top-4 right-4 z-10` inside the canvas/table container.
+- The staged-changes bar stays in the header but should appear centered
+  only when there are unsaved changes.
+
+### App click — drawer in place, not navigation
+Clicking an App node on the canvas OR a row in the list view must open the
+`AppDrawer` as a slide-over **within the same page** (`/projects/{p}`) —
+no URL change, no navigation. The drawer slides in from the right with a
+translucent backdrop that closes it on click.
+
+The URL `/projects/{p}/apps/{a}` still exists and renders the canvas with
+the drawer already open (for deep-linking and back/forward navigation), but
+clicking an app card from the project page must NOT trigger a full navigation.
+
+### Environment switcher
+The environment switcher in the top-bar must always include at least
+`production` and `staging`. Additional environment names are collected
+from all app specs in the project. Hard-coded default: `['production',
+'staging']` is the floor; the API-derived set is unioned with it, never
+replaces it.
+
+### Git-provider "configure" link
+In the new-app modal, when no git providers are connected, "Configure one"
+must link to `/admin/settings` with the `#git-providers` anchor. If the
+current user is not an admin, the link should be hidden and replaced with
+"Ask your admin to connect a git provider."
+
+### Canvas background
+The SvelteFlow canvas must use `BackgroundVariant.Dots` with a visible
+contrasting color. Use `patternColor="#252530"` (surface-600) on the
+surface-900 page background for strong dot visibility. The current
+implementation uses surface-700, which is too subtle.
+
+### Variables tab — shared vars
+The "Shared" section in the Variables tab calls
+`GET /projects/:p/apps/:a/shared` which does **not exist** as a backend
+endpoint. Fix: read `app.spec.sharedVars` directly from the already-loaded
+`App` object (it is part of the CRD spec). Writes go via `api.updateApp`
+patching `spec.sharedVars`. Remove the `getSharedVars` / `setSharedVars`
+API calls.
+
+### Variables tab — layout (stacked, not sub-tabs)
+The production/shared env selector must NOT be sub-tabs. Instead, show env
+vars as **stacked sections** within the tab:
+1. Top section: env-specific vars (one section per environment, with a
+   section heading for the env name). Show all envs the app has, each
+   collapsible.
+2. Bottom section: "Shared variables" — always visible below the env
+   sections. These are `app.spec.sharedVars` and are available to every
+   environment of this app.
+
+### Settings tab — structuredClone error
+All `api.updateApp` calls in `SettingsTab.svelte` that spread from
+`app.spec` (a Svelte 5 reactive proxy) must convert it to a plain object
+first. The pattern `{ ...app.spec, environments: envs }` leaves nested
+proxies in the spread, causing `structuredClone` failures in some Svelte 5
+contexts. Fix every save function:
+```ts
+// BEFORE (broken): { ...app.spec, environments: envs }
+// AFTER: JSON.parse(JSON.stringify({ ...app.spec, environments: envs }))
+// OR use: const plainSpec = $state.snapshot(app.spec)
+```
+
+### New-app modal — domain field
+After selecting the app type and name, show a **Domain** field (optional)
+that sets `spec.environments[0].domain`. Placeholder:
+`app.yourdomain.com`. Helper text: "Leave blank to auto-assign a subdomain."
+
+### New-app modal — watch paths picker
+The "Watch paths" field (git source only) must change from a raw textarea
+to an **interactive path picker**:
+- Call `GET /api/repos/:owner/:repo/tree?provider=X&branch=Y` to fetch
+  the top-level directory tree of the selected repository.
+- Render a multi-select dropdown/tree showing directory entries returned.
+- The user can check/uncheck directories; each checked entry becomes one
+  watch-path.
+- The user can also type a custom path and press Enter to add it.
+- The backend endpoint (`repos.go`) must be added: it delegates to
+  `GitAPI.ListTree(owner, repo, branch, path)` (new method on the
+  interface), implemented for GitHub, GitLab, and Gitea.
+
+---
+
 ## 0. How this document is structured
 
 Each flow gets its own section using a consistent template:

@@ -131,6 +131,35 @@ func (g *GitLabAPI) ListBranches(ctx context.Context, repo string) ([]Branch, er
 	return result, nil
 }
 
+func (g *GitLabAPI) ListTree(ctx context.Context, owner, repo, branch, path string) ([]TreeEntry, error) {
+	_ = ctx
+	projectPath := owner + "/" + repo
+	opts := &gogitlab.ListTreeOptions{
+		Path: gogitlab.Ptr(path),
+		Ref:  gogitlab.Ptr(branch),
+		ListOptions: gogitlab.ListOptions{
+			PerPage: 100,
+		},
+	}
+	nodes, _, err := g.client.Repositories.ListTree(projectPath, opts)
+	if err != nil {
+		return nil, fmt.Errorf("list gitlab tree: %w", err)
+	}
+	result := make([]TreeEntry, 0, len(nodes))
+	for _, n := range nodes {
+		entryType := "blob"
+		if n.Type == "tree" {
+			entryType = "tree"
+		}
+		result = append(result, TreeEntry{
+			Name: n.Name,
+			Type: entryType,
+			Path: n.Path,
+		})
+	}
+	return result, nil
+}
+
 // gitlabState maps Mortise's CommitStatusState to GitLab build state strings.
 func gitlabState(s CommitStatusState) string {
 	switch s {

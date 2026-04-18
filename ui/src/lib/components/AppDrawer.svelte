@@ -119,7 +119,7 @@
 			{#if store.drawerTab === 'deployments'}
 				<DeploymentsTab {project} {app} />
 			{:else if store.drawerTab === 'variables'}
-				<VariablesTab {project} {app} />
+				<VariablesTab {project} {app} onAppUpdated={(updated) => { app = updated; }} />
 			{:else if store.drawerTab === 'logs'}
 				<LogsTab {project} {app} />
 			{:else if store.drawerTab === 'metrics'}

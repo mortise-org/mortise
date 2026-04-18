@@ -143,6 +143,27 @@ func (g *GiteaAPI) ListBranches(ctx context.Context, repo string) ([]Branch, err
 	return result, nil
 }
 
+func (g *GiteaAPI) ListTree(ctx context.Context, owner, repo, branch, path string) ([]TreeEntry, error) {
+	_ = ctx
+	items, _, err := g.client.ListContents(owner, repo, branch, path)
+	if err != nil {
+		return nil, fmt.Errorf("list gitea tree: %w", err)
+	}
+	result := make([]TreeEntry, 0, len(items))
+	for _, item := range items {
+		entryType := "blob"
+		if item.Type == "dir" {
+			entryType = "tree"
+		}
+		result = append(result, TreeEntry{
+			Name: item.Name,
+			Type: entryType,
+			Path: item.Path,
+		})
+	}
+	return result, nil
+}
+
 func giteaState(s CommitStatusState) gogitea.StatusState {
 	switch s {
 	case StatusPending:

@@ -296,6 +296,31 @@ func (g *GitHubAppAPI) ListBranches(ctx context.Context, repo string) ([]Branch,
 	return result, nil
 }
 
+func (g *GitHubAppAPI) ListTree(ctx context.Context, owner, repo, branch, path string) ([]TreeEntry, error) {
+	c, err := g.installationClient(ctx)
+	if err != nil {
+		return nil, err
+	}
+	opts := &gogithub.RepositoryContentGetOptions{Ref: branch}
+	_, contents, _, err := c.Repositories.GetContents(ctx, owner, repo, path, opts)
+	if err != nil {
+		return nil, fmt.Errorf("list github app tree: %w", err)
+	}
+	result := make([]TreeEntry, 0, len(contents))
+	for _, item := range contents {
+		entryType := "blob"
+		if item.GetType() == "dir" {
+			entryType = "tree"
+		}
+		result = append(result, TreeEntry{
+			Name: item.GetName(),
+			Type: entryType,
+			Path: item.GetPath(),
+		})
+	}
+	return result, nil
+}
+
 // jwtTransport adds a Bearer token to every request.
 type jwtTransport struct {
 	token string

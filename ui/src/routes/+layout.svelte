@@ -7,7 +7,7 @@
 	import { store } from '$lib/store.svelte';
 	import { currentProject } from '$lib/context.svelte';
 	// Lucide icons
-	import { Folder, Puzzle, Settings, LayoutDashboard, List, Bell, Activity, User, LogOut, ChevronDown } from 'lucide-svelte';
+	import { Folder, Puzzle, Settings, LayoutDashboard, List, Bell, Activity, User, LogOut, ChevronDown, Users } from 'lucide-svelte';
 	import ActivityRail from '$lib/components/ActivityRail.svelte';
 	import NotificationDropdown from '$lib/components/NotificationDropdown.svelte';
 
@@ -90,8 +90,7 @@
 		if (!proj || !store.token) return;
 		api.listApps(proj)
 			.then(apps => {
-				const envNames = new Set<string>();
-				envNames.add('production'); // always include production
+				const envNames = new Set<string>(['production', 'staging']);
 				for (const app of apps) {
 					for (const env of app.spec.environments ?? []) {
 						envNames.add(env.name);
@@ -194,6 +193,7 @@
 					<div class="relative" bind:this={envSwitcherEl}>
 						<button
 							type="button"
+							aria-label="Switch environment: {currentEnv}"
 							onclick={() => (envSwitcherOpen = !envSwitcherOpen)}
 							class="flex items-center gap-1.5 rounded-md px-2 py-1 text-sm text-gray-400 hover:bg-surface-700 hover:text-white transition-colors"
 						>
@@ -233,7 +233,7 @@
 			<!-- Right side -->
 			<div class="flex items-center gap-1">
 				{#if inProject}
-					<!-- Activity pulse button -->
+					<!-- Activity pulse button (project context only) -->
 					<button
 						type="button"
 						onclick={() => store.toggleActivityRail()}
@@ -242,23 +242,24 @@
 					>
 						<Activity class="h-4 w-4" />
 					</button>
-					<!-- Notifications bell -->
-					<div class="relative" bind:this={notificationsEl}>
-						<button
-							type="button"
-							onclick={() => (notificationsOpen = !notificationsOpen)}
-							class="rounded-md p-2 text-gray-500 hover:bg-surface-700 hover:text-white transition-colors {notificationsOpen
-								? 'bg-surface-700 text-white'
-								: ''}"
-							title="Notifications"
-						>
-							<Bell class="h-4 w-4" />
-						</button>
-						{#if notificationsOpen}
-							<NotificationDropdown onClose={() => (notificationsOpen = false)} />
-						{/if}
-					</div>
 				{/if}
+
+				<!-- Notifications bell (all authenticated pages) -->
+				<div class="relative" bind:this={notificationsEl}>
+					<button
+						type="button"
+						onclick={() => (notificationsOpen = !notificationsOpen)}
+						class="rounded-md p-2 text-gray-500 hover:bg-surface-700 hover:text-white transition-colors {notificationsOpen
+							? 'bg-surface-700 text-white'
+							: ''}"
+						title="Notifications"
+					>
+						<Bell class="h-4 w-4" />
+					</button>
+					{#if notificationsOpen}
+						<NotificationDropdown onClose={() => (notificationsOpen = false)} />
+					{/if}
+				</div>
 
 				<!-- User menu -->
 				<div class="relative" bind:this={userMenuEl}>
@@ -329,6 +330,13 @@
 						title="Extensions"
 					>
 						<Puzzle class="h-5 w-5" />
+					</a>
+					<a
+						href="/admin/settings"
+						class="{isActive('/admin') ? railIconActive : railIcon}"
+						title="People"
+					>
+						<Users class="h-5 w-5" />
 					</a>
 					{#if store.isAdmin}
 						<a

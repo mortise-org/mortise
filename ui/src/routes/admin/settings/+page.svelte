@@ -30,6 +30,10 @@
 	let buildkitPlatform = $state('linux/amd64');
 	let savingBuild = $state(false);
 
+	// --- Storage ---
+	let defaultStorageClass = $state('');
+	let savingStorage = $state(false);
+
 	// --- TLS ---
 	let tlsClusterIssuer = $state('');
 	let savingTls = $state(false);
@@ -59,6 +63,7 @@
 				dnsProvider = platform.dns?.provider ?? 'cloudflare';
 				clusterIssuer = platform.tls?.certManagerClusterIssuer ?? '';
 				tlsClusterIssuer = platform.tls?.certManagerClusterIssuer ?? '';
+				defaultStorageClass = platform.storage?.defaultStorageClass ?? '';
 			}
 		} finally {
 			loading = false;
@@ -139,6 +144,17 @@
 		}
 	}
 
+	async function saveStorage() {
+		savingStorage = true;
+		try {
+			await api.patchPlatform({ storage: { defaultStorageClass } });
+		} catch (e) {
+			error = e instanceof Error ? e.message : 'Failed to save storage config';
+		} finally {
+			savingStorage = false;
+		}
+	}
+
 	async function saveTls() {
 		savingTls = true;
 		try {
@@ -156,6 +172,7 @@
 		dns: ['dns', 'cloudflare', 'route53'],
 		registry: ['registry', 'oci', 'zot', 'image'],
 		build: ['build', 'buildkit', 'container'],
+		storage: ['storage', 'storageclass', 'pvc', 'volume'],
 		tls: ['tls', 'cert', 'issuer', 'ssl'],
 		'git-providers': ['git', 'provider', 'github', 'gitlab', 'gitea', 'oauth'],
 		users: ['users', 'invite', 'admin']
@@ -280,6 +297,25 @@
 			<button type="button" onclick={saveBuildConfig} disabled={savingBuild}
 				class="rounded-md bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent-hover disabled:opacity-50">
 				{savingBuild ? 'Saving…' : 'Save build config'}
+			</button>
+		</div>
+	</section>
+
+	<!-- Storage -->
+	<section id="storage" class="mb-8 space-y-4" style:display={sectionVisible('storage') ? '' : 'none'}>
+		<h2 class="border-b border-surface-600 pb-2 text-sm font-medium text-gray-300">Storage</h2>
+		<p class="text-xs text-gray-500">Default Kubernetes StorageClass for persistent volumes created by Mortise. Leave empty to use the cluster default.</p>
+		<div class="space-y-3 rounded-md border border-surface-600 bg-surface-800/50 p-4">
+			<div>
+				<label class="block text-xs text-gray-500 mb-1" for="storage-class">Default storage class</label>
+				<input id="storage-class" type="text" bind:value={defaultStorageClass}
+					placeholder="local-path"
+					class="w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-white placeholder-gray-500 outline-none font-mono focus:border-accent" />
+				<p class="mt-0.5 text-xs text-gray-500">Maps to <code class="font-mono bg-surface-700 px-1 rounded">spec.storage.defaultStorageClass</code> in PlatformConfig. Apps can override per-volume via <code class="font-mono bg-surface-700 px-1 rounded">storageClass</code>.</p>
+			</div>
+			<button type="button" onclick={saveStorage} disabled={savingStorage}
+				class="rounded-md bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent-hover disabled:opacity-50">
+				{savingStorage ? 'Saving…' : 'Save storage config'}
 			</button>
 		</div>
 	</section>
