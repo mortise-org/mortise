@@ -38,66 +38,8 @@
 	let tlsClusterIssuer = $state('');
 	let savingTls = $state(false);
 
-	// GitHub device flow
-	let deviceCode = $state('');
-	let userCode = $state('');
-	let verificationUri = $state('');
-	let devicePollInterval = $state(5);
-	let deviceConnecting = $state(false);
-	let deviceError = $state('');
-	let deviceSuccess = $state(false);
-	let devicePollTimer: ReturnType<typeof setInterval> | null = null;
-
-	async function connectGitHub() {
-		deviceError = '';
-		deviceConnecting = true;
-		try {
-			const resp = await fetch('/api/auth/github/device', { method: 'POST' });
-			if (!resp.ok) {
-				const body = await resp.text();
-				deviceError = body || 'Failed to start GitHub connection';
-				deviceConnecting = false;
-				return;
-			}
-			const data = await resp.json();
-			deviceCode = data.device_code;
-			userCode = data.user_code;
-			verificationUri = data.verification_uri || 'https://github.com/login/device';
-			devicePollInterval = data.interval || 5;
-
-			// Copy code to clipboard and let user open manually
-			try { await navigator.clipboard.writeText(userCode); } catch { /* fallback: user reads the code */ }
-
-			// Poll for completion
-			devicePollTimer = setInterval(async () => {
-				try {
-					const pollResp = await fetch('/api/auth/github/device/poll', {
-						method: 'POST',
-						headers: { 'Content-Type': 'application/json' },
-						body: JSON.stringify({ device_code: deviceCode })
-					});
-					const pollData = await pollResp.json();
-					if (pollData.status === 'complete') {
-						if (devicePollTimer) clearInterval(devicePollTimer);
-						deviceSuccess = true;
-						deviceConnecting = false;
-						// Refresh providers list
-						providers = await api.listGitProviders();
-					} else if (pollData.status === 'expired' || pollData.status === 'denied') {
-						if (devicePollTimer) clearInterval(devicePollTimer);
-						deviceError = `Authorization ${pollData.status}. Try again.`;
-						deviceConnecting = false;
-					}
-					// 'pending' and 'slow_down' → keep polling
-				} catch {
-					// network error, keep polling
-				}
-			}, devicePollInterval * 1000);
-		} catch (e) {
-			deviceError = e instanceof Error ? e.message : 'Connection failed';
-			deviceConnecting = false;
-		}
-	}
+	// GitHub App install URL — one click installs AND authorizes
+	const githubAppInstallUrl = 'https://github.com/apps/mortise-deploy/installations/new';
 
 	// New git provider form
 	let showProviderForm = $state(false);
@@ -413,41 +355,19 @@
 			</button>
 		</div>
 
-		<!-- GitHub one-click connect (device flow) -->
+		<!-- GitHub one-click install -->
 		{#if !providers.some(p => p.type === 'github')}
 			<div class="rounded-lg border border-accent/30 bg-surface-700 p-4">
-				{#if deviceSuccess}
-					<div class="flex items-center gap-2 text-success">
-						<span class="text-sm font-medium">GitHub connected!</span>
+				<div class="flex items-center justify-between">
+					<div>
+						<h3 class="text-sm font-medium text-white">Connect GitHub</h3>
+						<p class="text-xs text-gray-500 mt-0.5">Install the Mortise app on your GitHub account to deploy from your repos.</p>
 					</div>
-				{:else if userCode && deviceConnecting}
-					<div class="space-y-3">
-						<h3 class="text-sm font-medium text-white">Enter this code on GitHub</h3>
-						<div class="flex items-center gap-3">
-							<code class="rounded bg-surface-800 px-4 py-2 text-2xl font-mono font-bold text-white tracking-widest">{userCode}</code>
-							<span class="text-xs text-gray-500">Copied to clipboard</span>
-						</div>
-						<a href={verificationUri} target="_blank" rel="noopener noreferrer"
-							class="inline-flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white hover:bg-accent-hover">
-							Open github.com/login/device →
-						</a>
-						<p class="text-xs text-gray-500 mt-1">Paste the code, authorize, and come back. This page will update automatically.</p>
-					</div>
-				{:else}
-					<div class="flex items-center justify-between">
-						<div>
-							<h3 class="text-sm font-medium text-white">Connect GitHub</h3>
-							<p class="text-xs text-gray-500 mt-0.5">One click — authorize Mortise to access your repos.</p>
-						</div>
-						<button type="button" onclick={connectGitHub} disabled={deviceConnecting}
-							class="rounded-md bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent-hover disabled:opacity-50">
-							{deviceConnecting ? 'Connecting...' : 'Connect GitHub'}
-						</button>
-					</div>
-				{/if}
-				{#if deviceError}
-					<p class="mt-2 text-xs text-danger">{deviceError}</p>
-				{/if}
+					<a href={githubAppInstallUrl} target="_blank" rel="noopener noreferrer"
+						class="rounded-md bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent-hover">
+						Install on GitHub →
+					</a>
+				</div>
 			</div>
 		{/if}
 
