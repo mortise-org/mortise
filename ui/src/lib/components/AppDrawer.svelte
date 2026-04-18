@@ -3,7 +3,7 @@
 	import { api } from '$lib/api';
 	import { store } from '$lib/store.svelte';
 	import type { App } from '$lib/types';
-	import { X, GitBranch, Container, Cloud } from 'lucide-svelte';
+	import { X, GitBranch, Container, Cloud, AlertTriangle, Loader2 } from 'lucide-svelte';
 	import DeploymentsTab from './drawer/DeploymentsTab.svelte';
 	import VariablesTab from './drawer/VariablesTab.svelte';
 	import LogsTab from './drawer/LogsTab.svelte';
@@ -27,12 +27,26 @@
 	onMount(async () => {
 		try {
 			app = await api.getApp(project, appName);
+			// Auto-open logs tab when app is building or failed (so user sees build output)
+			if (app?.status?.phase === 'Building' || app?.status?.phase === 'Failed') {
+				store.setDrawerTab('logs');
+			}
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'Failed to load app';
 		} finally {
 			loading = false;
 		}
 	});
+
+	function conditionMessage(a: App): string | null {
+		const cond = a.status?.conditions?.find(c => c.status === 'False');
+		return cond?.message ?? null;
+	}
+
+	const buildError = $derived(
+		app?.status?.phase === 'Failed' ? conditionMessage(app) : null
+	);
+	const isBuilding = $derived(app?.status?.phase === 'Building');
 
 	const tabs = ['deployments', 'variables', 'logs', 'metrics', 'settings'] as const;
 
@@ -103,6 +117,20 @@
 			</button>
 		{/each}
 	</div>
+
+	<!-- Build status banner -->
+	{#if isBuilding}
+		<div class="mx-4 mt-3 flex items-center gap-2 rounded-md border border-warning/30 bg-warning/10 px-3 py-2">
+			<Loader2 class="h-4 w-4 animate-spin text-warning" />
+			<span class="text-sm text-warning">Build in progress...</span>
+		</div>
+	{/if}
+	{#if buildError}
+		<div class="mx-4 mt-3 flex items-start gap-2 rounded-md border border-danger/30 bg-danger/10 px-3 py-2">
+			<AlertTriangle class="mt-0.5 h-4 w-4 shrink-0 text-danger" />
+			<span class="text-sm text-danger">{buildError}</span>
+		</div>
+	{/if}
 
 	<!-- Tab content -->
 	<div class="flex-1 overflow-y-auto p-4">

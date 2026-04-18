@@ -844,6 +844,19 @@ environment scoping. No `Team` CRD exists; grants have no env field.
 **Decision: v1 ships admin/member only.** The 5-role team model is tracked
 as Issue #9 for v2.
 
+### Issue #28 — Silent git deploy failures — **Resolved**
+Backend already wrote `status.conditions` with build error messages via
+`setFailedCondition`, but the UI never displayed them. Fixed:
+- `AppNode.svelte`: shows truncated error message and info icon with
+  tooltip when phase is `Failed`.
+- `AppDrawer.svelte`: shows a red error banner with the condition message
+  when phase is `Failed`, a spinner banner when `Building`, and auto-opens
+  the Logs tab for both states so build output is immediately visible.
+- `types.ts`: added `Condition` interface and `conditions` field to
+  `AppStatus` so the UI can read `status.conditions[].message`.
+- The `+page.svelte` `onCreated` callback already auto-opens the drawer
+  after app creation.
+
 ---
 
 ## Documentation drift

@@ -123,9 +123,18 @@ export interface EnvironmentStatus {
 
 export type AppPhase = 'Pending' | 'Building' | 'Deploying' | 'Ready' | 'Failed';
 
+export interface Condition {
+	type: string;
+	status: 'True' | 'False' | 'Unknown';
+	reason?: string;
+	message?: string;
+	lastTransitionTime?: string;
+}
+
 export interface AppStatus {
 	phase?: AppPhase;
 	environments?: EnvironmentStatus[];
+	conditions?: Condition[];
 }
 
 export interface App {

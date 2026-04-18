@@ -39,6 +39,13 @@
 	const domain = $derived(primaryDomain(app));
 	const replicas = $derived(replicaCount(app));
 	const volumes = $derived(app.spec.storage ?? []);
+
+	function failedReason(a: App): string | null {
+		if (a.status?.phase !== 'Failed') return null;
+		const cond = a.status.conditions?.find(c => c.status === 'False');
+		return cond?.message ?? null;
+	}
+	const errorMsg = $derived(failedReason(app));
 </script>
 
 <div
@@ -73,11 +80,21 @@
 
 	<!-- Status chip -->
 	{#if phase}
-		<div class="flex items-center">
+		<div class="flex items-center gap-1.5">
 			<span class="rounded px-1.5 py-0.5 text-xs font-medium {phaseClass[phase] ?? 'bg-surface-700 text-gray-400'}">
 				{phase}
 			</span>
+			{#if phase === 'Failed' && errorMsg}
+				<span class="h-3 w-3 shrink-0 text-danger" title={errorMsg}>
+					<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="h-3 w-3">
+						<path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a.75.75 0 000 1.5h.253a.25.25 0 01.244.304l-.459 2.066A1.75 1.75 0 0010.747 15H11a.75.75 0 000-1.5h-.253a.25.25 0 01-.244-.304l.459-2.066A1.75 1.75 0 009.253 9H9z" clip-rule="evenodd" />
+					</svg>
+				</span>
+			{/if}
 		</div>
+		{#if phase === 'Failed' && errorMsg}
+			<span class="line-clamp-2 text-xs text-danger/80">{errorMsg}</span>
+		{/if}
 	{/if}
 
 	<!-- Domain or Private label -->
