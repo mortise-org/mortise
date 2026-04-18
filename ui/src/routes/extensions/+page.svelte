@@ -35,14 +35,14 @@
 			name: 'kube-prometheus-stack',
 			description: 'Prometheus, Grafana, and Alertmanager for monitoring. Mortise pods emit standard metrics.',
 			category: 'Infrastructure',
-			action: '/docs/recipes/monitoring',
+			action: 'https://github.com/MC-Meesh/mortise/blob/main/docs/recipes/monitoring.md',
 			actionLabel: 'Recipe'
 		},
 		{
 			name: 'External Secrets Operator',
 			description: 'Sync secrets from Vault, AWS Secrets Manager, or GCP into Kubernetes Secrets that Mortise reads natively.',
 			category: 'Security',
-			action: '/docs/recipes/external-secrets',
+			action: 'https://github.com/MC-Meesh/mortise/blob/main/docs/recipes/external-secrets.md',
 			actionLabel: 'Recipe'
 		},
 		{
@@ -56,7 +56,7 @@
 			name: 'OIDC Providers',
 			description: 'Authenticate users via Authentik, Keycloak, Okta, or Google. Configure once in PlatformConfig.',
 			category: 'Security',
-			action: '/docs/recipes/oidc',
+			action: 'https://github.com/MC-Meesh/mortise/blob/main/docs/recipes/oidc.md',
 			actionLabel: 'Recipe'
 		},
 		{
@@ -77,7 +77,7 @@
 			name: 'Cloudflare Tunnel',
 			description: 'Access Mortise from anywhere without a public IP. Deploy cloudflared as an App pointing at Traefik.',
 			category: 'Infrastructure',
-			action: '/docs/recipes/cloudflare-tunnel',
+			action: 'https://github.com/MC-Meesh/mortise/blob/main/docs/recipes/cloudflare-tunnel.md',
 			actionLabel: 'Recipe'
 		}
 	];
