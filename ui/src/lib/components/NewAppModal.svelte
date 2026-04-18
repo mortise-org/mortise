@@ -3,7 +3,8 @@
 	import { api } from '$lib/api';
 	import { store } from '$lib/store.svelte';
 	import type { AppSpec, GitProviderSummary, Repository, Branch } from '$lib/types';
-	import { X } from 'lucide-svelte';
+	import { X, GitBranch as GitBranchIcon, Database, Package, Container, Globe, Square } from 'lucide-svelte';
+	import type { ComponentType } from 'svelte';
 
 	let {
 		project,
@@ -64,6 +65,21 @@
 	let selectedPaths = $state<Set<string>>(new Set());
 	let customPath = $state('');
 	let pullSecret = $state(''); // for image source
+
+	// Root Directory autocomplete
+	let rootDirFocused = $state(false);
+	const repoDirs = $derived(
+		repoTree.filter((e) => e.type === 'tree').map((e) => e.path)
+	);
+	const filteredDirs = $derived(
+		gitPath.trim()
+			? repoDirs.filter((p) => p.toLowerCase().includes(gitPath.toLowerCase()))
+			: repoDirs
+	);
+
+	// Advanced options / watch paths toggle
+	let advancedOpen = $state(false);
+	let watchPathsDiffer = $state(false);
 
 	// External credentials
 	let externalCredentials = $state<Array<{ name: string; value: string }>>([]);
@@ -180,7 +196,7 @@
 					branch: gitBranch,
 					path: gitPath || undefined,
 					providerRef: gitProvider || undefined,
-					watchPaths: [...selectedPaths, customPath.trim()].filter(Boolean).length > 0
+					watchPaths: watchPathsDiffer && [...selectedPaths, customPath.trim()].filter(Boolean).length > 0
 						? [...selectedPaths, customPath.trim()].filter(Boolean)
 						: gitPath ? [gitPath] : undefined,
 					build: {
@@ -368,76 +384,37 @@
 							</select>
 						</div>
 
-						<!-- Root Directory -->
-						<div>
+						<!-- Root Directory (autocomplete) -->
+						<div class="relative">
 							<label class="text-sm text-gray-400">Root Directory</label>
 							<input
 								type="text"
 								bind:value={gitPath}
 								placeholder="/"
+								onfocus={() => (rootDirFocused = true)}
+								onblur={() => setTimeout(() => (rootDirFocused = false), 150)}
+								onkeydown={(e) => {
+									if (e.key === 'Tab' && rootDirFocused && filteredDirs.length > 0) {
+										e.preventDefault();
+										gitPath = filteredDirs[0];
+									}
+								}}
 								class="mt-1 w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-white font-mono placeholder-gray-500 outline-none focus:border-accent"
 							/>
+							{#if rootDirFocused && filteredDirs.length > 0}
+								<div class="absolute z-10 mt-1 max-h-48 w-full overflow-y-auto rounded-md border border-surface-600 bg-surface-800">
+									{#each filteredDirs as dir}
+										<button
+											type="button"
+											onmousedown={() => { gitPath = dir; rootDirFocused = false; }}
+											class="flex w-full px-3 py-2 text-sm font-mono hover:bg-surface-700 {gitPath === dir ? 'bg-surface-600 text-white' : 'text-gray-300'}"
+										>
+											{dir}/
+										</button>
+									{/each}
+								</div>
+							{/if}
 							<p class="mt-0.5 text-xs text-gray-500">Where your app's code lives in the repo. Leave as / for the repo root.</p>
-						</div>
-
-						<!-- Watch paths picker (advanced) -->
-						<div>
-							<label class="text-sm text-gray-400">Watch paths <span class="text-gray-600">(optional, advanced)</span></label>
-							{#if treeLoading}
-								<div class="mt-1 rounded-md border border-surface-600 bg-surface-700 px-3 py-3 text-xs text-gray-500">
-									Loading repository tree…
-								</div>
-							{:else if repoTree.length > 0}
-								<div class="mt-1 max-h-36 overflow-y-auto rounded-md border border-surface-600 bg-surface-700">
-									{#each repoTree.slice().sort((a, b) => {
-										if (a.type === b.type) return a.name.localeCompare(b.name);
-										return a.type === 'tree' ? -1 : 1;
-									}) as entry}
-										<label class="flex cursor-pointer items-center gap-2 px-3 py-1.5 hover:bg-surface-600">
-											<input
-												type="checkbox"
-												checked={selectedPaths.has(entry.path)}
-												onchange={() => togglePath(entry.path)}
-												class="rounded border-surface-600 bg-surface-800 text-accent"
-											/>
-											<span class="font-mono text-xs text-gray-300">{entry.name}{entry.type === 'tree' ? '/' : ''}</span>
-										</label>
-									{/each}
-								</div>
-							{:else if selectedRepo}
-								<div class="mt-1 rounded-md border border-surface-600 bg-surface-700 px-3 py-2 text-xs text-gray-500">
-									No paths found. Enter paths manually below.
-								</div>
-							{/if}
-
-							<!-- Custom path input -->
-							<div class="mt-1.5 flex gap-2">
-								<input
-									type="text"
-									bind:value={customPath}
-									placeholder="Add custom path (e.g. src/)"
-									onkeydown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addCustomPath(); } }}
-									class="flex-1 rounded-md border border-surface-600 bg-surface-700 px-3 py-1.5 font-mono text-sm text-white placeholder-gray-500 outline-none focus:border-accent"
-								/>
-								<button type="button" onclick={addCustomPath}
-									class="rounded-md border border-surface-600 px-2.5 py-1.5 text-xs text-gray-400 hover:bg-surface-600 hover:text-white">
-									Add
-								</button>
-							</div>
-
-							<!-- Selected paths display -->
-							{#if selectedPaths.size > 0}
-								<div class="mt-1.5 flex flex-wrap gap-1">
-									{#each [...selectedPaths] as p}
-										<span class="flex items-center gap-1 rounded-full bg-accent/10 px-2 py-0.5 font-mono text-xs text-accent">
-											{p}
-											<button type="button" onclick={() => togglePath(p)} class="ml-0.5 opacity-60 hover:opacity-100">✕</button>
-										</span>
-									{/each}
-								</div>
-							{/if}
-
-							<p class="mt-0.5 text-xs text-gray-500">Select paths to watch. Leave empty to rebuild on any push.</p>
 						</div>
 
 						<!-- Build mode -->
@@ -463,6 +440,91 @@
 							<input type="checkbox" bind:checked={buildCache} class="rounded border-surface-600 bg-surface-800 text-accent" />
 							<span class="text-sm text-gray-400">Enable build cache</span>
 						</label>
+
+						<!-- Advanced options -->
+						<div class="border-t border-surface-600 pt-3">
+							<button
+								type="button"
+								onclick={() => (advancedOpen = !advancedOpen)}
+								class="flex items-center gap-1.5 text-sm text-gray-400 hover:text-white transition-colors"
+							>
+								<span class="text-xs">{advancedOpen ? '▾' : '▸'}</span>
+								Advanced options
+							</button>
+
+							{#if advancedOpen}
+								<div class="mt-3 space-y-3">
+									<!-- Watch paths toggle -->
+									<label class="flex items-center gap-2 cursor-pointer">
+										<input type="checkbox" bind:checked={watchPathsDiffer} class="rounded border-surface-600 bg-surface-800 text-accent" />
+										<span class="text-sm text-gray-400">Watch path differs from source path</span>
+									</label>
+
+									{#if !watchPathsDiffer}
+										<p class="text-xs text-gray-500 font-mono">Watching: {gitPath || '/'}</p>
+									{:else}
+										<!-- Watch paths picker -->
+										<div>
+											{#if treeLoading}
+												<div class="rounded-md border border-surface-600 bg-surface-700 px-3 py-3 text-xs text-gray-500">
+													Loading repository tree…
+												</div>
+											{:else if repoTree.length > 0}
+												<div class="max-h-36 overflow-y-auto rounded-md border border-surface-600 bg-surface-700">
+													{#each repoTree.slice().sort((a, b) => {
+														if (a.type === b.type) return a.name.localeCompare(b.name);
+														return a.type === 'tree' ? -1 : 1;
+													}) as entry}
+														<label class="flex cursor-pointer items-center gap-2 px-3 py-1.5 hover:bg-surface-600">
+															<input
+																type="checkbox"
+																checked={selectedPaths.has(entry.path)}
+																onchange={() => togglePath(entry.path)}
+																class="rounded border-surface-600 bg-surface-800 text-accent"
+															/>
+															<span class="font-mono text-xs text-gray-300">{entry.name}{entry.type === 'tree' ? '/' : ''}</span>
+														</label>
+													{/each}
+												</div>
+											{:else if selectedRepo}
+												<div class="rounded-md border border-surface-600 bg-surface-700 px-3 py-2 text-xs text-gray-500">
+													No paths found. Enter paths manually below.
+												</div>
+											{/if}
+
+											<!-- Custom path input -->
+											<div class="mt-1.5 flex gap-2">
+												<input
+													type="text"
+													bind:value={customPath}
+													placeholder="Add custom path (e.g. src/)"
+													onkeydown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addCustomPath(); } }}
+													class="flex-1 rounded-md border border-surface-600 bg-surface-700 px-3 py-1.5 font-mono text-sm text-white placeholder-gray-500 outline-none focus:border-accent"
+												/>
+												<button type="button" onclick={addCustomPath}
+													class="rounded-md border border-surface-600 px-2.5 py-1.5 text-xs text-gray-400 hover:bg-surface-600 hover:text-white">
+													Add
+												</button>
+											</div>
+
+											<!-- Selected paths display -->
+											{#if selectedPaths.size > 0}
+												<div class="mt-1.5 flex flex-wrap gap-1">
+													{#each [...selectedPaths] as p}
+														<span class="flex items-center gap-1 rounded-full bg-accent/10 px-2 py-0.5 font-mono text-xs text-accent">
+															{p}
+															<button type="button" onclick={() => togglePath(p)} class="ml-0.5 opacity-60 hover:opacity-100">✕</button>
+														</span>
+													{/each}
+												</div>
+											{/if}
+										</div>
+									{/if}
+								</div>
+							{:else}
+								<p class="mt-1 text-xs text-gray-500 font-mono">Watching: {gitPath || '/'}</p>
+							{/if}
+						</div>
 					</div>
 				{:else if selectedType === 'image'}
 					<div class="space-y-4">
