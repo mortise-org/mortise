@@ -65,8 +65,8 @@
 			verificationUri = data.verification_uri || 'https://github.com/login/device';
 			devicePollInterval = data.interval || 5;
 
-			// Open GitHub in new tab
-			window.open(verificationUri, '_blank');
+			// Copy code to clipboard and let user open manually
+			try { await navigator.clipboard.writeText(userCode); } catch { /* fallback: user reads the code */ }
 
 			// Poll for completion
 			devicePollTimer = setInterval(async () => {
@@ -425,12 +425,13 @@
 						<h3 class="text-sm font-medium text-white">Enter this code on GitHub</h3>
 						<div class="flex items-center gap-3">
 							<code class="rounded bg-surface-800 px-4 py-2 text-2xl font-mono font-bold text-white tracking-widest">{userCode}</code>
-							<a href={verificationUri} target="_blank" rel="noopener noreferrer"
-								class="text-sm text-accent hover:text-accent-hover underline">
-								Open github.com/login/device →
-							</a>
+							<span class="text-xs text-gray-500">Copied to clipboard</span>
 						</div>
-						<p class="text-xs text-gray-500">Waiting for authorization...</p>
+						<a href={verificationUri} target="_blank" rel="noopener noreferrer"
+							class="inline-flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white hover:bg-accent-hover">
+							Open github.com/login/device →
+						</a>
+						<p class="text-xs text-gray-500 mt-1">Paste the code, authorize, and come back. This page will update automatically.</p>
 					</div>
 				{:else}
 					<div class="flex items-center justify-between">

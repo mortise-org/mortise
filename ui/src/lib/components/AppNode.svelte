@@ -44,15 +44,15 @@
 <div
 	role="button"
 	tabindex="0"
-	class="relative flex w-60 flex-col gap-2 rounded-lg bg-surface-800 p-3 transition-all duration-150 hover:shadow-lg hover:shadow-black/20 cursor-pointer {isExternal ? 'border border-dashed border-surface-700/50' : ''}"
+	class="relative flex w-60 flex-col gap-2 rounded-lg border border-surface-600 bg-surface-800 p-3 transition-all duration-150 hover:shadow-lg hover:shadow-black/20 hover:border-surface-500 cursor-pointer {isExternal ? 'border-dashed' : ''}"
 	onclick={() => nodeData.onOpen(app.metadata.name)}
 	onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') nodeData.onOpen(app.metadata.name); }}
 >
-	<!-- Pegboard corner dots — aligned to 20px snap grid -->
-	<span class="absolute -top-[3px] -left-[3px] h-[5px] w-[5px] rounded-full bg-surface-400/40"></span>
-	<span class="absolute -top-[3px] -right-[3px] h-[5px] w-[5px] rounded-full bg-surface-400/40"></span>
-	<span class="absolute -bottom-[3px] -left-[3px] h-[5px] w-[5px] rounded-full bg-surface-400/40"></span>
-	<span class="absolute -bottom-[3px] -right-[3px] h-[5px] w-[5px] rounded-full bg-surface-400/40"></span>
+	<!-- Pegboard corner dots -->
+	<span class="absolute -top-[3px] -left-[3px] h-[5px] w-[5px] rounded-full bg-gray-500/60"></span>
+	<span class="absolute -top-[3px] -right-[3px] h-[5px] w-[5px] rounded-full bg-gray-500/60"></span>
+	<span class="absolute -bottom-[3px] -left-[3px] h-[5px] w-[5px] rounded-full bg-gray-500/60"></span>
+	<span class="absolute -bottom-[3px] -right-[3px] h-[5px] w-[5px] rounded-full bg-gray-500/60"></span>
 	<!-- Handles -->
 	<Handle type="target" position={Position.Left} />
 	<Handle type="source" position={Position.Right} />

@@ -14,6 +14,9 @@ rules:
   - apiGroups: ["mortise.mortise.dev"]
     resources: ["platformconfigs", "gitproviders", "previewenvironments", "teams"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["mortise.mortise.dev"]
+    resources: ["platformconfigs/status", "gitproviders/status", "previewenvironments/status", "previewenvironments/finalizers", "teams/status"]
+    verbs: ["get", "update", "patch"]
   # Namespaces: Project controller creates + deletes one per Project.
   - apiGroups: [""]
     resources: ["namespaces"]

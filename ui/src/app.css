@@ -1,17 +1,11 @@
 @import 'tailwindcss';
 
-/* Override Svelte Flow's default node selection outline */
+/* Override Svelte Flow's default node selection outline — keep the base border */
 :global(.svelte-flow__node.selected),
 :global(.svelte-flow__node:focus),
 :global(.svelte-flow__node:focus-visible) {
 	outline: none !important;
 	box-shadow: none !important;
-	border-color: transparent !important;
-}
-
-:global(.svelte-flow__node) {
-	border: none !important;
-	outline: none !important;
 }
 
 @theme {
