@@ -241,18 +241,31 @@ func (r *AppReconciler) reconcileGitSource(ctx context.Context, app *mortisev1al
 		}
 	}
 
-	// Resolve the GitProvider and its OAuth token (synchronously — these are
-	// cheap API lookups and their failure is the user's to fix immediately).
-	if app.Spec.Source.ProviderRef == "" {
-		return ctrl.Result{}, false, r.setFailedCondition(ctx, app, "MissingProviderRef", "spec.source.providerRef must be set for git source apps")
-	}
-	var gp mortisev1alpha1.GitProvider
-	if err := r.Get(ctx, types.NamespacedName{Name: app.Spec.Source.ProviderRef}, &gp); err != nil {
-		return ctrl.Result{}, false, r.setFailedCondition(ctx, app, "ProviderNotFound", fmt.Sprintf("GitProvider %q: %v", app.Spec.Source.ProviderRef, err))
-	}
-	token, err := git.ResolveProviderToken(ctx, r.Client, &gp)
-	if err != nil {
-		return ctrl.Result{}, false, r.setFailedCondition(ctx, app, "TokenResolutionFailed", err.Error())
+	// Resolve git credentials: either from a GitProvider CRD (GitLab/Gitea)
+	// or from the creating user's per-user GitHub token (device flow).
+	var token string
+	if app.Spec.Source.ProviderRef != "" {
+		var gp mortisev1alpha1.GitProvider
+		if err := r.Get(ctx, types.NamespacedName{Name: app.Spec.Source.ProviderRef}, &gp); err != nil {
+			return ctrl.Result{}, false, r.setFailedCondition(ctx, app, "ProviderNotFound", fmt.Sprintf("GitProvider %q: %v", app.Spec.Source.ProviderRef, err))
+		}
+		var resolveErr error
+		token, resolveErr = git.ResolveProviderToken(ctx, r.Client, &gp)
+		if resolveErr != nil {
+			return ctrl.Result{}, false, r.setFailedCondition(ctx, app, "TokenResolutionFailed", resolveErr.Error())
+		}
+	} else {
+		// No providerRef — try per-user GitHub token from the creating user.
+		createdBy := app.Annotations["mortise.dev/created-by"]
+		if createdBy == "" {
+			return ctrl.Result{}, false, r.setFailedCondition(ctx, app, "MissingCredentials", "no git provider or user token available; reconnect GitHub from your profile")
+		}
+		tokenSecret := "user-github-token-" + hex.EncodeToString([]byte(createdBy))
+		var s corev1.Secret
+		if err := r.Get(ctx, types.NamespacedName{Name: tokenSecret, Namespace: "mortise-system"}, &s); err != nil {
+			return ctrl.Result{}, false, r.setFailedCondition(ctx, app, "UserTokenNotFound", fmt.Sprintf("GitHub token for %s not found; reconnect GitHub from your profile", createdBy))
+		}
+		token = string(s.Data["token"])
 	}
 
 	imageRef, err := r.RegistryBackend.PushTarget(app.Name, shortTag(revision))

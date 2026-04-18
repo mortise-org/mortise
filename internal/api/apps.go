@@ -52,10 +52,18 @@ func (s *Server) CreateApp(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Stamp which user created this app so the controller can resolve
+	// their per-user GitHub token for git-source builds.
+	annotations := map[string]string{}
+	if p := PrincipalFromContext(r.Context()); p != nil {
+		annotations["mortise.dev/created-by"] = p.Email
+	}
+
 	app := &mortisev1alpha1.App{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      req.Name,
-			Namespace: ns,
+			Name:        req.Name,
+			Namespace:   ns,
+			Annotations: annotations,
 		},
 		Spec: req.Spec,
 	}
