@@ -310,19 +310,24 @@ func (r *PreviewEnvironmentReconciler) runPreviewBuild(ctx context.Context, canc
 	}
 	log.Info("cloned repo for preview", "repo", p.repo, "branch", p.branch)
 
-	sourceDir, err := resolveSourceDir(cloneDir, p.path)
-	if err != nil {
-		t.setFailed(err.Error())
-		return
+	dockerfileDir := cloneDir
+	if p.path != "" {
+		resolved, err := resolveSourceDir(cloneDir, p.path)
+		if err != nil {
+			t.setFailed(err.Error())
+			return
+		}
+		dockerfileDir = resolved
 	}
 
 	req := build.BuildRequest{
-		AppName:    p.appName,
-		Namespace:  p.namespace,
-		SourceDir:  sourceDir,
-		Dockerfile: p.dockerfile,
-		BuildArgs:  p.buildArgs,
-		PushTarget: p.imageRef.Full,
+		AppName:       p.appName,
+		Namespace:     p.namespace,
+		SourceDir:     cloneDir,
+		DockerfileDir: dockerfileDir,
+		Dockerfile:    p.dockerfile,
+		BuildArgs:     p.buildArgs,
+		PushTarget:    p.imageRef.Full,
 	}
 
 	events, err := r.BuildClient.Submit(ctx, req)

@@ -1,0 +1,30 @@
+# Dev-mode PlatformConfig with local build infrastructure.
+# Applied by `make dev-up` after the cluster and build deps are ready.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: dns-token-stub
+  namespace: mortise-system
+type: Opaque
+stringData:
+  token: "placeholder"
+---
+apiVersion: mortise.mortise.dev/v1alpha1
+kind: PlatformConfig
+metadata:
+  name: platform
+spec:
+  domain: mortise.local
+  dns:
+    provider: externaldns-noop
+    apiTokenSecretRef:
+      namespace: mortise-system
+      name: dns-token-stub
+      key: token
+  registry:
+    url: http://registry.mortise-test-deps.svc:5000
+    namespace: mortise
+    insecureSkipTLSVerify: true
+  build:
+    buildkitAddr: tcp://buildkitd.mortise-test-deps.svc:1234
+    defaultPlatform: linux/arm64

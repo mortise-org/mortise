@@ -108,12 +108,10 @@ DEV_CLUSTER ?= mortise-dev
 DEV_IMG ?= mortise:dev
 
 .PHONY: dev-up
-dev-up: ## Create k3d dev cluster, build image, install Mortise
-	@echo "==> Creating k3d cluster $(DEV_CLUSTER)..."
-	@k3d cluster list | grep -q $(DEV_CLUSTER) || k3d cluster create $(DEV_CLUSTER) \
-		--port "8090:80@loadbalancer" \
-		--k3s-arg "--disable=traefik@server:0" \
-		--wait
+dev-up: build-ui ## Create k3d dev cluster with build infra, install Mortise, port-forward
+	@echo "==> Creating k3d cluster $(DEV_CLUSTER) (with registry mirror)..."
+	@k3d cluster list | grep -q $(DEV_CLUSTER) || k3d cluster create \
+		--config test/dev/k3d-config.yaml --wait
 	@echo "==> Building Docker image..."
 	$(CONTAINER_TOOL) build -t $(DEV_IMG) .
 	@echo "==> Loading image into k3d..."
@@ -126,15 +124,45 @@ dev-up: ## Create k3d dev cluster, build image, install Mortise
 		--set image.repository=mortise \
 		--set image.tag=dev \
 		--set image.pullPolicy=Never \
-		--wait --timeout 60s
+		--set traefik.enabled=false \
+		--set cert-manager.enabled=false \
+		--set external-dns.enabled=false \
+		--set registry.builtin.enabled=false \
+		--wait --timeout 90s
+	@echo "==> Deploying build infrastructure (BuildKit + registry)..."
+	kubectl apply -f test/integration/manifests/00-namespace.yaml \
+		-f test/integration/manifests/10-registry.yaml \
+		-f test/integration/manifests/30-buildkit.yaml
+	@echo "==> Applying dev PlatformConfig..."
+	kubectl apply -f test/dev/platform-config.yaml
+	@echo "==> Restarting operator to pick up config..."
+	kubectl -n mortise-system rollout restart deployment/mortise
+	kubectl -n mortise-system rollout status deployment/mortise --timeout=60s
+	@echo "==> Starting port-forward..."
+	@pkill -f "port-forward.*mortise" >/dev/null 2>&1 || true
+	@kubectl port-forward -n mortise-system svc/mortise 8090:80 >/dev/null 2>&1 &
+	@sleep 2
 	@echo ""
-	@echo "✓ Mortise is running!"
-	@echo "  API: kubectl port-forward -n mortise-system svc/mortise 8090:80"
-	@echo "  Then open http://localhost:8090"
+	@echo "✓ Mortise dev cluster is running at http://localhost:8090"
+	@echo "  Build infra: BuildKit + registry (with node-local mirror)"
+	@echo "  Run 'make dev-reload' to rebuild and redeploy without recreating the cluster"
+	@echo "  Run 'make dev-down' to tear down"
 
 .PHONY: dev-down
-dev-down: ## Delete k3d dev cluster
+dev-down: ## Delete k3d dev cluster and stop port-forward
+	@pkill -f "port-forward.*mortise" >/dev/null 2>&1 || true
 	k3d cluster delete $(DEV_CLUSTER)
+
+.PHONY: dev-reload
+dev-reload: build-ui ## Rebuild image and redeploy to existing dev cluster (no cluster recreate)
+	$(CONTAINER_TOOL) build -t $(DEV_IMG) .
+	k3d image import $(DEV_IMG) -c $(DEV_CLUSTER)
+	kubectl -n mortise-system rollout restart deployment/mortise
+	kubectl -n mortise-system rollout status deployment/mortise --timeout=60s
+	@pkill -f "port-forward.*mortise" >/dev/null 2>&1 || true
+	@kubectl port-forward -n mortise-system svc/mortise 8090:80 >/dev/null 2>&1 &
+	@sleep 2
+	@echo "✓ Reloaded — http://localhost:8090"
 
 .PHONY: dev-reset
 dev-reset: ## Tear down dev cluster completely, rebuild, and start fresh

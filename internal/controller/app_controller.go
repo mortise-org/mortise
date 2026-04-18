@@ -353,19 +353,27 @@ func (r *AppReconciler) runBuild(ctx context.Context, cancel context.CancelFunc,
 	}
 	log.Info("cloned repo", "repo", p.repo, "branch", p.branch, "dir", cloneDir)
 
-	sourceDir, err := resolveSourceDir(cloneDir, p.path)
-	if err != nil {
-		t.setFailed(err.Error())
-		return
+	// Build context is always the repo root. If source.path is set, the
+	// Dockerfile is looked for in that subdirectory — matching Railway/Vercel
+	// behavior where monorepo Dockerfiles can COPY from sibling directories.
+	dockerfileDir := cloneDir
+	if p.path != "" {
+		resolved, err := resolveSourceDir(cloneDir, p.path)
+		if err != nil {
+			t.setFailed(err.Error())
+			return
+		}
+		dockerfileDir = resolved
 	}
 
 	req := build.BuildRequest{
-		AppName:    p.appName,
-		Namespace:  p.namespace,
-		SourceDir:  sourceDir,
-		Dockerfile: p.dockerfile,
-		BuildArgs:  p.buildArgs,
-		PushTarget: p.imageRef.Full,
+		AppName:       p.appName,
+		Namespace:     p.namespace,
+		SourceDir:     cloneDir,
+		DockerfileDir: dockerfileDir,
+		Dockerfile:    p.dockerfile,
+		BuildArgs:     p.buildArgs,
+		PushTarget:    p.imageRef.Full,
 	}
 
 	events, err := r.BuildClient.Submit(ctx, req)

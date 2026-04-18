@@ -1,0 +1,35 @@
+# k3d cluster config for local development.
+#
+# Includes the containerd registry mirror that rewrites pulls of
+# registry.mortise-test-deps.svc:5000 to a node-local endpoint at
+# 127.0.0.1:30500 (hostPort on the registry pod). Without this, the
+# kubelet can't pull images built by BuildKit because it can't resolve
+# cluster-internal DNS names.
+#
+# Port 8090 is mapped to the loadbalancer for the Mortise API/UI.
+apiVersion: k3d.io/v1alpha5
+kind: Simple
+metadata:
+  name: mortise-dev
+servers: 1
+agents: 0
+ports:
+  - port: 8090:80
+    nodeFilters:
+      - loadbalancer
+options:
+  k3s:
+    extraArgs:
+      - arg: "--disable=traefik"
+        nodeFilters:
+          - "server:0"
+registries:
+  config: |
+    mirrors:
+      "registry.mortise-test-deps.svc:5000":
+        endpoint:
+          - "http://127.0.0.1:30500"
+    configs:
+      "127.0.0.1:30500":
+        tls:
+          insecure_skip_verify: true
