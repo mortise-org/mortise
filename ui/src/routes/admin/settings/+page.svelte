@@ -38,6 +38,67 @@
 	let tlsClusterIssuer = $state('');
 	let savingTls = $state(false);
 
+	// GitHub device flow
+	let deviceCode = $state('');
+	let userCode = $state('');
+	let verificationUri = $state('');
+	let devicePollInterval = $state(5);
+	let deviceConnecting = $state(false);
+	let deviceError = $state('');
+	let deviceSuccess = $state(false);
+	let devicePollTimer: ReturnType<typeof setInterval> | null = null;
+
+	async function connectGitHub() {
+		deviceError = '';
+		deviceConnecting = true;
+		try {
+			const resp = await fetch('/api/auth/github/device', { method: 'POST' });
+			if (!resp.ok) {
+				const body = await resp.text();
+				deviceError = body || 'Failed to start GitHub connection';
+				deviceConnecting = false;
+				return;
+			}
+			const data = await resp.json();
+			deviceCode = data.device_code;
+			userCode = data.user_code;
+			verificationUri = data.verification_uri || 'https://github.com/login/device';
+			devicePollInterval = data.interval || 5;
+
+			// Open GitHub in new tab
+			window.open(verificationUri, '_blank');
+
+			// Poll for completion
+			devicePollTimer = setInterval(async () => {
+				try {
+					const pollResp = await fetch('/api/auth/github/device/poll', {
+						method: 'POST',
+						headers: { 'Content-Type': 'application/json' },
+						body: JSON.stringify({ device_code: deviceCode })
+					});
+					const pollData = await pollResp.json();
+					if (pollData.status === 'complete') {
+						if (devicePollTimer) clearInterval(devicePollTimer);
+						deviceSuccess = true;
+						deviceConnecting = false;
+						// Refresh providers list
+						providers = await api.listGitProviders();
+					} else if (pollData.status === 'expired' || pollData.status === 'denied') {
+						if (devicePollTimer) clearInterval(devicePollTimer);
+						deviceError = `Authorization ${pollData.status}. Try again.`;
+						deviceConnecting = false;
+					}
+					// 'pending' and 'slow_down' → keep polling
+				} catch {
+					// network error, keep polling
+				}
+			}, devicePollInterval * 1000);
+		} catch (e) {
+			deviceError = e instanceof Error ? e.message : 'Connection failed';
+			deviceConnecting = false;
+		}
+	}
+
 	// New git provider form
 	let showProviderForm = $state(false);
 	let newProviderName = $state('');
@@ -348,13 +409,51 @@
 				onclick={() => (showProviderForm = !showProviderForm)}
 				class="flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-white hover:bg-accent-hover"
 			>
-				<Plus class="h-3.5 w-3.5" /> Add Provider
+				<Plus class="h-3.5 w-3.5" /> Add Manually
 			</button>
 		</div>
 
+		<!-- GitHub one-click connect (device flow) -->
+		{#if !providers.some(p => p.type === 'github')}
+			<div class="rounded-lg border border-accent/30 bg-surface-700 p-4">
+				{#if deviceSuccess}
+					<div class="flex items-center gap-2 text-success">
+						<span class="text-sm font-medium">GitHub connected!</span>
+					</div>
+				{:else if userCode && deviceConnecting}
+					<div class="space-y-3">
+						<h3 class="text-sm font-medium text-white">Enter this code on GitHub</h3>
+						<div class="flex items-center gap-3">
+							<code class="rounded bg-surface-800 px-4 py-2 text-2xl font-mono font-bold text-white tracking-widest">{userCode}</code>
+							<a href={verificationUri} target="_blank" rel="noopener noreferrer"
+								class="text-sm text-accent hover:text-accent-hover underline">
+								Open github.com/login/device →
+							</a>
+						</div>
+						<p class="text-xs text-gray-500">Waiting for authorization...</p>
+					</div>
+				{:else}
+					<div class="flex items-center justify-between">
+						<div>
+							<h3 class="text-sm font-medium text-white">Connect GitHub</h3>
+							<p class="text-xs text-gray-500 mt-0.5">One click — authorize Mortise to access your repos.</p>
+						</div>
+						<button type="button" onclick={connectGitHub} disabled={deviceConnecting}
+							class="rounded-md bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent-hover disabled:opacity-50">
+							{deviceConnecting ? 'Connecting...' : 'Connect GitHub'}
+						</button>
+					</div>
+				{/if}
+				{#if deviceError}
+					<p class="mt-2 text-xs text-danger">{deviceError}</p>
+				{/if}
+			</div>
+		{/if}
+
+		<!-- Manual provider form (for GitLab, Gitea, or custom GitHub) -->
 		{#if showProviderForm}
 			<div class="space-y-3 rounded-lg border border-surface-600 bg-surface-700 p-4">
-				<h3 class="text-sm font-medium text-white">New Git Provider</h3>
+				<h3 class="text-sm font-medium text-white">Add Provider Manually</h3>
 				<div class="grid grid-cols-2 gap-3">
 					<div>
 						<label class="text-xs text-gray-400">Name</label>
