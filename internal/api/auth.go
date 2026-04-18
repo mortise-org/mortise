@@ -96,10 +96,12 @@ func (s *Server) Setup(w http.ResponseWriter, r *http.Request) {
 
 	// No default project seeded — users create their first project explicitly.
 
-	principal, err := s.auth.Authenticate(r.Context(), auth.Credentials{Email: req.Email, Password: req.Password})
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorResponse{err.Error()})
-		return
+	// Skip re-authentication — we just created the user, no need to read it
+	// back from the cache (which may not have synced yet).
+	principal := auth.Principal{
+		ID:    req.Email,
+		Email: req.Email,
+		Role:  auth.RoleAdmin,
 	}
 
 	token, err := s.jwt.GenerateToken(r.Context(), principal)
