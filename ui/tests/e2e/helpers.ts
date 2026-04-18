@@ -92,16 +92,22 @@ export async function createProjectViaAPI(
 		throw new Error(`create project failed: HTTP ${res.status()} ${body}`);
 	}
 	// The project controller creates the namespace asynchronously.
-	// Poll until creating an app in this project would succeed (namespace exists).
-	for (let i = 0; i < 30; i++) {
+	// Poll the Project's phase — it transitions to Ready only after the
+	// backing k8s namespace has actually been created. The /apps list
+	// endpoint returns OK for missing namespaces too, so it's not a
+	// reliable readiness signal for POST /apps.
+	for (let i = 0; i < 60; i++) {
 		const check = await request.get(
-			`/api/projects/${encodeURIComponent(name)}/apps`,
+			`/api/projects/${encodeURIComponent(name)}`,
 			{ headers: { Authorization: `Bearer ${token}` }, failOnStatusCode: false }
 		);
-		if (check.ok()) return name;
+		if (check.ok()) {
+			const body = await check.json().catch(() => ({}));
+			if (body.phase === 'Ready') return name;
+		}
 		await new Promise((r) => setTimeout(r, 500));
 	}
-	throw new Error(`project ${name}: namespace not ready after 15s`);
+	throw new Error(`project ${name}: namespace not ready after 30s`);
 }
 
 /** Create an image-source app via the API. */

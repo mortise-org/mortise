@@ -64,40 +64,42 @@ test.describe('git providers', () => {
 			page.getByRole('heading', { name: 'Platform Settings' })
 		).toBeVisible({ timeout: 10_000 });
 
+		// Scope form + list interaction to the git-providers section.
+		const section = page.locator('section#git-providers');
+
 		// Click "Add Provider" to show the form.
-		await page.getByRole('button', { name: 'Add Provider' }).click();
+		await section.getByRole('button', { name: 'Add Provider' }).click();
 
 		// Form appears with provider fields.
-		await expect(page.getByText('New Git Provider')).toBeVisible();
+		await expect(section.getByRole('heading', { name: 'New Git Provider' })).toBeVisible();
 
-		// Fill in the form. Scope inputs to the form section to avoid matching
-		// other inputs on the page.
-		const formSection = page.locator('section#git-providers, div').filter({ hasText: 'New Git Provider' }).last();
-		await formSection.getByPlaceholder('github-main').fill(providerName);
-		await formSection.getByPlaceholder('https://github.com').fill('https://github.com');
+		await section.getByPlaceholder('github-main').fill(providerName);
+		await section.getByPlaceholder('https://github.com').fill('https://github.com');
 
-		// Fill required OAuth fields (backend validates these).
-		// The form has: Name, Host URL, OAuth Client ID, OAuth Client Secret, Webhook Secret
-		// Use label text to locate the inputs.
-		await formSection.locator('label').filter({ hasText: 'OAuth Client ID' }).locator('~ input').fill('test-client-id');
-		await formSection.locator('label').filter({ hasText: 'OAuth Client Secret' }).locator('~ input').fill('test-client-secret');
-		await formSection.locator('label').filter({ hasText: 'Webhook Secret' }).locator('~ input').fill('test-webhook-secret');
+		// OAuth fields have labels with matching `for` attrs linking to input ids,
+		// so getByLabel works directly.
+		await section.getByLabel('OAuth Client ID').fill('test-client-id');
+		await section.getByLabel('OAuth Client Secret').fill('test-client-secret');
+		await section.getByLabel('Webhook Secret').fill('test-webhook-secret');
 
 		// Submit the form.
-		await page.getByRole('button', { name: 'Create', exact: true }).click();
+		await section.getByRole('button', { name: 'Create', exact: true }).click();
 
 		// The form should close and the provider list should show our provider.
-		await expect(page.getByText(providerName)).toBeVisible({ timeout: 10_000 });
+		await expect(section.getByText(providerName)).toBeVisible({ timeout: 10_000 });
 
-		// Delete the provider via the trash icon button next to the provider row.
-		const providerRow = page.locator('div').filter({ hasText: providerName }).last();
+		// Delete the provider. Accept the confirm() dialog before clicking the
+		// trash button in the provider's row.
+		page.once('dialog', (dialog) => dialog.accept());
+		const providerRow = section
+			.locator('div')
+			.filter({ hasText: providerName })
+			.filter({ has: page.getByRole('button') })
+			.first();
 		await providerRow.getByRole('button').last().click();
 
-		// Dialog confirmation.
-		page.once('dialog', (dialog) => dialog.accept());
-
-		// Provider should be gone.
-		await expect(page.getByText(providerName)).toHaveCount(0, { timeout: 5_000 });
+		// Provider should be gone from the list.
+		await expect(section.getByText(providerName)).toHaveCount(0, { timeout: 5_000 });
 
 		// Test passed — skip afterEach's delete fallback.
 		providerName = '';

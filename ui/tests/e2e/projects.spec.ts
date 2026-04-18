@@ -103,12 +103,16 @@ test.describe('projects', () => {
 		await injectToken(page, adminToken);
 		await page.goto(`/projects/${name}`);
 
-		// Toolbar breadcrumb: "Projects" link and project name.
-		await expect(page.getByRole('link', { name: 'Projects' })).toBeVisible({ timeout: 10_000 });
-		await expect(page.getByText(name, { exact: false }).first()).toBeVisible();
+		// Header shows the Mortise home link and the project switcher button with
+		// the current project name. The drawer-in-place refactor removed the old
+		// "Projects" breadcrumb link.
+		await expect(page.getByRole('link', { name: 'Mortise', exact: true })).toBeVisible({
+			timeout: 10_000
+		});
+		await expect(page.getByRole('button', { name, exact: true })).toBeVisible();
 
-		// "+ Add" button in the toolbar (it's a button, not a link).
-		await expect(page.getByRole('button', { name: 'Add', exact: false }).first()).toBeVisible();
+		// "+ Add" button in the canvas toolbar (it's a button, not a link).
+		await expect(page.getByRole('button', { name: 'Add', exact: true })).toBeVisible();
 
 		// View toggle buttons.
 		await expect(page.getByTitle('Canvas view')).toBeVisible();

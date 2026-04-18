@@ -46,13 +46,12 @@ test.describe("app drawer detail", () => {
     await injectToken(page, adminToken);
     await page.goto(`/projects/${projectName}/apps/${appName}`);
 
-    // Breadcrumb in toolbar: "Projects" link and project name.
-    await expect(page.getByRole("link", { name: "Projects" })).toBeVisible({
-      timeout: 10_000,
-    });
+    // Top header shows project switcher (as a button, not a link) with the
+    // current project name. Breadcrumbs were removed in the drawer-in-place
+    // redesign — the project switcher button is the replacement.
     await expect(
-      page.getByRole("link", { name: projectName }),
-    ).toBeVisible();
+      page.getByRole("button", { name: projectName }).first(),
+    ).toBeVisible({ timeout: 10_000 });
 
     // Drawer heading with app name.
     await expect(
@@ -122,16 +121,18 @@ test.describe("app drawer detail", () => {
       page.getByRole("heading", { name: appName }),
     ).toBeVisible({ timeout: 10_000 });
 
-    await page.getByRole("button", { name: "Variables" }).click();
+    await page.getByRole("button", { name: "Variables", exact: true }).click();
 
     // Empty state — actual text is "No variables set. Click..."
     await expect(page.getByText(/No variables set/)).toBeVisible({
       timeout: 5_000,
     });
 
-    // "New variable" button.
+    // Per-env "New variable" button (first env section is production).
+    // The shared-vars section uses "New shared variable" so this matches only
+    // the per-env button. Use .first() for robustness in case more envs exist.
     await expect(
-      page.getByRole("button", { name: "New variable", exact: true }),
+      page.getByRole("button", { name: "New variable", exact: true }).first(),
     ).toBeVisible();
 
     await deleteAppViaAPI(request, adminToken, projectName, appName);
@@ -147,10 +148,15 @@ test.describe("app drawer detail", () => {
       page.getByRole("heading", { name: appName }),
     ).toBeVisible({ timeout: 10_000 });
 
-    await page.getByRole("button", { name: "Variables" }).click();
+    await page.getByRole("button", { name: "Variables", exact: true }).click();
 
-    // Click "New variable" to show inline form.
-    await page.getByRole("button", { name: "New variable", exact: true }).click();
+    // Click the per-env "New variable" button (first env = production) to
+    // show inline form. Shared section uses "New shared variable" which is
+    // excluded by exact:true.
+    await page
+      .getByRole("button", { name: "New variable", exact: true })
+      .first()
+      .click();
 
     // VARIABLE_NAME and value inputs appear.
     await expect(page.getByPlaceholder("VARIABLE_NAME")).toBeVisible();
@@ -163,7 +169,7 @@ test.describe("app drawer detail", () => {
     // Cancel to discard without saving.
     await page.getByRole("button", { name: "Cancel" }).last().click();
 
-    // Empty state should reappear.
+    // Empty state should reappear (per-env section).
     await expect(page.getByText(/No variables set/)).toBeVisible();
 
     await deleteAppViaAPI(request, adminToken, projectName, appName);
@@ -182,17 +188,21 @@ test.describe("app drawer detail", () => {
       page.getByRole("heading", { name: appName }),
     ).toBeVisible({ timeout: 10_000 });
 
-    await page.getByRole("button", { name: "Variables" }).click();
+    await page.getByRole("button", { name: "Variables", exact: true }).click();
 
-    // Click "Raw / Import" to switch modes.
-    await page.getByRole("button", { name: "Raw / Import" }).click();
+    // Click the per-env "Raw" button to switch to raw/import mode. The actual
+    // label is just "Raw" (Table/Raw toggle pair per section).
+    await page
+      .getByRole("button", { name: "Raw", exact: true })
+      .first()
+      .click();
 
     // Textarea with placeholder should appear (e.g. DATABASE_URL=postgres://...).
-    const textarea = page.getByPlaceholder(/DATABASE_URL/);
+    const textarea = page.getByPlaceholder(/DATABASE_URL/).first();
     await expect(textarea).toBeVisible();
 
     // Cancel returns to form view.
-    await page.getByRole("button", { name: "Cancel" }).click();
+    await page.getByRole("button", { name: "Cancel" }).first().click();
     await expect(page.getByText(/No variables set/)).toBeVisible();
 
     await deleteAppViaAPI(request, adminToken, projectName, appName);

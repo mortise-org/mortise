@@ -78,8 +78,9 @@ const mockGitProvider = {
 // ---------------------------------------------------------------------------
 
 async function injectAuth(page: Page, isAdmin = true) {
-	// Navigate to a page first so localStorage is accessible for this origin.
-	await page.goto('/');
+	// Visit /login first so we land on the origin without triggering the root
+	// page's unauthenticated redirect; then write the token to localStorage.
+	await page.goto('/login');
 	await page.evaluate(({ isAdmin }) => {
 		localStorage.setItem('mortise_token', 'test-token');
 		localStorage.setItem(
@@ -130,19 +131,21 @@ async function setupMocks(page: Page) {
 			}
 		})
 	);
-	await page.route('/api/projects/my-project/apps/web-app/env/**', (r) =>
-		r.fulfill({ json: {} })
-	);
-	await page.route('/api/projects/my-project/apps/web-app/shared', (r) =>
-		r.fulfill({ json: {} })
-	);
-	await page.route('/api/projects/my-project/apps/web-app/secrets', (r) =>
+	// Env URLs use ?environment=... query string, so match with a wildcard
+	// rather than /env/**, which only matches path segments.
+	await page.route('**/api/projects/my-project/apps/web-app/env*', (r) =>
 		r.fulfill({ json: [] })
 	);
-	await page.route('/api/projects/my-project/apps/postgres/env/**', (r) =>
+	await page.route('**/api/projects/my-project/apps/web-app/shared', (r) =>
 		r.fulfill({ json: {} })
 	);
-	await page.route('/api/projects/my-project/apps/postgres/secrets', (r) =>
+	await page.route('**/api/projects/my-project/apps/web-app/secrets', (r) =>
+		r.fulfill({ json: [] })
+	);
+	await page.route('**/api/projects/my-project/apps/postgres/env*', (r) =>
+		r.fulfill({ json: [] })
+	);
+	await page.route('**/api/projects/my-project/apps/postgres/secrets', (r) =>
 		r.fulfill({ json: [] })
 	);
 }
@@ -232,10 +235,15 @@ test.describe('navigation reachability', () => {
 		await expect(page.getByText('web-app')).toBeVisible({ timeout: 5000 });
 		await page.getByText('web-app').first().click();
 
-		// URL changes and drawer opens
-		await expect(page).toHaveURL('/projects/my-project/apps/web-app');
-		// Drawer shows Deployments tab by default
-		await expect(page.getByRole('button', { name: 'Deployments' })).toBeVisible({ timeout: 5000 });
+		// Drawer-in-place: URL stays on project canvas but drawer opens with the
+		// app detail. The drawer shows Deployments tab by default and a heading
+		// with the app name.
+		await expect(page.getByRole('heading', { name: 'web-app', exact: true })).toBeVisible({
+			timeout: 5000
+		});
+		await expect(page.getByRole('button', { name: 'Deployments', exact: true })).toBeVisible({
+			timeout: 5000
+		});
 	});
 
 	test('Test 8: /projects/my-project/settings is reachable via left rail Settings icon', async ({
@@ -270,27 +278,29 @@ test.describe('navigation reachability', () => {
 
 	test('Test 10: Drawer tabs are all reachable', async ({ page }) => {
 		await setupMocks(page);
-		// Mock additional routes for env/shared tab
-		await page.route('/api/projects/my-project/apps/web-app/env/production', (r) =>
-			r.fulfill({ json: { APP_ENV: 'production' } })
-		);
 		await injectAuth(page);
 		await page.goto('/projects/my-project/apps/web-app');
 
 		// Deployments tab is shown by default
-		await expect(page.getByRole('button', { name: 'Deployments' })).toBeVisible({ timeout: 5000 });
+		await expect(page.getByRole('button', { name: 'Deployments', exact: true })).toBeVisible({
+			timeout: 5000
+		});
 
 		// Click Variables tab
-		await page.getByRole('button', { name: 'Variables' }).click();
+		await page.getByRole('button', { name: 'Variables', exact: true }).click();
 		// Variables tab content renders something (editor or empty state)
-		await expect(page.getByRole('button', { name: 'Variables' })).toBeVisible({ timeout: 3000 });
+		await expect(page.getByRole('button', { name: 'Variables', exact: true })).toBeVisible({
+			timeout: 3000
+		});
 
 		// Click Logs tab
-		await page.getByRole('button', { name: 'Logs' }).click();
-		await expect(page.getByRole('button', { name: 'Logs' })).toBeVisible({ timeout: 3000 });
+		await page.getByRole('button', { name: 'Logs', exact: true }).click();
+		await expect(page.getByRole('button', { name: 'Logs', exact: true })).toBeVisible({
+			timeout: 3000
+		});
 
 		// Click Settings tab
-		await page.getByRole('button', { name: 'Settings' }).click();
+		await page.getByRole('button', { name: 'Settings', exact: true }).click();
 		// Settings tab has a filter input
 		await expect(page.getByPlaceholder('Filter settings…')).toBeVisible({ timeout: 5000 });
 	});

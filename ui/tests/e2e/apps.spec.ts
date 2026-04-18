@@ -254,7 +254,9 @@ test.describe('app list view', () => {
 		await expect(page.getByText(appName)).toBeVisible({ timeout: 10_000 });
 		await page.getByText(appName).click();
 
-		await expect(page).toHaveURL(`/projects/${project}/apps/${appName}`, { timeout: 10_000 });
+		// Drawer opens in place (URL may stay on canvas); assert drawer heading + tabs.
+		await expect(page.getByRole('heading', { name: appName })).toBeVisible({ timeout: 10_000 });
+		await expect(page.getByRole('button', { name: 'Deployments', exact: true })).toBeVisible();
 	});
 
 	test('list view table has expected column headers', async ({ page }) => {

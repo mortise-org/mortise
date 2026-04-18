@@ -95,7 +95,9 @@ const mockBranches = [
 // ---------------------------------------------------------------------------
 
 async function injectAuth(page: Page, isAdmin = true) {
-	await page.goto('/');
+	// Visit the login page first so we land on the origin without triggering the
+	// root page's unauthenticated redirect; then write the token to localStorage.
+	await page.goto('/login');
 	await page.evaluate(({ isAdmin }) => {
 		localStorage.setItem('mortise_token', 'test-token');
 		localStorage.setItem(
@@ -109,14 +111,18 @@ async function injectAuth(page: Page, isAdmin = true) {
 }
 
 async function setupBaseRoutes(page: Page) {
-	await page.route('/api/auth/status', (r) => r.fulfill({ json: { setupRequired: false } }));
-	await page.route('/api/projects', (r) => r.fulfill({ json: [mockProject] }));
-	await page.route('/api/projects/my-project', (r) => r.fulfill({ json: mockProject }));
-	await page.route('/api/projects/my-project/apps', (r) => r.fulfill({ json: [mockGitApp] }));
-	await page.route('/api/gitproviders', (r) => r.fulfill({ json: [mockGitProvider] }));
-	await page.route('/api/repos*', (r) => r.fulfill({ json: mockRepos }));
-	await page.route('/api/repos/org/web-app/branches*', (r) =>
+	await page.route('**/api/auth/status', (r) => r.fulfill({ json: { setupRequired: false } }));
+	await page.route('**/api/projects', (r) => r.fulfill({ json: [mockProject] }));
+	await page.route('**/api/projects/my-project', (r) => r.fulfill({ json: mockProject }));
+	await page.route('**/api/projects/my-project/apps', (r) => r.fulfill({ json: [mockGitApp] }));
+	await page.route('**/api/gitproviders', (r) => r.fulfill({ json: [mockGitProvider] }));
+	await page.route('**/api/repos?**', (r) => r.fulfill({ json: mockRepos }));
+	await page.route('**/api/repos/org/web-app/branches?**', (r) =>
 		r.fulfill({ json: mockBranches })
+	);
+	// loadRepoTree is a best-effort nice-to-have; return empty to satisfy it.
+	await page.route('**/api/repos/org/web-app/tree?**', (r) =>
+		r.fulfill({ json: [] })
 	);
 }
 
@@ -392,7 +398,13 @@ test.describe('build and deploy', () => {
 		// Create the app
 		await page.getByRole('button', { name: 'Create app' }).click();
 
-		// Should navigate to the app drawer URL
-		await expect(page).toHaveURL('/projects/my-project/apps/my-new-app', { timeout: 10_000 });
+		// Drawer-in-place: the modal closes and the new app's drawer opens
+		// inline on the project canvas (URL stays at /projects/my-project).
+		await expect(page.getByRole('heading', { name: 'my-new-app', exact: true })).toBeVisible({
+			timeout: 10_000
+		});
+		await expect(page.getByRole('button', { name: 'Deployments', exact: true })).toBeVisible({
+			timeout: 5000
+		});
 	});
 });

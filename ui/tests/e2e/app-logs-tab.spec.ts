@@ -37,8 +37,7 @@ const mockApp = {
 };
 
 async function injectAuth(page: Page) {
-  await page.goto('/');
-  await page.evaluate(() => {
+  await page.addInitScript(() => {
     localStorage.setItem('mortise_token', 'test-token');
     localStorage.setItem(
       'mortise_user',

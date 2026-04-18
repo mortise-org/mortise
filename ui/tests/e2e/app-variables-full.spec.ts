@@ -44,10 +44,13 @@ const mockApp = {
 };
 
 async function injectAuth(page: Page) {
-  await page.goto('/');
-  await page.evaluate(() => {
-    localStorage.setItem('mortise_token', 'test-token');
-    localStorage.setItem(
+  // Use addInitScript so localStorage is set BEFORE any page script runs.
+  // Navigating to '/' first would hit the real /api/projects (unmocked at that
+  // point), receive 401, auto-redirect to /login, and clear localStorage —
+  // breaking any subsequent navigation.
+  await page.addInitScript(() => {
+    window.localStorage.setItem('mortise_token', 'test-token');
+    window.localStorage.setItem(
       'mortise_user',
       JSON.stringify({ email: 'admin@example.com', role: 'admin' })
     );
