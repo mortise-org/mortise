@@ -385,7 +385,7 @@
 		<div class="flex items-center justify-between px-3 py-2.5">
 			<div class="flex items-center gap-2 flex-1">
 				<span class="text-sm font-medium text-white">Shared variables</span>
-				<span class="text-xs text-gray-500">— available to all environments of this app</span>
+				<span class="text-xs text-gray-500">- available to all environments of this app</span>
 			</div>
 			<div class="flex items-center gap-2">
 				{#if shared.editedKeys.size > 0 && !shared.rawMode}

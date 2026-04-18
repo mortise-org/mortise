@@ -38,7 +38,7 @@
 	let tlsClusterIssuer = $state('');
 	let savingTls = $state(false);
 
-	// New git provider form (GitLab/Gitea only — GitHub is per-user)
+	// New git provider form (GitLab/Gitea only - GitHub is per-user)
 	let showProviderForm = $state(false);
 	let newProviderName = $state('');
 	let newProviderType = $state<'github' | 'gitlab' | 'gitea'>('github');

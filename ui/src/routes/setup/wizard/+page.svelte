@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { api } from '$lib/api';
+	import { Rocket } from 'lucide-svelte';
 
 	let step = $state(1);
 	let error = $state('');
@@ -11,7 +12,7 @@
 	// Step 2: DNS
 	let dnsProvider = $state('cloudflare');
 	let dnsToken = $state('');
-	// Step 3: GitHub connection (single step — just authorize)
+	// Step 3: GitHub connection (single step - just authorize)
 	let gitStep = $state<'start' | 'polling' | 'done'>('start');
 	let userCode = $state('');
 	let gitError = $state('');
@@ -167,7 +168,7 @@
 
 			{:else if step === 4}
 				<div class="py-6 text-center">
-					<div class="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-success/10 text-3xl">🚀</div>
+					<div class="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-success/10 text-success"><Rocket class="h-7 w-7" /></div>
 					<h2 class="mb-2 text-lg font-semibold text-white">All set! Go ship something awesome.</h2>
 					<p class="text-sm text-gray-400">Your platform is ready. Create a project and deploy your first app.</p>
 				</div>

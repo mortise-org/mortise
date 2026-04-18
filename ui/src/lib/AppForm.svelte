@@ -3,7 +3,7 @@
 	import { goto } from '$app/navigation';
 	import { api } from '$lib/api';
 	import EnvVarEditor from '$lib/components/EnvVarEditor.svelte';
-	import type { Template } from '$lib/templates';
+	import { templateIcons, type Template } from '$lib/templates';
 	import type { AppSource, AppSpec, Build, Credential, EnvVar, GitProviderSummary, SourceType, VolumeSpec } from '$lib/types';
 
 	let {
@@ -136,7 +136,8 @@
 	</button>
 
 	<div class="mb-6 flex items-center gap-3">
-		<span class="text-3xl">{template.icon}</span>
+		{@const IconComp = templateIcons[template.icon]}
+		{#if IconComp}<svelte:component this={IconComp} class="h-8 w-8 text-accent" />{/if}
 		<div>
 			<h1 class="text-xl font-semibold text-white">{template.name}</h1>
 			<p class="text-sm text-gray-500">{template.description}</p>

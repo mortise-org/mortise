@@ -30,7 +30,7 @@
 			}
 		};
 		es.onerror = () => {
-			// connection closed or error — don't retry automatically
+			// connection closed or error - don't retry automatically
 		};
 	}
 

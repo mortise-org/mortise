@@ -47,7 +47,7 @@
 		},
 		{
 			name: 'OPA Gatekeeper',
-			description: 'Policy enforcement via admission control. Gate deployments with custom rules — Mortise creates standard resources that OPA can evaluate.',
+			description: 'Policy enforcement via admission control. Gate deployments with custom rules. Mortise creates standard resources that OPA can evaluate.',
 			category: 'Security',
 			action: 'https://open-policy-agent.github.io/gatekeeper/',
 			actionLabel: 'Docs'
@@ -104,7 +104,7 @@
 		<h1 class="text-xl font-semibold text-white">Extensions</h1>
 		<p class="mt-2 text-sm text-gray-400">
 			Known integrations and tenons that work with Mortise. These are standard
-			Kubernetes tools — Mortise interoperates through native primitives, not a
+			Kubernetes tools - Mortise interoperates through native primitives, not a
 			plugin API.
 		</p>
 	</div>

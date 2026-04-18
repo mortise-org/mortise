@@ -846,7 +846,7 @@
 
 			{#if createdToken}
 				<div class="rounded-md border border-success/30 bg-success/10 p-3">
-					<p class="mb-1.5 text-xs font-medium text-success">Token created — copy it now, it won't be shown again.</p>
+					<p class="mb-1.5 text-xs font-medium text-success">Token created - copy it now, it won't be shown again.</p>
 					<div class="flex items-center gap-2">
 						<code class="flex-1 truncate rounded bg-surface-800 px-2 py-1 font-mono text-xs text-gray-300">
 							{createdToken}

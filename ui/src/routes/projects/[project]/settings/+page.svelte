@@ -365,9 +365,9 @@
         <div class="mt-6">
           <h3 class="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-400">Reference syntax</h3>
           <div class="rounded-md bg-surface-900 p-3 font-mono text-xs text-gray-300 space-y-1">
-            <div><span class="text-accent">$&#123;shared.KEY&#125;</span> — shared var from this app</div>
-            <div><span class="text-accent">$&#123;bindings.APP.KEY&#125;</span> — credential from bound app</div>
-            <div><span class="text-accent">$&#123;secrets.SECRET_NAME&#125;</span> — k8s Secret key</div>
+            <div><span class="text-accent">$&#123;shared.KEY&#125;</span> - shared var from this app</div>
+            <div><span class="text-accent">$&#123;bindings.APP.KEY&#125;</span> - credential from bound app</div>
+            <div><span class="text-accent">$&#123;secrets.SECRET_NAME&#125;</span> - k8s Secret key</div>
           </div>
         </div>
       </div>

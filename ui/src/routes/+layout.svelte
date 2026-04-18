@@ -7,7 +7,7 @@
 	import { store } from '$lib/store.svelte';
 	import { currentProject } from '$lib/context.svelte';
 	// Lucide icons
-	import { Folder, Puzzle, Settings, LayoutDashboard, List, Bell, Activity, User, LogOut, ChevronDown, Users, Github } from 'lucide-svelte';
+	import { Folder, Puzzle, Settings, LayoutDashboard, List, Bell, Activity, User, LogOut, ChevronDown, Users, GitBranch } from 'lucide-svelte';
 	import ActivityRail from '$lib/components/ActivityRail.svelte';
 	import NotificationDropdown from '$lib/components/NotificationDropdown.svelte';
 
@@ -99,7 +99,7 @@
 				await goto('/login', { replaceState: true });
 			}
 		} catch {
-			// unreachable — fall through
+			// unreachable - fall through
 		}
 	}
 
@@ -318,11 +318,37 @@
 						<User class="h-4 w-4" />
 					</button>
 					{#if userMenuOpen}
-						<div class="absolute right-0 top-full z-50 mt-1 w-48 overflow-hidden rounded-md border border-surface-600 bg-surface-800 shadow-xl">
+						<div class="absolute right-0 top-full z-50 mt-1 w-56 overflow-hidden rounded-md border border-surface-600 bg-surface-800 shadow-xl">
 							<div class="border-b border-surface-600 px-3 py-2">
 								<p class="text-xs text-gray-500 truncate">{store.user?.email ?? 'Signed in'}</p>
 							</div>
 							<div class="py-1">
+								<!-- GitHub connection -->
+								{#if githubFlowActive}
+									<div class="px-3 py-2 space-y-2">
+										<p class="text-xs text-gray-400">Enter code on GitHub:</p>
+										<code class="block rounded bg-surface-900 px-2 py-1 text-center text-base font-mono font-bold text-white tracking-widest">{githubUserCode}</code>
+										<a href="https://github.com/login/device" target="_blank" rel="noopener noreferrer"
+											class="block text-center text-xs text-accent hover:underline">
+											Open github.com/login/device
+										</a>
+									</div>
+								{:else if store.githubConnected}
+									<div class="flex items-center gap-2 px-3 py-2 text-sm text-success">
+										<GitBranch class="h-4 w-4" /> GitHub: Connected
+									</div>
+								{:else}
+									<button
+										type="button"
+										onclick={connectGitHub}
+										class="flex w-full items-center gap-2 px-3 py-2 text-sm text-gray-300 hover:bg-surface-700 hover:text-white"
+									>
+										<GitBranch class="h-4 w-4" /> Connect GitHub
+									</button>
+								{/if}
+								{#if githubError}
+									<p class="px-3 text-xs text-danger">{githubError}</p>
+								{/if}
 								{#if store.isAdmin}
 									<a href="/admin/settings" class="flex items-center gap-2 px-3 py-2 text-sm text-gray-300 hover:bg-surface-700 hover:text-white">
 										<Settings class="h-4 w-4" /> Platform Settings

@@ -59,7 +59,7 @@
 	// Domain (optional, for git/image/database/empty)
 	let domain = $state('');
 
-	// Git-specific — watch paths picker
+	// Git-specific - watch paths picker
 	let repoTree = $state<Array<{ name: string; type: string; path: string }>>([]);
 	let treeLoading = $state(false);
 	let selectedPaths = $state<Set<string>>(new Set());
@@ -85,24 +85,24 @@
 	let externalCredentials = $state<Array<{ name: string; value: string }>>([]);
 
 	// Database/Template presets
-	type DbTemplate = { name: string; image: string; icon: string; description: string };
+	type DbTemplate = { name: string; image: string; icon: ComponentType; description: string };
 	const DB_TEMPLATES: DbTemplate[] = [
-		{ name: 'Postgres', image: 'postgres:16', icon: '🐘', description: 'PostgreSQL 16' },
-		{ name: 'Redis', image: 'redis:7', icon: '🔴', description: 'Redis 7 in-memory store' },
-		{ name: 'MinIO', image: 'minio/minio:latest', icon: '🪣', description: 'S3-compatible object storage' },
-		{ name: 'MySQL', image: 'mysql:8', icon: '🐬', description: 'MySQL 8' }
+		{ name: 'Postgres', image: 'postgres:16', icon: Database, description: 'PostgreSQL 16' },
+		{ name: 'Redis', image: 'redis:7', icon: Database, description: 'Redis 7 in-memory store' },
+		{ name: 'MinIO', image: 'minio/minio:latest', icon: Package, description: 'S3-compatible object storage' },
+		{ name: 'MySQL', image: 'mysql:8', icon: Database, description: 'MySQL 8' }
 	];
 	let selectedDbTemplate = $state<DbTemplate | null>(null);
 
 	let providers = $state<GitProviderSummary[]>([]);
 
-	const typeOptions: { type: AppType; icon: string; label: string; description: string }[] = [
-		{ type: 'git', icon: '🔀', label: 'Git Repository', description: 'Deploy from a connected git provider' },
-		{ type: 'database', icon: '🗄️', label: 'Database', description: 'Postgres, Redis, MinIO, MySQL' },
-		{ type: 'template', icon: '📦', label: 'Template', description: 'Pre-configured app templates' },
-		{ type: 'image', icon: '🐳', label: 'Docker Image', description: 'Deploy any container image' },
-		{ type: 'external', icon: '🌐', label: 'External Service', description: 'Facade over an external API or DB' },
-		{ type: 'empty', icon: '⬜', label: 'Empty App', description: 'Blank scaffold, configure later' }
+	const typeOptions: { type: AppType; icon: ComponentType; label: string; description: string }[] = [
+		{ type: 'git', icon: GitBranchIcon, label: 'Git Repository', description: 'Deploy from a connected git provider' },
+		{ type: 'database', icon: Database, label: 'Database', description: 'Postgres, Redis, MinIO, MySQL' },
+		{ type: 'template', icon: Package, label: 'Template', description: 'Pre-configured app templates' },
+		{ type: 'image', icon: Container, label: 'Docker Image', description: 'Deploy any container image' },
+		{ type: 'external', icon: Globe, label: 'External Service', description: 'Facade over an external API or DB' },
+		{ type: 'empty', icon: Square, label: 'Empty App', description: 'Blank scaffold, configure later' }
 	];
 
 	function getTypeName(t: AppType): string {
@@ -298,8 +298,8 @@
 						onclick={() => selectType(opt.type)}
 						class="flex w-full items-center gap-3 rounded-md px-3 py-2.5 text-left transition-colors hover:bg-surface-700"
 					>
-						<span class="flex h-8 w-8 items-center justify-center rounded-md bg-surface-700 text-sm"
-							>{opt.icon}</span
+						<span class="flex h-8 w-8 items-center justify-center rounded-md bg-surface-700 text-accent"
+							><svelte:component this={opt.icon} class="h-4 w-4" /></span
 						>
 						<div>
 							<p class="text-sm font-medium text-white">{opt.label}</p>
@@ -322,7 +322,7 @@
 				<!-- Source-specific config -->
 				{#if selectedType === 'git'}
 					<div class="space-y-4">
-						<!-- Provider selector (optional — GitHub uses per-user token) -->
+						<!-- Provider selector (optional - GitHub uses per-user token) -->
 						{#if providers.length > 0}
 						<div>
 							<label class="text-sm text-gray-400">Git Provider</label>
@@ -556,7 +556,7 @@
 								}}
 								class="rounded-lg border p-3 text-left {selectedDbTemplate?.name === tpl.name ? 'border-accent bg-accent/5' : 'border-surface-600 bg-surface-700 hover:border-surface-500'}"
 							>
-								<div class="mb-1 text-xl">{tpl.icon}</div>
+								<div class="mb-1 text-accent"><svelte:component this={tpl.icon} class="h-5 w-5" /></div>
 								<div class="text-sm font-medium text-white">{tpl.name}</div>
 								<div class="text-xs text-gray-500">{tpl.description}</div>
 							</button>

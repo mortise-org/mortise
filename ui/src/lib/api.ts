@@ -48,7 +48,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 		throw new Error(body.error || res.statusText);
 	}
 
-	// 204s and empty bodies — return undefined as T.
+	// 204s and empty bodies - return undefined as T.
 	if (res.status === 204) {
 		return undefined as T;
 	}

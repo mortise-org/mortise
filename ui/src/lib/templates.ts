@@ -1,4 +1,16 @@
 import type { AppSpec } from './types';
+import { Database, FileText, Lock, UtensilsCrossed, GitBranch, Sparkles } from 'lucide-svelte';
+import type { ComponentType } from 'svelte';
+
+/** Map template icon names to Lucide components for rendering. */
+export const templateIcons: Record<string, ComponentType> = {
+	Database,
+	FileText,
+	Lock,
+	UtensilsCrossed,
+	GitBranch,
+	Sparkles
+};
 
 /** Generate a cryptographically random alphanumeric string. */
 function generatePassword(length = 24): string {
@@ -36,7 +48,7 @@ export const templates: Template[] = [
 		id: 'postgres-16',
 		name: 'Postgres 16',
 		description: 'Managed PostgreSQL 16 database with persistent storage and automatic credential wiring.',
-		icon: '🐘',
+		icon: 'Database',
 		category: 'database',
 		submitLabel: 'Deploy Postgres',
 		fields: [
@@ -74,7 +86,7 @@ export const templates: Template[] = [
 		id: 'redis-7',
 		name: 'Redis 7',
 		description: 'In-memory Redis 7 cache with persistent AOF storage on a private network.',
-		icon: '🟥',
+		icon: 'Database', // Redis
 		category: 'database',
 		submitLabel: 'Deploy Redis',
 		fields: [
@@ -106,7 +118,7 @@ export const templates: Template[] = [
 		id: 'paperless-ngx',
 		name: 'Paperless-ngx',
 		description: 'Document management system that turns physical docs into a searchable archive.',
-		icon: '📄',
+		icon: 'FileText',
 		category: 'app',
 		submitLabel: 'Deploy Paperless-ngx',
 		fields: [
@@ -141,7 +153,7 @@ export const templates: Template[] = [
 		id: 'vaultwarden',
 		name: 'Vaultwarden',
 		description: 'Self-hosted, lightweight Bitwarden-compatible password manager server.',
-		icon: '🔐',
+		icon: 'Lock',
 		category: 'app',
 		submitLabel: 'Deploy Vaultwarden',
 		fields: [
@@ -174,7 +186,7 @@ export const templates: Template[] = [
 		id: 'mealie',
 		name: 'Mealie',
 		description: 'Self-hosted recipe manager and meal planner with a clean modern UI.',
-		icon: '🍳',
+		icon: 'UtensilsCrossed',
 		category: 'app',
 		submitLabel: 'Deploy Mealie',
 		fields: [
@@ -209,7 +221,7 @@ export const templates: Template[] = [
 		id: 'git-dockerfile',
 		name: 'Deploy from Git',
 		description: 'Connect a Git repository and build with Dockerfile or auto-detect.',
-		icon: '📦',
+		icon: 'GitBranch',
 		category: 'app',
 		submitLabel: 'Create App',
 		fields: [
@@ -235,7 +247,7 @@ export const templates: Template[] = [
 		id: 'blank',
 		name: 'Blank',
 		description: 'Start from scratch with a custom container image and your own configuration.',
-		icon: '✨',
+		icon: 'Sparkles',
 		category: 'blank',
 		submitLabel: 'Create App',
 		fields: [

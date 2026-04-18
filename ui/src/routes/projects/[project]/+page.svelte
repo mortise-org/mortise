@@ -87,7 +87,7 @@
 
 	function lastDeploy(app: App): string {
 		const envs = app.status?.environments;
-		if (!envs?.length) return '—';
+		if (!envs?.length) return '-';
 		const history = envs[0].deployHistory;
 		if (!history?.length) return 'Never';
 		const ts = history[history.length - 1].timestamp;
@@ -256,7 +256,7 @@
 							</svg>
 						</div>
 						<h2 class="text-base font-medium text-white">No apps in this project</h2>
-						<p class="mx-auto mt-1 max-w-sm text-sm text-gray-500">Deploy your first app — pick a template or start from a container image.</p>
+						<p class="mx-auto mt-1 max-w-sm text-sm text-gray-500">Deploy your first app - pick a template or start from a container image.</p>
 						<button
 							type="button"
 							onclick={() => showNewApp = true}
@@ -311,14 +311,14 @@
 												{phase}
 											</span>
 										{:else}
-											<span class="text-gray-500">—</span>
+											<span class="text-gray-500">-</span>
 										{/if}
 									</td>
 									<td class="py-3 pr-4 font-mono text-xs text-gray-500">
 										{#if app.spec.network?.public === false}
 											<span class="text-gray-500">Private</span>
 										{:else}
-											{domain ?? '—'}
+											{domain ?? '-'}
 										{/if}
 									</td>
 									<td class="py-3 text-gray-500">{lastDeploy(app)}</td>
@@ -360,7 +360,7 @@
 							<button type="button" onclick={() => store.discardChange(appName)} class="text-xs text-gray-500 hover:text-danger">Discard</button>
 						</div>
 						{#if change.original.source?.image !== change.dirty.source?.image}
-							<div class="mt-1 text-xs text-gray-400">Image: <span class="font-mono text-warning">{change.dirty.source?.image ?? '—'}</span></div>
+							<div class="mt-1 text-xs text-gray-400">Image: <span class="font-mono text-warning">{change.dirty.source?.image ?? '-'}</span></div>
 						{/if}
 						{#if (change.original.environments?.[0]?.replicas ?? 1) !== (change.dirty.environments?.[0]?.replicas ?? 1)}
 							<div class="mt-1 text-xs text-gray-400">Replicas: {change.original.environments?.[0]?.replicas ?? 1} → <span class="text-accent">{change.dirty.environments?.[0]?.replicas ?? 1}</span></div>

@@ -35,7 +35,7 @@
 	<div class="mb-6">
 		<a href="/" class="text-sm text-gray-500 hover:text-white">← Back to Projects</a>
 		<h1 class="mt-4 text-xl font-semibold text-white">New Project</h1>
-		<p class="mt-1 text-sm text-gray-400">A project is an isolated workspace where your apps run together — your frontend, backend, and database all in one place. Each project gets its own namespace on the cluster.</p>
+		<p class="mt-1 text-sm text-gray-400">A project is an isolated workspace where your apps run together - your frontend, backend, and database all in one place. Each project gets its own namespace on the cluster.</p>
 	</div>
 
 	<div class="rounded-lg border border-surface-600 bg-surface-800 p-6">
