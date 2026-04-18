@@ -48,6 +48,11 @@
 	onclick={() => nodeData.onOpen(app.metadata.name)}
 	onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') nodeData.onOpen(app.metadata.name); }}
 >
+	<!-- Pegboard corner dots -->
+	<span class="absolute -top-[2px] -left-[2px] h-[4px] w-[4px] rounded-full bg-surface-500"></span>
+	<span class="absolute -top-[2px] -right-[2px] h-[4px] w-[4px] rounded-full bg-surface-500"></span>
+	<span class="absolute -bottom-[2px] -left-[2px] h-[4px] w-[4px] rounded-full bg-surface-500"></span>
+	<span class="absolute -bottom-[2px] -right-[2px] h-[4px] w-[4px] rounded-full bg-surface-500"></span>
 	<!-- Handles -->
 	<Handle type="target" position={Position.Left} />
 	<Handle type="source" position={Position.Right} />

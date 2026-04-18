@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { browser } from '$app/environment';
-	import { SvelteFlow, Background, Controls, MiniMap, BackgroundVariant } from '@xyflow/svelte';
+	import { SvelteFlow, Background, Controls, BackgroundVariant } from '@xyflow/svelte';
 	import type { Node, Edge } from '@xyflow/svelte';
 	import '@xyflow/svelte/dist/style.css';
 	import { Plus } from 'lucide-svelte';
@@ -39,7 +39,6 @@
 				id: app.metadata.name,
 				type: 'app',
 				position: pos,
-				selected: app.metadata.name === selectedApp,
 				data: {
 					app,
 					projectName,
@@ -79,14 +78,6 @@
 	let nodes = $derived(appsToNodes(apps));
 	let edges = $derived(appsToEdges(apps));
 
-	function nodeColor(node: Node): string {
-		const phase = (node.data as unknown as AppNodeData).app.status?.phase;
-		if (phase === 'Ready') return 'var(--color-success)';
-		if (phase === 'Failed') return 'var(--color-danger)';
-		if (phase === 'Building' || phase === 'Deploying') return 'var(--color-warning)';
-		return '#3a3a48';
-	}
-
 	function onNodeDragStop({ nodes: draggedNodes }: { nodes: Node[] }) {
 		for (const node of draggedNodes) {
 			const key = `mortise_pos_${projectName}_${node.id}`;
@@ -103,6 +94,7 @@
 	function closeCtxMenu() {
 		ctxMenu = null;
 	}
+
 </script>
 
 <svelte:window onclick={closeCtxMenu} />
@@ -135,6 +127,7 @@
 			{edges}
 			{nodeTypes}
 			fitView
+			fitViewOptions={{ padding: 0.3, maxZoom: 0.75 }}
 			snapGrid={[20, 20]}
 			onnodedragstop={({ nodes: n }) => onNodeDragStop({ nodes: n })}
 			onnodeclick={({ node }) => onAppOpen(node.id)}
@@ -143,7 +136,6 @@
 		>
 			<Background variant={BackgroundVariant.Dots} gap={24} size={1.5} patternColor="#252530" />
 			<Controls />
-			<MiniMap nodeColor={nodeColor} class="bg-surface-800" />
 		</SvelteFlow>
 	{/if}
 
