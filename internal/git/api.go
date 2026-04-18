@@ -2,8 +2,13 @@ package git
 
 import (
 	"context"
+	"errors"
 	"net/http"
 )
+
+// ErrAuthFailed indicates the git token was rejected (401/403). The user
+// should reconnect their git provider from their profile.
+var ErrAuthFailed = errors.New("git authentication failed")
 
 type WebhookConfig struct {
 	URL    string

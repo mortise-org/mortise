@@ -15,124 +15,25 @@ import (
 	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
 )
 
-// seedGitProvider creates a GitProvider CRD and its OAuth credential secrets
-// so the OAuth handler can build an oauth2.Config.
+// seedGitProvider creates a GitProvider CRD for tests that need one.
 func seedGitProvider(t *testing.T, c client.Client) {
 	t.Helper()
 	ctx := context.Background()
 
-	// Ensure mortise-system namespace.
 	_ = c.Create(ctx, &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{Name: "mortise-system"},
 	})
 
-	// Create the OAuth credential secret.
-	secret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "gh-creds",
-			Namespace: "mortise-system",
-		},
-		Data: map[string][]byte{
-			"clientID":     []byte("test-client-id"),
-			"clientSecret": []byte("test-client-secret"),
-		},
-	}
-	if err := c.Create(ctx, secret); err != nil {
-		t.Fatalf("create oauth secret: %v", err)
-	}
-
 	gp := &mortisev1alpha1.GitProvider{
 		ObjectMeta: metav1.ObjectMeta{Name: "github-main"},
 		Spec: mortisev1alpha1.GitProviderSpec{
-			Type: mortisev1alpha1.GitProviderTypeGitHub,
-			Host: "https://github.com",
-			OAuth: mortisev1alpha1.OAuthConfig{
-				ClientIDSecretRef:     mortisev1alpha1.SecretRef{Namespace: "mortise-system", Name: "gh-creds", Key: "clientID"},
-				ClientSecretSecretRef: mortisev1alpha1.SecretRef{Namespace: "mortise-system", Name: "gh-creds", Key: "clientSecret"},
-			},
-			WebhookSecretRef: mortisev1alpha1.SecretRef{Namespace: "mortise-system", Name: "gh-creds", Key: "clientID"},
+			Type:     mortisev1alpha1.GitProviderTypeGitHub,
+			Host:     "https://github.com",
+			ClientID: "test-id",
 		},
 	}
 	if err := c.Create(ctx, gp); err != nil {
 		t.Fatalf("create GitProvider: %v", err)
-	}
-}
-
-// --- Fix 1: OAuth CSRF ---
-
-// TestOAuthAuthorizeSetsCookie verifies the authorize endpoint sets a state
-// cookie and includes the same state in the redirect URL.
-func TestOAuthAuthorizeSetsCookie(t *testing.T) {
-	k8sClient := setupEnvtest(t)
-	srv := newAdminServer(t, k8sClient)
-	seedGitProvider(t, k8sClient)
-	h := srv.Handler()
-
-	req := httptest.NewRequest(http.MethodGet, "/api/oauth/github-main/authorize", nil)
-	w := httptest.NewRecorder()
-	h.ServeHTTP(w, req)
-
-	if w.Code != http.StatusFound {
-		t.Fatalf("expected 302, got %d: %s", w.Code, w.Body.String())
-	}
-
-	var stateCookie *http.Cookie
-	for _, c := range w.Result().Cookies() {
-		if c.Name == "mortise_oauth_state" {
-			stateCookie = c
-			break
-		}
-	}
-	if stateCookie == nil {
-		t.Fatal("expected mortise_oauth_state cookie to be set")
-	}
-	if !stateCookie.HttpOnly {
-		t.Error("state cookie must be HttpOnly")
-	}
-	if stateCookie.SameSite != http.SameSiteLaxMode {
-		t.Error("state cookie must be SameSite=Lax")
-	}
-	if len(stateCookie.Value) != 64 { // 32 bytes hex-encoded
-		t.Errorf("expected 64-char hex state, got %d chars", len(stateCookie.Value))
-	}
-
-	// The redirect Location should contain &state=<same value>.
-	loc := w.Header().Get("Location")
-	if !strings.Contains(loc, "state="+stateCookie.Value) {
-		t.Errorf("redirect URL missing matching state param: %s", loc)
-	}
-}
-
-// TestOAuthCallbackRejectsNoCookie verifies the callback rejects requests
-// without the state cookie.
-func TestOAuthCallbackRejectsNoCookie(t *testing.T) {
-	k8sClient := setupEnvtest(t)
-	srv := newAdminServer(t, k8sClient)
-	h := srv.Handler()
-
-	req := httptest.NewRequest(http.MethodGet, "/api/oauth/github-main/callback?code=abc&state=xyz", nil)
-	w := httptest.NewRecorder()
-	h.ServeHTTP(w, req)
-
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("expected 403 without state cookie, got %d: %s", w.Code, w.Body.String())
-	}
-}
-
-// TestOAuthCallbackRejectsMismatchedState verifies the callback rejects
-// requests where the cookie state does not match the query state.
-func TestOAuthCallbackRejectsMismatchedState(t *testing.T) {
-	k8sClient := setupEnvtest(t)
-	srv := newAdminServer(t, k8sClient)
-	h := srv.Handler()
-
-	req := httptest.NewRequest(http.MethodGet, "/api/oauth/github-main/callback?code=abc&state=wrong", nil)
-	req.AddCookie(&http.Cookie{Name: "mortise_oauth_state", Value: "correct"})
-	w := httptest.NewRecorder()
-	h.ServeHTTP(w, req)
-
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("expected 403 for mismatched state, got %d: %s", w.Code, w.Body.String())
 	}
 }
 

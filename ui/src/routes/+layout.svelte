@@ -21,7 +21,7 @@
 
 	async function checkGitHubStatus() {
 		try {
-			const resp = await api.githubStatus();
+			const resp = await api.gitTokenStatus('github');
 			store.githubConnected = resp.connected;
 		} catch {
 			store.githubConnected = null;
@@ -32,14 +32,14 @@
 		githubError = '';
 		githubFlowActive = true;
 		try {
-			const data = await api.githubDeviceCode();
+			const data = await api.gitDeviceCode('github');
 			githubUserCode = data.user_code;
 			try { await navigator.clipboard.writeText(githubUserCode); } catch {}
 
 			const interval = (data.interval || 5) * 1000;
 			githubPollTimer = setInterval(async () => {
 				try {
-					const pd = await api.githubDevicePoll(data.device_code);
+					const pd = await api.gitDevicePoll('github', data.device_code);
 					if (pd.status === 'complete') {
 						if (githubPollTimer) clearInterval(githubPollTimer);
 						githubFlowActive = false;

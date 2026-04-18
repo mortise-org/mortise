@@ -181,13 +181,9 @@ func TestFactory(t *testing.T) {
 	} {
 		gp := &mortisev1alpha1.GitProvider{
 			Spec: mortisev1alpha1.GitProviderSpec{
-				Type: tt.t,
-				Host: tt.host,
-				OAuth: mortisev1alpha1.OAuthConfig{
-					ClientIDSecretRef:     ref,
-					ClientSecretSecretRef: ref,
-				},
-				WebhookSecretRef: ref,
+				Type:             tt.t,
+				Host:             tt.host,
+				WebhookSecretRef: &ref,
 			},
 		}
 		api, err := NewGitAPIFromProvider(gp, "tok", "wh-secret")
@@ -240,13 +236,9 @@ func TestFactory_UnknownType(t *testing.T) {
 	ref := mortisev1alpha1.SecretRef{Namespace: "ns", Name: "s", Key: "k"}
 	gp := &mortisev1alpha1.GitProvider{
 		Spec: mortisev1alpha1.GitProviderSpec{
-			Type: mortisev1alpha1.GitProviderType("bitbucket"),
-			Host: "https://bitbucket.org",
-			OAuth: mortisev1alpha1.OAuthConfig{
-				ClientIDSecretRef:     ref,
-				ClientSecretSecretRef: ref,
-			},
-			WebhookSecretRef: ref,
+			Type:             mortisev1alpha1.GitProviderType("bitbucket"),
+			Host:             "https://bitbucket.org",
+			WebhookSecretRef: &ref,
 		},
 	}
 	_, err := NewGitAPIFromProvider(gp, "tok", "wh-secret")

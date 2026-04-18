@@ -1,7 +1,6 @@
 package api
 
 import (
-	"context"
 	"fmt"
 	"net/http"
 
@@ -12,19 +11,14 @@ import (
 	"github.com/MC-Meesh/mortise/internal/git"
 )
 
-// ListRepos returns the repositories visible to the authenticated user.
-// For GitHub, uses the calling user's per-user token. For other providers,
-// accepts an optional ?provider= query param.
+// ListRepos returns the repositories visible to the authenticated user
+// for the given git provider.
 //
-// GET /api/repos
+// GET /api/repos?provider=github
 func (s *Server) ListRepos(w http.ResponseWriter, r *http.Request) {
 	api, err := s.resolveGitAPI(r)
 	if err != nil {
-		status := http.StatusBadRequest
-		if err == errGitHubNotConnected {
-			status = http.StatusNotFound
-		}
-		writeJSON(w, status, errorResponse{err.Error()})
+		writeJSON(w, http.StatusBadRequest, errorResponse{err.Error()})
 		return
 	}
 
@@ -39,7 +33,7 @@ func (s *Server) ListRepos(w http.ResponseWriter, r *http.Request) {
 
 // ListBranches returns the branches for a repository.
 //
-// GET /api/repos/{owner}/{repo}/branches
+// GET /api/repos/{owner}/{repo}/branches?provider=github
 func (s *Server) ListBranches(w http.ResponseWriter, r *http.Request) {
 	owner := chi.URLParam(r, "owner")
 	repo := chi.URLParam(r, "repo")
@@ -47,11 +41,7 @@ func (s *Server) ListBranches(w http.ResponseWriter, r *http.Request) {
 
 	api, err := s.resolveGitAPI(r)
 	if err != nil {
-		status := http.StatusBadRequest
-		if err == errGitHubNotConnected {
-			status = http.StatusNotFound
-		}
-		writeJSON(w, status, errorResponse{err.Error()})
+		writeJSON(w, http.StatusBadRequest, errorResponse{err.Error()})
 		return
 	}
 
@@ -66,7 +56,7 @@ func (s *Server) ListBranches(w http.ResponseWriter, r *http.Request) {
 
 // GetRepoTree returns the immediate children of a path in a repository.
 //
-// GET /api/repos/{owner}/{repo}/tree?branch=Y&path=Z
+// GET /api/repos/{owner}/{repo}/tree?provider=github&branch=Y&path=Z
 func (s *Server) GetRepoTree(w http.ResponseWriter, r *http.Request) {
 	owner := chi.URLParam(r, "owner")
 	repo := chi.URLParam(r, "repo")
@@ -78,11 +68,7 @@ func (s *Server) GetRepoTree(w http.ResponseWriter, r *http.Request) {
 
 	api, err := s.resolveGitAPI(r)
 	if err != nil {
-		status := http.StatusBadRequest
-		if err == errGitHubNotConnected {
-			status = http.StatusNotFound
-		}
-		writeJSON(w, status, errorResponse{err.Error()})
+		writeJSON(w, http.StatusBadRequest, errorResponse{err.Error()})
 		return
 	}
 
@@ -95,42 +81,27 @@ func (s *Server) GetRepoTree(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, entries)
 }
 
-var errGitHubNotConnected = fmt.Errorf("GitHub not connected. Connect from your profile.")
-
-// resolveGitAPI determines the GitAPI to use. If ?provider= is given, uses that
-// GitProvider CRD (for GitLab/Gitea). Otherwise, uses the calling user's
-// per-user GitHub token.
+// resolveGitAPI determines the GitAPI to use based on the ?provider= query
+// param and the calling user's per-user token for that provider.
 func (s *Server) resolveGitAPI(r *http.Request) (git.GitAPI, error) {
 	providerName := r.URL.Query().Get("provider")
-	if providerName != "" {
-		return s.gitAPIForProvider(r.Context(), providerName)
+	if providerName == "" {
+		return nil, fmt.Errorf("provider query parameter is required")
 	}
 
-	// Default: use calling user's GitHub token.
+	var gp mortisev1alpha1.GitProvider
+	if err := s.client.Get(r.Context(), types.NamespacedName{Name: providerName}, &gp); err != nil {
+		return nil, fmt.Errorf("git provider %q not found: %w", providerName, err)
+	}
+
 	principal := PrincipalFromContext(r.Context())
 	if principal == nil {
 		return nil, fmt.Errorf("authentication required")
 	}
 
-	token, err := ResolveUserGitHubToken(r.Context(), s.client, principal.Email)
+	token, err := git.ResolveGitToken(r.Context(), s.client, providerName, principal.Email)
 	if err != nil {
-		return nil, errGitHubNotConnected
-	}
-
-	return git.NewGitHubAPI("https://github.com", token, "")
-}
-
-// gitAPIForProvider resolves a GitProvider CRD + stored credentials and
-// constructs the appropriate GitAPI implementation.
-func (s *Server) gitAPIForProvider(ctx context.Context, providerName string) (git.GitAPI, error) {
-	var gp mortisev1alpha1.GitProvider
-	if err := s.client.Get(ctx, types.NamespacedName{Name: providerName}, &gp); err != nil {
-		return nil, fmt.Errorf("get git provider %q: %w", providerName, err)
-	}
-
-	token, err := git.ResolveProviderToken(ctx, s.client, &gp)
-	if err != nil {
-		return nil, fmt.Errorf("resolve token for %q: %w", providerName, err)
+		return nil, fmt.Errorf("git not connected for provider %q — connect from your profile", providerName)
 	}
 
 	api, err := git.NewGitAPIFromProvider(&gp, token, "")

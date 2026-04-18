@@ -22,9 +22,7 @@ const mockGitProvider = {
 	name: 'github-main',
 	type: 'github' as const,
 	host: 'github.com',
-	mode: 'oauth' as const,
-	phase: 'Ready' as const,
-	hasToken: true
+	phase: 'Ready' as const
 };
 
 const mockPlatform = {
@@ -188,11 +186,11 @@ test.describe('platform settings actions', () => {
 		await page.route('/api/gitproviders', async (route) => {
 			if (route.request().method() === 'POST') {
 				capturedBody = JSON.parse(route.request().postData() ?? '{}');
-				return route.fulfill({ status: 201, json: { name: 'new-github', type: 'github', host: 'github.com', phase: 'Pending', hasToken: false } });
+				return route.fulfill({ status: 201, json: { name: 'new-github', type: 'github', host: 'github.com', phase: 'Pending' } });
 			}
 			// After create, return the new provider in the list
 			if (capturedBody) {
-				return route.fulfill({ json: [{ name: 'new-github', type: 'github', host: 'github.com', phase: 'Pending', hasToken: false }] });
+				return route.fulfill({ json: [{ name: 'new-github', type: 'github', host: 'github.com', phase: 'Pending' }] });
 			}
 			return route.fulfill({ json: [] });
 		});
@@ -255,26 +253,6 @@ test.describe('platform settings actions', () => {
 		await page.locator('section#git-providers').getByRole('button').nth(1).click();
 
 		await expect.poll(() => deleteWasCalled).toBe(true);
-	});
-
-	test('Test 7: Git provider connect link points to correct OAuth URL (provider without token)', async ({ page }) => {
-		const providerWithoutToken = {
-			...mockGitProvider,
-			name: 'github-unconnected',
-			hasToken: false,
-			phase: 'Pending' as const
-		};
-
-		await setupBaseMocks(page, [providerWithoutToken]);
-
-		await injectAuth(page, true);
-		await page.goto('/admin/settings');
-		await expect(page.getByRole('heading', { name: 'Platform Settings' })).toBeVisible({ timeout: 5000 });
-
-		// The "Connect" link should point to /api/oauth/{name}/authorize
-		const connectLink = page.getByRole('link', { name: 'Connect' });
-		await expect(connectLink).toBeVisible({ timeout: 5000 });
-		await expect(connectLink).toHaveAttribute('href', '/api/oauth/github-unconnected/authorize');
 	});
 
 	test('Test 8: Filter input narrows visible sections (type "registry" → only registry section visible)', async ({ page }) => {

@@ -55,13 +55,10 @@ var _ = Describe("GitProvider Controller", func() {
 		return &mortisev1alpha1.GitProvider{
 			ObjectMeta: metav1.ObjectMeta{Name: name},
 			Spec: mortisev1alpha1.GitProviderSpec{
-				Type: providerType,
-				Host: "https://github.com",
-				OAuth: mortisev1alpha1.OAuthConfig{
-					ClientIDSecretRef:     ref,
-					ClientSecretSecretRef: ref,
-				},
-				WebhookSecretRef: ref,
+				Type:             providerType,
+				Host:             "https://github.com",
+				ClientID:         "test-id",
+				WebhookSecretRef: &ref,
 			},
 		}
 	}

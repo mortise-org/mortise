@@ -171,7 +171,6 @@ export interface GitProviderSummary {
 	type: GitProviderType;
 	host: string;
 	phase: GitProviderPhase;
-	hasToken: boolean;
 }
 
 export interface GitHubStatusResponse {
@@ -182,8 +181,7 @@ export interface CreateGitProviderRequest {
 	name: string;
 	type: GitProviderType;
 	host: string;
-	oauth: { clientID: string; clientSecret: string };
-	webhookSecret: string;
+	clientID?: string;
 }
 
 export interface Repository {

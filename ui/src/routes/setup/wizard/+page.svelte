@@ -49,14 +49,14 @@
 		gitError = '';
 		gitStep = 'polling';
 		try {
-			const data = await api.githubDeviceCode();
+			const data = await api.gitDeviceCode('github');
 			userCode = data.user_code;
 			try { await navigator.clipboard.writeText(userCode); } catch {}
 
 			const interval = (data.interval || 5) * 1000;
 			pollTimer = setInterval(async () => {
 				try {
-					const pd = await api.githubDevicePoll(data.device_code);
+					const pd = await api.gitDevicePoll('github', data.device_code);
 					if (pd.status === 'complete') {
 						if (pollTimer) clearInterval(pollTimer);
 						gitStep = 'done';

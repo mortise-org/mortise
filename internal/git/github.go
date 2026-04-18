@@ -5,6 +5,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -108,7 +109,7 @@ func (g *GitHubAPI) ListRepos(ctx context.Context) ([]Repository, error) {
 	}
 	repos, _, err := g.client.Repositories.List(ctx, "", opts)
 	if err != nil {
-		return nil, fmt.Errorf("list github repos: %w", err)
+		return nil, wrapGitHubError(fmt.Errorf("list github repos: %w", err))
 	}
 	result := make([]Repository, 0, len(repos))
 	for _, r := range repos {
@@ -172,6 +173,21 @@ func (g *GitHubAPI) ListTree(ctx context.Context, owner, repo, branch, path stri
 		})
 	}
 	return result, nil
+}
+
+// wrapGitHubError checks if a go-github error is a 401/403 and wraps it
+// with ErrAuthFailed for downstream detection.
+func wrapGitHubError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var ghErr *gogithub.ErrorResponse
+	if errors.Is(err, ghErr) || errors.As(err, &ghErr) {
+		if ghErr.Response != nil && (ghErr.Response.StatusCode == 401 || ghErr.Response.StatusCode == 403) {
+			return fmt.Errorf("%w: token may be expired or revoked (HTTP %d)", ErrAuthFailed, ghErr.Response.StatusCode)
+		}
+	}
+	return err
 }
 
 // splitRepo splits "owner/repo" into two parts.

@@ -22,7 +22,6 @@ type Server struct {
 	jwt        *auth.JWTHelper
 	ui         fs.FS
 	webhook    *webhook.Handler
-	oauth      *OAuthHandler
 	deviceFlow *DeviceFlowHandler
 }
 
@@ -31,7 +30,6 @@ type Server struct {
 func NewServer(c client.Client, cs kubernetes.Interface, authProvider auth.AuthProvider, jwt *auth.JWTHelper, ui fs.FS) *Server {
 	kr := webhook.NewK8sReader(c)
 	wh := webhook.New(kr)
-	oh := newOAuthHandler(c)
 	df := newDeviceFlowHandler(c)
 	return &Server{
 		client:     c,
@@ -40,7 +38,6 @@ func NewServer(c client.Client, cs kubernetes.Interface, authProvider auth.AuthP
 		jwt:        jwt,
 		ui:         ui,
 		webhook:    wh,
-		oauth:      oh,
 		deviceFlow: df,
 	}
 }
@@ -50,12 +47,10 @@ func NewServer(c client.Client, cs kubernetes.Interface, authProvider auth.AuthP
 // URL scheme:
 //
 //	/api/auth/{status|setup|login}                                 unauthenticated
-//	/api/oauth/{provider}/authorize                                unauthenticated — OAuth redirect
-//	/api/oauth/{provider}/callback                                 unauthenticated — OAuth callback
 //	/api/webhooks/{provider}                                       unauthenticated — HMAC-verified
-//	/api/auth/github/device                                        authenticated — device flow initiation
-//	/api/auth/github/device/poll                                   authenticated — device flow polling
-//	/api/auth/github/status                                        authenticated — connection status
+//	/api/auth/git/{provider}/device                                authenticated — device flow initiation
+//	/api/auth/git/{provider}/device/poll                           authenticated — device flow polling
+//	/api/auth/git/{provider}/status                                authenticated — connection status
 //	/api/projects                                                  list/create
 //	/api/projects/{project}                                        get/delete
 //	/api/projects/{project}/apps                                   list/create
@@ -83,26 +78,21 @@ func (s *Server) Handler() http.Handler {
 	// body cap applied.
 	r.Mount("/api/webhooks", s.webhook.Routes())
 
-	// Unauthenticated OAuth endpoints.
-	r.Get("/api/oauth/{provider}/authorize", s.oauth.Authorize)
-	r.Get("/api/oauth/{provider}/callback", s.oauth.Callback)
-
-	// Device flow poll is unauthenticated — device_code is the auth.
-	r.Post("/api/auth/github/device/poll", s.deviceFlow.Poll)
-
 	// Authenticated /api routes.
 	r.Route("/api", func(r chi.Router) {
 		r.Use(maxBytesMiddleware(1 << 20)) // 1 MB body limit
 		r.Group(func(r chi.Router) {
 			r.Use(s.jwtAuthMiddleware)
 
-			// Device flow initiation needs JWT to associate user with device_code.
-			r.Post("/auth/github/device", s.deviceFlow.RequestCode)
-			r.Get("/auth/github/status", s.deviceFlow.GitHubStatus)
+			// Device flow: provider-parameterized routes for per-user git auth.
+			r.Post("/auth/git/{provider}/device", s.deviceFlow.RequestCode)
+			r.Post("/auth/git/{provider}/device/poll", s.deviceFlow.Poll)
+			r.Get("/auth/git/{provider}/status", s.deviceFlow.GitTokenStatus)
 
 			r.Get("/gitproviders", s.ListGitProviders)
 			r.Post("/gitproviders", s.CreateGitProvider)
 			r.Delete("/gitproviders/{name}", s.DeleteGitProvider)
+			r.Get("/gitproviders/{name}/webhook-secret", s.GetWebhookSecret)
 
 			r.Post("/projects", s.CreateProject)
 			r.Get("/projects", s.ListProjects)

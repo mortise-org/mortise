@@ -73,18 +73,22 @@ func (h *Handler) handleWebhook(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	webhookSecret, err := h.k8s.getSecret(req.Context(),
-		gp.Spec.WebhookSecretRef.Namespace,
-		gp.Spec.WebhookSecretRef.Name,
-		gp.Spec.WebhookSecretRef.Key)
-	if err != nil {
-		log.Error(err, "get webhook secret")
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
+	var webhookSecret string
+	if gp.Spec.WebhookSecretRef != nil {
+		webhookSecret, err = h.k8s.getSecret(req.Context(),
+			gp.Spec.WebhookSecretRef.Namespace,
+			gp.Spec.WebhookSecretRef.Name,
+			gp.Spec.WebhookSecretRef.Key)
+		if err != nil {
+			log.Error(err, "get webhook secret")
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+	} else {
+		log.Info("WARNING: no webhook secret configured for provider — HMAC verification skipped", "provider", providerName)
 	}
 
-	// We only need VerifyWebhookSignature, so construct an ephemeral GitAPI
-	// without a real token — empty token is fine for signature-only use.
+	// Construct an ephemeral GitAPI for signature verification only.
 	api, err := git.NewGitAPIFromProvider(gp, "" /* token unused */, webhookSecret)
 	if err != nil {
 		log.Error(err, "build git api")

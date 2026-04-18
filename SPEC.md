@@ -368,6 +368,7 @@ metadata:
 spec:
   source:
     type: git                         # git | image
+    providerRef: github-main          # required for git source
     repo: https://github.com/org/monorepo
     branch: main
     path: services/api                # optional; monorepo subdir
@@ -1036,39 +1037,66 @@ is deferred until real demand; see §10.
 
 ### 5.12 Git Providers (v1)
 
-All three supported forges use the same shape: an OAuth application the
-admin creates on the forge and pastes into Mortise's Git Provider
-settings. Identical mental model across GitHub, GitLab, Gitea.
+Each supported forge gets a GitProvider CRD instance (e.g.
+`github-main`, `gitea-homelab`). Cluster-scoped.
 
-- **GitHub** — admin creates an OAuth App at
-  `github.com/settings/applications/new` (~90s), sets callback URL to
-  `https://mortise.yourdomain.com/api/oauth/github/callback`, pastes
-  client ID + client secret into Mortise.
-- **GitLab** (.com or self-hosted) — admin creates an OAuth application
-  at `{gitlab-url}/-/user_settings/applications`, pastes credentials.
-- **Gitea / Forgejo** (self-hosted) — admin creates an OAuth2 application
-  in user settings, pastes credentials.
+**GitHub — device flow (primary).** The admin creates an OAuth App on
+GitHub and pastes only the **client ID** (a public value) into Mortise.
+No client secret needed. Each user authenticates via the OAuth device
+authorization grant (RFC 8628): Mortise shows a user code + verification
+URL, the user authorises in their browser, Mortise polls until the grant
+completes. Tokens are stored **per-user per-provider** (see below).
+Zero callback URLs, zero shared secrets, zero server-side redirects.
+
+**GitLab / Gitea — device flow where supported, code grant as future
+work.** The GitProvider CRD carries an optional `spec.clientSecretRef`
+(`*SecretRef`) for forges that require the OAuth authorization code
+grant. The code grant flow is not implemented in v1; it will land when
+GitLab/Gitea support is prioritised. For now, `spec.clientSecretRef`
+is a forward-compat field.
+
+**CRD schema (simplified):**
+- `spec.type` — enum `github | gitlab | gitea`.
+- `spec.host` — base URL.
+- `spec.clientID` — plain string, the public OAuth client ID.
+- `spec.clientSecretRef` — optional `*SecretRef`, for future code grant
+  (GitLab/Gitea). Not used by the device flow.
+- `spec.webhookSecretRef` — optional `*SecretRef` for HMAC verification.
+- `status.phase` — `Pending | Ready | Failed`; plus standard `Conditions`.
+
+**Token storage — per-user per-provider.** Every authenticated user gets
+their own token Secret named `user-{providerName}-token-{hex(email)}`
+in `mortise-system`. There is no shared per-provider token. This means
+each user's API calls use their own rate limit and permission scope.
+
+**`providerRef` required on git-source Apps.** Every App with
+`source.type: git` must set `spec.source.providerRef` naming the
+GitProvider to use for cloning and webhook registration.
+
+**PlatformConfig auto-creates default GitHub provider.** When
+`PlatformConfig.spec.github.clientID` is set, the PlatformConfig
+controller auto-creates a default `GitProvider` named `github` so
+users don't need to configure one manually.
 
 After credentials are configured, the per-repo webhook is registered
 automatically by the GitProvider controller when a user connects a repo
 (POST `/repos/{owner}/{repo}/hooks` on GitHub; equivalent on the others).
 
-**Why OAuth instead of GitHub App:** GitHub Apps offer finer permissions
-and per-install rate limits, at the cost of admin setup complexity
-(RSA key generation, per-org installation, permission config). Mortise's
-target audience (homelabbers, small teams) is better served by OAuth's
-~90-second flow. All three forges end up with the same mental model.
+**Device flow API routes:**
+- `POST /api/auth/git/{provider}/device` — initiates device flow, returns user code + verification URI.
+- `GET /api/auth/git/{provider}/device/poll` — polls for grant completion (requires JWT).
+- `GET /api/auth/git/{provider}/status` — checks whether the current user has a valid token for this provider.
+
+**Error handling:** The `internal/git` package exports an `ErrAuthFailed`
+sentinel error for 401/403 detection. Callers use `errors.Is` to
+distinguish auth failures from transient errors.
 
 GitHub App support can land as a second `spec.mode: githubApp` on the
 GitProvider CRD if real demand appears; the interface seam
 (`internal/git/github/`) accommodates it. Not v1.
 
-GitProvider CRD: one instance per configured provider (e.g.
-`github-main`, `gitea-homelab`). Cluster-scoped. Credentials via
-secretRefs.
-
-**Relay-mode Cloudflare Worker is deferred** (§6.4). Admin-configured
-OAuth is the v1 path — no third-party infrastructure required.
+**Relay-mode Cloudflare Worker is deferred** (§6.4). Device flow
+eliminates the need for callback infrastructure in the GitHub path.
 
 ### 5.13 Web UI (v1)
 
@@ -1242,9 +1270,9 @@ Things that could conceivably exist but won't be built speculatively.
 Scoped in only when users with that specific need show up.
 
 - **Cloudflare Worker relay for GitHub App OAuth** — infrastructure we'd
-  have to host and maintain forever to support GitHub App mode. PAT and
-  OAuth-app modes cover 95%+ of git-provider users; this stays off the
-  roadmap until there's concrete demand.
+  have to host and maintain forever to support GitHub App mode. Device
+  flow and PAT modes cover 95%+ of git-provider users; this stays off
+  the roadmap until there's concrete demand.
 - **Cloudflare for SaaS custom hostnames** — genuinely useful for users
   building SaaS on Mortise where end-customers want custom domains. A real
   feature for a narrow audience; specced and built when that audience
@@ -1625,7 +1653,7 @@ project `staging` → moves (recreates) the app stack there → deletes
 
 ### Phase 4 — Build System (git source)
 
-- Git provider CRD + controllers: GitHub, GitLab, Gitea — all via admin-configured OAuth apps
+- Git provider CRD + controllers: GitHub (device flow), GitLab, Gitea — per-user token auth
 - Webhook receiver + HMAC verification
 - Repo clone into temp workspace
 - Dockerfile mode: BuildKit `dockerfile.v0` frontend, submit via Go client
@@ -2037,7 +2065,7 @@ pattern; anything beyond it is user-at-own-risk.
 |---|---|---|
 | Mortise Helm release (operator version, chart values) | **Yes, recommended** | Declarative platform config |
 | `PlatformConfig` CRD (domain, DNS, default SC) | **Yes, recommended** | Cluster-wide, rarely changes |
-| `GitProvider` CRDs | **Yes, recommended** | Credentials via ESO / sealed-secrets / SOPS |
+| `GitProvider` CRDs | **Yes, recommended** | `clientID` is inline; optional `clientSecretRef`/`webhookSecretRef` via ESO / sealed-secrets / SOPS |
 | `App` CRDs | **No** | Authored through Mortise; live in etcd |
 | `PreviewEnvironment` CRDs | **No — operator-created** | Lifecycle is PR-driven |
 | Deployments / Services / Ingresses | **No — operator-created** | Mortise owns these |

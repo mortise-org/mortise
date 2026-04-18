@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"net/url"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -67,18 +68,22 @@ func (r *GitProviderReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			fmt.Sprintf("spec.type %q is not one of: github, gitlab, gitea", gp.Spec.Type))
 	}
 
-	// Validate that all referenced secrets exist and contain the required keys.
-	refs := []struct {
-		ref  mortisev1alpha1.SecretRef
-		desc string
-	}{
-		{gp.Spec.OAuth.ClientIDSecretRef, "spec.oauth.clientIDSecretRef"},
-		{gp.Spec.OAuth.ClientSecretSecretRef, "spec.oauth.clientSecretSecretRef"},
-		{gp.Spec.WebhookSecretRef, "spec.webhookSecretRef"},
+	// Validate host is a parseable URL.
+	if _, err := url.ParseRequestURI(gp.Spec.Host); err != nil {
+		return ctrl.Result{}, r.markFailed(ctx, &gp, "InvalidHost",
+			fmt.Sprintf("spec.host %q is not a valid URL: %v", gp.Spec.Host, err))
 	}
-	for _, r2 := range refs {
-		if err := r.validateSecretRef(ctx, r2.ref, r2.desc); err != nil {
-			log.Info("secret ref invalid", "field", r2.desc, "error", err)
+
+	// Validate optional secret refs.
+	if gp.Spec.ClientSecretRef != nil {
+		if err := r.validateSecretRef(ctx, *gp.Spec.ClientSecretRef, "spec.clientSecretRef"); err != nil {
+			log.Info("client secret ref invalid", "error", err)
+			return ctrl.Result{}, r.markFailed(ctx, &gp, "SecretNotFound", err.Error())
+		}
+	}
+	if gp.Spec.WebhookSecretRef != nil {
+		if err := r.validateSecretRef(ctx, *gp.Spec.WebhookSecretRef, "spec.webhookSecretRef"); err != nil {
+			log.Info("webhook secret ref invalid", "error", err)
 			return ctrl.Result{}, r.markFailed(ctx, &gp, "SecretNotFound", err.Error())
 		}
 	}

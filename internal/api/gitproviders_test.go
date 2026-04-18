@@ -37,60 +37,25 @@ func TestListGitProvidersEmpty(t *testing.T) {
 }
 
 // TestListGitProvidersSummary verifies that GitProviders are listed with the
-// correct fields and that hasToken reflects whether the token Secret exists.
+// correct fields.
 func TestListGitProvidersSummary(t *testing.T) {
 	k8sClient := setupEnvtest(t)
 	ctx := context.Background()
 
-	// Ensure mortise-system namespace exists for token secret creation.
 	_ = k8sClient.Create(ctx, &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{Name: "mortise-system"},
 	})
 
-	// Create a GitProvider that will have a token secret.
-	gpWithToken := &mortisev1alpha1.GitProvider{
+	gp := &mortisev1alpha1.GitProvider{
 		ObjectMeta: metav1.ObjectMeta{Name: "github-main"},
 		Spec: mortisev1alpha1.GitProviderSpec{
-			Type: mortisev1alpha1.GitProviderTypeGitHub,
-			Host: "https://github.com",
-			OAuth: mortisev1alpha1.OAuthConfig{
-				ClientIDSecretRef:     mortisev1alpha1.SecretRef{Namespace: "mortise-system", Name: "gh-creds", Key: "clientID"},
-				ClientSecretSecretRef: mortisev1alpha1.SecretRef{Namespace: "mortise-system", Name: "gh-creds", Key: "clientSecret"},
-			},
-			WebhookSecretRef: mortisev1alpha1.SecretRef{Namespace: "mortise-system", Name: "gh-webhook", Key: "secret"},
+			Type:     mortisev1alpha1.GitProviderTypeGitHub,
+			Host:     "https://github.com",
+			ClientID: "test-client-id",
 		},
 	}
-	if err := k8sClient.Create(ctx, gpWithToken); err != nil {
-		t.Fatalf("create GitProvider github-main: %v", err)
-	}
-
-	// Create a GitProvider without a token secret.
-	gpNoToken := &mortisev1alpha1.GitProvider{
-		ObjectMeta: metav1.ObjectMeta{Name: "gitea-internal"},
-		Spec: mortisev1alpha1.GitProviderSpec{
-			Type: mortisev1alpha1.GitProviderTypeGitea,
-			Host: "https://gitea.internal.example",
-			OAuth: mortisev1alpha1.OAuthConfig{
-				ClientIDSecretRef:     mortisev1alpha1.SecretRef{Namespace: "mortise-system", Name: "gitea-creds", Key: "clientID"},
-				ClientSecretSecretRef: mortisev1alpha1.SecretRef{Namespace: "mortise-system", Name: "gitea-creds", Key: "clientSecret"},
-			},
-			WebhookSecretRef: mortisev1alpha1.SecretRef{Namespace: "mortise-system", Name: "gitea-webhook", Key: "secret"},
-		},
-	}
-	if err := k8sClient.Create(ctx, gpNoToken); err != nil {
-		t.Fatalf("create GitProvider gitea-internal: %v", err)
-	}
-
-	// Write the token secret for github-main only.
-	tokenSecret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "gitprovider-token-github-main",
-			Namespace: "mortise-system",
-		},
-		Data: map[string][]byte{"token": []byte("ghs_test")},
-	}
-	if err := k8sClient.Create(ctx, tokenSecret); err != nil {
-		t.Fatalf("create token secret: %v", err)
+	if err := k8sClient.Create(ctx, gp); err != nil {
+		t.Fatalf("create GitProvider: %v", err)
 	}
 
 	srv := newAdminServer(t, k8sClient)
@@ -105,33 +70,19 @@ func TestListGitProvidersSummary(t *testing.T) {
 	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if len(resp) != 2 {
-		t.Fatalf("expected 2 git providers, got %d", len(resp))
+	if len(resp) != 1 {
+		t.Fatalf("expected 1 git provider, got %d", len(resp))
 	}
 
-	// Build a lookup map for easier assertions.
-	byName := make(map[string]map[string]any)
-	for _, item := range resp {
-		byName[item["name"].(string)] = item
+	gh := resp[0]
+	if gh["name"] != "github-main" {
+		t.Errorf("name: expected github-main, got %v", gh["name"])
 	}
-
-	gh := byName["github-main"]
 	if gh["type"] != "github" {
-		t.Errorf("github-main type: expected github, got %v", gh["type"])
+		t.Errorf("type: expected github, got %v", gh["type"])
 	}
 	if gh["host"] != "https://github.com" {
-		t.Errorf("github-main host: expected https://github.com, got %v", gh["host"])
-	}
-	if gh["hasToken"] != true {
-		t.Errorf("github-main hasToken: expected true, got %v", gh["hasToken"])
-	}
-
-	gt := byName["gitea-internal"]
-	if gt["type"] != "gitea" {
-		t.Errorf("gitea-internal type: expected gitea, got %v", gt["type"])
-	}
-	if gt["hasToken"] != false {
-		t.Errorf("gitea-internal hasToken: expected false, got %v", gt["hasToken"])
+		t.Errorf("host: expected https://github.com, got %v", gh["host"])
 	}
 }
 
@@ -148,23 +99,18 @@ func TestListGitProvidersForbiddenForMember(t *testing.T) {
 	}
 }
 
-// validCreateGitProviderBody returns a request body the handler accepts,
-// scoped to a test-provided name so each test can keep its resources isolated.
+// validCreateGitProviderBody returns a request body the handler accepts.
 func validCreateGitProviderBody(name string) map[string]any {
 	return map[string]any{
-		"name": name,
-		"type": "github",
-		"host": "https://github.com",
-		"oauth": map[string]string{
-			"clientID":     "client-id-123",
-			"clientSecret": "client-secret-xyz",
-		},
-		"webhookSecret": "whsec_abc123",
+		"name":     name,
+		"type":     "github",
+		"host":     "https://github.com",
+		"clientID": "client-id-123",
 	}
 }
 
-// TestCreateGitProviderHappyPath verifies that a valid request creates both
-// the GitProvider CRD and the backing OAuth Secret with the expected shape.
+// TestCreateGitProviderHappyPath verifies that a valid request creates the
+// GitProvider CRD and an auto-generated webhook secret.
 func TestCreateGitProviderHappyPath(t *testing.T) {
 	k8sClient := setupEnvtest(t)
 	srv := newAdminServer(t, k8sClient)
@@ -185,12 +131,6 @@ func TestCreateGitProviderHappyPath(t *testing.T) {
 	if resp["type"] != "github" {
 		t.Errorf("type: expected github, got %v", resp["type"])
 	}
-	if resp["hasToken"] != false {
-		t.Errorf("hasToken: expected false, got %v", resp["hasToken"])
-	}
-	if _, present := resp["clientSecret"]; present {
-		t.Errorf("response must not echo clientSecret")
-	}
 
 	ctx := context.Background()
 
@@ -201,31 +141,26 @@ func TestCreateGitProviderHappyPath(t *testing.T) {
 	if gp.Spec.Host != "https://github.com" {
 		t.Errorf("host: got %q", gp.Spec.Host)
 	}
-	if gp.Spec.OAuth.ClientIDSecretRef.Name != "gitprovider-oauth-github-main" {
-		t.Errorf("clientIDSecretRef.Name: got %q", gp.Spec.OAuth.ClientIDSecretRef.Name)
+	if gp.Spec.ClientID != "client-id-123" {
+		t.Errorf("clientID: got %q", gp.Spec.ClientID)
 	}
-	if gp.Spec.OAuth.ClientIDSecretRef.Key != "clientID" {
-		t.Errorf("clientIDSecretRef.Key: got %q", gp.Spec.OAuth.ClientIDSecretRef.Key)
+	if gp.Spec.WebhookSecretRef == nil {
+		t.Fatal("webhookSecretRef is nil")
 	}
 	if gp.Spec.WebhookSecretRef.Key != "webhookSecret" {
 		t.Errorf("webhookSecretRef.Key: got %q", gp.Spec.WebhookSecretRef.Key)
 	}
 
+	// Verify the auto-generated webhook secret exists.
 	var secret corev1.Secret
 	if err := k8sClient.Get(ctx, types.NamespacedName{
 		Namespace: "mortise-system",
-		Name:      "gitprovider-oauth-github-main",
+		Name:      "gitprovider-webhook-github-main",
 	}, &secret); err != nil {
-		t.Fatalf("get OAuth secret: %v", err)
+		t.Fatalf("get webhook secret: %v", err)
 	}
-	if string(secret.Data["clientID"]) != "client-id-123" {
-		t.Errorf("secret clientID: got %q", secret.Data["clientID"])
-	}
-	if string(secret.Data["clientSecret"]) != "client-secret-xyz" {
-		t.Errorf("secret clientSecret: got %q", secret.Data["clientSecret"])
-	}
-	if string(secret.Data["webhookSecret"]) != "whsec_abc123" {
-		t.Errorf("secret webhookSecret: got %q", secret.Data["webhookSecret"])
+	if len(secret.Data["webhookSecret"]) == 0 {
+		t.Error("webhook secret is empty")
 	}
 	if secret.Labels["mortise.dev/managed-by"] != "api" {
 		t.Errorf("label mortise.dev/managed-by: got %q", secret.Labels["mortise.dev/managed-by"])
@@ -242,59 +177,32 @@ func TestCreateGitProviderValidation(t *testing.T) {
 		{
 			name: "missing name",
 			body: map[string]any{
-				"type":          "github",
-				"host":          "https://github.com",
-				"oauth":         map[string]string{"clientID": "x", "clientSecret": "y"},
-				"webhookSecret": "z",
+				"type": "github",
+				"host": "https://github.com",
 			},
 		},
 		{
 			name: "invalid name",
 			body: map[string]any{
-				"name":          "Bad Name",
-				"type":          "github",
-				"host":          "https://github.com",
-				"oauth":         map[string]string{"clientID": "x", "clientSecret": "y"},
-				"webhookSecret": "z",
+				"name": "Bad Name",
+				"type": "github",
+				"host": "https://github.com",
 			},
 		},
 		{
 			name: "bad type",
 			body: map[string]any{
-				"name":          "my-provider",
-				"type":          "bitbucket",
-				"host":          "https://bitbucket.org",
-				"oauth":         map[string]string{"clientID": "x", "clientSecret": "y"},
-				"webhookSecret": "z",
+				"name": "my-provider",
+				"type": "bitbucket",
+				"host": "https://bitbucket.org",
 			},
 		},
 		{
 			name: "non-url host",
 			body: map[string]any{
-				"name":          "my-provider",
-				"type":          "github",
-				"host":          "not-a-url",
-				"oauth":         map[string]string{"clientID": "x", "clientSecret": "y"},
-				"webhookSecret": "z",
-			},
-		},
-		{
-			name: "missing clientID",
-			body: map[string]any{
-				"name":          "my-provider",
-				"type":          "github",
-				"host":          "https://github.com",
-				"oauth":         map[string]string{"clientSecret": "y"},
-				"webhookSecret": "z",
-			},
-		},
-		{
-			name: "missing webhookSecret",
-			body: map[string]any{
-				"name":  "my-provider",
-				"type":  "github",
-				"host":  "https://github.com",
-				"oauth": map[string]string{"clientID": "x", "clientSecret": "y"},
+				"name": "my-provider",
+				"type": "github",
+				"host": "not-a-url",
 			},
 		},
 	}
@@ -310,7 +218,6 @@ func TestCreateGitProviderValidation(t *testing.T) {
 				t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
 			}
 
-			// Confirm nothing was persisted.
 			var list mortisev1alpha1.GitProviderList
 			if err := k8sClient.List(context.Background(), &list); err != nil {
 				t.Fatalf("list GitProviders: %v", err)
@@ -353,8 +260,8 @@ func TestCreateGitProviderForbiddenForMember(t *testing.T) {
 	}
 }
 
-// TestDeleteGitProviderHappyPath verifies that deletion removes the CRD,
-// the OAuth credentials Secret, and the OAuth access token Secret.
+// TestDeleteGitProviderHappyPath verifies that deletion removes the CRD and
+// the managed webhook secret.
 func TestDeleteGitProviderHappyPath(t *testing.T) {
 	k8sClient := setupEnvtest(t)
 	srv := newAdminServer(t, k8sClient)
@@ -364,18 +271,6 @@ func TestDeleteGitProviderHappyPath(t *testing.T) {
 	w := doRequest(h, http.MethodPost, "/api/gitproviders", validCreateGitProviderBody("github-main"))
 	if w.Code != http.StatusCreated {
 		t.Fatalf("seed create: %d: %s", w.Code, w.Body.String())
-	}
-
-	// Simulate a completed OAuth flow by creating the token secret.
-	tokenSecret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "gitprovider-token-github-main",
-			Namespace: "mortise-system",
-		},
-		Data: map[string][]byte{"token": []byte("ghs_test")},
-	}
-	if err := k8sClient.Create(ctx, tokenSecret); err != nil {
-		t.Fatalf("create token secret: %v", err)
 	}
 
 	w = doRequest(h, http.MethodDelete, "/api/gitproviders/github-main", nil)
@@ -388,20 +283,12 @@ func TestDeleteGitProviderHappyPath(t *testing.T) {
 		t.Errorf("GitProvider still present: err=%v", err)
 	}
 
-	var oauthSecret corev1.Secret
+	var whSecret corev1.Secret
 	if err := k8sClient.Get(ctx, types.NamespacedName{
 		Namespace: "mortise-system",
-		Name:      "gitprovider-oauth-github-main",
-	}, &oauthSecret); !errors.IsNotFound(err) {
-		t.Errorf("OAuth Secret still present: err=%v", err)
-	}
-
-	var tok corev1.Secret
-	if err := k8sClient.Get(ctx, types.NamespacedName{
-		Namespace: "mortise-system",
-		Name:      "gitprovider-token-github-main",
-	}, &tok); !errors.IsNotFound(err) {
-		t.Errorf("token Secret still present: err=%v", err)
+		Name:      "gitprovider-webhook-github-main",
+	}, &whSecret); !errors.IsNotFound(err) {
+		t.Errorf("webhook Secret still present: err=%v", err)
 	}
 }
 
@@ -428,17 +315,12 @@ func TestDeleteGitProviderIgnoresMissingSecrets(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "mortise-system"},
 	})
 
-	// Create only the CRD, no managed secrets, to simulate an orphan.
 	gp := &mortisev1alpha1.GitProvider{
 		ObjectMeta: metav1.ObjectMeta{Name: "orphan"},
 		Spec: mortisev1alpha1.GitProviderSpec{
-			Type: mortisev1alpha1.GitProviderTypeGitHub,
-			Host: "https://github.com",
-			OAuth: mortisev1alpha1.OAuthConfig{
-				ClientIDSecretRef:     mortisev1alpha1.SecretRef{Namespace: "mortise-system", Name: "x", Key: "clientID"},
-				ClientSecretSecretRef: mortisev1alpha1.SecretRef{Namespace: "mortise-system", Name: "x", Key: "clientSecret"},
-			},
-			WebhookSecretRef: mortisev1alpha1.SecretRef{Namespace: "mortise-system", Name: "x", Key: "webhookSecret"},
+			Type:     mortisev1alpha1.GitProviderTypeGitHub,
+			Host:     "https://github.com",
+			ClientID: "test-id",
 		},
 	}
 	if err := k8sClient.Create(ctx, gp); err != nil {

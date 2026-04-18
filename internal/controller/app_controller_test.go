@@ -1745,6 +1745,9 @@ func makeGitSourceApp(name, ns, providerRef string) *mortisev1alpha1.App {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: ns,
+			Annotations: map[string]string{
+				"mortise.dev/created-by": "test@example.com",
+			},
 		},
 		Spec: mortisev1alpha1.AppSpec{
 			Source: mortisev1alpha1.AppSource{
@@ -1795,20 +1798,16 @@ var _ = Describe("App Controller — git source", func() {
 			gp := &mortisev1alpha1.GitProvider{
 				ObjectMeta: metav1.ObjectMeta{Name: "gh-clone-fail"},
 				Spec: mortisev1alpha1.GitProviderSpec{
-					Type: mortisev1alpha1.GitProviderTypeGitHub,
-					Host: "https://github.com",
-					OAuth: mortisev1alpha1.OAuthConfig{
-						ClientIDSecretRef:     mortisev1alpha1.SecretRef{Namespace: namespace, Name: "dummy", Key: "id"},
-						ClientSecretSecretRef: mortisev1alpha1.SecretRef{Namespace: namespace, Name: "dummy", Key: "secret"},
-					},
-					WebhookSecretRef: mortisev1alpha1.SecretRef{Namespace: namespace, Name: "dummy", Key: "wh"},
+					Type:     mortisev1alpha1.GitProviderTypeGitHub,
+					Host:     "https://github.com",
+					ClientID: "test-client-id",
 				},
 			}
 			Expect(k8sClient.Create(ctx, gp)).To(Succeed())
 			defer func() { Expect(k8sClient.Delete(ctx, gp)).To(Succeed()) }()
 
 			tokenSecret := &corev1.Secret{
-				ObjectMeta: metav1.ObjectMeta{Name: "gitprovider-token-gh-clone-fail", Namespace: "mortise-system"},
+				ObjectMeta: metav1.ObjectMeta{Name: "user-gh-clone-fail-token-74657374406578616d706c652e636f6d", Namespace: "mortise-system"},
 				Data:       map[string][]byte{"token": []byte("tok")},
 			}
 			ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "mortise-system"}}
@@ -1845,20 +1844,16 @@ var _ = Describe("App Controller — git source", func() {
 			gp := &mortisev1alpha1.GitProvider{
 				ObjectMeta: metav1.ObjectMeta{Name: "gh-build-fail"},
 				Spec: mortisev1alpha1.GitProviderSpec{
-					Type: mortisev1alpha1.GitProviderTypeGitHub,
-					Host: "https://github.com",
-					OAuth: mortisev1alpha1.OAuthConfig{
-						ClientIDSecretRef:     mortisev1alpha1.SecretRef{Namespace: namespace, Name: "dummy", Key: "id"},
-						ClientSecretSecretRef: mortisev1alpha1.SecretRef{Namespace: namespace, Name: "dummy", Key: "secret"},
-					},
-					WebhookSecretRef: mortisev1alpha1.SecretRef{Namespace: namespace, Name: "dummy", Key: "wh"},
+					Type:     mortisev1alpha1.GitProviderTypeGitHub,
+					Host:     "https://github.com",
+					ClientID: "test-client-id",
 				},
 			}
 			Expect(k8sClient.Create(ctx, gp)).To(Succeed())
 			defer func() { Expect(k8sClient.Delete(ctx, gp)).To(Succeed()) }()
 
 			tokenSecret := &corev1.Secret{
-				ObjectMeta: metav1.ObjectMeta{Name: "gitprovider-token-gh-build-fail", Namespace: "mortise-system"},
+				ObjectMeta: metav1.ObjectMeta{Name: "user-gh-build-fail-token-74657374406578616d706c652e636f6d", Namespace: "mortise-system"},
 				Data:       map[string][]byte{"token": []byte("tok")},
 			}
 			_ = k8sClient.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "mortise-system"}})
@@ -1892,20 +1887,16 @@ var _ = Describe("App Controller — git source", func() {
 			gp := &mortisev1alpha1.GitProvider{
 				ObjectMeta: metav1.ObjectMeta{Name: "gh-happy"},
 				Spec: mortisev1alpha1.GitProviderSpec{
-					Type: mortisev1alpha1.GitProviderTypeGitHub,
-					Host: "https://github.com",
-					OAuth: mortisev1alpha1.OAuthConfig{
-						ClientIDSecretRef:     mortisev1alpha1.SecretRef{Namespace: namespace, Name: "dummy", Key: "id"},
-						ClientSecretSecretRef: mortisev1alpha1.SecretRef{Namespace: namespace, Name: "dummy", Key: "secret"},
-					},
-					WebhookSecretRef: mortisev1alpha1.SecretRef{Namespace: namespace, Name: "dummy", Key: "wh"},
+					Type:     mortisev1alpha1.GitProviderTypeGitHub,
+					Host:     "https://github.com",
+					ClientID: "test-client-id",
 				},
 			}
 			Expect(k8sClient.Create(ctx, gp)).To(Succeed())
 			defer func() { Expect(k8sClient.Delete(ctx, gp)).To(Succeed()) }()
 
 			tokenSecret := &corev1.Secret{
-				ObjectMeta: metav1.ObjectMeta{Name: "gitprovider-token-gh-happy", Namespace: "mortise-system"},
+				ObjectMeta: metav1.ObjectMeta{Name: "user-gh-happy-token-74657374406578616d706c652e636f6d", Namespace: "mortise-system"},
 				Data:       map[string][]byte{"token": []byte("mytoken")},
 			}
 			_ = k8sClient.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "mortise-system"}})
@@ -1914,7 +1905,7 @@ var _ = Describe("App Controller — git source", func() {
 
 			app := makeGitSourceApp("git-happy", namespace, "gh-happy")
 			// Set the revision annotation as the webhook would.
-			app.Annotations = map[string]string{"mortise.dev/revision": "abc1234567890"}
+			app.Annotations["mortise.dev/revision"] = "abc1234567890"
 			Expect(k8sClient.Create(ctx, app)).To(Succeed())
 			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
 
@@ -1950,20 +1941,16 @@ var _ = Describe("App Controller — git source", func() {
 			gp := &mortisev1alpha1.GitProvider{
 				ObjectMeta: metav1.ObjectMeta{Name: "gh-async"},
 				Spec: mortisev1alpha1.GitProviderSpec{
-					Type: mortisev1alpha1.GitProviderTypeGitHub,
-					Host: "https://github.com",
-					OAuth: mortisev1alpha1.OAuthConfig{
-						ClientIDSecretRef:     mortisev1alpha1.SecretRef{Namespace: namespace, Name: "dummy", Key: "id"},
-						ClientSecretSecretRef: mortisev1alpha1.SecretRef{Namespace: namespace, Name: "dummy", Key: "secret"},
-					},
-					WebhookSecretRef: mortisev1alpha1.SecretRef{Namespace: namespace, Name: "dummy", Key: "wh"},
+					Type:     mortisev1alpha1.GitProviderTypeGitHub,
+					Host:     "https://github.com",
+					ClientID: "test-client-id",
 				},
 			}
 			Expect(k8sClient.Create(ctx, gp)).To(Succeed())
 			defer func() { Expect(k8sClient.Delete(ctx, gp)).To(Succeed()) }()
 
 			tokenSecret := &corev1.Secret{
-				ObjectMeta: metav1.ObjectMeta{Name: "gitprovider-token-gh-async", Namespace: "mortise-system"},
+				ObjectMeta: metav1.ObjectMeta{Name: "user-gh-async-token-74657374406578616d706c652e636f6d", Namespace: "mortise-system"},
 				Data:       map[string][]byte{"token": []byte("tok")},
 			}
 			_ = k8sClient.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "mortise-system"}})
@@ -1971,7 +1958,7 @@ var _ = Describe("App Controller — git source", func() {
 			defer func() { Expect(k8sClient.Delete(ctx, tokenSecret)).To(Succeed()) }()
 
 			app := makeGitSourceApp("git-async", namespace, "gh-async")
-			app.Annotations = map[string]string{"mortise.dev/revision": "revasync"}
+			app.Annotations["mortise.dev/revision"] = "revasync"
 			Expect(k8sClient.Create(ctx, app)).To(Succeed())
 			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
 
@@ -2030,20 +2017,16 @@ var _ = Describe("App Controller — git source", func() {
 			gp := &mortisev1alpha1.GitProvider{
 				ObjectMeta: metav1.ObjectMeta{Name: "gh-shortcircuit"},
 				Spec: mortisev1alpha1.GitProviderSpec{
-					Type: mortisev1alpha1.GitProviderTypeGitHub,
-					Host: "https://github.com",
-					OAuth: mortisev1alpha1.OAuthConfig{
-						ClientIDSecretRef:     mortisev1alpha1.SecretRef{Namespace: namespace, Name: "dummy", Key: "id"},
-						ClientSecretSecretRef: mortisev1alpha1.SecretRef{Namespace: namespace, Name: "dummy", Key: "secret"},
-					},
-					WebhookSecretRef: mortisev1alpha1.SecretRef{Namespace: namespace, Name: "dummy", Key: "wh"},
+					Type:     mortisev1alpha1.GitProviderTypeGitHub,
+					Host:     "https://github.com",
+					ClientID: "test-client-id",
 				},
 			}
 			Expect(k8sClient.Create(ctx, gp)).To(Succeed())
 			defer func() { Expect(k8sClient.Delete(ctx, gp)).To(Succeed()) }()
 
 			tokenSecret := &corev1.Secret{
-				ObjectMeta: metav1.ObjectMeta{Name: "gitprovider-token-gh-shortcircuit", Namespace: "mortise-system"},
+				ObjectMeta: metav1.ObjectMeta{Name: "user-gh-shortcircuit-token-74657374406578616d706c652e636f6d", Namespace: "mortise-system"},
 				Data:       map[string][]byte{"token": []byte("tok")},
 			}
 			_ = k8sClient.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "mortise-system"}})

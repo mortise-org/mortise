@@ -5,15 +5,14 @@ whenever implementation status changes — see the **Keeping this file up to
 date** section at the bottom.
 
 Legend: **Done** / **Partial** / **Not started**
-Last reconciled against spec + code: 2026-04-17 (UI overhaul pass 4 — UX bug-fix pass
-based on live review: app-detail drawer now opens in-place (no navigation), breadcrumbs
-removed, view-toggle/Add floated as overlay, notifications bell on all pages, storage
-config in platform settings, `ListTree` added to GitAPI + all impls + `/repos/:owner/:repo/tree`
-endpoint for watch-paths picker, domain field in new-app modal, shared-vars reads from
-app.spec (not broken /shared endpoint), VariablesTab restructured to stacked sections,
-SettingsTab spread-proxy bug fixed, env switcher always shows production+staging floor,
-canvas dot grid improved. E2E: canvas-interactions 14/14, app-variables-full 11/11,
-admin-settings 21/21, new-app-all-sources 14/14 passing after selector fixes.)
+Last reconciled against spec + code: 2026-04-18 (Git auth consolidation — GitProvider
+CRD simplified: `spec.oauth` deleted, replaced by `spec.clientID` (plain string) +
+`spec.clientSecretRef` (optional `*SecretRef`); `spec.webhookSecretRef` changed to
+optional pointer; token storage now per-user (`user-{providerName}-token-{hex(email)}`);
+OAuth code grant flow removed, device flow is primary auth for GitHub; `providerRef`
+required on all git-source Apps; PlatformConfig auto-creates default GitHub GitProvider;
+device flow routes moved to `/api/auth/git/{provider}/...`; poll endpoint requires JWT;
+`ErrAuthFailed` sentinel added. Issue #29 resolved.)
 
 ---
 
@@ -29,7 +28,7 @@ admin-settings 21/21, new-app-all-sources 14/14 passing after selector fixes.)
 | 4 — Build system (git source)    | §7.5        | **Done**         | All stacks wired end-to-end: webhook patches `mortise.dev/revision` annotation → App reconciler clones + builds + deploys. Operator entrypoint reads config from `PlatformConfig` (env-var fallback for first-boot). Builds run asynchronously in background goroutines; the reconciler returns `Building` immediately and polls on requeue. |
 | 5 — Monorepo support             | §7.6        | **Done**         | `source.path` plumbs into BuildKit context; `source.watchPaths` gates webhook rebuilds (prefix match). UI build grouping deferred. |
 | 6 — Preview environments        | §7.7        | **Done**         | `PreviewEnvironment` CRD with real types (PullRequestRef, PreviewPhase, TTL, domain). Controller reconciles Deployment + Service + Ingress with owner references; async build via buildTrackerStore (same pattern as App controller); TTL expiry auto-deletes. Webhook handler parses PR events (opened/synchronize/closed) for GitHub, GitLab, Gitea; creates/updates/deletes PreviewEnvironments with staging inheritance + preview overrides. Domain template resolution (`{number}`, `{app}`). Commit status posted on PR SHA. |
-| 7 — Polish & v1                  | §7.8        | **Partial**      | Rollback + promote full-stack (API, CLI, UI). Deploy tokens + env management surface (§5.9a) full-stack. Custom domains API/CLI/UI. First-run wizard (4-step). PlatformConfig PATCH API. `spec.network.port`. `oauthTokenExists` fix. Repos API (`ListRepos`/`ListBranches`). Railway-style new-app page. **GitHub device flow** (zero-config GitHub connection via device authorization grant). **GitHub App Manifest Flow** (`POST /api/github-app/manifest`, callback, `GitHubAppAPI` with JWT + installation tokens, CRD `spec.mode`/`spec.githubApp`). `sharedVars` (§5.8b). Cron apps `kind: cron` with CronJob reconciliation (§5.8a). `source.type: external` with ExternalName Service + Ingress + bindings resolver (§5.1). Missing: 5-role RBAC (deferred to v2, Issue #9), metrics-server UI. |
+| 7 — Polish & v1                  | §7.8        | **Partial**      | Rollback + promote full-stack (API, CLI, UI). Deploy tokens + env management surface (§5.9a) full-stack. Custom domains API/CLI/UI. First-run wizard (4-step). PlatformConfig PATCH API. `spec.network.port`. Repos API (`ListRepos`/`ListBranches`). Railway-style new-app page. **Git auth consolidation** (Issue #29): GitProvider CRD simplified (`spec.oauth` → `spec.clientID` + optional `spec.clientSecretRef`), device flow as primary auth, per-user token storage, `providerRef` required on git-source Apps, PlatformConfig auto-creates default GitHub GitProvider, `ErrAuthFailed` sentinel. **GitHub App Manifest Flow** (`POST /api/github-app/manifest`, callback, `GitHubAppAPI` with JWT + installation tokens, CRD `spec.mode`/`spec.githubApp`). `sharedVars` (§5.8b). Cron apps `kind: cron` with CronJob reconciliation (§5.8a). `source.type: external` with ExternalName Service + Ingress + bindings resolver (§5.1). Missing: 5-role RBAC (deferred to v2, Issue #9), metrics-server UI. |
 | 8 — Tenons & integration recipes | §7.9 / §13  | **Partial**      | Helm chart bundles Traefik/cert-manager/ExternalDNS/Zot as optional deps. 6 integration recipe docs in `docs/recipes/`. Extensions page in UI. Missing: actual reference tenon projects (cf-for-saas, backup-tenon) that spec §9 Phase 8 calls for. |
 
 ### Interface implementation coverage
@@ -110,7 +109,7 @@ cluster via the `//go:build integration` tag.
   `test/fixtures/image-basic.yaml` and asserts Deployment becomes ready.
 - `app_git_source_test.go` — `TestGitSourceAppBuildsAndDeploys`: bootstraps
   a Gitea repo with a minimal Dockerfile via `helpers.GiteaBootstrap`, stubs
-  the OAuth + webhook + provider-token secrets, creates a GitProvider and
+  the webhook + per-user token secrets, creates a GitProvider and
   an App from `test/fixtures/git-gitea-basic.yaml`, and asserts the App
   reaches `Ready`, the registry surfaces the built tag, and the Deployment
   runs the built image.
@@ -127,9 +126,9 @@ cluster via the `//go:build integration` tag.
   persistence using the in-cluster Gitea as the OAuth provider. Creates
   a Gitea OAuth app via its admin API, drives a cookie-jar HTTP client
   through Gitea's login + consent forms (scraping the `_csrf` token), and
-  verifies the operator-side code exchange stores a usable access token in
-  `gitprovider-token-{name}` — proved by calling Gitea's `/api/v1/user`
-  with it.
+  verifies the operator-side token exchange stores a usable access token in
+  a per-user Secret (`user-{providerName}-token-{hex(email)}`) — proved
+  by calling Gitea's `/api/v1/user` with it.
 
 **Helpers added:**
 - `test/helpers/gitea.go` — `GiteaBootstrap{BaseURL, Username, Password}`
@@ -175,7 +174,7 @@ cluster via the `//go:build integration` tag.
 Where it works (`internal/controller/app_controller.go`):
 - Reconciles `Deployment`, `Service`, `Ingress`, `PersistentVolumeClaim(s)`,
   `ServiceAccount` for `source.type: image` apps.
-- Reconciles `source.type: git` apps: resolves GitProvider OAuth token,
+- Reconciles `source.type: git` apps: resolves per-user GitProvider token,
   clones repo, runs build via `BuildClient`, pushes image via
   `RegistryBackend`, then falls through to Deployment/Service/Ingress
   reconciliation with the built image digest.
@@ -419,22 +418,26 @@ Integration test proves it against in-cluster Gitea + BuildKit + registry.
 
 ### Git provider stack — **Done**
 
-`internal/git/`, `internal/webhook/`, `internal/api/oauth.go`,
+`internal/git/`, `internal/webhook/`, `internal/api/device_flow.go`,
 `api/v1alpha1/gitprovider_types.go`,
 `internal/controller/gitprovider_controller.go`.
 
-**CRD (`api/v1alpha1/gitprovider_types.go`, 140 LOC):**
+**CRD (`api/v1alpha1/gitprovider_types.go`):**
 - `spec.type` — enum `github | gitlab | gitea` (CEL-validated).
 - `spec.host` — base URL.
-- `spec.oauth.clientIDSecretRef` / `spec.oauth.clientSecretSecretRef` —
-  `SecretRef{Namespace, Name, Key}` pointing at the OAuth app credentials.
-- `spec.webhookSecretRef` — `SecretRef` for HMAC verification.
+- `spec.clientID` — plain string, the public OAuth client ID.
+- `spec.clientSecretRef` — optional `*SecretRef`, for future OAuth code
+  grant (GitLab/Gitea). Not used by the device flow.
+- `spec.webhookSecretRef` — optional `*SecretRef` for HMAC verification.
 - `status.phase` — `Pending | Ready | Failed`; plus standard `Conditions`.
 - Generated `zz_generated.deepcopy.go`, CRD yaml, and RBAC role all
   regenerated via `make manifests generate`.
+- **Old `spec.oauth` (OAuthConfig with `clientIDSecretRef` +
+  `clientSecretSecretRef`) deleted** — replaced by the flat fields above.
 
-**Reconciler (`internal/controller/gitprovider_controller.go`, 141 LOC):**
-- Validates that every referenced Secret exists and is non-empty.
+**Reconciler (`internal/controller/gitprovider_controller.go`):**
+- Validates that every referenced Secret (optional `clientSecretRef`,
+  optional `webhookSecretRef`) exists and is non-empty when set.
 - Sets `status.phase = Ready` + `Available=True` condition on success.
 - Sets `status.phase = Failed` + condition with reason on validation
   failure; requeues with backoff.
@@ -446,7 +449,7 @@ Integration test proves it against in-cluster Gitea + BuildKit + registry.
   `xanzy/go-gitlab`, `code.gitea.io/sdk/gitea`) behind the `GitAPI`
   interface so controllers never import these directly.
 - `Factory(ctx, provider, token)` in `internal/git/factory.go` takes a
-  `*mortisev1alpha1.GitProvider` + resolved OAuth access token and
+  `*mortisev1alpha1.GitProvider` + resolved per-user access token and
   returns the matching impl.
 - `internal/git/api_test.go` exercises the factory's dispatch and
   mocks at the `GitAPI` boundary per CLAUDE.md mocking policy.
@@ -470,17 +473,21 @@ Integration test proves it against in-cluster Gitea + BuildKit + registry.
 - Mounted in `internal/api/server.go` at `/api/webhooks/{provider}`
   (unauthenticated — auth is via HMAC).
 
-**OAuth server (`internal/api/oauth.go`, 202 LOC):**
-- `GET /api/oauth/{provider}/authorize` — builds the forge's OAuth
-  consent URL from the `GitProvider`'s `oauth.clientIDSecretRef` and
-  redirects.
-- `GET /api/oauth/{provider}/callback` — exchanges the code for an
-  access token (using `golang.org/x/oauth2`), then stores the token in a
-  k8s Secret keyed by provider name.
+**Device flow server (`internal/api/device_flow.go`):**
+- `POST /api/auth/git/{provider}/device` — initiates the OAuth device
+  authorization grant (RFC 8628) using the `GitProvider`'s `spec.clientID`.
+  Returns user code + verification URI.
+- `GET /api/auth/git/{provider}/device/poll` — polls the token endpoint
+  for grant completion. **Requires JWT** (authenticated).
+- `GET /api/auth/git/{provider}/status` — checks whether the current
+  user has a valid token for this provider.
+- Tokens stored per-user per-provider: Secret named
+  `user-{providerName}-token-{hex(email)}` in `mortise-system`.
 - Scopes are per-forge: `repo` / `admin:repo_hook` for GitHub, `api` for
   GitLab, `repo` / `write:repo_hook` for Gitea.
-- Wired into `server.go:74-75` as unauthenticated routes (same reasoning
-  as the webhook route).
+- Device and status routes are JWT-authenticated; the old unauthenticated
+  OAuth code grant routes (`/api/oauth/{provider}/authorize`,
+  `/api/oauth/{provider}/callback`) have been removed.
 
 **Admin REST API (`internal/api/gitproviders.go`):**
 - `GET`, `POST`, `DELETE /api/gitproviders` let admins list, create, and
@@ -546,33 +553,32 @@ Integration test proves it against in-cluster Gitea + BuildKit + registry.
 
 ### Git provider UI — **Done**
 
-- **Frontend for OAuth** — `ui/src/routes/settings/git-providers/+page.svelte`
-  drives the authorize → callback round-trip. The list page shows all
-  `GitProvider` CRDs with Name, Type, Host, Phase, token status (Connected /
-  Not Connected), and a "Connect"/"Reconnect" anchor that navigates to
-  `/api/oauth/{name}/authorize` (full browser navigation, not fetch).
-  OAuth callback now redirects to `/settings/git-providers?connected={name}`
-  and the list page displays a success banner keyed on that query param.
-  Navigation link ("Settings") added to the main header in `+layout.svelte`.
+- **Frontend for device flow** — `ui/src/routes/settings/git-providers/+page.svelte`
+  drives the device authorization grant flow. The list page shows all
+  `GitProvider` CRDs with Name, Type, Host, Phase, per-user token status
+  (Connected / Not Connected), and a "Connect"/"Reconnect" button that
+  initiates the device flow (`POST /api/auth/git/{provider}/device`),
+  displays the user code + verification URL, and polls for completion
+  (`GET /api/auth/git/{provider}/device/poll`). Navigation link
+  ("Settings") added to the main header in `+layout.svelte`.
 - **`GET /api/gitproviders`** — admin-only endpoint in
   `internal/api/gitproviders.go` returns `[]GitProviderSummary` with
-  `hasToken` reflecting whether `gitprovider-token-{name}` exists in
-  `mortise-system`. Unit tests in `internal/api/gitproviders_test.go`.
+  per-user token status reflecting whether
+  `user-{providerName}-token-{hex(email)}` exists for the requesting
+  user. Unit tests in `internal/api/gitproviders_test.go`.
 - **`POST /api/gitproviders`** — admin-only. Accepts name / type / host /
-  OAuth client ID+secret / webhook secret. Creates a Secret named
-  `gitprovider-oauth-{name}` in `mortise-system` (labeled
-  `mortise.dev/managed-by: api`) holding `clientID`, `clientSecret`,
-  `webhookSecret`; then creates the GitProvider CRD pointing at it.
-  Rolls back the Secret if CRD creation fails. Returns 400 on
-  validation errors, 409 if a provider with that name already exists.
-- **`DELETE /api/gitproviders/{name}`** — admin-only. Deletes the CRD,
-  the managed OAuth Secret (`gitprovider-oauth-{name}`), and the per-
-  provider OAuth access-token Secret (`gitprovider-token-{name}`).
-  Returns 204 on success, 404 if the provider doesn't exist. Missing
-  secrets are ignored.
+  client ID / optional webhook secret. Creates the GitProvider CRD with
+  `spec.clientID` set directly. If a webhook secret is provided, creates
+  a Secret for `spec.webhookSecretRef`. Returns 400 on validation errors,
+  409 if a provider with that name already exists.
+- **`DELETE /api/gitproviders/{name}`** — admin-only. Deletes the CRD
+  and any associated webhook-secret Secret. Per-user token Secrets
+  (`user-{providerName}-token-{hex(email)}`) are cleaned up by label
+  selector. Returns 204 on success, 404 if the provider doesn't exist.
+  Missing secrets are ignored.
 - **Create/delete UI** — `ui/src/routes/settings/git-providers/+page.svelte`
   now has an inline "Create git provider" form (name, type, host,
-  OAuth client ID+secret, webhook secret with a "Generate" helper) and
+  client ID, optional webhook secret with a "Generate" helper) and
   a Delete action per row. The previous `kubectl apply` snippet in
   the empty state has been removed — the UI is now a self-contained
   admin experience. Client wired in `ui/src/lib/api.ts`
@@ -724,6 +730,20 @@ Present:
   directly (removed broken `/shared` API call); VariablesTab restructured to stacked
   env sections; SettingsTab proxy-spread bug fixed (all `api.updateApp` calls
   now go through `JSON.parse(JSON.stringify(spec))`).
+- **Git auth consolidation (2026-04-18, Issue #29):** GitProvider CRD
+  simplified — `spec.oauth` (OAuthConfig) deleted, replaced by
+  `spec.clientID` (plain string) + `spec.clientSecretRef` (optional
+  `*SecretRef`). `spec.webhookSecretRef` changed to optional pointer.
+  Token storage moved from shared per-provider
+  (`gitprovider-token-{name}`) to per-user per-provider
+  (`user-{providerName}-token-{hex(email)}`). OAuth code grant flow
+  deleted; device flow (RFC 8628) is the primary auth mechanism for
+  GitHub. Device flow routes moved from `/api/auth/github/device*` to
+  `/api/auth/git/{provider}/device*`; poll endpoint now requires JWT.
+  `providerRef` required on all git-source Apps. PlatformConfig
+  controller auto-creates default GitHub GitProvider from
+  `spec.github.clientID`. `ErrAuthFailed` sentinel added to
+  `internal/git` for 401/403 detection.
 
 Missing:
 - **Authz role upgrade (Issue #9, deferred to v2):** current roles are
@@ -843,6 +863,18 @@ five roles: `platform-admin`, `platform-viewer`, `team-admin`,
 environment scoping. No `Team` CRD exists; grants have no env field.
 **Decision: v1 ships admin/member only.** The 5-role team model is tracked
 as Issue #9 for v2.
+
+### Issue #29 — Git auth consolidation — **Resolved**
+GitProvider CRD carried a `spec.oauth` block (`OAuthConfig` with
+`clientIDSecretRef` + `clientSecretSecretRef`) and stored tokens in a
+shared per-provider Secret (`gitprovider-token-{name}`). This meant all
+users shared one token (wrong rate-limit scope, wrong permission scope)
+and the OAuth code grant flow required callback URLs that complicated
+setup. Resolved: CRD simplified to `spec.clientID` (plain string) +
+optional `spec.clientSecretRef`; token storage is now per-user
+(`user-{providerName}-token-{hex(email)}`); device flow (RFC 8628) is
+the primary auth mechanism; `providerRef` required on git-source Apps;
+PlatformConfig auto-creates default GitHub GitProvider.
 
 ### Issue #28 — Silent git deploy failures — **Resolved**
 Backend already wrote `status.conditions` with build error messages via

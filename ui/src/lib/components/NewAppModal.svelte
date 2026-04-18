@@ -113,11 +113,11 @@
 		selectedType = t;
 		error = '';
 		if (t === 'git') {
-			// Default: try per-user GitHub token (no provider needed).
-			// If user has GitLab/Gitea providers, they can pick one.
-			if (!gitProvider) {
-				loadRepos();
-			} else if (providers.length > 0) {
+			// Auto-select provider if none chosen.
+			if (!gitProvider && providers.length > 0) {
+				gitProvider = providers[0].name;
+			}
+			if (gitProvider) {
 				loadRepos();
 			}
 		}
@@ -129,7 +129,7 @@
 		selectedRepo = null;
 		branches = [];
 		try {
-			repos = await api.listRepos(gitProvider || undefined);
+			repos = await api.listRepos(gitProvider);
 		} catch {
 			repos = [];
 		} finally {
@@ -142,7 +142,7 @@
 		treeLoading = true;
 		const [owner, name] = selectedRepo.fullName.split('/');
 		try {
-			repoTree = await api.listRepoTree(owner, name, gitProvider || undefined, gitBranch);
+			repoTree = await api.listRepoTree(owner, name, gitProvider, gitBranch);
 		} catch {
 			repoTree = [];
 		} finally {
@@ -179,7 +179,7 @@
 		branches = [];
 		const [owner, name] = repo.fullName.split('/');
 		api
-			.listBranches(owner, name, gitProvider || undefined)
+			.listBranches(owner, name, gitProvider)
 			.then((list) => { branches = list ?? []; })
 			.catch(() => { branches = [{ name: repo.defaultBranch, default: true }]; });
 		void loadRepoTree();
@@ -195,7 +195,7 @@
 					repo: selectedRepo?.cloneURL ?? '',
 					branch: gitBranch,
 					path: gitPath || undefined,
-					providerRef: gitProvider || undefined,
+					providerRef: gitProvider,
 					watchPaths: watchPathsDiffer && [...selectedPaths, customPath.trim()].filter(Boolean).length > 0
 						? [...selectedPaths, customPath.trim()].filter(Boolean)
 						: gitPath ? [gitPath] : undefined,

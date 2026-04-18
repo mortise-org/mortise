@@ -116,7 +116,6 @@ func (s *Server) PatchPlatform(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-
 	writeJSON(w, http.StatusOK, platformResponse{
 		Domain:  pc.Spec.Domain,
 		DNS:     pc.Spec.DNS,

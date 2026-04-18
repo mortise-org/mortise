@@ -5,6 +5,7 @@ package integration
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -63,26 +64,17 @@ func TestGitProviderAdminAPICRUD(t *testing.T) {
 		})
 		_ = k8sClient.Delete(ctx, &corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:      "gitprovider-oauth-" + providerName,
-				Namespace: "mortise-system",
-			},
-		})
-		_ = k8sClient.Delete(ctx, &corev1.Secret{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "gitprovider-token-" + providerName,
+				Name:      "gitprovider-webhook-" + providerName,
 				Namespace: "mortise-system",
 			},
 		})
 	})
 
 	body := map[string]any{
-		"name": providerName,
-		"type": "gitea",
-		"host": giteaInClusterHost,
-		"oauth": map[string]string{
-			"clientID":     "stub-client-id",
-			"clientSecret": "stub-client-secret",
-		},
+		"name":          providerName,
+		"type":          "gitea",
+		"host":          giteaInClusterHost,
+		"clientID":      "stub-client-id",
 		"webhookSecret": "stub-webhook-secret",
 	}
 
@@ -114,20 +106,17 @@ func TestGitProviderAdminAPICRUD(t *testing.T) {
 		t.Errorf("CRD host=%q want %q", gp.Spec.Host, giteaInClusterHost)
 	}
 
-	// --- Managed OAuth secret must exist with the API-managed label.
+	// --- Managed webhook secret must exist with the API-managed label.
 	var secret corev1.Secret
 	if err := k8sClient.Get(ctx, types.NamespacedName{
 		Namespace: "mortise-system",
-		Name:      "gitprovider-oauth-" + providerName,
+		Name:      "gitprovider-webhook-" + providerName,
 	}, &secret); err != nil {
-		t.Fatalf("get OAuth secret: %v", err)
+		t.Fatalf("get webhook secret: %v", err)
 	}
 	if secret.Labels["mortise.dev/managed-by"] != "api" {
 		t.Errorf("secret label mortise.dev/managed-by=%q want api",
 			secret.Labels["mortise.dev/managed-by"])
-	}
-	if string(secret.Data["clientID"]) != "stub-client-id" {
-		t.Errorf("secret clientID mismatch: got %q", secret.Data["clientID"])
 	}
 
 	// --- Duplicate POST → 409.
@@ -148,9 +137,9 @@ func TestGitProviderAdminAPICRUD(t *testing.T) {
 	}
 	if err := k8sClient.Get(ctx, types.NamespacedName{
 		Namespace: "mortise-system",
-		Name:      "gitprovider-oauth-" + providerName,
+		Name:      "gitprovider-webhook-" + providerName,
 	}, &secret); !errors.IsNotFound(err) {
-		t.Errorf("OAuth secret still present after delete: err=%v", err)
+		t.Errorf("webhook secret still present after delete: err=%v", err)
 	}
 }
 
@@ -199,6 +188,8 @@ func TestGiteaOAuthFlow(t *testing.T) {
 	// Create the GitProvider via the Mortise admin API, wiring in the OAuth
 	// credentials Gitea just minted.
 	ctx := context.Background()
+	// hex(mortiseAdminEmail) for per-user token secret cleanup.
+	adminEmailHex := hex.EncodeToString([]byte(mortiseAdminEmail))
 	t.Cleanup(func() {
 		// Best-effort teardown: the server should do this on DELETE, but if the
 		// test bails before we reach DELETE the cluster would be left dirty.
@@ -207,26 +198,24 @@ func TestGiteaOAuthFlow(t *testing.T) {
 		})
 		_ = k8sClient.Delete(ctx, &corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:      "gitprovider-oauth-" + providerName,
+				Name:      "gitprovider-webhook-" + providerName,
 				Namespace: "mortise-system",
 			},
 		})
 		_ = k8sClient.Delete(ctx, &corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:      "gitprovider-token-" + providerName,
+				Name:      "user-" + providerName + "-token-" + adminEmailHex,
 				Namespace: "mortise-system",
 			},
 		})
 	})
 
 	createBody := map[string]any{
-		"name": providerName,
-		"type": "gitea",
-		"host": giteaInClusterHost,
-		"oauth": map[string]string{
-			"clientID":     app.ClientID,
-			"clientSecret": app.ClientSecret,
-		},
+		"name":          providerName,
+		"type":          "gitea",
+		"host":          giteaInClusterHost,
+		"clientID":      app.ClientID,
+		"clientSecret":  app.ClientSecret,
 		"webhookSecret": "oauth-flow-webhook-secret",
 	}
 	resp := doJSON(t, http.MethodPost, mortiseURL+"/api/gitproviders", jwt, createBody)
@@ -310,7 +299,7 @@ func TestGiteaOAuthFlow(t *testing.T) {
 	var tokenSecret corev1.Secret
 	if err := k8sClient.Get(ctx, types.NamespacedName{
 		Namespace: "mortise-system",
-		Name:      "gitprovider-token-" + providerName,
+		Name:      "user-" + providerName + "-token-" + adminEmailHex,
 	}, &tokenSecret); err != nil {
 		t.Fatalf("get token secret: %v", err)
 	}
@@ -341,7 +330,7 @@ func TestGiteaOAuthFlow(t *testing.T) {
 	}
 	if err := k8sClient.Get(ctx, types.NamespacedName{
 		Namespace: "mortise-system",
-		Name:      "gitprovider-token-" + providerName,
+		Name:      "user-" + providerName + "-token-" + adminEmailHex,
 	}, &tokenSecret); !errors.IsNotFound(err) {
 		t.Errorf("token secret still present after delete: err=%v", err)
 	}

@@ -58,13 +58,9 @@ func TestListReposNoToken(t *testing.T) {
 	gp := &mortisev1alpha1.GitProvider{
 		ObjectMeta: metav1.ObjectMeta{Name: "gh-no-token"},
 		Spec: mortisev1alpha1.GitProviderSpec{
-			Type: mortisev1alpha1.GitProviderTypeGitHub,
-			Host: "https://github.com",
-			OAuth: mortisev1alpha1.OAuthConfig{
-				ClientIDSecretRef:     mortisev1alpha1.SecretRef{Namespace: "mortise-system", Name: "x", Key: "id"},
-				ClientSecretSecretRef: mortisev1alpha1.SecretRef{Namespace: "mortise-system", Name: "x", Key: "secret"},
-			},
-			WebhookSecretRef: mortisev1alpha1.SecretRef{Namespace: "mortise-system", Name: "x", Key: "wh"},
+			Type:     mortisev1alpha1.GitProviderTypeGitHub,
+			Host:     "https://github.com",
+			ClientID: "test-id",
 		},
 	}
 	if err := k8sClient.Create(ctx, gp); err != nil {

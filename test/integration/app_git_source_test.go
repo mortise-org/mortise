@@ -68,20 +68,17 @@ func TestGitSourceAppBuildsAndDeploys(t *testing.T) {
 		},
 	)
 
-	// --- Provide the OAuth + webhook secrets the GitProvider CRD schema
-	//     requires. Content is irrelevant — the test talks to Gitea with the
-	//     pre-populated admin token, not OAuth-issued tokens.
+	// --- Provide the webhook secret and per-user token the GitProvider CRD
+	//     schema requires. Content is irrelevant — the test talks to Gitea
+	//     with the pre-populated admin token, not OAuth-issued tokens.
 	providerName := "gitea-int"
-	stubSecret(t, "mortise-system", "gitea-oauth-stub", map[string]string{
-		"client-id":     "stub",
-		"client-secret": "stub",
-	})
 	stubSecret(t, "mortise-system", "gitea-webhook-stub", map[string]string{
 		"secret": "stub",
 	})
-	// Pre-populate the OAuth token secret the App controller reads via
-	// git.ResolveProviderToken. Bypasses /api/oauth/callback for tests.
-	stubSecret(t, "mortise-system", "gitprovider-token-"+providerName, map[string]string{
+	// Pre-populate the per-user token secret the App controller reads via
+	// git.ResolveGitToken. Bypasses the OAuth flow for tests.
+	testEmail := "test@example.com"
+	stubSecret(t, "mortise-system", "user-"+providerName+"-token-74657374406578616d706c652e636f6d", map[string]string{
 		"token": boot.Token,
 	})
 
@@ -89,17 +86,10 @@ func TestGitSourceAppBuildsAndDeploys(t *testing.T) {
 	gp := &mortisev1alpha1.GitProvider{
 		ObjectMeta: metav1.ObjectMeta{Name: providerName},
 		Spec: mortisev1alpha1.GitProviderSpec{
-			Type: mortisev1alpha1.GitProviderTypeGitea,
-			Host: giteaInClusterURL,
-			OAuth: mortisev1alpha1.OAuthConfig{
-				ClientIDSecretRef: mortisev1alpha1.SecretRef{
-					Namespace: "mortise-system", Name: "gitea-oauth-stub", Key: "client-id",
-				},
-				ClientSecretSecretRef: mortisev1alpha1.SecretRef{
-					Namespace: "mortise-system", Name: "gitea-oauth-stub", Key: "client-secret",
-				},
-			},
-			WebhookSecretRef: mortisev1alpha1.SecretRef{
+			Type:     mortisev1alpha1.GitProviderTypeGitea,
+			Host:     giteaInClusterURL,
+			ClientID: "test-client-id",
+			WebhookSecretRef: &mortisev1alpha1.SecretRef{
 				Namespace: "mortise-system", Name: "gitea-webhook-stub", Key: "secret",
 			},
 		},
@@ -128,6 +118,7 @@ func TestGitSourceAppBuildsAndDeploys(t *testing.T) {
 	// "main" is the branch; reconcileGitSource falls back to using it as the
 	// pseudo-revision when no SHA has been resolved yet.
 	app.Annotations["mortise.dev/revision"] = "main"
+	app.Annotations["mortise.dev/created-by"] = testEmail
 
 	if err := k8sClient.Create(context.Background(), app); err != nil {
 		t.Fatalf("create App: %v", err)

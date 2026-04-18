@@ -238,7 +238,7 @@ func (r *PreviewEnvironmentReconciler) reconcilePreviewBuild(ctx context.Context
 		return ctrl.Result{}, true, nil
 	}
 
-	// Resolve git provider token.
+	// Resolve git credentials via the parent app's owner token.
 	if app.Spec.Source.ProviderRef == "" {
 		return ctrl.Result{}, false, r.setPreviewFailed(ctx, pe, "MissingProviderRef", "parent App has no source.providerRef")
 	}
@@ -246,9 +246,14 @@ func (r *PreviewEnvironmentReconciler) reconcilePreviewBuild(ctx context.Context
 	if err := r.Get(ctx, types.NamespacedName{Name: app.Spec.Source.ProviderRef}, &gp); err != nil {
 		return ctrl.Result{}, false, r.setPreviewFailed(ctx, pe, "ProviderNotFound", fmt.Sprintf("GitProvider %q: %v", app.Spec.Source.ProviderRef, err))
 	}
-	token, err := git.ResolveProviderToken(ctx, r.Client, &gp)
+	createdBy := app.Annotations["mortise.dev/created-by"]
+	if createdBy == "" {
+		return ctrl.Result{}, false, r.setPreviewFailed(ctx, pe, "MissingOwner", "parent app has no mortise.dev/created-by annotation")
+	}
+	token, err := git.ResolveGitToken(ctx, r.Client, gp.Name, createdBy)
 	if err != nil {
-		return ctrl.Result{}, false, r.setPreviewFailed(ctx, pe, "TokenResolutionFailed", err.Error())
+		return ctrl.Result{}, false, r.setPreviewFailed(ctx, pe, "GitAuthFailed",
+			fmt.Sprintf("git token not available for user %s: %v", createdBy, err))
 	}
 
 	imageRef, err := r.RegistryBackend.PushTarget(pe.Spec.AppRef, fmt.Sprintf("pr-%d-%s", pe.Spec.PullRequest.Number, shortTag(revision)))
@@ -555,7 +560,12 @@ func (r *PreviewEnvironmentReconciler) postPreviewStatus(ctx context.Context, ap
 		log.Error(err, "get GitProvider for commit status")
 		return
 	}
-	token, err := git.ResolveProviderToken(ctx, r.Client, &gp)
+	createdBy := app.Annotations["mortise.dev/created-by"]
+	if createdBy == "" {
+		log.Info("cannot post commit status: app has no created-by annotation")
+		return
+	}
+	token, err := git.ResolveGitToken(ctx, r.Client, gp.Name, createdBy)
 	if err != nil {
 		log.Error(err, "resolve token for commit status")
 		return

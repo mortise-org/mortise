@@ -54,55 +54,37 @@ spec:
           spec:
             description: spec defines the desired state of GitProvider
             properties:
+              clientID:
+                description: |-
+                  ClientID is the OAuth App client ID (public, not a secret). For GitHub
+                  device flow this is the only credential needed to initiate user
+                  authorization. For forges requiring OAuth code grant (GitLab, Gitea),
+                  the client secret is stored separately via ClientSecretRef.
+                type: string
+              clientSecretRef:
+                description: |-
+                  ClientSecretRef references a Secret containing the OAuth client secret.
+                  Required only for forges that use OAuth code grant (GitLab, Gitea).
+                  Not needed for GitHub device flow.
+                properties:
+                  key:
+                    description: Key within the secret.
+                    type: string
+                  name:
+                    description: Name of the secret.
+                    type: string
+                  namespace:
+                    description: Namespace of the secret.
+                    type: string
+                required:
+                - key
+                - name
+                - namespace
+                type: object
               host:
                 description: Host is the base URL of the forge (e.g. https://github.com
                   or https://gitea.internal.example).
                 type: string
-              oauth:
-                description: |-
-                  OAuth holds the OAuth application credentials used to authenticate users and
-                  register webhooks on their behalf.
-                properties:
-                  clientIDSecretRef:
-                    description: ClientIDSecretRef references the secret containing
-                      the OAuth client ID.
-                    properties:
-                      key:
-                        description: Key within the secret.
-                        type: string
-                      name:
-                        description: Name of the secret.
-                        type: string
-                      namespace:
-                        description: Namespace of the secret.
-                        type: string
-                    required:
-                    - key
-                    - name
-                    - namespace
-                    type: object
-                  clientSecretSecretRef:
-                    description: ClientSecretSecretRef references the secret containing
-                      the OAuth client secret.
-                    properties:
-                      key:
-                        description: Key within the secret.
-                        type: string
-                      name:
-                        description: Name of the secret.
-                        type: string
-                      namespace:
-                        description: Namespace of the secret.
-                        type: string
-                    required:
-                    - key
-                    - name
-                    - namespace
-                    type: object
-                required:
-                - clientIDSecretRef
-                - clientSecretSecretRef
-                type: object
               type:
                 description: Type is the git forge type.
                 enum:
@@ -112,8 +94,8 @@ spec:
                 type: string
               webhookSecretRef:
                 description: |-
-                  WebhookSecretRef references the secret used to verify HMAC signatures on
-                  inbound webhook payloads from this forge.
+                  WebhookSecretRef references the Secret containing the HMAC key for
+                  verifying inbound webhook payloads from this forge.
                 properties:
                   key:
                     description: Key within the secret.

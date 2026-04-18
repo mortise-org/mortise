@@ -55,17 +55,6 @@ type SecretRef struct {
 	Key string `json:"key"`
 }
 
-// OAuthConfig holds the OAuth client credentials for a git forge.
-type OAuthConfig struct {
-	// ClientIDSecretRef references the secret containing the OAuth client ID.
-	// +required
-	ClientIDSecretRef SecretRef `json:"clientIDSecretRef"`
-
-	// ClientSecretSecretRef references the secret containing the OAuth client secret.
-	// +required
-	ClientSecretSecretRef SecretRef `json:"clientSecretSecretRef"`
-}
-
 // GitProviderSpec defines the desired state of GitProvider.
 type GitProviderSpec struct {
 	// Type is the git forge type.
@@ -76,15 +65,23 @@ type GitProviderSpec struct {
 	// +required
 	Host string `json:"host"`
 
-	// OAuth holds the OAuth application credentials used to authenticate users and
-	// register webhooks on their behalf.
+	// ClientID is the OAuth App client ID (public, not a secret). For GitHub
+	// device flow this is the only credential needed to initiate user
+	// authorization. For forges requiring OAuth code grant (GitLab, Gitea),
+	// the client secret is stored separately via ClientSecretRef.
 	// +optional
-	OAuth OAuthConfig `json:"oauth,omitempty"`
+	ClientID string `json:"clientID,omitempty"`
 
-	// WebhookSecretRef references the secret used to verify HMAC signatures on
-	// inbound webhook payloads from this forge.
+	// ClientSecretRef references a Secret containing the OAuth client secret.
+	// Required only for forges that use OAuth code grant (GitLab, Gitea).
+	// Not needed for GitHub device flow.
 	// +optional
-	WebhookSecretRef SecretRef `json:"webhookSecretRef,omitempty"`
+	ClientSecretRef *SecretRef `json:"clientSecretRef,omitempty"`
+
+	// WebhookSecretRef references the Secret containing the HMAC key for
+	// verifying inbound webhook payloads from this forge.
+	// +optional
+	WebhookSecretRef *SecretRef `json:"webhookSecretRef,omitempty"`
 }
 
 // GitProviderStatus defines the observed state of GitProvider.

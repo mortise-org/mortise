@@ -50,31 +50,21 @@ func TestPreviewEnvironmentLifecycle(t *testing.T) {
 
 	// --- GitProvider + token secrets (reuse pattern from git source test).
 	providerName := "gitea-prev-" + randSuffix()
-	stubSecret(t, "mortise-system", "prev-oauth-"+providerName, map[string]string{
-		"client-id":     "stub",
-		"client-secret": "stub",
-	})
+	testEmail := "test@example.com"
 	stubSecret(t, "mortise-system", "prev-webhook-"+providerName, map[string]string{
 		"secret": "stub",
 	})
-	stubSecret(t, "mortise-system", "gitprovider-token-"+providerName, map[string]string{
+	stubSecret(t, "mortise-system", "user-"+providerName+"-token-74657374406578616d706c652e636f6d", map[string]string{
 		"token": boot.Token,
 	})
 
 	gp := &mortisev1alpha1.GitProvider{
 		ObjectMeta: metav1.ObjectMeta{Name: providerName},
 		Spec: mortisev1alpha1.GitProviderSpec{
-			Type: mortisev1alpha1.GitProviderTypeGitea,
-			Host: giteaInClusterURL,
-			OAuth: mortisev1alpha1.OAuthConfig{
-				ClientIDSecretRef: mortisev1alpha1.SecretRef{
-					Namespace: "mortise-system", Name: "prev-oauth-" + providerName, Key: "client-id",
-				},
-				ClientSecretSecretRef: mortisev1alpha1.SecretRef{
-					Namespace: "mortise-system", Name: "prev-oauth-" + providerName, Key: "client-secret",
-				},
-			},
-			WebhookSecretRef: mortisev1alpha1.SecretRef{
+			Type:     mortisev1alpha1.GitProviderTypeGitea,
+			Host:     giteaInClusterURL,
+			ClientID: "test-client-id",
+			WebhookSecretRef: &mortisev1alpha1.SecretRef{
 				Namespace: "mortise-system", Name: "prev-webhook-" + providerName, Key: "secret",
 			},
 		},
@@ -98,6 +88,7 @@ func TestPreviewEnvironmentLifecycle(t *testing.T) {
 		app.Annotations = map[string]string{}
 	}
 	app.Annotations["mortise.dev/revision"] = "main"
+	app.Annotations["mortise.dev/created-by"] = testEmail
 
 	// Project-level preview toggle (SPEC §5.8).
 	enableProjectPreview(t, projectName, &mortisev1alpha1.PreviewConfig{
@@ -303,31 +294,21 @@ func TestPreviewInheritsStagingBindings(t *testing.T) {
 	)
 
 	providerName := "gitea-bind-" + randSuffix()
-	stubSecret(t, "mortise-system", "bind-oauth-"+providerName, map[string]string{
-		"client-id":     "stub",
-		"client-secret": "stub",
-	})
+	testEmail := "test@example.com"
 	stubSecret(t, "mortise-system", "bind-webhook-"+providerName, map[string]string{
 		"secret": "stub",
 	})
-	stubSecret(t, "mortise-system", "gitprovider-token-"+providerName, map[string]string{
+	stubSecret(t, "mortise-system", "user-"+providerName+"-token-74657374406578616d706c652e636f6d", map[string]string{
 		"token": boot.Token,
 	})
 
 	gp := &mortisev1alpha1.GitProvider{
 		ObjectMeta: metav1.ObjectMeta{Name: providerName},
 		Spec: mortisev1alpha1.GitProviderSpec{
-			Type: mortisev1alpha1.GitProviderTypeGitea,
-			Host: giteaInClusterURL,
-			OAuth: mortisev1alpha1.OAuthConfig{
-				ClientIDSecretRef: mortisev1alpha1.SecretRef{
-					Namespace: "mortise-system", Name: "bind-oauth-" + providerName, Key: "client-id",
-				},
-				ClientSecretSecretRef: mortisev1alpha1.SecretRef{
-					Namespace: "mortise-system", Name: "bind-oauth-" + providerName, Key: "client-secret",
-				},
-			},
-			WebhookSecretRef: mortisev1alpha1.SecretRef{
+			Type:     mortisev1alpha1.GitProviderTypeGitea,
+			Host:     giteaInClusterURL,
+			ClientID: "test-client-id",
+			WebhookSecretRef: &mortisev1alpha1.SecretRef{
 				Namespace: "mortise-system", Name: "bind-webhook-" + providerName, Key: "secret",
 			},
 		},
@@ -351,6 +332,7 @@ func TestPreviewInheritsStagingBindings(t *testing.T) {
 		apiApp.Annotations = map[string]string{}
 	}
 	apiApp.Annotations["mortise.dev/revision"] = "main"
+	apiApp.Annotations["mortise.dev/created-by"] = testEmail
 
 	// Project-level preview toggle (SPEC §5.8).
 	enableProjectPreview(t, projectName, &mortisev1alpha1.PreviewConfig{

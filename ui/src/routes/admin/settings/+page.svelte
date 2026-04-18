@@ -44,8 +44,8 @@
 	let newProviderType = $state<'github' | 'gitlab' | 'gitea'>('github');
 	let newProviderHost = $state('');
 	let newProviderClientID = $state('');
-	let newProviderClientSecret = $state('');
-	let newProviderWebhookSecret = $state('');
+
+
 	let creatingProvider = $state(false);
 
 	onMount(async () => {
@@ -95,15 +95,12 @@
 				name: newProviderName,
 				type: newProviderType,
 				host: newProviderHost,
-				oauth: { clientID: newProviderClientID, clientSecret: newProviderClientSecret },
-				webhookSecret: newProviderWebhookSecret
+				clientID: newProviderClientID
 			});
 			providers = await api.listGitProviders();
 			showProviderForm = false;
 			newProviderName = '';
 			newProviderClientID = '';
-			newProviderClientSecret = '';
-			newProviderWebhookSecret = '';
 			newProviderHost = '';
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'Create failed';
@@ -399,24 +396,6 @@
 							class="mt-1 w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-white placeholder-gray-500 outline-none focus:border-accent"
 						/>
 					</div>
-					<div>
-						<label class="text-xs text-gray-400" for="new-provider-client-secret">OAuth Client Secret</label>
-						<input
-							id="new-provider-client-secret"
-							type="password"
-							bind:value={newProviderClientSecret}
-							class="mt-1 w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-white placeholder-gray-500 outline-none focus:border-accent"
-						/>
-					</div>
-				</div>
-				<div>
-					<label class="text-xs text-gray-400" for="new-provider-webhook-secret">Webhook Secret</label>
-					<input
-						id="new-provider-webhook-secret"
-						type="text"
-						bind:value={newProviderWebhookSecret}
-						class="mt-1 w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-white placeholder-gray-500 outline-none focus:border-accent"
-					/>
 				</div>
 				<div class="flex gap-2">
 					<button
@@ -461,16 +440,6 @@
 							</span>
 						</div>
 						<div class="flex items-center gap-2">
-							{#if !provider.hasToken}
-								<a
-									href="/api/oauth/{provider.name}/authorize"
-									class="rounded-md border border-surface-600 px-3 py-1 text-xs text-gray-400 hover:bg-surface-600 hover:text-white"
-								>
-									Connect
-								</a>
-							{:else}
-								<span class="text-xs text-success">Connected</span>
-							{/if}
 							<button
 								type="button"
 								onclick={() => deleteProvider(provider.name)}

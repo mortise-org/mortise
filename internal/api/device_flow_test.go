@@ -16,34 +16,70 @@ import (
 	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
 )
 
-// TestDeviceFlowRequestCodePlaceholder verifies that when no client ID is
-// configured (placeholder still in place), the endpoint returns 503.
-func TestDeviceFlowRequestCodePlaceholder(t *testing.T) {
+// TestDeviceFlowRequestCodeNoProvider verifies that when no GitProvider exists,
+// the endpoint returns 404.
+func TestDeviceFlowRequestCodeNoProvider(t *testing.T) {
 	k8sClient := setupEnvtest(t)
 	srv := newAdminServer(t, k8sClient)
 	h := srv.Handler()
 
-	w := doRequest(h, http.MethodPost, "/api/auth/github/device", nil)
+	w := doRequest(h, http.MethodPost, "/api/auth/git/github/device", nil)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestDeviceFlowRequestCodeNoClientID verifies that when a GitProvider exists
+// but has no clientID, the endpoint returns 503.
+func TestDeviceFlowRequestCodeNoClientID(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	ctx := context.Background()
+
+	gp := &mortisev1alpha1.GitProvider{
+		ObjectMeta: metav1.ObjectMeta{Name: "github"},
+		Spec: mortisev1alpha1.GitProviderSpec{
+			Type: mortisev1alpha1.GitProviderTypeGitHub,
+			Host: "https://github.com",
+		},
+	}
+	if err := k8sClient.Create(ctx, gp); err != nil {
+		t.Fatalf("create GitProvider: %v", err)
+	}
+
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+
+	w := doRequest(h, http.MethodPost, "/api/auth/git/github/device", nil)
 	if w.Code != http.StatusServiceUnavailable {
 		t.Fatalf("expected 503, got %d: %s", w.Code, w.Body.String())
 	}
 }
 
-// TestDeviceFlowRequestCodeWithEnvVar verifies that the endpoint calls GitHub
-// when a client ID is configured via env var.
-func TestDeviceFlowRequestCodeWithEnvVar(t *testing.T) {
-	t.Setenv("MORTISE_GITHUB_CLIENT_ID", "test-client-id")
-
+// TestDeviceFlowRequestCodeWithClientID verifies that the endpoint calls the
+// forge when a GitProvider with clientID exists.
+func TestDeviceFlowRequestCodeWithClientID(t *testing.T) {
 	k8sClient := setupEnvtest(t)
+	ctx := context.Background()
+
+	gp := &mortisev1alpha1.GitProvider{
+		ObjectMeta: metav1.ObjectMeta{Name: "github"},
+		Spec: mortisev1alpha1.GitProviderSpec{
+			Type:     mortisev1alpha1.GitProviderTypeGitHub,
+			Host:     "https://github.com",
+			ClientID: "test-client-id",
+		},
+	}
+	if err := k8sClient.Create(ctx, gp); err != nil {
+		t.Fatalf("create GitProvider: %v", err)
+	}
+
 	srv := newAdminServer(t, k8sClient)
 	h := srv.Handler()
 
-	w := doRequest(h, http.MethodPost, "/api/auth/github/device", nil)
-
-	// We expect either 200 (if GitHub is reachable) or 502 (if not).
-	// The key assertion is that it did NOT return 503 (placeholder error).
-	if w.Code == http.StatusServiceUnavailable {
-		t.Fatalf("should not get 503 when MORTISE_GITHUB_CLIENT_ID is set")
+	w := doRequest(h, http.MethodPost, "/api/auth/git/github/device", nil)
+	// Expect 502 (GitHub unreachable in test) or 200, NOT 503 or 404.
+	if w.Code == http.StatusServiceUnavailable || w.Code == http.StatusNotFound {
+		t.Fatalf("should not get %d when GitProvider has clientID", w.Code)
 	}
 }
 
@@ -54,7 +90,8 @@ func TestDeviceFlowPollMissingDeviceCode(t *testing.T) {
 	srv := newAdminServer(t, k8sClient)
 	h := srv.Handler()
 
-	w := doRequest(h, http.MethodPost, "/api/auth/github/device/poll", map[string]string{})
+	// Poll now requires auth — doRequest sends JWT via testToken.
+	w := doRequest(h, http.MethodPost, "/api/auth/git/github/device/poll", map[string]string{})
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
 	}
@@ -63,10 +100,10 @@ func TestDeviceFlowPollMissingDeviceCode(t *testing.T) {
 // TestDeviceFlowPollInvalidJSON verifies that malformed JSON is rejected.
 func TestDeviceFlowPollInvalidJSON(t *testing.T) {
 	k8sClient := setupEnvtest(t)
-	_, token := newTestServer(t, k8sClient)
-	h := newAdminServer(t, k8sClient).Handler()
+	srv, token := newTestServer(t, k8sClient)
+	h := srv.Handler()
 
-	req := httptest.NewRequest(http.MethodPost, "/api/auth/github/device/poll", bytes.NewBufferString("not json"))
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/git/github/device/poll", bytes.NewBufferString("not json"))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+token)
 	w := httptest.NewRecorder()
@@ -77,42 +114,32 @@ func TestDeviceFlowPollInvalidJSON(t *testing.T) {
 	}
 }
 
-// TestDeviceFlowResolveClientIDFromPlatformConfig verifies that the client ID
-// is read from PlatformConfig when set.
-func TestDeviceFlowResolveClientIDFromPlatformConfig(t *testing.T) {
+// TestDeviceFlowResolveClientIDFromGitProvider verifies that the client ID
+// is read from the GitProvider CRD.
+func TestDeviceFlowResolveClientIDFromGitProvider(t *testing.T) {
 	k8sClient := setupEnvtest(t)
 	ctx := context.Background()
 
-	// Create PlatformConfig with a GitHub client ID.
-	pc := &mortisev1alpha1.PlatformConfig{
-		ObjectMeta: metav1.ObjectMeta{Name: "platform"},
-		Spec: mortisev1alpha1.PlatformConfigSpec{
-			Domain: "example.com",
-			DNS: mortisev1alpha1.DNSConfig{
-				Provider: mortisev1alpha1.DNSProviderCloudflare,
-				APITokenSecretRef: mortisev1alpha1.SecretRef{
-					Namespace: "mortise-system",
-					Name:      "dns-token",
-					Key:       "token",
-				},
-			},
-			GitHub: &mortisev1alpha1.GitHubConfig{
-				ClientID: "platform-client-id",
-			},
+	gp := &mortisev1alpha1.GitProvider{
+		ObjectMeta: metav1.ObjectMeta{Name: "github"},
+		Spec: mortisev1alpha1.GitProviderSpec{
+			Type:     mortisev1alpha1.GitProviderTypeGitHub,
+			Host:     "https://github.com",
+			ClientID: "provider-client-id",
 		},
 	}
-	if err := k8sClient.Create(ctx, pc); err != nil {
-		t.Fatalf("create PlatformConfig: %v", err)
+	if err := k8sClient.Create(ctx, gp); err != nil {
+		t.Fatalf("create GitProvider: %v", err)
 	}
 
 	srv := newAdminServer(t, k8sClient)
 	h := srv.Handler()
 
-	// The endpoint should NOT return 503 (placeholder error) since we have a
-	// client ID in PlatformConfig.
-	w := doRequest(h, http.MethodPost, "/api/auth/github/device", nil)
-	if w.Code == http.StatusServiceUnavailable {
-		t.Fatalf("should not get 503 when PlatformConfig has github.clientID")
+	// The endpoint should NOT return 503 or 404 since we have a GitProvider
+	// with a clientID.
+	w := doRequest(h, http.MethodPost, "/api/auth/git/github/device", nil)
+	if w.Code == http.StatusServiceUnavailable || w.Code == http.StatusNotFound {
+		t.Fatalf("should not get %d when GitProvider has clientID", w.Code)
 	}
 }
 
@@ -124,7 +151,7 @@ func TestDeviceFlowRoutesRequireAuth(t *testing.T) {
 	h := srv.Handler()
 
 	// Request with no Authorization header.
-	req := httptest.NewRequest(http.MethodPost, "/api/auth/github/device", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/git/github/device", nil)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
 	if w.Code != http.StatusUnauthorized {
@@ -132,7 +159,7 @@ func TestDeviceFlowRoutesRequireAuth(t *testing.T) {
 	}
 
 	body := `{"device_code": "test"}`
-	req = httptest.NewRequest(http.MethodPost, "/api/auth/github/device/poll", bytes.NewBufferString(body))
+	req = httptest.NewRequest(http.MethodPost, "/api/auth/git/github/device/poll", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	w = httptest.NewRecorder()
 	h.ServeHTTP(w, req)
@@ -141,16 +168,28 @@ func TestDeviceFlowRoutesRequireAuth(t *testing.T) {
 	}
 }
 
-// TestDeviceFlowPollPendingStatus verifies that the poll endpoint returns
-// "pending" when the token exchange returns authorization_pending.
+// TestDeviceFlowPollPendingStatus verifies that the poll endpoint processes
+// the request when a GitProvider with clientID exists.
 func TestDeviceFlowPollPendingStatus(t *testing.T) {
-	t.Setenv("MORTISE_GITHUB_CLIENT_ID", "test-client-id")
-
 	k8sClient := setupEnvtest(t)
+	ctx := context.Background()
+
+	gp := &mortisev1alpha1.GitProvider{
+		ObjectMeta: metav1.ObjectMeta{Name: "github"},
+		Spec: mortisev1alpha1.GitProviderSpec{
+			Type:     mortisev1alpha1.GitProviderTypeGitHub,
+			Host:     "https://github.com",
+			ClientID: "test-client-id",
+		},
+	}
+	if err := k8sClient.Create(ctx, gp); err != nil {
+		t.Fatalf("create GitProvider: %v", err)
+	}
+
 	srv := newAdminServer(t, k8sClient)
 	h := srv.Handler()
 
-	w := doRequest(h, http.MethodPost, "/api/auth/github/device/poll", map[string]string{"device_code": "some-code"})
+	w := doRequest(h, http.MethodPost, "/api/auth/git/github/device/poll", map[string]string{"device_code": "some-code"})
 
 	// The actual GitHub call will fail (network), so we expect 502.
 	// This confirms the endpoint is wired correctly and processes the request.
@@ -166,7 +205,7 @@ func TestGitHubStatusNotConnected(t *testing.T) {
 	srv := newAdminServer(t, k8sClient)
 	h := srv.Handler()
 
-	w := doRequest(h, http.MethodGet, "/api/auth/github/status", nil)
+	w := doRequest(h, http.MethodGet, "/api/auth/git/github/status", nil)
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
@@ -207,7 +246,7 @@ func TestGitHubStatusConnected(t *testing.T) {
 	srv := newAdminServer(t, k8sClient)
 	h := srv.Handler()
 
-	w := doRequest(h, http.MethodGet, "/api/auth/github/status", nil)
+	w := doRequest(h, http.MethodGet, "/api/auth/git/github/status", nil)
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
@@ -227,7 +266,7 @@ func TestGitHubStatusRequiresAuth(t *testing.T) {
 	srv := newAdminServer(t, k8sClient)
 	h := srv.Handler()
 
-	req := httptest.NewRequest(http.MethodGet, "/api/auth/github/status", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/auth/git/github/status", nil)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
 

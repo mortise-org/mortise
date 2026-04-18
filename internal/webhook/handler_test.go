@@ -109,13 +109,9 @@ func makeGitProvider(providerType mortisev1alpha1.GitProviderType, secretNS, sec
 	ref := mortisev1alpha1.SecretRef{Namespace: secretNS, Name: secretName, Key: secretKey}
 	return &mortisev1alpha1.GitProvider{
 		Spec: mortisev1alpha1.GitProviderSpec{
-			Type: providerType,
-			Host: "https://github.com",
-			OAuth: mortisev1alpha1.OAuthConfig{
-				ClientIDSecretRef:     ref,
-				ClientSecretSecretRef: ref,
-			},
-			WebhookSecretRef: ref,
+			Type:             providerType,
+			Host:             "https://github.com",
+			WebhookSecretRef: &ref,
 		},
 	}
 }
