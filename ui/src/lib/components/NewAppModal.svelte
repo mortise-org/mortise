@@ -180,7 +180,9 @@
 					branch: gitBranch,
 					path: gitPath || undefined,
 					providerRef: gitProvider || undefined,
-					watchPaths: [...selectedPaths, customPath.trim()].filter(Boolean).length > 0 ? [...selectedPaths, customPath.trim()].filter(Boolean) : undefined,
+					watchPaths: [...selectedPaths, customPath.trim()].filter(Boolean).length > 0
+						? [...selectedPaths, customPath.trim()].filter(Boolean)
+						: gitPath ? [gitPath] : undefined,
 					build: {
 						mode: buildMode,
 						cache: buildCache || undefined,
@@ -366,9 +368,21 @@
 							</select>
 						</div>
 
-						<!-- Watch paths picker -->
+						<!-- Root Directory -->
 						<div>
-							<label class="text-sm text-gray-400">Watch paths <span class="text-gray-600">(optional)</span></label>
+							<label class="text-sm text-gray-400">Root Directory</label>
+							<input
+								type="text"
+								bind:value={gitPath}
+								placeholder="/"
+								class="mt-1 w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-white font-mono placeholder-gray-500 outline-none focus:border-accent"
+							/>
+							<p class="mt-0.5 text-xs text-gray-500">Where your app's code lives in the repo. Leave as / for the repo root.</p>
+						</div>
+
+						<!-- Watch paths picker (advanced) -->
+						<div>
+							<label class="text-sm text-gray-400">Watch paths <span class="text-gray-600">(optional, advanced)</span></label>
 							{#if treeLoading}
 								<div class="mt-1 rounded-md border border-surface-600 bg-surface-700 px-3 py-3 text-xs text-gray-500">
 									Loading repository tree…
