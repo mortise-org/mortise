@@ -291,7 +291,7 @@ func (d *DeviceFlowHandler) storeUserToken(ctx context.Context, email, token str
 			Labels: map[string]string{
 				"app.kubernetes.io/managed-by": "mortise",
 				"mortise.dev/github-token":     "true",
-				"mortise.dev/user":             email,
+				"mortise.dev/user":             hex.EncodeToString([]byte(email)),
 			},
 		},
 		Data: map[string][]byte{
