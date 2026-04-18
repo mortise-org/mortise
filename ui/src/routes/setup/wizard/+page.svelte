@@ -89,17 +89,14 @@
 
 			{:else if step === 3}
 				<h2 class="mb-4 text-base font-semibold text-white">Connect Git Provider</h2>
-				<p class="mb-4 text-sm text-gray-400">Install the Mortise app on GitHub to deploy from your repos. You can skip this and connect later in Settings.</p>
-				<div class="space-y-3">
-					<a href="https://github.com/apps/mortise-deploy/installations/new" target="_blank" rel="noopener noreferrer"
-						class="flex items-center justify-between rounded-md border border-accent/30 bg-surface-700 p-4 hover:border-accent hover:bg-surface-600 transition-colors">
-						<div>
-							<p class="text-sm font-medium text-white">Connect GitHub</p>
-							<p class="text-xs text-gray-500">One click — install the Mortise app on your repos</p>
-						</div>
-						<span class="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white">Install →</span>
-					</a>
-					<p class="text-xs text-gray-500 text-center">For GitLab or Gitea, add a provider manually in Settings after setup.</p>
+				<p class="mb-4 text-sm text-gray-400">Connect GitHub to deploy from your repos. You can skip this and connect later in Settings.</p>
+				<div class="rounded-md border border-surface-600 bg-surface-700 p-4">
+					<p class="text-sm text-gray-400 mb-2">GitHub connection requires two quick steps done in Settings after setup:</p>
+					<ol class="text-sm text-gray-400 list-decimal list-inside space-y-1">
+						<li>Authorize Mortise (device code flow — works on localhost)</li>
+						<li>Install the app on your repos</li>
+					</ol>
+					<p class="text-xs text-gray-500 mt-3">You'll find this in <strong class="text-gray-300">Settings → Git Providers</strong> once setup completes.</p>
 				</div>
 
 			{:else if step === 4}
