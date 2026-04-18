@@ -2,41 +2,65 @@ package api
 
 import (
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
-	"strings"
+	"sync"
 
 	"github.com/go-chi/chi/v5"
 	"k8s.io/apimachinery/pkg/types"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
 )
 
-// handleProxy reverse-proxies HTTP requests to an app's in-cluster Service.
-// This lets users access apps via the Mortise UI/API without needing separate
-// port-forwards or ingress — one port, all apps.
-//
-// GET /proxy/{project}/{app}/*
-func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
-	projectName := chi.URLParam(r, "project")
-	appName := chi.URLParam(r, "app")
+// appProxyEntry tracks a running per-app proxy listener.
+type appProxyEntry struct {
+	Port     int    `json:"port"`
+	URL      string `json:"url"`
+	listener net.Listener
+}
 
-	// Resolve project namespace.
-	var project mortisev1alpha1.Project
-	if err := s.client.Get(r.Context(), types.NamespacedName{Name: projectName}, &project); err != nil {
-		http.Error(w, "project not found", http.StatusNotFound)
+// appProxyManager manages per-app reverse proxy listeners. Each app gets its
+// own port — no path prefix, no asset rewriting issues.
+type appProxyManager struct {
+	mu      sync.Mutex
+	proxies map[string]*appProxyEntry // key: "project/app"
+}
+
+func newAppProxyManager() *appProxyManager {
+	return &appProxyManager{proxies: make(map[string]*appProxyEntry)}
+}
+
+// handleConnect starts a reverse proxy listener for an app on an auto-allocated
+// port and returns the URL. If already running, returns the existing URL.
+// Both the CLI and UI call this same endpoint.
+//
+// POST /api/projects/{project}/apps/{app}/connect
+func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
+	log := logf.FromContext(r.Context())
+	ns, ok := s.resolveProject(w, r)
+	if !ok {
 		return
 	}
-	ns := project.Status.Namespace
-	if ns == "" {
-		ns = "project-" + projectName
+	appName := chi.URLParam(r, "app")
+	projectName := chi.URLParam(r, "project")
+	key := projectName + "/" + appName
+
+	// If already proxying, return the existing URL.
+	s.proxies.mu.Lock()
+	if entry, exists := s.proxies.proxies[key]; exists {
+		s.proxies.mu.Unlock()
+		writeJSON(w, http.StatusOK, entry)
+		return
 	}
+	s.proxies.mu.Unlock()
 
 	// Resolve app to get the port.
 	var app mortisev1alpha1.App
 	if err := s.client.Get(r.Context(), types.NamespacedName{Name: appName, Namespace: ns}, &app); err != nil {
-		http.Error(w, "app not found", http.StatusNotFound)
+		writeJSON(w, http.StatusNotFound, errorResponse{"app not found"})
 		return
 	}
 
@@ -45,44 +69,71 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
 		port = 8080
 	}
 
-	// The service name follows the pattern {app}-{env}. Default to production.
 	svcName := appName + "-production"
 	target := fmt.Sprintf("http://%s.%s.svc:%d", svcName, ns, port)
-
 	targetURL, err := url.Parse(target)
 	if err != nil {
-		http.Error(w, "invalid proxy target", http.StatusInternalServerError)
+		writeJSON(w, http.StatusInternalServerError, errorResponse{"invalid proxy target"})
 		return
 	}
 
-	// Strip the /proxy/{project}/{app} prefix before forwarding.
-	prefix := fmt.Sprintf("/proxy/%s/%s", projectName, appName)
+	// Allocate a random port and start listening.
+	listener, err := net.Listen("tcp", ":0")
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorResponse{"failed to allocate port: " + err.Error()})
+		return
+	}
+	allocatedPort := listener.Addr().(*net.TCPAddr).Port
+
 	proxy := &httputil.ReverseProxy{
 		Director: func(req *http.Request) {
 			req.URL.Scheme = targetURL.Scheme
 			req.URL.Host = targetURL.Host
-			req.URL.Path = strings.TrimPrefix(req.URL.Path, prefix)
-			if req.URL.Path == "" {
-				req.URL.Path = "/"
-			}
 			req.Host = targetURL.Host
 		},
 	}
 
-	proxy.ServeHTTP(w, r)
+	// Start serving in the background.
+	go func() {
+		if err := http.Serve(listener, proxy); err != nil {
+			log.Info("app proxy stopped", "app", key, "error", err)
+		}
+	}()
+
+	entry := &appProxyEntry{
+		Port:     allocatedPort,
+		URL:      fmt.Sprintf("http://localhost:%d", allocatedPort),
+		listener: listener,
+	}
+
+	s.proxies.mu.Lock()
+	s.proxies.proxies[key] = entry
+	s.proxies.mu.Unlock()
+
+	log.Info("started app proxy", "app", key, "port", allocatedPort, "target", target)
+	writeJSON(w, http.StatusOK, entry)
 }
 
-// proxyURL returns the proxy URL for an app, for use by the UI and CLI.
-func (s *Server) handleProxyURL(w http.ResponseWriter, r *http.Request) {
+// handleDisconnect stops the proxy for an app.
+//
+// POST /api/projects/{project}/apps/{app}/disconnect
+func (s *Server) handleDisconnect(w http.ResponseWriter, r *http.Request) {
 	projectName := chi.URLParam(r, "project")
 	appName := chi.URLParam(r, "app")
+	key := projectName + "/" + appName
 
-	// Build the proxy URL relative to the current host.
-	scheme := "http"
-	if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
-		scheme = "https"
+	s.proxies.mu.Lock()
+	entry, exists := s.proxies.proxies[key]
+	if exists {
+		entry.listener.Close()
+		delete(s.proxies.proxies, key)
 	}
-	proxyURL := fmt.Sprintf("%s://%s/proxy/%s/%s/", scheme, r.Host, projectName, appName)
+	s.proxies.mu.Unlock()
 
-	writeJSON(w, http.StatusOK, map[string]string{"url": proxyURL})
+	if !exists {
+		writeJSON(w, http.StatusNotFound, errorResponse{"no active proxy for this app"})
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }

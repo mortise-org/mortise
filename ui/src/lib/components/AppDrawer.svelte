@@ -43,6 +43,23 @@
 		return cond?.message ?? null;
 	}
 
+	let appURL = $state<string | null>(null);
+	let connecting = $state(false);
+
+	async function connectApp() {
+		if (!app) return;
+		connecting = true;
+		try {
+			const resp = await api.connectApp(project, app.metadata.name);
+			appURL = resp.url;
+			window.open(resp.url, '_blank');
+		} catch (e) {
+			// ignore
+		} finally {
+			connecting = false;
+		}
+	}
+
 	const buildError = $derived(
 		app?.status?.phase === 'Failed' ? conditionMessage(app) : null
 	);
@@ -117,15 +134,27 @@
 		</div>
 		<div class="flex items-center gap-2">
 			{#if app?.status?.phase === 'Ready'}
-				<a
-					href="/proxy/{project}/{appName}/"
-					target="_blank"
-					rel="noopener noreferrer"
-					class="flex items-center gap-1 rounded-md px-2 py-1 text-xs text-gray-400 hover:bg-surface-700 hover:text-white transition-colors"
-				>
-					<ExternalLink class="h-3 w-3" />
-					Open
-				</a>
+				{#if appURL}
+					<a
+						href={appURL}
+						target="_blank"
+						rel="noopener noreferrer"
+						class="flex items-center gap-1 rounded-md px-2 py-1 text-xs text-success hover:bg-surface-700 transition-colors"
+					>
+						<ExternalLink class="h-3 w-3" />
+						Open
+					</a>
+				{:else}
+					<button
+						type="button"
+						onclick={connectApp}
+						disabled={connecting}
+						class="flex items-center gap-1 rounded-md px-2 py-1 text-xs text-gray-400 hover:bg-surface-700 hover:text-white transition-colors disabled:opacity-50"
+					>
+						<ExternalLink class="h-3 w-3" />
+						{connecting ? 'Connecting...' : 'Open'}
+					</button>
+				{/if}
 			{/if}
 			<button
 				type="button"
