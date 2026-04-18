@@ -99,8 +99,9 @@ func (g *GitHubAPI) ResolveCloneCredentials(_ context.Context, _ string) (GitCre
 
 func (g *GitHubAPI) ListRepos(ctx context.Context) ([]Repository, error) {
 	opts := &gogithub.RepositoryListOptions{
-		Sort:      "pushed",
-		Direction: "desc",
+		Sort:        "pushed",
+		Direction:   "desc",
+		Affiliation: "owner,collaborator,organization_member",
 		ListOptions: gogithub.ListOptions{
 			PerPage: 100,
 		},
