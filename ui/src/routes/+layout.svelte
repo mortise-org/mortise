@@ -331,13 +331,15 @@
 					>
 						<Puzzle class="h-5 w-5" />
 					</a>
-					<a
-						href="/admin/settings"
-						class="{isActive('/admin') ? railIconActive : railIcon}"
-						title="Settings"
-					>
-						<Settings class="h-5 w-5" />
-					</a>
+					{#if store.isAdmin}
+						<a
+							href="/admin/settings"
+							class="{isActive('/admin') ? railIconActive : railIcon}"
+							title="Settings"
+						>
+							<Settings class="h-5 w-5" />
+						</a>
+					{/if}
 				{/if}
 			</nav>
 
