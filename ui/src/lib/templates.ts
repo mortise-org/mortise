@@ -1,5 +1,13 @@
 import type { AppSpec } from './types';
 
+/** Generate a cryptographically random alphanumeric string. */
+function generatePassword(length = 24): string {
+	const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+	const values = new Uint8Array(length);
+	crypto.getRandomValues(values);
+	return Array.from(values, (v) => chars[v % chars.length]).join('');
+}
+
 export type TemplateCategory = 'database' | 'app' | 'blank';
 
 export interface TemplateField {
@@ -53,7 +61,10 @@ export const templates: Template[] = [
 					{
 						name: 'production',
 						replicas: 1,
-						env: [{ name: 'POSTGRES_PASSWORD', value: '' }]
+						env: [
+							{ name: 'POSTGRES_USER', value: 'postgres' },
+							{ name: 'POSTGRES_PASSWORD', value: generatePassword() }
+						]
 					}
 				]
 			}
@@ -117,7 +128,7 @@ export const templates: Template[] = [
 						replicas: 1,
 						env: [
 							{ name: 'PAPERLESS_URL', value: '' },
-							{ name: 'PAPERLESS_SECRET_KEY', value: '' },
+							{ name: 'PAPERLESS_SECRET_KEY', value: generatePassword(48) },
 							{ name: 'PAPERLESS_TIME_ZONE', value: 'UTC' },
 							{ name: 'PAPERLESS_OCR_LANGUAGE', value: 'eng' }
 						]
@@ -152,7 +163,7 @@ export const templates: Template[] = [
 						env: [
 							{ name: 'DOMAIN', value: '' },
 							{ name: 'SIGNUPS_ALLOWED', value: 'false' },
-							{ name: 'ADMIN_TOKEN', value: '' }
+							{ name: 'ADMIN_TOKEN', value: generatePassword(48) }
 						]
 					}
 				]
