@@ -24,8 +24,8 @@
 				const data = await res.json().catch(() => ({}));
 				throw new Error(data.error || 'Setup failed');
 			}
-			const data = await res.json() as { token: string; email: string; role: 'admin' | 'member' };
-			store.login(data.token, { email: data.email, role: data.role });
+			const data = await res.json() as { token: string; user: { Email: string; Role: string } };
+			store.login(data.token, { email: data.user.Email, role: (data.user.Role as 'admin' | 'member') });
 			await goto('/setup/wizard');
 		} catch(e) {
 			error = e instanceof Error ? e.message : 'Setup failed';
