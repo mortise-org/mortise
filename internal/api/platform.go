@@ -1,9 +1,12 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -88,9 +91,14 @@ func (s *Server) PatchPlatform(w http.ResponseWriter, r *http.Request) {
 
 	if errors.IsNotFound(err) {
 		// Create.
+		spec, specErr := s.buildPlatformSpec(r.Context(), mortisev1alpha1.PlatformConfigSpec{}, &req)
+		if specErr != nil {
+			writeJSON(w, http.StatusInternalServerError, errorResponse{specErr.Error()})
+			return
+		}
 		pc = mortisev1alpha1.PlatformConfig{
 			ObjectMeta: metav1.ObjectMeta{Name: platformConfigName},
-			Spec:       buildPlatformSpec(mortisev1alpha1.PlatformConfigSpec{}, &req),
+			Spec:       spec,
 		}
 		if err := s.client.Create(r.Context(), &pc); err != nil {
 			writeError(w, err)
@@ -110,8 +118,13 @@ func (s *Server) PatchPlatform(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Update.
-	pc.Spec = buildPlatformSpec(pc.Spec, &req)
+	// Update — merge onto existing spec (preserves build, registry, etc.).
+	spec, specErr := s.buildPlatformSpec(r.Context(), pc.Spec, &req)
+	if specErr != nil {
+		writeJSON(w, http.StatusInternalServerError, errorResponse{specErr.Error()})
+		return
+	}
+	pc.Spec = spec
 	if err := s.client.Update(r.Context(), &pc); err != nil {
 		writeError(w, err)
 		return
@@ -126,7 +139,8 @@ func (s *Server) PatchPlatform(w http.ResponseWriter, r *http.Request) {
 }
 
 // buildPlatformSpec applies non-zero patch fields onto an existing spec.
-func buildPlatformSpec(base mortisev1alpha1.PlatformConfigSpec, req *patchPlatformRequest) mortisev1alpha1.PlatformConfigSpec {
+// It creates k8s Secrets as needed (e.g. for DNS API tokens passed as raw values).
+func (s *Server) buildPlatformSpec(ctx context.Context, base mortisev1alpha1.PlatformConfigSpec, req *patchPlatformRequest) (mortisev1alpha1.PlatformConfigSpec, error) {
 	if req.Domain != "" {
 		base.Domain = req.Domain
 	}
@@ -135,9 +149,14 @@ func buildPlatformSpec(base mortisev1alpha1.PlatformConfigSpec, req *patchPlatfo
 			base.DNS.Provider = mortisev1alpha1.DNSProviderType(req.DNS.Provider)
 		}
 		if req.DNS.APITokenSecretRef != "" {
+			// Create or update a Secret from the raw token value, then reference it.
+			secretName := "platform-dns-token"
+			if err := s.ensureSecret(ctx, secretName, "token", req.DNS.APITokenSecretRef); err != nil {
+				return base, fmt.Errorf("create DNS token secret: %w", err)
+			}
 			base.DNS.APITokenSecretRef = mortisev1alpha1.SecretRef{
 				Namespace: "mortise-system",
-				Name:      req.DNS.APITokenSecretRef,
+				Name:      secretName,
 				Key:       "token",
 			}
 		}
@@ -148,5 +167,27 @@ func buildPlatformSpec(base mortisev1alpha1.PlatformConfigSpec, req *patchPlatfo
 	if req.Storage != nil {
 		base.Storage.DefaultStorageClass = req.Storage.DefaultStorageClass
 	}
-	return base
+	return base, nil
+}
+
+// ensureSecret creates or updates a Secret in mortise-system with a single key/value.
+func (s *Server) ensureSecret(ctx context.Context, name, key, value string) error {
+	desired := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: "mortise-system",
+			Labels:    map[string]string{"app.kubernetes.io/managed-by": "mortise"},
+		},
+		Data: map[string][]byte{key: []byte(value)},
+	}
+	var existing corev1.Secret
+	err := s.client.Get(ctx, types.NamespacedName{Namespace: "mortise-system", Name: name}, &existing)
+	if errors.IsNotFound(err) {
+		return s.client.Create(ctx, desired)
+	}
+	if err != nil {
+		return err
+	}
+	existing.Data = desired.Data
+	return s.client.Update(ctx, &existing)
 }
