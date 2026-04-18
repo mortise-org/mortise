@@ -87,15 +87,17 @@ func (s *Server) Handler() http.Handler {
 	r.Get("/api/oauth/{provider}/authorize", s.oauth.Authorize)
 	r.Get("/api/oauth/{provider}/callback", s.oauth.Callback)
 
+	// Device flow poll is unauthenticated — device_code is the auth.
+	r.Post("/api/auth/github/device/poll", s.deviceFlow.Poll)
+
 	// Authenticated /api routes.
 	r.Route("/api", func(r chi.Router) {
 		r.Use(maxBytesMiddleware(1 << 20)) // 1 MB body limit
 		r.Group(func(r chi.Router) {
 			r.Use(s.jwtAuthMiddleware)
 
-			// GitHub device flow (per-user, requires JWT).
+			// Device flow initiation needs JWT to associate user with device_code.
 			r.Post("/auth/github/device", s.deviceFlow.RequestCode)
-			r.Post("/auth/github/device/poll", s.deviceFlow.Poll)
 			r.Get("/auth/github/status", s.deviceFlow.GitHubStatus)
 
 			r.Get("/gitproviders", s.ListGitProviders)

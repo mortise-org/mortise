@@ -40,6 +40,9 @@ const (
 type DeviceFlowHandler struct {
 	client     client.Client
 	httpClient HTTPClient
+	// pending maps device_code → user email for in-flight device flows.
+	// Set during RequestCode (authenticated), read during Poll (unauthenticated).
+	pending map[string]string
 }
 
 // HTTPClient abstracts HTTP requests for testability.
@@ -48,7 +51,7 @@ type HTTPClient interface {
 }
 
 func newDeviceFlowHandler(c client.Client) *DeviceFlowHandler {
-	return &DeviceFlowHandler{client: c, httpClient: http.DefaultClient}
+	return &DeviceFlowHandler{client: c, httpClient: http.DefaultClient, pending: make(map[string]string)}
 }
 
 // deviceCodeResponse is the JSON body returned from POST /api/auth/github/device.
@@ -120,22 +123,21 @@ func (d *DeviceFlowHandler) RequestCode(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// Track which user initiated this device flow (if JWT present).
+	if principal := PrincipalFromContext(r.Context()); principal != nil {
+		d.pending[ghResp.DeviceCode] = principal.Email
+	}
+
 	writeJSON(w, http.StatusOK, ghResp)
 }
 
 // Poll checks whether the user has completed the device flow authorization.
-// On success, stores the token keyed to the calling user.
-// Requires JWT auth.
+// On success, stores the token. User association comes from the pending map
+// (set during RequestCode when JWT was available).
 //
 // POST /api/auth/github/device/poll
 func (d *DeviceFlowHandler) Poll(w http.ResponseWriter, r *http.Request) {
 	log := logf.FromContext(r.Context())
-
-	principal := PrincipalFromContext(r.Context())
-	if principal == nil {
-		writeJSON(w, http.StatusUnauthorized, errorResponse{"authentication required"})
-		return
-	}
 
 	var body devicePollRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -210,8 +212,21 @@ func (d *DeviceFlowHandler) Poll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Store the token keyed to the calling user.
-	if err := d.storeUserToken(r.Context(), principal.Email, ghResp.AccessToken); err != nil {
+	// Resolve user from the pending map (set during RequestCode).
+	userEmail := d.pending[body.DeviceCode]
+	if userEmail == "" {
+		// Fallback: try JWT if present.
+		if p := PrincipalFromContext(r.Context()); p != nil {
+			userEmail = p.Email
+		}
+	}
+	if userEmail == "" {
+		userEmail = "default" // platform-level fallback
+	}
+	delete(d.pending, body.DeviceCode) // clean up
+
+	// Store the token keyed to the user.
+	if err := d.storeUserToken(r.Context(), userEmail, ghResp.AccessToken); err != nil {
 		log.Error(err, "store user github token")
 		http.Error(w, "failed to store credentials", http.StatusInternalServerError)
 		return
