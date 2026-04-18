@@ -96,20 +96,24 @@
 	function selectType(t: AppType) {
 		selectedType = t;
 		error = '';
-		if (t === 'git' && providers.length > 0 && !gitProvider) {
-			gitProvider = providers[0].name;
-			loadRepos();
+		if (t === 'git') {
+			// Default: try per-user GitHub token (no provider needed).
+			// If user has GitLab/Gitea providers, they can pick one.
+			if (!gitProvider) {
+				loadRepos();
+			} else if (providers.length > 0) {
+				loadRepos();
+			}
 		}
 	}
 
 	async function loadRepos() {
-		if (!gitProvider) return;
 		reposLoading = true;
 		repos = [];
 		selectedRepo = null;
 		branches = [];
 		try {
-			repos = await api.listRepos(gitProvider);
+			repos = await api.listRepos(gitProvider || undefined);
 		} catch {
 			repos = [];
 		} finally {
@@ -118,11 +122,11 @@
 	}
 
 	async function loadRepoTree() {
-		if (!selectedRepo || !gitProvider) return;
+		if (!selectedRepo) return;
 		treeLoading = true;
 		const [owner, name] = selectedRepo.fullName.split('/');
 		try {
-			repoTree = await api.listRepoTree(owner, name, gitProvider, gitBranch);
+			repoTree = await api.listRepoTree(owner, name, gitProvider || undefined, gitBranch);
 		} catch {
 			repoTree = [];
 		} finally {
@@ -159,7 +163,7 @@
 		branches = [];
 		const [owner, name] = repo.fullName.split('/');
 		api
-			.listBranches(owner, name, gitProvider)
+			.listBranches(owner, name, gitProvider || undefined)
 			.then((list) => { branches = list ?? []; })
 			.catch(() => { branches = [{ name: repo.defaultBranch, default: true }]; });
 		void loadRepoTree();
@@ -300,30 +304,22 @@
 				<!-- Source-specific config -->
 				{#if selectedType === 'git'}
 					<div class="space-y-4">
-						<!-- Provider selector -->
+						<!-- Provider selector (optional — GitHub uses per-user token) -->
+						{#if providers.length > 0}
 						<div>
 							<label class="text-sm text-gray-400">Git Provider</label>
-							{#if providers.length === 0}
-								<p class="mt-1 text-sm text-gray-500">
-									No git providers connected.
-									{#if store.isAdmin}
-										<a href="/admin/settings#git-providers" class="text-accent hover:underline">Configure one</a>.
-									{:else}
-										Ask your admin to connect a git provider.
-									{/if}
-								</p>
-							{:else}
-								<select
-									bind:value={gitProvider}
-									onchange={loadRepos}
-									class="mt-1 w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-white outline-none focus:border-accent"
-								>
-									{#each providers as p}
-										<option value={p.name}>{p.name} ({p.type})</option>
-									{/each}
-								</select>
-							{/if}
+							<select
+								bind:value={gitProvider}
+								onchange={loadRepos}
+								class="mt-1 w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-white outline-none focus:border-accent"
+							>
+								<option value="">GitHub (your account)</option>
+								{#each providers as p}
+									<option value={p.name}>{p.name} ({p.type})</option>
+								{/each}
+							</select>
 						</div>
+						{/if}
 
 						<!-- Repo search -->
 						<div class="min-h-[14rem]">
