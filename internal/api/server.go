@@ -121,6 +121,7 @@ func (s *Server) Handler() http.Handler {
 			r.Post("/projects/{project}/apps/{app}/rollback", s.Rollback)
 			r.Post("/projects/{project}/apps/{app}/promote", s.Promote)
 			r.Get("/projects/{project}/apps/{app}/build-logs", s.handleBuildLogs)
+			r.Get("/projects/{project}/apps/{app}/proxy-url", s.handleProxyURL)
 
 			r.Post("/projects/{project}/apps/{app}/secrets", s.CreateSecret)
 			r.Get("/projects/{project}/apps/{app}/secrets", s.ListSecrets)
@@ -164,6 +165,12 @@ func (s *Server) Handler() http.Handler {
 			r.Get("/projects/{project}/apps/{app}/logs", s.handleLogs)
 		})
 	})
+
+	// App proxy: reverse-proxy to in-cluster app Services. No JWT required —
+	// the app itself handles auth. Placed before the UI catch-all so /proxy/*
+	// doesn't fall through to the SPA handler.
+	r.HandleFunc("/proxy/{project}/{app}/*", s.handleProxy)
+	r.HandleFunc("/proxy/{project}/{app}", s.handleProxy)
 
 	// UI: serve SvelteKit static files at all non-/api paths
 	if s.ui != nil {

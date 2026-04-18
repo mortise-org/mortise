@@ -139,6 +139,8 @@ export const api = {
 
 	getBuildLogs: (project: string, app: string) =>
 		request<{ lines: string[]; building: boolean }>(`/projects/${enc(project)}/apps/${enc(app)}/build-logs`),
+	getProxyURL: (project: string, app: string) =>
+		request<{ url: string }>(`/projects/${enc(project)}/apps/${enc(app)}/proxy-url`),
 
 	// --- Git provider device flow (per-user, requires JWT) ---
 	gitDeviceCode: (provider: string) =>

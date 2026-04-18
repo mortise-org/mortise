@@ -3,7 +3,7 @@
 	import { api } from '$lib/api';
 	import { store } from '$lib/store.svelte';
 	import type { App } from '$lib/types';
-	import { X, GitBranch, Container, Cloud, AlertTriangle, Loader2 } from 'lucide-svelte';
+	import { X, GitBranch, Container, Cloud, AlertTriangle, Loader2, ExternalLink } from 'lucide-svelte';
 	import DeploymentsTab from './drawer/DeploymentsTab.svelte';
 	import VariablesTab from './drawer/VariablesTab.svelte';
 	import LogsTab from './drawer/LogsTab.svelte';
@@ -115,14 +115,27 @@
 				</span>
 			{/if}
 		</div>
-		<button
-			type="button"
-			onclick={onClose}
-			class="rounded-md p-1.5 text-gray-500 transition-colors hover:bg-surface-700 hover:text-white"
-			aria-label="Close drawer"
-		>
-			<X class="h-4 w-4" />
-		</button>
+		<div class="flex items-center gap-2">
+			{#if app?.status?.phase === 'Ready'}
+				<a
+					href="/proxy/{project}/{appName}/"
+					target="_blank"
+					rel="noopener noreferrer"
+					class="flex items-center gap-1 rounded-md px-2 py-1 text-xs text-gray-400 hover:bg-surface-700 hover:text-white transition-colors"
+				>
+					<ExternalLink class="h-3 w-3" />
+					Open
+				</a>
+			{/if}
+			<button
+				type="button"
+				onclick={onClose}
+				class="rounded-md p-1.5 text-gray-500 transition-colors hover:bg-surface-700 hover:text-white"
+				aria-label="Close drawer"
+			>
+				<X class="h-4 w-4" />
+			</button>
+		</div>
 	</div>
 
 	<!-- Tabs -->
