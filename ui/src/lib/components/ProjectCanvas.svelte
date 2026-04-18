@@ -134,7 +134,7 @@
 			onnodecontextmenu={onNodeContextMenu}
 			colorMode="dark"
 		>
-			<Background variant={BackgroundVariant.Dots} gap={24} size={1.5} patternColor="#252530" />
+			<Background variant={BackgroundVariant.Dots} gap={20} size={1.2} patternColor="#3a3a48" />
 			<Controls />
 		</SvelteFlow>
 	{/if}

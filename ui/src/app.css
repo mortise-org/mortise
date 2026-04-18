@@ -8,6 +8,20 @@
 	box-shadow: none !important;
 }
 
+/* Hide Svelte Flow's default resize handles */
+:global(.svelte-flow__resize-control) {
+	display: none !important;
+}
+
+/* Hide connection handles until hover */
+:global(.svelte-flow__handle) {
+	opacity: 0;
+	transition: opacity 150ms;
+}
+:global(.svelte-flow__node:hover .svelte-flow__handle) {
+	opacity: 1;
+}
+
 @theme {
 	--color-surface-900: #0a0a0f;
 	--color-surface-800: #12121a;
