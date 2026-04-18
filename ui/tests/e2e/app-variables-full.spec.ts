@@ -159,7 +159,7 @@ test('add new variable via form calls PUT with the new key', async ({ page }) =>
   await expect(page.getByText('APP_ENV')).toBeVisible({ timeout: 8_000 });
 
   // Click the New variable button in the production section (first one).
-  await page.getByRole('button', { name: 'New variable' }).first().click();
+  await page.getByRole('button', { name: 'New variable', exact: true }).first().click();
 
   // Fill key and value.
   await page.getByPlaceholder('VARIABLE_NAME').first().fill('MY_NEW_VAR');
@@ -386,9 +386,8 @@ test('adding a shared variable calls updateApp with sharedVars in spec', async (
   // Wait for shared variables section to appear.
   await expect(page.getByText('Shared variables')).toBeVisible({ timeout: 8_000 });
 
-  // Click the New variable button in the shared section (last one).
-  const newVarBtns = page.getByRole('button', { name: 'New variable' });
-  await newVarBtns.last().click();
+  // Click the New shared variable button in the shared section.
+  await page.getByRole('button', { name: 'New shared variable', exact: true }).click();
 
   // Fill in key and value in the shared section's input fields (last pair).
   await page.getByPlaceholder('VARIABLE_NAME').last().fill('GLOBAL_FLAG');
@@ -462,4 +461,153 @@ test('staging section is collapsed by default and expands on click', async ({ pa
 
   // Staging vars should now be visible.
   await expect(page.getByText('STAGE_VAR')).toBeVisible({ timeout: 5_000 });
+});
+
+// ---------------------------------------------------------------------------
+// Test 12: Edit an existing shared variable → Save → updateApp called with updated value
+// ---------------------------------------------------------------------------
+test('inline edit of shared variable calls updateApp with updated value', async ({ page }) => {
+  let capturedAppBody: unknown;
+
+  await injectAuth(page);
+  await setupCommonMocks(page); // mockApp has sharedVars: [{ name: 'SHARED_KEY', value: 'shared-value' }]
+
+  await page.route('**/api/projects/my-project/apps/web-app/env*', (r) =>
+    r.fulfill({ json: [] })
+  );
+
+  await page.route('**/api/projects/my-project/apps/web-app', async (route) => {
+    if (route.request().method() === 'PUT') {
+      capturedAppBody = JSON.parse(route.request().postData() ?? '{}');
+      return route.fulfill({ json: { ...mockApp, spec: JSON.parse(route.request().postData() ?? '{}') } });
+    }
+    return route.fulfill({ json: mockApp });
+  });
+
+  await page.goto('/projects/my-project/apps/web-app');
+  await expect(page.getByRole('button', { name: 'Deployments', exact: true })).toBeVisible({ timeout: 8_000 });
+  await page.getByRole('button', { name: 'Variables', exact: true }).click();
+
+  // Wait for SHARED_KEY to appear in the shared section.
+  await expect(page.getByText('SHARED_KEY')).toBeVisible({ timeout: 8_000 });
+
+  // Find the value input for SHARED_KEY — it's the last input[placeholder="(empty)"] on the page
+  // (shared section is rendered after all env sections).
+  const valueInput = page.locator('input[placeholder="(empty)"]').last();
+  await valueInput.fill('updated-value');
+
+  // The "Save 1 changes" button should appear in the shared section.
+  const saveBtn = page.getByRole('button', { name: /Save \d+ change/ });
+  await expect(saveBtn).toBeVisible({ timeout: 3_000 });
+  await saveBtn.click();
+
+  await expect(async () => {
+    expect(capturedAppBody).toBeDefined();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const body = capturedAppBody as any;
+    expect(body.sharedVars).toBeDefined();
+    const sharedVar = (body.sharedVars as Array<{ name: string; value: string }>).find(
+      v => v.name === 'SHARED_KEY'
+    );
+    expect(sharedVar?.value).toBe('updated-value');
+  }).toPass({ timeout: 5_000 });
+});
+
+// ---------------------------------------------------------------------------
+// Test 13: Delete an existing shared variable → updateApp called without that key
+// ---------------------------------------------------------------------------
+test('deleting a shared variable calls updateApp without the deleted key', async ({ page }) => {
+  let capturedAppBody: unknown;
+
+  await injectAuth(page);
+  await setupCommonMocks(page); // mockApp has sharedVars: [{ name: 'SHARED_KEY', value: 'shared-value' }]
+
+  await page.route('**/api/projects/my-project/apps/web-app/env*', (r) =>
+    r.fulfill({ json: [] })
+  );
+
+  await page.route('**/api/projects/my-project/apps/web-app', async (route) => {
+    if (route.request().method() === 'PUT') {
+      capturedAppBody = JSON.parse(route.request().postData() ?? '{}');
+      return route.fulfill({ json: { ...mockApp, spec: JSON.parse(route.request().postData() ?? '{}') } });
+    }
+    return route.fulfill({ json: mockApp });
+  });
+
+  await page.goto('/projects/my-project/apps/web-app');
+  await expect(page.getByRole('button', { name: 'Deployments', exact: true })).toBeVisible({ timeout: 8_000 });
+  await page.getByRole('button', { name: 'Variables', exact: true }).click();
+
+  // Wait for SHARED_KEY to appear.
+  await expect(page.getByText('SHARED_KEY')).toBeVisible({ timeout: 8_000 });
+
+  // Hover the shared var row and click the trash button.
+  const row = page.locator('div.group').filter({ hasText: 'SHARED_KEY' });
+  await row.hover();
+  await row.getByRole('button').click();
+
+  await expect(async () => {
+    expect(capturedAppBody).toBeDefined();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const body = capturedAppBody as any;
+    expect(body.sharedVars).toBeDefined();
+    const names = (body.sharedVars as Array<{ name: string; value: string }>).map(v => v.name);
+    expect(names).not.toContain('SHARED_KEY');
+  }).toPass({ timeout: 5_000 });
+});
+
+// ---------------------------------------------------------------------------
+// Test 14: Shared vars raw import → updateApp called with imported vars
+// ---------------------------------------------------------------------------
+test('raw import of shared variables calls updateApp with merged vars', async ({ page }) => {
+  let capturedAppBody: unknown;
+
+  const appWithNoSharedVars = {
+    ...mockApp,
+    spec: { ...mockApp.spec, sharedVars: [] }
+  };
+
+  await injectAuth(page);
+  await setupCommonMocks(page, appWithNoSharedVars);
+
+  await page.route('**/api/projects/my-project/apps/web-app/env*', (r) =>
+    r.fulfill({ json: [] })
+  );
+
+  await page.route('**/api/projects/my-project/apps/web-app', async (route) => {
+    if (route.request().method() === 'PUT') {
+      capturedAppBody = JSON.parse(route.request().postData() ?? '{}');
+      return route.fulfill({ json: { ...appWithNoSharedVars, spec: JSON.parse(route.request().postData() ?? '{}') } });
+    }
+    return route.fulfill({ json: appWithNoSharedVars });
+  });
+
+  await page.goto('/projects/my-project/apps/web-app');
+  await expect(page.getByRole('button', { name: 'Deployments', exact: true })).toBeVisible({ timeout: 8_000 });
+  await page.getByRole('button', { name: 'Variables', exact: true }).click();
+
+  // Wait for shared variables section to appear.
+  await expect(page.getByText('Shared variables')).toBeVisible({ timeout: 8_000 });
+
+  // Click the Raw button in the shared section — shared section is last, so use .last().
+  await page.getByRole('button', { name: 'Raw', exact: true }).last().click();
+
+  // Fill the textarea with dotenv content.
+  const textarea = page.getByPlaceholder(/DATABASE_URL/).last();
+  await expect(textarea).toBeVisible({ timeout: 5_000 });
+  await textarea.fill('SHARED_IMPORT=abc');
+
+  // Click Import — shared section Import is last.
+  await page.getByRole('button', { name: 'Import', exact: true }).last().click();
+
+  await expect(async () => {
+    expect(capturedAppBody).toBeDefined();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const body = capturedAppBody as any;
+    expect(body.sharedVars).toBeDefined();
+    const sharedVar = (body.sharedVars as Array<{ name: string; value: string }>).find(
+      v => v.name === 'SHARED_IMPORT'
+    );
+    expect(sharedVar?.value).toBe('abc');
+  }).toPass({ timeout: 5_000 });
 });
