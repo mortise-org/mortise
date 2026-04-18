@@ -350,6 +350,158 @@ func (c *Client) RevokeToken(project, app, name string) error {
 	return c.doJSON(http.MethodDelete, u, nil, nil)
 }
 
+// ---------- Git Providers ----------
+
+type GitProviderSummary struct {
+	Name     string `json:"name"`
+	Type     string `json:"type"`
+	Host     string `json:"host"`
+	Phase    string `json:"phase"`
+	HasToken bool   `json:"hasToken"`
+	Mode     string `json:"mode"`
+}
+
+type CreateGitProviderRequest struct {
+	Name          string `json:"name"`
+	Type          string `json:"type"`
+	Host          string `json:"host"`
+	ClientID      string `json:"clientID"`
+	ClientSecret  string `json:"clientSecret"`
+	WebhookSecret string `json:"webhookSecret"`
+}
+
+func (c *Client) ListGitProviders() ([]GitProviderSummary, error) {
+	var resp []GitProviderSummary
+	if err := c.doJSON(http.MethodGet, c.BaseURL+"/api/gitproviders", nil, &resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+func (c *Client) CreateGitProvider(req CreateGitProviderRequest) error {
+	return c.doJSON(http.MethodPost, c.BaseURL+"/api/gitproviders", req, nil)
+}
+
+func (c *Client) DeleteGitProvider(name string) error {
+	u := fmt.Sprintf("%s/api/gitproviders/%s", c.BaseURL, url.PathEscape(name))
+	return c.doJSON(http.MethodDelete, u, nil, nil)
+}
+
+// ---------- Platform ----------
+
+type PlatformResponse struct {
+	Domain string `json:"domain"`
+	DNS    struct {
+		Provider string `json:"provider"`
+	} `json:"dns"`
+	Registry struct {
+		URL string `json:"url"`
+	} `json:"registry"`
+	Build struct {
+		BuildkitAddr string `json:"buildkitAddr"`
+	} `json:"build"`
+}
+
+type PlatformPatchRequest struct {
+	Domain string         `json:"domain,omitempty"`
+	DNS    map[string]any `json:"dns,omitempty"`
+}
+
+func (c *Client) GetPlatform() (*PlatformResponse, error) {
+	var resp PlatformResponse
+	if err := c.doJSON(http.MethodGet, c.BaseURL+"/api/platform", nil, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+func (c *Client) PatchPlatform(req PlatformPatchRequest) (*PlatformResponse, error) {
+	var resp PlatformResponse
+	if err := c.doJSON(http.MethodPatch, c.BaseURL+"/api/platform", req, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// ---------- Repos ----------
+
+type Repository struct {
+	FullName      string `json:"fullName"`
+	Name          string `json:"name"`
+	Description   string `json:"description"`
+	DefaultBranch string `json:"defaultBranch"`
+	Language      string `json:"language"`
+	Private       bool   `json:"private"`
+	UpdatedAt     string `json:"updatedAt"`
+}
+
+type Branch struct {
+	Name    string `json:"name"`
+	Default bool   `json:"default"`
+}
+
+func (c *Client) ListRepos(provider string) ([]Repository, error) {
+	var resp []Repository
+	u := c.BaseURL + "/api/repos?provider=" + url.QueryEscape(provider)
+	if err := c.doJSON(http.MethodGet, u, nil, &resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+func (c *Client) ListBranches(owner, repo, provider string) ([]Branch, error) {
+	var resp []Branch
+	u := fmt.Sprintf("%s/api/repos/%s/%s/branches?provider=%s",
+		c.BaseURL, url.PathEscape(owner), url.PathEscape(repo), url.QueryEscape(provider))
+	if err := c.doJSON(http.MethodGet, u, nil, &resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+// ---------- App Update ----------
+
+func (c *Client) UpdateApp(project, name string, spec any) (*mortisev1alpha1.App, error) {
+	var app mortisev1alpha1.App
+	u := c.appBase(project, name)
+	if err := c.doJSON(http.MethodPut, u, spec, &app); err != nil {
+		return nil, err
+	}
+	return &app, nil
+}
+
+// ---------- GitHub Device Flow ----------
+
+type DeviceCodeResponse struct {
+	DeviceCode      string `json:"device_code"`
+	UserCode        string `json:"user_code"`
+	VerificationURI string `json:"verification_uri"`
+	ExpiresIn       int    `json:"expires_in"`
+	Interval        int    `json:"interval"`
+}
+
+type DevicePollResponse struct {
+	Status string `json:"status"`
+	Error  string `json:"error,omitempty"`
+}
+
+func (c *Client) RequestDeviceCode() (*DeviceCodeResponse, error) {
+	var resp DeviceCodeResponse
+	if err := c.doJSON(http.MethodPost, c.BaseURL+"/api/auth/github/device", nil, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+func (c *Client) PollDeviceCode(deviceCode string) (*DevicePollResponse, error) {
+	var resp DevicePollResponse
+	if err := c.doJSON(http.MethodPost, c.BaseURL+"/api/auth/github/device/poll",
+		map[string]string{"device_code": deviceCode}, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
 // ---------- Env Vars ----------
 
 // EnvVarResponse mirrors internal/api.envVarResponse.

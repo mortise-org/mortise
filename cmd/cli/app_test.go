@@ -224,6 +224,7 @@ func TestRootCommandStructure(t *testing.T) {
 
 	expected := map[string]bool{
 		"login": false, "project": false, "app": false, "deploy": false, "logs": false, "status": false,
+		"secret": false, "git-provider": false, "platform": false, "repo": false,
 	}
 	for _, sub := range root.Commands() {
 		if _, ok := expected[sub.Name()]; ok {
@@ -237,13 +238,53 @@ func TestRootCommandStructure(t *testing.T) {
 	}
 }
 
+func TestAppUpdate_PutsToCorrectPath(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/projects/myproject/apps/web":
+			// Return current app state
+			_ = json.NewEncoder(w).Encode(mortisev1alpha1.App{
+				Spec: mortisev1alpha1.AppSpec{
+					Source: mortisev1alpha1.AppSource{
+						Type:  mortisev1alpha1.SourceTypeImage,
+						Image: "nginx:1.27",
+					},
+				},
+			})
+		case r.Method == http.MethodPut && r.URL.Path == "/api/projects/myproject/apps/web":
+			calls++
+			var spec mortisev1alpha1.AppSpec
+			_ = json.NewDecoder(r.Body).Decode(&spec)
+			if spec.Source.Image != "nginx:1.27" {
+				t.Errorf("expected image preserved as nginx:1.27, got %q", spec.Source.Image)
+			}
+			_ = json.NewEncoder(w).Encode(mortisev1alpha1.App{Spec: spec})
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	c := newTestClient(srv)
+	_, err := c.UpdateApp(c.ResolveProject(""), "web", mortisev1alpha1.AppSpec{
+		Source: mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: "nginx:1.27"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Errorf("expected 1 PUT call, got %d", calls)
+	}
+}
+
 func TestAppSubcommands(t *testing.T) {
 	app := newAppCmd()
 	subs := map[string]bool{}
 	for _, c := range app.Commands() {
 		subs[c.Name()] = true
 	}
-	for _, name := range []string{"list", "create", "delete"} {
+	for _, name := range []string{"list", "create", "update", "delete"} {
 		if !subs[name] {
 			t.Errorf("missing app subcommand: %s", name)
 		}
