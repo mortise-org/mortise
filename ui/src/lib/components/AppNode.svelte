@@ -1,7 +1,8 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
 	import type { NodeProps } from '@xyflow/svelte';
 	import { Handle, Position } from '@xyflow/svelte';
-	import { GitBranch, Container, Cloud, Clock, HardDrive } from 'lucide-svelte';
+	import { GitBranch, Container, Cloud, Clock, HardDrive, Loader2 } from 'lucide-svelte';
 	import type { App, AppPhase } from '$lib/types';
 
 	interface AppNodeData {
@@ -46,6 +47,39 @@
 		return cond?.message ?? null;
 	}
 	const errorMsg = $derived(failedReason(app));
+
+	// Build timer — synced to the BuildStarted condition timestamp from k8s.
+	let buildElapsed = $state('');
+	let timerHandle: ReturnType<typeof setInterval> | null = null;
+
+	function buildStartTime(): number | null {
+		const cond = app.status?.conditions?.find(c => c.type === 'BuildStarted' && c.status === 'True');
+		if (!cond?.lastTransitionTime) return null;
+		return new Date(cond.lastTransitionTime).getTime();
+	}
+
+	function startBuildTimer() {
+		const start = buildStartTime() ?? Date.now();
+		const tick = () => {
+			const s = Math.floor((Date.now() - start) / 1000);
+			const m = Math.floor(s / 60);
+			buildElapsed = m > 0 ? `${m}m ${s % 60}s` : `${s}s`;
+		};
+		tick();
+		timerHandle = setInterval(tick, 1000);
+	}
+
+	$effect(() => {
+		if (phase === 'Building' && !timerHandle) {
+			startBuildTimer();
+		} else if (phase !== 'Building' && timerHandle) {
+			clearInterval(timerHandle);
+			timerHandle = null;
+			buildElapsed = '';
+		}
+	});
+
+	onMount(() => () => { if (timerHandle) clearInterval(timerHandle); });
 </script>
 
 <div
@@ -81,9 +115,15 @@
 	<!-- Status chip -->
 	{#if phase}
 		<div class="flex items-center gap-1.5">
+			{#if phase === 'Building'}
+				<Loader2 class="h-3 w-3 animate-spin text-warning" />
+			{/if}
 			<span class="rounded px-1.5 py-0.5 text-xs font-medium {phaseClass[phase] ?? 'bg-surface-700 text-gray-400'}">
 				{phase}
 			</span>
+			{#if phase === 'Building' && buildElapsed}
+				<span class="text-xs font-mono text-warning/70">{buildElapsed}</span>
+			{/if}
 			{#if phase === 'Failed' && errorMsg}
 				<span class="h-3 w-3 shrink-0 text-danger" title={errorMsg}>
 					<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="h-3 w-3">

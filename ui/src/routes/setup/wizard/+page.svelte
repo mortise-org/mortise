@@ -51,12 +51,13 @@
 		try {
 			const data = await api.gitDeviceCode('github');
 			userCode = data.user_code;
+			const dc = data.device_code;
 			try { await navigator.clipboard.writeText(userCode); } catch {}
 
 			const interval = (data.interval || 5) * 1000;
-			pollTimer = setInterval(async () => {
+			const doPoll = async () => {
 				try {
-					const pd = await api.gitDevicePoll('github', data.device_code);
+					const pd = await api.gitDevicePoll('github', dc);
 					if (pd.status === 'complete') {
 						if (pollTimer) clearInterval(pollTimer);
 						gitStep = 'done';
@@ -66,7 +67,12 @@
 						gitStep = 'start';
 					}
 				} catch { /* network hiccup, keep polling */ }
-			}, interval);
+			};
+			pollTimer = setInterval(doPoll, interval);
+			// Also poll on tab focus so the user sees the result immediately.
+			document.addEventListener('visibilitychange', () => {
+				if (!document.hidden && gitStep === 'polling') void doPoll();
+			});
 		} catch (e) {
 			gitError = e instanceof Error ? e.message : 'Connection failed';
 			gitStep = 'start';

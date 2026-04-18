@@ -80,10 +80,10 @@ type AppReconciler struct {
 	// ingressClassName.
 	IngressProvider ingress.IngressProvider
 
-	// builds tracks in-flight asynchronous git-source builds so subsequent
+	// Builds tracks in-flight asynchronous git-source builds so subsequent
 	// reconciles can check progress without blocking the worker. Lost on
 	// operator restart; the next reconcile re-launches (builds are idempotent).
-	builds buildTrackerStore
+	Builds buildTrackerStore
 }
 
 // +kubebuilder:rbac:groups=mortise.mortise.dev,resources=apps,verbs=get;list;watch;create;update;patch;delete
@@ -208,11 +208,20 @@ func (r *AppReconciler) reconcileGitSource(ctx context.Context, app *mortisev1al
 		return ctrl.Result{}, true, nil
 	}
 
+	// Don't retry a build that already failed for this revision. The user must
+	// push a new commit or manually clear the condition to trigger a rebuild.
+	if app.Status.Phase == mortisev1alpha1.AppPhaseFailed {
+		cond := meta.FindStatusCondition(app.Status.Conditions, "BuildSucceeded")
+		if cond != nil && cond.Status == metav1.ConditionFalse && cond.Reason == "BuildFailed" {
+			return ctrl.Result{}, false, nil
+		}
+	}
+
 	key := types.NamespacedName{Namespace: app.Namespace, Name: app.Name}
 
 	// Check for an existing tracker. If it matches the current revision, inspect
 	// its state; if it's for a stale revision, discard and fall through to launch.
-	if t := r.builds.get(key); t != nil {
+	if t := r.Builds.get(key); t != nil {
 		phase, trackedRev, image, digest, errMsg := t.snapshot()
 		if trackedRev != revision {
 			// Stale tracker from a previous revision — cancel and drop.
@@ -222,20 +231,20 @@ func (r *AppReconciler) reconcileGitSource(ctx context.Context, app *mortisev1al
 			if cancel != nil {
 				cancel()
 			}
-			r.builds.delete(key)
+			r.Builds.delete(key)
 		} else {
 			switch phase {
 			case buildPhaseRunning:
 				return ctrl.Result{RequeueAfter: buildPollInterval}, false, nil
 			case buildPhaseSucceeded:
-				r.builds.delete(key)
+				r.Builds.delete(key)
 				if err := r.applyBuildSuccess(ctx, app, revision, image, digest); err != nil {
 					return ctrl.Result{}, false, err
 				}
 				app.Spec.Source.Image = image
 				return ctrl.Result{}, true, nil
 			case buildPhaseFailed:
-				r.builds.delete(key)
+				r.Builds.delete(key)
 				return ctrl.Result{}, false, r.setFailedCondition(ctx, app, "BuildFailed", errMsg)
 			}
 		}
@@ -270,8 +279,16 @@ func (r *AppReconciler) reconcileGitSource(ctx context.Context, app *mortisev1al
 		return ctrl.Result{}, false, r.setFailedCondition(ctx, app, "PushTargetFailed", err.Error())
 	}
 
-	// Mark building phase before kicking off the goroutine.
+	// Mark building phase and record the start time so the UI can display
+	// an accurate elapsed timer.
 	app.Status.Phase = mortisev1alpha1.AppPhaseBuilding
+	meta.SetStatusCondition(&app.Status.Conditions, metav1.Condition{
+		Type:               "BuildStarted",
+		Status:             metav1.ConditionTrue,
+		Reason:             "BuildInProgress",
+		Message:            fmt.Sprintf("building revision %s", revision),
+		LastTransitionTime: metav1.NewTime(r.clock().Now()),
+	})
 	if err := r.Status().Update(ctx, app); err != nil {
 		log.Error(err, "update status to Building")
 	}
@@ -285,7 +302,7 @@ func (r *AppReconciler) reconcileGitSource(ctx context.Context, app *mortisev1al
 		phase:    buildPhaseRunning,
 		cancel:   cancel,
 	}
-	r.builds.set(key, tracker)
+	r.Builds.set(key, tracker)
 
 	go r.runBuild(buildCtx, cancel, tracker, buildParams{
 		appName:    app.Name,
@@ -362,6 +379,7 @@ func (r *AppReconciler) runBuild(ctx context.Context, cancel context.CancelFunc,
 		switch ev.Type {
 		case build.EventLog:
 			log.V(1).Info("build log", "line", ev.Line)
+			t.appendLog(ev.Line)
 		case build.EventSuccess:
 			digest = ev.Digest
 			log.Info("build succeeded", "image", p.imageRef.Full, "digest", digest)

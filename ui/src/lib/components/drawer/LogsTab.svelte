@@ -1,15 +1,23 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { api } from '$lib/api';
+	import { Loader2 } from 'lucide-svelte';
 	import type { App } from '$lib/types';
 
 	let { project, app }: { project: string; app: App } = $props();
+
+	const isBuilding = $derived(app.status?.phase === 'Building');
+	const isFailed = $derived(app.status?.phase === 'Failed');
+	const failedMessage = $derived(
+		app.status?.conditions?.find(c => c.status === 'False')?.message ?? null
+	);
 
 	let selectedEnv = $state(app.spec.environments?.[0]?.name ?? 'production');
 	let lines = $state<string[]>([]);
 	let following = $state(true);
 	let es: EventSource | null = null;
 	let logContainer: HTMLElement | null = $state(null);
+	let buildPollHandle: ReturnType<typeof setInterval> | null = null;
 
 	function scrollToBottom() {
 		if (logContainer) {
@@ -19,32 +27,58 @@
 
 	function connect() {
 		es?.close();
+		// Don't try to stream pod logs while building — there are no pods yet.
+		if (isBuilding) return;
 		lines = [];
 		const url = api.logsURL(project, app.metadata.name, selectedEnv);
 		es = new EventSource(url);
 		es.onmessage = (e: MessageEvent) => {
 			lines = [...lines.slice(-499), e.data as string];
 			if (following) {
-				// Defer scroll to after DOM update
 				setTimeout(scrollToBottom, 0);
 			}
 		};
-		es.onerror = () => {
-			// connection closed or error - don't retry automatically
-		};
+		es.onerror = () => {};
 	}
 
+	async function pollBuildLogs() {
+		try {
+			const resp = await api.getBuildLogs(project, app.metadata.name);
+			lines = resp.lines;
+			if (following) setTimeout(scrollToBottom, 0);
+		} catch { /* ignore */ }
+	}
+
+	// Start/stop build log polling based on build state.
+	$effect(() => {
+		if (isBuilding && !buildPollHandle) {
+			void pollBuildLogs();
+			buildPollHandle = setInterval(pollBuildLogs, 2000);
+		} else if (!isBuilding && buildPollHandle) {
+			clearInterval(buildPollHandle);
+			buildPollHandle = null;
+			// Build finished — switch to pod log streaming.
+			connect();
+		}
+	});
+
 	onMount(() => {
-		connect();
+		if (!isBuilding) {
+			connect();
+		}
 		return () => {
 			es?.close();
 			es = null;
+			if (buildPollHandle) {
+				clearInterval(buildPollHandle);
+				buildPollHandle = null;
+			}
 		};
 	});
 
 	$effect(() => {
 		void selectedEnv;
-		connect();
+		if (!isBuilding) connect();
 	});
 
 	function clearLogs() {
@@ -70,8 +104,12 @@
 <div class="flex h-full flex-col gap-3">
 	<!-- Top bar -->
 	<div class="flex items-center justify-between">
-		<!-- Environment tabs -->
-		{#if app.spec.environments && app.spec.environments.length > 1}
+		{#if isBuilding}
+			<div class="flex items-center gap-1.5 text-xs text-warning">
+				<Loader2 class="h-3 w-3 animate-spin" />
+				<span>Build logs</span>
+			</div>
+		{:else if app.spec.environments && app.spec.environments.length > 1}
 			<div class="flex gap-1">
 				{#each app.spec.environments as env}
 					<button
@@ -90,7 +128,6 @@
 		{/if}
 
 		<div class="flex items-center gap-2">
-			<!-- Live tail toggle -->
 			<label class="flex cursor-pointer items-center gap-1.5 text-xs text-gray-400">
 				<span>Live tail</span>
 				<button
@@ -137,7 +174,19 @@
 		style="min-height: 300px; max-height: calc(100vh - 280px)"
 	>
 		{#if filteredLines.length === 0}
-			<p class="text-xs text-gray-600 italic">{searchQuery.trim() ? 'No matching lines.' : 'No logs yet…'}</p>
+			{#if isBuilding}
+				<div class="flex items-center gap-2 text-xs text-warning">
+					<Loader2 class="h-3.5 w-3.5 animate-spin" />
+					<span>Waiting for build output...</span>
+				</div>
+			{:else if isFailed && failedMessage}
+				<div class="space-y-2">
+					<p class="text-xs font-medium text-danger">Build failed:</p>
+					<pre class="whitespace-pre-wrap break-all rounded bg-surface-800 p-2 text-xs text-danger/80">{failedMessage}</pre>
+				</div>
+			{:else}
+				<p class="text-xs text-gray-600 italic">{searchQuery.trim() ? 'No matching lines.' : 'No logs yet…'}</p>
+			{/if}
 		{:else}
 			{#each filteredLines as line}
 				<div class="font-mono text-xs leading-5 text-gray-300 whitespace-pre-wrap break-all">{line}</div>

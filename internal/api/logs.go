@@ -27,6 +27,32 @@ type logLine struct {
 	Stream string `json:"stream"`
 }
 
+// handleBuildLogs returns the current build log lines for an in-progress build.
+// Unlike pod logs (SSE stream), build logs are returned as a JSON array since
+// they come from the operator's in-memory build tracker, not from a pod.
+//
+// GET /api/projects/{project}/apps/{app}/build-logs
+func (s *Server) handleBuildLogs(w http.ResponseWriter, r *http.Request) {
+	ns, ok := s.resolveProject(w, r)
+	if !ok {
+		return
+	}
+	name := chi.URLParam(r, "app")
+	key := types.NamespacedName{Namespace: ns, Name: name}
+
+	if s.buildLogs == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"lines": []string{}, "building": false})
+		return
+	}
+
+	lines := s.buildLogs.GetBuildLogs(key)
+	building := lines != nil
+	if lines == nil {
+		lines = []string{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"lines": lines, "building": building})
+}
+
 // handleLogs streams pod logs for an App environment via Server-Sent Events.
 // All pods matching the Deployment's label selector are aggregated onto the
 // single response; each line is tagged with its pod name. New pods created

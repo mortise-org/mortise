@@ -48,6 +48,28 @@
 	);
 	const isBuilding = $derived(app?.status?.phase === 'Building');
 
+	// Build timer — synced to BuildStarted condition timestamp from k8s.
+	let buildElapsed = $state('');
+	let buildTimerHandle: ReturnType<typeof setInterval> | null = null;
+
+	$effect(() => {
+		if (isBuilding && !buildTimerHandle) {
+			const cond = app?.status?.conditions?.find(c => c.type === 'BuildStarted' && c.status === 'True');
+			const start = cond?.lastTransitionTime ? new Date(cond.lastTransitionTime).getTime() : Date.now();
+			const tick = () => {
+				const s = Math.floor((Date.now() - start) / 1000);
+				const m = Math.floor(s / 60);
+				buildElapsed = m > 0 ? `${m}m ${s % 60}s` : `${s}s`;
+			};
+			tick();
+			buildTimerHandle = setInterval(tick, 1000);
+		} else if (!isBuilding && buildTimerHandle) {
+			clearInterval(buildTimerHandle);
+			buildTimerHandle = null;
+			buildElapsed = '';
+		}
+	});
+
 	const tabs = ['deployments', 'variables', 'logs', 'metrics', 'settings'] as const;
 
 	const phaseChip: Record<string, string> = {
@@ -120,9 +142,14 @@
 
 	<!-- Build status banner -->
 	{#if isBuilding}
-		<div class="mx-4 mt-3 flex items-center gap-2 rounded-md border border-warning/30 bg-warning/10 px-3 py-2">
-			<Loader2 class="h-4 w-4 animate-spin text-warning" />
-			<span class="text-sm text-warning">Build in progress...</span>
+		<div class="mx-4 mt-3 flex items-center justify-between rounded-md border border-warning/30 bg-warning/10 px-3 py-2">
+			<div class="flex items-center gap-2">
+				<Loader2 class="h-4 w-4 animate-spin text-warning" />
+				<span class="text-sm text-warning">Build in progress...</span>
+			</div>
+			{#if buildElapsed}
+				<span class="font-mono text-xs text-warning/70">{buildElapsed}</span>
+			{/if}
 		</div>
 	{/if}
 	{#if buildError}

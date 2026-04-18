@@ -28,31 +28,42 @@
 		}
 	}
 
+	let ghDeviceCode = '';
+
+	async function ghPollOnce() {
+		if (!ghDeviceCode) return;
+		try {
+			const pd = await api.gitDevicePoll('github', ghDeviceCode);
+			if (pd.status === 'complete') {
+				if (githubPollTimer) clearInterval(githubPollTimer);
+				githubFlowActive = false;
+				githubUserCode = '';
+				store.githubConnected = true;
+			} else if (pd.status === 'expired' || pd.status === 'denied') {
+				if (githubPollTimer) clearInterval(githubPollTimer);
+				githubError = `Authorization ${pd.status}. Try again.`;
+				githubFlowActive = false;
+				githubUserCode = '';
+			}
+		} catch { /* network hiccup, keep polling */ }
+	}
+
 	async function connectGitHub() {
 		githubError = '';
 		githubFlowActive = true;
 		try {
 			const data = await api.gitDeviceCode('github');
 			githubUserCode = data.user_code;
+			ghDeviceCode = data.device_code;
 			try { await navigator.clipboard.writeText(githubUserCode); } catch {}
 
 			const interval = (data.interval || 5) * 1000;
-			githubPollTimer = setInterval(async () => {
-				try {
-					const pd = await api.gitDevicePoll('github', data.device_code);
-					if (pd.status === 'complete') {
-						if (githubPollTimer) clearInterval(githubPollTimer);
-						githubFlowActive = false;
-						githubUserCode = '';
-						store.githubConnected = true;
-					} else if (pd.status === 'expired' || pd.status === 'denied') {
-						if (githubPollTimer) clearInterval(githubPollTimer);
-						githubError = `Authorization ${pd.status}. Try again.`;
-						githubFlowActive = false;
-						githubUserCode = '';
-					}
-				} catch { /* network hiccup, keep polling */ }
-			}, interval);
+			githubPollTimer = setInterval(() => void ghPollOnce(), interval);
+
+			// Poll immediately when tab regains focus.
+			document.addEventListener('visibilitychange', () => {
+				if (!document.hidden && githubFlowActive) void ghPollOnce();
+			});
 		} catch (e) {
 			githubError = e instanceof Error ? e.message : 'Connection failed';
 			githubFlowActive = false;

@@ -69,6 +69,8 @@
 		}
 	});
 
+	let pollHandle: ReturnType<typeof setInterval> | null = null;
+
 	async function load() {
 		loading = true;
 		error = '';
@@ -78,10 +80,29 @@
 				api.listApps(projectName)
 			]);
 			store.setProject(projectName);
+			startPollingIfBuilding();
 		} catch (err) {
 			error = err instanceof Error ? err.message : 'Failed to load project';
 		} finally {
 			loading = false;
+		}
+	}
+
+	function startPollingIfBuilding() {
+		const hasBuilding = apps.some(a => a.status?.phase === 'Building' || a.status?.phase === 'Deploying');
+		if (hasBuilding && !pollHandle) {
+			pollHandle = setInterval(async () => {
+				try {
+					apps = await api.listApps(projectName);
+					if (!apps.some(a => a.status?.phase === 'Building' || a.status?.phase === 'Deploying')) {
+						clearInterval(pollHandle!);
+						pollHandle = null;
+					}
+				} catch { /* ignore */ }
+			}, 3000);
+		} else if (!hasBuilding && pollHandle) {
+			clearInterval(pollHandle);
+			pollHandle = null;
 		}
 	}
 

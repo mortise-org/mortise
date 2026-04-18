@@ -137,6 +137,9 @@ export const api = {
 		return `/api/projects/${enc(project)}/apps/${enc(app)}/logs?${params.toString()}`;
 	},
 
+	getBuildLogs: (project: string, app: string) =>
+		request<{ lines: string[]; building: boolean }>(`/projects/${enc(project)}/apps/${enc(app)}/build-logs`),
+
 	// --- Git provider device flow (per-user, requires JWT) ---
 	gitDeviceCode: (provider: string) =>
 		request<DeviceCodeResponse>(`/auth/git/${enc(provider)}/device`, { method: 'POST' }),

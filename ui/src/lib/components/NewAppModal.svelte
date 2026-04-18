@@ -36,6 +36,7 @@
 	let gitBranch = $state('main');
 	let gitPath = $state('');
 	let repoSearch = $state('');
+	let repoListOpen = $state(true);
 
 	const filteredRepos = $derived(
 		repoSearch.trim()
@@ -72,9 +73,10 @@
 		repoTree.filter((e) => e.type === 'tree').map((e) => e.path)
 	);
 	const filteredDirs = $derived(
-		gitPath.trim()
-			? repoDirs.filter((p) => p.toLowerCase().includes(gitPath.toLowerCase()))
-			: repoDirs
+		repoDirs.filter((p) => {
+			if (!gitPath.trim()) return true;
+			return p.toLowerCase().startsWith(gitPath.toLowerCase().replace(/\/$/, ''));
+		})
 	);
 
 	// Advanced options / watch paths toggle
@@ -137,12 +139,12 @@
 		}
 	}
 
-	async function loadRepoTree() {
+	async function loadRepoTree(path = '') {
 		if (!selectedRepo) return;
 		treeLoading = true;
 		const [owner, name] = selectedRepo.fullName.split('/');
 		try {
-			repoTree = await api.listRepoTree(owner, name, gitProvider, gitBranch);
+			repoTree = await api.listRepoTree(owner, name, gitProvider, gitBranch, path);
 		} catch {
 			repoTree = [];
 		} finally {
@@ -169,6 +171,7 @@
 
 	function selectRepo(repo: Repository) {
 		selectedRepo = repo;
+		repoListOpen = false;
 		gitBranch = repo.defaultBranch;
 		selectedPaths = new Set();
 		customPath = '';
@@ -339,31 +342,42 @@
 						</div>
 						{/if}
 
-						<!-- Repo search -->
-						<div class="min-h-[14rem]">
+						<!-- Repo selector -->
+						<div>
 						{#if reposLoading}
 							<div class="flex items-center justify-center h-[14rem] text-sm text-gray-500">Loading repositories...</div>
 						{:else if repos.length > 0}
 							<div>
 								<label class="text-sm text-gray-400">Repository</label>
-								<input
-									type="text"
-									bind:value={repoSearch}
-									placeholder="Search repos..."
-									class="mt-1 w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-white placeholder-gray-500 outline-none focus:border-accent"
-								/>
-								<div class="mt-1 max-h-48 overflow-y-auto rounded-md border border-surface-600">
-									{#each filteredRepos as repo}
-										<button
-											type="button"
-											onclick={() => selectRepo(repo)}
-											class="flex w-full items-center justify-between px-3 py-2 text-sm hover:bg-surface-700 {selectedRepo?.fullName === repo.fullName ? 'bg-surface-600 text-white' : 'text-gray-300'}"
-										>
-											<span class="truncate">{repo.fullName}</span>
-											{#if repo.private}<span class="text-xs text-gray-500">private</span>{/if}
-										</button>
-									{/each}
-								</div>
+								{#if selectedRepo && !repoListOpen}
+									<button
+										type="button"
+										onclick={() => repoListOpen = true}
+										class="mt-1 flex w-full items-center justify-between rounded-md border border-surface-600 bg-surface-700 px-3 py-2 text-sm text-white hover:border-accent transition-colors"
+									>
+										<span class="truncate font-medium">{selectedRepo.fullName}</span>
+										<span class="text-xs text-gray-400">change</span>
+									</button>
+								{:else}
+									<input
+										type="text"
+										bind:value={repoSearch}
+										placeholder="Search repos..."
+										class="mt-1 w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-white placeholder-gray-500 outline-none focus:border-accent"
+									/>
+									<div class="mt-1 max-h-48 overflow-y-auto rounded-md border border-surface-600">
+										{#each filteredRepos as repo}
+											<button
+												type="button"
+												onclick={() => selectRepo(repo)}
+												class="flex w-full items-center justify-between px-3 py-2 text-sm hover:bg-surface-700 {selectedRepo?.fullName === repo.fullName ? 'bg-surface-600 text-white' : 'text-gray-300'}"
+											>
+												<span class="truncate">{repo.fullName}</span>
+												{#if repo.private}<span class="text-xs text-gray-500">private</span>{/if}
+											</button>
+										{/each}
+									</div>
+								{/if}
 							</div>
 						{/if}
 						</div>
@@ -396,7 +410,8 @@
 								onkeydown={(e) => {
 									if (e.key === 'Tab' && rootDirFocused && filteredDirs.length > 0) {
 										e.preventDefault();
-										gitPath = filteredDirs[0];
+										gitPath = filteredDirs[0] + '/';
+										void loadRepoTree(filteredDirs[0]);
 									}
 								}}
 								class="mt-1 w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-white font-mono placeholder-gray-500 outline-none focus:border-accent"
@@ -406,7 +421,7 @@
 									{#each filteredDirs as dir}
 										<button
 											type="button"
-											onmousedown={() => { gitPath = dir; rootDirFocused = false; }}
+											onmousedown={() => { gitPath = dir + '/'; rootDirFocused = false; void loadRepoTree(dir); }}
 											class="flex w-full px-3 py-2 text-sm font-mono hover:bg-surface-700 {gitPath === dir ? 'bg-surface-600 text-white' : 'text-gray-300'}"
 										>
 											{dir}/

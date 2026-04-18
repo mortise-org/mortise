@@ -31,6 +31,9 @@ const (
 	buildPhaseFailed    buildPhase = "Failed"
 )
 
+// maxBuildLogLines is the maximum number of build log lines retained in memory.
+const maxBuildLogLines = 500
+
 // buildTracker holds the state of a single asynchronous build. Only the
 // goroutine that owns the tracker mutates its fields; callers read them under
 // the mutex. Cancel aborts the build.
@@ -38,9 +41,10 @@ type buildTracker struct {
 	mu       sync.Mutex
 	revision string
 	phase    buildPhase
-	image    string // set on success
-	digest   string // set on success
-	errMsg   string // set on failure
+	image    string   // set on success
+	digest   string   // set on success
+	errMsg   string   // set on failure
+	logs     []string // rolling buffer of build log lines
 	cancel   func()
 }
 
@@ -49,6 +53,25 @@ func (t *buildTracker) snapshot() (phase buildPhase, revision, image, digest, er
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.phase, t.revision, t.image, t.digest, t.errMsg
+}
+
+// appendLog adds a line to the build log buffer.
+func (t *buildTracker) appendLog(line string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if len(t.logs) >= maxBuildLogLines {
+		t.logs = t.logs[1:]
+	}
+	t.logs = append(t.logs, line)
+}
+
+// snapshotLogs returns a copy of the current build log lines.
+func (t *buildTracker) snapshotLogs() []string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	out := make([]string, len(t.logs))
+	copy(out, t.logs)
+	return out
 }
 
 // setSucceeded marks the build as succeeded with the resulting image and digest.
@@ -93,4 +116,14 @@ func (s *buildTrackerStore) set(key types.NamespacedName, t *buildTracker) {
 // delete removes the tracker for the given App.
 func (s *buildTrackerStore) delete(key types.NamespacedName) {
 	s.trackers.Delete(key)
+}
+
+// GetBuildLogs returns the current build log lines for the given App, or nil
+// if no build is in progress. Exported for use by the API layer.
+func (s *buildTrackerStore) GetBuildLogs(key types.NamespacedName) []string {
+	t := s.get(key)
+	if t == nil {
+		return nil
+	}
+	return t.snapshotLogs()
 }

@@ -7,12 +7,19 @@ import (
 	"strings"
 
 	"github.com/go-chi/chi/v5"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/MC-Meesh/mortise/internal/auth"
 	"github.com/MC-Meesh/mortise/internal/webhook"
 )
+
+// BuildLogProvider returns in-progress build logs for an App. Implemented by
+// the build tracker store on the AppReconciler.
+type BuildLogProvider interface {
+	GetBuildLogs(key types.NamespacedName) []string
+}
 
 // Server is the REST API server that translates HTTP requests into CRD operations.
 type Server struct {
@@ -23,6 +30,12 @@ type Server struct {
 	ui         fs.FS
 	webhook    *webhook.Handler
 	deviceFlow *DeviceFlowHandler
+	buildLogs  BuildLogProvider
+}
+
+// SetBuildLogProvider sets the build log provider (called after reconciler setup).
+func (s *Server) SetBuildLogProvider(p BuildLogProvider) {
+	s.buildLogs = p
 }
 
 // NewServer creates a new API server.
@@ -107,6 +120,7 @@ func (s *Server) Handler() http.Handler {
 
 			r.Post("/projects/{project}/apps/{app}/rollback", s.Rollback)
 			r.Post("/projects/{project}/apps/{app}/promote", s.Promote)
+			r.Get("/projects/{project}/apps/{app}/build-logs", s.handleBuildLogs)
 
 			r.Post("/projects/{project}/apps/{app}/secrets", s.CreateSecret)
 			r.Get("/projects/{project}/apps/{app}/secrets", s.ListSecrets)

@@ -369,14 +369,15 @@ func main() {
 		DefaultClusterIssuer: stk.TLS.CertManagerClusterIssuer,
 	})
 
-	if err := (&controller.AppReconciler{
+	appReconciler := &controller.AppReconciler{
 		Client:          mgr.GetClient(),
 		Scheme:          mgr.GetScheme(),
 		BuildClient:     stk.build,
 		GitClient:       stk.git,
 		RegistryBackend: stk.registry,
 		IngressProvider: ingressProvider,
-	}).SetupWithManager(mgr); err != nil {
+	}
+	if err := appReconciler.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "App")
 		os.Exit(1)
 	}
@@ -441,6 +442,7 @@ func main() {
 	}
 
 	apiServer := api.NewServer(mgr.GetClient(), clientset, authProvider, jwtHelper, uiSub)
+	apiServer.SetBuildLogProvider(&appReconciler.Builds)
 	httpServer := &http.Server{Addr: apiAddr, Handler: apiServer.Handler()}
 	go func() {
 		setupLog.Info("Starting API server", "addr", apiAddr)
