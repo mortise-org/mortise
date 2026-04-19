@@ -49,6 +49,25 @@ spec:
           spec:
             description: AppSpec defines the desired state of App
             properties:
+              configFiles:
+                description: |-
+                  ConfigFiles defines files to mount into containers via ConfigMaps.
+                  Each entry creates a ConfigMap and mounts it at the specified path.
+                items:
+                  description: ConfigFile defines a file to mount into the container
+                    via a ConfigMap.
+                  properties:
+                    content:
+                      description: Content is the file content.
+                      type: string
+                    path:
+                      description: Path is the absolute mount path inside the container.
+                      type: string
+                  required:
+                  - content
+                  - path
+                  type: object
+                type: array
               credentials:
                 description: |-
                   Credentials declares the keys this App exposes to binders. The App
@@ -292,8 +311,9 @@ spec:
                     format: int32
                     type: integer
                   public:
-                    default: true
                     type: boolean
+                required:
+                - public
                 type: object
               sharedVars:
                 description: |-
