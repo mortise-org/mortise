@@ -31,6 +31,7 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -601,10 +602,10 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 					Annotations: podAnno,
 				},
 				Spec: corev1.PodSpec{
-					ServiceAccountName: app.Name,
-					Containers:         containers,
-					Volumes:            volumes,
-				},
+					ServiceAccountName:            app.Name,
+					Containers:                    containers,
+					Volumes:                       volumes,
+					},
 			},
 		},
 	}
@@ -622,10 +623,52 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 		return err
 	}
 
-	patch := client.MergeFrom(existing.DeepCopy())
+	// Only update if the fields we manage actually changed. Comparing the
+	// full spec/template doesn't work because k8s adds dozens of default
+	// fields (securityContext, serviceAccount, terminationMessagePolicy, etc.)
+	// that make our desired spec never match, triggering an infinite
+	// reconcile loop via the Deployment watch.
+	existingContainer := existing.Spec.Template.Spec.Containers[0]
+	desiredContainer := desired.Spec.Template.Spec.Containers[0]
+
+	needsUpdate := false
+	if existingContainer.Image != desiredContainer.Image {
+		needsUpdate = true
+	}
+	if !equality.Semantic.DeepEqual(existingContainer.Env, desiredContainer.Env) {
+		needsUpdate = true
+	}
+	if !equality.Semantic.DeepEqual(existingContainer.Ports, desiredContainer.Ports) {
+		needsUpdate = true
+	}
+	if !equality.Semantic.DeepEqual(existingContainer.VolumeMounts, desiredContainer.VolumeMounts) {
+		needsUpdate = true
+	}
+	if !equality.Semantic.DeepEqual(existingContainer.Resources, desiredContainer.Resources) {
+		needsUpdate = true
+	}
+	if existing.Spec.Replicas == nil || *existing.Spec.Replicas != *desired.Spec.Replicas {
+		needsUpdate = true
+	}
+	if !equality.Semantic.DeepEqual(existing.Spec.Template.ObjectMeta.Annotations, desired.Spec.Template.ObjectMeta.Annotations) {
+		needsUpdate = true
+	}
+
+	if !needsUpdate {
+		return nil
+	}
+
+	// Apply our fields onto the existing Deployment (preserves k8s defaults).
+	existing.Spec.Replicas = desired.Spec.Replicas
+	existing.Spec.Template.Spec.Containers[0].Image = desiredContainer.Image
+	existing.Spec.Template.Spec.Containers[0].Env = desiredContainer.Env
+	existing.Spec.Template.Spec.Containers[0].Ports = desiredContainer.Ports
+	existing.Spec.Template.Spec.Containers[0].VolumeMounts = desiredContainer.VolumeMounts
+	existing.Spec.Template.Spec.Containers[0].Resources = desiredContainer.Resources
+	existing.Spec.Template.ObjectMeta.Annotations = desired.Spec.Template.ObjectMeta.Annotations
+	existing.Spec.Template.ObjectMeta.Labels = desired.Spec.Template.ObjectMeta.Labels
 	existing.Annotations = desired.Annotations
-	existing.Spec = desired.Spec
-	return r.Patch(ctx, &existing, patch)
+	return r.Update(ctx, &existing)
 }
 
 func (r *AppReconciler) reconcileCronJob(ctx context.Context, app *mortisev1alpha1.App, env *mortisev1alpha1.Environment, credentialsHash string) error {
