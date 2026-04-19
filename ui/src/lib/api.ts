@@ -96,6 +96,24 @@ export const api = {
 			method: 'DELETE'
 		}),
 
+	// --- stacks ---
+	createStack: (
+		project: string,
+		body: { template?: string; compose?: string; name?: string; vars?: Record<string, string> }
+	) =>
+		request<{ apps: string[] }>(`/projects/${enc(project)}/stacks`, {
+			method: 'POST',
+			body: JSON.stringify(body)
+		}),
+	execInApp: (project: string, app: string, command: string[]) =>
+		request<{ stdout: string; stderr: string }>(
+			`/projects/${enc(project)}/apps/${enc(app)}/exec`,
+			{
+				method: 'POST',
+				body: JSON.stringify({ command })
+			}
+		),
+
 	// --- deploy ---
 	deploy: (project: string, app: string, environment: string, image: string) =>
 		request<{ status: string; app: string; image: string }>(
@@ -313,5 +331,5 @@ export const api = {
 		request<void>(`/projects/${enc(project)}/apps/${enc(app)}/env/${enc(env)}`, {
 			method: 'PATCH',
 			body: JSON.stringify({ [key]: null })
-		})
+		}),
 };
