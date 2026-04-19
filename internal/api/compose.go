@@ -24,6 +24,7 @@ type ComposeService struct {
 	DependsOn   interface{} `yaml:"depends_on"`  // []string or map[string]{condition}
 	Restart     string      `yaml:"restart"`
 	Command     interface{} `yaml:"command"` // string or []string
+	Volumes     []string    `yaml:"volumes"` // "host:container" or "host:container:ro"
 }
 
 // parseCompose parses a docker-compose YAML string.
@@ -79,6 +80,24 @@ func composeToAppSpecs(compose *ComposeFile, stackPrefix string) ([]appSpec, err
 
 		envVars := parseEnvironment(svc.Environment)
 
+		// Parse volume mounts as ConfigFiles (file content mounts).
+		// Format: "./path/to/file:/container/path" or "./dir:/container/dir"
+		var configFiles []mortisev1alpha1.ConfigFile
+		for _, vol := range svc.Volumes {
+			parts := strings.SplitN(vol, ":", 2)
+			if len(parts) == 2 {
+				containerPath := strings.TrimSuffix(parts[1], ":ro")
+				// We can't read host files, but we record the mount path.
+				// For built-in templates, the stack handler can provide content.
+				// For user compose imports, this is a known limitation until
+				// the user provides the file content separately.
+				configFiles = append(configFiles, mortisev1alpha1.ConfigFile{
+					Path:    containerPath,
+					Content: "", // populated by template or user
+				})
+			}
+		}
+
 		as.Spec = mortisev1alpha1.AppSpec{
 			Source: mortisev1alpha1.AppSource{
 				Type:  mortisev1alpha1.SourceTypeImage,
@@ -88,6 +107,7 @@ func composeToAppSpecs(compose *ComposeFile, stackPrefix string) ([]appSpec, err
 				Public: false,
 				Port:   port,
 			},
+			ConfigFiles: configFiles,
 			Environments: []mortisev1alpha1.Environment{{
 				Name: "production",
 				Env:  envVars,

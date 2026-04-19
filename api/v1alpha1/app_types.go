@@ -128,6 +128,16 @@ type VolumeSpec struct {
 	AccessMode   string            `json:"accessMode,omitempty"`
 }
 
+// ConfigFile defines a file to mount into the container via a ConfigMap.
+type ConfigFile struct {
+	// Path is the absolute mount path inside the container.
+	// +kubebuilder:validation:Required
+	Path string `json:"path"`
+	// Content is the file content.
+	// +kubebuilder:validation:Required
+	Content string `json:"content"`
+}
+
 type EnvVar struct {
 	Name      string        `json:"name"`
 	Value     string        `json:"value,omitempty"`
@@ -327,6 +337,11 @@ type AppSpec struct {
 	Network NetworkConfig `json:"network,omitempty"`
 
 	Storage []VolumeSpec `json:"storage,omitempty"`
+
+	// ConfigFiles defines files to mount into containers via ConfigMaps.
+	// Each entry creates a ConfigMap and mounts it at the specified path.
+	// +optional
+	ConfigFiles []ConfigFile `json:"configFiles,omitempty"`
 
 	// Credentials declares the keys this App exposes to binders. The App
 	// controller materialises the `{app}-credentials` Secret from these

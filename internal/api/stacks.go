@@ -78,6 +78,11 @@ func (s *Server) CreateStack(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// For built-in templates, inject config file content (init SQL, etc.)
+	if req.Template == "supabase" {
+		injectSupabaseConfigFiles(specs)
+	}
+
 	// Stamp creator annotation.
 	annotations := map[string]string{}
 	if p := PrincipalFromContext(r.Context()); p != nil {
@@ -161,6 +166,27 @@ func substituteVars(tpl string, vars map[string]string) (string, error) {
 		result = strings.ReplaceAll(result, "${"+varName+"}", generated)
 	}
 	return result, nil
+}
+
+// injectSupabaseConfigFiles adds the init SQL to the postgres service.
+func injectSupabaseConfigFiles(specs []appSpec) {
+	for i := range specs {
+		if specs[i].Service == "postgres" {
+			specs[i].Spec.ConfigFiles = append(specs[i].Spec.ConfigFiles, mortisev1alpha1.ConfigFile{
+				Path: "/docker-entrypoint-initdb.d/00-init-supabase.sql",
+				Content: `-- GoTrue requires these enum types before its migrations run
+CREATE SCHEMA IF NOT EXISTS auth;
+CREATE SCHEMA IF NOT EXISTS storage;
+CREATE SCHEMA IF NOT EXISTS realtime;
+DO $$ BEGIN CREATE TYPE auth.factor_type AS ENUM ('totp', 'webauthn'); EXCEPTION WHEN duplicate_object THEN null; END $$;
+DO $$ BEGIN CREATE TYPE auth.factor_status AS ENUM ('unverified', 'verified'); EXCEPTION WHEN duplicate_object THEN null; END $$;
+DO $$ BEGIN CREATE TYPE auth.aal_level AS ENUM ('aal1', 'aal2', 'aal3'); EXCEPTION WHEN duplicate_object THEN null; END $$;
+DO $$ BEGIN CREATE TYPE auth.code_challenge_method AS ENUM ('s256', 'plain'); EXCEPTION WHEN duplicate_object THEN null; END $$;
+DO $$ BEGIN CREATE TYPE auth.one_time_token_type AS ENUM ('confirmation_token', 'reauthentication_token', 'recovery_token', 'email_change_token_new', 'email_change_token_current', 'phone_change_token'); EXCEPTION WHEN duplicate_object THEN null; END $$;
+`,
+			})
+		}
+	}
 }
 
 const supabaseTemplate = `services:
