@@ -215,6 +215,8 @@ REST surface (`internal/api/server.go`):
 - `GET /api/repos` + `GET /api/repos/{owner}/{repo}/branches` — repo listing for new-app flow.
 - `PATCH /api/platform` — PlatformConfig create-or-update singleton.
 - `GET/POST/DELETE /api/gitproviders[/{name}]` — admin git provider CRUD.
+- `POST /api/projects/{project}/stacks` — create stack from compose YAML or built-in template (e.g. supabase).
+- `POST /api/projects/{project}/apps/{app}/exec` — exec command in app pod (k8s SPDY exec).
 
 UI (`ui/src/routes/`) — **UI overhaul landed 2026-04-17 per UI_SPEC.md:**
 - Complete Railway-style dark UI rebuild. See "UI overhaul status" section below.

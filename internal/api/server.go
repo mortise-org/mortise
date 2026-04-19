@@ -80,6 +80,8 @@ func NewServer(c client.Client, cs kubernetes.Interface, authProvider auth.AuthP
 //	/api/projects/{project}/apps/{app}/tokens/{tokenName}         revoke deploy token
 //	/api/projects/{project}/apps/{app}/env                        get/put/patch env vars
 //	/api/projects/{project}/apps/{app}/env/import                 import .env file
+//	/api/projects/{project}/stacks                                create stack from compose/template
+//	/api/projects/{project}/apps/{app}/exec                       exec command in app pod
 func (s *Server) Handler() http.Handler {
 	r := chi.NewRouter()
 
@@ -120,6 +122,9 @@ func (s *Server) Handler() http.Handler {
 			r.Put("/projects/{project}/apps/{app}", s.UpdateApp)
 			r.Delete("/projects/{project}/apps/{app}", s.DeleteApp)
 
+			r.Post("/projects/{project}/stacks", s.CreateStack)
+
+			r.Post("/projects/{project}/apps/{app}/exec", s.ExecInApp)
 			r.Post("/projects/{project}/apps/{app}/rollback", s.Rollback)
 			r.Post("/projects/{project}/apps/{app}/rebuild", s.Rebuild)
 			r.Post("/projects/{project}/apps/{app}/promote", s.Promote)
