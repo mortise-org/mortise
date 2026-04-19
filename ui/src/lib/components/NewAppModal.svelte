@@ -104,12 +104,52 @@
 	let externalCredentials = $state<Array<{ name: string; value: string }>>([]);
 
 	// Database/Template presets
-	type DbTemplate = { name: string; image: string; icon: ComponentType; description: string };
+	type DbTemplate = {
+		name: string;
+		image: string;
+		icon: ComponentType;
+		description: string;
+		port: number;
+		env: Array<{ name: string; value: string }>;
+	};
+
+	function generatePassword(length = 24): string {
+		const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+		const arr = new Uint8Array(length);
+		crypto.getRandomValues(arr);
+		return Array.from(arr, b => chars[b % chars.length]).join('');
+	}
+
 	const DB_TEMPLATES: DbTemplate[] = [
-		{ name: 'Postgres', image: 'postgres:16', icon: Database, description: 'PostgreSQL 16' },
-		{ name: 'Redis', image: 'redis:7', icon: Database, description: 'Redis 7 in-memory store' },
-		{ name: 'MinIO', image: 'minio/minio:latest', icon: Package, description: 'S3-compatible object storage' },
-		{ name: 'MySQL', image: 'mysql:8', icon: Database, description: 'MySQL 8' }
+		{
+			name: 'Postgres', image: 'postgres:16', icon: Database, description: 'PostgreSQL 16',
+			port: 5432,
+			env: [
+				{ name: 'POSTGRES_PASSWORD', value: generatePassword() },
+				{ name: 'POSTGRES_DB', value: 'app' }
+			]
+		},
+		{
+			name: 'Redis', image: 'redis:7', icon: Database, description: 'Redis 7 in-memory store',
+			port: 6379,
+			env: []
+		},
+		{
+			name: 'MinIO', image: 'minio/minio:latest', icon: Package, description: 'S3-compatible object storage',
+			port: 9000,
+			env: [
+				{ name: 'MINIO_ROOT_USER', value: 'admin' },
+				{ name: 'MINIO_ROOT_PASSWORD', value: generatePassword() }
+			]
+		},
+		{
+			name: 'MySQL', image: 'mysql:8', icon: Database, description: 'MySQL 8',
+			port: 3306,
+			env: [
+				{ name: 'MYSQL_ROOT_PASSWORD', value: generatePassword() },
+				{ name: 'MYSQL_DATABASE', value: 'app' }
+			]
+		}
 	];
 	let selectedDbTemplate = $state<DbTemplate | null>(null);
 
@@ -234,16 +274,24 @@
 			} as AppSpec;
 		}
 		if (selectedType === 'image' || selectedType === 'database' || selectedType === 'template') {
+			const isDb = selectedType === 'database' && selectedDbTemplate;
+			const envs = appKind === 'cron'
+				? [{ name: 'production', replicas: 0, annotations: { 'mortise.dev/schedule': schedule }, ...(domain ? { domain } : {}) }]
+				: [{
+					...baseEnv[0],
+					...(isDb ? { env: selectedDbTemplate!.env } : {})
+				}];
 			return {
 				source: {
 					type: 'image' as const,
 					image: imageRef || 'nginx:latest',
 					pullSecretRef: pullSecret || undefined
 				},
-				network: { public: selectedType === 'image' },
-				environments: appKind === 'cron'
-					? [{ name: 'production', replicas: 0, annotations: { 'mortise.dev/schedule': schedule }, ...(domain ? { domain } : {}) }]
-					: baseEnv,
+				network: {
+					public: selectedType === 'image',
+					...(isDb ? { port: selectedDbTemplate!.port } : {})
+				},
+				environments: envs,
 				...(appKind === 'cron' ? { kind: 'cron' as const } : {})
 			} as AppSpec;
 		}
