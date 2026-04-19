@@ -1,6 +1,8 @@
 package api
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -116,8 +118,7 @@ func (s *Server) CreateStack(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, createStackResponse{Apps: created})
 }
 
-// resolveTemplate returns the compose YAML for a built-in template with
-// variable substitution applied.
+// resolveTemplate returns the compose YAML for a built-in template.
 func resolveTemplate(name string, vars map[string]string) (string, error) {
 	switch name {
 	case "supabase":
@@ -127,18 +128,37 @@ func resolveTemplate(name string, vars map[string]string) (string, error) {
 	}
 }
 
+func generateRandomHex(n int) string {
+	b := make([]byte, n)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
 // substituteVars replaces ${VAR_NAME} placeholders in the template.
+// Any unresolved variables are auto-generated as random 32-char hex strings.
+// This means templates "just work" without requiring the user to provide secrets.
 func substituteVars(tpl string, vars map[string]string) (string, error) {
+	if vars == nil {
+		vars = make(map[string]string)
+	}
 	result := tpl
 	for k, v := range vars {
 		result = strings.ReplaceAll(result, "${"+k+"}", v)
 	}
-	// Check for unresolved variables.
-	if idx := strings.Index(result, "${"); idx != -1 {
-		end := strings.Index(result[idx:], "}")
-		if end > 0 {
-			return "", fmt.Errorf("unresolved variable: %s", result[idx:idx+end+1])
+	// Auto-generate any remaining unresolved variables.
+	for {
+		idx := strings.Index(result, "${")
+		if idx == -1 {
+			break
 		}
+		end := strings.Index(result[idx:], "}")
+		if end < 0 {
+			break
+		}
+		varName := result[idx+2 : idx+end]
+		generated := generateRandomHex(16)
+		vars[varName] = generated
+		result = strings.ReplaceAll(result, "${"+varName+"}", generated)
 	}
 	return result, nil
 }
