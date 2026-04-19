@@ -121,7 +121,7 @@ var _ = Describe("App Controller", func() {
 
 			Expect(svc.Spec.Selector["app.kubernetes.io/name"]).To(Equal(appName))
 			Expect(svc.Spec.Ports).To(HaveLen(1))
-			Expect(svc.Spec.Ports[0].Port).To(Equal(int32(80)))
+			Expect(svc.Spec.Ports[0].Port).To(Equal(int32(8080)))
 		})
 
 		It("should create an Ingress with TLS for the domain", func() {
@@ -2440,7 +2440,7 @@ var _ = Describe("App Controller — git source", func() {
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
 				Name: appName + "-production", Namespace: namespace,
 			}, &svc)).To(Succeed())
-			Expect(svc.Spec.Ports[0].Port).To(Equal(int32(80)))
+			Expect(svc.Spec.Ports[0].Port).To(Equal(int32(3000)))
 			Expect(svc.Spec.Ports[0].TargetPort.IntVal).To(Equal(int32(3000)))
 
 			var dep appsv1.Deployment

@@ -798,7 +798,7 @@ func (r *AppReconciler) reconcileService(ctx context.Context, app *mortisev1alph
 			Ports: []corev1.ServicePort{
 				{
 					Name:       "http",
-					Port:       80,
+					Port:       int32(appPort(app)),
 					TargetPort: intstr.FromInt32(appPort(app)),
 					Protocol:   corev1.ProtocolTCP,
 				},
