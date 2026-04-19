@@ -123,6 +123,7 @@ func (s *Server) Handler() http.Handler {
 			r.Delete("/projects/{project}/apps/{app}", s.DeleteApp)
 
 			r.Post("/projects/{project}/stacks", s.CreateStack)
+			r.Get("/templates", s.ListTemplates)
 
 			r.Post("/projects/{project}/apps/{app}/exec", s.ExecInApp)
 			r.Post("/projects/{project}/apps/{app}/rollback", s.Rollback)

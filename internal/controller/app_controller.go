@@ -622,10 +622,10 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 					Annotations: podAnno,
 				},
 				Spec: corev1.PodSpec{
-					ServiceAccountName:            app.Name,
-					Containers:                    containers,
-					Volumes:                       volumes,
-					},
+					ServiceAccountName: app.Name,
+					Containers:         containers,
+					Volumes:            volumes,
+				},
 			},
 		},
 	}

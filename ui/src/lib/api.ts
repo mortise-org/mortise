@@ -97,9 +97,28 @@ export const api = {
 		}),
 
 	// --- stacks ---
+	listTemplates: () =>
+		request<
+			Array<{
+				name: string;
+				description: string;
+				services: Array<{
+					name: string;
+					description: string;
+					image: string;
+					required: boolean;
+				}>;
+			}>
+		>('/templates'),
 	createStack: (
 		project: string,
-		body: { template?: string; compose?: string; name?: string; vars?: Record<string, string> }
+		body: {
+			template?: string;
+			compose?: string;
+			name?: string;
+			vars?: Record<string, string>;
+			services?: string[];
+		}
 	) =>
 		request<{ apps: string[] }>(`/projects/${enc(project)}/stacks`, {
 			method: 'POST',

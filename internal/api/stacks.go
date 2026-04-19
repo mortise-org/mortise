@@ -23,6 +23,9 @@ type createStackRequest struct {
 	Name string `json:"name,omitempty"`
 	// Vars are variable substitutions for the template.
 	Vars map[string]string `json:"vars,omitempty"`
+	// Services filters the compose to only the named services.
+	// If empty, all services are included.
+	Services []string `json:"services,omitempty"`
 }
 
 type createStackResponse struct {
@@ -74,6 +77,24 @@ func (s *Server) CreateStack(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Filter to selected services (if specified).
+	if len(req.Services) > 0 {
+		keep := make(map[string]bool, len(req.Services))
+		for _, s := range req.Services {
+			keep[s] = true
+		}
+		for name := range cf.Services {
+			if !keep[name] {
+				delete(cf.Services, name)
+			}
+		}
+		// Also prune depends_on references to excluded services.
+		for name, svc := range cf.Services {
+			svc.DependsOn = filterDependsOn(svc.DependsOn, keep)
+			cf.Services[name] = svc
+		}
+	}
+
 	specs, err := composeToAppSpecs(cf, stackPrefix, bundledFiles)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, errorResponse{err.Error()})
@@ -118,6 +139,69 @@ func (s *Server) CreateStack(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusCreated, createStackResponse{Apps: created})
+}
+
+// filterDependsOn removes references to services not in the keep set.
+func filterDependsOn(v interface{}, keep map[string]bool) interface{} {
+	if v == nil {
+		return nil
+	}
+	switch val := v.(type) {
+	case []interface{}:
+		var out []interface{}
+		for _, item := range val {
+			if s, ok := item.(string); ok && keep[s] {
+				out = append(out, s)
+			}
+		}
+		if len(out) == 0 {
+			return nil
+		}
+		return out
+	case map[string]interface{}:
+		out := make(map[string]interface{})
+		for k, v := range val {
+			if keep[k] {
+				out[k] = v
+			}
+		}
+		if len(out) == 0 {
+			return nil
+		}
+		return out
+	}
+	return v
+}
+
+type templateInfo struct {
+	Name        string        `json:"name"`
+	Description string        `json:"description"`
+	Services    []serviceInfo `json:"services"`
+}
+
+type serviceInfo struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Image       string `json:"image"`
+	Required    bool   `json:"required"`
+}
+
+func (s *Server) ListTemplates(w http.ResponseWriter, r *http.Request) {
+	templates := []templateInfo{
+		{
+			Name:        "supabase",
+			Description: "Self-hosted Supabase (auth, database, storage, realtime, API gateway)",
+			Services: []serviceInfo{
+				{Name: "postgres", Description: "PostgreSQL database", Image: "supabase/postgres:15.6.1.143", Required: true},
+				{Name: "auth", Description: "GoTrue authentication", Image: "supabase/gotrue:v2.164.0", Required: false},
+				{Name: "rest", Description: "PostgREST API", Image: "postgrest/postgrest:v12.2.3", Required: false},
+				{Name: "storage", Description: "File storage API", Image: "supabase/storage-api:v1.11.13", Required: false},
+				{Name: "realtime", Description: "Realtime WebSocket server", Image: "supabase/realtime:v2.85.2", Required: false},
+				{Name: "studio", Description: "Supabase dashboard UI", Image: "supabase/studio:2026.04.13-sha-e95f1cc", Required: false},
+			},
+		},
+	}
+	writeJSON(w, http.StatusOK, templates)
 }
 
 // templateBundle is a docker-compose YAML with any referenced files bundled.
@@ -233,6 +317,44 @@ const supabaseTemplate = `services:
       SERVICE_KEY: ${JWT_SECRET}
       STORAGE_BACKEND: file
       FILE_STORAGE_BACKEND_PATH: /var/lib/storage
+
+  realtime:
+    image: supabase/realtime:v2.85.2
+    depends_on: [postgres]
+    ports: ["4000:4000"]
+    environment:
+      DB_HOST: supabase-postgres-production
+      DB_PORT: "5432"
+      DB_USER: supabase_admin
+      DB_PASSWORD: ${PG_PASSWORD}
+      DB_NAME: supabase
+      JWT_SECRET: ${JWT_SECRET}
+      API_JWT_SECRET: ${JWT_SECRET}
+      APP_NAME: realtime
+      SELF_HOSTED: "true"
+      PORT: "4000"
+      SECRET_KEY_BASE: ${SECRET_KEY_BASE}
+      METRICS_JWT_SECRET: ${JWT_SECRET}
+      ERL_AFLAGS: "-proto_dist inet_tcp"
+      RLIMIT_NOFILE: "10000"
+      FLY_ALLOC_ID: fly123
+      FLY_APP_NAME: realtime
+      DNS_NODES: "''"
+
+  studio:
+    image: supabase/studio:2026.04.13-sha-e95f1cc
+    depends_on: [postgres]
+    ports: ["3001:3000"]
+    environment:
+      STUDIO_PG_META_URL: http://supabase-rest-production:3000
+      POSTGRES_PASSWORD: ${PG_PASSWORD}
+      SUPABASE_URL: http://supabase-rest-production:3000
+      SUPABASE_REST_URL: http://supabase-rest-production:3000/rest/v1
+      SUPABASE_ANON_KEY: ${ANON_KEY}
+      SUPABASE_SERVICE_ROLE_KEY: ${SERVICE_ROLE_KEY}
+      DEFAULT_ORGANIZATION_NAME: Default Organization
+      DEFAULT_PROJECT_NAME: Default Project
+      PORT: "3000"
 `
 
 // supabaseInitSQL is bundled alongside the compose template.

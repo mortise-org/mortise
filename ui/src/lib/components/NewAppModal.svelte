@@ -156,13 +156,36 @@
 	// Supabase stack
 	let supabaseProgress = $state('');
 	let supabaseCreating = $state(false);
+	let supabaseServices = $state<Array<{ name: string; description: string; image: string; required: boolean; selected: boolean }>>([]);
+
+	async function loadSupabaseServices() {
+		try {
+			const templates = await api.listTemplates();
+			const sb = templates.find((t) => t.name === 'supabase');
+			if (sb) {
+				supabaseServices = sb.services.map((s) => ({ ...s, selected: true }));
+			}
+		} catch {
+			// Fallback if endpoint not available
+			supabaseServices = [
+				{ name: 'postgres', description: 'PostgreSQL database', image: 'supabase/postgres', required: true, selected: true },
+				{ name: 'auth', description: 'GoTrue authentication', image: 'supabase/gotrue', required: false, selected: true },
+				{ name: 'rest', description: 'PostgREST API', image: 'postgrest/postgrest', required: false, selected: true },
+				{ name: 'storage', description: 'File storage API', image: 'supabase/storage-api', required: false, selected: true },
+				{ name: 'realtime', description: 'Realtime WebSocket server', image: 'supabase/realtime', required: false, selected: true },
+				{ name: 'studio', description: 'Supabase dashboard UI', image: 'supabase/studio', required: false, selected: true }
+			];
+		}
+	}
 
 	async function createSupabaseStack() {
 		supabaseCreating = true;
 		supabaseProgress = 'Creating Supabase stack...';
 		try {
+			const selected = supabaseServices.filter((s) => s.selected).map((s) => s.name);
 			await api.createStack(project, {
 				template: 'supabase',
+				services: selected.length < supabaseServices.length ? selected : undefined,
 				vars: {}
 			});
 			onCreated('supabase-postgres');
@@ -212,6 +235,9 @@
 	function selectType(t: AppType) {
 		selectedType = t;
 		error = '';
+		if (t === 'supabase' && supabaseServices.length === 0) {
+			loadSupabaseServices();
+		}
 		if (t === 'git') {
 			// Auto-select provider if none chosen.
 			if (!gitProvider && providers.length > 0) {
@@ -693,8 +719,32 @@
 					</div>
 				{:else if selectedType === 'supabase'}
 					<div class="space-y-3">
-						<p class="text-sm text-gray-400">Deploy a self-hosted Supabase stack (PostgreSQL, Auth, REST API, Storage)</p>
-						<p class="text-xs text-gray-500">Shared secrets and service configuration are auto-generated server-side.</p>
+						<p class="text-sm text-gray-400">Select which Supabase services to deploy. Secrets and configuration are auto-generated.</p>
+						{#if supabaseServices.length > 0}
+							<div class="space-y-1.5">
+								{#each supabaseServices as svc, i}
+									<label class="flex items-center gap-3 rounded-md border border-surface-600 bg-surface-800 px-3 py-2 cursor-pointer hover:border-surface-500 transition-colors" class:opacity-60={svc.required && svc.selected}>
+										<input
+											type="checkbox"
+											bind:checked={supabaseServices[i].selected}
+											disabled={svc.required}
+											class="rounded border-surface-500 bg-surface-700 text-accent focus:ring-accent"
+										/>
+										<div class="flex-1 min-w-0">
+											<div class="flex items-center gap-2">
+												<span class="text-sm font-medium text-white">{svc.name}</span>
+												{#if svc.required}
+													<span class="text-[10px] px-1.5 py-0.5 rounded bg-surface-600 text-gray-400">required</span>
+												{/if}
+											</div>
+											<div class="text-xs text-gray-500">{svc.description}</div>
+										</div>
+									</label>
+								{/each}
+							</div>
+						{:else}
+							<div class="text-sm text-gray-500">Loading services...</div>
+						{/if}
 						{#if supabaseProgress}
 							<p class="text-sm text-accent">{supabaseProgress}</p>
 						{/if}
