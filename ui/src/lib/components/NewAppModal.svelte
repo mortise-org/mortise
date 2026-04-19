@@ -16,7 +16,7 @@
 		onCreated: (appName: string) => void;
 	} = $props();
 
-	type AppType = 'git' | 'image' | 'database' | 'template' | 'external' | 'empty';
+	type AppType = 'git' | 'image' | 'database' | 'supabase' | 'template' | 'external' | 'empty';
 
 	let selectedType = $state<AppType | null>(null);
 	let submitting = $state(false);
@@ -153,11 +153,161 @@
 	];
 	let selectedDbTemplate = $state<DbTemplate | null>(null);
 
+	// Supabase stack
+	type SupabaseService = {
+		id: string;
+		name: string;
+		image: string;
+		port: number;
+		required: boolean;
+		description: string;
+		env: (shared: { jwtSecret: string; pgPassword: string; projectRef: string }) => Array<{ name: string; value: string }>;
+	};
+
+	const SUPABASE_SERVICES: SupabaseService[] = [
+		{
+			id: 'postgres', name: 'PostgreSQL', image: 'postgres:16', port: 5432, required: true,
+			description: 'Core database',
+			env: (s) => [
+				{ name: 'POSTGRES_PASSWORD', value: s.pgPassword },
+				{ name: 'POSTGRES_DB', value: 'supabase' }
+			]
+		},
+		{
+			id: 'auth', name: 'GoTrue (Auth)', image: 'supabase/gotrue:v2.164.0', port: 9999, required: false,
+			description: 'Authentication & user management',
+			env: (s) => [
+				{ name: 'GOTRUE_DB_DATABASE_URL', value: `postgres://postgres:${s.pgPassword}@supabase-postgres:5432/supabase?sslmode=disable` },
+				{ name: 'GOTRUE_JWT_SECRET', value: s.jwtSecret },
+				{ name: 'GOTRUE_SITE_URL', value: 'http://localhost:3000' },
+				{ name: 'API_EXTERNAL_URL', value: 'http://localhost:8000' },
+				{ name: 'GOTRUE_MAILER_AUTOCONFIRM', value: 'true' },
+				{ name: 'GOTRUE_EXTERNAL_EMAIL_ENABLED', value: 'true' },
+				{ name: 'GOTRUE_DISABLE_SIGNUP', value: 'false' },
+				{ name: 'GOTRUE_API_HOST', value: '0.0.0.0' },
+				{ name: 'PORT', value: '9999' }
+			]
+		},
+		{
+			id: 'rest', name: 'PostgREST (REST API)', image: 'postgrest/postgrest:v12.2.3', port: 3000, required: false,
+			description: 'Auto-generated REST API',
+			env: (s) => [
+				{ name: 'PGRST_DB_URI', value: `postgres://postgres:${s.pgPassword}@supabase-postgres:5432/supabase` },
+				{ name: 'PGRST_DB_SCHEMA', value: 'public' },
+				{ name: 'PGRST_DB_ANON_ROLE', value: 'anon' },
+				{ name: 'PGRST_JWT_SECRET', value: s.jwtSecret }
+			]
+		},
+		{
+			id: 'realtime', name: 'Realtime', image: 'supabase/realtime:v2.33.58', port: 4000, required: false,
+			description: 'WebSocket-based realtime subscriptions',
+			env: (s) => [
+				{ name: 'DB_HOST', value: 'supabase-postgres' },
+				{ name: 'DB_PORT', value: '5432' },
+				{ name: 'DB_USER', value: 'postgres' },
+				{ name: 'DB_PASSWORD', value: s.pgPassword },
+				{ name: 'DB_NAME', value: 'supabase' },
+				{ name: 'PORT', value: '4000' },
+				{ name: 'JWT_SECRET', value: s.jwtSecret },
+				{ name: 'SECURE_CHANNELS', value: 'true' },
+				{ name: 'SECRET_KEY_BASE', value: generatePassword(64) }
+			]
+		},
+		{
+			id: 'storage', name: 'Storage', image: 'supabase/storage-api:v1.11.13', port: 5000, required: false,
+			description: 'S3-compatible file storage',
+			env: (s) => [
+				{ name: 'DATABASE_URL', value: `postgres://postgres:${s.pgPassword}@supabase-postgres:5432/supabase` },
+				{ name: 'PGRST_JWT_SECRET', value: s.jwtSecret },
+				{ name: 'ANON_KEY', value: 'anon-key-placeholder' },
+				{ name: 'SERVICE_KEY', value: 'service-key-placeholder' },
+				{ name: 'STORAGE_BACKEND', value: 'file' },
+				{ name: 'FILE_STORAGE_BACKEND_PATH', value: '/var/lib/storage' }
+			]
+		},
+		{
+			id: 'kong', name: 'Kong (API Gateway)', image: 'kong:3.8', port: 8000, required: false,
+			description: 'Single entry point for all client traffic',
+			env: () => [
+				{ name: 'KONG_DATABASE', value: 'off' },
+				{ name: 'KONG_DECLARATIVE_CONFIG', value: '/var/lib/kong/kong.yml' }
+			]
+		},
+		{
+			id: 'studio', name: 'Studio (Dashboard)', image: 'supabase/studio:20241202', port: 3000, required: false,
+			description: 'Web-based admin dashboard',
+			env: (s) => [
+				{ name: 'STUDIO_PG_META_URL', value: `http://supabase-rest:3000` },
+				{ name: 'SUPABASE_URL', value: 'http://supabase-kong:8000' },
+				{ name: 'SUPABASE_ANON_KEY', value: s.jwtSecret }
+			]
+		}
+	];
+
+	let supabaseSelected = $state<Set<string>>(new Set(SUPABASE_SERVICES.map(s => s.id)));
+	let supabaseProgress = $state('');
+	let supabaseCreating = $state(false);
+
+	function toggleSupabaseService(id: string) {
+		const svc = SUPABASE_SERVICES.find(s => s.id === id);
+		if (svc?.required) return;
+		const next = new Set(supabaseSelected);
+		if (next.has(id)) next.delete(id);
+		else next.add(id);
+		supabaseSelected = next;
+	}
+
+	function toggleAllSupabaseOptional() {
+		const optionalIds = SUPABASE_SERVICES.filter(s => !s.required).map(s => s.id);
+		const allSelected = optionalIds.every(id => supabaseSelected.has(id));
+		const next = new Set(supabaseSelected);
+		if (allSelected) {
+			optionalIds.forEach(id => next.delete(id));
+		} else {
+			optionalIds.forEach(id => next.add(id));
+		}
+		supabaseSelected = next;
+	}
+
+	async function createSupabaseStack() {
+		supabaseCreating = true;
+		error = '';
+		const shared = {
+			jwtSecret: generatePassword(48),
+			pgPassword: generatePassword(24),
+			projectRef: generatePassword(20)
+		};
+		const selected = SUPABASE_SERVICES.filter(s => supabaseSelected.has(s.id));
+		const total = selected.length;
+
+		try {
+			for (let i = 0; i < selected.length; i++) {
+				const svc = selected[i];
+				supabaseProgress = `Creating ${svc.name} (${i + 1}/${total})...`;
+				const svcName = `supabase-${svc.id}`;
+				const isPublic = svc.id === 'kong';
+				const spec: AppSpec = {
+					source: { type: 'image', image: svc.image },
+					network: { public: isPublic, port: svc.port },
+					environments: [{ name: 'production', replicas: 1, env: svc.env(shared) }]
+				};
+				await api.createApp(project, svcName, spec);
+			}
+			onCreated('supabase-postgres');
+		} catch (e) {
+			error = e instanceof Error ? e.message : 'Failed to create Supabase stack';
+		} finally {
+			supabaseCreating = false;
+			supabaseProgress = '';
+		}
+	}
+
 	let providers = $state<GitProviderSummary[]>([]);
 
 	const typeOptions: { type: AppType; icon: ComponentType; label: string; description: string }[] = [
 		{ type: 'git', icon: GitBranchIcon, label: 'Git Repository', description: 'Deploy from a connected git provider' },
 		{ type: 'database', icon: Database, label: 'Database', description: 'Postgres, Redis, MinIO, MySQL' },
+		{ type: 'supabase', icon: Database, label: 'Supabase', description: 'Self-hosted Supabase (auth, database, storage, realtime)' },
 		{ type: 'template', icon: Package, label: 'Template', description: 'Pre-configured app templates' },
 		{ type: 'image', icon: Container, label: 'Docker Image', description: 'Deploy any container image' },
 		{ type: 'external', icon: Globe, label: 'External Service', description: 'Facade over an external API or DB' },
@@ -316,6 +466,12 @@
 	}
 
 	async function handleCreate() {
+		if (selectedType === 'supabase') {
+			submitting = true;
+			await createSupabaseStack();
+			submitting = false;
+			return;
+		}
 		if (!appName) return;
 		submitting = true;
 		error = '';
@@ -642,6 +798,41 @@
 							</button>
 						{/each}
 					</div>
+				{:else if selectedType === 'supabase'}
+					<div class="space-y-3">
+						<div class="flex items-center justify-between">
+							<label class="text-sm text-gray-400">Services</label>
+							<button
+								type="button"
+								onclick={toggleAllSupabaseOptional}
+								class="text-xs text-accent hover:text-accent-hover"
+							>
+								{SUPABASE_SERVICES.filter(s => !s.required).every(s => supabaseSelected.has(s.id)) ? 'Deselect Optional' : 'Select All'}
+							</button>
+						</div>
+						<div class="space-y-1 rounded-md border border-surface-600 bg-surface-700 p-2">
+							{#each SUPABASE_SERVICES as svc}
+								<label class="flex cursor-pointer items-center gap-2.5 rounded px-2 py-1.5 hover:bg-surface-600 {svc.required ? 'opacity-80' : ''}">
+									<input
+										type="checkbox"
+										checked={supabaseSelected.has(svc.id)}
+										disabled={svc.required}
+										onchange={() => toggleSupabaseService(svc.id)}
+										class="rounded border-surface-600 bg-surface-800 text-accent"
+									/>
+									<div class="flex-1 min-w-0">
+										<span class="text-sm text-white">{svc.name}</span>
+										{#if svc.required}<span class="ml-1 text-xs text-gray-500">(required)</span>{/if}
+										<p class="text-xs text-gray-500 truncate">{svc.description}</p>
+									</div>
+								</label>
+							{/each}
+						</div>
+						<p class="text-xs text-gray-500">A shared JWT secret will be auto-generated across all services.</p>
+						{#if supabaseProgress}
+							<p class="text-sm text-accent">{supabaseProgress}</p>
+						{/if}
+					</div>
 				{:else if selectedType === 'template'}
 					<div class="rounded-md border border-surface-600 bg-surface-700 p-4">
 						<p class="text-sm text-gray-400">Custom templates are not yet configured. Start from a Docker Image or Database preset.</p>
@@ -688,7 +879,8 @@
 
 				<!-- Common footer -->
 				<div class="mt-5 space-y-3 border-t border-surface-600 pt-4">
-					<!-- App name -->
+					<!-- App name (not shown for supabase — names are auto-generated) -->
+					{#if selectedType !== 'supabase'}
 					<div>
 						<label class="text-sm text-gray-400">App name</label>
 						<input
@@ -699,9 +891,10 @@
 							class="mt-1 w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-white placeholder-gray-500 outline-none focus:border-accent"
 						/>
 					</div>
+					{/if}
 
-					<!-- Domain (optional, not shown for external service) -->
-					{#if selectedType !== 'external'}
+					<!-- Domain (optional, not shown for external service or supabase) -->
+					{#if selectedType !== 'external' && selectedType !== 'supabase'}
 						<div>
 							<label class="text-sm text-gray-400">Domain <span class="text-gray-600">(optional)</span></label>
 							<input
@@ -715,7 +908,7 @@
 					{/if}
 
 					<!-- Kind selector (git + image only) -->
-					{#if selectedType === 'git' || selectedType === 'image'}
+					{#if (selectedType === 'git' || selectedType === 'image')}
 						<div>
 							<label class="text-sm text-gray-400">Kind</label>
 							<div class="mt-1 flex gap-2">
@@ -765,10 +958,14 @@
 						<button
 							type="button"
 							onclick={handleCreate}
-							disabled={submitting || !appName}
+							disabled={submitting || (selectedType !== 'supabase' && !appName)}
 							class="rounded-md bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50"
 						>
-							{submitting ? 'Creating...' : 'Create app'}
+							{#if selectedType === 'supabase'}
+								{submitting ? supabaseProgress || 'Creating...' : 'Create Supabase Stack'}
+							{:else}
+								{submitting ? 'Creating...' : 'Create app'}
+							{/if}
 						</button>
 					</div>
 				</div>
