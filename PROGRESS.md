@@ -889,6 +889,19 @@ Backend already wrote `status.conditions` with build error messages via
 - The `+page.svelte` `onCreated` callback already auto-opens the drawer
   after app creation.
 
+### Issue #50 — `network.public: false` ignored due to `omitempty` on bool — **Resolved**
+`NetworkConfig.Public` was tagged `json:"public,omitempty"` with a
+`+kubebuilder:default=true` annotation. Go's `omitempty` drops `false`
+(the zero value), so the kubebuilder default made every app public even
+when explicitly set to `false`. Fixed: removed `omitempty` from the JSON
+tag and removed the `+kubebuilder:default=true` annotation.
+
+### Issue #51 — Bindings resolver hardcodes port 80 — **Resolved**
+`Resolve()` in `internal/bindings/resolver.go` set `portValue = "80"` for
+managed (non-external) apps. The actual container port lives in
+`spec.network.port` (kubebuilder default 8080). Fixed: resolver now reads
+`boundApp.Spec.Network.Port`, falling back to 8080 when zero.
+
 ---
 
 ## Documentation drift

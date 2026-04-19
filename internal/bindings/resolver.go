@@ -70,7 +70,11 @@ func (r *Resolver) Resolve(ctx context.Context, namespace string, bindings []mor
 			}
 			svcName := fmt.Sprintf("%s-%s", boundApp.Name, boundApp.Spec.Environments[0].Name)
 			hostValue = fmt.Sprintf("%s.%s.svc.cluster.local", svcName, ns)
-			portValue = "80"
+			port := boundApp.Spec.Network.Port
+			if port == 0 {
+				port = 8080
+			}
+			portValue = fmt.Sprintf("%d", port)
 		}
 
 		secretName := fmt.Sprintf("%s-credentials", boundApp.Name)

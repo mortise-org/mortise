@@ -755,7 +755,7 @@ var _ = Describe("App Controller", func() {
 			// port should be a literal value
 			portVar := findEnvVar(envVars, "port")
 			Expect(portVar).NotTo(BeNil())
-			Expect(portVar.Value).To(Equal("80"))
+			Expect(portVar.Value).To(Equal("8080"))
 
 			// DATABASE_URL should be a secretKeyRef
 			dbURLVar := findEnvVar(envVars, "DATABASE_URL")
@@ -2669,7 +2669,7 @@ var _ = Describe("App Controller — git source", func() {
 			// Bound credential: port should still be present (not overridden)
 			portVar := findEnvVar(envVars, "port")
 			Expect(portVar).NotTo(BeNil())
-			Expect(portVar.Value).To(Equal("80"))
+			Expect(portVar.Value).To(Equal("8080"))
 		})
 
 		It("should not change behavior when sharedVars is empty", func() {

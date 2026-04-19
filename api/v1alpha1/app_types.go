@@ -108,8 +108,7 @@ type Build struct {
 }
 
 type NetworkConfig struct {
-	// +kubebuilder:default=true
-	Public bool `json:"public,omitempty"`
+	Public bool `json:"public"`
 
 	// Port is the container port the app listens on. Defaults to 8080.
 	// The Service always exposes port 80 for HTTP; this controls the
