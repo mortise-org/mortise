@@ -31,7 +31,10 @@
 	let ctxMenu = $state<{ x: number; y: number; appName: string } | null>(null);
 
 	function appsToNodes(appsArr: App[]): Node[] {
-		return appsArr.map((app, i) => {
+		// Sort by name so default grid positions are deterministic
+		// regardless of API return order.
+		const sorted = [...appsArr].sort((a, b) => a.metadata.name.localeCompare(b.metadata.name));
+		return sorted.map((app, i) => {
 			const key = `mortise_pos_${projectName}_${app.metadata.name}`;
 			const saved = browser ? localStorage.getItem(key) : null;
 			const pos = saved ? JSON.parse(saved) : { x: (i % 4) * 280 + 40, y: Math.floor(i / 4) * 200 + 40 };
@@ -75,50 +78,9 @@
 		return edges;
 	}
 
-	let nodes = $state<Node[]>(appsToNodes(apps));
-	let edges = $state<Edge[]>(appsToEdges(apps));
-
-	// Update node data in-place when apps change (poll refresh).
-	// Preserves positions — only updates the app data inside each node.
-	$effect(() => {
-		const appsByName = new Map(apps.map(a => [a.metadata.name, a]));
-		let changed = false;
-
-		// Update existing nodes' data.
-		const updated = nodes.map(n => {
-			const app = appsByName.get(n.id);
-			if (app && app !== (n.data as unknown as AppNodeData).app) {
-				changed = true;
-				return { ...n, data: { ...(n.data as unknown as AppNodeData), app } };
-			}
-			return n;
-		});
-
-		// Add new nodes for apps that don't have a node yet.
-		const existingIds = new Set(nodes.map(n => n.id));
-		for (const app of apps) {
-			if (!existingIds.has(app.metadata.name)) {
-				changed = true;
-				const i = updated.length;
-				const key = `mortise_pos_${projectName}_${app.metadata.name}`;
-				const saved = browser ? localStorage.getItem(key) : null;
-				const pos = saved ? JSON.parse(saved) : { x: (i % 4) * 280 + 40, y: Math.floor(i / 4) * 200 + 40 };
-				updated.push({
-					id: app.metadata.name,
-					type: 'app',
-					position: pos,
-					data: { app, projectName, onOpen: onAppOpen } satisfies AppNodeData
-				});
-			}
-		}
-
-		// Remove nodes for deleted apps.
-		const filtered = updated.filter(n => appsByName.has(n.id));
-		if (filtered.length !== updated.length) changed = true;
-
-		if (changed) nodes = filtered;
-		edges = appsToEdges(apps);
-	});
+	let nodes = $derived(appsToNodes(apps));
+	let edges = $derived(appsToEdges(apps));
+	let initialFitDone = $state(false);
 
 	function onNodeDragStop({ nodes: draggedNodes }: { nodes: Node[] }) {
 		for (const node of draggedNodes) {
@@ -168,8 +130,9 @@
 			{nodes}
 			{edges}
 			{nodeTypes}
-			fitView
+			fitView={!initialFitDone}
 			fitViewOptions={{ padding: 0.3, maxZoom: 0.75 }}
+			oninit={() => { initialFitDone = true; }}
 			snapGrid={[20, 20]}
 			onnodedragstop={({ nodes: n }) => onNodeDragStop({ nodes: n })}
 			onnodeclick={({ node }) => onAppOpen(node.id)}
