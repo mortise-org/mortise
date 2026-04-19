@@ -50,7 +50,8 @@ type appSpec struct {
 
 // composeToAppSpecs converts a parsed ComposeFile into ordered app specs.
 // stackPrefix is prepended to service names (e.g. "supabase" -> "supabase-postgres").
-func composeToAppSpecs(compose *ComposeFile, stackPrefix string) ([]appSpec, error) {
+// bundledFiles maps host paths from volume mounts to file content (for templates).
+func composeToAppSpecs(compose *ComposeFile, stackPrefix string, bundledFiles map[string]string) ([]appSpec, error) {
 	specs := make(map[string]*appSpec, len(compose.Services))
 
 	for svcName, svc := range compose.Services {
@@ -80,22 +81,26 @@ func composeToAppSpecs(compose *ComposeFile, stackPrefix string) ([]appSpec, err
 
 		envVars := parseEnvironment(svc.Environment)
 
-		// Parse volume mounts as ConfigFiles (file content mounts).
-		// Format: "./path/to/file:/container/path" or "./dir:/container/dir"
+		// Parse volume mounts. If the host path is in bundledFiles, create
+		// a ConfigFile mount (ConfigMap). Otherwise treat as a PVC or skip.
 		var configFiles []mortisev1alpha1.ConfigFile
 		for _, vol := range svc.Volumes {
 			parts := strings.SplitN(vol, ":", 2)
-			if len(parts) == 2 {
-				containerPath := strings.TrimSuffix(parts[1], ":ro")
-				// We can't read host files, but we record the mount path.
-				// For built-in templates, the stack handler can provide content.
-				// For user compose imports, this is a known limitation until
-				// the user provides the file content separately.
+			if len(parts) != 2 {
+				continue
+			}
+			hostPath := parts[0]
+			containerPath := strings.TrimSuffix(parts[1], ":ro")
+
+			// Check if the host path has bundled content (from a template).
+			if content, ok := bundledFiles[hostPath]; ok && content != "" {
 				configFiles = append(configFiles, mortisev1alpha1.ConfigFile{
 					Path:    containerPath,
-					Content: "", // populated by template or user
+					Content: content,
 				})
 			}
+			// Named volumes or unresolved file paths are skipped for now.
+			// Future: PVC for named volumes, git repo lookup for file paths.
 		}
 
 		as.Spec = mortisev1alpha1.AppSpec{

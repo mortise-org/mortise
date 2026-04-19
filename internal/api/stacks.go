@@ -53,14 +53,16 @@ func (s *Server) CreateStack(w http.ResponseWriter, r *http.Request) {
 
 	composeYAML := req.Compose
 	stackPrefix := req.Name
+	var bundledFiles map[string]string
 
 	if req.Template != "" {
-		tpl, err := resolveTemplate(req.Template, req.Vars)
+		bundle, err := resolveTemplate(req.Template, req.Vars)
 		if err != nil {
 			writeJSON(w, http.StatusBadRequest, errorResponse{err.Error()})
 			return
 		}
-		composeYAML = tpl
+		composeYAML = bundle.Compose
+		bundledFiles = bundle.Files
 		if stackPrefix == "" {
 			stackPrefix = req.Template
 		}
@@ -72,15 +74,10 @@ func (s *Server) CreateStack(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	specs, err := composeToAppSpecs(cf, stackPrefix)
+	specs, err := composeToAppSpecs(cf, stackPrefix, bundledFiles)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, errorResponse{err.Error()})
 		return
-	}
-
-	// For built-in templates, inject config file content (init SQL, etc.)
-	if req.Template == "supabase" {
-		injectSupabaseConfigFiles(specs)
 	}
 
 	// Stamp creator annotation.
@@ -123,13 +120,28 @@ func (s *Server) CreateStack(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, createStackResponse{Apps: created})
 }
 
-// resolveTemplate returns the compose YAML for a built-in template.
-func resolveTemplate(name string, vars map[string]string) (string, error) {
+// templateBundle is a docker-compose YAML with any referenced files bundled.
+type templateBundle struct {
+	Compose string            // docker-compose.yml content
+	Files   map[string]string // host path -> file content (for volume mounts)
+}
+
+// resolveTemplate returns the compose YAML and bundled files for a built-in template.
+func resolveTemplate(name string, vars map[string]string) (*templateBundle, error) {
 	switch name {
 	case "supabase":
-		return substituteVars(supabaseTemplate, vars)
+		composed, err := substituteVars(supabaseTemplate, vars)
+		if err != nil {
+			return nil, err
+		}
+		return &templateBundle{
+			Compose: composed,
+			Files: map[string]string{
+				"./volumes/db/init/00-init.sql": supabaseInitSQL,
+			},
+		}, nil
 	default:
-		return "", fmt.Errorf("unknown template %q", name)
+		return nil, fmt.Errorf("unknown template %q", name)
 	}
 }
 
@@ -168,31 +180,12 @@ func substituteVars(tpl string, vars map[string]string) (string, error) {
 	return result, nil
 }
 
-// injectSupabaseConfigFiles adds the init SQL to the postgres service.
-func injectSupabaseConfigFiles(specs []appSpec) {
-	for i := range specs {
-		if specs[i].Service == "postgres" {
-			specs[i].Spec.ConfigFiles = append(specs[i].Spec.ConfigFiles, mortisev1alpha1.ConfigFile{
-				Path: "/docker-entrypoint-initdb.d/00-init-supabase.sql",
-				Content: `-- GoTrue requires these enum types before its migrations run
-CREATE SCHEMA IF NOT EXISTS auth;
-CREATE SCHEMA IF NOT EXISTS storage;
-CREATE SCHEMA IF NOT EXISTS realtime;
-DO $$ BEGIN CREATE TYPE auth.factor_type AS ENUM ('totp', 'webauthn'); EXCEPTION WHEN duplicate_object THEN null; END $$;
-DO $$ BEGIN CREATE TYPE auth.factor_status AS ENUM ('unverified', 'verified'); EXCEPTION WHEN duplicate_object THEN null; END $$;
-DO $$ BEGIN CREATE TYPE auth.aal_level AS ENUM ('aal1', 'aal2', 'aal3'); EXCEPTION WHEN duplicate_object THEN null; END $$;
-DO $$ BEGIN CREATE TYPE auth.code_challenge_method AS ENUM ('s256', 'plain'); EXCEPTION WHEN duplicate_object THEN null; END $$;
-DO $$ BEGIN CREATE TYPE auth.one_time_token_type AS ENUM ('confirmation_token', 'reauthentication_token', 'recovery_token', 'email_change_token_new', 'email_change_token_current', 'phone_change_token'); EXCEPTION WHEN duplicate_object THEN null; END $$;
-`,
-			})
-		}
-	}
-}
-
 const supabaseTemplate = `services:
   postgres:
     image: supabase/postgres:15.6.1.143
     ports: ["5432:5432"]
+    volumes:
+      - ./volumes/db/init/00-init.sql:/docker-entrypoint-initdb.d/00-init.sql
     environment:
       POSTGRES_PASSWORD: ${PG_PASSWORD}
       POSTGRES_DB: supabase
@@ -240,4 +233,18 @@ const supabaseTemplate = `services:
       SERVICE_KEY: ${JWT_SECRET}
       STORAGE_BACKEND: file
       FILE_STORAGE_BACKEND_PATH: /var/lib/storage
+`
+
+// supabaseInitSQL is bundled alongside the compose template.
+// It's referenced by the compose volumes entry and resolved by the generic
+// compose parser — no Supabase-specific Go logic needed.
+const supabaseInitSQL = `-- GoTrue requires these enum types and schemas before its migrations run
+CREATE SCHEMA IF NOT EXISTS auth;
+CREATE SCHEMA IF NOT EXISTS storage;
+CREATE SCHEMA IF NOT EXISTS realtime;
+DO $$ BEGIN CREATE TYPE auth.factor_type AS ENUM ('totp', 'webauthn'); EXCEPTION WHEN duplicate_object THEN null; END $$;
+DO $$ BEGIN CREATE TYPE auth.factor_status AS ENUM ('unverified', 'verified'); EXCEPTION WHEN duplicate_object THEN null; END $$;
+DO $$ BEGIN CREATE TYPE auth.aal_level AS ENUM ('aal1', 'aal2', 'aal3'); EXCEPTION WHEN duplicate_object THEN null; END $$;
+DO $$ BEGIN CREATE TYPE auth.code_challenge_method AS ENUM ('s256', 'plain'); EXCEPTION WHEN duplicate_object THEN null; END $$;
+DO $$ BEGIN CREATE TYPE auth.one_time_token_type AS ENUM ('confirmation_token', 'reauthentication_token', 'recovery_token', 'email_change_token_new', 'email_change_token_current', 'phone_change_token'); EXCEPTION WHEN duplicate_object THEN null; END $$;
 `
