@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,10 +14,11 @@ import (
 	exptypes "github.com/moby/buildkit/exporter/containerimage/exptypes"
 	"github.com/moby/buildkit/session"
 	"github.com/moby/buildkit/session/auth/authprovider"
+	"github.com/tonistiigi/fsutil"
 
 	rpapp "github.com/railwayapp/railpack/core/app"
-	rpcore "github.com/railwayapp/railpack/core"
 	rpbuildkit "github.com/railwayapp/railpack/buildkit"
+	rpcore "github.com/railwayapp/railpack/core"
 )
 
 // Config holds connection settings for a buildkitd daemon.
@@ -246,7 +248,7 @@ func (b *BuildKitClient) railpackSolveOpt(ctx context.Context, req BuildRequest,
 
 	// Convert the build plan to LLB.
 	platform, _ := rpbuildkit.ParsePlatformWithDefaults(b.cfg.DefaultPlatform)
-	llbState, _, err := rpbuildkit.ConvertPlanToLLB(result.Plan, rpbuildkit.ConvertPlanOptions{
+	llbState, image, err := rpbuildkit.ConvertPlanToLLB(result.Plan, rpbuildkit.ConvertPlanOptions{
 		BuildPlatform: platform,
 	})
 	if err != nil {
@@ -259,14 +261,31 @@ func (b *BuildKitClient) railpackSolveOpt(ctx context.Context, req BuildRequest,
 		return nil, bkclient.SolveOpt{}, fmt.Errorf("railpack: marshal LLB: %w", err)
 	}
 
+	// Serialize image config (CMD, ENV, EXPOSE, etc.) so BuildKit
+	// embeds it in the exported image.
+	imageBytes, err := json.Marshal(image)
+	if err != nil {
+		return nil, bkclient.SolveOpt{}, fmt.Errorf("railpack: marshal image config: %w", err)
+	}
+
+	// Use LocalMounts (fsutil.FS) instead of LocalDirs — matches how
+	// Railpack's own BuildWithBuildkitClient works.
+	appFS, err := fsutil.NewFS(appDir)
+	if err != nil {
+		return nil, bkclient.SolveOpt{}, fmt.Errorf("railpack: create FS: %w", err)
+	}
+
 	return def, bkclient.SolveOpt{
-		// No Frontend — we're providing a pre-built LLB Definition directly.
+		LocalMounts: map[string]fsutil.FS{
+			"context": appFS,
+		},
 		Exports: []bkclient.ExportEntry{
 			{
 				Type: bkclient.ExporterImage,
 				Attrs: map[string]string{
-					"name": req.PushTarget,
-					"push": "true",
+					"name":                  req.PushTarget,
+					"push":                  "true",
+					"containerimage.config": string(imageBytes),
 				},
 			},
 		},

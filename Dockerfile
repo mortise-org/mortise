@@ -22,10 +22,16 @@ COPY --from=ui-builder /ui/build ./internal/ui/build
 
 RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -a -o manager cmd/main.go
 
-# Final image
-FROM gcr.io/distroless/static:nonroot
+# Final image — debian-slim instead of distroless/alpine because Railpack
+# auto-downloads mise (a glibc-linked binary) at runtime for framework detection.
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates curl git && \
+    rm -rf /var/lib/apt/lists/* && \
+    useradd -u 65532 -m mortise && \
+    mkdir -p /tmp/railpack && chown mortise:mortise /tmp/railpack
 WORKDIR /
 COPY --from=builder /workspace/manager .
-USER 65532:65532
+USER mortise
 
 ENTRYPOINT ["/manager"]
