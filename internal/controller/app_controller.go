@@ -622,9 +622,10 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 		return err
 	}
 
+	patch := client.MergeFrom(existing.DeepCopy())
 	existing.Annotations = desired.Annotations
 	existing.Spec = desired.Spec
-	return r.Update(ctx, &existing)
+	return r.Patch(ctx, &existing, patch)
 }
 
 func (r *AppReconciler) reconcileCronJob(ctx context.Context, app *mortisev1alpha1.App, env *mortisev1alpha1.Environment, credentialsHash string) error {
