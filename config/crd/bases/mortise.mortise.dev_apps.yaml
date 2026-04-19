@@ -527,6 +527,7 @@ spec:
                 - Building
                 - Deploying
                 - Ready
+                - CrashLooping
                 - Failed
                 type: string
             type: object
