@@ -72,11 +72,16 @@
 	}
 
 	async function doRedeploy() {
-		if (!envStatus?.currentImage) return;
 		errorMsg = '';
 		reloading = true;
 		try {
-			await api.deploy(project, app.metadata.name, selectedEnv, envStatus.currentImage);
+			if (app.spec.source.type === 'git') {
+				// Git apps: rebuild from latest commit.
+				await api.rebuild(project, app.metadata.name);
+			} else if (envStatus?.currentImage) {
+				// Image apps: redeploy same image (restarts pod).
+				await api.deploy(project, app.metadata.name, selectedEnv, envStatus.currentImage);
+			}
 		} catch (e) {
 			errorMsg = e instanceof Error ? e.message : 'Redeploy failed';
 		} finally {

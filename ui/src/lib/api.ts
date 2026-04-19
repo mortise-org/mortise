@@ -123,6 +123,9 @@ export const api = {
 			}
 		),
 
+	rebuild: (project: string, app: string) =>
+		request<{ status: string }>(`/projects/${enc(project)}/apps/${enc(app)}/rebuild`, { method: 'POST' }),
+
 	// --- logs: returns a ready-to-use SSE URL including the JWT ---
 	logsURL: (project: string, app: string, env: string, tail = 200): string => {
 		const token = localStorage.getItem('mortise_token') ?? '';

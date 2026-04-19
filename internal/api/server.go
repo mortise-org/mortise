@@ -121,6 +121,7 @@ func (s *Server) Handler() http.Handler {
 			r.Delete("/projects/{project}/apps/{app}", s.DeleteApp)
 
 			r.Post("/projects/{project}/apps/{app}/rollback", s.Rollback)
+			r.Post("/projects/{project}/apps/{app}/rebuild", s.Rebuild)
 			r.Post("/projects/{project}/apps/{app}/promote", s.Promote)
 			r.Get("/projects/{project}/apps/{app}/build-logs", s.handleBuildLogs)
 			r.Post("/projects/{project}/apps/{app}/connect", s.handleConnect)
