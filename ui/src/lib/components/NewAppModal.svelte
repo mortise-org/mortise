@@ -24,7 +24,17 @@
 
 	// Common fields
 	let appName = $state('');
+	let appNameManuallyEdited = $state(false);
 	let appKind = $state<'service' | 'cron'>('service');
+
+	function generateAppName(repoName: string, path: string): string {
+		const parts = [repoName];
+		const trimmed = path.replace(/^\/+|\/+$/g, '');
+		if (trimmed) {
+			parts.push(...trimmed.split('/'));
+		}
+		return parts.join('-').toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').slice(0, 53);
+	}
 	let schedule = $state('0 * * * *');
 
 	// Git source
@@ -78,6 +88,13 @@
 			return p.toLowerCase().startsWith(gitPath.toLowerCase().replace(/\/$/, ''));
 		})
 	);
+
+	// Update app name when root directory changes (unless manually edited).
+	$effect(() => {
+		if (selectedRepo && !appNameManuallyEdited) {
+			appName = generateAppName(selectedRepo.name, gitPath);
+		}
+	});
 
 	// Advanced options / watch paths toggle
 	let advancedOpen = $state(false);
@@ -176,8 +193,8 @@
 		selectedPaths = new Set();
 		customPath = '';
 		repoTree = [];
-		if (!appName) {
-			appName = repo.name.toLowerCase().replace(/[^a-z0-9-]/g, '-');
+		if (!appNameManuallyEdited) {
+			appName = generateAppName(repo.name, gitPath);
 		}
 		branches = [];
 		const [owner, name] = repo.fullName.split('/');
@@ -629,6 +646,7 @@
 						<input
 							type="text"
 							bind:value={appName}
+							oninput={() => { appNameManuallyEdited = true; }}
 							placeholder="my-app"
 							class="mt-1 w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-white placeholder-gray-500 outline-none focus:border-accent"
 						/>

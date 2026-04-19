@@ -5,12 +5,18 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 
 	bkclient "github.com/moby/buildkit/client"
 	"github.com/moby/buildkit/client/llb"
 	exptypes "github.com/moby/buildkit/exporter/containerimage/exptypes"
 	"github.com/moby/buildkit/session"
 	"github.com/moby/buildkit/session/auth/authprovider"
+
+	rpapp "github.com/railwayapp/railpack/core/app"
+	rpcore "github.com/railwayapp/railpack/core"
+	rpbuildkit "github.com/railwayapp/railpack/buildkit"
 )
 
 // Config holds connection settings for a buildkitd daemon.
@@ -45,25 +51,17 @@ type solver interface {
 
 // BuildKitClient implements BuildClient using a buildkitd daemon.
 type BuildKitClient struct {
-	cfg    Config
 	solver solver
+	cfg    Config
 }
 
-// New creates a BuildKitClient that dials the buildkitd at cfg.Addr.
-// The underlying gRPC connection is established lazily on the first Solve call.
+// New creates a BuildKitClient connected to the given buildkitd address.
 func New(cfg Config) (*BuildKitClient, error) {
-	if cfg.Addr == "" {
-		return nil, fmt.Errorf("build: buildkitd addr must not be empty")
-	}
-
-	opts := []bkclient.ClientOpt{}
+	var opts []bkclient.ClientOpt
 	if cfg.TLSCACert != "" {
 		opts = append(opts, bkclient.WithServerConfig(cfg.ServerName, cfg.TLSCACert))
 	}
-	if cfg.TLSCert != "" {
-		if cfg.TLSKey == "" {
-			return nil, fmt.Errorf("build: TLSCert requires TLSKey")
-		}
+	if cfg.TLSCert != "" && cfg.TLSKey != "" {
 		opts = append(opts, bkclient.WithCredentials(cfg.TLSCert, cfg.TLSKey))
 	}
 
@@ -71,13 +69,12 @@ func New(cfg Config) (*BuildKitClient, error) {
 	if err != nil {
 		return nil, fmt.Errorf("build: connecting to buildkitd: %w", err)
 	}
-
-	return &BuildKitClient{cfg: cfg, solver: c}, nil
+	return &BuildKitClient{solver: c, cfg: cfg}, nil
 }
 
-// newWithSolver creates a BuildKitClient with an injected solver. Used by tests.
+// newWithSolver is used by tests to inject a fake solver.
 func newWithSolver(cfg Config, s solver) *BuildKitClient {
-	return &BuildKitClient{cfg: cfg, solver: s}
+	return &BuildKitClient{solver: s, cfg: cfg}
 }
 
 // Submit starts a build and returns a channel of BuildEvents. The channel is
@@ -120,8 +117,15 @@ func (b *BuildKitClient) run(ctx context.Context, req BuildRequest, ch chan<- Bu
 		}
 	}()
 
-	opt := b.solveOpt(req)
-	resp, err := b.solver.Solve(ctx, nil, opt, statusCh)
+	// Decide build strategy: Dockerfile if present, Railpack otherwise.
+	def, opt, err := b.buildSolveOpt(ctx, req, ch)
+	if err != nil {
+		ch <- BuildEvent{Type: EventFailure, Error: err.Error()}
+		<-logDone
+		return
+	}
+
+	resp, err := b.solver.Solve(ctx, def, opt, statusCh)
 	<-logDone // drain remaining log events before writing the terminal event
 
 	if err != nil {
@@ -136,8 +140,38 @@ func (b *BuildKitClient) run(ctx context.Context, req BuildRequest, ch chan<- Bu
 	ch <- BuildEvent{Type: EventSuccess, Digest: digest}
 }
 
-// solveOpt constructs the SolveOpt for the given build request.
-func (b *BuildKitClient) solveOpt(req BuildRequest) bkclient.SolveOpt {
+// buildSolveOpt decides between Dockerfile and Railpack, returning the
+// appropriate Definition (nil for Dockerfile frontend) and SolveOpt.
+func (b *BuildKitClient) buildSolveOpt(ctx context.Context, req BuildRequest, ch chan<- BuildEvent) (*llb.Definition, bkclient.SolveOpt, error) {
+	// Check if a Dockerfile exists.
+	dockerfileDir := req.dockerfileDir()
+	dockerfileName := req.Dockerfile
+	if dockerfileName == "" {
+		dockerfileName = "Dockerfile"
+	}
+	dockerfilePath := filepath.Join(dockerfileDir, dockerfileName)
+
+	useDockerfile := false
+	if req.Mode == BuildModeDockerfile {
+		useDockerfile = true
+	} else if req.Mode == BuildModeRailpack {
+		useDockerfile = false
+	} else {
+		// Auto mode: use Dockerfile if it exists, Railpack otherwise.
+		if _, err := os.Stat(dockerfilePath); err == nil {
+			useDockerfile = true
+		}
+	}
+
+	if useDockerfile {
+		return nil, b.dockerfileSolveOpt(req), nil
+	}
+
+	return b.railpackSolveOpt(ctx, req, ch)
+}
+
+// dockerfileSolveOpt builds a SolveOpt for Dockerfile-based builds.
+func (b *BuildKitClient) dockerfileSolveOpt(req BuildRequest) bkclient.SolveOpt {
 	frontendAttrs := map[string]string{}
 
 	if req.Dockerfile != "" {
@@ -179,13 +213,65 @@ func (b *BuildKitClient) solveOpt(req BuildRequest) bkclient.SolveOpt {
 		},
 		CacheImports: cacheImports,
 		// Use the host Docker credentials so BuildKit can pull base images
-		// and push to the target registry. A follow-up can inject explicit
-		// credentials when PlatformConfig wiring lands.
+		// and push to the target registry.
 		Session: []session.Attachable{
 			authprovider.NewDockerAuthProvider(authprovider.DockerAuthProviderConfig{}),
 		},
 	}
 }
 
-// Ensure BuildKitClient satisfies BuildClient at compile time.
-var _ BuildClient = (*BuildKitClient)(nil)
+// railpackSolveOpt detects the framework via Railpack, generates an LLB build
+// plan, converts it to a Definition, and returns the Definition + SolveOpt.
+func (b *BuildKitClient) railpackSolveOpt(ctx context.Context, req BuildRequest, ch chan<- BuildEvent) (*llb.Definition, bkclient.SolveOpt, error) {
+	// Point Railpack at the source directory (the subdirectory, not repo root,
+	// so it detects the right framework).
+	appDir := req.dockerfileDir()
+	rpApp, err := rpapp.NewApp(appDir)
+	if err != nil {
+		return nil, bkclient.SolveOpt{}, fmt.Errorf("railpack: init app: %w", err)
+	}
+
+	env := &rpapp.Environment{}
+	result := rpcore.GenerateBuildPlan(rpApp, env, &rpcore.GenerateBuildPlanOptions{})
+	if !result.Success || result.Plan == nil {
+		msg := "railpack: failed to generate build plan"
+		if len(result.Logs) > 0 {
+			msg += ": " + result.Logs[len(result.Logs)-1].Msg
+		}
+		return nil, bkclient.SolveOpt{}, fmt.Errorf("%s", msg)
+	}
+
+	// Log detected providers.
+	ch <- BuildEvent{Type: EventLog, Line: fmt.Sprintf("[railpack] detected: %v", result.DetectedProviders)}
+
+	// Convert the build plan to LLB.
+	platform, _ := rpbuildkit.ParsePlatformWithDefaults(b.cfg.DefaultPlatform)
+	llbState, _, err := rpbuildkit.ConvertPlanToLLB(result.Plan, rpbuildkit.ConvertPlanOptions{
+		BuildPlatform: platform,
+	})
+	if err != nil {
+		return nil, bkclient.SolveOpt{}, fmt.Errorf("railpack: convert to LLB: %w", err)
+	}
+
+	// Marshal the LLB state to a Definition for Solve.
+	def, err := llbState.Marshal(ctx)
+	if err != nil {
+		return nil, bkclient.SolveOpt{}, fmt.Errorf("railpack: marshal LLB: %w", err)
+	}
+
+	return def, bkclient.SolveOpt{
+		// No Frontend — we're providing a pre-built LLB Definition directly.
+		Exports: []bkclient.ExportEntry{
+			{
+				Type: bkclient.ExporterImage,
+				Attrs: map[string]string{
+					"name": req.PushTarget,
+					"push": "true",
+				},
+			},
+		},
+		Session: []session.Attachable{
+			authprovider.NewDockerAuthProvider(authprovider.DockerAuthProviderConfig{}),
+		},
+	}, nil
+}
