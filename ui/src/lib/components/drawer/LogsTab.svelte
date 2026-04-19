@@ -8,6 +8,7 @@
 
 	const isBuilding = $derived(app.status?.phase === 'Building');
 	const isFailed = $derived(app.status?.phase === 'Failed');
+	const isCrashLooping = $derived(app.status?.phase === 'CrashLooping');
 	const failedMessage = $derived(
 		app.status?.conditions?.find(c => c.status === 'False')?.message ?? null
 	);
@@ -178,6 +179,11 @@
 				<div class="flex items-center gap-2 text-xs text-warning">
 					<Loader2 class="h-3.5 w-3.5 animate-spin" />
 					<span>Waiting for build output...</span>
+				</div>
+			{:else if isCrashLooping && failedMessage}
+				<div class="space-y-2">
+					<p class="text-xs font-medium text-danger">Container crash:</p>
+					<pre class="whitespace-pre-wrap break-all rounded bg-surface-800 p-2 text-xs text-danger/80">{failedMessage}</pre>
 				</div>
 			{:else if isFailed && failedMessage}
 				<div class="space-y-2">

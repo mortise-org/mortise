@@ -63,6 +63,11 @@
 	const buildError = $derived(
 		app?.status?.phase === 'Failed' ? conditionMessage(app) : null
 	);
+	const crashError = $derived(
+		app?.status?.phase === 'CrashLooping'
+			? (app.status?.conditions?.find(c => c.type === 'PodHealthy' && c.status === 'False')?.message ?? null)
+			: null
+	);
 	const isBuilding = $derived(app?.status?.phase === 'Building');
 
 	// Build timer — synced to BuildStarted condition timestamp from k8s.
@@ -196,6 +201,12 @@
 		<div class="mx-4 mt-3 flex items-start gap-2 rounded-md border border-danger/30 bg-danger/10 px-3 py-2">
 			<AlertTriangle class="mt-0.5 h-4 w-4 shrink-0 text-danger" />
 			<span class="text-sm text-danger">{buildError}</span>
+		</div>
+	{/if}
+	{#if crashError}
+		<div class="mx-4 mt-3 flex items-start gap-2 rounded-md border border-danger/30 bg-danger/10 px-3 py-2">
+			<AlertTriangle class="mt-0.5 h-4 w-4 shrink-0 text-danger" />
+			<span class="text-sm text-danger">{crashError}</span>
 		</div>
 	{/if}
 

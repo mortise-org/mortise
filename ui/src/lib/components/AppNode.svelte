@@ -86,7 +86,7 @@
 <div
 	role="button"
 	tabindex="0"
-	class="relative flex w-60 flex-col gap-2 rounded-lg border border-surface-600 bg-surface-800 p-3 transition-all duration-150 hover:shadow-lg hover:shadow-black/20 hover:border-surface-500 cursor-pointer {isExternal ? 'border-dashed' : ''}"
+	class="relative flex w-60 min-h-[7rem] flex-col gap-2 rounded-lg border border-surface-600 bg-surface-800 p-3 transition-all duration-150 hover:shadow-lg hover:shadow-black/20 hover:border-surface-500 cursor-pointer {isExternal ? 'border-dashed' : ''}"
 	onclick={() => nodeData.onOpen(app.metadata.name)}
 	onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') nodeData.onOpen(app.metadata.name); }}
 >
@@ -113,12 +113,11 @@
 		</span>
 	</div>
 
-	<!-- Status chip -->
-	{#if phase}
-		<div class="flex items-center gap-1.5">
-			<span class="rounded px-1.5 py-0.5 text-xs font-medium {phaseClass[phase] ?? 'bg-surface-700 text-gray-400'}">
-				{phase}
-			</span>
+	<!-- Status chip (always shown — Pending when no phase yet) -->
+	<div class="flex items-center gap-1.5">
+		<span class="rounded px-1.5 py-0.5 text-xs font-medium {phaseClass[phase ?? 'Pending'] ?? 'bg-surface-700 text-gray-400'}">
+			{phase ?? 'Pending'}
+		</span>
 			{#if phase === 'Building' && buildElapsed}
 				<span class="text-xs font-mono text-warning/70">{buildElapsed}</span>
 			{/if}
@@ -130,9 +129,8 @@
 				</span>
 			{/if}
 		</div>
-		{#if phase === 'Failed' && errorMsg}
-			<span class="line-clamp-2 text-xs text-danger/80">{errorMsg}</span>
-		{/if}
+	{#if (phase === 'Failed' || phase === 'CrashLooping') && errorMsg}
+		<span class="line-clamp-2 text-xs text-danger/80">{errorMsg}</span>
 	{/if}
 
 	<!-- Domain or Private label -->
