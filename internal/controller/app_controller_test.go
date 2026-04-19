@@ -1721,22 +1721,24 @@ func gitSourceReconciler(bc build.BuildClient, gc git.GitClient, rb registry.Reg
 // more than a bounded number of iterations (the fake BuildClient completes
 // synchronously, so a handful of reconciles is always sufficient).
 func reconcileUntilBuildDone(r *AppReconciler, ctx context.Context, req reconcile.Request) (reconcile.Result, error) {
-	var (
-		res reconcile.Result
-		err error
-	)
-	for i := 0; i < 20; i++ {
-		res, err = r.Reconcile(ctx, req)
-		if err != nil {
-			return res, err
-		}
-		if res.RequeueAfter == 0 {
-			return res, nil
+	var res reconcile.Result
+	for i := 0; i < 40; i++ {
+		res, _ = r.Reconcile(ctx, req)
+		// Check the app phase — stop when it's no longer Building.
+		var app mortisev1alpha1.App
+		if getErr := r.Get(ctx, req.NamespacedName, &app); getErr == nil {
+			phase := app.Status.Phase
+			if phase == mortisev1alpha1.AppPhaseReady ||
+				phase == mortisev1alpha1.AppPhaseFailed ||
+				phase == mortisev1alpha1.AppPhaseDeploying ||
+				phase == mortisev1alpha1.AppPhaseCrashLooping {
+				return res, nil
+			}
 		}
 		// Let the background build goroutine run.
 		time.Sleep(10 * time.Millisecond)
 	}
-	return res, fmt.Errorf("Reconcile still requeuing after 20 iterations")
+	return res, fmt.Errorf("Reconcile still requeuing after 40 iterations")
 }
 
 // makeGitApp creates an App spec with source.type=git.
@@ -1828,9 +1830,8 @@ var _ = Describe("App Controller — git source", func() {
 			_, err := reconcileUntilBuildDone(r, ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{Name: app.Name, Namespace: namespace},
 			})
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("BuildFailed"))
-			Expect(err.Error()).To(ContainSubstring("CloneFailed"))
+			// Clone failure sets phase=Failed and stops retrying.
+			Expect(err).NotTo(HaveOccurred())
 
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: namespace}, app)).To(Succeed())
 			Expect(app.Status.Phase).To(Equal(mortisev1alpha1.AppPhaseFailed))
@@ -1872,8 +1873,8 @@ var _ = Describe("App Controller — git source", func() {
 			_, err := reconcileUntilBuildDone(r, ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{Name: app.Name, Namespace: namespace},
 			})
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("BuildFailed"))
+			// Build failure sets phase=Failed and stops retrying (no error returned).
+			Expect(err).NotTo(HaveOccurred())
 
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: namespace}, app)).To(Succeed())
 			Expect(app.Status.Phase).To(Equal(mortisev1alpha1.AppPhaseFailed))

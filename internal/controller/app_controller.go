@@ -170,6 +170,14 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		return ctrl.Result{}, fmt.Errorf("update status: %w", err)
 	}
 
+	// Requeue while not Ready so we can detect CrashLoopBackOff and other
+	// pod-level issues. The Deployment watch doesn't trigger for these
+	// because readyReplicas stays at 0 — the Deployment status doesn't change.
+	if app.Status.Phase == mortisev1alpha1.AppPhaseDeploying ||
+		app.Status.Phase == mortisev1alpha1.AppPhaseCrashLooping {
+		return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
+	}
+
 	return ctrl.Result{}, nil
 }
 
@@ -1232,6 +1240,40 @@ func isMortiseManaged(obj client.Object) bool {
 	return labels["mortise.dev/managed-by"] == "controller"
 }
 
+// checkPodCrashLoop checks pods for CrashLoopBackOff and returns a
+// user-facing message describing the crash. Returns "" if no crash detected.
+//
+// Note: this List call hits the API server directly (not the controller cache)
+// because Pods are not in our watch set. This is acceptable at 15s intervals
+// with namespace + label scoping.
+func (r *AppReconciler) checkPodCrashLoop(ctx context.Context, app *mortisev1alpha1.App) string {
+	var podList corev1.PodList
+	if err := r.List(ctx, &podList, client.InNamespace(app.Namespace), client.MatchingLabels{
+		"app.kubernetes.io/name":       app.Name,
+		"app.kubernetes.io/managed-by": "mortise",
+	}); err != nil {
+		return ""
+	}
+
+	for _, pod := range podList.Items {
+		for _, cs := range pod.Status.ContainerStatuses {
+			if cs.State.Waiting != nil && cs.State.Waiting.Reason == "CrashLoopBackOff" {
+				msg := fmt.Sprintf("Container crashing (restart #%d)", cs.RestartCount)
+				if cs.LastTerminationState.Terminated != nil {
+					t := cs.LastTerminationState.Terminated
+					msg += fmt.Sprintf(", exit code %d", t.ExitCode)
+					if t.Reason != "" {
+						msg += fmt.Sprintf(" (%s)", t.Reason)
+					}
+				}
+				msg += " — check logs for details"
+				return msg
+			}
+		}
+	}
+	return ""
+}
+
 func (r *AppReconciler) clock() clock.Clock {
 	if r.Clock != nil {
 		return r.Clock
@@ -1305,6 +1347,25 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 	}
 	if allReady && len(envStatuses) > 0 {
 		phase = mortisev1alpha1.AppPhaseReady
+	}
+
+	// Check if any pods are crash-looping. This surfaces container exit
+	// reasons to the user instead of showing a generic "Deploying" phase.
+	if !allReady && !isCron {
+		crashMsg := r.checkPodCrashLoop(ctx, app)
+		if crashMsg != "" {
+			phase = mortisev1alpha1.AppPhaseCrashLooping
+			meta.SetStatusCondition(&app.Status.Conditions, metav1.Condition{
+				Type:               "PodHealthy",
+				Status:             metav1.ConditionFalse,
+				Reason:             "CrashLoopBackOff",
+				Message:            crashMsg,
+				ObservedGeneration: app.Generation,
+			})
+		}
+	} else {
+		// Clear the crash condition if pods recovered.
+		meta.RemoveStatusCondition(&app.Status.Conditions, "PodHealthy")
 	}
 
 	// Re-read the App to get the latest resourceVersion before updating status.

@@ -121,7 +121,7 @@ export interface EnvironmentStatus {
 	deployHistory?: DeployRecord[];
 }
 
-export type AppPhase = 'Pending' | 'Building' | 'Deploying' | 'Ready' | 'Failed';
+export type AppPhase = 'Pending' | 'Building' | 'Deploying' | 'Ready' | 'CrashLooping' | 'Failed';
 
 export interface Condition {
 	type: string;

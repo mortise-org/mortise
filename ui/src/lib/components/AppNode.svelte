@@ -23,6 +23,7 @@
 		Ready: 'bg-success/10 text-success',
 		Building: 'bg-warning/10 text-warning',
 		Deploying: 'bg-warning/10 text-warning',
+		CrashLooping: 'bg-danger/10 text-danger',
 		Failed: 'bg-danger/10 text-danger',
 		Pending: 'bg-info/10 text-info'
 	};
@@ -42,7 +43,7 @@
 	const volumes = $derived(app.spec.storage ?? []);
 
 	function failedReason(a: App): string | null {
-		if (a.status?.phase !== 'Failed') return null;
+		if (a.status?.phase !== 'Failed' && a.status?.phase !== 'CrashLooping') return null;
 		const cond = a.status.conditions?.find(c => c.status === 'False');
 		return cond?.message ?? null;
 	}
@@ -121,7 +122,7 @@
 			{#if phase === 'Building' && buildElapsed}
 				<span class="text-xs font-mono text-warning/70">{buildElapsed}</span>
 			{/if}
-			{#if phase === 'Failed' && errorMsg}
+			{#if (phase === 'Failed' || phase === 'CrashLooping') && errorMsg}
 				<span class="h-3 w-3 shrink-0 text-danger" title={errorMsg}>
 					<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="h-3 w-3">
 						<path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a.75.75 0 000 1.5h.253a.25.25 0 01.244.304l-.459 2.066A1.75 1.75 0 0010.747 15H11a.75.75 0 000-1.5h-.253a.25.25 0 01-.244-.304l.459-2.066A1.75 1.75 0 009.253 9H9z" clip-rule="evenodd" />

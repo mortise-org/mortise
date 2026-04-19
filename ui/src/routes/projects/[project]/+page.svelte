@@ -89,12 +89,12 @@
 	}
 
 	function startPollingIfBuilding() {
-		const hasBuilding = apps.some(a => a.status?.phase === 'Building' || a.status?.phase === 'Deploying');
+		const hasBuilding = apps.some(a => a.status?.phase === 'Building' || a.status?.phase === 'Deploying' || a.status?.phase === 'CrashLooping');
 		if (hasBuilding && !pollHandle) {
 			pollHandle = setInterval(async () => {
 				try {
 					apps = await api.listApps(projectName);
-					if (!apps.some(a => a.status?.phase === 'Building' || a.status?.phase === 'Deploying')) {
+					if (!apps.some(a => a.status?.phase === 'Building' || a.status?.phase === 'Deploying' || a.status?.phase === 'CrashLooping')) {
 						clearInterval(pollHandle!);
 						pollHandle = null;
 					}
