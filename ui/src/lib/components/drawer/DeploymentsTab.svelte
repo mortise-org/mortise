@@ -38,8 +38,12 @@
 	}
 
 	function shortDigest(image: string): string {
-		// show last 20 chars of image ref
-		return image.length > 40 ? '…' + image.slice(-37) : image;
+		// Extract sha256 digest and show first 7 chars (like GitHub commit hashes).
+		const match = image.match(/sha256:([a-f0-9]+)/);
+		if (match) return match[1].slice(0, 7);
+		// Fallback: show tag or last segment.
+		const parts = image.split(':');
+		return parts[parts.length - 1].slice(0, 12);
 	}
 
 	async function doRollback(envName: string, index: number) {
@@ -71,17 +75,24 @@
 		}
 	}
 
-	async function doRedeploy() {
+	async function doRebuild() {
 		errorMsg = '';
 		reloading = true;
 		try {
-			if (app.spec.source.type === 'git') {
-				// Git apps: rebuild from latest commit.
-				await api.rebuild(project, app.metadata.name);
-			} else if (envStatus?.currentImage) {
-				// Image apps: redeploy same image (restarts pod).
-				await api.deploy(project, app.metadata.name, selectedEnv, envStatus.currentImage);
-			}
+			await api.rebuild(project, app.metadata.name);
+		} catch (e) {
+			errorMsg = e instanceof Error ? e.message : 'Rebuild failed';
+		} finally {
+			reloading = false;
+		}
+	}
+
+	async function doRedeploy() {
+		if (!envStatus?.currentImage) return;
+		errorMsg = '';
+		reloading = true;
+		try {
+			await api.deploy(project, app.metadata.name, selectedEnv, envStatus.currentImage);
 		} catch (e) {
 			errorMsg = e instanceof Error ? e.message : 'Redeploy failed';
 		} finally {
@@ -131,13 +142,23 @@
 				{/if}
 			</div>
 			<div class="flex items-center gap-2">
+				{#if app.spec.source.type === 'git'}
+					<button
+						type="button"
+						onclick={doRebuild}
+						disabled={reloading}
+						class="flex items-center gap-1 rounded-md bg-accent px-2 py-1 text-xs text-white transition-colors hover:bg-accent-hover disabled:opacity-40"
+					>
+						<Rocket class="h-3 w-3" /> Rebuild
+					</button>
+				{/if}
 				<button
 					type="button"
 					onclick={doRedeploy}
 					disabled={reloading || !envStatus?.currentImage}
 					class="flex items-center gap-1 rounded-md bg-surface-700 px-2 py-1 text-xs text-gray-300 transition-colors hover:bg-surface-600 hover:text-white disabled:opacity-40"
 				>
-					<Rocket class="h-3 w-3" /> Redeploy
+					Redeploy
 				</button>
 				{#if (envStatus?.deployHistory?.length ?? 0) > 1}
 					<button
