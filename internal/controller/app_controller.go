@@ -283,6 +283,12 @@ func (r *AppReconciler) reconcileGitSource(ctx context.Context, app *mortisev1al
 			fmt.Sprintf("git token not available for user %s — reconnect from your profile: %v", createdBy, err))
 	}
 
+	// Register webhook on the repo if not already done. One webhook per repo
+	// — Mortise filters by watchPaths in the handler to decide which apps rebuild.
+	if err := r.ensureWebhook(ctx, app, &gp, token); err != nil {
+		log.Error(err, "webhook registration failed (non-fatal, builds still work manually)")
+	}
+
 	imageRef, err := r.RegistryBackend.PushTarget(app.Name, shortTag(revision))
 	if err != nil {
 		return ctrl.Result{}, false, r.setFailedCondition(ctx, app, "PushTargetFailed", err.Error())
@@ -1238,6 +1244,68 @@ func hashCredentialData(data map[string][]byte) string {
 func isMortiseManaged(obj client.Object) bool {
 	labels := obj.GetLabels()
 	return labels["mortise.dev/managed-by"] == "controller"
+}
+
+// ensureWebhook registers a webhook on the git repo if not already done.
+// Uses an annotation on the App to track registration and avoid duplicates.
+// Non-fatal — if registration fails (e.g. no public URL, no permissions),
+// builds still work via manual redeploy.
+func (r *AppReconciler) ensureWebhook(ctx context.Context, app *mortisev1alpha1.App, gp *mortisev1alpha1.GitProvider, token string) error {
+	log := logf.FromContext(ctx)
+
+	// Skip if already registered for this repo.
+	if app.Annotations["mortise.dev/webhook-registered"] == app.Spec.Source.Repo {
+		return nil
+	}
+
+	// Resolve the webhook URL from PlatformConfig domain.
+	var pc mortisev1alpha1.PlatformConfig
+	if err := r.Get(ctx, types.NamespacedName{Name: "platform"}, &pc); err != nil {
+		return fmt.Errorf("get PlatformConfig: %w", err)
+	}
+	if pc.Spec.Domain == "" {
+		return nil // no domain configured, can't register webhooks
+	}
+
+	webhookURL := fmt.Sprintf("https://%s/api/webhooks/%s", pc.Spec.Domain, gp.Name)
+
+	// Resolve webhook secret.
+	var webhookSecret string
+	if gp.Spec.WebhookSecretRef != nil {
+		var s corev1.Secret
+		if err := r.Get(ctx, types.NamespacedName{
+			Namespace: gp.Spec.WebhookSecretRef.Namespace,
+			Name:      gp.Spec.WebhookSecretRef.Name,
+		}, &s); err == nil {
+			webhookSecret = string(s.Data[gp.Spec.WebhookSecretRef.Key])
+		}
+	}
+
+	// Build GitAPI and register.
+	api, err := git.NewGitAPIFromProvider(gp, token, webhookSecret)
+	if err != nil {
+		return fmt.Errorf("create git API: %w", err)
+	}
+
+	if err := api.RegisterWebhook(ctx, app.Spec.Source.Repo, git.WebhookConfig{
+		URL:    webhookURL,
+		Secret: webhookSecret,
+		Events: []string{"push", "pull_request"},
+	}); err != nil {
+		return fmt.Errorf("register webhook: %w", err)
+	}
+
+	// Mark as registered so we don't re-register on every reconcile.
+	if app.Annotations == nil {
+		app.Annotations = make(map[string]string)
+	}
+	app.Annotations["mortise.dev/webhook-registered"] = app.Spec.Source.Repo
+	if err := r.Update(ctx, app); err != nil {
+		log.Error(err, "failed to save webhook-registered annotation")
+	}
+
+	log.Info("registered webhook", "repo", app.Spec.Source.Repo, "url", webhookURL)
+	return nil
 }
 
 // checkPodCrashLoop checks pods for CrashLoopBackOff and returns a
