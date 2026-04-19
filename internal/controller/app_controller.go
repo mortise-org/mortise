@@ -368,9 +368,11 @@ func (r *AppReconciler) runBuild(ctx context.Context, cancel context.CancelFunc,
 	}
 	log.Info("cloned repo", "repo", p.repo, "branch", p.branch, "dir", cloneDir)
 
-	// Build context is always the repo root. If source.path is set, the
-	// Dockerfile is looked for in that subdirectory — matching Railway/Vercel
-	// behavior where monorepo Dockerfiles can COPY from sibling directories.
+	// DockerfileDir is the subdirectory (source.path). The build system
+	// decides the context: if a Dockerfile exists in the subdirectory, it
+	// uses the subdirectory as context (self-contained, Railway-style).
+	// If no Dockerfile in subdirectory, it checks repo root (monorepo pattern)
+	// or falls back to Railpack.
 	dockerfileDir := cloneDir
 	if p.path != "" {
 		resolved, err := resolveSourceDir(cloneDir, p.path)

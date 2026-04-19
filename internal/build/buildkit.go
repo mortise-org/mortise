@@ -145,13 +145,10 @@ func (b *BuildKitClient) run(ctx context.Context, req BuildRequest, ch chan<- Bu
 // buildSolveOpt decides between Dockerfile and Railpack, returning the
 // appropriate Definition (nil for Dockerfile frontend) and SolveOpt.
 func (b *BuildKitClient) buildSolveOpt(ctx context.Context, req BuildRequest, ch chan<- BuildEvent) (*llb.Definition, bkclient.SolveOpt, error) {
-	// Check if a Dockerfile exists.
-	dockerfileDir := req.dockerfileDir()
 	dockerfileName := req.Dockerfile
 	if dockerfileName == "" {
 		dockerfileName = "Dockerfile"
 	}
-	dockerfilePath := filepath.Join(dockerfileDir, dockerfileName)
 
 	useDockerfile := false
 	if req.Mode == BuildModeDockerfile {
@@ -159,9 +156,21 @@ func (b *BuildKitClient) buildSolveOpt(ctx context.Context, req BuildRequest, ch
 	} else if req.Mode == BuildModeRailpack {
 		useDockerfile = false
 	} else {
-		// Auto mode: use Dockerfile if it exists, Railpack otherwise.
-		if _, err := os.Stat(dockerfilePath); err == nil {
+		// Auto mode: check for Dockerfile in the subdirectory first,
+		// then repo root. Prefer subdirectory (self-contained pattern,
+		// e.g. Railway-style) over repo root (monorepo pattern).
+		subDir := req.dockerfileDir()
+		if _, err := os.Stat(filepath.Join(subDir, dockerfileName)); err == nil {
 			useDockerfile = true
+			// Self-contained Dockerfile: use subdirectory as both context
+			// and dockerfile dir (e.g. backend/Dockerfile with COPY . .)
+			req.SourceDir = subDir
+		} else if subDir != req.SourceDir {
+			// Check repo root for a monorepo Dockerfile.
+			if _, err := os.Stat(filepath.Join(req.SourceDir, dockerfileName)); err == nil {
+				useDockerfile = true
+				req.DockerfileDir = req.SourceDir
+			}
 		}
 	}
 
