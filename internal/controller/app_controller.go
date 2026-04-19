@@ -1263,9 +1263,18 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 		phase = mortisev1alpha1.AppPhaseReady
 	}
 
-	app.Status.Phase = phase
-	app.Status.Environments = envStatuses
-	return r.Status().Update(ctx, app)
+	// Re-read the App to get the latest resourceVersion before updating status.
+	// This avoids conflict errors when multiple reconciles race.
+	var fresh mortisev1alpha1.App
+	if err := r.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: app.Namespace}, &fresh); err != nil {
+		return err
+	}
+	fresh.Status.Phase = phase
+	fresh.Status.Environments = envStatuses
+	fresh.Status.LastBuiltSHA = app.Status.LastBuiltSHA
+	fresh.Status.LastBuiltImage = app.Status.LastBuiltImage
+	fresh.Status.Conditions = app.Status.Conditions
+	return r.Status().Update(ctx, &fresh)
 }
 
 // needsDeployRecord returns true if a new deploy record should be created —
