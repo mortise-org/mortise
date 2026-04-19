@@ -166,18 +166,20 @@
 
 	const SUPABASE_SERVICES: SupabaseService[] = [
 		{
-			id: 'postgres', name: 'PostgreSQL', image: 'postgres:16', port: 5432, required: true,
-			description: 'Core database',
+			id: 'postgres', name: 'PostgreSQL', image: 'supabase/postgres:15.6.1.143', port: 5432, required: true,
+			description: 'Core database (with Supabase extensions)',
 			env: (s) => [
 				{ name: 'POSTGRES_PASSWORD', value: s.pgPassword },
-				{ name: 'POSTGRES_DB', value: 'supabase' }
+				{ name: 'POSTGRES_DB', value: 'supabase' },
+				{ name: 'JWT_SECRET', value: s.jwtSecret }
 			]
 		},
 		{
 			id: 'auth', name: 'GoTrue (Auth)', image: 'supabase/gotrue:v2.164.0', port: 9999, required: false,
 			description: 'Authentication & user management',
 			env: (s) => [
-				{ name: 'GOTRUE_DB_DATABASE_URL', value: `postgres://postgres:${s.pgPassword}@supabase-postgres:5432/supabase?sslmode=disable` },
+				{ name: 'GOTRUE_DB_DRIVER', value: 'postgres' },
+					{ name: 'GOTRUE_DB_DATABASE_URL', value: `postgres://postgres:${s.pgPassword}@supabase-postgres-production:5432/supabase?sslmode=disable` },
 				{ name: 'GOTRUE_JWT_SECRET', value: s.jwtSecret },
 				{ name: 'GOTRUE_SITE_URL', value: 'http://localhost:3000' },
 				{ name: 'API_EXTERNAL_URL', value: 'http://localhost:8000' },
@@ -192,7 +194,7 @@
 			id: 'rest', name: 'PostgREST (REST API)', image: 'postgrest/postgrest:v12.2.3', port: 3000, required: false,
 			description: 'Auto-generated REST API',
 			env: (s) => [
-				{ name: 'PGRST_DB_URI', value: `postgres://postgres:${s.pgPassword}@supabase-postgres:5432/supabase` },
+				{ name: 'PGRST_DB_URI', value: `postgres://postgres:${s.pgPassword}@supabase-postgres-production:5432/supabase` },
 				{ name: 'PGRST_DB_SCHEMA', value: 'public' },
 				{ name: 'PGRST_DB_ANON_ROLE', value: 'anon' },
 				{ name: 'PGRST_JWT_SECRET', value: s.jwtSecret }
@@ -217,7 +219,7 @@
 			id: 'storage', name: 'Storage', image: 'supabase/storage-api:v1.11.13', port: 5000, required: false,
 			description: 'S3-compatible file storage',
 			env: (s) => [
-				{ name: 'DATABASE_URL', value: `postgres://postgres:${s.pgPassword}@supabase-postgres:5432/supabase` },
+				{ name: 'DATABASE_URL', value: `postgres://postgres:${s.pgPassword}@supabase-postgres-production:5432/supabase` },
 				{ name: 'PGRST_JWT_SECRET', value: s.jwtSecret },
 				{ name: 'ANON_KEY', value: 'anon-key-placeholder' },
 				{ name: 'SERVICE_KEY', value: 'service-key-placeholder' },
