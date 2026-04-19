@@ -167,11 +167,13 @@
 	const SUPABASE_SERVICES: SupabaseService[] = [
 		{
 			id: 'postgres', name: 'PostgreSQL', image: 'supabase/postgres:15.6.1.143', port: 5432, required: true,
-			description: 'Core database (with Supabase extensions)',
+			description: 'Core database (with Supabase extensions, schemas, and roles)',
 			env: (s) => [
 				{ name: 'POSTGRES_PASSWORD', value: s.pgPassword },
 				{ name: 'POSTGRES_DB', value: 'supabase' },
-				{ name: 'JWT_SECRET', value: s.jwtSecret }
+				{ name: 'JWT_SECRET', value: s.jwtSecret },
+				{ name: 'SUPABASE_AUTH_ADMIN_PASSWORD', value: s.pgPassword },
+				{ name: 'SUPABASE_STORAGE_ADMIN_PASSWORD', value: s.pgPassword }
 			]
 		},
 		{
@@ -179,10 +181,12 @@
 			description: 'Authentication & user management',
 			env: (s) => [
 				{ name: 'GOTRUE_DB_DRIVER', value: 'postgres' },
-					{ name: 'GOTRUE_DB_DATABASE_URL', value: `postgres://postgres:${s.pgPassword}@supabase-postgres-production:5432/supabase?sslmode=disable` },
+				{ name: 'GOTRUE_DB_DATABASE_URL', value: `postgres://supabase_admin:${s.pgPassword}@supabase-postgres-production:5432/supabase?sslmode=disable` },
+				{ name: 'DATABASE_URL', value: `postgres://supabase_admin:${s.pgPassword}@supabase-postgres-production:5432/supabase?sslmode=disable` },
 				{ name: 'GOTRUE_JWT_SECRET', value: s.jwtSecret },
-				{ name: 'GOTRUE_SITE_URL', value: 'http://localhost:3000' },
-				{ name: 'API_EXTERNAL_URL', value: 'http://localhost:8000' },
+				{ name: 'GOTRUE_JWT_EXP', value: '3600' },
+				{ name: 'GOTRUE_SITE_URL', value: 'http://localhost' },
+				{ name: 'API_EXTERNAL_URL', value: 'http://localhost' },
 				{ name: 'GOTRUE_MAILER_AUTOCONFIRM', value: 'true' },
 				{ name: 'GOTRUE_EXTERNAL_EMAIL_ENABLED', value: 'true' },
 				{ name: 'GOTRUE_DISABLE_SIGNUP', value: 'false' },
@@ -192,56 +196,44 @@
 		},
 		{
 			id: 'rest', name: 'PostgREST (REST API)', image: 'postgrest/postgrest:v12.2.3', port: 3000, required: false,
-			description: 'Auto-generated REST API',
+			description: 'Auto-generated REST API from your Postgres schema',
 			env: (s) => [
-				{ name: 'PGRST_DB_URI', value: `postgres://postgres:${s.pgPassword}@supabase-postgres-production:5432/supabase` },
-				{ name: 'PGRST_DB_SCHEMA', value: 'public' },
+				{ name: 'PGRST_DB_URI', value: `postgres://supabase_admin:${s.pgPassword}@supabase-postgres-production:5432/supabase` },
+				{ name: 'PGRST_DB_SCHEMA', value: 'public,storage' },
 				{ name: 'PGRST_DB_ANON_ROLE', value: 'anon' },
-				{ name: 'PGRST_JWT_SECRET', value: s.jwtSecret }
+				{ name: 'PGRST_JWT_SECRET', value: s.jwtSecret },
+				{ name: 'PGRST_DB_USE_LEGACY_GUCS', value: 'false' }
 			]
 		},
 		{
 			id: 'realtime', name: 'Realtime', image: 'supabase/realtime:v2.33.58', port: 4000, required: false,
 			description: 'WebSocket-based realtime subscriptions',
 			env: (s) => [
-				{ name: 'DB_HOST', value: 'supabase-postgres' },
+				{ name: 'DB_HOST', value: 'supabase-postgres-production' },
 				{ name: 'DB_PORT', value: '5432' },
-				{ name: 'DB_USER', value: 'postgres' },
+				{ name: 'DB_USER', value: 'supabase_admin' },
 				{ name: 'DB_PASSWORD', value: s.pgPassword },
 				{ name: 'DB_NAME', value: 'supabase' },
+				{ name: 'DB_AFTER_CONNECT_QUERY', value: 'SET search_path TO realtime' },
 				{ name: 'PORT', value: '4000' },
 				{ name: 'JWT_SECRET', value: s.jwtSecret },
 				{ name: 'SECURE_CHANNELS', value: 'true' },
-				{ name: 'SECRET_KEY_BASE', value: generatePassword(64) }
+				{ name: 'SECRET_KEY_BASE', value: generatePassword(64) },
+				{ name: 'ERL_AFLAGS', value: '-proto_dist inet_tcp' },
+				{ name: 'DNS_NODES', value: '' },
+				{ name: 'RLIMIT_NOFILE', value: '10000' }
 			]
 		},
 		{
 			id: 'storage', name: 'Storage', image: 'supabase/storage-api:v1.11.13', port: 5000, required: false,
 			description: 'S3-compatible file storage',
 			env: (s) => [
-				{ name: 'DATABASE_URL', value: `postgres://postgres:${s.pgPassword}@supabase-postgres-production:5432/supabase` },
+				{ name: 'DATABASE_URL', value: `postgres://supabase_admin:${s.pgPassword}@supabase-postgres-production:5432/supabase` },
 				{ name: 'PGRST_JWT_SECRET', value: s.jwtSecret },
-				{ name: 'ANON_KEY', value: 'anon-key-placeholder' },
-				{ name: 'SERVICE_KEY', value: 'service-key-placeholder' },
+				{ name: 'ANON_KEY', value: s.jwtSecret },
+				{ name: 'SERVICE_KEY', value: s.jwtSecret },
 				{ name: 'STORAGE_BACKEND', value: 'file' },
 				{ name: 'FILE_STORAGE_BACKEND_PATH', value: '/var/lib/storage' }
-			]
-		},
-		{
-			id: 'kong', name: 'Kong (API Gateway)', image: 'kong:3.8', port: 8000, required: false,
-			description: 'Single entry point for all client traffic',
-			env: () => [
-				{ name: 'KONG_DATABASE', value: 'off' },
-				{ name: 'KONG_DECLARATIVE_CONFIG', value: '/var/lib/kong/kong.yml' }
-			]
-		},
-		{
-			id: 'studio', name: 'Studio (Dashboard)', image: 'supabase/studio:20241202', port: 3000, required: false,
-			description: 'Web-based admin dashboard',
-			env: (s) => [
-				{ name: 'STUDIO_PG_META_URL', value: `http://supabase-rest:3000` },
-				{ name: 'SUPABASE_URL', value: 'http://supabase-kong:8000' },
-				{ name: 'SUPABASE_ANON_KEY', value: s.jwtSecret }
 			]
 		}
 	];
