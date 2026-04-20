@@ -45,11 +45,14 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
 	"github.com/MC-Meesh/mortise/internal/bindings"
 	"github.com/MC-Meesh/mortise/internal/build"
+	"github.com/MC-Meesh/mortise/internal/constants"
 	"github.com/MC-Meesh/mortise/internal/git"
 	"github.com/MC-Meesh/mortise/internal/ingress"
 	"github.com/MC-Meesh/mortise/internal/registry"
@@ -111,6 +114,27 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		return ctrl.Result{}, err
 	}
 
+	// Finalizer flow — owner references can't cross namespaces, so the only
+	// way to clean up per-env-ns resources on App delete is via a finalizer
+	// that enumerates them and deletes by label.
+	if !app.DeletionTimestamp.IsZero() {
+		if controllerutil.ContainsFinalizer(&app, appFinalizer) {
+			if err := r.gcAppAcrossEnvs(ctx, &app); err != nil {
+				return ctrl.Result{}, fmt.Errorf("gc app across envs: %w", err)
+			}
+			controllerutil.RemoveFinalizer(&app, appFinalizer)
+			if err := r.Update(ctx, &app); err != nil {
+				return ctrl.Result{}, fmt.Errorf("remove finalizer: %w", err)
+			}
+		}
+		return ctrl.Result{}, nil
+	}
+	if controllerutil.AddFinalizer(&app, appFinalizer) {
+		if err := r.Update(ctx, &app); err != nil {
+			return ctrl.Result{}, fmt.Errorf("add finalizer: %w", err)
+		}
+	}
+
 	switch app.Spec.Source.Type {
 	case mortisev1alpha1.SourceTypeGit:
 		result, proceed, err := r.reconcileGitSource(ctx, &app)
@@ -129,23 +153,6 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		return ctrl.Result{}, nil
 	}
 
-	if err := r.reconcilePVCs(ctx, &app); err != nil {
-		return ctrl.Result{}, fmt.Errorf("reconcile PVCs: %w", err)
-	}
-
-	if err := r.reconcileConfigMaps(ctx, &app); err != nil {
-		return ctrl.Result{}, fmt.Errorf("reconcile config maps: %w", err)
-	}
-
-	if err := r.reconcileServiceAccount(ctx, &app); err != nil {
-		return ctrl.Result{}, fmt.Errorf("reconcile service account: %w", err)
-	}
-
-	credentialsHash, err := r.reconcileCredentialsSecret(ctx, &app)
-	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("reconcile credentials secret: %w", err)
-	}
-
 	// Environments are project-scoped: an App auto-exists in every
 	// `Project.Spec.Environments` entry, and `App.Spec.Environments[]`
 	// carries only per-env overrides. If the parent project isn't resolvable
@@ -161,8 +168,31 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		resolvedEnvs = resolveEnvs(project, &app)
 	}
 
+	// Each env gets its own namespace; per-app resources (SA, credentials
+	// Secret, ConfigMaps, PVCs) fan out once per env namespace so pods that
+	// reference them can resolve cross-ns (they can't). The controller owns
+	// each env ns via the Project controller, so existence is a given by the
+	// time we reach here — we just materialise the per-app objects inside.
 	for i := range resolvedEnvs {
 		env := &resolvedEnvs[i]
+		envNs, err := appEnvNs(&app, env.Name)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+
+		if err := r.reconcilePVCs(ctx, &app, envNs, env.Name); err != nil {
+			return ctrl.Result{}, fmt.Errorf("reconcile PVCs for env %s: %w", env.Name, err)
+		}
+		if err := r.reconcileConfigMaps(ctx, &app, envNs, env.Name); err != nil {
+			return ctrl.Result{}, fmt.Errorf("reconcile config maps for env %s: %w", env.Name, err)
+		}
+		if err := r.reconcileServiceAccount(ctx, &app, envNs, env.Name); err != nil {
+			return ctrl.Result{}, fmt.Errorf("reconcile service account for env %s: %w", env.Name, err)
+		}
+		credentialsHash, err := r.reconcileCredentialsSecret(ctx, &app, envNs, env.Name)
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("reconcile credentials secret for env %s: %w", env.Name, err)
+		}
 
 		if app.Spec.Kind == mortisev1alpha1.AppKindCron {
 			// Cron envs without a schedule can't produce a valid CronJob.
@@ -171,34 +201,34 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 			if env.Schedule == "" {
 				continue
 			}
-			if err := r.reconcileCronJob(ctx, &app, env, credentialsHash); err != nil {
+			if err := r.reconcileCronJob(ctx, &app, env, envNs, credentialsHash); err != nil {
 				return ctrl.Result{}, fmt.Errorf("reconcile cronjob for env %s: %w", env.Name, err)
 			}
 			continue
 		}
 
-		if err := r.reconcileDeployment(ctx, &app, env, credentialsHash); err != nil {
+		if err := r.reconcileDeployment(ctx, &app, env, envNs, credentialsHash); err != nil {
 			return ctrl.Result{}, fmt.Errorf("reconcile deployment for env %s: %w", env.Name, err)
 		}
 
-		if err := r.reconcileService(ctx, &app, env); err != nil {
+		if err := r.reconcileService(ctx, &app, env, envNs); err != nil {
 			return ctrl.Result{}, fmt.Errorf("reconcile service for env %s: %w", env.Name, err)
 		}
 
 		if app.Spec.Network.Public && env.Domain != "" {
-			if err := r.reconcileIngress(ctx, &app, env); err != nil {
+			if err := r.reconcileIngress(ctx, &app, env, envNs); err != nil {
 				return ctrl.Result{}, fmt.Errorf("reconcile ingress for env %s: %w", env.Name, err)
 			}
 		}
 	}
 
-	// GC resources left behind by envs that were removed from the project or
-	// opted out via `Enabled: false`. Owner references + foreground delete
-	// handle cascade; we only need to trigger the delete on the top-level
-	// Deployment / CronJob / Service / Ingress for each stale env.
+	// GC resources for envs this App opts out of (`Enabled: false`). When the
+	// project removes an env entirely the namespace deletion cascades, so no
+	// explicit GC is needed there. This only handles opt-out — the env ns
+	// still exists, but this app's objects inside it should be removed.
 	if project != nil {
-		if err := r.gcStaleEnvResources(ctx, &app, resolvedEnvs); err != nil {
-			return ctrl.Result{}, fmt.Errorf("gc stale env resources: %w", err)
+		if err := r.gcOptedOutEnvs(ctx, &app, project, resolvedEnvs); err != nil {
+			return ctrl.Result{}, fmt.Errorf("gc opted-out envs: %w", err)
 		}
 	}
 
@@ -216,6 +246,10 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 
 	return ctrl.Result{}, nil
 }
+
+// appFinalizer is the finalizer string applied to every App. Cleared only
+// after cross-namespace cleanup of workload resources completes.
+const appFinalizer = "mortise.dev/app-finalizer"
 
 // reconcileGitSource handles the build-from-source path for source.type=git apps
 // without blocking the reconcile worker. On the first reconcile of a new
@@ -474,7 +508,7 @@ func (r *AppReconciler) persistBuildLog(t *buildTracker, p buildParams) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        buildLogsConfigMapName(p.appName),
 			Namespace:   p.namespace,
-			Labels:      appLabels(p.appName, ""),
+			Labels:      appLabels(&app, ""),
 			Annotations: annotations,
 		},
 		Data: map[string]string{
@@ -613,8 +647,8 @@ func (r *AppReconciler) setFailedCondition(ctx context.Context, app *mortisev1al
 	return fmt.Errorf("%s: %s", reason, msg)
 }
 
-func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1alpha1.App, env *mortisev1alpha1.Environment, credentialsHash string) error {
-	name := deploymentName(app.Name, env.Name)
+func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1alpha1.App, env *mortisev1alpha1.Environment, envNs, credentialsHash string) error {
+	name := deploymentName(app.Name)
 	replicas := int32(1)
 	if env.Replicas != nil {
 		replicas = *env.Replicas
@@ -625,8 +659,12 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 	var layers [][]corev1.EnvVar
 
 	if len(env.Bindings) > 0 {
+		projectName, err := appProjectName(app)
+		if err != nil {
+			return err
+		}
 		resolver := &bindings.Resolver{Client: r.Client}
-		boundVars, err := resolver.Resolve(ctx, app.Namespace, env.Bindings)
+		boundVars, err := resolver.Resolve(ctx, projectName, env.Name, env.Bindings)
 		if err != nil {
 			return fmt.Errorf("resolve bindings: %w", err)
 		}
@@ -696,18 +734,18 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 	desired := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        name,
-			Namespace:   app.Namespace,
-			Labels:      appLabels(app.Name, env.Name),
+			Namespace:   envNs,
+			Labels:      appLabels(app, env.Name),
 			Annotations: userAnno,
 		},
 		Spec: appsv1.DeploymentSpec{
 			Replicas: &replicas,
 			Selector: &metav1.LabelSelector{
-				MatchLabels: appLabels(app.Name, env.Name),
+				MatchLabels: appLabels(app, env.Name),
 			},
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
-					Labels:      appLabels(app.Name, env.Name),
+					Labels:      appLabels(app, env.Name),
 					Annotations: podAnno,
 				},
 				Spec: corev1.PodSpec{
@@ -721,12 +759,12 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 
 	desired.Spec.ProgressDeadlineSeconds = ptr.To(int32(120))
 
-	if err := controllerutil.SetControllerReference(app, desired, r.Scheme); err != nil {
-		return err
-	}
+	// No SetControllerReference: the App CRD lives in the project's control
+	// namespace while this Deployment lives in the env namespace. Owner refs
+	// don't cascade cross-ns; the App's finalizer handles cleanup by label.
 
 	var existing appsv1.Deployment
-	err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: app.Namespace}, &existing)
+	err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: envNs}, &existing)
 	if errors.IsNotFound(err) {
 		return r.Create(ctx, desired)
 	}
@@ -800,21 +838,25 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 		}
 
 		// Conflict: re-fetch the latest version before the next attempt.
-		if getErr := r.Get(ctx, types.NamespacedName{Name: name, Namespace: app.Namespace}, &existing); getErr != nil {
+		if getErr := r.Get(ctx, types.NamespacedName{Name: name, Namespace: envNs}, &existing); getErr != nil {
 			return getErr
 		}
 	}
 	return nil
 }
 
-func (r *AppReconciler) reconcileCronJob(ctx context.Context, app *mortisev1alpha1.App, env *mortisev1alpha1.Environment, credentialsHash string) error {
-	name := cronJobName(app.Name, env.Name)
+func (r *AppReconciler) reconcileCronJob(ctx context.Context, app *mortisev1alpha1.App, env *mortisev1alpha1.Environment, envNs, credentialsHash string) error {
+	name := cronJobName(app.Name)
 
 	envVars := toEnvVars(env.Env)
 
 	if len(env.Bindings) > 0 {
+		projectName, err := appProjectName(app)
+		if err != nil {
+			return err
+		}
 		resolver := &bindings.Resolver{Client: r.Client}
-		boundVars, err := resolver.Resolve(ctx, app.Namespace, env.Bindings)
+		boundVars, err := resolver.Resolve(ctx, projectName, env.Name, env.Bindings)
 		if err != nil {
 			return fmt.Errorf("resolve bindings: %w", err)
 		}
@@ -863,8 +905,8 @@ func (r *AppReconciler) reconcileCronJob(ctx context.Context, app *mortisev1alph
 	desired := &batchv1.CronJob{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        name,
-			Namespace:   app.Namespace,
-			Labels:      appLabels(app.Name, env.Name),
+			Namespace:   envNs,
+			Labels:      appLabels(app, env.Name),
 			Annotations: userAnno,
 		},
 		Spec: batchv1.CronJobSpec{
@@ -872,13 +914,13 @@ func (r *AppReconciler) reconcileCronJob(ctx context.Context, app *mortisev1alph
 			ConcurrencyPolicy: concurrencyPolicy,
 			JobTemplate: batchv1.JobTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
-					Labels:      appLabels(app.Name, env.Name),
+					Labels:      appLabels(app, env.Name),
 					Annotations: podAnno,
 				},
 				Spec: batchv1.JobSpec{
 					Template: corev1.PodTemplateSpec{
 						ObjectMeta: metav1.ObjectMeta{
-							Labels:      appLabels(app.Name, env.Name),
+							Labels:      appLabels(app, env.Name),
 							Annotations: podAnno,
 						},
 						Spec: corev1.PodSpec{
@@ -893,12 +935,10 @@ func (r *AppReconciler) reconcileCronJob(ctx context.Context, app *mortisev1alph
 		},
 	}
 
-	if err := controllerutil.SetControllerReference(app, desired, r.Scheme); err != nil {
-		return err
-	}
+	// Cross-namespace: no controller ref; finalizer-based GC on App delete.
 
 	var existing batchv1.CronJob
-	err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: app.Namespace}, &existing)
+	err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: envNs}, &existing)
 	if errors.IsNotFound(err) {
 		return r.Create(ctx, desired)
 	}
@@ -911,18 +951,18 @@ func (r *AppReconciler) reconcileCronJob(ctx context.Context, app *mortisev1alph
 	return r.Update(ctx, &existing)
 }
 
-func (r *AppReconciler) reconcileService(ctx context.Context, app *mortisev1alpha1.App, env *mortisev1alpha1.Environment) error {
-	name := serviceName(app.Name, env.Name)
+func (r *AppReconciler) reconcileService(ctx context.Context, app *mortisev1alpha1.App, env *mortisev1alpha1.Environment, envNs string) error {
+	name := serviceName(app.Name)
 
 	desired := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        name,
-			Namespace:   app.Namespace,
-			Labels:      appLabels(app.Name, env.Name),
+			Namespace:   envNs,
+			Labels:      appLabels(app, env.Name),
 			Annotations: mergeAnnotations(nil, env.Annotations),
 		},
 		Spec: corev1.ServiceSpec{
-			Selector: appLabels(app.Name, env.Name),
+			Selector: appLabels(app, env.Name),
 			Ports: []corev1.ServicePort{
 				{
 					Name:       "http",
@@ -934,12 +974,10 @@ func (r *AppReconciler) reconcileService(ctx context.Context, app *mortisev1alph
 		},
 	}
 
-	if err := controllerutil.SetControllerReference(app, desired, r.Scheme); err != nil {
-		return err
-	}
+	// Cross-namespace: no controller ref; finalizer-based GC on App delete.
 
 	var existing corev1.Service
-	err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: app.Namespace}, &existing)
+	err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: envNs}, &existing)
 	if errors.IsNotFound(err) {
 		return r.Create(ctx, desired)
 	}
@@ -953,10 +991,10 @@ func (r *AppReconciler) reconcileService(ctx context.Context, app *mortisev1alph
 	return r.Update(ctx, &existing)
 }
 
-func (r *AppReconciler) reconcileIngress(ctx context.Context, app *mortisev1alpha1.App, env *mortisev1alpha1.Environment) error {
-	name := ingressName(app.Name, env.Name)
+func (r *AppReconciler) reconcileIngress(ctx context.Context, app *mortisev1alpha1.App, env *mortisev1alpha1.Environment, envNs string) error {
+	name := ingressName(app.Name)
 	pathType := networkingv1.PathTypePrefix
-	svcName := serviceName(app.Name, env.Name)
+	svcName := serviceName(app.Name)
 
 	// Collect all hostnames: primary domain + custom domains.
 	allHosts := []string{env.Domain}
@@ -998,7 +1036,7 @@ func (r *AppReconciler) reconcileIngress(ctx context.Context, app *mortisev1alph
 	var owned map[string]string
 	if r.IngressProvider != nil {
 		owned = r.IngressProvider.Annotations(
-			ingress.AppRef{Name: app.Name, Namespace: app.Namespace},
+			ingress.AppRef{Name: app.Name, Namespace: envNs},
 			allHosts,
 			nil,
 		)
@@ -1020,8 +1058,8 @@ func (r *AppReconciler) reconcileIngress(ctx context.Context, app *mortisev1alph
 	desired := &networkingv1.Ingress{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        name,
-			Namespace:   app.Namespace,
-			Labels:      appLabels(app.Name, env.Name),
+			Namespace:   envNs,
+			Labels:      appLabels(app, env.Name),
 			Annotations: mergeAnnotations(owned, env.Annotations),
 		},
 		Spec: networkingv1.IngressSpec{
@@ -1041,12 +1079,10 @@ func (r *AppReconciler) reconcileIngress(ctx context.Context, app *mortisev1alph
 		desired.Spec.IngressClassName = &cn
 	}
 
-	if err := controllerutil.SetControllerReference(app, desired, r.Scheme); err != nil {
-		return err
-	}
+	// Cross-namespace: no controller ref; finalizer-based GC on App delete.
 
 	var existing networkingv1.Ingress
-	err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: app.Namespace}, &existing)
+	err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: envNs}, &existing)
 	if errors.IsNotFound(err) {
 		return r.Create(ctx, desired)
 	}
@@ -1059,7 +1095,7 @@ func (r *AppReconciler) reconcileIngress(ctx context.Context, app *mortisev1alph
 	return r.Update(ctx, &existing)
 }
 
-func (r *AppReconciler) reconcileServiceAccount(ctx context.Context, app *mortisev1alpha1.App) error {
+func (r *AppReconciler) reconcileServiceAccount(ctx context.Context, app *mortisev1alpha1.App, envNs, envName string) error {
 	var imagePullSecrets []corev1.LocalObjectReference
 	if r.RegistryBackend != nil {
 		if ref := r.RegistryBackend.PullSecretRef(); ref != "" {
@@ -1070,18 +1106,16 @@ func (r *AppReconciler) reconcileServiceAccount(ctx context.Context, app *mortis
 	desired := &corev1.ServiceAccount{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      app.Name,
-			Namespace: app.Namespace,
-			Labels:    appLabels(app.Name, ""),
+			Namespace: envNs,
+			Labels:    appLabels(app, envName),
 		},
 		ImagePullSecrets: imagePullSecrets,
 	}
 
-	if err := controllerutil.SetControllerReference(app, desired, r.Scheme); err != nil {
-		return err
-	}
+	// Cross-namespace: no controller ref; finalizer-based GC on App delete.
 
 	var existing corev1.ServiceAccount
-	err := r.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: app.Namespace}, &existing)
+	err := r.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: envNs}, &existing)
 	if errors.IsNotFound(err) {
 		return r.Create(ctx, desired)
 	}
@@ -1110,20 +1144,19 @@ func imagePullSecretsEqual(a, b []corev1.LocalObjectReference) bool {
 	return true
 }
 
-func (r *AppReconciler) reconcilePVCs(ctx context.Context, app *mortisev1alpha1.App) error {
-	// PVCs are App-level (not per-env), but env.Annotations are per-env per
-	// spec §5.2a. Merge the passthrough maps across all envs; the last env's
-	// value wins on key collision. For the common single-env App this is a
-	// no-op; for multi-env Apps annotation conflicts on a shared PVC aren't
-	// meaningful anyway (there's only one PVC).
-	pvcAnno := map[string]string{}
+func (r *AppReconciler) reconcilePVCs(ctx context.Context, app *mortisev1alpha1.App, envNs, envName string) error {
+	// PVCs live per-env-ns, so env-level annotations apply directly.
+	envAnno := map[string]string{}
 	for i := range app.Spec.Environments {
+		if app.Spec.Environments[i].Name != envName {
+			continue
+		}
 		for k, v := range app.Spec.Environments[i].Annotations {
-			pvcAnno[k] = v
+			envAnno[k] = v
 		}
 	}
-	if len(pvcAnno) == 0 {
-		pvcAnno = nil
+	if len(envAnno) == 0 {
+		envAnno = nil
 	}
 
 	for _, vol := range app.Spec.Storage {
@@ -1137,9 +1170,9 @@ func (r *AppReconciler) reconcilePVCs(ctx context.Context, app *mortisev1alpha1.
 		desired := &corev1.PersistentVolumeClaim{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:        name,
-				Namespace:   app.Namespace,
-				Labels:      appLabels(app.Name, ""),
-				Annotations: pvcAnno,
+				Namespace:   envNs,
+				Labels:      appLabels(app, envName),
+				Annotations: envAnno,
 			},
 			Spec: corev1.PersistentVolumeClaimSpec{
 				AccessModes: []corev1.PersistentVolumeAccessMode{accessMode},
@@ -1155,12 +1188,10 @@ func (r *AppReconciler) reconcilePVCs(ctx context.Context, app *mortisev1alpha1.
 			desired.Spec.StorageClassName = &vol.StorageClass
 		}
 
-		if err := controllerutil.SetControllerReference(app, desired, r.Scheme); err != nil {
-			return err
-		}
+		// Cross-namespace: no controller ref; finalizer-based GC on App delete.
 
 		var existing corev1.PersistentVolumeClaim
-		err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: app.Namespace}, &existing)
+		err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: envNs}, &existing)
 		if errors.IsNotFound(err) {
 			if err := r.Create(ctx, desired); err != nil {
 				return err
@@ -1192,8 +1223,10 @@ func (r *AppReconciler) reconcilePVCs(ctx context.Context, app *mortisev1alpha1.
 }
 
 // reconcileConfigMaps creates or updates ConfigMaps for each configFile
-// defined on the App spec. These are mounted into containers as individual files.
-func (r *AppReconciler) reconcileConfigMaps(ctx context.Context, app *mortisev1alpha1.App) error {
+// defined on the App spec. These are mounted into containers as individual
+// files. Fans out into the per-env namespace so pods in that env can mount
+// from their own namespace (cross-ns ConfigMap mounts aren't allowed).
+func (r *AppReconciler) reconcileConfigMaps(ctx context.Context, app *mortisev1alpha1.App, envNs, envName string) error {
 	// Track the set of ConfigMap names we expect to own after this pass so we
 	// can prune orphans below.
 	expected := make(map[string]struct{}, len(app.Spec.ConfigFiles))
@@ -1215,15 +1248,13 @@ func (r *AppReconciler) reconcileConfigMaps(ctx context.Context, app *mortisev1a
 
 		expected[cmName] = struct{}{}
 
-		// ConfigFiles are per-App, not per-environment — the empty env slot
-		// on appLabels is intentional and shared across envs.
-		labels := appLabels(app.Name, "")
+		labels := appLabels(app, envName)
 		labels["mortise.dev/managed-by"] = "controller"
 
 		desired := &corev1.ConfigMap{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      cmName,
-				Namespace: app.Namespace,
+				Namespace: envNs,
 				Labels:    labels,
 			},
 			Data: map[string]string{
@@ -1231,12 +1262,10 @@ func (r *AppReconciler) reconcileConfigMaps(ctx context.Context, app *mortisev1a
 			},
 		}
 
-		if err := controllerutil.SetControllerReference(app, desired, r.Scheme); err != nil {
-			return err
-		}
+		// Cross-namespace: no controller ref; finalizer-based GC on App delete.
 
 		var existing corev1.ConfigMap
-		err := r.Get(ctx, types.NamespacedName{Name: cmName, Namespace: app.Namespace}, &existing)
+		err := r.Get(ctx, types.NamespacedName{Name: cmName, Namespace: envNs}, &existing)
 		if errors.IsNotFound(err) {
 			if err := r.Create(ctx, desired); err != nil {
 				return err
@@ -1250,7 +1279,7 @@ func (r *AppReconciler) reconcileConfigMaps(ctx context.Context, app *mortisev1a
 		// Per CLAUDE.md "Mortise owns only what it creates": refuse to
 		// overwrite a pre-existing ConfigMap with this reserved name.
 		if !isMortiseManaged(&existing) {
-			return fmt.Errorf("ConfigMap %q already exists in namespace %q and is not managed by Mortise; rename or delete it to let Mortise manage configFiles", cmName, app.Namespace)
+			return fmt.Errorf("ConfigMap %q already exists in namespace %q and is not managed by Mortise; rename or delete it to let Mortise manage configFiles", cmName, envNs)
 		}
 
 		// Update content and labels if changed.
@@ -1263,12 +1292,12 @@ func (r *AppReconciler) reconcileConfigMaps(ctx context.Context, app *mortisev1a
 		}
 	}
 
-	// Prune ConfigMaps that match our naming convention but are no longer
-	// expected (e.g. a configFiles entry was removed). Only touch
+	// Prune ConfigMaps that match our naming convention in this env ns but are
+	// no longer expected (e.g. a configFiles entry was removed). Only touch
 	// Mortise-managed objects — never delete someone else's CM that happens
 	// to match the pattern.
 	var owned corev1.ConfigMapList
-	if err := r.List(ctx, &owned, client.InNamespace(app.Namespace), client.MatchingLabels{
+	if err := r.List(ctx, &owned, client.InNamespace(envNs), client.MatchingLabels{
 		"app.kubernetes.io/name":       app.Name,
 		"app.kubernetes.io/managed-by": "mortise",
 	}); err != nil {
@@ -1312,9 +1341,9 @@ func credentialsSecretName(appName string) string {
 // Secret is removed). Per CLAUDE.md "Mortise owns only what it creates":
 // we refuse to modify or delete a pre-existing Secret that lacks our
 // managed-by label — the user must rename or delete it by hand.
-func (r *AppReconciler) reconcileCredentialsSecret(ctx context.Context, app *mortisev1alpha1.App) (string, error) {
+func (r *AppReconciler) reconcileCredentialsSecret(ctx context.Context, app *mortisev1alpha1.App, envNs, envName string) (string, error) {
 	name := credentialsSecretName(app.Name)
-	key := types.NamespacedName{Name: name, Namespace: app.Namespace}
+	key := types.NamespacedName{Name: name, Namespace: envNs}
 
 	// Empty credentials → clean up any Secret we previously materialised.
 	if len(app.Spec.Credentials) == 0 {
@@ -1337,14 +1366,16 @@ func (r *AppReconciler) reconcileCredentialsSecret(ctx context.Context, app *mor
 		return "", nil
 	}
 
-	// Validate + render data.
+	// Validate + render data. Credential Value/ValueFrom sources are resolved
+	// against the env namespace so users can place per-env Secret sources
+	// (e.g. different staging vs prod passwords) in the appropriate env ns.
 	data := make(map[string][]byte, len(app.Spec.Credentials))
 	for i := range app.Spec.Credentials {
 		cred := &app.Spec.Credentials[i]
 		if err := validateCredential(cred); err != nil {
 			return "", err
 		}
-		value, ok, err := r.resolveCredential(ctx, app.Namespace, cred)
+		value, ok, err := r.resolveCredential(ctx, envNs, cred)
 		if err != nil {
 			return "", err
 		}
@@ -1359,21 +1390,19 @@ func (r *AppReconciler) reconcileCredentialsSecret(ctx context.Context, app *mor
 
 	hash := hashCredentialData(data)
 
+	labels := appLabels(app, envName)
+	labels["mortise.dev/managed-by"] = "controller"
+
 	desired := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
-			Namespace: app.Namespace,
-			Labels: map[string]string{
-				"mortise.dev/managed-by": "controller",
-				"mortise.dev/app":        app.Name,
-			},
+			Namespace: envNs,
+			Labels:    labels,
 		},
 		Type: corev1.SecretTypeOpaque,
 		Data: data,
 	}
-	if err := controllerutil.SetControllerReference(app, desired, r.Scheme); err != nil {
-		return "", err
-	}
+	// Cross-namespace: no controller ref; finalizer-based GC on App delete.
 
 	var existing corev1.Secret
 	err := r.Get(ctx, key, &existing)
@@ -1390,7 +1419,7 @@ func (r *AppReconciler) reconcileCredentialsSecret(ctx context.Context, app *mor
 		// Pre-existing Secret with the reserved name but no managed-by label
 		// — refuse to take it over. Users see a clear error rather than
 		// silent credential exfiltration.
-		return "", fmt.Errorf("Secret %q already exists in namespace %q and is not managed by Mortise; rename or delete it to let Mortise manage credentials", name, app.Namespace)
+		return "", fmt.Errorf("Secret %q already exists in namespace %q and is not managed by Mortise; rename or delete it to let Mortise manage credentials", name, envNs)
 	}
 	existing.Labels = desired.Labels
 	existing.Type = desired.Type
@@ -1539,10 +1568,17 @@ func (r *AppReconciler) ensureWebhook(ctx context.Context, app *mortisev1alpha1.
 // because Pods are not in our watch set. This is acceptable at 15s intervals
 // with namespace + label scoping.
 func (r *AppReconciler) checkPodCrashLoop(ctx context.Context, app *mortisev1alpha1.App) string {
+	// Pods live in env namespaces, not the control ns. Listing cluster-wide
+	// by project+app label finds them without having to re-walk project envs.
+	projectName, err := appProjectName(app)
+	if err != nil {
+		return ""
+	}
 	var podList corev1.PodList
-	if err := r.List(ctx, &podList, client.InNamespace(app.Namespace), client.MatchingLabels{
+	if err := r.List(ctx, &podList, client.MatchingLabels{
 		"app.kubernetes.io/name":       app.Name,
 		"app.kubernetes.io/managed-by": "mortise",
+		constants.ProjectLabel:         projectName,
 	}); err != nil {
 		return ""
 	}
@@ -1660,16 +1696,19 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 			Name:         env.Name,
 			CurrentImage: app.Spec.Source.Image,
 		}
+		envNs, nsErr := appEnvNs(app, env.Name)
+		if nsErr != nil {
+			return nsErr
+		}
 		if isCron {
-			// CronJobs don't have replicas; check existence via Get.
 			var cj batchv1.CronJob
-			if err := r.Get(ctx, types.NamespacedName{Name: cronJobName(app.Name, env.Name), Namespace: app.Namespace}, &cj); err == nil {
+			if err := r.Get(ctx, types.NamespacedName{Name: cronJobName(app.Name), Namespace: envNs}, &cj); err == nil {
 				es.ReadyReplicas = 1
 			}
 		} else {
-			name := deploymentName(app.Name, env.Name)
+			name := deploymentName(app.Name)
 			var dep appsv1.Deployment
-			if err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: app.Namespace}, &dep); err == nil {
+			if err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: envNs}, &dep); err == nil {
 				es.ReadyReplicas = dep.Status.ReadyReplicas
 			}
 		}
@@ -1775,9 +1814,13 @@ func (r *AppReconciler) RollbackDeployment(ctx context.Context, app *mortisev1al
 		rollbackImage = target.Digest
 	}
 
-	name := deploymentName(app.Name, envName)
+	envNs, err := appEnvNs(app, envName)
+	if err != nil {
+		return err
+	}
+	name := deploymentName(app.Name)
 	var dep appsv1.Deployment
-	if err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: app.Namespace}, &dep); err != nil {
+	if err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: envNs}, &dep); err != nil {
 		return fmt.Errorf("get deployment %s: %w", name, err)
 	}
 
@@ -1797,28 +1840,61 @@ func appPort(app *mortisev1alpha1.App) int32 {
 	return 8080
 }
 
-func deploymentName(app, env string) string {
-	return fmt.Sprintf("%s-%s", app, env)
-}
+// Resource names drop the env suffix — each env lives in its own namespace
+// (`pj-{project}-{env}`) so the namespace disambiguates. Keeping the app
+// name alone means in-cluster DNS for app `web` in env `staging` is
+// simply `web.pj-myproj-staging.svc.cluster.local`.
+func deploymentName(appName string) string { return appName }
+func cronJobName(appName string) string    { return appName }
+func serviceName(appName string) string    { return appName }
+func ingressName(appName string) string    { return appName }
 
-func cronJobName(app, env string) string {
-	return fmt.Sprintf("%s-%s", app, env)
-}
-
-func serviceName(app, env string) string {
-	return fmt.Sprintf("%s-%s", app, env)
-}
-
-func ingressName(app, env string) string {
-	return fmt.Sprintf("%s-%s", app, env)
-}
-
-func appLabels(app, env string) map[string]string {
-	return map[string]string{
-		"app.kubernetes.io/name":       app,
-		"app.kubernetes.io/managed-by": "mortise",
-		"mortise.dev/environment":      env,
+// appLabels stamps the standard Mortise ownership labels. `mortise.dev/project`
+// enables cross-namespace GC on App delete (owner refs don't cascade across
+// namespaces) and powers UI/CLI lookups scoped to a project. `env` is the
+// workload env; pass "" for app-scoped resources that aren't tied to a
+// specific env (e.g. cross-env audit metadata — currently unused).
+//
+// Panics if `app.Namespace` isn't a control namespace; that would be a
+// controller invariant violation (admission webhook keeps Apps in control
+// namespaces) so surfacing loudly beats silently writing unrouteable labels.
+func appLabels(app *mortisev1alpha1.App, env string) map[string]string {
+	projectName, ok := constants.ProjectFromControlNs(app.Namespace)
+	if !ok {
+		panic(fmt.Sprintf("appLabels: app %q not in a control namespace (%q)", app.Name, app.Namespace))
 	}
+	l := map[string]string{
+		"app.kubernetes.io/name":       app.Name,
+		"app.kubernetes.io/managed-by": "mortise",
+		constants.ProjectLabel:         projectName,
+	}
+	if env != "" {
+		l[constants.EnvironmentLabel] = env
+	}
+	return l
+}
+
+// appEnvNs returns the workload namespace for an App in the given env.
+// Returns an error when the App's namespace isn't a valid control ns
+// (`pj-{project}`) — callers should treat that as a reconcile failure since
+// it means the App was mis-placed (admission/project controller invariant
+// already rejects that path on the write side).
+func appEnvNs(app *mortisev1alpha1.App, envName string) (string, error) {
+	projectName, ok := constants.ProjectFromControlNs(app.Namespace)
+	if !ok {
+		return "", fmt.Errorf("app %q not in a control namespace (%q)", app.Name, app.Namespace)
+	}
+	return constants.EnvNamespace(projectName, envName), nil
+}
+
+// appProjectName returns the project the App belongs to by stripping the
+// control-ns prefix. Mirrors appEnvNs's error semantics.
+func appProjectName(app *mortisev1alpha1.App) (string, error) {
+	projectName, ok := constants.ProjectFromControlNs(app.Namespace)
+	if !ok {
+		return "", fmt.Errorf("app %q not in a control namespace (%q)", app.Name, app.Namespace)
+	}
+	return projectName, nil
 }
 
 // mergeAnnotations combines Mortise-owned annotations with user-supplied
@@ -2021,10 +2097,6 @@ func toSecretVolumesAndMounts(mounts []mortisev1alpha1.SecretMount) ([]corev1.Vo
 // ExternalName Service + Ingress to expose the external host through Mortise's
 // domain/TLS setup.
 func (r *AppReconciler) reconcileExternalSource(ctx context.Context, app *mortisev1alpha1.App) (ctrl.Result, error) {
-	if _, err := r.reconcileCredentialsSecret(ctx, app); err != nil {
-		return ctrl.Result{}, fmt.Errorf("reconcile credentials secret: %w", err)
-	}
-
 	project, err := r.fetchParentProject(ctx, app)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("fetch parent project: %w", err)
@@ -2036,12 +2108,20 @@ func (r *AppReconciler) reconcileExternalSource(ctx context.Context, app *mortis
 
 	for i := range resolvedEnvs {
 		env := &resolvedEnvs[i]
+		envNs, err := appEnvNs(app, env.Name)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+
+		if _, err := r.reconcileCredentialsSecret(ctx, app, envNs, env.Name); err != nil {
+			return ctrl.Result{}, fmt.Errorf("reconcile credentials secret for env %s: %w", env.Name, err)
+		}
 
 		if app.Spec.Network.Public && env.Domain != "" {
-			if err := r.reconcileExternalNameService(ctx, app, env); err != nil {
+			if err := r.reconcileExternalNameService(ctx, app, env, envNs); err != nil {
 				return ctrl.Result{}, fmt.Errorf("reconcile externalname service for env %s: %w", env.Name, err)
 			}
-			if err := r.reconcileIngress(ctx, app, env); err != nil {
+			if err := r.reconcileIngress(ctx, app, env, envNs); err != nil {
 				return ctrl.Result{}, fmt.Errorf("reconcile ingress for env %s: %w", env.Name, err)
 			}
 		}
@@ -2058,15 +2138,15 @@ func (r *AppReconciler) reconcileExternalSource(ctx context.Context, app *mortis
 // reconcileExternalNameService creates an ExternalName Service that points at
 // the external host. Standard k8s Ingress requires a Service backend; an
 // ExternalName Service provides that without any pods.
-func (r *AppReconciler) reconcileExternalNameService(ctx context.Context, app *mortisev1alpha1.App, env *mortisev1alpha1.Environment) error {
-	name := serviceName(app.Name, env.Name)
+func (r *AppReconciler) reconcileExternalNameService(ctx context.Context, app *mortisev1alpha1.App, env *mortisev1alpha1.Environment, envNs string) error {
+	name := serviceName(app.Name)
 	host := app.Spec.Source.External.Host
 
 	desired := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        name,
-			Namespace:   app.Namespace,
-			Labels:      appLabels(app.Name, env.Name),
+			Namespace:   envNs,
+			Labels:      appLabels(app, env.Name),
 			Annotations: mergeAnnotations(nil, env.Annotations),
 		},
 		Spec: corev1.ServiceSpec{
@@ -2075,12 +2155,10 @@ func (r *AppReconciler) reconcileExternalNameService(ctx context.Context, app *m
 		},
 	}
 
-	if err := controllerutil.SetControllerReference(app, desired, r.Scheme); err != nil {
-		return err
-	}
+	// Cross-namespace: no controller ref; finalizer-based GC on App delete.
 
 	var existing corev1.Service
-	err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: app.Namespace}, &existing)
+	err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: envNs}, &existing)
 	if errors.IsNotFound(err) {
 		return r.Create(ctx, desired)
 	}
@@ -2098,16 +2176,42 @@ func (r *AppReconciler) reconcileExternalNameService(ctx context.Context, app *m
 }
 
 // SetupWithManager sets up the controller with the Manager.
+//
+// Owned resources live in per-env namespaces (`pj-{project}-{env}`) while the
+// App CRD lives in the control namespace (`pj-{project}`). Owner references
+// can't cascade cross-namespace, so instead we `Watches()` each managed kind
+// and map back to the owning App via the `mortise.dev/project` +
+// `app.kubernetes.io/name` labels the reconciler stamps on every resource it
+// creates. Finalizer GC handles delete cleanup; this mapping handles drift
+// reconciliation (e.g. someone scales a Deployment manually).
 func (r *AppReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	enqueueAppFromManagedResource := handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []reconcile.Request {
+		labels := obj.GetLabels()
+		if labels == nil {
+			return nil
+		}
+		appName := labels["app.kubernetes.io/name"]
+		projectName := labels[constants.ProjectLabel]
+		if appName == "" || projectName == "" {
+			return nil
+		}
+		if labels["app.kubernetes.io/managed-by"] != "mortise" {
+			return nil
+		}
+		return []reconcile.Request{{NamespacedName: types.NamespacedName{
+			Name:      appName,
+			Namespace: constants.ControlNamespace(projectName),
+		}}}
+	})
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&mortisev1alpha1.App{}).
-		Owns(&appsv1.Deployment{}).
-		Owns(&batchv1.CronJob{}).
-		Owns(&corev1.Service{}).
-		Owns(&corev1.PersistentVolumeClaim{}).
-		Owns(&corev1.Secret{}).
-		Owns(&corev1.ServiceAccount{}).
-		Owns(&networkingv1.Ingress{}).
+		Watches(&appsv1.Deployment{}, enqueueAppFromManagedResource).
+		Watches(&batchv1.CronJob{}, enqueueAppFromManagedResource).
+		Watches(&corev1.Service{}, enqueueAppFromManagedResource).
+		Watches(&corev1.PersistentVolumeClaim{}, enqueueAppFromManagedResource).
+		Watches(&corev1.Secret{}, enqueueAppFromManagedResource).
+		Watches(&corev1.ServiceAccount{}, enqueueAppFromManagedResource).
+		Watches(&networkingv1.Ingress{}, enqueueAppFromManagedResource).
 		Named("app").
 		Complete(r)
 }

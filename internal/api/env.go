@@ -171,9 +171,12 @@ func (s *Server) ImportEnv(w http.ResponseWriter, r *http.Request) {
 }
 
 // resolveAppEnv reads the project, app, and environment query param. It fetches
-// the App CRD and returns it along with the environment name.
+// the App CRD and returns it along with the environment name. The env name is
+// verified against the parent Project's `spec.environments` — unknown names
+// return 400 with a remediation message rather than falling through to an
+// unconfigured override write.
 func (s *Server) resolveAppEnv(w http.ResponseWriter, r *http.Request) (*mortisev1alpha1.App, string, bool) {
-	ns, ok := s.resolveProject(w, r)
+	project, ok := s.getProject(w, r)
 	if !ok {
 		return nil, "", false
 	}
@@ -183,9 +186,15 @@ func (s *Server) resolveAppEnv(w http.ResponseWriter, r *http.Request) (*mortise
 		writeJSON(w, http.StatusBadRequest, errorResponse{"environment query parameter is required"})
 		return nil, "", false
 	}
+	if indexOfEnv(project, env) < 0 {
+		writeJSON(w, http.StatusBadRequest, errorResponse{fmt.Sprintf(
+			"environment %q is not declared on project %q — add it via POST /api/projects/%s/environments first",
+			env, project.Name, project.Name)})
+		return nil, "", false
+	}
 
 	var app mortisev1alpha1.App
-	if err := s.client.Get(r.Context(), types.NamespacedName{Name: appName, Namespace: ns}, &app); err != nil {
+	if err := s.client.Get(r.Context(), types.NamespacedName{Name: appName, Namespace: projectNs(project)}, &app); err != nil {
 		writeError(w, err)
 		return nil, "", false
 	}

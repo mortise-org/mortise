@@ -370,12 +370,14 @@
 </div>
 
 {#if selectedApp}
-	<AppDrawer
-		project={projectName}
-		appName={selectedApp}
-		liveApp={apps.find(a => a.metadata.name === selectedApp) ?? null}
-		onClose={() => selectedApp = null}
-	/>
+	{#key selectedApp}
+		<AppDrawer
+			project={projectName}
+			appName={selectedApp}
+			liveApp={apps.find(a => a.metadata.name === selectedApp) ?? null}
+			onClose={() => selectedApp = null}
+		/>
+	{/key}
 {/if}
 
 {#if showNewApp}

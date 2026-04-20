@@ -7,13 +7,22 @@
 	interface AppNodeData {
 		app: App;
 		projectName: string;
+		env: string;
 		onOpen: (appName: string) => void;
 	}
 
 	let { data }: NodeProps = $props();
 	const nodeData = $derived(data as unknown as AppNodeData);
 	const app = $derived(nodeData.app);
-	const phase = $derived(app.status?.phase);
+	const envName = $derived(nodeData.env);
+	const envEntry = $derived(app.spec.environments?.find((e) => e.name === envName));
+	const envStatusEntry = $derived(app.status?.environments?.find((e) => e.name === envName));
+	const enabled = $derived(envEntry?.enabled !== false);
+	const phase = $derived.by<AppPhase | undefined>(() => {
+		const p = app.status?.phase;
+		if (p === 'Ready' && envStatusEntry && envStatusEntry.readyReplicas === 0) return 'Deploying';
+		return p;
+	});
 	const isExternal = $derived(app.spec.source.type === 'external' as string);
 	const isPrivate = $derived(app.spec.network?.public === false);
 	const isCron = $derived((app as { kind?: string }).kind === 'cron');
@@ -27,18 +36,8 @@
 		Pending: 'bg-info/10 text-info'
 	};
 
-	function primaryDomain(a: App): string | null {
-		const env = a.spec.environments?.[0];
-		if (!env) return null;
-		return env.domain ?? null;
-	}
-
-	function replicaCount(a: App): number {
-		return a.spec.environments?.[0]?.replicas ?? 1;
-	}
-
-	const domain = $derived(primaryDomain(app));
-	const replicas = $derived(replicaCount(app));
+	const domain = $derived(envEntry?.domain ?? app.spec.environments?.[0]?.domain ?? null);
+	const replicas = $derived(envEntry?.replicas ?? app.spec.environments?.[0]?.replicas ?? 1);
 	const volumes = $derived(app.spec.storage ?? []);
 
 	function failedReason(a: App): string | null {
@@ -85,7 +84,7 @@
 <div
 	role="button"
 	tabindex="0"
-	class="relative flex w-60 min-h-[7rem] flex-col gap-2 rounded-lg border border-surface-600 bg-surface-800 p-3 transition-all duration-150 hover:shadow-lg hover:shadow-black/20 hover:border-surface-500 cursor-pointer {isExternal ? 'border-dashed' : ''}"
+	class="relative flex w-60 min-h-[7rem] flex-col gap-2 rounded-lg border border-surface-600 bg-surface-800 p-3 transition-all duration-150 hover:shadow-lg hover:shadow-black/20 hover:border-surface-500 cursor-pointer {isExternal ? 'border-dashed' : ''} {enabled ? '' : 'opacity-50'}"
 	onclick={() => nodeData.onOpen(app.metadata.name)}
 	onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') nodeData.onOpen(app.metadata.name); }}
 >
@@ -110,9 +109,13 @@
 
 	<!-- Status chip (always shown, Pending when no phase yet) -->
 	<div class="flex items-center gap-1.5">
-		<span class="rounded px-1.5 py-0.5 text-xs font-medium {phaseClass[phase ?? 'Pending'] ?? 'bg-surface-700 text-gray-400'}">
-			{phase ?? 'Pending'}
-		</span>
+		{#if !enabled}
+			<span class="rounded bg-surface-700 px-1.5 py-0.5 text-xs font-medium text-gray-400">Disabled</span>
+		{:else}
+			<span class="rounded px-1.5 py-0.5 text-xs font-medium {phaseClass[phase ?? 'Pending'] ?? 'bg-surface-700 text-gray-400'}">
+				{phase ?? 'Pending'}
+			</span>
+		{/if}
 			{#if phase === 'Building' && buildElapsed}
 				<span class="text-xs font-mono text-warning/70">{buildElapsed}</span>
 			{/if}

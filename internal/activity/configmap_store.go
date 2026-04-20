@@ -12,6 +12,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	"github.com/MC-Meesh/mortise/internal/constants"
 )
 
 // Cap is the ring-buffer size: the maximum number of events kept per project.
@@ -19,7 +21,6 @@ const Cap = 500
 
 const (
 	configMapNamePrefix    = "activity-"
-	projectNamespacePrefix = "project-"
 	eventsKey              = "events"
 	maxConflictRetries     = 5
 	initialConflictBackoff = 50 * time.Millisecond
@@ -30,9 +31,11 @@ func configMapName(project string) string {
 	return configMapNamePrefix + project
 }
 
-// projectNamespace returns the Kubernetes namespace backing project.
+// projectNamespace returns the control namespace name backing project. The
+// activity ConfigMap is project-scoped (not env-scoped) — it lives in the
+// control namespace alongside App CRDs.
 func projectNamespace(project string) string {
-	return projectNamespacePrefix + project
+	return constants.ControlNamespace(project)
 }
 
 // ConfigMapStore persists activity events in a per-project ConfigMap ring

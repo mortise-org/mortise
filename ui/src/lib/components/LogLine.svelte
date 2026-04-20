@@ -33,23 +33,7 @@
 		return `${hh}:${mm}:${ss}`;
 	}
 
-	function formatRelative(ts: string): string {
-		if (!ts) return '';
-		const d = new Date(ts).getTime();
-		if (Number.isNaN(d)) return '';
-		const secs = Math.max(0, Math.floor((Date.now() - d) / 1000));
-		if (secs < 5) return 'now';
-		if (secs < 60) return `${secs}s ago`;
-		const mins = Math.floor(secs / 60);
-		if (mins < 60) return `${mins}m ago`;
-		const hrs = Math.floor(mins / 60);
-		if (hrs < 24) return `${hrs}h ago`;
-		const days = Math.floor(hrs / 24);
-		return `${days}d ago`;
-	}
-
 	const clock = $derived(formatClock(event.ts));
-	const rel = $derived(formatRelative(event.ts));
 	const podBadge = $derived(
 		event.pod ? event.pod.slice(Math.max(0, event.pod.length - 5)) : ''
 	);
@@ -114,17 +98,15 @@
 		parsed?.level
 	)}"
 >
-	<!-- Timestamp gutter (~110px) -->
+	<!-- Timestamp gutter (~64px, content-sized) -->
 	<span
 		class="shrink-0 whitespace-nowrap text-gray-500"
-		style="min-width: 110px; max-width: 110px;"
 		title={event.ts}
 	>
 		{#if clock}
 			<span class="text-gray-400">{clock}</span>
-			<span class="text-gray-600"> · {rel}</span>
 		{:else}
-			<span class="text-gray-600">—</span>
+			<span class="text-gray-600">-</span>
 		{/if}
 	</span>
 

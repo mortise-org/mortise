@@ -311,8 +311,11 @@ curl -X POST http://localhost:8090/api/projects/default/apps \
   -H "Content-Type: application/json" \
   -d '{"name":"nginx-test","spec":{"source":{"type":"image","image":"nginx:1.27"},"network":{"public":false},"environments":[{"name":"production","replicas":1,"resources":{"cpu":"50m","memory":"64Mi"}}]}}'
 
-# Inspect the created k8s resources (in the project namespace)
-kubectl get app,deployment,service,ingress -n project-default
+# Inspect the created k8s resources. The App lives in the control ns
+# (pj-default); the Deployment/Service/Ingress live in the per-env ns
+# (pj-default-production).
+kubectl get app -n pj-default
+kubectl get deployment,service,ingress -n pj-default-production
 
 # Create a second project
 curl -X POST http://localhost:8090/api/projects \

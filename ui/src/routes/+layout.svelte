@@ -10,6 +10,7 @@
 	import { Folder, Puzzle, Settings, LayoutDashboard, List, Bell, Activity, User, LogOut, ChevronDown, Users } from 'lucide-svelte';
 	import ActivityRail from '$lib/components/ActivityRail.svelte';
 	import NotificationDropdown from '$lib/components/NotificationDropdown.svelte';
+	import type { EnvHealth, ProjectEnvironment } from '$lib/types';
 
 	let { children } = $props();
 
@@ -45,10 +46,33 @@
 	let userMenuEl: HTMLDivElement | null = $state(null);
 	let notificationsOpen = $state(false);
 	let notificationsEl: HTMLDivElement | null = $state(null);
-	let currentEnv = $state<string>('production');
 	let envSwitcherOpen = $state(false);
 	let envSwitcherEl: HTMLDivElement | null = $state(null);
-	let projectEnvs = $state<string[]>(['production', 'staging']);
+	let projectEnvs = $state<ProjectEnvironment[]>([]);
+
+	const currentEnv = $derived.by<string>(() => {
+		if (!activeProject) return '';
+		const stored = store.currentEnv(activeProject);
+		if (stored && projectEnvs.some((e) => e.name === stored)) return stored;
+		return projectEnvs[0]?.name ?? '';
+	});
+
+	const currentEnvHealth = $derived<EnvHealth>(
+		projectEnvs.find((e) => e.name === currentEnv)?.health ?? 'unknown'
+	);
+
+	function dotClass(h: EnvHealth | undefined): string {
+		switch (h) {
+			case 'healthy':
+				return 'bg-success';
+			case 'warning':
+				return 'bg-warning';
+			case 'danger':
+				return 'bg-error';
+			default:
+				return 'bg-gray-500';
+		}
+	}
 
 	async function checkSetupStatus() {
 		try {
@@ -95,23 +119,47 @@
 		if (store.githubConnected === null) void checkGitHubStatus();
 	});
 
+	// Load the project's declared environments and seed store.currentEnv from
+	// the URL's ?env= when present.
 	$effect(() => {
 		const proj = urlProject;
-		if (!proj || !store.token) return;
-		api.listApps(proj)
-			.then(apps => {
-				const envNames = new Set<string>(['production', 'staging']);
-				for (const app of apps) {
-					for (const env of app.spec.environments ?? []) {
-						envNames.add(env.name);
-					}
+		if (!proj || !store.token) {
+			projectEnvs = [];
+			return;
+		}
+		api.listProjectEnvironments(proj)
+			.then((envs) => {
+				projectEnvs = [...envs].sort((a, b) => a.displayOrder - b.displayOrder);
+				const urlEnv = page.url.searchParams.get('env');
+				if (urlEnv && projectEnvs.some((e) => e.name === urlEnv)) {
+					store.setEnv(proj, urlEnv);
+				} else if (!store.currentEnv(proj) && projectEnvs[0]) {
+					store.setEnv(proj, projectEnvs[0].name);
 				}
-				projectEnvs = [...envNames];
 			})
 			.catch(() => {
-				projectEnvs = ['production', 'staging'];
+				projectEnvs = [];
 			});
 	});
+
+	// Keep ?env= in sync with store.currentEnv so deep links + reloads are stable.
+	$effect(() => {
+		if (!activeProject || !currentEnv) return;
+		const url = new URL(page.url);
+		if (url.searchParams.get('env') !== currentEnv) {
+			url.searchParams.set('env', currentEnv);
+			history.replaceState(history.state, '', url.toString());
+		}
+	});
+
+	function selectEnv(name: string) {
+		envSwitcherOpen = false;
+		if (!activeProject) return;
+		store.setEnv(activeProject, name);
+		const url = new URL(page.url);
+		url.searchParams.set('env', name);
+		history.replaceState(history.state, '', url.toString());
+	}
 
 	function logout() {
 		store.logout();
@@ -200,43 +248,40 @@
 					</div>
 
 					<!-- Environment switcher -->
-					<div class="relative" bind:this={envSwitcherEl}>
-						<button
-							type="button"
-							aria-label="Switch environment: {currentEnv}"
-							onclick={() => (envSwitcherOpen = !envSwitcherOpen)}
-							class="flex items-center gap-1.5 rounded-md px-2 py-1 text-sm text-gray-400 hover:bg-surface-700 hover:text-white transition-colors"
-						>
-							<span class="h-2 w-2 rounded-full bg-success"></span>
-							<span>{currentEnv}</span>
-							<ChevronDown class="h-3.5 w-3.5 text-gray-500" />
-						</button>
-						{#if envSwitcherOpen}
-							<div
-								class="absolute left-0 top-full z-50 mt-1 w-40 rounded-md border border-surface-600 bg-surface-800 shadow-xl"
+					{#if projectEnvs.length > 0}
+						<div class="relative" bind:this={envSwitcherEl}>
+							<button
+								type="button"
+								aria-label="Switch environment: {currentEnv}"
+								onclick={() => (envSwitcherOpen = !envSwitcherOpen)}
+								class="flex items-center gap-1.5 rounded-md px-2 py-1 text-sm text-gray-400 hover:bg-surface-700 hover:text-white transition-colors"
 							>
-								{#each projectEnvs as env}
-									<button
-										type="button"
-										onclick={() => {
-											currentEnv = env;
-											envSwitcherOpen = false;
-										}}
-										class="flex w-full items-center gap-2 px-3 py-2 text-sm {currentEnv === env
-											? 'bg-surface-600 text-white'
-											: 'text-gray-300 hover:bg-surface-700 hover:text-white'}"
-									>
-										<span
-											class="h-1.5 w-1.5 rounded-full {env === 'production'
-												? 'bg-success'
-												: 'bg-info'}"
-										></span>
-										{env}
-									</button>
-								{/each}
-							</div>
-						{/if}
-					</div>
+								<span class="h-2 w-2 rounded-full {dotClass(currentEnvHealth)}"></span>
+								<span>{currentEnv}</span>
+								<ChevronDown class="h-3.5 w-3.5 text-gray-500" />
+							</button>
+							{#if envSwitcherOpen}
+								<div
+									class="absolute left-0 top-full z-50 mt-1 w-40 rounded-md border border-surface-600 bg-surface-800 shadow-xl"
+								>
+									{#each projectEnvs as env}
+										<button
+											type="button"
+											onclick={() => selectEnv(env.name)}
+											class="flex w-full items-center gap-2 px-3 py-2 text-sm {currentEnv === env.name
+												? 'bg-surface-600 text-white'
+												: 'text-gray-300 hover:bg-surface-700 hover:text-white'}"
+										>
+											<span
+												class="h-1.5 w-1.5 rounded-full {dotClass(env.health)}"
+											></span>
+											{env.name}
+										</button>
+									{/each}
+								</div>
+							{/if}
+						</div>
+					{/if}
 				{/if}
 			</div>
 

@@ -4,6 +4,7 @@
 
 	let name = $state('');
 	let description = $state('');
+	let alsoStaging = $state(false);
 	let loading = $state(false);
 	let error = $state('');
 
@@ -22,6 +23,13 @@
 		loading = true;
 		try {
 			const project = await api.createProject(trimmed, description.trim() || undefined);
+			if (alsoStaging) {
+				try {
+					await api.createProjectEnvironment(project.name, 'staging');
+				} catch {
+					// non-fatal: project is created; user can retry from settings
+				}
+			}
 			await goto(`/projects/${encodeURIComponent(project.name)}`);
 		} catch(e) {
 			error = e instanceof Error ? e.message : 'Failed to create project';
@@ -61,6 +69,12 @@
 					placeholder="What lives in this project?"
 					class="mt-1 w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-white placeholder-gray-500 outline-none focus:border-accent"></textarea>
 			</div>
+
+			<label class="flex items-center gap-2 text-sm text-gray-300">
+				<input type="checkbox" bind:checked={alsoStaging}
+					class="h-4 w-4 rounded border-surface-600 bg-surface-700 text-accent focus:ring-accent" />
+				Also create a <span class="font-mono text-gray-200">staging</span> environment
+			</label>
 
 			{#if error}
 				<p class="text-sm text-danger">{error}</p>

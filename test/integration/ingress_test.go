@@ -16,6 +16,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/rand"
 
 	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
+	"github.com/MC-Meesh/mortise/internal/constants"
 	"github.com/MC-Meesh/mortise/test/helpers"
 )
 
@@ -57,7 +58,7 @@ func createProjectForTest(t *testing.T, name string) string {
 		// Wait for namespace cleanup so tests don't leak.
 		helpers.RequireEventually(t, 60*time.Second, func() bool {
 			var ns corev1.Namespace
-			err := k8sClient.Get(context.Background(), types.NamespacedName{Name: "project-" + name}, &ns)
+			err := k8sClient.Get(context.Background(), types.NamespacedName{Name: "pj-" + name}, &ns)
 			return err != nil // gone
 		})
 	})
@@ -70,7 +71,7 @@ func createProjectForTest(t *testing.T, name string) string {
 		}
 		return p.Status.Phase == mortisev1alpha1.ProjectPhaseReady
 	})
-	return "project-" + name
+	return "pj-" + name
 }
 
 func TestIngressCreatedForPublicApp(t *testing.T) {
@@ -89,11 +90,13 @@ func TestIngressCreatedForPublicApp(t *testing.T) {
 	helpers.WaitForAppReady(t, k8sClient, ns, app.Name, 2*time.Minute)
 
 	ingressName := app.Name + "-" + app.Spec.Environments[0].Name
-	helpers.AssertIngressExists(t, k8sClient, ns, ingressName)
+	projectName, _ := constants.ProjectFromControlNs(ns)
+	envNs := constants.EnvNamespace(projectName, app.Spec.Environments[0].Name)
+	helpers.AssertIngressExists(t, k8sClient, envNs, ingressName)
 
 	var ing networkingv1.Ingress
 	if err := k8sClient.Get(context.Background(), types.NamespacedName{
-		Name: ingressName, Namespace: ns,
+		Name: ingressName, Namespace: envNs,
 	}, &ing); err != nil {
 		t.Fatalf("get ingress: %v", err)
 	}
@@ -132,9 +135,11 @@ func TestNoIngressForPrivateApp(t *testing.T) {
 	helpers.WaitForAppReady(t, k8sClient, ns, app.Name, 2*time.Minute)
 
 	ingressName := app.Name + "-" + app.Spec.Environments[0].Name
+	projectName, _ := constants.ProjectFromControlNs(ns)
+	envNs := constants.EnvNamespace(projectName, app.Spec.Environments[0].Name)
 	var ing networkingv1.Ingress
 	err := k8sClient.Get(context.Background(), types.NamespacedName{
-		Name: ingressName, Namespace: ns,
+		Name: ingressName, Namespace: envNs,
 	}, &ing)
 	if err == nil {
 		t.Fatal("expected no ingress for private app, but one exists")
@@ -158,11 +163,13 @@ func TestCustomDomainsCreateAdditionalRules(t *testing.T) {
 	helpers.WaitForAppReady(t, k8sClient, ns, app.Name, 2*time.Minute)
 
 	ingressName := app.Name + "-" + app.Spec.Environments[0].Name
-	helpers.AssertIngressExists(t, k8sClient, ns, ingressName)
+	projectName, _ := constants.ProjectFromControlNs(ns)
+	envNs := constants.EnvNamespace(projectName, app.Spec.Environments[0].Name)
+	helpers.AssertIngressExists(t, k8sClient, envNs, ingressName)
 
 	var ing networkingv1.Ingress
 	if err := k8sClient.Get(context.Background(), types.NamespacedName{
-		Name: ingressName, Namespace: ns,
+		Name: ingressName, Namespace: envNs,
 	}, &ing); err != nil {
 		t.Fatalf("get ingress: %v", err)
 	}
@@ -218,11 +225,13 @@ func TestAnnotationPassthrough(t *testing.T) {
 	helpers.WaitForAppReady(t, k8sClient, ns, app.Name, 2*time.Minute)
 
 	ingressName := app.Name + "-" + app.Spec.Environments[0].Name
-	helpers.AssertIngressExists(t, k8sClient, ns, ingressName)
+	projectName, _ := constants.ProjectFromControlNs(ns)
+	envNs := constants.EnvNamespace(projectName, app.Spec.Environments[0].Name)
+	helpers.AssertIngressExists(t, k8sClient, envNs, ingressName)
 
 	var ing networkingv1.Ingress
 	if err := k8sClient.Get(context.Background(), types.NamespacedName{
-		Name: ingressName, Namespace: ns,
+		Name: ingressName, Namespace: envNs,
 	}, &ing); err != nil {
 		t.Fatalf("get ingress: %v", err)
 	}
@@ -241,12 +250,15 @@ func TestAnnotationPassthrough(t *testing.T) {
 func TestTLSSecretOverride(t *testing.T) {
 	skipIfNoIngressClass(t)
 	ns := createProjectForTest(t, "ing-tls-"+randSuffix())
+	projectName, _ := constants.ProjectFromControlNs(ns)
+	envNs := constants.EnvNamespace(projectName, "production")
 
-	// Pre-create a TLS Secret.
+	// Pre-create a TLS Secret in the env ns — that's where the Ingress
+	// will look up BYO TLS secrets.
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "my-custom-tls",
-			Namespace: ns,
+			Namespace: envNs,
 		},
 		Type: corev1.SecretTypeTLS,
 		Data: map[string][]byte{
@@ -273,11 +285,11 @@ func TestTLSSecretOverride(t *testing.T) {
 	helpers.WaitForAppReady(t, k8sClient, ns, app.Name, 2*time.Minute)
 
 	ingressName := app.Name + "-" + app.Spec.Environments[0].Name
-	helpers.AssertIngressExists(t, k8sClient, ns, ingressName)
+	helpers.AssertIngressExists(t, k8sClient, envNs, ingressName)
 
 	var ing networkingv1.Ingress
 	if err := k8sClient.Get(context.Background(), types.NamespacedName{
-		Name: ingressName, Namespace: ns,
+		Name: ingressName, Namespace: envNs,
 	}, &ing); err != nil {
 		t.Fatalf("get ingress: %v", err)
 	}

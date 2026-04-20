@@ -172,6 +172,59 @@ func (c *Client) DeleteProject(name string) error {
 	return c.doJSON(http.MethodDelete, u, nil, nil)
 }
 
+// ---------- Project Environments ----------
+
+// ProjectEnvResponse mirrors internal/api.projectEnvResponse.
+type ProjectEnvResponse struct {
+	Name         string `json:"name"`
+	DisplayOrder int    `json:"displayOrder"`
+	Health       string `json:"health,omitempty"`
+}
+
+type createProjectEnvRequest struct {
+	Name         string `json:"name"`
+	DisplayOrder int    `json:"displayOrder,omitempty"`
+}
+
+type patchProjectEnvRequest struct {
+	Name         *string `json:"name,omitempty"`
+	DisplayOrder *int    `json:"displayOrder,omitempty"`
+}
+
+func (c *Client) ListProjectEnvs(project string) ([]ProjectEnvResponse, error) {
+	var resp []ProjectEnvResponse
+	u := c.projectBase(project) + "/environments"
+	if err := c.doJSON(http.MethodGet, u, nil, &resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+func (c *Client) CreateProjectEnv(project, name string, displayOrder int) (*ProjectEnvResponse, error) {
+	var resp ProjectEnvResponse
+	u := c.projectBase(project) + "/environments"
+	req := createProjectEnvRequest{Name: name, DisplayOrder: displayOrder}
+	if err := c.doJSON(http.MethodPost, u, req, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+func (c *Client) RenameProjectEnv(project, oldName, newName string) (*ProjectEnvResponse, error) {
+	var resp ProjectEnvResponse
+	u := fmt.Sprintf("%s/environments/%s", c.projectBase(project), url.PathEscape(oldName))
+	req := patchProjectEnvRequest{Name: &newName}
+	if err := c.doJSON(http.MethodPatch, u, req, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+func (c *Client) DeleteProjectEnv(project, name string) error {
+	u := fmt.Sprintf("%s/environments/%s", c.projectBase(project), url.PathEscape(name))
+	return c.doJSON(http.MethodDelete, u, nil, nil)
+}
+
 // ---------- App methods ----------
 
 // CreateAppRequest is the body for POST /api/projects/{project}/apps. The

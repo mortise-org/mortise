@@ -101,12 +101,14 @@ func withStagingEnv(ctx context.Context) {
 	Expect(k8sClient.Get(ctx, client.ObjectKey{Name: "default-project"}, &proj)).To(Succeed())
 	for _, e := range proj.Spec.Environments {
 		if e.Name == "staging" {
+			ensureNamespace(ctx, "pj-default-project-staging")
 			return
 		}
 	}
 	proj.Spec.Environments = append(proj.Spec.Environments,
 		mortisev1alpha1.ProjectEnvironment{Name: "staging", DisplayOrder: 1})
 	Expect(k8sClient.Update(ctx, &proj)).To(Succeed())
+	ensureNamespace(ctx, "pj-default-project-staging")
 }
 
 func withoutStagingEnv(ctx context.Context) {
@@ -120,6 +122,11 @@ func withoutStagingEnv(ctx context.Context) {
 	}
 	proj.Spec.Environments = kept
 	Expect(k8sClient.Update(ctx, &proj)).To(Succeed())
+
+	var ns corev1.Namespace
+	if err := k8sClient.Get(ctx, client.ObjectKey{Name: "pj-default-project-staging"}, &ns); err == nil {
+		_ = k8sClient.Delete(ctx, &ns)
+	}
 }
 
 // seedDefaultProject creates the Project record that parents Apps living in
@@ -133,6 +140,17 @@ func seedDefaultProject(ctx context.Context) {
 	}
 	Expect(k8sClient.Create(ctx, proj)).To(Succeed())
 
+	ensureNamespace(ctx, "pj-default-project")
+	ensureNamespace(ctx, "pj-default-project-production")
+
+	var controlNs corev1.Namespace
+	Expect(k8sClient.Get(ctx, client.ObjectKey{Name: "pj-default-project"}, &controlNs)).To(Succeed())
+	if controlNs.Labels == nil {
+		controlNs.Labels = map[string]string{}
+	}
+	controlNs.Labels["mortise.dev/project"] = proj.Name
+	Expect(k8sClient.Update(ctx, &controlNs)).To(Succeed())
+
 	var ns corev1.Namespace
 	Expect(k8sClient.Get(ctx, client.ObjectKey{Name: "default"}, &ns)).To(Succeed())
 	if ns.Labels == nil {
@@ -140,6 +158,49 @@ func seedDefaultProject(ctx context.Context) {
 	}
 	ns.Labels["mortise.dev/project"] = proj.Name
 	Expect(k8sClient.Update(ctx, &ns)).To(Succeed())
+}
+
+func ensureNamespace(ctx context.Context, name string) {
+	var ns corev1.Namespace
+	err := k8sClient.Get(ctx, client.ObjectKey{Name: name}, &ns)
+	if err == nil {
+		return
+	}
+	ns = corev1.Namespace{}
+	ns.Name = name
+	Expect(k8sClient.Create(ctx, &ns)).To(Succeed())
+}
+
+// purgeAllAppsIn clears every App in the given namespace, removing finalizers
+// if necessary. Called from AfterEach so tests don't need to individually
+// reconcile-until-gone; the App finalizer otherwise leaves objects pending and
+// blocks the next test's Create(appName).
+func purgeAllAppsIn(ctx context.Context, namespace string) {
+	var list mortisev1alpha1.AppList
+	if err := k8sClient.List(ctx, &list, client.InNamespace(namespace)); err != nil {
+		return
+	}
+	for i := range list.Items {
+		app := &list.Items[i]
+		if app.DeletionTimestamp.IsZero() {
+			_ = k8sClient.Delete(ctx, app)
+		}
+		var fresh mortisev1alpha1.App
+		if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(app), &fresh); err != nil {
+			continue
+		}
+		if len(fresh.Finalizers) > 0 {
+			fresh.Finalizers = nil
+			_ = k8sClient.Update(ctx, &fresh)
+		}
+	}
+	Eventually(func() bool {
+		var cur mortisev1alpha1.AppList
+		if err := k8sClient.List(ctx, &cur, client.InNamespace(namespace)); err != nil {
+			return false
+		}
+		return len(cur.Items) == 0
+	}, time.Second*5, time.Millisecond*50).Should(BeTrue())
 }
 
 var _ = AfterSuite(func() {

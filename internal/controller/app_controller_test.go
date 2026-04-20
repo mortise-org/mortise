@@ -50,7 +50,13 @@ import (
 const testImageNginx = "nginx:1.27"
 
 var _ = Describe("App Controller", func() {
-	const namespace = "default"
+	const namespace = "pj-default-project"
+	const envNsProduction = "pj-default-project-production"
+	const envNsStaging = "pj-default-project-staging"
+
+	AfterEach(func() {
+		purgeAllAppsIn(context.Background(), namespace)
+	})
 
 	Context("image source with one environment", func() {
 		const appName = "test-nginx"
@@ -99,7 +105,7 @@ var _ = Describe("App Controller", func() {
 
 			var dep appsv1.Deployment
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name: "test-nginx-production", Namespace: namespace,
+				Name: "test-nginx", Namespace: envNsProduction,
 			}, &dep)).To(Succeed())
 
 			Expect(*dep.Spec.Replicas).To(Equal(int32(2)))
@@ -118,7 +124,7 @@ var _ = Describe("App Controller", func() {
 
 			var svc corev1.Service
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name: "test-nginx-production", Namespace: namespace,
+				Name: "test-nginx", Namespace: envNsProduction,
 			}, &svc)).To(Succeed())
 
 			Expect(svc.Spec.Selector["app.kubernetes.io/name"]).To(Equal(appName))
@@ -135,7 +141,7 @@ var _ = Describe("App Controller", func() {
 
 			var ing networkingv1.Ingress
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name: "test-nginx-production", Namespace: namespace,
+				Name: "test-nginx", Namespace: envNsProduction,
 			}, &ing)).To(Succeed())
 
 			Expect(ing.Spec.Rules).To(HaveLen(1))
@@ -146,7 +152,7 @@ var _ = Describe("App Controller", func() {
 			_, hasIssuer := ing.Annotations["cert-manager.io/cluster-issuer"]
 			Expect(hasIssuer).To(BeFalse())
 			// Auto-generated TLS Secret name.
-			Expect(ing.Spec.TLS[0].SecretName).To(Equal("test-nginx-production-tls"))
+			Expect(ing.Spec.TLS[0].SecretName).To(Equal("test-nginx-tls"))
 		})
 
 		It("should annotate the Ingress with DefaultClusterIssuer when configured", func() {
@@ -164,7 +170,7 @@ var _ = Describe("App Controller", func() {
 
 			var ing networkingv1.Ingress
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name: "test-nginx-production", Namespace: namespace,
+				Name: "test-nginx", Namespace: envNsProduction,
 			}, &ing)).To(Succeed())
 			Expect(ing.Annotations["cert-manager.io/cluster-issuer"]).To(Equal("prod-issuer"))
 		})
@@ -215,10 +221,10 @@ var _ = Describe("App Controller", func() {
 
 			var ing networkingv1.Ingress
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name: appName + "-production", Namespace: namespace,
+				Name: appName, Namespace: envNsProduction,
 			}, &ing)).To(Succeed())
 			Expect(ing.Annotations["cert-manager.io/cluster-issuer"]).To(Equal("override-issuer"))
-			Expect(ing.Spec.TLS[0].SecretName).To(Equal(appName + "-production-tls"))
+			Expect(ing.Spec.TLS[0].SecretName).To(Equal(appName + "-tls"))
 		})
 
 		It("env.TLS.SecretName (BYO) suppresses cert-manager annotation", func() {
@@ -253,7 +259,7 @@ var _ = Describe("App Controller", func() {
 
 			var ing networkingv1.Ingress
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name: appName + "-production", Namespace: namespace,
+				Name: appName, Namespace: envNsProduction,
 			}, &ing)).To(Succeed())
 			_, hasIssuer := ing.Annotations["cert-manager.io/cluster-issuer"]
 			Expect(hasIssuer).To(BeFalse())
@@ -296,7 +302,7 @@ var _ = Describe("App Controller", func() {
 
 			var ing networkingv1.Ingress
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name: appName + "-production", Namespace: namespace,
+				Name: appName, Namespace: envNsProduction,
 			}, &ing)).To(Succeed())
 			Expect(ing.Annotations["linkerd.io/inject"]).To(Equal("enabled"))
 			Expect(ing.Annotations["cert-manager.io/cluster-issuer"]).To(Equal("user-wins"))
@@ -345,7 +351,7 @@ var _ = Describe("App Controller", func() {
 
 			var ing networkingv1.Ingress
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name: appName + "-production", Namespace: namespace,
+				Name: appName, Namespace: envNsProduction,
 			}, &ing)).To(Succeed())
 			Expect(ing.Annotations["external-dns.alpha.kubernetes.io/hostname"]).To(Equal("dns.example.com"))
 		})
@@ -396,7 +402,7 @@ var _ = Describe("App Controller", func() {
 
 			var ing networkingv1.Ingress
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name: appName + "-production", Namespace: namespace,
+				Name: appName, Namespace: envNsProduction,
 			}, &ing)).To(Succeed())
 
 			// 3 rules: primary + 2 custom domains.
@@ -462,7 +468,7 @@ var _ = Describe("App Controller", func() {
 
 			var ing networkingv1.Ingress
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name: appName + "-production", Namespace: namespace,
+				Name: appName, Namespace: envNsProduction,
 			}, &ing)).To(Succeed())
 			Expect(ing.Spec.IngressClassName).NotTo(BeNil())
 			Expect(*ing.Spec.IngressClassName).To(Equal("traefik"))
@@ -507,7 +513,7 @@ var _ = Describe("App Controller", func() {
 
 			var ing networkingv1.Ingress
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name: appName + "-production", Namespace: namespace,
+				Name: appName, Namespace: envNsProduction,
 			}, &ing)).To(Succeed())
 
 			_, hasExternalDNS := ing.Annotations["external-dns.alpha.kubernetes.io/hostname"]
@@ -561,26 +567,26 @@ var _ = Describe("App Controller", func() {
 
 			var dep appsv1.Deployment
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name: appName + "-production", Namespace: namespace,
+				Name: appName, Namespace: envNsProduction,
 			}, &dep)).To(Succeed())
 			Expect(dep.Annotations["foo"]).To(Equal("bar"))
 			Expect(dep.Spec.Template.Annotations["foo"]).To(Equal("bar"))
 
 			var svc corev1.Service
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name: appName + "-production", Namespace: namespace,
+				Name: appName, Namespace: envNsProduction,
 			}, &svc)).To(Succeed())
 			Expect(svc.Annotations["foo"]).To(Equal("bar"))
 
 			var ing networkingv1.Ingress
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name: appName + "-production", Namespace: namespace,
+				Name: appName, Namespace: envNsProduction,
 			}, &ing)).To(Succeed())
 			Expect(ing.Annotations["foo"]).To(Equal("bar"))
 
 			var pvc corev1.PersistentVolumeClaim
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name: appName + "-data", Namespace: namespace,
+				Name: appName + "-data", Namespace: envNsProduction,
 			}, &pvc)).To(Succeed())
 			Expect(pvc.Annotations["foo"]).To(Equal("bar"))
 		})
@@ -636,7 +642,7 @@ var _ = Describe("App Controller", func() {
 
 			var dep appsv1.Deployment
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name: "test-db-production", Namespace: namespace,
+				Name: "test-db", Namespace: envNsProduction,
 			}, &dep)).To(Succeed())
 			Expect(dep.Spec.Template.Spec.Containers[0].Image).To(Equal("postgres:16"))
 			Expect(dep.Spec.Template.Spec.Containers[0].Env).To(ContainElement(
@@ -645,12 +651,12 @@ var _ = Describe("App Controller", func() {
 
 			var svc corev1.Service
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name: "test-db-production", Namespace: namespace,
+				Name: "test-db", Namespace: envNsProduction,
 			}, &svc)).To(Succeed())
 
 			var ing networkingv1.Ingress
 			err = k8sClient.Get(ctx, types.NamespacedName{
-				Name: "test-db-production", Namespace: namespace,
+				Name: "test-db", Namespace: envNsProduction,
 			}, &ing)
 			Expect(err).To(HaveOccurred())
 		})
@@ -744,7 +750,7 @@ var _ = Describe("App Controller", func() {
 
 			var dep appsv1.Deployment
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name: "my-api-production", Namespace: namespace,
+				Name: "my-api", Namespace: envNsProduction,
 			}, &dep)).To(Succeed())
 
 			envVars := dep.Spec.Template.Spec.Containers[0].Env
@@ -752,7 +758,7 @@ var _ = Describe("App Controller", func() {
 			// host should be a literal Service DNS value
 			hostVar := findEnvVar(envVars, "host")
 			Expect(hostVar).NotTo(BeNil())
-			Expect(hostVar.Value).To(Equal("my-db-production.default.svc.cluster.local"))
+			Expect(hostVar.Value).To(Equal("my-db.pj-default-project-production.svc.cluster.local"))
 
 			// port should be a literal value
 			portVar := findEnvVar(envVars, "port")
@@ -821,7 +827,7 @@ var _ = Describe("App Controller", func() {
 
 			var pvc corev1.PersistentVolumeClaim
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name: "test-pvc-basic-data", Namespace: namespace,
+				Name: "test-pvc-basic-data", Namespace: envNsProduction,
 			}, &pvc)).To(Succeed())
 
 			Expect(pvc.Spec.AccessModes).To(ContainElement(corev1.ReadWriteOnce))
@@ -850,7 +856,7 @@ var _ = Describe("App Controller", func() {
 
 			var pvc corev1.PersistentVolumeClaim
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name: "test-pvc-sc-data", Namespace: namespace,
+				Name: "test-pvc-sc-data", Namespace: envNsProduction,
 			}, &pvc)).To(Succeed())
 
 			Expect(pvc.Spec.StorageClassName).NotTo(BeNil())
@@ -879,13 +885,13 @@ var _ = Describe("App Controller", func() {
 
 			var pvc corev1.PersistentVolumeClaim
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name: "test-pvc-idem-data", Namespace: namespace,
+				Name: "test-pvc-idem-data", Namespace: envNsProduction,
 			}, &pvc)).To(Succeed())
 			storageReq := pvc.Spec.Resources.Requests[corev1.ResourceStorage]
 			Expect(storageReq.Equal(resource.MustParse("10Gi"))).To(BeTrue())
 		})
 
-		It("should set owner reference for garbage collection", func() {
+		It("should stamp labels enabling cross-namespace finalizer GC", func() {
 			app := newStorageApp("test-pvc-owner", []mortisev1alpha1.VolumeSpec{
 				{Name: "data", MountPath: "/data", Size: resource.MustParse("1Gi")},
 			})
@@ -900,12 +906,12 @@ var _ = Describe("App Controller", func() {
 
 			var pvc corev1.PersistentVolumeClaim
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name: "test-pvc-owner-data", Namespace: namespace,
+				Name: "test-pvc-owner-data", Namespace: envNsProduction,
 			}, &pvc)).To(Succeed())
 
-			Expect(pvc.OwnerReferences).To(HaveLen(1))
-			Expect(pvc.OwnerReferences[0].Name).To(Equal("test-pvc-owner"))
-			Expect(*pvc.OwnerReferences[0].Controller).To(BeTrue())
+			Expect(pvc.OwnerReferences).To(BeEmpty())
+			Expect(pvc.Labels).To(HaveKeyWithValue("app.kubernetes.io/name", "test-pvc-owner"))
+			Expect(pvc.Labels).To(HaveKeyWithValue("mortise.dev/project", "default-project"))
 		})
 
 		It("should wire PVC into Deployment volume mounts", func() {
@@ -923,7 +929,7 @@ var _ = Describe("App Controller", func() {
 
 			var dep appsv1.Deployment
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name: "test-pvc-mount-production", Namespace: namespace,
+				Name: "test-pvc-mount", Namespace: envNsProduction,
 			}, &dep)).To(Succeed())
 
 			Expect(dep.Spec.Template.Spec.Volumes).To(HaveLen(1))
@@ -958,7 +964,7 @@ var _ = Describe("App Controller", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			pvcKey := types.NamespacedName{Name: "test-pvc-expand-data", Namespace: namespace}
+			pvcKey := types.NamespacedName{Name: "test-pvc-expand-data", Namespace: envNsProduction}
 
 			var pvc corev1.PersistentVolumeClaim
 			Expect(k8sClient.Get(ctx, pvcKey, &pvc)).To(Succeed())
@@ -1047,7 +1053,7 @@ var _ = Describe("App Controller", func() {
 
 			var dep appsv1.Deployment
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name: "test-sm-basic-production", Namespace: namespace,
+				Name: "test-sm-basic", Namespace: envNsProduction,
 			}, &dep)).To(Succeed())
 
 			vol := findVolume(dep.Spec.Template.Spec.Volumes, "tls-bundle")
@@ -1078,7 +1084,7 @@ var _ = Describe("App Controller", func() {
 
 			var dep appsv1.Deployment
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name: "test-sm-rw-production", Namespace: namespace,
+				Name: "test-sm-rw", Namespace: envNsProduction,
 			}, &dep)).To(Succeed())
 
 			vm := findMount(dep.Spec.Template.Spec.Containers[0].VolumeMounts, "writable")
@@ -1110,7 +1116,7 @@ var _ = Describe("App Controller", func() {
 
 			var dep appsv1.Deployment
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name: "test-sm-items-production", Namespace: namespace,
+				Name: "test-sm-items", Namespace: envNsProduction,
 			}, &dep)).To(Succeed())
 
 			vol := findVolume(dep.Spec.Template.Spec.Volumes, "tls-bundle")
@@ -1140,7 +1146,7 @@ var _ = Describe("App Controller", func() {
 
 			var dep appsv1.Deployment
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name: "test-sm-multi-production", Namespace: namespace,
+				Name: "test-sm-multi", Namespace: envNsProduction,
 			}, &dep)).To(Succeed())
 
 			Expect(findVolume(dep.Spec.Template.Spec.Volumes, "tls-bundle")).NotTo(BeNil())
@@ -1168,7 +1174,7 @@ var _ = Describe("App Controller", func() {
 
 			var dep appsv1.Deployment
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name: "test-sm-none-production", Namespace: namespace,
+				Name: "test-sm-none", Namespace: envNsProduction,
 			}, &dep)).To(Succeed())
 
 			for _, v := range dep.Spec.Template.Spec.Volumes {
@@ -1220,7 +1226,7 @@ var _ = Describe("App Controller", func() {
 
 			var dep appsv1.Deployment
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name: "test-update-production", Namespace: namespace,
+				Name: "test-update", Namespace: envNsProduction,
 			}, &dep)).To(Succeed())
 			Expect(dep.Spec.Template.Spec.Containers[0].Image).To(Equal("nginx:1.26"))
 
@@ -1236,7 +1242,7 @@ var _ = Describe("App Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name: "test-update-production", Namespace: namespace,
+				Name: "test-update", Namespace: envNsProduction,
 			}, &dep)).To(Succeed())
 			Expect(dep.Spec.Template.Spec.Containers[0].Image).To(Equal(testImageNginx))
 		})
@@ -1428,7 +1434,7 @@ var _ = Describe("App Controller", func() {
 
 			var dep appsv1.Deployment
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name: "test-rollback-production", Namespace: namespace,
+				Name: "test-rollback", Namespace: envNsProduction,
 			}, &dep)).To(Succeed())
 			Expect(dep.Spec.Template.Spec.Containers[0].Image).To(Equal("nginx:1.26"))
 		})
@@ -1484,13 +1490,13 @@ var _ = Describe("App Controller", func() {
 
 			var sa corev1.ServiceAccount
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name: appName, Namespace: namespace,
+				Name: appName, Namespace: envNsProduction,
 			}, &sa)).To(Succeed())
 
-			Expect(sa.OwnerReferences).To(HaveLen(1))
-			Expect(sa.OwnerReferences[0].Name).To(Equal(appName))
-			Expect(*sa.OwnerReferences[0].Controller).To(BeTrue())
+			Expect(sa.OwnerReferences).To(BeEmpty())
 			Expect(sa.Labels["app.kubernetes.io/managed-by"]).To(Equal("mortise"))
+			Expect(sa.Labels).To(HaveKeyWithValue("app.kubernetes.io/name", appName))
+			Expect(sa.Labels).To(HaveKeyWithValue("mortise.dev/project", "default-project"))
 		})
 
 		It("sets serviceAccountName on the Deployment pod spec", func() {
@@ -1516,7 +1522,7 @@ var _ = Describe("App Controller", func() {
 
 			var dep appsv1.Deployment
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name: appName + "-production", Namespace: namespace,
+				Name: appName, Namespace: envNsProduction,
 			}, &dep)).To(Succeed())
 			Expect(dep.Spec.Template.Spec.ServiceAccountName).To(Equal(appName))
 		})
@@ -1548,7 +1554,7 @@ var _ = Describe("App Controller", func() {
 
 			var sa corev1.ServiceAccount
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name: appName, Namespace: namespace,
+				Name: appName, Namespace: envNsProduction,
 			}, &sa)).To(Succeed())
 			Expect(sa.ImagePullSecrets).To(HaveLen(1))
 			Expect(sa.ImagePullSecrets[0].Name).To(Equal("registry-pull"))
@@ -1577,7 +1583,7 @@ var _ = Describe("App Controller", func() {
 
 			var sa corev1.ServiceAccount
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name: appName, Namespace: namespace,
+				Name: appName, Namespace: envNsProduction,
 			}, &sa)).To(Succeed())
 			Expect(sa.ImagePullSecrets).To(BeEmpty())
 		})
@@ -1616,7 +1622,7 @@ var _ = Describe("App Controller", func() {
 
 			var sa corev1.ServiceAccount
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name: appName, Namespace: namespace,
+				Name: appName, Namespace: envNsProduction,
 			}, &sa)).To(Succeed())
 			Expect(sa.ImagePullSecrets).To(HaveLen(1))
 			Expect(sa.ImagePullSecrets[0].Name).To(Equal("registry-pull"))
@@ -1769,7 +1775,12 @@ func makeGitSourceApp(name, ns, providerRef string) *mortisev1alpha1.App {
 }
 
 var _ = Describe("App Controller — git source", func() {
-	const namespace = "default"
+	const namespace = "pj-default-project"
+	const envNsProduction = "pj-default-project-production"
+
+	AfterEach(func() {
+		purgeAllAppsIn(context.Background(), namespace)
+	})
 
 	Context("no providerRef", func() {
 		It("should set phase=Failed when providerRef is missing", func() {
@@ -1930,8 +1941,8 @@ var _ = Describe("App Controller — git source", func() {
 			// A Deployment should have been created with the built image.
 			var dep appsv1.Deployment
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name:      "git-happy-production",
-				Namespace: namespace,
+				Name:      "git-happy",
+				Namespace: envNsProduction,
 			}, &dep)).To(Succeed())
 			Expect(dep.Spec.Template.Spec.Containers[0].Image).To(ContainSubstring("sha256:deadbeef"))
 		})
@@ -1993,7 +2004,7 @@ var _ = Describe("App Controller — git source", func() {
 
 			var dep appsv1.Deployment
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name: "git-async-production", Namespace: namespace,
+				Name: "git-async", Namespace: envNsProduction,
 			}, &dep)).To(MatchError(ContainSubstring("not found")))
 
 			// Release the build; the next reconcile should observe the
@@ -2007,7 +2018,7 @@ var _ = Describe("App Controller — git source", func() {
 			Expect(app.Status.LastBuiltImage).To(ContainSubstring("sha256:asyncdigest"))
 
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name: "git-async-production", Namespace: namespace,
+				Name: "git-async", Namespace: envNsProduction,
 			}, &dep)).To(Succeed())
 			Expect(dep.Spec.Template.Spec.Containers[0].Image).To(ContainSubstring("sha256:asyncdigest"))
 		})
@@ -2062,8 +2073,8 @@ var _ = Describe("App Controller — git source", func() {
 			// The Deployment should use the already-built image.
 			var dep appsv1.Deployment
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name:      "git-shortcircuit-production",
-				Namespace: namespace,
+				Name:      "git-shortcircuit",
+				Namespace: envNsProduction,
 			}, &dep)).To(Succeed())
 			Expect(dep.Spec.Template.Spec.Containers[0].Image).To(Equal("registry.example.com/mortise/git-shortcircuit:same-sha"))
 		})
@@ -2309,14 +2320,14 @@ var _ = Describe("App Controller — git source", func() {
 
 			var sec corev1.Secret
 			err = k8sClient.Get(ctx, types.NamespacedName{
-				Name: appName + "-credentials", Namespace: namespace,
+				Name: appName + "-credentials", Namespace: envNsProduction,
 			}, &sec)
 			Expect(err).To(HaveOccurred())
 
 			// Pod template must NOT carry the credentials-hash annotation.
 			var dep appsv1.Deployment
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name: appName + "-production", Namespace: namespace,
+				Name: appName, Namespace: envNsProduction,
 			}, &dep)).To(Succeed())
 			Expect(dep.Spec.Template.Annotations).NotTo(HaveKey("mortise.dev/credentials-hash"))
 		})
@@ -2350,12 +2361,12 @@ var _ = Describe("App Controller — git source", func() {
 
 			var sec corev1.Secret
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name: appName + "-credentials", Namespace: namespace,
+				Name: appName + "-credentials", Namespace: envNsProduction,
 			}, &sec)).To(Succeed())
 
 			Expect(sec.Type).To(Equal(corev1.SecretTypeOpaque))
 			Expect(sec.Labels).To(HaveKeyWithValue("mortise.dev/managed-by", "controller"))
-			Expect(sec.Labels).To(HaveKeyWithValue("mortise.dev/app", appName))
+			Expect(sec.Labels).To(HaveKeyWithValue("app.kubernetes.io/name", appName))
 			// Well-known keys (host, port) are resolved at binder time, not
 			// stored in the Secret.
 			Expect(sec.Data).NotTo(HaveKey("host"))
@@ -2363,14 +2374,14 @@ var _ = Describe("App Controller — git source", func() {
 			Expect(sec.Data).To(HaveKeyWithValue("username", []byte("postgres")))
 			Expect(sec.Data).To(HaveKeyWithValue("password", []byte("hunter2")))
 
-			// OwnerRef back to the App.
-			Expect(sec.OwnerReferences).To(HaveLen(1))
-			Expect(sec.OwnerReferences[0].Name).To(Equal(appName))
+			// Cross-namespace: no controller ref; finalizer-based GC on App delete.
+			Expect(sec.OwnerReferences).To(BeEmpty())
+			Expect(sec.Labels).To(HaveKeyWithValue("mortise.dev/project", "default-project"))
 
 			// Pod template carries the hash annotation.
 			var dep appsv1.Deployment
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name: appName + "-production", Namespace: namespace,
+				Name: appName, Namespace: envNsProduction,
 			}, &dep)).To(Succeed())
 			Expect(dep.Spec.Template.Annotations).To(HaveKey("mortise.dev/credentials-hash"))
 			Expect(dep.Spec.Template.Annotations["mortise.dev/credentials-hash"]).NotTo(BeEmpty())
@@ -2380,7 +2391,7 @@ var _ = Describe("App Controller — git source", func() {
 			const appName = "creds-valuefrom"
 
 			userSec := &corev1.Secret{
-				ObjectMeta: metav1.ObjectMeta{Name: "user-db-secret", Namespace: namespace},
+				ObjectMeta: metav1.ObjectMeta{Name: "user-db-secret", Namespace: envNsProduction},
 				Type:       corev1.SecretTypeOpaque,
 				Data:       map[string][]byte{"pw": []byte("s3cret!")},
 			}
@@ -2417,7 +2428,7 @@ var _ = Describe("App Controller — git source", func() {
 
 			var sec corev1.Secret
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name: appName + "-credentials", Namespace: namespace,
+				Name: appName + "-credentials", Namespace: envNsProduction,
 			}, &sec)).To(Succeed())
 			Expect(sec.Data).To(HaveKeyWithValue("username", []byte("postgres")))
 			Expect(sec.Data).To(HaveKeyWithValue("password", []byte("s3cret!")))
@@ -2458,7 +2469,7 @@ var _ = Describe("App Controller — git source", func() {
 			const appName = "creds-rotate"
 
 			userSec := &corev1.Secret{
-				ObjectMeta: metav1.ObjectMeta{Name: "rotate-src", Namespace: namespace},
+				ObjectMeta: metav1.ObjectMeta{Name: "rotate-src", Namespace: envNsProduction},
 				Type:       corev1.SecretTypeOpaque,
 				Data:       map[string][]byte{"pw": []byte("v1")},
 			}
@@ -2494,14 +2505,14 @@ var _ = Describe("App Controller — git source", func() {
 
 			var dep1 appsv1.Deployment
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name: appName + "-production", Namespace: namespace,
+				Name: appName, Namespace: envNsProduction,
 			}, &dep1)).To(Succeed())
 			hash1 := dep1.Spec.Template.Annotations["mortise.dev/credentials-hash"]
 			Expect(hash1).NotTo(BeEmpty())
 
 			// Rotate the source Secret and re-reconcile.
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name: "rotate-src", Namespace: namespace,
+				Name: "rotate-src", Namespace: envNsProduction,
 			}, userSec)).To(Succeed())
 			userSec.Data["pw"] = []byte("v2")
 			Expect(k8sClient.Update(ctx, userSec)).To(Succeed())
@@ -2513,7 +2524,7 @@ var _ = Describe("App Controller — git source", func() {
 
 			var dep2 appsv1.Deployment
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name: appName + "-production", Namespace: namespace,
+				Name: appName, Namespace: envNsProduction,
 			}, &dep2)).To(Succeed())
 			hash2 := dep2.Spec.Template.Annotations["mortise.dev/credentials-hash"]
 			Expect(hash2).NotTo(Equal(hash1))
@@ -2545,7 +2556,7 @@ var _ = Describe("App Controller — git source", func() {
 
 			var sec corev1.Secret
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name: appName + "-credentials", Namespace: namespace,
+				Name: appName + "-credentials", Namespace: envNsProduction,
 			}, &sec)).To(Succeed())
 
 			// Clear credentials, reconcile again; Secret should go away.
@@ -2562,7 +2573,7 @@ var _ = Describe("App Controller — git source", func() {
 
 			Eventually(func() bool {
 				err := k8sClient.Get(ctx, types.NamespacedName{
-					Name: appName + "-credentials", Namespace: namespace,
+					Name: appName + "-credentials", Namespace: envNsProduction,
 				}, &sec)
 				return err != nil
 			}, 5*time.Second, 100*time.Millisecond).Should(BeTrue())
@@ -2573,7 +2584,7 @@ var _ = Describe("App Controller — git source", func() {
 
 			// User pre-created a Secret at {app}-credentials with no Mortise label.
 			preExisting := &corev1.Secret{
-				ObjectMeta: metav1.ObjectMeta{Name: appName + "-credentials", Namespace: namespace},
+				ObjectMeta: metav1.ObjectMeta{Name: appName + "-credentials", Namespace: envNsProduction},
 				Type:       corev1.SecretTypeOpaque,
 				Data:       map[string][]byte{"external": []byte("data")},
 			}
@@ -2605,7 +2616,7 @@ var _ = Describe("App Controller — git source", func() {
 			// Pre-existing Secret must be untouched.
 			var sec corev1.Secret
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name: appName + "-credentials", Namespace: namespace,
+				Name: appName + "-credentials", Namespace: envNsProduction,
 			}, &sec)).To(Succeed())
 			Expect(sec.Data).To(HaveKeyWithValue("external", []byte("data")))
 		})
@@ -2640,14 +2651,14 @@ var _ = Describe("App Controller — git source", func() {
 
 			var cm corev1.ConfigMap
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name: appName + "-config-0", Namespace: namespace,
+				Name: appName + "-config-0", Namespace: envNsProduction,
 			}, &cm)).To(Succeed())
 
 			Expect(cm.Data).To(HaveKeyWithValue("app.conf", "key=value\n"))
 			Expect(cm.Labels).To(HaveKeyWithValue("mortise.dev/managed-by", "controller"))
 			Expect(cm.Labels).To(HaveKeyWithValue("app.kubernetes.io/name", appName))
-			Expect(cm.OwnerReferences).To(HaveLen(1))
-			Expect(cm.OwnerReferences[0].Name).To(Equal(appName))
+			Expect(cm.OwnerReferences).To(BeEmpty())
+			Expect(cm.Labels).To(HaveKeyWithValue("mortise.dev/project", "default-project"))
 		})
 
 		It("prunes a ConfigMap when its configFiles entry is removed", func() {
@@ -2677,8 +2688,8 @@ var _ = Describe("App Controller — git source", func() {
 
 			// Both ConfigMaps exist.
 			var cm0, cm1 corev1.ConfigMap
-			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: appName + "-config-0", Namespace: namespace}, &cm0)).To(Succeed())
-			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: appName + "-config-1", Namespace: namespace}, &cm1)).To(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: appName + "-config-0", Namespace: envNsProduction}, &cm0)).To(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: appName + "-config-1", Namespace: envNsProduction}, &cm1)).To(Succeed())
 
 			// Drop the second configFile and reconcile again.
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: appName, Namespace: namespace}, app)).To(Succeed())
@@ -2691,8 +2702,8 @@ var _ = Describe("App Controller — git source", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// -0 is retained, -1 is deleted.
-			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: appName + "-config-0", Namespace: namespace}, &cm0)).To(Succeed())
-			err = k8sClient.Get(ctx, types.NamespacedName{Name: appName + "-config-1", Namespace: namespace}, &cm1)
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: appName + "-config-0", Namespace: envNsProduction}, &cm0)).To(Succeed())
+			err = k8sClient.Get(ctx, types.NamespacedName{Name: appName + "-config-1", Namespace: envNsProduction}, &cm1)
 			Expect(err).To(HaveOccurred())
 		})
 
@@ -2704,7 +2715,7 @@ var _ = Describe("App Controller — git source", func() {
 			userCM := &corev1.ConfigMap{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      cmName,
-					Namespace: namespace,
+					Namespace: envNsProduction,
 					// No mortise.dev/managed-by label — not ours.
 				},
 				Data: map[string]string{"user.conf": "do not touch"},
@@ -2737,7 +2748,7 @@ var _ = Describe("App Controller — git source", func() {
 
 			// Pre-existing data untouched.
 			var got corev1.ConfigMap
-			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: cmName, Namespace: namespace}, &got)).To(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: cmName, Namespace: envNsProduction}, &got)).To(Succeed())
 			Expect(got.Data).To(HaveKeyWithValue("user.conf", "do not touch"))
 			Expect(got.Data).NotTo(HaveKey("new.conf"))
 		})
@@ -2786,14 +2797,14 @@ var _ = Describe("App Controller — git source", func() {
 
 			var svc corev1.Service
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name: appName + "-production", Namespace: namespace,
+				Name: appName, Namespace: envNsProduction,
 			}, &svc)).To(Succeed())
 			Expect(svc.Spec.Ports[0].Port).To(Equal(int32(3000)))
 			Expect(svc.Spec.Ports[0].TargetPort.IntVal).To(Equal(int32(3000)))
 
 			var dep appsv1.Deployment
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name: appName + "-production", Namespace: namespace,
+				Name: appName, Namespace: envNsProduction,
 			}, &dep)).To(Succeed())
 			Expect(dep.Spec.Template.Spec.Containers[0].Ports[0].ContainerPort).To(Equal(int32(3000)))
 		})
@@ -2845,8 +2856,9 @@ var _ = Describe("App Controller — git source", func() {
 
 			for _, envName := range []string{"production", "staging"} {
 				var dep appsv1.Deployment
+				envNs := "pj-default-project-" + envName
 				Expect(k8sClient.Get(ctx, types.NamespacedName{
-					Name: appName + "-" + envName, Namespace: namespace,
+					Name: appName, Namespace: envNs,
 				}, &dep)).To(Succeed())
 
 				envVars := dep.Spec.Template.Spec.Containers[0].Env
@@ -2899,7 +2911,7 @@ var _ = Describe("App Controller — git source", func() {
 
 			var dep appsv1.Deployment
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name: appName + "-production", Namespace: namespace,
+				Name: appName, Namespace: envNsProduction,
 			}, &dep)).To(Succeed())
 
 			envVars := dep.Spec.Template.Spec.Containers[0].Env
@@ -2990,7 +3002,7 @@ var _ = Describe("App Controller — git source", func() {
 
 			var dep appsv1.Deployment
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name: apiAppName + "-production", Namespace: namespace,
+				Name: apiAppName, Namespace: envNsProduction,
 			}, &dep)).To(Succeed())
 
 			envVars := dep.Spec.Template.Spec.Containers[0].Env
@@ -3058,7 +3070,7 @@ var _ = Describe("App Controller — git source", func() {
 
 			var dep appsv1.Deployment
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name: appName + "-production", Namespace: namespace,
+				Name: appName, Namespace: envNsProduction,
 			}, &dep)).To(Succeed())
 
 			envVars := dep.Spec.Template.Spec.Containers[0].Env
@@ -3116,7 +3128,7 @@ var _ = Describe("App Controller — git source", func() {
 
 			var cj batchv1.CronJob
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name: appName + "-production", Namespace: namespace,
+				Name: appName, Namespace: envNsProduction,
 			}, &cj)).To(Succeed())
 
 			Expect(cj.Spec.Schedule).To(Equal("*/5 * * * *"))
@@ -3160,24 +3172,24 @@ var _ = Describe("App Controller — git source", func() {
 
 			var dep appsv1.Deployment
 			err = k8sClient.Get(ctx, types.NamespacedName{
-				Name: appName + "-production", Namespace: namespace,
+				Name: appName, Namespace: envNsProduction,
 			}, &dep)
 			Expect(err).To(HaveOccurred())
 
 			var svc corev1.Service
 			err = k8sClient.Get(ctx, types.NamespacedName{
-				Name: appName + "-production", Namespace: namespace,
+				Name: appName, Namespace: envNsProduction,
 			}, &svc)
 			Expect(err).To(HaveOccurred())
 
 			var ing networkingv1.Ingress
 			err = k8sClient.Get(ctx, types.NamespacedName{
-				Name: appName + "-production", Namespace: namespace,
+				Name: appName, Namespace: envNsProduction,
 			}, &ing)
 			Expect(err).To(HaveOccurred())
 		})
 
-		It("should set owner reference on CronJob for garbage collection", func() {
+		It("should label CronJob for cross-namespace garbage collection", func() {
 			app = &mortisev1alpha1.App{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      appName,
@@ -3207,12 +3219,12 @@ var _ = Describe("App Controller — git source", func() {
 
 			var cj batchv1.CronJob
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name: appName + "-production", Namespace: namespace,
+				Name: appName, Namespace: envNsProduction,
 			}, &cj)).To(Succeed())
 
-			Expect(cj.OwnerReferences).To(HaveLen(1))
-			Expect(cj.OwnerReferences[0].Name).To(Equal(appName))
-			Expect(*cj.OwnerReferences[0].Controller).To(BeTrue())
+			Expect(cj.OwnerReferences).To(BeEmpty())
+			Expect(cj.Labels).To(HaveKeyWithValue("app.kubernetes.io/name", appName))
+			Expect(cj.Labels).To(HaveKeyWithValue("mortise.dev/project", "default-project"))
 		})
 
 		It("should default concurrency policy to Allow", func() {
@@ -3245,7 +3257,7 @@ var _ = Describe("App Controller — git source", func() {
 
 			var cj batchv1.CronJob
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name: appName + "-production", Namespace: namespace,
+				Name: appName, Namespace: envNsProduction,
 			}, &cj)).To(Succeed())
 
 			Expect(cj.Spec.ConcurrencyPolicy).To(Equal(batchv1.AllowConcurrent))
@@ -3291,7 +3303,7 @@ var _ = Describe("App Controller — git source", func() {
 
 			var cj batchv1.CronJob
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name: appName + "-production", Namespace: namespace,
+				Name: appName, Namespace: envNsProduction,
 			}, &cj)).To(Succeed())
 
 			Expect(cj.Spec.Schedule).To(Equal("0 3 * * *"))
@@ -3328,7 +3340,7 @@ var _ = Describe("App Controller — git source", func() {
 
 			var cj batchv1.CronJob
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name: appName + "-production", Namespace: namespace,
+				Name: appName, Namespace: envNsProduction,
 			}, &cj)).To(Succeed())
 
 			Expect(cj.Spec.ConcurrencyPolicy).To(Equal(batchv1.ReplaceConcurrent))
@@ -3378,7 +3390,7 @@ var _ = Describe("App Controller — git source", func() {
 			// Credentials Secret must exist.
 			var sec corev1.Secret
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name: appName + "-credentials", Namespace: namespace,
+				Name: appName + "-credentials", Namespace: envNsProduction,
 			}, &sec)).To(Succeed())
 			Expect(sec.Data).To(HaveKeyWithValue("DATABASE_URL",
 				[]byte("postgres://user:pass@db.provider.cloud:5432/mydb")))
@@ -3389,14 +3401,14 @@ var _ = Describe("App Controller — git source", func() {
 			// No Deployment should exist.
 			var dep appsv1.Deployment
 			err = k8sClient.Get(ctx, types.NamespacedName{
-				Name: appName + "-production", Namespace: namespace,
+				Name: appName, Namespace: envNsProduction,
 			}, &dep)
 			Expect(err).To(HaveOccurred())
 
 			// No ClusterIP Service should exist.
 			var svc corev1.Service
 			err = k8sClient.Get(ctx, types.NamespacedName{
-				Name: appName + "-production", Namespace: namespace,
+				Name: appName, Namespace: envNsProduction,
 			}, &svc)
 			Expect(err).To(HaveOccurred())
 
@@ -3485,7 +3497,7 @@ var _ = Describe("App Controller — git source", func() {
 			// ExternalName Service should exist.
 			var svc corev1.Service
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name: appName + "-production", Namespace: namespace,
+				Name: appName, Namespace: envNsProduction,
 			}, &svc)).To(Succeed())
 			Expect(svc.Spec.Type).To(Equal(corev1.ServiceTypeExternalName))
 			Expect(svc.Spec.ExternalName).To(Equal("admin.managed-db.example.com"))
@@ -3493,14 +3505,14 @@ var _ = Describe("App Controller — git source", func() {
 			// Ingress should exist with the correct host.
 			var ing networkingv1.Ingress
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name: appName + "-production", Namespace: namespace,
+				Name: appName, Namespace: envNsProduction,
 			}, &ing)).To(Succeed())
 			Expect(ing.Spec.Rules).To(HaveLen(1))
 			Expect(ing.Spec.Rules[0].Host).To(Equal("db-admin.example.com"))
 
 			// Ingress backend should point at the ExternalName Service.
 			backend := ing.Spec.Rules[0].HTTP.Paths[0].Backend
-			Expect(backend.Service.Name).To(Equal(appName + "-production"))
+			Expect(backend.Service.Name).To(Equal(appName))
 
 			// Phase should be Ready.
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
@@ -3585,7 +3597,7 @@ var _ = Describe("App Controller — git source", func() {
 
 			var dep appsv1.Deployment
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name: apiAppName + "-production", Namespace: namespace,
+				Name: apiAppName, Namespace: envNsProduction,
 			}, &dep)).To(Succeed())
 
 			envVars := dep.Spec.Template.Spec.Containers[0].Env
@@ -3630,7 +3642,7 @@ var _ = Describe("App Controller — git source", func() {
 			app = &mortisev1alpha1.App{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      appName,
-					Namespace: "default",
+					Namespace: namespace,
 				},
 				Spec: mortisev1alpha1.AppSpec{
 					Source: mortisev1alpha1.AppSource{
@@ -3657,17 +3669,17 @@ var _ = Describe("App Controller — git source", func() {
 			// First reconcile: creates the Deployment.
 			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{
-				NamespacedName: types.NamespacedName{Name: appName, Namespace: "default"},
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
 			})
 			Expect(err).NotTo(HaveOccurred())
 
 			var dep appsv1.Deployment
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name: appName + "-production", Namespace: "default",
+				Name: appName, Namespace: envNsProduction,
 			}, &dep)).To(Succeed())
 
 			// Re-fetch App so we have the latest resource version before updating.
-			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: appName, Namespace: "default"}, app)).To(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: appName, Namespace: namespace}, app)).To(Succeed())
 
 			// Mutate the App so the next reconcile has something to update.
 			app.Spec.Source.Image = "nginx:1.28"
@@ -3683,14 +3695,14 @@ var _ = Describe("App Controller — git source", func() {
 
 			conflictReconciler := &AppReconciler{Client: conflictClient, Scheme: k8sClient.Scheme()}
 			_, err = conflictReconciler.Reconcile(ctx, reconcile.Request{
-				NamespacedName: types.NamespacedName{Name: appName, Namespace: "default"},
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
 			})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(conflictFired).To(BeTrue(), "conflict interceptor should have fired")
 
 			// Image should be updated despite the transient conflict.
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name: appName + "-production", Namespace: "default",
+				Name: appName, Namespace: envNsProduction,
 			}, &dep)).To(Succeed())
 			Expect(dep.Spec.Template.Spec.Containers[0].Image).To(Equal("nginx:1.28"))
 		})

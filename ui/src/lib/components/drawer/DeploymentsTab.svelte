@@ -1,11 +1,31 @@
 <script lang="ts">
 	import { api } from '$lib/api';
-	import type { App, EnvironmentStatus } from '$lib/types';
-	import { Rocket } from 'lucide-svelte';
+	import type { App, ProjectEnvironment } from '$lib/types';
 
-	let { project, app, phase: phaseProp = null, onOptimisticPhase }: { project: string; app: App; phase?: string | null; onOptimisticPhase?: (phase: string) => void } = $props();
+	let {
+		project,
+		app,
+		projectEnvs = [],
+		selectedEnv: selectedEnvProp = '',
+		onSelectEnv,
+		phase: phaseProp = null,
+		onOptimisticPhase
+	}: {
+		project: string;
+		app: App;
+		projectEnvs?: ProjectEnvironment[];
+		selectedEnv?: string;
+		onSelectEnv?: (name: string) => void;
+		phase?: string | null;
+		onOptimisticPhase?: (phase: string) => void;
+	} = $props();
 
-	let selectedEnv = $state(app.spec.environments?.[0]?.name ?? 'production');
+	const selectedEnv = $derived(
+		selectedEnvProp || projectEnvs[0]?.name || app.spec.environments?.[0]?.name || 'production'
+	);
+	function chooseEnv(name: string) {
+		onSelectEnv?.(name);
+	}
 	let reloading = $state(false);
 	let errorMsg = $state('');
 
@@ -83,36 +103,6 @@
 		}
 	}
 
-	async function doRebuild() {
-		errorMsg = '';
-		reloading = true;
-		const prevPhase = app.status?.phase;
-		onOptimisticPhase?.('Building');
-		try {
-			await api.rebuild(project, app.metadata.name);
-		} catch (e) {
-			errorMsg = e instanceof Error ? e.message : 'Rebuild failed';
-			if (prevPhase) onOptimisticPhase?.(prevPhase);
-		} finally {
-			reloading = false;
-		}
-	}
-
-	async function doRedeploy() {
-		if (!envStatus?.currentImage) return;
-		errorMsg = '';
-		reloading = true;
-		const prevPhase = app.status?.phase;
-		onOptimisticPhase?.('Deploying');
-		try {
-			await api.deploy(project, app.metadata.name, selectedEnv, envStatus.currentImage);
-		} catch (e) {
-			errorMsg = e instanceof Error ? e.message : 'Redeploy failed';
-			if (prevPhase) onOptimisticPhase?.(prevPhase);
-		} finally {
-			reloading = false;
-		}
-	}
 </script>
 
 <div class="space-y-4">
@@ -128,12 +118,12 @@
 	{/if}
 
 	<!-- Environment tabs -->
-	{#if app.spec.environments && app.spec.environments.length > 1}
+	{#if projectEnvs.length > 1}
 		<div class="flex gap-1 border-b border-surface-600 pb-0">
-			{#each app.spec.environments as env}
+			{#each projectEnvs as env}
 				<button
 					type="button"
-					onclick={() => (selectedEnv = env.name)}
+					onclick={() => chooseEnv(env.name)}
 					class="px-3 py-1.5 text-xs transition-colors {selectedEnv === env.name
 						? 'border-b-2 border-accent text-white'
 						: 'text-gray-400 hover:text-white'}"
@@ -156,24 +146,6 @@
 				{/if}
 			</div>
 			<div class="flex items-center gap-2">
-				{#if app.spec.source.type === 'git'}
-					<button
-						type="button"
-						onclick={doRebuild}
-						disabled={reloading}
-						class="flex items-center gap-1 rounded-md bg-accent px-2 py-1 text-xs text-white transition-colors hover:bg-accent-hover disabled:opacity-40"
-					>
-						<Rocket class="h-3 w-3" /> Rebuild
-					</button>
-				{/if}
-				<button
-					type="button"
-					onclick={doRedeploy}
-					disabled={reloading || !envStatus?.currentImage}
-					class="flex items-center gap-1 rounded-md bg-surface-700 px-2 py-1 text-xs text-gray-300 transition-colors hover:bg-surface-600 hover:text-white disabled:opacity-40"
-				>
-					Redeploy
-				</button>
 				{#if (envStatus?.deployHistory?.length ?? 0) > 1}
 					<button
 						type="button"
@@ -184,7 +156,7 @@
 						Rollback
 					</button>
 				{/if}
-				{#if app.spec.environments && app.spec.environments.length > 1}
+				{#if projectEnvs.length > 1}
 					<button
 						type="button"
 						onclick={() => showPromoteModal = true}
@@ -249,7 +221,7 @@
 				<h3 class="mb-3 text-sm font-semibold text-white">Promote to environment</h3>
 				<select bind:value={promoteTarget}
 					class="w-full rounded-md border border-surface-600 bg-surface-700 px-3 py-2 text-sm text-white outline-none focus:border-accent">
-					{#each (app.spec.environments ?? []).filter(e => e.name !== selectedEnv) as env}
+					{#each projectEnvs.filter(e => e.name !== selectedEnv) as env}
 						<option value={env.name}>{env.name}</option>
 					{/each}
 				</select>

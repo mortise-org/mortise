@@ -11,6 +11,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
+	"github.com/MC-Meesh/mortise/internal/constants"
 )
 
 // podSummary is the per-pod shape returned by GET /pods. It's the minimum the
@@ -31,7 +32,7 @@ type podSummary struct {
 //
 // GET /api/projects/{project}/apps/{app}/pods?env={env}
 func (s *Server) handleListPods(w http.ResponseWriter, r *http.Request) {
-	ns, ok := s.resolveProject(w, r)
+	ns, projectName, ok := s.resolveProject(w, r)
 	if !ok {
 		return
 	}
@@ -48,6 +49,8 @@ func (s *Server) handleListPods(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	envNs := constants.EnvNamespace(projectName, env)
+
 	sel := labels.SelectorFromSet(map[string]string{
 		"app.kubernetes.io/name":       name,
 		"app.kubernetes.io/managed-by": "mortise",
@@ -55,7 +58,7 @@ func (s *Server) handleListPods(w http.ResponseWriter, r *http.Request) {
 	})
 
 	var podList corev1.PodList
-	if err := s.client.List(r.Context(), &podList, client.InNamespace(ns), client.MatchingLabelsSelector{Selector: sel}); err != nil {
+	if err := s.client.List(r.Context(), &podList, client.InNamespace(envNs), client.MatchingLabelsSelector{Selector: sel}); err != nil {
 		writeJSON(w, http.StatusInternalServerError, errorResponse{err.Error()})
 		return
 	}

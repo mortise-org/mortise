@@ -26,7 +26,7 @@ type deployRequest struct {
 // Deploy tokens are scoped to a specific app+environment; the handler rejects
 // mismatches.
 func (s *Server) Deploy(w http.ResponseWriter, r *http.Request) {
-	ns, ok := s.resolveProject(w, r)
+	ns, _, ok := s.resolveProject(w, r)
 	if !ok {
 		return
 	}

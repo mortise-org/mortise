@@ -130,6 +130,13 @@ spec:
                   memory:
                     type: string
                 type: object
+              sourceEnv:
+                description: |-
+                  SourceEnv is the project environment name the preview was forked from
+                  (typically `staging`). Bindings declared in the preview resolve against
+                  this env's namespace, so previews share the backing services of their
+                  source env rather than spinning up their own.
+                type: string
               ttl:
                 description: TTL after which the preview is auto-deleted if the PR
                   is still open.
@@ -137,6 +144,7 @@ spec:
             required:
             - appRef
             - pullRequest
+            - sourceEnv
             type: object
           status:
             description: status defines the observed state of PreviewEnvironment

@@ -31,7 +31,7 @@ type createAppRequest struct {
 }
 
 func (s *Server) CreateApp(w http.ResponseWriter, r *http.Request) {
-	ns, ok := s.resolveProject(w, r)
+	ns, _, ok := s.resolveProject(w, r)
 	if !ok {
 		return
 	}
@@ -77,7 +77,7 @@ func (s *Server) CreateApp(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) ListApps(w http.ResponseWriter, r *http.Request) {
-	ns, ok := s.resolveProject(w, r)
+	ns, _, ok := s.resolveProject(w, r)
 	if !ok {
 		return
 	}
@@ -92,7 +92,7 @@ func (s *Server) ListApps(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) GetApp(w http.ResponseWriter, r *http.Request) {
-	ns, ok := s.resolveProject(w, r)
+	ns, _, ok := s.resolveProject(w, r)
 	if !ok {
 		return
 	}
@@ -108,7 +108,7 @@ func (s *Server) GetApp(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) UpdateApp(w http.ResponseWriter, r *http.Request) {
-	ns, ok := s.resolveProject(w, r)
+	ns, _, ok := s.resolveProject(w, r)
 	if !ok {
 		return
 	}
@@ -136,7 +136,7 @@ func (s *Server) UpdateApp(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) DeleteApp(w http.ResponseWriter, r *http.Request) {
-	ns, ok := s.resolveProject(w, r)
+	ns, _, ok := s.resolveProject(w, r)
 	if !ok {
 		return
 	}

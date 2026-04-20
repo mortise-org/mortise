@@ -46,7 +46,7 @@ func TestProjectValidator_RejectsRemovalWhileAppOverridesReferenceIt(t *testing.
 	old := project("web", "production", "staging")
 	updated := project("web", "production")
 
-	offender := app("api", "project-web", "staging")
+	offender := app("api", "pj-web", "staging")
 
 	c := fake.NewClientBuilder().WithScheme(testScheme(t)).
 		WithObjects(updated, offender).Build()

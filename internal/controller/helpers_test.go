@@ -155,20 +155,11 @@ func TestMergeAnnotations(t *testing.T) {
 }
 
 func TestResolveProjectNamespace(t *testing.T) {
-	t.Run("default derives project-{name}", func(t *testing.T) {
+	t.Run("derives control namespace pj-{name}", func(t *testing.T) {
 		p := &mortisev1alpha1.Project{}
 		p.Name = "web"
-		if got := ResolveProjectNamespace(p); got != "project-web" {
-			t.Fatalf("expected project-web, got %q", got)
-		}
-	})
-
-	t.Run("namespaceOverride takes precedence", func(t *testing.T) {
-		p := &mortisev1alpha1.Project{}
-		p.Name = "web"
-		p.Spec.NamespaceOverride = "corp-team-web"
-		if got := ResolveProjectNamespace(p); got != "corp-team-web" {
-			t.Fatalf("expected corp-team-web, got %q", got)
+		if got := ResolveProjectNamespace(p); got != "pj-web" {
+			t.Fatalf("expected pj-web, got %q", got)
 		}
 	})
 }

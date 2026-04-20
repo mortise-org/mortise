@@ -15,7 +15,7 @@ import (
 //
 // POST /api/projects/{project}/apps/{app}/rebuild
 func (s *Server) Rebuild(w http.ResponseWriter, r *http.Request) {
-	ns, ok := s.resolveProject(w, r)
+	ns, _, ok := s.resolveProject(w, r)
 	if !ok {
 		return
 	}

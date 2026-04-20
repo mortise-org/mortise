@@ -22,6 +22,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
+	"github.com/MC-Meesh/mortise/internal/constants"
 	"github.com/MC-Meesh/mortise/internal/git"
 )
 
@@ -190,9 +191,9 @@ func (h *Handler) dispatchPREvent(ctx context.Context, pr PREvent) {
 		return
 	}
 
-	// Cache project preview state so we don't re-fetch for every App in the
-	// same project.
-	projectPreview := make(map[string]*mortisev1alpha1.PreviewConfig)
+	// Cache the parent Project once per PR — preview gating, staging lookup,
+	// and env-set validation all hang off the same record.
+	projectCache := make(map[string]*mortisev1alpha1.Project)
 	projectKnown := make(map[string]bool)
 
 	matched := 0
@@ -206,33 +207,37 @@ func (h *Handler) dispatchPREvent(ctx context.Context, pr PREvent) {
 			continue
 		}
 
-		projectName := strings.TrimPrefix(app.Namespace, "project-")
-		if projectName == app.Namespace || projectName == "" {
-			log.Info("skipping app not in project namespace", "app", app.Name, "namespace", app.Namespace)
+		projectName, ok := constants.ProjectFromControlNs(app.Namespace)
+		if !ok {
+			log.Info("skipping app not in control namespace", "app", app.Name, "namespace", app.Namespace)
 			continue
 		}
 
-		var preview *mortisev1alpha1.PreviewConfig
+		var project *mortisev1alpha1.Project
 		if projectKnown[projectName] {
-			preview = projectPreview[projectName]
+			project = projectCache[projectName]
 		} else {
-			project, err := h.k8s.getProject(ctx, projectName)
+			fetched, err := h.k8s.getProject(ctx, projectName)
 			projectKnown[projectName] = true
 			if err != nil {
 				log.Error(err, "get Project for PR dispatch", "project", projectName)
-				projectPreview[projectName] = nil
+				projectCache[projectName] = nil
 				continue
 			}
-			preview = project.Spec.Preview
-			projectPreview[projectName] = preview
+			projectCache[projectName] = fetched
+			project = fetched
 		}
+		if project == nil {
+			continue
+		}
+		preview := project.Spec.Preview
 		if preview == nil || !preview.Enabled {
 			continue
 		}
 
 		switch pr.Action {
 		case "opened", "synchronize":
-			h.handlePROpenOrSync(ctx, app, preview, pr)
+			h.handlePROpenOrSync(ctx, app, project, preview, pr)
 		case "closed":
 			h.handlePRClosed(ctx, app, pr)
 		default:
@@ -246,8 +251,17 @@ func (h *Handler) dispatchPREvent(ctx context.Context, pr PREvent) {
 	}
 }
 
-func (h *Handler) handlePROpenOrSync(ctx context.Context, app *mortisev1alpha1.App, preview *mortisev1alpha1.PreviewConfig, pr PREvent) {
+func (h *Handler) handlePROpenOrSync(ctx context.Context, app *mortisev1alpha1.App, project *mortisev1alpha1.Project, preview *mortisev1alpha1.PreviewConfig, pr PREvent) {
 	log := logf.FromContext(ctx)
+
+	// Preview envs inherit from staging. If the project doesn't declare a
+	// `staging` env, there's nothing reasonable to clone from — log and skip
+	// so PR webhooks don't fail and the gap is visible in the operator log.
+	if !projectHasStagingEnv(project) {
+		log.Info("skipping preview env: project has no staging env",
+			"project", project.Name, "app", app.Name, "pr", pr.Number)
+		return
+	}
 
 	peName := previewEnvName(app.Name, pr.Number)
 
@@ -267,7 +281,7 @@ func (h *Handler) handlePROpenOrSync(ctx context.Context, app *mortisev1alpha1.A
 		}
 	}
 
-	// Find staging environment to inherit from.
+	// Find staging override on the App (may be nil — defaults are fine).
 	staging := findStagingEnv(app)
 
 	// Check if PreviewEnvironment already exists.
@@ -298,7 +312,8 @@ func (h *Handler) handlePROpenOrSync(ctx context.Context, app *mortisev1alpha1.A
 			Namespace: app.Namespace,
 		},
 		Spec: mortisev1alpha1.PreviewEnvironmentSpec{
-			AppRef: app.Name,
+			AppRef:    app.Name,
+			SourceEnv: "staging",
 			PullRequest: mortisev1alpha1.PullRequestRef{
 				Number: pr.Number,
 				Branch: pr.Branch,
@@ -704,15 +719,30 @@ func resolvePreviewDomainTemplate(template, appName string, prNumber int) string
 	return result
 }
 
-// findStagingEnv returns the staging environment from the App, or the first env.
+// findStagingEnv returns the App's staging override, or nil when no override
+// exists. Callers that need defaults should treat nil as "use App defaults".
+// Project-level staging existence is checked separately via
+// projectHasStagingEnv before this is consulted.
 func findStagingEnv(app *mortisev1alpha1.App) *mortisev1alpha1.Environment {
 	for i := range app.Spec.Environments {
 		if app.Spec.Environments[i].Name == "staging" {
 			return &app.Spec.Environments[i]
 		}
 	}
-	if len(app.Spec.Environments) > 0 {
-		return &app.Spec.Environments[0]
-	}
 	return nil
+}
+
+// projectHasStagingEnv returns true iff the project declares a `staging`
+// environment in its spec. Preview envs require staging to exist as the
+// inheritance source.
+func projectHasStagingEnv(project *mortisev1alpha1.Project) bool {
+	if project == nil {
+		return false
+	}
+	for _, env := range project.Spec.Environments {
+		if env.Name == "staging" {
+			return true
+		}
+	}
+	return false
 }

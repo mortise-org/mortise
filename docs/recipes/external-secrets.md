@@ -86,7 +86,7 @@ apiVersion: external-secrets.io/v1beta1
 kind: ExternalSecret
 metadata:
   name: my-app-db
-  namespace: project-my-saas
+  namespace: pj-my-saas
 spec:
   refreshInterval: 1h
   secretStoreRef:

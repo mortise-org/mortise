@@ -48,7 +48,7 @@ func TestAppend_CreatesConfigMapOnFirstCall(t *testing.T) {
 
 	var cm corev1.ConfigMap
 	err := c.Get(context.Background(), types.NamespacedName{
-		Namespace: "project-alpha",
+		Namespace: "pj-alpha",
 		Name:      "activity-alpha",
 	}, &cm)
 	if err != nil {

@@ -12,6 +12,7 @@ import (
 
 	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
 	"github.com/MC-Meesh/mortise/internal/api"
+	"github.com/MC-Meesh/mortise/internal/constants"
 )
 
 func TestHandlePodsNonexistentProject(t *testing.T) {
@@ -78,6 +79,7 @@ func TestHandlePodsReturnsSummaries(t *testing.T) {
 	srv := newAdminServer(t, k8sClient)
 	h := srv.Handler()
 	ns := seedProject(t, k8sClient, "default")
+	envNs := constants.EnvNamespace("default", "production")
 	ctx := context.Background()
 
 	app := &mortisev1alpha1.App{
@@ -99,7 +101,7 @@ func TestHandlePodsReturnsSummaries(t *testing.T) {
 		pod := &corev1.Pod{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      name,
-				Namespace: ns,
+				Namespace: envNs,
 				Labels:    labels,
 			},
 			Spec: corev1.PodSpec{
@@ -130,7 +132,7 @@ func TestHandlePodsReturnsSummaries(t *testing.T) {
 	offEnv := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "sum-app-staging",
-			Namespace: ns,
+			Namespace: envNs,
 			Labels: map[string]string{
 				"app.kubernetes.io/name":       "sum-app",
 				"app.kubernetes.io/managed-by": "mortise",

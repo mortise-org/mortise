@@ -66,6 +66,7 @@ export interface ResourceRequirements {
 
 export interface Environment {
 	name: string;
+	enabled?: boolean;
 	replicas?: number;
 	resources?: ResourceRequirements;
 	env?: EnvVar[];
@@ -147,6 +148,24 @@ export interface Project {
 	phase?: ProjectPhase;
 	appCount: number;
 	createdAt?: string;
+}
+
+export type EnvHealth = 'healthy' | 'warning' | 'danger' | 'unknown';
+
+// Mirrors internal/api.projectEnvResponse. `health` is server-aggregated
+// across every participating App for rendering the navbar status dot.
+export interface ProjectEnvironment {
+	name: string;
+	displayOrder: number;
+	health?: EnvHealth;
+}
+
+// Canvas edge for GET /api/projects/{p}/bindings?environment=X.
+export interface BindingEdge {
+	from: string;
+	to: string;
+	toProject?: string;
+	environment: string;
 }
 
 export type GitProviderType = 'github' | 'gitlab' | 'gitea';

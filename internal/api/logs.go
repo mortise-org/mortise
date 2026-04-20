@@ -21,6 +21,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
+	"github.com/MC-Meesh/mortise/internal/constants"
 )
 
 type logLine struct {
@@ -53,7 +54,7 @@ func parseLogLine(raw string) (ts, content string) {
 //
 // GET /api/projects/{project}/apps/{app}/build-logs
 func (s *Server) handleBuildLogs(w http.ResponseWriter, r *http.Request) {
-	ns, ok := s.resolveProject(w, r)
+	ns, _, ok := s.resolveProject(w, r)
 	if !ok {
 		return
 	}
@@ -101,7 +102,7 @@ func (s *Server) handleBuildLogs(w http.ResponseWriter, r *http.Request) {
 // during the stream (e.g. rollouts) are picked up via a pod watcher and their
 // logs are joined into the stream.
 func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
-	ns, ok := s.resolveProject(w, r)
+	ns, projectName, ok := s.resolveProject(w, r)
 	if !ok {
 		return
 	}
@@ -140,12 +141,15 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 		sinceSeconds = nil
 	}
 
-	// Resolve the App CRD (404 if missing).
+	// Resolve the App CRD (404 if missing). CRD lives in the control ns.
 	var app mortisev1alpha1.App
 	if err := s.client.Get(r.Context(), types.NamespacedName{Name: name, Namespace: ns}, &app); err != nil {
 		writeError(w, err)
 		return
 	}
+
+	// Workload pods live in the per-env namespace.
+	envNs := constants.EnvNamespace(projectName, env)
 
 	selSet := map[string]string{
 		"app.kubernetes.io/name":       name,
@@ -166,7 +170,7 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 	// the right labels. No label-selector list, no watcher.
 	if pinnedPod != "" {
 		var pod corev1.Pod
-		if err := s.client.Get(r.Context(), types.NamespacedName{Name: pinnedPod, Namespace: ns}, &pod); err != nil {
+		if err := s.client.Get(r.Context(), types.NamespacedName{Name: pinnedPod, Namespace: envNs}, &pod); err != nil {
 			writeError(w, err)
 			return
 		}
@@ -189,12 +193,12 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 		defer cancel()
 
 		writer := &sseWriter{w: w, flusher: flusher}
-		s.streamPodLogs(ctx, writer, ns, pinnedPod, opts)
+		s.streamPodLogs(ctx, writer, envNs, pinnedPod, opts)
 		return
 	}
 
 	var podList corev1.PodList
-	if err := s.client.List(r.Context(), &podList, client.InNamespace(ns), client.MatchingLabelsSelector{Selector: sel}); err != nil {
+	if err := s.client.List(r.Context(), &podList, client.InNamespace(envNs), client.MatchingLabelsSelector{Selector: sel}); err != nil {
 		writeJSON(w, http.StatusInternalServerError, errorResponse{err.Error()})
 		return
 	}
@@ -228,7 +232,7 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			s.streamPodLogs(ctx, writer, ns, podName, opts)
+			s.streamPodLogs(ctx, writer, envNs, podName, opts)
 		}()
 	}
 
@@ -242,7 +246,7 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			s.watchPods(ctx, ns, sel.String(), streamPod)
+			s.watchPods(ctx, envNs, sel.String(), streamPod)
 		}()
 	}
 

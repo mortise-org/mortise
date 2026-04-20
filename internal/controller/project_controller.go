@@ -39,8 +39,8 @@ import (
 )
 
 const (
-	// projectFinalizer ensures the Project's owned namespace is deleted before
-	// the CRD is removed, so cascade GC completes cleanly.
+	// projectFinalizer ensures the controller gets one last reconcile on delete
+	// so it can tear down owned namespaces before the CRD disappears.
 	projectFinalizer = "mortise.dev/project-finalizer"
 
 	// DefaultProjectEnvironment is seeded into spec.environments when the
@@ -50,43 +50,34 @@ const (
 
 // Condition types and reasons exposed on Project.status.conditions.
 const (
-	// ProjectConditionNamespaceReady is True once the Project owns its backing
-	// namespace and False when the controller refused to claim it for a
-	// structural reason (collision, adoption disabled, etc).
+	// ProjectConditionNamespaceReady is True once every project-owned namespace
+	// (control + one per env) has been provisioned. False when the controller
+	// refused to claim a namespace or when env-namespace length validation
+	// failed.
 	ProjectConditionNamespaceReady = "NamespaceReady"
 
-	// ReasonReconciled is the standard success reason.
-	ReasonReconciled = "Reconciled"
-	// ReasonAdopted indicates the controller took ownership of a pre-existing
-	// namespace because `spec.adoptExistingNamespace: true`.
-	ReasonAdopted = "Adopted"
-	// ReasonNamespaceAlreadyExists is returned when a namespace with the
-	// resolved name already exists (not owned by any Project) and adoption is
-	// not enabled.
+	ReasonReconciled             = "Reconciled"
 	ReasonNamespaceAlreadyExists = "NamespaceAlreadyExists"
-	// ReasonNamespaceOwnedByAnotherProject is returned when the target
-	// namespace has an owner reference to a different Project.
-	ReasonNamespaceOwnedByAnotherProject = "NamespaceOwnedByAnotherProject"
-	// ReasonNamespaceConflict is returned when another Project has already
-	// claimed the resolved namespace name via its own spec.
-	ReasonNamespaceConflict = "NamespaceConflict"
+	ReasonNamespaceOwnedByOther  = "NamespaceOwnedByAnotherProject"
+	ReasonNamespaceConflict      = "NamespaceConflict"
+	ReasonEnvNamespaceTooLong    = "EnvNamespaceTooLong"
 )
 
-// ProjectNamespace returns the default backing namespace name for a Project
-// name (i.e. `project-{name}`). Callers that need to honor
-// `spec.namespaceOverride` should use ResolveProjectNamespace with the live
-// Project instead.
+// ProjectEnvsRevAnnotation is the App annotation the Project controller bumps
+// when the project's environment set changes. Purely an informer wake-up
+// signal — the App reconciler doesn't read the value.
+const ProjectEnvsRevAnnotation = "mortise.dev/project-envs-rev"
+
+// ProjectNamespace returns the control namespace for a Project. Kept for
+// callers outside this package that used to rely on `project-{name}`.
 func ProjectNamespace(projectName string) string {
-	return constants.ProjectNamespacePrefix + projectName
+	return constants.ControlNamespace(projectName)
 }
 
-// ResolveProjectNamespace returns the backing namespace name the controller
-// should use for this Project: the override if set, else `project-{name}`.
+// ResolveProjectNamespace returns the control namespace for the Project. The
+// legacy `NamespaceOverride` knob has been removed in the per-env pivot.
 func ResolveProjectNamespace(p *mortisev1alpha1.Project) string {
-	if p.Spec.NamespaceOverride != "" {
-		return p.Spec.NamespaceOverride
-	}
-	return ProjectNamespace(p.Name)
+	return constants.ControlNamespace(p.Name)
 }
 
 // namespaceResolveError is a structured reconcile failure carrying both a
@@ -98,9 +89,6 @@ type namespaceResolveError struct {
 
 func (e *namespaceResolveError) Error() string { return e.Message }
 
-// asNamespaceResolveError unwraps err looking for a *namespaceResolveError.
-// Uses stderrors.As because the k8s apierrors package is imported as "errors"
-// in this file.
 func asNamespaceResolveError(err error) (*namespaceResolveError, bool) {
 	var nsErr *namespaceResolveError
 	if stderrors.As(err, &nsErr) {
@@ -109,9 +97,9 @@ func asNamespaceResolveError(err error) (*namespaceResolveError, bool) {
 	return nil, false
 }
 
-// ProjectReconciler reconciles a Project object. On create it provisions a
-// backing namespace; on delete it tears the namespace down (k8s GC cascades
-// to every App inside).
+// ProjectReconciler reconciles a Project: provisions the control namespace
+// plus one workload namespace per declared environment, tears them down on
+// delete, and propagates env-set changes to owned Apps.
 type ProjectReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
@@ -134,14 +122,15 @@ func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, err
 	}
 
-	nsName := ResolveProjectNamespace(&project)
+	controlNs := constants.ControlNamespace(project.Name)
 
-	// Handle deletion: drop the namespace, then the finalizer.
+	// Handle deletion: drop every namespace we own (control + env), then the
+	// finalizer. Owner refs cascade resource deletion inside each ns.
 	if !project.DeletionTimestamp.IsZero() {
-		if err := r.markTerminating(ctx, &project, nsName); err != nil {
+		if err := r.markTerminating(ctx, &project, controlNs); err != nil {
 			return ctrl.Result{}, err
 		}
-		if err := r.ensureNamespaceDeleted(ctx, nsName); err != nil {
+		if err := r.deleteOwnedNamespaces(ctx, &project); err != nil {
 			return ctrl.Result{}, err
 		}
 		if controllerutil.RemoveFinalizer(&project, projectFinalizer) {
@@ -152,10 +141,7 @@ func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, nil
 	}
 
-	// Ensure finalizer and seed the default environment in a single spec
-	// update. Batching keeps the reconcile count down (the controller only
-	// has one meaningful "wait for spec write" barrier) and avoids the
-	// intermediate state where a Project has a finalizer but still no env.
+	// Seed finalizer + default env in one spec-update pass.
 	specChanged := controllerutil.AddFinalizer(&project, projectFinalizer)
 	if len(project.Spec.Environments) == 0 {
 		project.Spec.Environments = []mortisev1alpha1.ProjectEnvironment{
@@ -167,44 +153,72 @@ func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		if err := r.Update(ctx, &project); err != nil {
 			return ctrl.Result{}, fmt.Errorf("seed project spec defaults: %w", err)
 		}
-		// Requeue implicitly via the update event.
 		return ctrl.Result{}, nil
 	}
 
-	// Cross-Project uniqueness check: another Project may have claimed this
-	// namespace name via its own spec. Reject before we touch the namespace.
-	if err := r.checkNamespaceUniqueness(ctx, &project, nsName); err != nil {
+	// Validate every env-namespace name fits in 63 chars BEFORE we create
+	// anything — catches the overflow case at the project level so status
+	// messaging is clear.
+	for _, env := range project.Spec.Environments {
+		if err := constants.ValidateProjectEnvLengths(project.Name, env.Name); err != nil {
+			return ctrl.Result{}, r.markFailed(ctx, &project, controlNs, ReasonEnvNamespaceTooLong, err.Error())
+		}
+	}
+
+	// Cross-project uniqueness check on the control namespace.
+	if err := r.checkControlNamespaceUniqueness(ctx, &project, controlNs); err != nil {
 		if nsErr, ok := asNamespaceResolveError(err); ok {
-			return ctrl.Result{}, r.markFailed(ctx, &project, nsName, nsErr.Reason, nsErr.Message)
+			return ctrl.Result{}, r.markFailed(ctx, &project, controlNs, nsErr.Reason, nsErr.Message)
 		}
 		return ctrl.Result{}, err
 	}
 
-	adopted, err := r.ensureNamespace(ctx, &project, nsName)
-	if err != nil {
+	// Ensure control namespace.
+	if err := r.ensureNamespace(ctx, &project, controlNs, namespaceSpec{
+		role: constants.NamespaceRoleControl,
+	}); err != nil {
 		if nsErr, ok := asNamespaceResolveError(err); ok {
-			return ctrl.Result{}, r.markFailed(ctx, &project, nsName, nsErr.Reason, nsErr.Message)
+			return ctrl.Result{}, r.markFailed(ctx, &project, controlNs, nsErr.Reason, nsErr.Message)
 		}
-		log.Error(err, "ensure namespace failed")
+		log.Error(err, "ensure control namespace failed")
 		return ctrl.Result{}, err
 	}
 
-	appCount, err := r.countApps(ctx, nsName)
+	// Ensure one namespace per declared env.
+	envNsMap := make(map[string]string, len(project.Spec.Environments))
+	for _, env := range project.Spec.Environments {
+		ns := constants.EnvNamespace(project.Name, env.Name)
+		if err := r.ensureNamespace(ctx, &project, ns, namespaceSpec{
+			role:    constants.NamespaceRoleEnv,
+			envName: env.Name,
+		}); err != nil {
+			if nsErr, ok := asNamespaceResolveError(err); ok {
+				return ctrl.Result{}, r.markFailed(ctx, &project, controlNs, nsErr.Reason, nsErr.Message)
+			}
+			return ctrl.Result{}, fmt.Errorf("ensure env namespace %q: %w", ns, err)
+		}
+		envNsMap[env.Name] = ns
+	}
+
+	// GC env namespaces that are no longer in spec.
+	if err := r.gcStaleEnvNamespaces(ctx, &project, envNsMap); err != nil {
+		return ctrl.Result{}, fmt.Errorf("gc stale env namespaces: %w", err)
+	}
+
+	appCount, err := r.countApps(ctx, controlNs)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("count apps: %w", err)
 	}
 
-	// Cascade: if the project's env set changed since the last reconcile, bump
-	// an annotation on every App in the namespace so the App controller
-	// reconciles with the new env list. The bumped revision is just the
-	// generation — monotonic and guaranteed to change on any spec edit.
+	// Cascade env changes to every App in the control namespace so their
+	// reconcilers pick up the new env list on the next loop.
 	if envsChanged(project.Spec.Environments, project.Status.Environments) {
-		if err := r.cascadeEnvChange(ctx, &project, nsName); err != nil {
+		if err := r.cascadeEnvChange(ctx, &project, controlNs); err != nil {
 			return ctrl.Result{}, fmt.Errorf("cascade env change: %w", err)
 		}
 	}
 
-	if err := r.markReady(ctx, &project, nsName, appCount, adopted); err != nil {
+	if err := r.markReady(ctx, &project, controlNs, appCount, envNsMap); err != nil {
 		return ctrl.Result{}, fmt.Errorf("update status: %w", err)
 	}
 
@@ -225,13 +239,11 @@ func envsChanged(spec []mortisev1alpha1.ProjectEnvironment, status []string) boo
 	return false
 }
 
-// cascadeEnvChange patches every App in the project's namespace with a
-// revision annotation so the App controller's informer fires. The annotation
-// value is the project's generation — bumped on any spec edit — so repeated
-// reconciles of the same generation are no-ops.
-func (r *ProjectReconciler) cascadeEnvChange(ctx context.Context, project *mortisev1alpha1.Project, nsName string) error {
+// cascadeEnvChange patches every App in the project's control namespace with a
+// revision annotation so the App controller's informer fires.
+func (r *ProjectReconciler) cascadeEnvChange(ctx context.Context, project *mortisev1alpha1.Project, controlNs string) error {
 	var apps mortisev1alpha1.AppList
-	if err := r.List(ctx, &apps, client.InNamespace(nsName)); err != nil {
+	if err := r.List(ctx, &apps, client.InNamespace(controlNs)); err != nil {
 		return fmt.Errorf("list apps: %w", err)
 	}
 	rev := fmt.Sprintf("%d", project.Generation)
@@ -252,127 +264,96 @@ func (r *ProjectReconciler) cascadeEnvChange(ctx context.Context, project *morti
 	return nil
 }
 
-// ProjectEnvsRevAnnotation is the App annotation the Project controller bumps
-// when the project's environment set changes. The App reconciler doesn't
-// read it — its only purpose is to force an informer event so the App
-// controller re-runs with the new project spec visible.
-const ProjectEnvsRevAnnotation = "mortise.dev/project-envs-rev"
+// namespaceSpec carries the metadata we stamp onto a namespace the Project
+// controller owns.
+type namespaceSpec struct {
+	role    string // constants.NamespaceRole*
+	envName string // "" for control, env name otherwise
+}
 
-// ensureNamespace reconciles the Project's backing namespace. It returns
-// adopted=true when it just took ownership of a pre-existing namespace via
-// `spec.adoptExistingNamespace`. Structured refusals (collision, adoption
-// disabled, foreign owner) come back as *namespaceResolveError so the caller
-// can surface them on the Project status.
-func (r *ProjectReconciler) ensureNamespace(ctx context.Context, project *mortisev1alpha1.Project, nsName string) (adopted bool, err error) {
+// ensureNamespace creates or updates a namespace owned by the Project. Refuses
+// to adopt namespaces already owned by a different Project; refuses to create
+// over the top of a user-created namespace (no adoption path in per-env world).
+func (r *ProjectReconciler) ensureNamespace(ctx context.Context, project *mortisev1alpha1.Project, nsName string, spec namespaceSpec) error {
+	labels := namespaceLabels(project.Name, spec)
 	var existing corev1.Namespace
 	getErr := r.Get(ctx, types.NamespacedName{Name: nsName}, &existing)
 	if errors.IsNotFound(getErr) {
 		desired := &corev1.Namespace{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:   nsName,
-				Labels: projectNamespaceLabels(project.Name),
+				Labels: labels,
 			},
 		}
 		if err := controllerutil.SetControllerReference(project, desired, r.Scheme); err != nil {
-			return false, fmt.Errorf("set owner ref on namespace: %w", err)
+			return fmt.Errorf("set owner ref on namespace: %w", err)
 		}
 		if err := r.Create(ctx, desired); err != nil {
-			return false, fmt.Errorf("create namespace: %w", err)
+			return fmt.Errorf("create namespace: %w", err)
 		}
-		return false, nil
+		return nil
 	}
 	if getErr != nil {
-		return false, fmt.Errorf("get namespace: %w", getErr)
+		return fmt.Errorf("get namespace: %w", getErr)
 	}
 
-	// Namespace exists. Who owns it?
+	// Namespace exists. Only owner: us → sync labels. Anything else → error.
 	ownedByUs := false
-	ownedBySomeoneElse := ""
+	ownedByOther := ""
 	for _, ref := range existing.OwnerReferences {
 		if ref.APIVersion == mortisev1alpha1.GroupVersion.String() && ref.Kind == "Project" {
 			if ref.UID == project.UID {
 				ownedByUs = true
 				break
 			}
-			ownedBySomeoneElse = ref.Name
+			ownedByOther = ref.Name
 		}
 	}
-
 	if ownedByUs {
-		// Fast path: already ours. Keep labels in sync.
-		return false, r.syncLabels(ctx, &existing, project)
+		if existing.Labels == nil {
+			existing.Labels = map[string]string{}
+		}
+		changed := false
+		for k, v := range labels {
+			if existing.Labels[k] != v {
+				existing.Labels[k] = v
+				changed = true
+			}
+		}
+		if changed {
+			return r.Update(ctx, &existing)
+		}
+		return nil
 	}
-
-	if ownedBySomeoneElse != "" {
-		return false, &namespaceResolveError{
-			Reason: ReasonNamespaceOwnedByAnotherProject,
-			Message: fmt.Sprintf(
-				"namespace %q is already owned by Project %q",
-				nsName, ownedBySomeoneElse,
-			),
+	if ownedByOther != "" {
+		return &namespaceResolveError{
+			Reason:  ReasonNamespaceOwnedByOther,
+			Message: fmt.Sprintf("namespace %q is already owned by Project %q", nsName, ownedByOther),
 		}
 	}
-
-	// Namespace exists with no Project owner. If a prior Mortise version
-	// created it (labelled but owner-ref stripped), take it back on the fast
-	// path — not a user-facing "adoption" of foreign infra. Otherwise
-	// adoption requires explicit opt-in.
-	if existing.Labels["app.kubernetes.io/managed-by"] == "mortise" {
-		if err := controllerutil.SetControllerReference(project, &existing, r.Scheme); err != nil {
-			return false, fmt.Errorf("update owner ref: %w", err)
-		}
-		return false, r.syncLabels(ctx, &existing, project)
+	return &namespaceResolveError{
+		Reason:  ReasonNamespaceAlreadyExists,
+		Message: fmt.Sprintf("namespace %q already exists and is not managed by mortise; delete it or pick a different project/env name", nsName),
 	}
-
-	if !project.Spec.AdoptExistingNamespace {
-		return false, &namespaceResolveError{
-			Reason: ReasonNamespaceAlreadyExists,
-			Message: fmt.Sprintf(
-				"namespace %q already exists and is not managed by mortise; "+
-					"set spec.adoptExistingNamespace: true to take ownership (admin-only)",
-				nsName,
-			),
-		}
-	}
-
-	// Adoption path: add owner ref + labels. Do NOT touch any other resource
-	// inside the namespace — Mortise only owns what it creates (CLAUDE.md).
-	if err := controllerutil.SetControllerReference(project, &existing, r.Scheme); err != nil {
-		return false, fmt.Errorf("adopt: set owner ref: %w", err)
-	}
-	if err := r.syncLabels(ctx, &existing, project); err != nil {
-		return false, fmt.Errorf("adopt: sync labels: %w", err)
-	}
-	return true, nil
 }
 
-// projectNamespaceLabels returns the Mortise management labels applied to
-// every namespace the Project controller creates or adopts.
-func projectNamespaceLabels(projectName string) map[string]string {
-	return map[string]string{
+// namespaceLabels returns the management labels stamped on a project-owned ns.
+func namespaceLabels(projectName string, spec namespaceSpec) map[string]string {
+	labels := map[string]string{
 		"app.kubernetes.io/managed-by": "mortise",
-		"mortise.dev/project":          projectName,
+		constants.ProjectLabel:         projectName,
 		"mortise.dev/managed-by":       "project",
+		constants.NamespaceRoleLabel:   spec.role,
 	}
+	if spec.envName != "" {
+		labels[constants.EnvironmentLabel] = spec.envName
+	}
+	return labels
 }
 
-// syncLabels writes Mortise's management labels onto the namespace. Always
-// issues an Update so that a newly-added owner reference from the caller is
-// persisted alongside any label changes.
-func (r *ProjectReconciler) syncLabels(ctx context.Context, ns *corev1.Namespace, project *mortisev1alpha1.Project) error {
-	if ns.Labels == nil {
-		ns.Labels = map[string]string{}
-	}
-	for k, v := range projectNamespaceLabels(project.Name) {
-		ns.Labels[k] = v
-	}
-	return r.Update(ctx, ns)
-}
-
-// checkNamespaceUniqueness verifies no other Project already claims the same
-// resolved namespace name via its own spec. Prevents two Projects from
-// fighting over a single namespace when one uses namespaceOverride.
-func (r *ProjectReconciler) checkNamespaceUniqueness(ctx context.Context, project *mortisev1alpha1.Project, nsName string) error {
+// checkControlNamespaceUniqueness verifies no other active Project claims the
+// same control namespace.
+func (r *ProjectReconciler) checkControlNamespaceUniqueness(ctx context.Context, project *mortisev1alpha1.Project, controlNs string) error {
 	var projects mortisev1alpha1.ProjectList
 	if err := r.List(ctx, &projects); err != nil {
 		return fmt.Errorf("list projects: %w", err)
@@ -385,85 +366,99 @@ func (r *ProjectReconciler) checkNamespaceUniqueness(ctx context.Context, projec
 		if !other.DeletionTimestamp.IsZero() {
 			continue
 		}
-		if ResolveProjectNamespace(other) == nsName {
+		if constants.ControlNamespace(other.Name) == controlNs {
 			return &namespaceResolveError{
-				Reason: ReasonNamespaceConflict,
-				Message: fmt.Sprintf(
-					"namespace %q is already claimed by Project %q",
-					nsName, other.Name,
-				),
+				Reason:  ReasonNamespaceConflict,
+				Message: fmt.Sprintf("namespace %q is already claimed by Project %q", controlNs, other.Name),
 			}
 		}
 	}
 	return nil
 }
 
-func (r *ProjectReconciler) ensureNamespaceDeleted(ctx context.Context, nsName string) error {
-	var ns corev1.Namespace
-	err := r.Get(ctx, types.NamespacedName{Name: nsName}, &ns)
-	if errors.IsNotFound(err) {
-		return nil
+// gcStaleEnvNamespaces deletes any env namespace labelled for this project but
+// whose env name is not in the current desired set.
+func (r *ProjectReconciler) gcStaleEnvNamespaces(ctx context.Context, project *mortisev1alpha1.Project, desired map[string]string) error {
+	var nsList corev1.NamespaceList
+	if err := r.List(ctx, &nsList, client.MatchingLabels{
+		constants.ProjectLabel:       project.Name,
+		constants.NamespaceRoleLabel: constants.NamespaceRoleEnv,
+	}); err != nil {
+		return fmt.Errorf("list env namespaces: %w", err)
 	}
-	if err != nil {
-		return fmt.Errorf("get namespace for delete: %w", err)
-	}
-	if ns.Labels["app.kubernetes.io/managed-by"] != "mortise" {
-		// Refuse to delete namespaces we don't own.
-		return nil
-	}
-	if !ns.DeletionTimestamp.IsZero() {
-		return nil
-	}
-	if err := r.Delete(ctx, &ns); err != nil && !errors.IsNotFound(err) {
-		return fmt.Errorf("delete namespace: %w", err)
+	for i := range nsList.Items {
+		ns := &nsList.Items[i]
+		envName := ns.Labels[constants.EnvironmentLabel]
+		if _, stillWanted := desired[envName]; stillWanted {
+			continue
+		}
+		if !ns.DeletionTimestamp.IsZero() {
+			continue
+		}
+		if err := r.Delete(ctx, ns); err != nil && !errors.IsNotFound(err) {
+			return fmt.Errorf("delete stale env ns %q: %w", ns.Name, err)
+		}
 	}
 	return nil
 }
 
-func (r *ProjectReconciler) countApps(ctx context.Context, nsName string) (int32, error) {
+// deleteOwnedNamespaces requests deletion of every namespace this Project owns
+// (control, env, preview). k8s GC cascades to everything inside each ns.
+func (r *ProjectReconciler) deleteOwnedNamespaces(ctx context.Context, project *mortisev1alpha1.Project) error {
+	var nsList corev1.NamespaceList
+	if err := r.List(ctx, &nsList, client.MatchingLabels{
+		constants.ProjectLabel: project.Name,
+	}); err != nil {
+		return fmt.Errorf("list owned namespaces: %w", err)
+	}
+	for i := range nsList.Items {
+		ns := &nsList.Items[i]
+		if ns.Labels["app.kubernetes.io/managed-by"] != "mortise" {
+			continue
+		}
+		if !ns.DeletionTimestamp.IsZero() {
+			continue
+		}
+		if err := r.Delete(ctx, ns); err != nil && !errors.IsNotFound(err) {
+			return fmt.Errorf("delete namespace %q: %w", ns.Name, err)
+		}
+	}
+	return nil
+}
+
+func (r *ProjectReconciler) countApps(ctx context.Context, controlNs string) (int32, error) {
 	var list mortisev1alpha1.AppList
-	if err := r.List(ctx, &list, client.InNamespace(nsName)); err != nil {
+	if err := r.List(ctx, &list, client.InNamespace(controlNs)); err != nil {
 		return 0, err
 	}
 	return int32(len(list.Items)), nil
 }
 
-func (r *ProjectReconciler) markTerminating(ctx context.Context, project *mortisev1alpha1.Project, nsName string) error {
+func (r *ProjectReconciler) markTerminating(ctx context.Context, project *mortisev1alpha1.Project, controlNs string) error {
 	if project.Status.Phase == mortisev1alpha1.ProjectPhaseTerminating {
 		return nil
 	}
 	project.Status.Phase = mortisev1alpha1.ProjectPhaseTerminating
-	project.Status.Namespace = nsName
+	project.Status.Namespace = controlNs
 	return r.Status().Update(ctx, project)
 }
 
-// markReady transitions the Project to Ready and records a NamespaceReady
-// condition. When adopted is true, the reason is ReasonAdopted with a message
-// identifying the adopted namespace; otherwise ReasonReconciled.
-func (r *ProjectReconciler) markReady(ctx context.Context, project *mortisev1alpha1.Project, nsName string, appCount int32, adopted bool) error {
-	reason := ReasonReconciled
-	msg := fmt.Sprintf("namespace %q ready", nsName)
-	if adopted {
-		reason = ReasonAdopted
-		msg = fmt.Sprintf("adopted pre-existing namespace %q", nsName)
-	}
+func (r *ProjectReconciler) markReady(ctx context.Context, project *mortisev1alpha1.Project, controlNs string, appCount int32, envNsMap map[string]string) error {
 	meta.SetStatusCondition(&project.Status.Conditions, metav1.Condition{
 		Type:               ProjectConditionNamespaceReady,
 		Status:             metav1.ConditionTrue,
-		Reason:             reason,
-		Message:            msg,
+		Reason:             ReasonReconciled,
+		Message:            fmt.Sprintf("control %q + %d env namespaces ready", controlNs, len(envNsMap)),
 		ObservedGeneration: project.Generation,
 	})
 	project.Status.Phase = mortisev1alpha1.ProjectPhaseReady
-	project.Status.Namespace = nsName
+	project.Status.Namespace = controlNs
 	project.Status.AppCount = appCount
 	project.Status.Environments = specEnvNames(project)
+	project.Status.EnvNamespaces = envNsMap
 	return r.Status().Update(ctx, project)
 }
 
-// specEnvNames projects spec.environments onto just the names, preserving
-// spec order. Status consumers use this to know which envs the controller
-// has actually observed (post-defaulting).
 func specEnvNames(project *mortisev1alpha1.Project) []string {
 	names := make([]string, 0, len(project.Spec.Environments))
 	for _, env := range project.Spec.Environments {
@@ -472,9 +467,7 @@ func specEnvNames(project *mortisev1alpha1.Project) []string {
 	return names
 }
 
-// markFailed transitions the Project to Failed with a NamespaceReady=False
-// condition carrying the given reason + message.
-func (r *ProjectReconciler) markFailed(ctx context.Context, project *mortisev1alpha1.Project, nsName, reason, message string) error {
+func (r *ProjectReconciler) markFailed(ctx context.Context, project *mortisev1alpha1.Project, controlNs, reason, message string) error {
 	meta.SetStatusCondition(&project.Status.Conditions, metav1.Condition{
 		Type:               ProjectConditionNamespaceReady,
 		Status:             metav1.ConditionFalse,
@@ -483,27 +476,26 @@ func (r *ProjectReconciler) markFailed(ctx context.Context, project *mortisev1al
 		ObservedGeneration: project.Generation,
 	})
 	project.Status.Phase = mortisev1alpha1.ProjectPhaseFailed
-	project.Status.Namespace = nsName
+	project.Status.Namespace = controlNs
 	return r.Status().Update(ctx, project)
 }
 
-// SetupWithManager sets up the controller with the Manager. Watches Apps so
-// that `status.appCount` stays current — App changes enqueue the owning
-// Project, identified via the namespace's `mortise.dev/project` label.
+// SetupWithManager wires the controller. Watches Apps (to keep appCount fresh)
+// and owned Namespaces (to trigger cleanup after cascade deletion).
 func (r *ProjectReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	enqueueProjectForApp := handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []reconcile.Request {
 		app, ok := obj.(*mortisev1alpha1.App)
 		if !ok || app == nil {
 			return nil
 		}
-		// Apps live in namespaces named `project-{name}` (or an override).
-		// Look up the namespace's `mortise.dev/project` label to find the
-		// owning project — this handles the NamespaceOverride case too.
+		// App CRDs live in control namespaces (`pj-{name}`). Look up the
+		// namespace's project label so we find the owning project in both
+		// the common case and when cached label→ns mapping is fresher.
 		var ns corev1.Namespace
 		if err := r.Get(ctx, types.NamespacedName{Name: app.Namespace}, &ns); err != nil {
 			return nil
 		}
-		projectName := ns.Labels["mortise.dev/project"]
+		projectName := ns.Labels[constants.ProjectLabel]
 		if projectName == "" {
 			return nil
 		}

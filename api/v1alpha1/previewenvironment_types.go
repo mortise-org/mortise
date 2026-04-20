@@ -45,6 +45,13 @@ type PreviewEnvironmentSpec struct {
 	// +kubebuilder:validation:Required
 	AppRef string `json:"appRef"`
 
+	// SourceEnv is the project environment name the preview was forked from
+	// (typically `staging`). Bindings declared in the preview resolve against
+	// this env's namespace, so previews share the backing services of their
+	// source env rather than spinning up their own.
+	// +kubebuilder:validation:Required
+	SourceEnv string `json:"sourceEnv"`
+
 	// PullRequest identifies the PR that triggered this preview.
 	// +kubebuilder:validation:Required
 	PullRequest PullRequestRef `json:"pullRequest"`

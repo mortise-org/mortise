@@ -17,6 +17,7 @@ import (
 	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
 	"github.com/MC-Meesh/mortise/internal/api"
 	"github.com/MC-Meesh/mortise/internal/auth"
+	"github.com/MC-Meesh/mortise/internal/constants"
 )
 
 // newLogsServer returns a Server wired with the supplied fake clientset and a
@@ -70,8 +71,9 @@ func lastPodLogOptions(cs *fake.Clientset) *corev1.PodLogOptions {
 	return nil
 }
 
-// seedAppAndPod creates an App CRD and a matching Pod in envtest so the logs
-// handler sees a pod to stream.
+// seedAppAndPod creates an App CRD in the control namespace and a matching
+// Pod in the per-env workload namespace, matching the post-Pivot E layout
+// that the logs/pods handlers expect.
 func seedAppAndPod(t *testing.T, k8sClient client.Client, ns, appName, env, podName string) {
 	t.Helper()
 	ctx := context.Background()
@@ -86,10 +88,14 @@ func seedAppAndPod(t *testing.T, k8sClient client.Client, ns, appName, env, podN
 		t.Fatalf("create app: %v", err)
 	}
 
+	// Pods live in the per-env workload namespace. seedProject pre-creates it.
+	project := strings.TrimPrefix(ns, "pj-")
+	envNs := constants.EnvNamespace(project, env)
+
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      podName,
-			Namespace: ns,
+			Namespace: envNs,
 			Labels: map[string]string{
 				"app.kubernetes.io/name":       appName,
 				"app.kubernetes.io/managed-by": "mortise",
@@ -214,7 +220,7 @@ func TestLogsSSEHeadersWithPod(t *testing.T) {
 	k8sClient := setupEnvtest(t)
 	srv := newAdminServer(t, k8sClient)
 	h := srv.Handler()
-	nsName := seedProject(t, k8sClient, "default")
+	seedProject(t, k8sClient, "default")
 
 	doRequest(h, http.MethodPost, "/api/projects/default/apps", map[string]any{
 		"name": "stream-app",
@@ -226,7 +232,7 @@ func TestLogsSSEHeadersWithPod(t *testing.T) {
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "stream-app-pod-1",
-			Namespace: nsName,
+			Namespace: constants.EnvNamespace("default", "production"),
 			Labels: map[string]string{
 				"app.kubernetes.io/name":       "stream-app",
 				"app.kubernetes.io/managed-by": "mortise",

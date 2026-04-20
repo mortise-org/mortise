@@ -19,20 +19,20 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
+	"github.com/MC-Meesh/mortise/internal/constants"
 )
 
 // fetchParentProject returns the Project that owns the namespace the given
-// App lives in. Apps sit in `project-{name}` namespaces by convention; we
-// resolve via the namespace label set by the Project controller so that
-// `spec.namespaceOverride` paths still work.
+// App lives in. Apps live in the project's control namespace (`pj-{name}`);
+// we fast-path the prefix trim and fall back to the namespace's
+// `mortise.dev/project` label for cases where the namespace was created by
+// hand or a future naming convention is in play.
 //
 // Returns (nil, nil) when no project is found — callers must treat this as a
 // transient condition (project not yet created / being deleted) and skip
 // reconciliation rather than erroring.
 func (r *AppReconciler) fetchParentProject(ctx context.Context, app *mortisev1alpha1.App) (*mortisev1alpha1.Project, error) {
-	// Fast path: default namespace layout. Trimming the prefix avoids a
-	// namespace Get when it's unnecessary.
-	if name, ok := projectNameFromNamespace(app.Namespace); ok {
+	if name, ok := constants.ProjectFromControlNs(app.Namespace); ok {
 		var project mortisev1alpha1.Project
 		if err := r.Get(ctx, types.NamespacedName{Name: name}, &project); err == nil {
 			return &project, nil
@@ -40,7 +40,8 @@ func (r *AppReconciler) fetchParentProject(ctx context.Context, app *mortisev1al
 			return nil, fmt.Errorf("get project %q: %w", name, err)
 		}
 	}
-	// Override path: inspect the namespace label.
+	// Label-based fallback: useful if the namespace name doesn't follow the
+	// `pj-{name}` convention for some reason.
 	var ns corev1.Namespace
 	if err := r.Get(ctx, types.NamespacedName{Name: app.Namespace}, &ns); err != nil {
 		if errors.IsNotFound(err) {
@@ -48,7 +49,7 @@ func (r *AppReconciler) fetchParentProject(ctx context.Context, app *mortisev1al
 		}
 		return nil, fmt.Errorf("get namespace %q: %w", app.Namespace, err)
 	}
-	projectName := ns.Labels["mortise.dev/project"]
+	projectName := ns.Labels[constants.ProjectLabel]
 	if projectName == "" {
 		return nil, nil
 	}
@@ -103,15 +104,10 @@ func resolvedEnvNames(envs []mortisev1alpha1.Environment) map[string]struct{} {
 	return out
 }
 
-// projectNameFromNamespace is the inverse of ProjectNamespace — returns the
-// project name when the namespace follows the default `project-{name}` form.
-// Returns (name, true) only when the prefix matches and the remainder is
-// non-empty. Callers must fall back to namespace-label lookup when this
-// returns false.
+// projectNameFromNamespace is kept as a thin wrapper over
+// constants.ProjectFromControlNs so existing call sites continue to compile;
+// it returns the project name when the namespace is a control namespace
+// (`pj-{name}`). New code should prefer the constants helper directly.
 func projectNameFromNamespace(ns string) (string, bool) {
-	const prefix = "project-"
-	if len(ns) <= len(prefix) || ns[:len(prefix)] != prefix {
-		return "", false
-	}
-	return ns[len(prefix):], true
+	return constants.ProjectFromControlNs(ns)
 }

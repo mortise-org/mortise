@@ -56,7 +56,7 @@ func TestAppValidator_AcceptsOverridesMatchingProject(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(proj).Build()
 	v := &AppValidator{Client: c}
 
-	if _, err := v.ValidateCreate(context.Background(), app("api", "project-web", "production", "staging")); err != nil {
+	if _, err := v.ValidateCreate(context.Background(), app("api", "pj-web", "production", "staging")); err != nil {
 		t.Fatalf("expected override with known envs to pass, got %v", err)
 	}
 }
@@ -66,7 +66,7 @@ func TestAppValidator_RejectsOverrideWithUnknownEnv(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(proj).Build()
 	v := &AppValidator{Client: c}
 
-	_, err := v.ValidateCreate(context.Background(), app("api", "project-web", "staging"))
+	_, err := v.ValidateCreate(context.Background(), app("api", "pj-web", "staging"))
 	if err == nil {
 		t.Fatal("expected rejection for unknown env, got nil")
 	}
@@ -82,7 +82,7 @@ func TestAppValidator_NoOverridesAlwaysPasses(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(proj).Build()
 	v := &AppValidator{Client: c}
 
-	if _, err := v.ValidateCreate(context.Background(), app("api", "project-web")); err != nil {
+	if _, err := v.ValidateCreate(context.Background(), app("api", "pj-web")); err != nil {
 		t.Fatalf("expected no-op, got %v", err)
 	}
 }
@@ -102,8 +102,8 @@ func TestAppValidator_UpdateUsesNewObject(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(proj).Build()
 	v := &AppValidator{Client: c}
 
-	old := app("api", "project-web", "production")
-	updated := app("api", "project-web", "staging")
+	old := app("api", "pj-web", "production")
+	updated := app("api", "pj-web", "staging")
 
 	if _, err := v.ValidateUpdate(context.Background(), old, updated); err == nil {
 		t.Fatal("expected update to the forbidden env to fail")

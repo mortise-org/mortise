@@ -3,8 +3,8 @@
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
   import { api } from '$lib/api';
-  import type { Project, ProjectMember, InviteResponse } from '$lib/types';
-  import { Plus, Trash2, Copy, Check } from 'lucide-svelte';
+  import type { Project, ProjectMember, InviteResponse, ProjectEnvironment, App, EnvHealth } from '$lib/types';
+  import { Plus, Trash2, Copy, Check, ArrowUp, ArrowDown } from 'lucide-svelte';
 
   const projectName = $derived(page.params.project ?? '');
   let project = $state<Project | null>(null);
@@ -24,11 +24,108 @@
   let savingPR = $state(false);
 
   // --- Environments ---
-  let envList = $state<string[]>([]);
+  let envs = $state<ProjectEnvironment[]>([]);
+  let loadingEnvs = $state(false);
   let showAddEnv = $state(false);
   let newEnvName = $state('');
   let savingEnv = $state(false);
   let envError = $state('');
+  let envDeleteTarget = $state<ProjectEnvironment | null>(null);
+  let envDeleteAffected = $state<string[]>([]);
+  let deletingEnv = $state(false);
+
+  const DNS_LABEL = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/;
+
+  async function loadEnvs() {
+    loadingEnvs = true;
+    envError = '';
+    try {
+      envs = await api.listProjectEnvironments(projectName);
+    } catch (e) {
+      envError = e instanceof Error ? e.message : 'Failed to load environments';
+      envs = [];
+    } finally {
+      loadingEnvs = false;
+    }
+  }
+
+  async function createEnv() {
+    const name = newEnvName.trim().toLowerCase();
+    envError = '';
+    if (!DNS_LABEL.test(name) || name.length > 63) {
+      envError = 'Name must be a DNS label (lowercase letters, digits, dashes; ≤63 chars).';
+      return;
+    }
+    if (envs.some(e => e.name === name)) {
+      envError = 'An environment with that name already exists.';
+      return;
+    }
+    savingEnv = true;
+    try {
+      const created = await api.createProjectEnvironment(projectName, name);
+      envs = [...envs, created];
+      newEnvName = '';
+      showAddEnv = false;
+    } catch (e) {
+      envError = e instanceof Error ? e.message : 'Failed to create environment';
+    } finally {
+      savingEnv = false;
+    }
+  }
+
+  async function moveEnv(name: string, delta: -1 | 1) {
+    const idx = envs.findIndex(e => e.name === name);
+    const target = idx + delta;
+    if (idx < 0 || target < 0 || target >= envs.length) return;
+    const next = [...envs];
+    [next[idx], next[target]] = [next[target], next[idx]];
+    const prev = envs;
+    envs = next.map((e, i) => ({ ...e, displayOrder: i }));
+    try {
+      await api.updateProjectEnvironment(projectName, name, { displayOrder: target });
+    } catch (e) {
+      envs = prev;
+      envError = e instanceof Error ? e.message : 'Failed to reorder';
+    }
+  }
+
+  async function openEnvDelete(env: ProjectEnvironment) {
+    envDeleteTarget = env;
+    envDeleteAffected = [];
+    try {
+      const apps: App[] = await api.listApps(projectName);
+      envDeleteAffected = apps
+        .filter(a => (a.spec.environments ?? []).some(e => e.name === env.name))
+        .map(a => a.metadata.name);
+    } catch {
+      envDeleteAffected = [];
+    }
+  }
+
+  async function confirmEnvDelete() {
+    if (!envDeleteTarget) return;
+    deletingEnv = true;
+    const name = envDeleteTarget.name;
+    try {
+      await api.deleteProjectEnvironment(projectName, name);
+      envs = envs.filter(e => e.name !== name);
+      envDeleteTarget = null;
+      envDeleteAffected = [];
+    } catch (e) {
+      envError = e instanceof Error ? e.message : 'Failed to delete environment';
+    } finally {
+      deletingEnv = false;
+    }
+  }
+
+  function healthDot(h?: EnvHealth): string {
+    switch (h) {
+      case 'healthy': return 'bg-success';
+      case 'warning': return 'bg-warning';
+      case 'danger': return 'bg-error';
+      default: return 'bg-gray-500';
+    }
+  }
 
   // --- Members ---
   let members = $state<ProjectMember[]>([]);
@@ -100,6 +197,7 @@
 
   async function switchTab(tab: typeof activeTab) {
     activeTab = tab;
+    if (tab === 'environments' && envs.length === 0 && !loadingEnvs) await loadEnvs();
     if (tab === 'members' && members.length === 0 && !loadingMembers) await loadMembers();
     if (tab === 'shared-vars' && Object.keys(sharedVars).length === 0 && !loadingShared) await loadSharedVars();
     if (tab === 'danger' && projectApps.length === 0 && !loadingApps) await loadAppsForDanger();
@@ -204,7 +302,7 @@
 
 <div class="flex h-full">
   <!-- Left tab rail -->
-  <nav class="flex w-44 shrink-0 flex-col border-r border-surface-600 bg-surface-800 pt-4">
+  <nav class="flex w-44 shrink-0 flex-col border-r border-surface-600 bg-surface-800">
     <button type="button" class={tabCls('general')} onclick={() => switchTab('general')}>General</button>
     <button type="button" class={tabCls('environments')} onclick={() => switchTab('environments')}>Environments</button>
     <button type="button" class={tabCls('shared-vars')} onclick={() => switchTab('shared-vars')}>Shared Variables</button>
@@ -285,51 +383,72 @@
         <div class="mb-4 flex items-center justify-between">
           <div>
             <h2 class="text-sm font-medium text-white">Environments</h2>
-            <p class="text-xs text-gray-500">Manage named deployment environments for this project.</p>
+            <p class="text-xs text-gray-500">Every app in this project deploys to every environment here.</p>
           </div>
-          <button type="button" onclick={() => showAddEnv = true}
+          <button type="button" onclick={() => { showAddEnv = true; envError = ''; }}
             class="flex items-center gap-1 rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-white hover:bg-accent-hover">
             <Plus class="h-3.5 w-3.5" /> New environment
           </button>
         </div>
 
-        <div class="space-y-2">
-          {#each ['production', 'staging'] as env}
-            <div class="flex items-center justify-between rounded-md border border-surface-600 bg-surface-800 px-4 py-3">
-              <div>
-                <p class="text-sm font-medium text-white">{env}</p>
-                <p class="text-xs text-gray-500">{env === 'production' ? 'Default environment' : 'Staging'}</p>
+        {#if envError}
+          <p class="mb-3 rounded bg-danger/10 px-3 py-2 text-xs text-danger">{envError}</p>
+        {/if}
+
+        {#if loadingEnvs}
+          <div class="h-20 animate-pulse rounded bg-surface-700"></div>
+        {:else if envs.length === 0}
+          <div class="rounded-md border border-dashed border-surface-600 p-6 text-center">
+            <p class="text-sm text-gray-500">No environments yet.</p>
+          </div>
+        {:else}
+          <div class="space-y-2">
+            {#each envs as env, i (env.name)}
+              <div class="flex items-center gap-3 rounded-md border border-surface-600 bg-surface-800 px-4 py-3">
+                <div class="flex flex-col gap-0.5">
+                  <button type="button"
+                    onclick={() => moveEnv(env.name, -1)}
+                    disabled={i === 0}
+                    aria-label="Move up"
+                    class="text-gray-500 hover:text-white disabled:opacity-30">
+                    <ArrowUp class="h-3 w-3" />
+                  </button>
+                  <button type="button"
+                    onclick={() => moveEnv(env.name, 1)}
+                    disabled={i === envs.length - 1}
+                    aria-label="Move down"
+                    class="text-gray-500 hover:text-white disabled:opacity-30">
+                    <ArrowDown class="h-3 w-3" />
+                  </button>
+                </div>
+                <span class="inline-block h-2 w-2 shrink-0 rounded-full {healthDot(env.health)}" title={env.health ?? 'unknown'}></span>
+                <p class="flex-1 text-sm font-medium text-white">{env.name}</p>
+                {#if envs.length > 1}
+                  <button type="button"
+                    onclick={() => openEnvDelete(env)}
+                    class="flex items-center gap-1 text-xs text-gray-500 hover:text-danger">
+                    <Trash2 class="h-3.5 w-3.5" /> Delete
+                  </button>
+                {:else}
+                  <span class="text-xs text-gray-500">Last environment</span>
+                {/if}
               </div>
-              {#if env !== 'production'}
-                <button type="button"
-                  class="text-xs text-gray-500 hover:text-danger">Remove</button>
-              {:else}
-                <span class="text-xs text-gray-500">Default</span>
-              {/if}
-            </div>
-          {/each}
-          {#each envList as env}
-            <div class="flex items-center justify-between rounded-md border border-surface-600 bg-surface-800 px-4 py-3">
-              <p class="text-sm font-medium text-white">{env}</p>
-              <button type="button" onclick={() => { envList = envList.filter(e => e !== env); }}
-                class="text-xs text-gray-500 hover:text-danger">Remove</button>
-            </div>
-          {/each}
-        </div>
+            {/each}
+          </div>
+        {/if}
 
         {#if showAddEnv}
           <div class="mt-3 rounded-md border border-surface-600 bg-surface-800 p-4 space-y-3">
             <div>
               <label class={labelCls} for="new-env">Environment name</label>
               <input id="new-env" type="text" bind:value={newEnvName} placeholder="e.g. staging, preview" class={inputCls} />
+              <p class="mt-1 text-xs text-gray-500">Lowercase letters, digits, and dashes. Max 63 chars.</p>
             </div>
-            {#if envError}<p class="text-xs text-danger">{envError}</p>{/if}
             <div class="flex gap-2">
-              <button type="button" onclick={() => { if (newEnvName.trim()) { envList = [...envList, newEnvName.trim()]; newEnvName = ''; showAddEnv = false; } }}
-                disabled={!newEnvName.trim() || savingEnv} class={btnPrimary}>
+              <button type="button" onclick={createEnv} disabled={!newEnvName.trim() || savingEnv} class={btnPrimary}>
                 {savingEnv ? 'Creating…' : 'Create'}
               </button>
-              <button type="button" onclick={() => { showAddEnv = false; newEnvName = ''; }} class={btnSecondary}>Cancel</button>
+              <button type="button" onclick={() => { showAddEnv = false; newEnvName = ''; envError = ''; }} class={btnSecondary}>Cancel</button>
             </div>
           </div>
         {/if}
@@ -340,6 +459,36 @@
           <a href="/projects/{projectName}/previews" class="mt-2 inline-block text-xs text-accent hover:underline">View active PR environments →</a>
         </div>
       </div>
+
+      {#if envDeleteTarget}
+        <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+          <div class="w-[28rem] rounded-lg border border-surface-600 bg-surface-800 p-5">
+            <h3 class="mb-2 text-sm font-semibold text-white">Delete environment "{envDeleteTarget.name}"?</h3>
+            <p class="mb-3 text-xs text-gray-400">
+              This will garbage-collect all Deployments, Services, Ingresses, PVCs, and Secrets for this environment across every app in the project.
+            </p>
+            {#if envDeleteAffected.length > 0}
+              <div class="mb-3 rounded-md border border-warning/30 bg-warning/5 p-3">
+                <p class="mb-1 text-xs font-medium text-warning">Apps with overrides for this env:</p>
+                <ul class="list-disc pl-5 text-xs text-gray-300">
+                  {#each envDeleteAffected as name}
+                    <li>{name}</li>
+                  {/each}
+                </ul>
+                <p class="mt-2 text-xs text-gray-500">Their <code class="font-mono">spec.environments[{envDeleteTarget.name}]</code> entries will be removed automatically.</p>
+              </div>
+            {/if}
+            <div class="flex justify-end gap-2">
+              <button type="button" onclick={() => { envDeleteTarget = null; envDeleteAffected = []; }}
+                class={btnSecondary}>Cancel</button>
+              <button type="button" onclick={confirmEnvDelete} disabled={deletingEnv}
+                class="rounded-md bg-danger px-4 py-2 text-sm font-medium text-white hover:bg-danger/80 disabled:opacity-50">
+                {deletingEnv ? 'Deleting…' : 'Delete environment'}
+              </button>
+            </div>
+          </div>
+        </div>
+      {/if}
 
     {:else if activeTab === 'shared-vars'}
       <div class="max-w-lg">

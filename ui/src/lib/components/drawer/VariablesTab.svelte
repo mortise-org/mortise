@@ -1,16 +1,18 @@
 <script lang="ts">
 	import { api } from '$lib/api';
-	import type { App } from '$lib/types';
+	import type { App, ProjectEnvironment } from '$lib/types';
 	import BindingsPicker from '$lib/components/BindingsPicker.svelte';
 	import { Plus, Trash2, Link, Upload, FileText, ChevronDown, X } from 'lucide-svelte';
 
 	let {
 		project,
 		app,
+		projectEnvs = [],
 		onAppUpdated
 	}: {
 		project: string;
 		app: App;
+		projectEnvs?: ProjectEnvironment[];
 		onAppUpdated: (app: App) => void;
 	} = $props();
 
@@ -41,7 +43,11 @@
 		dismissTimer = setTimeout(() => { restartTriggered = false; }, 4000);
 	}
 
-	const envNames = $derived(app.spec.environments?.map(e => e.name) ?? ['production']);
+	const envNames = $derived(
+		projectEnvs.length > 0
+			? projectEnvs.map(e => e.name)
+			: (app.spec.environments?.map(e => e.name) ?? ['production'])
+	);
 
 	function makeSection(expanded: boolean): SectionState {
 		return {

@@ -16,10 +16,13 @@ import (
 	"github.com/MC-Meesh/mortise/internal/constants"
 )
 
-// maxProjectNameLen is the maximum length of a Project name. The backing
-// namespace is `project-{name}` and k8s caps namespace names at 63 chars, so
-// names can be at most 63 - len("project-") = 55 characters.
-const maxProjectNameLen = 63 - len(constants.ProjectNamespacePrefix)
+// maxProjectNameLen caps the Project name so env namespaces (`pj-{name}-{env}`)
+// have reasonable room for env-name characters. With a 63-char namespace limit
+// and `pj-` (3) + "-" (1) = 4 chars of overhead plus a worst-case env name,
+// we cap the project at 30 chars — leaves 29 chars for env names, which
+// comfortably covers `production`, `staging`, `preview`, etc. The controller
+// rejects overflow at admission time too.
+const maxProjectNameLen = 30
 
 // dns1123LabelRegex matches a valid DNS-1123 label: lowercase alphanumerics
 // and hyphens, must start/end with an alphanumeric. Project names must be
@@ -32,22 +35,15 @@ func validateProjectName(name string) string {
 	return validateDNSLabel("name", name, maxProjectNameLen)
 }
 
-// projectNamespace returns the backing namespace name for a Project.
+// projectNamespace returns the control namespace name for a Project.
 func projectNamespace(projectName string) string {
-	return constants.ProjectNamespacePrefix + projectName
+	return constants.ControlNamespace(projectName)
 }
 
 // createProjectRequest is the JSON body for creating a Project.
-//
-// NamespaceOverride and AdoptExistingNamespace are admin-only knobs
-// (spec §5.0); they are accepted here because the handler is already gated
-// behind requireAdmin. Non-admin requests are rejected at the top of the
-// handler, so members cannot set them.
 type createProjectRequest struct {
-	Name                   string `json:"name"`
-	Description            string `json:"description,omitempty"`
-	NamespaceOverride      string `json:"namespaceOverride,omitempty"`
-	AdoptExistingNamespace bool   `json:"adoptExistingNamespace,omitempty"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
 }
 
 // projectResponse is the JSON shape returned for Project GETs. It is a flat,
@@ -95,25 +91,13 @@ func (s *Server) CreateProject(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errorResponse{msg})
 		return
 	}
-	if req.NamespaceOverride != "" {
-		if len(req.NamespaceOverride) > 63 {
-			writeJSON(w, http.StatusBadRequest, errorResponse{"namespaceOverride must be 63 characters or fewer"})
-			return
-		}
-		if !dns1123LabelRegex.MatchString(req.NamespaceOverride) {
-			writeJSON(w, http.StatusBadRequest, errorResponse{"namespaceOverride must be a DNS-1123 label"})
-			return
-		}
-	}
 
 	project := &mortisev1alpha1.Project{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: req.Name,
 		},
 		Spec: mortisev1alpha1.ProjectSpec{
-			Description:            req.Description,
-			NamespaceOverride:      req.NamespaceOverride,
-			AdoptExistingNamespace: req.AdoptExistingNamespace,
+			Description: req.Description,
 		},
 	}
 
@@ -177,34 +161,37 @@ func (s *Server) DeleteProject(w http.ResponseWriter, r *http.Request) {
 
 // resolveProject is called at the top of every app/secret/log/deploy handler
 // nested under /api/projects/{project}. It reads the {project} URL param,
-// fetches the Project CRD, 404s if missing, and returns the backing namespace
-// name the caller should use for its k8s operations.
+// fetches the Project CRD, 404s if missing, and returns the control namespace
+// name and the project name. The control namespace holds CRDs (App,
+// PreviewEnvironment) and App-owned shared resources (build logs, deploy
+// tokens, registry pull secrets). Per-env workload namespaces are derived
+// from projectName via constants.EnvNamespace.
 //
 // On any failure, resolveProject writes the HTTP response itself and returns
 // ok=false; the caller should simply return.
-func (s *Server) resolveProject(w http.ResponseWriter, r *http.Request) (namespace string, ok bool) {
-	projectName := chi.URLParam(r, "project")
+func (s *Server) resolveProject(w http.ResponseWriter, r *http.Request) (namespace, projectName string, ok bool) {
+	projectName = chi.URLParam(r, "project")
 	if projectName == "" {
 		writeJSON(w, http.StatusBadRequest, errorResponse{"project is required"})
-		return "", false
+		return "", "", false
 	}
 
 	var project mortisev1alpha1.Project
 	err := s.client.Get(r.Context(), types.NamespacedName{Name: projectName}, &project)
 	if errors.IsNotFound(err) {
 		writeJSON(w, http.StatusNotFound, errorResponse{fmt.Sprintf("project %q not found", projectName)})
-		return "", false
+		return "", "", false
 	}
 	if err != nil {
 		writeError(w, err)
-		return "", false
+		return "", "", false
 	}
 
 	ns := project.Status.Namespace
 	if ns == "" {
 		ns = projectNamespace(project.Name)
 	}
-	return ns, true
+	return ns, project.Name, true
 }
 
 // requireAdmin writes a 403 and returns false if the authenticated principal

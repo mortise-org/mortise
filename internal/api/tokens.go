@@ -36,7 +36,7 @@ type tokenResponse struct {
 // CreateToken generates a deploy token, stores its hash as a k8s Secret, and
 // returns the raw token value once.
 func (s *Server) CreateToken(w http.ResponseWriter, r *http.Request) {
-	ns, ok := s.resolveProject(w, r)
+	ns, _, ok := s.resolveProject(w, r)
 	if !ok {
 		return
 	}
@@ -99,7 +99,7 @@ func (s *Server) CreateToken(w http.ResponseWriter, r *http.Request) {
 
 // ListTokens returns metadata for all deploy tokens scoped to an app.
 func (s *Server) ListTokens(w http.ResponseWriter, r *http.Request) {
-	ns, ok := s.resolveProject(w, r)
+	ns, _, ok := s.resolveProject(w, r)
 	if !ok {
 		return
 	}
@@ -135,7 +135,7 @@ func (s *Server) ListTokens(w http.ResponseWriter, r *http.Request) {
 
 // DeleteToken revokes a deploy token by deleting its backing Secret.
 func (s *Server) DeleteToken(w http.ResponseWriter, r *http.Request) {
-	ns, ok := s.resolveProject(w, r)
+	ns, _, ok := s.resolveProject(w, r)
 	if !ok {
 		return
 	}

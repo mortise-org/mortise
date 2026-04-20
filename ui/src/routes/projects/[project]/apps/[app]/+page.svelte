@@ -73,10 +73,12 @@
 		{/if}
 
 		<!-- Drawer overlay -->
-		<AppDrawer
-			project={projectName}
-			{appName}
-			onClose={closeDrawer}
-		/>
+		{#key appName}
+			<AppDrawer
+				project={projectName}
+				{appName}
+				onClose={closeDrawer}
+			/>
+		{/key}
 	</div>
 </div>

@@ -207,10 +207,10 @@ type Binding struct {
 	// the binder's own project namespace.
 	Ref string `json:"ref"`
 
-	// Project, if set, resolves the ref in the namespace of the named Project
-	// (`project-{project}`) instead of the binder's own namespace. Enables
-	// cross-project bindings (e.g. binding app in `web` project to a db in
-	// `infra` project).
+	// Project, if set, resolves the ref in the matching env namespace of the
+	// named Project (`pj-{project}-{env}`) instead of the binder's own env
+	// namespace. Enables cross-project bindings (e.g. binding app in `web`
+	// project to a db in `infra` project).
 	// +optional
 	Project string `json:"project,omitempty"`
 }

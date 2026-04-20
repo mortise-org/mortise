@@ -18,7 +18,7 @@ func TestProjectList_GetsAPIProjects(t *testing.T) {
 			t.Errorf("unexpected method: %s", r.Method)
 		}
 		_ = json.NewEncoder(w).Encode([]ProjectResponse{
-			{Name: "default", Namespace: "project-default", Phase: "Ready", AppCount: 2},
+			{Name: "default", Namespace: "pj-default", Phase: "Ready", AppCount: 2},
 		})
 	}))
 	defer srv.Close()
@@ -50,7 +50,7 @@ func TestProjectCreate_PostsName(t *testing.T) {
 			t.Errorf("expected description 'a description', got %q", req.Description)
 		}
 		w.WriteHeader(http.StatusCreated)
-		_ = json.NewEncoder(w).Encode(ProjectResponse{Name: req.Name, Namespace: "project-new-proj"})
+		_ = json.NewEncoder(w).Encode(ProjectResponse{Name: req.Name, Namespace: "pj-new-proj"})
 	}))
 	defer srv.Close()
 
@@ -117,9 +117,120 @@ func TestProjectSubcommands(t *testing.T) {
 	for _, c := range p.Commands() {
 		subs[c.Name()] = true
 	}
-	for _, name := range []string{"list", "create", "delete", "use", "show"} {
+	for _, name := range []string{"list", "create", "delete", "use", "show", "env"} {
 		if !subs[name] {
 			t.Errorf("missing project subcommand: %s", name)
 		}
+	}
+}
+
+func TestProjectEnvSubcommands(t *testing.T) {
+	env := newProjectEnvCmd()
+	subs := map[string]bool{}
+	for _, c := range env.Commands() {
+		subs[c.Name()] = true
+	}
+	for _, name := range []string{"list", "create", "delete", "rename"} {
+		if !subs[name] {
+			t.Errorf("missing project env subcommand: %s", name)
+		}
+	}
+}
+
+func TestProjectEnvList_GetsAPIEnvs(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got, want := r.URL.Path, "/api/projects/demo/environments"; got != want {
+			t.Errorf("unexpected path: got %q, want %q", got, want)
+		}
+		if r.Method != http.MethodGet {
+			t.Errorf("unexpected method: %s", r.Method)
+		}
+		_ = json.NewEncoder(w).Encode([]ProjectEnvResponse{
+			{Name: "production", DisplayOrder: 0, Health: "healthy"},
+			{Name: "staging", DisplayOrder: 1, Health: "unknown"},
+		})
+	}))
+	defer srv.Close()
+
+	c := &Client{BaseURL: srv.URL, Token: "t", HTTPClient: srv.Client()}
+	envs, err := c.ListProjectEnvs("demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(envs) != 2 || envs[0].Name != "production" || envs[1].Name != "staging" {
+		t.Fatalf("unexpected envs: %+v", envs)
+	}
+}
+
+func TestProjectEnvCreate_PostsName(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got, want := r.URL.Path, "/api/projects/demo/environments"; got != want {
+			t.Errorf("unexpected path: got %q, want %q", got, want)
+		}
+		if r.Method != http.MethodPost {
+			t.Errorf("unexpected method: %s", r.Method)
+		}
+		var req createProjectEnvRequest
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if req.Name != "staging" || req.DisplayOrder != 2 {
+			t.Errorf("unexpected body: %+v", req)
+		}
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(ProjectEnvResponse{Name: req.Name, DisplayOrder: req.DisplayOrder})
+	}))
+	defer srv.Close()
+
+	c := &Client{BaseURL: srv.URL, Token: "t", HTTPClient: srv.Client()}
+	env, err := c.CreateProjectEnv("demo", "staging", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if env.Name != "staging" {
+		t.Errorf("unexpected env name: %q", env.Name)
+	}
+}
+
+func TestProjectEnvRename_PatchesName(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got, want := r.URL.Path, "/api/projects/demo/environments/staging"; got != want {
+			t.Errorf("unexpected path: got %q, want %q", got, want)
+		}
+		if r.Method != http.MethodPatch {
+			t.Errorf("unexpected method: %s", r.Method)
+		}
+		var req patchProjectEnvRequest
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if req.Name == nil || *req.Name != "stage" {
+			t.Errorf("unexpected body: %+v", req)
+		}
+		_ = json.NewEncoder(w).Encode(ProjectEnvResponse{Name: "stage"})
+	}))
+	defer srv.Close()
+
+	c := &Client{BaseURL: srv.URL, Token: "t", HTTPClient: srv.Client()}
+	env, err := c.RenameProjectEnv("demo", "staging", "stage")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if env.Name != "stage" {
+		t.Errorf("unexpected env name: %q", env.Name)
+	}
+}
+
+func TestProjectEnvDelete_Deletes(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got, want := r.URL.Path, "/api/projects/demo/environments/staging"; got != want {
+			t.Errorf("unexpected path: got %q, want %q", got, want)
+		}
+		if r.Method != http.MethodDelete {
+			t.Errorf("unexpected method: %s", r.Method)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "deleted"})
+	}))
+	defer srv.Close()
+
+	c := &Client{BaseURL: srv.URL, Token: "t", HTTPClient: srv.Client()}
+	if err := c.DeleteProjectEnv("demo", "staging"); err != nil {
+		t.Fatal(err)
 	}
 }

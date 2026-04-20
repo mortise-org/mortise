@@ -9,7 +9,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/go-chi/chi/v5"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
@@ -35,11 +34,10 @@ type createStackResponse struct {
 }
 
 func (s *Server) CreateStack(w http.ResponseWriter, r *http.Request) {
-	ns, ok := s.resolveProject(w, r)
+	ns, project, ok := s.resolveProject(w, r)
 	if !ok {
 		return
 	}
-	project := chi.URLParam(r, "project")
 
 	var req createStackRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {

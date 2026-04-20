@@ -87,12 +87,17 @@ CRDs. Backing services (Postgres, Redis) are Apps with
 `network.public: false` and a `credentials` block. Other Apps bind to them.
 
 **Apps live inside Projects, not free-floating.** Every App belongs to
-exactly one Project; its namespace is `project-{project-name}`. Users,
-URLs, and CLI commands scope to a current project context. When in doubt
-about where something goes: does it exist PER PROJECT (apps, secrets,
-domains, preview envs) or PER PLATFORM (users, git providers, DNS config,
-platform domain)? Per-project → lives under the project namespace.
-Per-platform → lives in `mortise-system` or a cluster-scoped CRD.
+exactly one Project; its *control* namespace is `pj-{project-name}` and
+its *workload* namespaces are `pj-{project-name}-{env-name}` (one per
+environment). Apps, PreviewEnvironments, and other project-owned CRDs
+live in the control namespace; Deployments, Services, Ingresses, Pods,
+PVCs, env-scoped Secrets and ConfigMaps live in the per-env namespace.
+Users, URLs, and CLI commands scope to a current project context. When
+in doubt about where something goes: does it exist PER PROJECT (apps,
+secrets, domains, preview envs) or PER PLATFORM (users, git providers,
+DNS config, platform domain)? Per-project → lives under the control
+namespace. Per-platform → lives in `mortise-system` or a cluster-scoped
+CRD.
 
 ### Mortise owns only what it creates
 
@@ -305,18 +310,19 @@ spec:
   description: "Customer-facing SaaS stack"
 status:
   phase: Ready               # Pending | Ready | Terminating | Failed
-  namespace: project-my-saas
+  namespace: pj-my-saas
   appCount: 3
 ```
 
 ```yaml
 # App — the user-facing workload resource
-# Apps live in their Project's namespace: metadata.namespace = project-{project-name}
+# Apps live in their Project's control namespace: metadata.namespace = pj-{project-name}
+# Workloads fan out into pj-{project-name}-{env-name} per environment.
 apiVersion: mortise.dev/v1alpha1
 kind: App
 metadata:
   name: my-app
-  namespace: project-my-saas
+  namespace: pj-my-saas
 spec:
   source:
     type: git | image
@@ -379,3 +385,11 @@ Deleting the App garbage-collects everything.
 - Adding "helpful" abstractions or plug-in machinery
 - Using `:latest` tags anywhere — always pin digests or specific versions
 - Adding comments that describe WHAT instead of WHY
+- Writing workload resources (Deployment, Service, Ingress, Pod, PVC,
+  env-scoped Secret/ConfigMap) into the control namespace `pj-{project}`.
+  Those belong in the per-env namespace `pj-{project}-{env}`. Only
+  project-scoped CRDs (App, PreviewEnvironment) and project-level
+  resources (activity ConfigMap, registry creds) live in the control ns.
+- Hard-coding the legacy `project-{name}` prefix. The current convention
+  is `pj-{name}` for control ns and `pj-{name}-{env}` for env ns —
+  always go through `internal/constants` helpers.

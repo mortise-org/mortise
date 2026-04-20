@@ -5,14 +5,24 @@ whenever implementation status changes — see the **Keeping this file up to
 date** section at the bottom.
 
 Legend: **Done** / **Partial** / **Not started**
-Last reconciled against spec + code: 2026-04-18 (Git auth consolidation — GitProvider
+Last reconciled against spec + code: 2026-04-20 (Per-env namespace refactor — Projects
+now own a control namespace `pj-{name}` plus one env namespace `pj-{name}-{env}` per
+declared environment. App CRDs and PreviewEnvironment CRDs live in the control ns;
+Deployments, Services, Ingresses, Pods, PVCs, env-scoped Secrets/ConfigMaps fan out
+across env namespaces via the App controller. REST API resolves control vs env
+namespace per handler (CRDs + project-scoped → control ns; Pods, Logs, Exec, Proxy,
+Rollback Deployment → env ns). Webhook handler looks up project via
+`constants.ProjectFromControlNs`. Bindings resolver scopes cross-project to the
+matching env ns. Unit tests, integration tests, and docs swept to the new
+`pj-` prefix; legacy `project-{name}` literals removed from Go code and docs.)
+Prior reconciliation (2026-04-18): Git auth consolidation — GitProvider
 CRD simplified: `spec.oauth` deleted, replaced by `spec.clientID` (plain string) +
 `spec.clientSecretRef` (optional `*SecretRef`); `spec.webhookSecretRef` changed to
 optional pointer; token storage now per-user (`user-{providerName}-token-{hex(email)}`);
 OAuth code grant flow removed, device flow is primary auth for GitHub; `providerRef`
 required on all git-source Apps; PlatformConfig auto-creates default GitHub GitProvider;
 device flow routes moved to `/api/auth/git/{provider}/...`; poll endpoint requires JWT;
-`ErrAuthFailed` sentinel added. Issue #29 resolved.)
+`ErrAuthFailed` sentinel added. Issue #29 resolved.
 
 ---
 
@@ -255,7 +265,8 @@ CLI (`cmd/cli/`):
 Works:
 - `internal/bindings/resolver.go` resolves bindings into `[]corev1.EnvVar`.
 - Cross-project bindings supported at the resolver level via
-  `Binding.Project` → namespace `project-{project}`.
+  `Binding.Project` → env namespace `pj-{project}-{env}` (matching env
+  of the binder).
 - `internal/api/secrets.go` implements per-app user-secret CRUD.
 - `{app}-credentials` Secret materialised by `reconcileCredentialsSecret` in
   `app_controller.go` from `spec.credentials` (Flavor A, §5.5a). Credential
@@ -290,7 +301,8 @@ Missing:
   `Pending | Ready | Terminating | Failed`, `status.namespace`,
   `status.appCount`.
 - `ProjectReconciler` (`internal/controller/project_controller.go`): creates
-  the backing namespace `project-{name}` with owner reference and finalizer
+  the control namespace `pj-{name}` plus one env namespace `pj-{name}-{env}`
+  per declared environment, each with owner reference and finalizer
   `mortise.dev/project-finalizer`; finalizer cascades namespace teardown so
   apps GC with the project.
 - REST: `internal/api/projects.go` with DNS-1123 validation,
@@ -616,10 +628,13 @@ Integration test proves it against in-cluster Gitea + BuildKit + registry.
   preview is enabled participates in each open PR's preview namespace; there
   is no per-App opt-out in v1.
 - `internal/controller/previewenvironment_controller.go`: full reconciler —
-  parent App lookup, parent Project lookup (derived from `project-` namespace
-  prefix) + validation (git source, `project.spec.preview.enabled`), async
-  build via `buildTrackerStore` (same pattern as App controller), Deployment +
-  Service + Ingress creation with owner references, TTL expiry auto-delete,
+  parent App lookup, parent Project lookup (derived from the `pj-` control
+  namespace prefix via `constants.ProjectFromControlNs`) + validation (git
+  source, `project.spec.preview.enabled`), async build via `buildTrackerStore`
+  (same pattern as App controller), Deployment + Service + Ingress creation
+  in a per-PR namespace `pj-{project}-pr-{num}` (owner references replaced
+  with label-driven finalizer GC since owner refs can't cross namespaces),
+  TTL expiry auto-delete,
   commit status posting via GitAPI.PostCommitStatus. `ResolvePreviewDomain`
   helper for `{number}`/`{app}` template expansion. Injectable clock for TTL
   tests.
@@ -644,7 +659,7 @@ Integration test proves it against in-cluster Gitea + BuildKit + registry.
 
 Per-project audit event log. SPEC §5.11 defines a ring-buffer store capped
 at 500 events per project, backed by a ConfigMap
-`activity-{project}` in namespace `project-{project}`, with every write
+`activity-{project}` in the control namespace `pj-{project}`, with every write
 also emitting a JSON line to stdout for external log-pipeline scrape.
 
 Landed (foundation):

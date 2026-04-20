@@ -35,11 +35,14 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
 	"github.com/MC-Meesh/mortise/internal/bindings"
 	"github.com/MC-Meesh/mortise/internal/build"
+	"github.com/MC-Meesh/mortise/internal/constants"
 	"github.com/MC-Meesh/mortise/internal/git"
 	"github.com/MC-Meesh/mortise/internal/ingress"
 	"github.com/MC-Meesh/mortise/internal/registry"
@@ -47,6 +50,11 @@ import (
 
 const previewBuildTimeout = 30 * time.Minute
 const previewBuildPollInterval = 15 * time.Second
+
+// previewFinalizer gates PreviewEnvironment deletion so we can garbage-collect
+// resources in the per-PR namespace (`pj-{project}-pr-{num}`). Owner
+// references don't cascade cross-namespace, so we list+delete by label.
+const previewFinalizer = "mortise.dev/preview-finalizer"
 
 // PreviewEnvironmentReconciler reconciles a PreviewEnvironment object.
 type PreviewEnvironmentReconciler struct {
@@ -67,12 +75,12 @@ type PreviewEnvironmentReconciler struct {
 // +kubebuilder:rbac:groups=mortise.mortise.dev,resources=projects,verbs=get;list;watch
 
 // getProjectForApp resolves the parent Project for an App by stripping the
-// `project-` prefix off the App's namespace. Returns an error if the App is
-// not in a project-scoped namespace or the Project cannot be fetched.
+// control-namespace prefix (`pj-`) off the App's namespace. Returns an error
+// if the App is not in a control namespace or the Project cannot be fetched.
 func (r *PreviewEnvironmentReconciler) getProjectForApp(ctx context.Context, app *mortisev1alpha1.App) (*mortisev1alpha1.Project, error) {
-	projectName := strings.TrimPrefix(app.Namespace, "project-")
-	if projectName == app.Namespace || projectName == "" {
-		return nil, fmt.Errorf("App %q is not in a project-scoped namespace (%q)", app.Name, app.Namespace)
+	projectName, ok := constants.ProjectFromControlNs(app.Namespace)
+	if !ok {
+		return nil, fmt.Errorf("App %q is not in a control namespace (%q)", app.Name, app.Namespace)
 	}
 	var project mortisev1alpha1.Project
 	if err := r.Get(ctx, types.NamespacedName{Name: projectName}, &project); err != nil {
@@ -90,6 +98,36 @@ func (r *PreviewEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.R
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, err
+	}
+
+	projectName, ok := constants.ProjectFromControlNs(pe.Namespace)
+	if !ok {
+		return ctrl.Result{}, r.setPreviewFailed(ctx, &pe, "BadNamespace",
+			fmt.Sprintf("PreviewEnvironment %q not in a control namespace (%q)", pe.Name, pe.Namespace))
+	}
+	previewNs := constants.PreviewNamespace(projectName, pe.Spec.PullRequest.Number)
+
+	// Handle deletion: run cross-ns GC via finalizer, then drop the finalizer.
+	if !pe.DeletionTimestamp.IsZero() {
+		if controllerutil.ContainsFinalizer(&pe, previewFinalizer) {
+			if err := r.gcPreviewResources(ctx, &pe, previewNs); err != nil {
+				return ctrl.Result{}, fmt.Errorf("gc preview resources: %w", err)
+			}
+			controllerutil.RemoveFinalizer(&pe, previewFinalizer)
+			if err := r.Update(ctx, &pe); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
+		return ctrl.Result{}, nil
+	}
+
+	// Add the finalizer before creating anything cross-namespace so an early
+	// abort or crash still leaves us with a cleanup path.
+	if !controllerutil.ContainsFinalizer(&pe, previewFinalizer) {
+		controllerutil.AddFinalizer(&pe, previewFinalizer)
+		if err := r.Update(ctx, &pe); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 
 	// Check TTL expiry before doing anything else.
@@ -123,6 +161,10 @@ func (r *PreviewEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.R
 		return ctrl.Result{}, r.setPreviewFailed(ctx, &pe, "PreviewDisabledOnProject", fmt.Sprintf("Project %q does not have preview.enabled: true", project.Name))
 	}
 
+	if err := r.ensurePreviewNamespace(ctx, project, &pe, previewNs); err != nil {
+		return ctrl.Result{}, r.setPreviewFailed(ctx, &pe, "NamespaceCreateFailed", err.Error())
+	}
+
 	// Calculate expiresAt if not set.
 	if pe.Status.ExpiresAt == nil && pe.Spec.TTL.Duration > 0 {
 		expires := metav1.NewTime(r.clock().Now().Add(pe.Spec.TTL.Duration))
@@ -138,15 +180,15 @@ func (r *PreviewEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.R
 		return result, nil
 	}
 
-	// Build succeeded: reconcile Deployment + Service + Ingress.
-	if err := r.reconcilePreviewDeployment(ctx, &pe, &app); err != nil {
+	// Build succeeded: reconcile Deployment + Service + Ingress in the preview ns.
+	if err := r.reconcilePreviewDeployment(ctx, &pe, &app, previewNs); err != nil {
 		return ctrl.Result{}, fmt.Errorf("reconcile preview deployment: %w", err)
 	}
-	if err := r.reconcilePreviewService(ctx, &pe); err != nil {
+	if err := r.reconcilePreviewService(ctx, &pe, previewNs); err != nil {
 		return ctrl.Result{}, fmt.Errorf("reconcile preview service: %w", err)
 	}
 	if pe.Spec.Domain != "" {
-		if err := r.reconcilePreviewIngress(ctx, &pe); err != nil {
+		if err := r.reconcilePreviewIngress(ctx, &pe, previewNs); err != nil {
 			return ctrl.Result{}, fmt.Errorf("reconcile preview ingress: %w", err)
 		}
 	}
@@ -294,8 +336,8 @@ func (r *PreviewEnvironmentReconciler) reconcilePreviewBuild(ctx context.Context
 	return ctrl.Result{RequeueAfter: previewBuildPollInterval}, false, nil
 }
 
-func (r *PreviewEnvironmentReconciler) reconcilePreviewDeployment(ctx context.Context, pe *mortisev1alpha1.PreviewEnvironment, app *mortisev1alpha1.App) error {
-	name := previewResourceName(pe.Spec.AppRef, pe.Spec.PullRequest.Number)
+func (r *PreviewEnvironmentReconciler) reconcilePreviewDeployment(ctx context.Context, pe *mortisev1alpha1.PreviewEnvironment, app *mortisev1alpha1.App, previewNs string) error {
+	name := pe.Spec.AppRef
 	replicas := int32(1)
 	if pe.Spec.Replicas != nil {
 		replicas = *pe.Spec.Replicas
@@ -303,8 +345,12 @@ func (r *PreviewEnvironmentReconciler) reconcilePreviewDeployment(ctx context.Co
 
 	envVars := toEnvVars(pe.Spec.Env)
 	if len(pe.Spec.Bindings) > 0 {
+		projectName, ok := constants.ProjectFromControlNs(pe.Namespace)
+		if !ok {
+			return fmt.Errorf("preview %q not in a control namespace (%q)", pe.Name, pe.Namespace)
+		}
 		resolver := &bindings.Resolver{Client: r.Client}
-		boundVars, err := resolver.Resolve(ctx, pe.Namespace, pe.Spec.Bindings)
+		boundVars, err := resolver.Resolve(ctx, projectName, pe.Spec.SourceEnv, pe.Spec.Bindings)
 		if err != nil {
 			return fmt.Errorf("resolve bindings: %w", err)
 		}
@@ -328,12 +374,12 @@ func (r *PreviewEnvironmentReconciler) reconcilePreviewDeployment(ctx context.Co
 		containers[0].Resources = toResourceRequirements(pe.Spec.Resources)
 	}
 
-	labels := previewLabels(pe.Spec.AppRef, pe.Spec.PullRequest.Number)
+	labels := previewLabels(pe)
 
 	desired := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
-			Namespace: pe.Namespace,
+			Namespace: previewNs,
 			Labels:    labels,
 		},
 		Spec: appsv1.DeploymentSpec{
@@ -352,12 +398,8 @@ func (r *PreviewEnvironmentReconciler) reconcilePreviewDeployment(ctx context.Co
 		},
 	}
 
-	if err := controllerutil.SetControllerReference(pe, desired, r.Scheme); err != nil {
-		return err
-	}
-
 	var existing appsv1.Deployment
-	err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: pe.Namespace}, &existing)
+	err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: previewNs}, &existing)
 	if errors.IsNotFound(err) {
 		return r.Create(ctx, desired)
 	}
@@ -369,14 +411,14 @@ func (r *PreviewEnvironmentReconciler) reconcilePreviewDeployment(ctx context.Co
 	return r.Update(ctx, &existing)
 }
 
-func (r *PreviewEnvironmentReconciler) reconcilePreviewService(ctx context.Context, pe *mortisev1alpha1.PreviewEnvironment) error {
-	name := previewResourceName(pe.Spec.AppRef, pe.Spec.PullRequest.Number)
-	labels := previewLabels(pe.Spec.AppRef, pe.Spec.PullRequest.Number)
+func (r *PreviewEnvironmentReconciler) reconcilePreviewService(ctx context.Context, pe *mortisev1alpha1.PreviewEnvironment, previewNs string) error {
+	name := pe.Spec.AppRef
+	labels := previewLabels(pe)
 
 	desired := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
-			Namespace: pe.Namespace,
+			Namespace: previewNs,
 			Labels:    labels,
 		},
 		Spec: corev1.ServiceSpec{
@@ -392,12 +434,8 @@ func (r *PreviewEnvironmentReconciler) reconcilePreviewService(ctx context.Conte
 		},
 	}
 
-	if err := controllerutil.SetControllerReference(pe, desired, r.Scheme); err != nil {
-		return err
-	}
-
 	var existing corev1.Service
-	err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: pe.Namespace}, &existing)
+	err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: previewNs}, &existing)
 	if errors.IsNotFound(err) {
 		return r.Create(ctx, desired)
 	}
@@ -410,12 +448,12 @@ func (r *PreviewEnvironmentReconciler) reconcilePreviewService(ctx context.Conte
 	return r.Update(ctx, &existing)
 }
 
-func (r *PreviewEnvironmentReconciler) reconcilePreviewIngress(ctx context.Context, pe *mortisev1alpha1.PreviewEnvironment) error {
-	name := previewResourceName(pe.Spec.AppRef, pe.Spec.PullRequest.Number)
-	svcName := previewResourceName(pe.Spec.AppRef, pe.Spec.PullRequest.Number)
+func (r *PreviewEnvironmentReconciler) reconcilePreviewIngress(ctx context.Context, pe *mortisev1alpha1.PreviewEnvironment, previewNs string) error {
+	name := pe.Spec.AppRef
+	svcName := pe.Spec.AppRef
 	pathType := networkingv1.PathTypePrefix
 	host := pe.Spec.Domain
-	labels := previewLabels(pe.Spec.AppRef, pe.Spec.PullRequest.Number)
+	labels := previewLabels(pe)
 
 	backend := networkingv1.IngressBackend{
 		Service: &networkingv1.IngressServiceBackend{
@@ -427,7 +465,7 @@ func (r *PreviewEnvironmentReconciler) reconcilePreviewIngress(ctx context.Conte
 	var owned map[string]string
 	if r.IngressProvider != nil {
 		owned = r.IngressProvider.Annotations(
-			ingress.AppRef{Name: pe.Spec.AppRef, Namespace: pe.Namespace},
+			ingress.AppRef{Name: pe.Spec.AppRef, Namespace: previewNs},
 			[]string{host},
 			nil,
 		)
@@ -436,7 +474,7 @@ func (r *PreviewEnvironmentReconciler) reconcilePreviewIngress(ctx context.Conte
 	desired := &networkingv1.Ingress{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        name,
-			Namespace:   pe.Namespace,
+			Namespace:   previewNs,
 			Labels:      labels,
 			Annotations: owned,
 		},
@@ -471,12 +509,8 @@ func (r *PreviewEnvironmentReconciler) reconcilePreviewIngress(ctx context.Conte
 		desired.Spec.IngressClassName = &cn
 	}
 
-	if err := controllerutil.SetControllerReference(pe, desired, r.Scheme); err != nil {
-		return err
-	}
-
 	var existing networkingv1.Ingress
-	err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: pe.Namespace}, &existing)
+	err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: previewNs}, &existing)
 	if errors.IsNotFound(err) {
 		return r.Create(ctx, desired)
 	}
@@ -554,14 +588,124 @@ func (r *PreviewEnvironmentReconciler) clock() clock.Clock {
 }
 
 // SetupWithManager sets up the controller with the Manager.
+//
+// Preview resources live in per-PR namespaces (`pj-{project}-pr-{num}`) while
+// the PreviewEnvironment CRD lives in the control namespace. Owner references
+// can't cascade cross-namespace; instead we `Watches()` each managed kind and
+// map back to the owning PE via the `mortise.dev/project` +
+// `app.kubernetes.io/name` + `mortise.dev/pr-number` labels.
 func (r *PreviewEnvironmentReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	enqueuePEFromManagedResource := handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []reconcile.Request {
+		labels := obj.GetLabels()
+		if labels == nil {
+			return nil
+		}
+		if labels["app.kubernetes.io/component"] != "preview" {
+			return nil
+		}
+		appName := labels["app.kubernetes.io/name"]
+		projectName := labels[constants.ProjectLabel]
+		prStr := labels["mortise.dev/pr-number"]
+		if appName == "" || projectName == "" || prStr == "" {
+			return nil
+		}
+		var prNumber int
+		if _, err := fmt.Sscanf(prStr, "%d", &prNumber); err != nil {
+			return nil
+		}
+		return []reconcile.Request{{NamespacedName: types.NamespacedName{
+			Name:      previewEnvCRDName(appName, prNumber),
+			Namespace: constants.ControlNamespace(projectName),
+		}}}
+	})
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&mortisev1alpha1.PreviewEnvironment{}).
-		Owns(&appsv1.Deployment{}).
-		Owns(&corev1.Service{}).
-		Owns(&networkingv1.Ingress{}).
+		Watches(&appsv1.Deployment{}, enqueuePEFromManagedResource).
+		Watches(&corev1.Service{}, enqueuePEFromManagedResource).
+		Watches(&networkingv1.Ingress{}, enqueuePEFromManagedResource).
 		Named("previewenvironment").
 		Complete(r)
+}
+
+// previewEnvCRDName reconstructs the PreviewEnvironment CRD name from app + PR.
+// Mirrors the format used by the webhook handler so label→name mapping stays
+// consistent.
+func previewEnvCRDName(appName string, prNumber int) string {
+	return fmt.Sprintf("%s-preview-pr-%d", appName, prNumber)
+}
+
+// ensurePreviewNamespace creates the per-PR preview namespace if it doesn't
+// exist. The namespace carries project/env/role labels so the Project
+// controller and ad-hoc GC can identify it; multiple PreviewEnvironments for
+// the same PR (one per App) share the namespace, so Create-if-not-exists is
+// idempotent and safe under concurrent reconciles.
+func (r *PreviewEnvironmentReconciler) ensurePreviewNamespace(ctx context.Context, project *mortisev1alpha1.Project, pe *mortisev1alpha1.PreviewEnvironment, previewNs string) error {
+	var existing corev1.Namespace
+	err := r.Get(ctx, types.NamespacedName{Name: previewNs}, &existing)
+	if err == nil {
+		return nil
+	}
+	if !errors.IsNotFound(err) {
+		return err
+	}
+	ns := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: previewNs,
+			Labels: map[string]string{
+				constants.ProjectLabel:         project.Name,
+				constants.EnvironmentLabel:     "preview",
+				constants.NamespaceRoleLabel:   constants.NamespaceRolePreview,
+				"app.kubernetes.io/managed-by": "mortise",
+				"mortise.dev/pr-number":        fmt.Sprintf("%d", pe.Spec.PullRequest.Number),
+			},
+		},
+	}
+	if err := r.Create(ctx, ns); err != nil && !errors.IsAlreadyExists(err) {
+		return err
+	}
+	return nil
+}
+
+// gcPreviewResources removes every resource this PreviewEnvironment created in
+// the per-PR namespace, selecting by `mortise.dev/project` + `app.kubernetes.io/name`
+// + `mortise.dev/pr-number`. Owner references don't cascade cross-ns so we
+// drive deletion from the finalizer instead.
+//
+// The preview namespace itself is intentionally left in place. Multiple PEs
+// can share a namespace (one per App in a project with preview enabled), and
+// coordinating "last PE out deletes the namespace" opens races we don't need
+// to solve: an empty preview namespace is cheap and gets reused on PR reopen.
+func (r *PreviewEnvironmentReconciler) gcPreviewResources(ctx context.Context, pe *mortisev1alpha1.PreviewEnvironment, previewNs string) error {
+	projectName, ok := constants.ProjectFromControlNs(pe.Namespace)
+	if !ok {
+		return nil
+	}
+	selector := client.MatchingLabels{
+		"app.kubernetes.io/name": pe.Spec.AppRef,
+		constants.ProjectLabel:   projectName,
+		"mortise.dev/pr-number":  fmt.Sprintf("%d", pe.Spec.PullRequest.Number),
+	}
+	inNs := client.InNamespace(previewNs)
+
+	var deploys appsv1.DeploymentList
+	if err := r.List(ctx, &deploys, selector, inNs); err == nil {
+		for i := range deploys.Items {
+			_ = r.Delete(ctx, &deploys.Items[i])
+		}
+	}
+	var svcs corev1.ServiceList
+	if err := r.List(ctx, &svcs, selector, inNs); err == nil {
+		for i := range svcs.Items {
+			_ = r.Delete(ctx, &svcs.Items[i])
+		}
+	}
+	var ings networkingv1.IngressList
+	if err := r.List(ctx, &ings, selector, inNs); err == nil {
+		for i := range ings.Items {
+			_ = r.Delete(ctx, &ings.Items[i])
+		}
+	}
+	return nil
 }
 
 // Naming helpers
@@ -570,12 +714,18 @@ func previewResourceName(app string, prNumber int) string {
 	return fmt.Sprintf("%s-preview-pr-%d", app, prNumber)
 }
 
-func previewLabels(app string, prNumber int) map[string]string {
+// previewLabels returns the label set stamped on every resource the preview
+// reconciler creates. `mortise.dev/project` is the same key the App reconciler
+// uses so label-based GC and the SetupWithManager mapping function can pivot
+// back to the owning PreviewEnvironment CRD from any managed resource.
+func previewLabels(pe *mortisev1alpha1.PreviewEnvironment) map[string]string {
+	projectName, _ := constants.ProjectFromControlNs(pe.Namespace)
 	return map[string]string{
-		"app.kubernetes.io/name":       app,
+		"app.kubernetes.io/name":       pe.Spec.AppRef,
 		"app.kubernetes.io/managed-by": "mortise",
 		"app.kubernetes.io/component":  "preview",
-		"mortise.dev/pr-number":        fmt.Sprintf("%d", prNumber),
+		"mortise.dev/pr-number":        fmt.Sprintf("%d", pe.Spec.PullRequest.Number),
+		constants.ProjectLabel:         projectName,
 	}
 }
 

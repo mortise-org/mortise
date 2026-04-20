@@ -4,12 +4,15 @@
 	import type { Node, Edge } from '@xyflow/svelte';
 	import '@xyflow/svelte/dist/style.css';
 	import { Plus } from 'lucide-svelte';
-	import type { App } from '$lib/types';
+	import { api } from '$lib/api';
+	import { store } from '$lib/store.svelte';
+	import type { App, BindingEdge } from '$lib/types';
 	import AppNode from './AppNode.svelte';
 
 	interface AppNodeData {
 		app: App;
 		projectName: string;
+		env: string;
 		onOpen: (appName: string) => void;
 	}
 
@@ -24,13 +27,27 @@
 
 	let { projectName, apps, selectedApp = null, onAppOpen, onAddApp, onDeleteApp }: Props = $props();
 
+	const currentEnv = $derived(store.currentEnv(projectName) ?? '');
+
+	let serverEdges = $state<BindingEdge[]>([]);
+
+	$effect(() => {
+		if (!projectName || !currentEnv) {
+			serverEdges = [];
+			return;
+		}
+		api.listBindings(projectName, currentEnv)
+			.then((e) => (serverEdges = e))
+			.catch(() => (serverEdges = []));
+	});
+
 	// Register custom node type
 	const nodeTypes = { app: AppNode };
 
 	// Context menu state
 	let ctxMenu = $state<{ x: number; y: number; appName: string } | null>(null);
 
-	function appsToNodes(appsArr: App[]): Node[] {
+	function appsToNodes(appsArr: App[], env: string): Node[] {
 		// Sort by name so default grid positions are deterministic
 		// regardless of API return order.
 		const sorted = [...appsArr].sort((a, b) => a.metadata.name.localeCompare(b.metadata.name));
@@ -45,41 +62,35 @@
 				data: {
 					app,
 					projectName,
+					env,
 					onOpen: onAppOpen
 				} satisfies AppNodeData
 			};
 		});
 	}
 
-	function appsToEdges(appsArr: App[]): Edge[] {
-		const edges: Edge[] = [];
-		for (const app of appsArr) {
-			const envs = app.spec.environments ?? [];
-			const seen = new Set<string>();
-			for (const env of envs) {
-				for (const binding of (env.bindings ?? [])) {
-					// Only draw edges for same-project bindings (no project field or matches current)
-					if (binding.project && binding.project !== projectName) continue;
-					const edgeId = `${app.metadata.name}->${binding.ref}`;
-					if (!seen.has(edgeId)) {
-						seen.add(edgeId);
-						edges.push({
-							id: edgeId,
-							source: app.metadata.name,
-							target: binding.ref,
-							type: 'smoothstep',
-							animated: true,
-							style: 'stroke: var(--color-surface-500); stroke-width: 1.5;'
-						});
-					}
-				}
-			}
+	function edgesFromServer(edges: BindingEdge[]): Edge[] {
+		const seen = new Set<string>();
+		const out: Edge[] = [];
+		for (const edge of edges) {
+			if (edge.toProject && edge.toProject !== projectName) continue;
+			const id = `${edge.from}->${edge.to}`;
+			if (seen.has(id)) continue;
+			seen.add(id);
+			out.push({
+				id,
+				source: edge.from,
+				target: edge.to,
+				type: 'smoothstep',
+				animated: true,
+				style: 'stroke: var(--color-surface-500); stroke-width: 1.5;'
+			});
 		}
-		return edges;
+		return out;
 	}
 
-	let nodes = $derived(appsToNodes(apps));
-	let edges = $derived(appsToEdges(apps));
+	let nodes = $derived(appsToNodes(apps, currentEnv));
+	let edges = $derived(edgesFromServer(serverEdges));
 	let initialFitDone = $state(false);
 
 	function onNodeDragStop({ nodes: draggedNodes }: { nodes: Node[] }) {

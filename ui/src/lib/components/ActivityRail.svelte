@@ -86,12 +86,12 @@
     </div>
 
     <!-- Filter chips -->
-    <div class="flex gap-1 border-b border-surface-600 px-4 py-2 overflow-x-auto">
+    <div class="flex items-center gap-1 border-b border-surface-600 px-4 overflow-x-auto">
       {#each (['all', 'deploys', 'changes', 'members'] as const) as f}
         <button
           type="button"
           onclick={() => (filter = f)}
-          class="shrink-0 rounded px-2.5 py-1 text-xs capitalize transition-colors {filter === f ? 'bg-surface-600 text-white' : 'text-gray-400 hover:text-white'}"
+          class="shrink-0 -mb-px border-b-2 px-3 py-1.5 text-xs font-medium capitalize transition-colors {filter === f ? 'border-accent text-white' : 'border-transparent text-gray-500 hover:text-white'}"
         >
           {f}
         </button>

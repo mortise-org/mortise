@@ -28,9 +28,10 @@ func newFakeClient(t *testing.T, objs ...client.Object) client.Client {
 }
 
 // newDB returns an App that declares credentials, so the resolver has work to do.
-func newDB(name, namespace string) *mortisev1alpha1.App {
+// The App CRD lives in the control namespace `pj-{project}` per the per-env-ns model.
+func newDB(name, controlNs string) *mortisev1alpha1.App {
 	return &mortisev1alpha1.App{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: controlNs},
 		Spec: mortisev1alpha1.AppSpec{
 			Source: mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: "postgres:16"},
 			Credentials: []mortisev1alpha1.Credential{
@@ -47,13 +48,13 @@ func newDB(name, namespace string) *mortisev1alpha1.App {
 }
 
 // TestResolveSameProjectBinding verifies that a bare ref (no project) resolves
-// to the binder's own namespace — the common case.
+// to the binder's own per-env namespace — the common case.
 func TestResolveSameProjectBinding(t *testing.T) {
-	db := newDB("db", "project-web")
+	db := newDB("db", "pj-web")
 	c := newFakeClient(t, db)
 	r := &bindings.Resolver{Client: c}
 
-	envVars, err := r.Resolve(context.Background(), "project-web", []mortisev1alpha1.Binding{
+	envVars, err := r.Resolve(context.Background(), "web", "production", []mortisev1alpha1.Binding{
 		{Ref: "db"},
 	})
 	if err != nil {
@@ -64,40 +65,42 @@ func TestResolveSameProjectBinding(t *testing.T) {
 	if hostVar == nil {
 		t.Fatal("expected host env var to be set")
 	}
-	if hostVar.Value != "db-production.project-web.svc.cluster.local" {
-		t.Errorf("expected host pointing at same-project service, got %q", hostVar.Value)
+	if hostVar.Value != "db.pj-web-production.svc.cluster.local" {
+		t.Errorf("expected host pointing at same-project env service, got %q", hostVar.Value)
 	}
 }
 
-// TestCrossProjectBindingReturnsError verifies that a binding with
-// Project set to a different project than the binder's returns a clear error.
-// Cross-project bindings are not supported in v1 because secretKeyRef can only
-// resolve within the Pod's namespace.
-func TestCrossProjectBindingReturnsError(t *testing.T) {
-	sharedDB := newDB("shared-postgres", "project-infra")
+// TestCrossProjectBindingResolves verifies that a cross-project binding
+// resolves inside the target project's matching env namespace.
+func TestCrossProjectBindingResolves(t *testing.T) {
+	sharedDB := newDB("shared-postgres", "pj-infra")
 	c := newFakeClient(t, sharedDB)
 	r := &bindings.Resolver{Client: c}
 
-	_, err := r.Resolve(context.Background(), "project-web", []mortisev1alpha1.Binding{
+	envVars, err := r.Resolve(context.Background(), "web", "production", []mortisev1alpha1.Binding{
 		{Ref: "shared-postgres", Project: "infra"},
 	})
-	if err == nil {
-		t.Fatal("expected error for cross-project binding, got nil")
+	if err != nil {
+		t.Fatalf("cross-project resolve: %v", err)
 	}
-	want := "cross-project binding"
-	if !strings.Contains(err.Error(), want) {
-		t.Errorf("error should mention %q, got: %v", want, err)
+
+	hostVar := findEnv(envVars, "host")
+	if hostVar == nil {
+		t.Fatal("expected host env var to be set")
+	}
+	if hostVar.Value != "shared-postgres.pj-infra-production.svc.cluster.local" {
+		t.Errorf("expected host pointing at target-project env service, got %q", hostVar.Value)
 	}
 }
 
 // TestSameProjectExplicitProjectBinding verifies that a binding with Project
 // set to the SAME project as the binder still resolves successfully.
 func TestSameProjectExplicitProjectBinding(t *testing.T) {
-	db := newDB("db", "project-web")
+	db := newDB("db", "pj-web")
 	c := newFakeClient(t, db)
 	r := &bindings.Resolver{Client: c}
 
-	envVars, err := r.Resolve(context.Background(), "project-web", []mortisev1alpha1.Binding{
+	envVars, err := r.Resolve(context.Background(), "web", "production", []mortisev1alpha1.Binding{
 		{Ref: "db", Project: "web"},
 	})
 	if err != nil {
@@ -108,7 +111,7 @@ func TestSameProjectExplicitProjectBinding(t *testing.T) {
 	if hostVar == nil {
 		t.Fatal("expected host env var to be set")
 	}
-	if hostVar.Value != "db-production.project-web.svc.cluster.local" {
+	if hostVar.Value != "db.pj-web-production.svc.cluster.local" {
 		t.Errorf("expected host pointing at same-project service, got %q", hostVar.Value)
 	}
 }
@@ -119,7 +122,7 @@ func TestResolveMissingBindingReturnsError(t *testing.T) {
 	c := newFakeClient(t)
 	r := &bindings.Resolver{Client: c}
 
-	_, err := r.Resolve(context.Background(), "project-web", []mortisev1alpha1.Binding{
+	_, err := r.Resolve(context.Background(), "web", "production", []mortisev1alpha1.Binding{
 		{Ref: "does-not-exist"},
 	})
 	if err == nil {
@@ -127,31 +130,11 @@ func TestResolveMissingBindingReturnsError(t *testing.T) {
 	}
 }
 
-// TestResolveCrossProjectMissingReturnsError verifies the resolver errors when
-// a cross-project binding is attempted (regardless of whether the ref exists).
-func TestResolveCrossProjectMissingReturnsError(t *testing.T) {
-	// DB lives in "project-other", but we'll ask for it in "project-infra".
-	// Either way, the cross-project guard fires first.
-	db := newDB("db", "project-other")
-	c := newFakeClient(t, db)
-	r := &bindings.Resolver{Client: c}
-
-	_, err := r.Resolve(context.Background(), "project-web", []mortisev1alpha1.Binding{
-		{Ref: "db", Project: "infra"},
-	})
-	if err == nil {
-		t.Fatal("expected error for cross-project binding, got nil")
-	}
-	if !strings.Contains(err.Error(), "cross-project binding") {
-		t.Errorf("expected cross-project error, got: %v", err)
-	}
-}
-
 // TestResolveExternalSourceBinding verifies that host and port come from
 // source.external rather than the managed-service DNS formula.
 func TestResolveExternalSourceBinding(t *testing.T) {
 	redis := &mortisev1alpha1.App{
-		ObjectMeta: metav1.ObjectMeta{Name: "redis", Namespace: "project-web"},
+		ObjectMeta: metav1.ObjectMeta{Name: "redis", Namespace: "pj-web"},
 		Spec: mortisev1alpha1.AppSpec{
 			Source: mortisev1alpha1.AppSource{
 				Type: mortisev1alpha1.SourceTypeExternal,
@@ -172,7 +155,7 @@ func TestResolveExternalSourceBinding(t *testing.T) {
 	c := newFakeClient(t, redis)
 	r := &bindings.Resolver{Client: c}
 
-	envVars, err := r.Resolve(context.Background(), "project-web", []mortisev1alpha1.Binding{
+	envVars, err := r.Resolve(context.Background(), "web", "production", []mortisev1alpha1.Binding{
 		{Ref: "redis"},
 	})
 	if err != nil {
@@ -200,7 +183,7 @@ func TestResolveExternalSourceBinding(t *testing.T) {
 // port env var rather than "0".
 func TestResolveExternalSourceNoPort(t *testing.T) {
 	redis := &mortisev1alpha1.App{
-		ObjectMeta: metav1.ObjectMeta{Name: "redis", Namespace: "project-web"},
+		ObjectMeta: metav1.ObjectMeta{Name: "redis", Namespace: "pj-web"},
 		Spec: mortisev1alpha1.AppSpec{
 			Source: mortisev1alpha1.AppSource{
 				Type: mortisev1alpha1.SourceTypeExternal,
@@ -221,7 +204,7 @@ func TestResolveExternalSourceNoPort(t *testing.T) {
 	c := newFakeClient(t, redis)
 	r := &bindings.Resolver{Client: c}
 
-	envVars, err := r.Resolve(context.Background(), "project-web", []mortisev1alpha1.Binding{
+	envVars, err := r.Resolve(context.Background(), "web", "production", []mortisev1alpha1.Binding{
 		{Ref: "redis"},
 	})
 	if err != nil {
@@ -249,7 +232,7 @@ func TestResolveExternalSourceNoPort(t *testing.T) {
 // credentials is silently skipped — no error, empty result.
 func TestResolveAppWithNoCredentials(t *testing.T) {
 	svc := &mortisev1alpha1.App{
-		ObjectMeta: metav1.ObjectMeta{Name: "sidecar", Namespace: "project-web"},
+		ObjectMeta: metav1.ObjectMeta{Name: "sidecar", Namespace: "pj-web"},
 		Spec: mortisev1alpha1.AppSpec{
 			Source: mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: "nginx:1.25"},
 			Environments: []mortisev1alpha1.Environment{
@@ -260,7 +243,7 @@ func TestResolveAppWithNoCredentials(t *testing.T) {
 	c := newFakeClient(t, svc)
 	r := &bindings.Resolver{Client: c}
 
-	envVars, err := r.Resolve(context.Background(), "project-web", []mortisev1alpha1.Binding{
+	envVars, err := r.Resolve(context.Background(), "web", "production", []mortisev1alpha1.Binding{
 		{Ref: "sidecar"},
 	})
 	if err != nil {
@@ -271,29 +254,33 @@ func TestResolveAppWithNoCredentials(t *testing.T) {
 	}
 }
 
-// TestResolveAppWithNoEnvironments verifies that a managed (non-external) App
-// with no environments returns a descriptive error.
-func TestResolveAppWithNoEnvironments(t *testing.T) {
+// TestResolveBoundAppDisabledInEnv verifies the resolver errors when the
+// bound app has an override setting `enabled: false` for the binder's env.
+func TestResolveBoundAppDisabledInEnv(t *testing.T) {
+	disabled := false
 	svc := &mortisev1alpha1.App{
-		ObjectMeta: metav1.ObjectMeta{Name: "db", Namespace: "project-web"},
+		ObjectMeta: metav1.ObjectMeta{Name: "db", Namespace: "pj-web"},
 		Spec: mortisev1alpha1.AppSpec{
 			Source: mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: "postgres:16"},
 			Credentials: []mortisev1alpha1.Credential{
 				{Name: "host"},
+			},
+			Environments: []mortisev1alpha1.Environment{
+				{Name: "production", Enabled: &disabled},
 			},
 		},
 	}
 	c := newFakeClient(t, svc)
 	r := &bindings.Resolver{Client: c}
 
-	_, err := r.Resolve(context.Background(), "project-web", []mortisev1alpha1.Binding{
+	_, err := r.Resolve(context.Background(), "web", "production", []mortisev1alpha1.Binding{
 		{Ref: "db"},
 	})
 	if err == nil {
-		t.Fatal("expected error for app with no environments, got nil")
+		t.Fatal("expected error when bound app is disabled in env, got nil")
 	}
-	if !strings.Contains(err.Error(), "no environments") {
-		t.Errorf("expected error to mention %q, got: %v", "no environments", err)
+	if !strings.Contains(err.Error(), "enabled instance") {
+		t.Errorf("expected error to mention enabled status, got: %v", err)
 	}
 }
 

@@ -166,7 +166,7 @@ func TestGitHubWebhook_ValidSignature(t *testing.T) {
 			"mortise-system/wh-secret/value": secret,
 		},
 		apps: []mortisev1alpha1.App{
-			makeGitApp("my-app", "project-default", "https://github.com/org/repo", "main"),
+			makeGitApp("my-app", "pj-default", "https://github.com/org/repo", "main"),
 		},
 	}
 	h := New(kr)
@@ -183,7 +183,7 @@ func TestGitHubWebhook_ValidSignature(t *testing.T) {
 		t.Fatalf("expected 202, got %d: %s", rr.Code, rr.Body.String())
 	}
 
-	if sha := kr.patched["project-default/my-app"]; sha != "abc123def456" {
+	if sha := kr.patched["pj-default/my-app"]; sha != "abc123def456" {
 		t.Errorf("expected my-app patched with sha abc123def456, got %q (all patched: %v)", sha, kr.patched)
 	}
 }
@@ -228,7 +228,7 @@ func TestGiteaWebhook_ValidSignature(t *testing.T) {
 			"mortise-system/wh-secret/value": secret,
 		},
 		apps: []mortisev1alpha1.App{
-			makeGitApp("my-repo-app", "project-x", "https://gitea.example.com/user/myrepo", "feature"),
+			makeGitApp("my-repo-app", "pj-x", "https://gitea.example.com/user/myrepo", "feature"),
 		},
 	}
 	h := New(kr)
@@ -244,7 +244,7 @@ func TestGiteaWebhook_ValidSignature(t *testing.T) {
 		t.Fatalf("expected 202, got %d: %s", rr.Code, rr.Body.String())
 	}
 
-	if sha := kr.patched["project-x/my-repo-app"]; sha != "deadbeef1234" {
+	if sha := kr.patched["pj-x/my-repo-app"]; sha != "deadbeef1234" {
 		t.Errorf("expected my-repo-app patched with sha deadbeef1234, got %q", sha)
 	}
 }
@@ -271,7 +271,7 @@ func TestGitLabWebhook_ValidToken(t *testing.T) {
 			"mortise-system/wh-secret/value": secret,
 		},
 		apps: []mortisev1alpha1.App{
-			makeGitApp("gitlab-app", "project-ns", "https://gitlab.com/ns/project", "main"),
+			makeGitApp("gitlab-app", "pj-ns", "https://gitlab.com/ns/project", "main"),
 		},
 	}
 	h := New(kr)
@@ -287,7 +287,7 @@ func TestGitLabWebhook_ValidToken(t *testing.T) {
 		t.Fatalf("expected 202, got %d: %s", rr.Code, rr.Body.String())
 	}
 
-	if sha := kr.patched["project-ns/gitlab-app"]; sha != "cafebabe5678" {
+	if sha := kr.patched["pj-ns/gitlab-app"]; sha != "cafebabe5678" {
 		t.Errorf("expected gitlab-app patched with sha cafebabe5678, got %q", sha)
 	}
 }
@@ -311,9 +311,9 @@ func TestWebhook_ProviderNotFound(t *testing.T) {
 func TestWebhook_DispatchMatrix(t *testing.T) {
 	const secret = "secret"
 
-	appMain := makeGitApp("app-main", "project-a", "https://github.com/org/repo", "main")
-	appDev := makeGitApp("app-dev", "project-a", "https://github.com/org/repo", "dev")
-	appOtherRepo := makeGitApp("app-other", "project-b", "https://github.com/org/other", "main")
+	appMain := makeGitApp("app-main", "pj-a", "https://github.com/org/repo", "main")
+	appDev := makeGitApp("app-dev", "pj-a", "https://github.com/org/repo", "dev")
+	appOtherRepo := makeGitApp("app-other", "pj-b", "https://github.com/org/other", "main")
 
 	tests := []struct {
 		name        string
@@ -330,7 +330,7 @@ func TestWebhook_DispatchMatrix(t *testing.T) {
 			pushRepo: "org/repo",
 			apps:     []mortisev1alpha1.App{appMain, appDev, appOtherRepo},
 			wantPatched: map[string]string{
-				"project-a/app-main": "sha1111",
+				"pj-a/app-main": "sha1111",
 			},
 		},
 		{
@@ -340,7 +340,7 @@ func TestWebhook_DispatchMatrix(t *testing.T) {
 			pushRepo: "org/repo",
 			apps:     []mortisev1alpha1.App{appMain, appDev, appOtherRepo},
 			wantPatched: map[string]string{
-				"project-a/app-dev": "sha2222",
+				"pj-a/app-dev": "sha2222",
 			},
 		},
 		{
@@ -357,10 +357,10 @@ func TestWebhook_DispatchMatrix(t *testing.T) {
 			pushSHA:  "sha4444",
 			pushRepo: "org/repo",
 			apps: []mortisev1alpha1.App{
-				makeGitApp("app-giturl", "project-c", "https://github.com/org/repo.git", "main"),
+				makeGitApp("app-giturl", "pj-c", "https://github.com/org/repo.git", "main"),
 			},
 			wantPatched: map[string]string{
-				"project-c/app-giturl": "sha4444",
+				"pj-c/app-giturl": "sha4444",
 			},
 		},
 		{
@@ -489,13 +489,13 @@ func TestMatchesWatchPaths(t *testing.T) {
 func TestWebhook_WatchPathsGating(t *testing.T) {
 	const secret = "secret"
 
-	apiApp := makeGitApp("api", "project-a", "https://github.com/org/repo", "main")
+	apiApp := makeGitApp("api", "pj-a", "https://github.com/org/repo", "main")
 	apiApp.Spec.Source.WatchPaths = []string{"services/api/"}
 
-	workerApp := makeGitApp("worker", "project-a", "https://github.com/org/repo", "main")
+	workerApp := makeGitApp("worker", "pj-a", "https://github.com/org/repo", "main")
 	workerApp.Spec.Source.WatchPaths = []string{"services/worker/"}
 
-	unscopedApp := makeGitApp("all", "project-a", "https://github.com/org/repo", "main")
+	unscopedApp := makeGitApp("all", "pj-a", "https://github.com/org/repo", "main")
 	// No WatchPaths → always rebuilds.
 
 	body, _ := json.Marshal(map[string]interface{}{
@@ -533,8 +533,8 @@ func TestWebhook_WatchPathsGating(t *testing.T) {
 	}
 
 	want := map[string]string{
-		"project-a/api": "sha-api-change",
-		"project-a/all": "sha-api-change",
+		"pj-a/api": "sha-api-change",
+		"pj-a/all": "sha-api-change",
 	}
 	if len(kr.patched) != len(want) {
 		t.Fatalf("patched count mismatch: got %v, want %v", kr.patched, want)
@@ -544,7 +544,7 @@ func TestWebhook_WatchPathsGating(t *testing.T) {
 			t.Errorf("app %s: got sha %q, want %q (all patched: %v)", k, got, v, kr.patched)
 		}
 	}
-	if _, skipped := kr.patched["project-a/worker"]; skipped {
+	if _, skipped := kr.patched["pj-a/worker"]; skipped {
 		t.Errorf("worker app should have been gated out, but was patched: %v", kr.patched)
 	}
 }
@@ -594,13 +594,19 @@ func gitlabMRPayloadJSON(action, state string, iid int, sourceBranch, sha, fullN
 }
 
 // makePreviewGitApp builds an App plus a Project with preview enabled. The
-// Project name is derived by stripping the "project-" prefix from ns.
+// Project name is derived by stripping the "pj-" prefix from ns.
+// The project always declares a staging env — preview env creation requires
+// staging to exist on the project.
 func makePreviewGitApp(name, ns, repo, branch string, domain, ttl string) (mortisev1alpha1.App, *mortisev1alpha1.Project) {
 	app := makeGitApp(name, ns, repo, branch)
-	projectName := strings.TrimPrefix(ns, "project-")
+	projectName := strings.TrimPrefix(ns, "pj-")
 	proj := &mortisev1alpha1.Project{
 		ObjectMeta: metav1.ObjectMeta{Name: projectName},
 		Spec: mortisev1alpha1.ProjectSpec{
+			Environments: []mortisev1alpha1.ProjectEnvironment{
+				{Name: "production"},
+				{Name: "staging", DisplayOrder: 1},
+			},
 			Preview: &mortisev1alpha1.PreviewConfig{
 				Enabled: true,
 				Domain:  domain,
@@ -626,7 +632,7 @@ func TestGitHubPREvent_Opened_CreatesPreviewEnvironment(t *testing.T) {
 	body := githubPRPayloadJSON("opened", 42, "feature/x", "shaopened", "org/repo")
 
 	gp := makeGitProvider(mortisev1alpha1.GitProviderTypeGitHub, "mortise-system", "wh-secret", "value")
-	app, proj := makePreviewGitApp("my-app", "project-default", "https://github.com/org/repo", "main", "pr-{number}.{app}.example.com", "24h")
+	app, proj := makePreviewGitApp("my-app", "pj-default", "https://github.com/org/repo", "main", "pr-{number}.{app}.example.com", "24h")
 	kr := &fakeK8sReader{
 		provider: gp,
 		secrets:  map[string]string{"mortise-system/wh-secret/value": secret},
@@ -653,7 +659,7 @@ func TestGitHubPREvent_Opened_CreatesPreviewEnvironment(t *testing.T) {
 	if pe.Name != "my-app-preview-pr-42" {
 		t.Errorf("unexpected PE name: %q", pe.Name)
 	}
-	if pe.Namespace != "project-default" {
+	if pe.Namespace != "pj-default" {
 		t.Errorf("unexpected PE namespace: %q", pe.Namespace)
 	}
 	if pe.Spec.AppRef != "my-app" {
@@ -684,7 +690,7 @@ func TestGiteaPREvent_Opened_CreatesPreviewEnvironment(t *testing.T) {
 
 	gp := makeGitProvider(mortisev1alpha1.GitProviderTypeGitea, "mortise-system", "wh-secret", "value")
 	gp.Spec.Host = "https://gitea.example.com"
-	app, proj := makePreviewGitApp("myrepo-app", "project-gitea", "https://gitea.example.com/user/myrepo", "main", "pr-{number}.example.com", "")
+	app, proj := makePreviewGitApp("myrepo-app", "pj-gitea", "https://gitea.example.com/user/myrepo", "main", "pr-{number}.example.com", "")
 	kr := &fakeK8sReader{
 		provider: gp,
 		secrets:  map[string]string{"mortise-system/wh-secret/value": secret},
@@ -728,7 +734,7 @@ func TestGitLabPREvent_Opened_CreatesPreviewEnvironment(t *testing.T) {
 
 	gp := makeGitProvider(mortisev1alpha1.GitProviderTypeGitLab, "mortise-system", "wh-secret", "value")
 	gp.Spec.Host = "https://gitlab.com"
-	app, proj := makePreviewGitApp("gl-app", "project-gl", "https://gitlab.com/ns/project", "main", "pr-{number}.{app}.gl.example.com", "")
+	app, proj := makePreviewGitApp("gl-app", "pj-gl", "https://gitlab.com/ns/project", "main", "pr-{number}.{app}.gl.example.com", "")
 	kr := &fakeK8sReader{
 		provider: gp,
 		secrets:  map[string]string{"mortise-system/wh-secret/value": secret},
@@ -770,7 +776,7 @@ func TestPREvent_ProjectPreviewDisabled_NoPECreated(t *testing.T) {
 	body := githubPRPayloadJSON("opened", 5, "f", "sha", "org/repo")
 
 	gp := makeGitProvider(mortisev1alpha1.GitProviderTypeGitHub, "mortise-system", "wh-secret", "value")
-	app := makeGitApp("no-preview", "project-default", "https://github.com/org/repo", "main")
+	app := makeGitApp("no-preview", "pj-default", "https://github.com/org/repo", "main")
 	// preview nil → disabled.
 	kr := &fakeK8sReader{
 		provider: gp,
@@ -795,7 +801,7 @@ func TestPREvent_ProjectPreviewDisabled_NoPECreated(t *testing.T) {
 	}
 
 	// Now test with preview explicitly disabled on the Project.
-	app2 := makeGitApp("also-no-preview", "project-default", "https://github.com/org/repo", "main")
+	app2 := makeGitApp("also-no-preview", "pj-default", "https://github.com/org/repo", "main")
 	proj2 := makeProject("default", &mortisev1alpha1.PreviewConfig{Enabled: false, Domain: "pr-{number}.example.com"})
 	kr2 := &fakeK8sReader{
 		provider: gp,
@@ -828,7 +834,7 @@ func TestPREvent_DomainTemplate_Resolved(t *testing.T) {
 	body := githubPRPayloadJSON("opened", 99, "br", "sha99", "org/repo")
 
 	gp := makeGitProvider(mortisev1alpha1.GitProviderTypeGitHub, "mortise-system", "wh-secret", "value")
-	app, proj := makePreviewGitApp("web", "project-default", "https://github.com/org/repo", "main", "pr-{number}-{app}.preview.example.com", "")
+	app, proj := makePreviewGitApp("web", "pj-default", "https://github.com/org/repo", "main", "pr-{number}-{app}.preview.example.com", "")
 	kr := &fakeK8sReader{
 		provider: gp,
 		secrets:  map[string]string{"mortise-system/wh-secret/value": secret},
@@ -863,7 +869,7 @@ func TestPREvent_StagingInheritance(t *testing.T) {
 	body := githubPRPayloadJSON("opened", 8, "br", "sha8", "org/repo")
 
 	replicas := int32(2)
-	app, proj := makePreviewGitApp("svc", "project-default", "https://github.com/org/repo", "main", "pr-{number}.example.com", "")
+	app, proj := makePreviewGitApp("svc", "pj-default", "https://github.com/org/repo", "main", "pr-{number}.example.com", "")
 	app.Spec.Environments = []mortisev1alpha1.Environment{
 		{
 			Name:     "production",
@@ -927,7 +933,7 @@ func TestPREvent_PreviewResourcesOverride(t *testing.T) {
 	body := githubPRPayloadJSON("opened", 3, "br", "sha3", "org/repo")
 
 	replicas := int32(2)
-	app, proj := makePreviewGitApp("svc", "project-default", "https://github.com/org/repo", "main", "pr-{number}.example.com", "12h")
+	app, proj := makePreviewGitApp("svc", "pj-default", "https://github.com/org/repo", "main", "pr-{number}.example.com", "12h")
 	app.Spec.Environments = []mortisev1alpha1.Environment{
 		{
 			Name:      "staging",
@@ -977,11 +983,11 @@ func TestGitHubPREvent_Synchronize_UpdatesExistingPE(t *testing.T) {
 	body := githubPRPayloadJSON("synchronize", 42, "feature/x", "newsha", "org/repo")
 
 	gp := makeGitProvider(mortisev1alpha1.GitProviderTypeGitHub, "mortise-system", "wh-secret", "value")
-	app, proj := makePreviewGitApp("my-app", "project-default", "https://github.com/org/repo", "main", "pr-{number}.example.com", "")
+	app, proj := makePreviewGitApp("my-app", "pj-default", "https://github.com/org/repo", "main", "pr-{number}.example.com", "")
 	existing := mortisev1alpha1.PreviewEnvironment{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "my-app-preview-pr-42",
-			Namespace: "project-default",
+			Namespace: "pj-default",
 		},
 		Spec: mortisev1alpha1.PreviewEnvironmentSpec{
 			AppRef: "my-app",
@@ -1030,7 +1036,7 @@ func TestGitHubPREvent_Synchronize_NoExistingPE_Creates(t *testing.T) {
 	body := githubPRPayloadJSON("synchronize", 42, "feature/x", "sync-sha", "org/repo")
 
 	gp := makeGitProvider(mortisev1alpha1.GitProviderTypeGitHub, "mortise-system", "wh-secret", "value")
-	app, proj := makePreviewGitApp("my-app", "project-default", "https://github.com/org/repo", "main", "pr-{number}.example.com", "")
+	app, proj := makePreviewGitApp("my-app", "pj-default", "https://github.com/org/repo", "main", "pr-{number}.example.com", "")
 	kr := &fakeK8sReader{
 		provider: gp,
 		secrets:  map[string]string{"mortise-system/wh-secret/value": secret},
@@ -1066,11 +1072,11 @@ func TestGitHubPREvent_Closed_DeletesPE(t *testing.T) {
 	body := githubPRPayloadJSON("closed", 42, "feature/x", "anysha", "org/repo")
 
 	gp := makeGitProvider(mortisev1alpha1.GitProviderTypeGitHub, "mortise-system", "wh-secret", "value")
-	app, proj := makePreviewGitApp("my-app", "project-default", "https://github.com/org/repo", "main", "pr-{number}.example.com", "")
+	app, proj := makePreviewGitApp("my-app", "pj-default", "https://github.com/org/repo", "main", "pr-{number}.example.com", "")
 	existing := mortisev1alpha1.PreviewEnvironment{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "my-app-preview-pr-42",
-			Namespace: "project-default",
+			Namespace: "pj-default",
 		},
 	}
 	kr := &fakeK8sReader{
@@ -1109,11 +1115,11 @@ func TestGiteaPREvent_Closed_DeletesPE(t *testing.T) {
 
 	gp := makeGitProvider(mortisev1alpha1.GitProviderTypeGitea, "mortise-system", "wh-secret", "value")
 	gp.Spec.Host = "https://gitea.example.com"
-	app, proj := makePreviewGitApp("myrepo-app", "project-gitea", "https://gitea.example.com/user/myrepo", "main", "pr-{number}.example.com", "")
+	app, proj := makePreviewGitApp("myrepo-app", "pj-gitea", "https://gitea.example.com/user/myrepo", "main", "pr-{number}.example.com", "")
 	existing := mortisev1alpha1.PreviewEnvironment{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "myrepo-app-preview-pr-9",
-			Namespace: "project-gitea",
+			Namespace: "pj-gitea",
 		},
 	}
 	kr := &fakeK8sReader{
@@ -1160,11 +1166,11 @@ func TestGitLabPREvent_Closed_DeletesPE(t *testing.T) {
 
 			gp := makeGitProvider(mortisev1alpha1.GitProviderTypeGitLab, "mortise-system", "wh-secret", "value")
 			gp.Spec.Host = "https://gitlab.com"
-			app, proj := makePreviewGitApp("gl-app", "project-gl", "https://gitlab.com/ns/project", "main", "pr-{number}.example.com", "")
+			app, proj := makePreviewGitApp("gl-app", "pj-gl", "https://gitlab.com/ns/project", "main", "pr-{number}.example.com", "")
 			existing := mortisev1alpha1.PreviewEnvironment{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "gl-app-preview-pr-17",
-					Namespace: "project-gl",
+					Namespace: "pj-gl",
 				},
 			}
 			kr := &fakeK8sReader{
@@ -1201,7 +1207,7 @@ func TestPREvent_Closed_NoExistingPE_Idempotent(t *testing.T) {
 	body := githubPRPayloadJSON("closed", 42, "br", "sha", "org/repo")
 
 	gp := makeGitProvider(mortisev1alpha1.GitProviderTypeGitHub, "mortise-system", "wh-secret", "value")
-	app, proj := makePreviewGitApp("my-app", "project-default", "https://github.com/org/repo", "main", "pr-{number}.example.com", "")
+	app, proj := makePreviewGitApp("my-app", "pj-default", "https://github.com/org/repo", "main", "pr-{number}.example.com", "")
 	kr := &fakeK8sReader{
 		provider: gp,
 		secrets:  map[string]string{"mortise-system/wh-secret/value": secret},
@@ -1237,7 +1243,7 @@ func TestGitHubPREvent_InvalidSignature_Unauthorized(t *testing.T) {
 	body := githubPRPayloadJSON("opened", 1, "br", "sha", "org/repo")
 
 	gp := makeGitProvider(mortisev1alpha1.GitProviderTypeGitHub, "mortise-system", "wh-secret", "value")
-	app, proj := makePreviewGitApp("my-app", "project-default", "https://github.com/org/repo", "main", "pr-{number}.example.com", "")
+	app, proj := makePreviewGitApp("my-app", "pj-default", "https://github.com/org/repo", "main", "pr-{number}.example.com", "")
 	kr := &fakeK8sReader{
 		provider: gp,
 		secrets:  map[string]string{"mortise-system/wh-secret/value": secret},
@@ -1270,7 +1276,7 @@ func TestGiteaPREvent_InvalidSignature_Unauthorized(t *testing.T) {
 
 	gp := makeGitProvider(mortisev1alpha1.GitProviderTypeGitea, "mortise-system", "wh-secret", "value")
 	gp.Spec.Host = "https://gitea.example.com"
-	app, proj := makePreviewGitApp("myrepo-app", "project-gitea", "https://gitea.example.com/user/myrepo", "main", "pr-{number}.example.com", "")
+	app, proj := makePreviewGitApp("myrepo-app", "pj-gitea", "https://gitea.example.com/user/myrepo", "main", "pr-{number}.example.com", "")
 	kr := &fakeK8sReader{
 		provider: gp,
 		secrets:  map[string]string{"mortise-system/wh-secret/value": secret},
@@ -1303,7 +1309,7 @@ func TestGitLabPREvent_InvalidToken_Unauthorized(t *testing.T) {
 
 	gp := makeGitProvider(mortisev1alpha1.GitProviderTypeGitLab, "mortise-system", "wh-secret", "value")
 	gp.Spec.Host = "https://gitlab.com"
-	app, proj := makePreviewGitApp("gl-app", "project-gl", "https://gitlab.com/ns/project", "main", "pr-{number}.example.com", "")
+	app, proj := makePreviewGitApp("gl-app", "pj-gl", "https://gitlab.com/ns/project", "main", "pr-{number}.example.com", "")
 	kr := &fakeK8sReader{
 		provider: gp,
 		secrets:  map[string]string{"mortise-system/wh-secret/value": secret},
@@ -1328,6 +1334,49 @@ func TestGitLabPREvent_InvalidToken_Unauthorized(t *testing.T) {
 	}
 }
 
+func TestPREvent_ProjectMissingStagingEnv_NoPECreated(t *testing.T) {
+	const secret = "prsecret"
+	const providerName = "github-main"
+
+	body := githubPRPayloadJSON("opened", 12, "br", "sha12", "org/repo")
+
+	gp := makeGitProvider(mortisev1alpha1.GitProviderTypeGitHub, "mortise-system", "wh-secret", "value")
+	app := makeGitApp("my-app", "pj-default", "https://github.com/org/repo", "main")
+	// Project has preview enabled but no staging env declared.
+	proj := &mortisev1alpha1.Project{
+		ObjectMeta: metav1.ObjectMeta{Name: "default"},
+		Spec: mortisev1alpha1.ProjectSpec{
+			Environments: []mortisev1alpha1.ProjectEnvironment{{Name: "production"}},
+			Preview: &mortisev1alpha1.PreviewConfig{
+				Enabled: true,
+				Domain:  "pr-{number}.example.com",
+			},
+		},
+	}
+	kr := &fakeK8sReader{
+		provider: gp,
+		secrets:  map[string]string{"mortise-system/wh-secret/value": secret},
+		apps:     []mortisev1alpha1.App{app},
+		projects: map[string]*mortisev1alpha1.Project{"default": proj},
+	}
+	h := New(kr)
+
+	req := httptest.NewRequest(http.MethodPost, "/"+providerName, bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-GitHub-Event", "pull_request")
+	req.Header.Set("X-Hub-Signature-256", githubSignature(body, secret))
+
+	rr := httptest.NewRecorder()
+	h.Routes().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if len(kr.createdPreviews) != 0 {
+		t.Errorf("expected no PE created when project lacks staging env, got %d", len(kr.createdPreviews))
+	}
+}
+
 func TestPREvent_NoMatchingRepo_NoPECreated(t *testing.T) {
 	const secret = "prsecret"
 	const providerName = "github-main"
@@ -1335,7 +1384,7 @@ func TestPREvent_NoMatchingRepo_NoPECreated(t *testing.T) {
 	body := githubPRPayloadJSON("opened", 1, "br", "sha", "org/unrelated")
 
 	gp := makeGitProvider(mortisev1alpha1.GitProviderTypeGitHub, "mortise-system", "wh-secret", "value")
-	app, proj := makePreviewGitApp("my-app", "project-default", "https://github.com/org/repo", "main", "pr-{number}.example.com", "")
+	app, proj := makePreviewGitApp("my-app", "pj-default", "https://github.com/org/repo", "main", "pr-{number}.example.com", "")
 	kr := &fakeK8sReader{
 		provider: gp,
 		secrets:  map[string]string{"mortise-system/wh-secret/value": secret},

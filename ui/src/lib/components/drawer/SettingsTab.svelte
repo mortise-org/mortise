@@ -1,20 +1,53 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { api } from '$lib/api';
-	import type { App, AppSpec, DeployToken, DomainsResponse, SecretMount } from '$lib/types';
+	import type { App, AppSpec, DeployToken, DomainsResponse, SecretMount, ProjectEnvironment } from '$lib/types';
 	import { Copy, Plus, Trash2, Link, ChevronDown } from 'lucide-svelte';
 
 	let {
 		project,
 		app,
+		projectEnvs = [],
+		selectedEnv = '',
 		onAppUpdated,
 		onAppDeleted
 	}: {
 		project: string;
 		app: App;
+		projectEnvs?: ProjectEnvironment[];
+		selectedEnv?: string;
 		onAppUpdated: (app: App) => void;
 		onAppDeleted: () => void;
 	} = $props();
+
+	const envEntry = $derived(app.spec.environments?.find(e => e.name === selectedEnv));
+	const envEnabled = $derived(envEntry?.enabled !== false);
+	let togglingEnabled = $state(false);
+
+	async function toggleEnvEnabled() {
+		if (!selectedEnv) return;
+		togglingEnabled = true;
+		const prevApp = app;
+		const next = !envEnabled;
+		const spec = JSON.parse(JSON.stringify(app.spec));
+		spec.environments = spec.environments ?? [];
+		const idx = spec.environments.findIndex((e: { name: string }) => e.name === selectedEnv);
+		if (idx >= 0) {
+			spec.environments[idx].enabled = next;
+		} else {
+			spec.environments.push({ name: selectedEnv, enabled: next });
+		}
+		onAppUpdated({ ...app, spec });
+		try {
+			const updated = await api.updateApp(project, prevApp.metadata.name, spec);
+			onAppUpdated(updated);
+		} catch (e) {
+			errorMsg = e instanceof Error ? e.message : 'Failed to toggle environment';
+			onAppUpdated(prevApp);
+		} finally {
+			togglingEnabled = false;
+		}
+	}
 
 	let filterText = $state('');
 	let errorMsg = $state('');
@@ -682,6 +715,31 @@
 					</div>
 				</div>
 			{/if}
+		</div>
+	{/if}
+
+	<!-- Environment -->
+	{#if selectedEnv && sectionVisible('environment enabled')}
+		<div class={sectionCls}>
+			<h3 class={headingCls}>Environment: {selectedEnv}</h3>
+			<div class="flex items-center justify-between">
+				<div>
+					<p class="text-sm text-gray-300">Enabled in this environment</p>
+					<p class="text-xs text-gray-500">Disabling stops reconciliation and garbage-collects resources for this env.</p>
+				</div>
+				<button
+					type="button"
+					role="switch"
+					aria-checked={envEnabled}
+					disabled={togglingEnabled}
+					onclick={toggleEnvEnabled}
+					class="relative inline-flex h-5 w-9 items-center rounded-full transition-colors {envEnabled ? 'bg-accent' : 'bg-surface-600'} disabled:opacity-50"
+				>
+					<span
+						class="inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform {envEnabled ? 'translate-x-4.5' : 'translate-x-0.5'}"
+					></span>
+				</button>
+			</div>
 		</div>
 	{/if}
 

@@ -125,25 +125,32 @@ scoped to its containing project.
 #### Model
 
 - `Project` is a cluster-scoped CRD.
-- When reconciled, the Project controller creates a Kubernetes namespace
-  named `project-{project-name}` and sets itself as the namespace's owner
-  reference.
-- Apps live inside that namespace (`metadata.namespace = project-{name}`).
-  Users never type namespace names directly — the UI, API, and CLI accept
-  the project name and translate.
-- Deleting the Project deletes its namespace, which cascades (via standard
-  k8s garbage collection) to every App, Deployment, Service, Ingress, PVC,
-  and Secret inside.
+- When reconciled, the Project controller creates a *control* namespace
+  `pj-{project-name}` plus one *environment* namespace per declared
+  environment (`pj-{project-name}-{env-name}`), setting itself as owner
+  reference on each. The control namespace holds App CRDs, Preview
+  environments, and other project-scoped metadata; the env namespaces
+  hold Deployments, Services, Ingresses, Pods, PVCs, and env-scoped
+  Secrets/ConfigMaps.
+- Apps live in the control namespace (`metadata.namespace = pj-{name}`);
+  their workloads are fanned out across the env namespaces by the App
+  controller. Users never type namespace names directly — the UI, API,
+  and CLI accept project + environment names and translate.
+- Deleting the Project deletes all its namespaces, which cascades (via
+  standard k8s garbage collection) to every App, Deployment, Service,
+  Ingress, PVC, and Secret inside.
 
-**Namespace naming** is prefixed (`project-foo`) to avoid collisions with
-system namespaces (`default`, `kube-system`, `mortise-system`). Users do not
-see this prefix in day-to-day use; it is surfaced only in CLI/debug output.
+**Namespace naming** is prefixed (`pj-foo`, `pj-foo-production`) to avoid
+collisions with system namespaces (`default`, `kube-system`,
+`mortise-system`). Users do not see this prefix in day-to-day use; it is
+surfaced only in CLI/debug output.
 
 **Overriding the derived name.** Two optional spec fields let users opt out
-of `project-{name}`:
+of `pj-{name}`:
 
-- `spec.namespaceOverride: my-namespace` — use this name instead of
-  `project-{name}`. The controller validates DNS-1123 and enforces
+- `spec.namespaceOverride: my-namespace` — use this name as the control
+  namespace instead of `pj-{name}` (env namespaces still derive from it
+  as `{override}-{env}`). The controller validates DNS-1123 and enforces
   cluster-wide uniqueness across Projects (two Projects cannot target the
   same namespace). Use cases: match an existing corporate naming
   convention (`corp-team-acme-prod`), migrate an existing namespace under
@@ -177,7 +184,7 @@ metadata:
   name: my-saas
 spec:
   description: "Core customer-facing SaaS"
-  # namespaceOverride: corp-team-acme-prod  # optional; use this name instead of project-my-saas
+  # namespaceOverride: corp-team-acme-prod  # optional; use this name instead of pj-my-saas
   # adoptExistingNamespace: false           # optional; admin-only; adopt an existing namespace
 
   # PR Environments are a project-level toggle (not per-App). When
@@ -195,7 +202,7 @@ spec:
   # v2+: team, quota, default-domain-suffix, retention policy
 status:
   phase: Ready               # Pending | Ready | Terminating | Failed
-  namespace: project-my-saas
+  namespace: pj-my-saas
   appCount: 3
   conditions: []             # NamespaceReady: True | False (reason: NamespaceAlreadyExists | NamespaceOwnedByAnotherProject | NamespaceConflict)
 ```
@@ -213,7 +220,7 @@ bindings:
 Cross-project bindings are allowed but explicit:
 
 ```yaml
-# Different project — operator resolves into project-other-proj namespace
+# Different project — operator resolves into pj-other-proj control namespace
 bindings:
   - ref: shared-postgres
     project: infra
@@ -307,14 +314,17 @@ mortise deploy web --env production --image registry/web:abc123
 **Project creation flow:**
 1. User submits `POST /api/projects` with name + description
 2. Controller creates `Project` CRD; status=Pending
-3. Controller reconciles: creates namespace `project-{name}` with owner ref
+3. Controller reconciles: creates control namespace `pj-{name}` plus one
+   env namespace `pj-{name}-{env}` per declared environment, each with
+   owner ref
 4. Status → Ready; appCount=0
 5. UI surfaces project, user can start creating apps
 
 **Project deletion flow:**
 1. User submits `DELETE /api/projects/{p}` (admin only)
 2. API returns 202 Accepted, status → Terminating
-3. Controller deletes the namespace (`kubectl delete namespace project-{name}`)
+3. Controller deletes all project-owned namespaces (`pj-{name}` and each
+   `pj-{name}-{env}`)
 4. Kubernetes garbage collector cascades: all Apps, Deployments, Services,
    Ingresses, PVCs, Secrets in the namespace are deleted
 5. When namespace deletion completes, Project CRD is removed
@@ -1052,8 +1062,9 @@ When not set, the live tab is the only view — no placeholder or prompt.
 addition to the stdout audit stream, the operator maintains a small
 in-cluster store of recent audit events *per project* so the UI
 Activity rail (UI_SPEC §12.22) can render history without a log
-agent. v1 store: a ConfigMap named `activity-{project-name}` in
-`mortise-system`, capped at the last 500 events per project with a
+agent. v1 store: a ConfigMap named `activity-{project-name}` in the
+project's control namespace (`pj-{project-name}`), capped at the last
+500 events per project with a
 simple ring-buffer trim; event body is JSON (`{timestamp, actor,
 verb, resource, summary}`). Written by every write handler in the
 REST API (see §5.13). The stdout stream remains authoritative for
@@ -1078,7 +1089,7 @@ GET /v1/logs
 Authorization: Bearer <token>
 
 Query parameters:
-  namespace  string   required   kubernetes namespace (e.g. project-my-app)
+  namespace  string   required   kubernetes namespace (e.g. pj-my-app-production)
   app        string   required   app name
   env        string   required   environment name (e.g. production)
   start      int64    required   unix timestamp seconds, range start
@@ -1717,8 +1728,9 @@ previews, and the rest on top. Landing Projects before Phase 4 avoids
 retrofitting the URL scheme, bindings resolver, and UI navigation later.
 
 **Backend:**
-- `Project` CRD (cluster-scoped) + controller that reconciles a k8s namespace
-  (`project-{name}`) and sets itself as owner
+- `Project` CRD (cluster-scoped) + controller that reconciles a control
+  namespace (`pj-{name}`) plus one env namespace per declared environment
+  (`pj-{name}-{env}`) and sets itself as owner on each
 - App controller respects project namespace boundaries (no logic change —
   Apps are already namespace-scoped; the namespace is now named by the Project)
 - Bindings resolver honors the optional `project:` field for cross-project
@@ -1744,9 +1756,11 @@ retrofitting the URL scheme, bindings resolver, and UI navigation later.
 - Delete Project → delete namespace → k8s GC cascades all contained
   resources (Apps, Deployments, Services, Ingresses, PVCs, Secrets)
 
-Tests: create Project → namespace exists; create App in Project → App
-lands in `project-{name}` namespace; cross-project binding resolves to
-correct Service DNS; delete Project → namespace and Apps gone.
+Tests: create Project → control + env namespaces exist; create App in
+Project → App CRD lands in `pj-{name}` control namespace and its
+Deployments fan out into `pj-{name}-{env}` per declared environment;
+cross-project binding resolves to correct Service DNS; delete Project →
+namespaces and Apps gone.
 
 **Exit criteria:** user logs in → lands in `default` project → creates a
 Postgres App + a bound API App inside that project → creates a second

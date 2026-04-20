@@ -20,6 +20,11 @@ class MortiseStore {
 	currentProject = $state<string | null>(null);
 	projects = $state<Project[]>([]);
 
+	// Current environment, keyed per-project so switching projects preserves
+	// each one's last-selected env. `null` means "not yet resolved" — callers
+	// fall back to the first env on the project.
+	currentEnvByProject = $state<Record<string, string>>({});
+
 	// Staged changes (client-side only, in-memory)
 	stagedChanges = $state<Map<string, StagedChange>>(new Map());
 	get stagedChangeCount(): number { return this.stagedChanges.size; }
@@ -41,6 +46,10 @@ class MortiseStore {
 				(sessionStorage.getItem('mortise_tab') as typeof this.drawerTab) ?? 'deployments';
 			this.activityRailOpen =
 				sessionStorage.getItem('mortise_activity') === 'true';
+			const savedEnvs = localStorage.getItem('mortise_envs');
+			if (savedEnvs) {
+				try { this.currentEnvByProject = JSON.parse(savedEnvs) ?? {}; } catch { /* ignore */ }
+			}
 			const savedUser = localStorage.getItem('mortise_user');
 			if (savedUser) {
 				try { this.user = JSON.parse(savedUser); } catch { /* ignore */ }
@@ -89,6 +98,21 @@ class MortiseStore {
 
 	setProjects(list: Project[]) {
 		this.projects = list;
+	}
+
+	// currentEnv returns the active env for the current project, or null if
+	// nothing has been selected yet. Callers (navbar, drawer) resolve null to
+	// the first env on the project.
+	currentEnv(project: string | null = this.currentProject): string | null {
+		if (!project) return null;
+		return this.currentEnvByProject[project] ?? null;
+	}
+
+	setEnv(project: string, env: string) {
+		this.currentEnvByProject = { ...this.currentEnvByProject, [project]: env };
+		if (browser) {
+			localStorage.setItem('mortise_envs', JSON.stringify(this.currentEnvByProject));
+		}
 	}
 
 	stageChange(appName: string, original: AppSpec, dirty: AppSpec) {

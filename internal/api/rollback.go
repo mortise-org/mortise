@@ -11,6 +11,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
+	"github.com/MC-Meesh/mortise/internal/constants"
 )
 
 type rollbackRequest struct {
@@ -23,7 +24,7 @@ type rollbackRequest struct {
 // Deployment back to the image at the specified history index, and returns
 // the DeployRecord that was rolled back to.
 func (s *Server) Rollback(w http.ResponseWriter, r *http.Request) {
-	ns, ok := s.resolveProject(w, r)
+	ns, projectName, ok := s.resolveProject(w, r)
 	if !ok {
 		return
 	}
@@ -44,6 +45,7 @@ func (s *Server) Rollback(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	envNs := constants.EnvNamespace(projectName, req.Environment)
 
 	// Find the environment status.
 	var envStatus *mortisev1alpha1.EnvironmentStatus
@@ -70,7 +72,7 @@ func (s *Server) Rollback(w http.ResponseWriter, r *http.Request) {
 
 	depName := fmt.Sprintf("%s-%s", appName, req.Environment)
 	var dep appsv1.Deployment
-	if err := s.client.Get(r.Context(), types.NamespacedName{Name: depName, Namespace: ns}, &dep); err != nil {
+	if err := s.client.Get(r.Context(), types.NamespacedName{Name: depName, Namespace: envNs}, &dep); err != nil {
 		writeError(w, err)
 		return
 	}
@@ -98,7 +100,7 @@ type promoteRequest struct {
 // patches the target environment's Deployment with that image. A new
 // DeployRecord is appended to the target environment's deploy history.
 func (s *Server) Promote(w http.ResponseWriter, r *http.Request) {
-	ns, ok := s.resolveProject(w, r)
+	ns, projectName, ok := s.resolveProject(w, r)
 	if !ok {
 		return
 	}
@@ -161,8 +163,9 @@ func (s *Server) Promote(w http.ResponseWriter, r *http.Request) {
 	}
 
 	depName := fmt.Sprintf("%s-%s", appName, req.To)
+	toEnvNs := constants.EnvNamespace(projectName, req.To)
 	var dep appsv1.Deployment
-	if err := s.client.Get(r.Context(), types.NamespacedName{Name: depName, Namespace: ns}, &dep); err != nil {
+	if err := s.client.Get(r.Context(), types.NamespacedName{Name: depName, Namespace: toEnvNs}, &dep); err != nil {
 		writeError(w, err)
 		return
 	}

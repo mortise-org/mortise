@@ -13,6 +13,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/remotecommand"
+
+	"github.com/MC-Meesh/mortise/internal/constants"
 )
 
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
@@ -29,11 +31,17 @@ type execResponse struct {
 }
 
 func (s *Server) ExecInApp(w http.ResponseWriter, r *http.Request) {
-	ns, ok := s.resolveProject(w, r)
+	_, projectName, ok := s.resolveProject(w, r)
 	if !ok {
 		return
 	}
 	appName := chi.URLParam(r, "app")
+
+	env := r.URL.Query().Get("env")
+	if env == "" {
+		env = "production"
+	}
+	envNs := constants.EnvNamespace(projectName, env)
 
 	var req execRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -46,22 +54,22 @@ func (s *Server) ExecInApp(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if s.restConfig == nil {
-		slog.Error("exec: server has no rest.Config; exec is unavailable", "namespace", ns, "app", appName)
+		slog.Error("exec: server has no rest.Config; exec is unavailable", "namespace", envNs, "app", appName)
 		writeJSON(w, http.StatusInternalServerError, errorResponse{"exec is not available on this server"})
 		return
 	}
 
-	// Find the first running pod for this app.
-	podName, err := s.findAppPod(r.Context(), ns, appName)
+	// Find the first running pod for this app in the env namespace.
+	podName, err := s.findAppPod(r.Context(), envNs, appName)
 	if err != nil {
-		slog.Error("exec: failed to find app pod", "namespace", ns, "app", appName, "err", err)
+		slog.Error("exec: failed to find app pod", "namespace", envNs, "app", appName, "err", err)
 		writeJSON(w, http.StatusNotFound, errorResponse{fmt.Sprintf("no running pod found for app %q", appName)})
 		return
 	}
 
-	stdout, stderr, err := s.execInPod(r.Context(), ns, podName, req.Command)
+	stdout, stderr, err := s.execInPod(r.Context(), envNs, podName, req.Command)
 	if err != nil {
-		slog.Error("exec: streaming failed", "namespace", ns, "app", appName, "pod", podName, "err", err)
+		slog.Error("exec: streaming failed", "namespace", envNs, "app", appName, "pod", podName, "err", err)
 		writeJSON(w, http.StatusInternalServerError, errorResponse{"exec failed"})
 		return
 	}

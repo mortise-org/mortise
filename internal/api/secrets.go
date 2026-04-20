@@ -10,6 +10,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	"github.com/MC-Meesh/mortise/internal/constants"
 )
 
 // createSecretRequest is the JSON body for upserting a secret.
@@ -24,12 +26,24 @@ type secretResponse struct {
 	Keys []string `json:"keys"`
 }
 
+// envFromQuery returns the `env` query parameter, defaulting to "production"
+// when absent. User-facing Secrets are scoped to a specific env namespace
+// because workload pods can only mount Secrets from their own namespace.
+func envFromQuery(r *http.Request) string {
+	env := r.URL.Query().Get("env")
+	if env == "" {
+		env = "production"
+	}
+	return env
+}
+
 func (s *Server) CreateSecret(w http.ResponseWriter, r *http.Request) {
-	ns, ok := s.resolveProject(w, r)
+	_, projectName, ok := s.resolveProject(w, r)
 	if !ok {
 		return
 	}
 	appName := chi.URLParam(r, "app")
+	envNs := constants.EnvNamespace(projectName, envFromQuery(r))
 
 	var req createSecretRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -44,7 +58,7 @@ func (s *Server) CreateSecret(w http.ResponseWriter, r *http.Request) {
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      req.Name,
-			Namespace: ns,
+			Namespace: envNs,
 			Labels: map[string]string{
 				"app.kubernetes.io/name":       appName,
 				"app.kubernetes.io/managed-by": "mortise",
@@ -62,15 +76,16 @@ func (s *Server) CreateSecret(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) ListSecrets(w http.ResponseWriter, r *http.Request) {
-	ns, ok := s.resolveProject(w, r)
+	_, projectName, ok := s.resolveProject(w, r)
 	if !ok {
 		return
 	}
 	appName := chi.URLParam(r, "app")
+	envNs := constants.EnvNamespace(projectName, envFromQuery(r))
 
 	var list corev1.SecretList
 	if err := s.client.List(r.Context(), &list,
-		client.InNamespace(ns),
+		client.InNamespace(envNs),
 		client.MatchingLabels{
 			"app.kubernetes.io/name":       appName,
 			"app.kubernetes.io/managed-by": "mortise",
@@ -89,14 +104,15 @@ func (s *Server) ListSecrets(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) DeleteSecret(w http.ResponseWriter, r *http.Request) {
-	ns, ok := s.resolveProject(w, r)
+	_, projectName, ok := s.resolveProject(w, r)
 	if !ok {
 		return
 	}
 	secretName := chi.URLParam(r, "secretName")
+	envNs := constants.EnvNamespace(projectName, envFromQuery(r))
 
 	var secret corev1.Secret
-	if err := s.client.Get(r.Context(), types.NamespacedName{Name: secretName, Namespace: ns}, &secret); err != nil {
+	if err := s.client.Get(r.Context(), types.NamespacedName{Name: secretName, Namespace: envNs}, &secret); err != nil {
 		writeError(w, err)
 		return
 	}

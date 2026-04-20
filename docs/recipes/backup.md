@@ -27,7 +27,7 @@ Mortise's state lives in:
 | Resource | Why |
 |----------|-----|
 | CRDs (App, PlatformConfig, GitProvider, Project) | Workload definitions |
-| Secrets in `mortise-system` and `project-*` namespaces | Credentials, tokens, env vars |
+| Secrets in `mortise-system` and `pj-*` namespaces | Credentials, tokens, env vars |
 | PersistentVolumeClaims | App data (databases, uploads) |
 | ConfigMaps in `mortise-system` | Operator configuration |
 
@@ -38,7 +38,7 @@ Mortise's state lives in:
 velero schedule create mortise-daily \
   --schedule="0 2 * * *" \
   --include-namespaces mortise-system \
-  --include-namespace-pattern "project-*" \
+  --include-namespace-pattern "pj-*" \
   --include-cluster-scoped-resources \
     apps.mortise.dev,platformconfigs.mortise.dev,gitproviders.mortise.dev,projects.mortise.dev \
   --ttl 720h \

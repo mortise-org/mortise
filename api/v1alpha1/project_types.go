@@ -72,8 +72,10 @@ type ProjectEnvironment struct {
 }
 
 // ProjectSpec defines the desired state of a Project — the top-level grouping
-// above Apps. Each Project owns a Kubernetes namespace (by default
-// `project-{metadata.name}`) into which its Apps are placed.
+// above Apps. Each Project owns a control namespace (by default
+// `pj-{metadata.name}`) which holds its App CRDs plus one env namespace per
+// declared environment (`pj-{metadata.name}-{env}`) which holds the running
+// workloads.
 type ProjectSpec struct {
 	// Description is a short, human-readable note about the project.
 	// +optional
@@ -90,32 +92,6 @@ type ProjectSpec struct {
 	// in each open PR's preview namespace. There is no per-App opt-out in v1.
 	// +optional
 	Preview *PreviewConfig `json:"preview,omitempty"`
-
-	// NamespaceOverride, when set, makes the controller use this name verbatim
-	// for the Project's backing namespace instead of the default
-	// `project-{name}` form. The value must be a valid DNS-1123 label.
-	//
-	// This is an admin-only field (enforced at the REST API layer) intended for
-	// regulated or enterprise clusters where namespace naming is governed by
-	// OPA policies, naming standards, or pre-existing IAM bindings (e.g.
-	// cloud IRSA roles keyed off namespace name).
-	// +optional
-	// +kubebuilder:validation:MaxLength=63
-	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
-	NamespaceOverride string `json:"namespaceOverride,omitempty"`
-
-	// AdoptExistingNamespace, when true, tells the controller to adopt a
-	// pre-existing Kubernetes namespace that matches the resolved namespace
-	// name (default or `namespaceOverride`) by adding this Project's owner
-	// reference and `app.kubernetes.io/managed-by: mortise` label. Mortise
-	// will never mutate resources it did not create inside the adopted
-	// namespace, but deleting the Project will cascade-delete the namespace
-	// and everything in it — adoption is a deliberate, admin-only operation.
-	//
-	// When false (the default), encountering a pre-existing namespace with no
-	// Mortise ownership causes the Project to transition to Failed.
-	// +optional
-	AdoptExistingNamespace bool `json:"adoptExistingNamespace,omitempty"`
 
 	// Future fields (v2+):
 	// - Team      string  — per-project team/ownership
@@ -141,9 +117,17 @@ type ProjectStatus struct {
 	// +optional
 	Phase ProjectPhase `json:"phase,omitempty"`
 
-	// Namespace is the name of the Kubernetes namespace backing this Project.
+	// Namespace is the name of the Project's control namespace (`pj-{name}`).
+	// Per-env workload namespaces (`pj-{name}-{env}`) are tracked in
+	// EnvNamespaces below.
 	// +optional
 	Namespace string `json:"namespace,omitempty"`
+
+	// EnvNamespaces maps environment name → namespace name for each env the
+	// controller has provisioned. Kept in sync with spec.environments; env
+	// add/remove drives ns create/delete.
+	// +optional
+	EnvNamespaces map[string]string `json:"envNamespaces,omitempty"`
 
 	// AppCount is the number of Apps currently inside this Project's namespace.
 	// +optional

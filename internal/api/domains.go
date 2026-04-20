@@ -7,7 +7,6 @@ import (
 	"slices"
 
 	"github.com/go-chi/chi/v5"
-	"k8s.io/apimachinery/pkg/types"
 
 	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
 )
@@ -25,29 +24,20 @@ type addDomainRequest struct {
 }
 
 // ListDomains returns the primary and custom domains for an app's environment.
+// Returns an empty payload (not 404) when the App has no override for this
+// env — every App auto-participates in every project env, and overrides only
+// exist when the user has customized something.
 //
 // GET /api/projects/{project}/apps/{app}/domains?environment=production
 func (s *Server) ListDomains(w http.ResponseWriter, r *http.Request) {
-	ns, ok := s.resolveProject(w, r)
+	app, envName, ok := s.resolveAppEnv(w, r)
 	if !ok {
 		return
 	}
-	appName := chi.URLParam(r, "app")
-	envName := r.URL.Query().Get("environment")
-	if envName == "" {
-		writeJSON(w, http.StatusBadRequest, errorResponse{"environment query parameter is required"})
-		return
-	}
 
-	var app mortisev1alpha1.App
-	if err := s.client.Get(r.Context(), types.NamespacedName{Name: appName, Namespace: ns}, &app); err != nil {
-		writeError(w, err)
-		return
-	}
-
-	env := findEnvironment(&app, envName)
+	env := findEnvironment(app, envName)
 	if env == nil {
-		writeJSON(w, http.StatusNotFound, errorResponse{"environment not found"})
+		writeJSON(w, http.StatusOK, domainsResponse{})
 		return
 	}
 
@@ -57,18 +47,13 @@ func (s *Server) ListDomains(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// AddDomain appends a custom domain to an app's environment.
+// AddDomain appends a custom domain to an app's environment. Auto-creates
+// the App's override entry for this env when it doesn't already exist.
 //
 // POST /api/projects/{project}/apps/{app}/domains?environment=production
 func (s *Server) AddDomain(w http.ResponseWriter, r *http.Request) {
-	ns, ok := s.resolveProject(w, r)
+	app, envName, ok := s.resolveAppEnv(w, r)
 	if !ok {
-		return
-	}
-	appName := chi.URLParam(r, "app")
-	envName := r.URL.Query().Get("environment")
-	if envName == "" {
-		writeJSON(w, http.StatusBadRequest, errorResponse{"environment query parameter is required"})
 		return
 	}
 
@@ -82,26 +67,15 @@ func (s *Server) AddDomain(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var app mortisev1alpha1.App
-	if err := s.client.Get(r.Context(), types.NamespacedName{Name: appName, Namespace: ns}, &app); err != nil {
-		writeError(w, err)
-		return
-	}
+	env := ensureEnvironment(app, envName)
 
-	env := findEnvironment(&app, envName)
-	if env == nil {
-		writeJSON(w, http.StatusNotFound, errorResponse{"environment not found"})
-		return
-	}
-
-	// Reject duplicates.
 	if slices.Contains(env.CustomDomains, req.Domain) {
 		writeJSON(w, http.StatusConflict, errorResponse{"domain already exists"})
 		return
 	}
 
 	env.CustomDomains = append(env.CustomDomains, req.Domain)
-	if err := s.client.Update(r.Context(), &app); err != nil {
+	if err := s.client.Update(r.Context(), app); err != nil {
 		writeError(w, err)
 		return
 	}
@@ -116,27 +90,15 @@ func (s *Server) AddDomain(w http.ResponseWriter, r *http.Request) {
 //
 // DELETE /api/projects/{project}/apps/{app}/domains/{domain}?environment=production
 func (s *Server) RemoveDomain(w http.ResponseWriter, r *http.Request) {
-	ns, ok := s.resolveProject(w, r)
+	app, envName, ok := s.resolveAppEnv(w, r)
 	if !ok {
 		return
 	}
-	appName := chi.URLParam(r, "app")
-	envName := r.URL.Query().Get("environment")
 	domain := chi.URLParam(r, "domain")
-	if envName == "" {
-		writeJSON(w, http.StatusBadRequest, errorResponse{"environment query parameter is required"})
-		return
-	}
 
-	var app mortisev1alpha1.App
-	if err := s.client.Get(r.Context(), types.NamespacedName{Name: appName, Namespace: ns}, &app); err != nil {
-		writeError(w, err)
-		return
-	}
-
-	env := findEnvironment(&app, envName)
+	env := findEnvironment(app, envName)
 	if env == nil {
-		writeJSON(w, http.StatusNotFound, errorResponse{"environment not found"})
+		writeJSON(w, http.StatusNotFound, errorResponse{"domain not found"})
 		return
 	}
 
@@ -147,7 +109,7 @@ func (s *Server) RemoveDomain(w http.ResponseWriter, r *http.Request) {
 	}
 
 	env.CustomDomains = slices.Delete(env.CustomDomains, idx, idx+1)
-	if err := s.client.Update(r.Context(), &app); err != nil {
+	if err := s.client.Update(r.Context(), app); err != nil {
 		writeError(w, err)
 		return
 	}

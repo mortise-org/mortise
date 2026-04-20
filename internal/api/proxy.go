@@ -13,6 +13,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
+	"github.com/MC-Meesh/mortise/internal/constants"
 )
 
 // appProxyEntry tracks a running per-app proxy listener.
@@ -40,13 +41,18 @@ func newAppProxyManager() *appProxyManager {
 // POST /api/projects/{project}/apps/{app}/connect
 func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	log := logf.FromContext(r.Context())
-	ns, ok := s.resolveProject(w, r)
+	ns, projectName, ok := s.resolveProject(w, r)
 	if !ok {
 		return
 	}
 	appName := chi.URLParam(r, "app")
-	projectName := chi.URLParam(r, "project")
 	key := projectName + "/" + appName
+
+	env := r.URL.Query().Get("env")
+	if env == "" {
+		env = "production"
+	}
+	envNs := constants.EnvNamespace(projectName, env)
 
 	// If already proxying, return the existing URL.
 	s.proxies.mu.Lock()
@@ -57,7 +63,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 	s.proxies.mu.Unlock()
 
-	// Resolve app to get the port.
+	// Resolve app CRD (control ns) to get the port.
 	var app mortisev1alpha1.App
 	if err := s.client.Get(r.Context(), types.NamespacedName{Name: appName, Namespace: ns}, &app); err != nil {
 		writeJSON(w, http.StatusNotFound, errorResponse{"app not found"})
@@ -69,8 +75,8 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		port = 8080
 	}
 
-	svcName := appName + "-production"
-	target := fmt.Sprintf("http://%s.%s.svc:%d", svcName, ns, port)
+	svcName := appName + "-" + env
+	target := fmt.Sprintf("http://%s.%s.svc:%d", svcName, envNs, port)
 	targetURL, err := url.Parse(target)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, errorResponse{"invalid proxy target"})

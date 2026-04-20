@@ -34,15 +34,16 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
+	"github.com/MC-Meesh/mortise/internal/constants"
 )
 
-// helper: create a test Project + its backing namespace. The namespace follows
-// the `project-{name}` convention so the preview controller can resolve the
-// Project from the App's namespace. Returns the Project and the namespace name.
+// helper: create a test Project and its control namespace (`pj-{name}`). The
+// PreviewEnvironment CRD lives in the control namespace; preview workloads
+// reconcile into `pj-{name}-pr-{num}` which the controller creates on demand.
+// Returns the Project and the control-namespace name.
 func createPreviewTestProject(ctx context.Context, previewEnabled bool) (*mortisev1alpha1.Project, string) {
-	// Use a random suffix for the project name; namespace derives from it.
 	projectName := fmt.Sprintf("prevtest-%d", time.Now().UnixNano())
-	nsName := "project-" + projectName
+	nsName := constants.ControlNamespace(projectName)
 
 	ns := &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{Name: nsName},
@@ -99,7 +100,8 @@ func createPreviewEnv(ctx context.Context, name, namespace, appRef string, prNum
 			Namespace: namespace,
 		},
 		Spec: mortisev1alpha1.PreviewEnvironmentSpec{
-			AppRef: appRef,
+			AppRef:    appRef,
+			SourceEnv: "staging",
 			PullRequest: mortisev1alpha1.PullRequestRef{
 				Number: prNumber,
 				Branch: branch,
@@ -255,10 +257,11 @@ var _ = Describe("PreviewEnvironment Controller", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			// Verify Deployment.
-			deployName := fmt.Sprintf("webapp-preview-pr-42")
+			previewNs := constants.PreviewNamespace(project.Name, 42)
+
+			// Verify Deployment (name is bare app name, in preview ns).
 			var dep appsv1.Deployment
-			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: deployName, Namespace: ns}, &dep)).To(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "webapp", Namespace: previewNs}, &dep)).To(Succeed())
 			Expect(*dep.Spec.Replicas).To(Equal(int32(1)))
 			Expect(dep.Spec.Template.Spec.Containers).To(HaveLen(1))
 			Expect(dep.Spec.Template.Spec.Containers[0].Name).To(Equal("webapp"))
@@ -276,16 +279,14 @@ var _ = Describe("PreviewEnvironment Controller", func() {
 			))
 
 			// Verify Service.
-			svcName := fmt.Sprintf("webapp-preview-pr-42")
 			var svc corev1.Service
-			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: svcName, Namespace: ns}, &svc)).To(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "webapp", Namespace: previewNs}, &svc)).To(Succeed())
 			Expect(svc.Spec.Ports).To(HaveLen(1))
 			Expect(svc.Spec.Ports[0].Port).To(Equal(int32(80)))
 
 			// Verify Ingress.
-			ingressN := fmt.Sprintf("webapp-preview-pr-42")
 			var ing networkingv1.Ingress
-			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: ingressN, Namespace: ns}, &ing)).To(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "webapp", Namespace: previewNs}, &ing)).To(Succeed())
 			Expect(ing.Spec.Rules).To(HaveLen(1))
 			Expect(ing.Spec.Rules[0].Host).To(Equal("pr-42-webapp.example.com"))
 			Expect(ing.Spec.TLS).To(HaveLen(1))
@@ -320,7 +321,16 @@ var _ = Describe("PreviewEnvironment Controller", func() {
 				Clock:  fakeClock,
 			}
 
+			// First reconcile: adds finalizer, sees TTL expired, sets Expired
+			// phase and issues Delete. Because the finalizer is present, the
+			// PE remains but has DeletionTimestamp.
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: pe.Name, Namespace: ns},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			// Second reconcile: sees DeletionTimestamp, runs GC, removes
+			// finalizer. PE disappears.
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{Name: pe.Name, Namespace: ns},
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -352,7 +362,6 @@ var _ = Describe("PreviewEnvironment Controller", func() {
 				Clock:  fakeClock,
 			}
 
-			// First reconcile: succeeds (no build clients = skip build).
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{Name: pe.Name, Namespace: ns},
 			})
@@ -367,7 +376,7 @@ var _ = Describe("PreviewEnvironment Controller", func() {
 			ready.Spec.PullRequest.SHA = "sha-v2"
 			Expect(k8sClient.Update(ctx, &ready)).To(Succeed())
 
-			// Second reconcile: still Ready since build clients are nil.
+			// Reconcile again: still Ready since build clients are nil.
 			_, err = reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{Name: pe.Name, Namespace: ns},
 			})
@@ -380,9 +389,9 @@ var _ = Describe("PreviewEnvironment Controller", func() {
 	})
 
 	Context("when the PreviewEnvironment is deleted", func() {
-		It("should clean up owned resources via garbage collection", func() {
+		It("should clean up resources in the preview namespace via label selector", func() {
 			ctx := context.Background()
-			_, ns := createPreviewTestProject(ctx, true)
+			project, ns := createPreviewTestProject(ctx, true)
 
 			createPreviewApp(ctx, "cleanapp", ns, nil)
 
@@ -399,31 +408,42 @@ var _ = Describe("PreviewEnvironment Controller", func() {
 				Clock:  fakeClock,
 			}
 
-			// Reconcile to create resources.
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{Name: pe.Name, Namespace: ns},
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			// Verify resources exist.
+			previewNs := constants.PreviewNamespace(project.Name, 99)
+
+			// Verify resources exist in the preview namespace.
 			var dep appsv1.Deployment
-			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "cleanapp-preview-pr-99", Namespace: ns}, &dep)).To(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "cleanapp", Namespace: previewNs}, &dep)).To(Succeed())
+			var svc corev1.Service
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "cleanapp", Namespace: previewNs}, &svc)).To(Succeed())
+			var ing networkingv1.Ingress
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "cleanapp", Namespace: previewNs}, &ing)).To(Succeed())
 
 			// Delete the PreviewEnvironment.
 			Expect(k8sClient.Delete(ctx, pe)).To(Succeed())
 
-			// Reconcile after delete.
+			// Reconcile after delete: the finalizer runs label-selector GC then
+			// removes itself, so the PE is gone and its workloads are deleted.
 			_, err = reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{Name: pe.Name, Namespace: ns},
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			// The PE itself should be gone (or going). Owner references will
-			// cascade delete the Deployment/Service/Ingress in a real cluster;
-			// envtest doesn't run the GC controller, so we just verify the PE
-			// is deleted.
+			// PE is gone.
 			var deletedPE mortisev1alpha1.PreviewEnvironment
 			err = k8sClient.Get(ctx, types.NamespacedName{Name: pe.Name, Namespace: ns}, &deletedPE)
+			Expect(errors.IsNotFound(err)).To(BeTrue())
+
+			// Managed resources are deleted by label selector from the preview ns.
+			err = k8sClient.Get(ctx, types.NamespacedName{Name: "cleanapp", Namespace: previewNs}, &dep)
+			Expect(errors.IsNotFound(err)).To(BeTrue())
+			err = k8sClient.Get(ctx, types.NamespacedName{Name: "cleanapp", Namespace: previewNs}, &svc)
+			Expect(errors.IsNotFound(err)).To(BeTrue())
+			err = k8sClient.Get(ctx, types.NamespacedName{Name: "cleanapp", Namespace: previewNs}, &ing)
 			Expect(errors.IsNotFound(err)).To(BeTrue())
 		})
 	})
