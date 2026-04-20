@@ -27,7 +27,6 @@ const mockGitProvider = {
 
 const mockPlatform = {
 	domain: 'example.com',
-	dns: { provider: 'cloudflare' },
 	tls: { certManagerClusterIssuer: 'letsencrypt-prod' }
 };
 
@@ -72,7 +71,7 @@ test.describe('platform settings actions', () => {
 				capturedBody = JSON.parse(route.request().postData() ?? '{}');
 				return route.fulfill({
 					status: 200,
-					json: { domain: 'newdomain.com', dns: { provider: 'cloudflare' }, tls: {} }
+					json: { domain: 'newdomain.com', tls: {} }
 				});
 			}
 			return route.fulfill({ json: mockPlatform });

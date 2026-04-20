@@ -126,7 +126,6 @@ async function setupMocks(page: Page) {
 		r.fulfill({
 			json: {
 				domain: 'example.com',
-				dns: { provider: 'cloudflare' },
 				tls: { certManagerClusterIssuer: 'letsencrypt-prod' }
 			}
 		})

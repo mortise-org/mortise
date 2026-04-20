@@ -14,8 +14,6 @@
 
 	// Platform form (admin only)
 	let domain = $state('');
-	let dnsProvider = $state('cloudflare');
-	let dnsToken = $state('');
 	let defaultStorageClass = $state('');
 	let tlsClusterIssuer = $state('');
 	let savingStorage = $state(false);
@@ -256,7 +254,6 @@
 			providers = provs;
 			if (platform) {
 				domain = platform.domain ?? '';
-				dnsProvider = platform.dns?.provider ?? 'cloudflare';
 				tlsClusterIssuer = platform.tls?.certManagerClusterIssuer ?? '';
 				defaultStorageClass = platform.storage?.defaultStorageClass ?? '';
 			}
@@ -279,12 +276,7 @@
 		saving = true;
 		error = '';
 		try {
-			await api.patchPlatform({
-				domain,
-				dns: dnsToken
-					? { provider: dnsProvider, apiTokenSecretRef: dnsToken }
-					: { provider: dnsProvider, apiTokenSecretRef: '' }
-			});
+			await api.patchPlatform({ domain });
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'Save failed';
 		} finally {
@@ -323,7 +315,6 @@
 	const sectionKeywords: Record<string, string[]> = {
 		'git-providers': ['git', 'provider', 'github', 'gitlab', 'gitea', 'oauth', 'connect'],
 		general: ['general', 'domain', 'platform'],
-		dns: ['dns', 'cloudflare', 'route53'],
 		registry: ['registry', 'oci', 'zot', 'image'],
 		build: ['build', 'buildkit', 'container'],
 		storage: ['storage', 'storageclass', 'pvc', 'volume'],
@@ -431,20 +422,6 @@
 				class="rounded-md bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent-hover disabled:opacity-50">
 				{saving ? 'Saving...' : 'Save'}
 			</button>
-		</section>
-
-		<!-- DNS -->
-		<section class="mb-8 space-y-4" id="dns" style:display={sectionVisible('dns') ? '' : 'none'}>
-			<h2 class="border-b border-surface-600 pb-2 text-sm font-medium text-gray-300">DNS</h2>
-			<div>
-				<label class="text-sm text-gray-400" for="dns-provider">Provider</label>
-				<select id="dns-provider" bind:value={dnsProvider}
-					class="mt-1 rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-white outline-none focus:border-accent">
-					<option value="cloudflare">Cloudflare</option>
-					<option value="route53">Route 53</option>
-					<option value="externaldns-noop">ExternalDNS (noop)</option>
-				</select>
-			</div>
 		</section>
 
 		<!-- Registry -->

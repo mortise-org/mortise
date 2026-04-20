@@ -34,7 +34,6 @@ export interface DomainsResponse {
 
 export interface PlatformResponse {
 	domain: string;
-	dns: { provider: string; apiTokenSecretRef?: { namespace?: string; name?: string; key?: string } };
 	tls: { certManagerClusterIssuer?: string };
 	storage?: { defaultStorageClass?: string };
 	phase?: string;
@@ -326,4 +325,32 @@ export interface Notification {
 	message: string;
 	ts: string;
 	read: boolean;
+}
+
+// Pod descriptor returned from GET /projects/{p}/apps/{a}/pods
+export interface Pod {
+	name: string;
+	phase: string;
+	restartCount: number;
+	ready: boolean;
+	startedAt?: string; // RFC3339
+	createdAt: string;  // RFC3339
+}
+
+// Build logs response for the Build sub-tab in the Logs drawer.
+export interface BuildLogsResponse {
+	lines: string[];
+	building: boolean;
+	timestamp?: string;  // RFC3339
+	commitSHA?: string;
+	status?: 'Running' | 'Succeeded' | 'Failed';
+	error?: string;
+}
+
+// A single event emitted by the logs SSE stream.
+export interface LogLineEvent {
+	pod: string;
+	ts: string;       // RFC3339; may be empty for synthetic (e.g. build) events
+	line: string;
+	stream?: string;  // "stdout" | "stderr"
 }

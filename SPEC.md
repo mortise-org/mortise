@@ -1009,16 +1009,44 @@ Every log line includes: `app`, `team`, `environment` (where applicable),
 `timestamp`, `level`. Build logs also carry `buildID` and `commitSHA`.
 Audit logs carry `actor` and `resource`.
 
-**No log storage in the operator.** Build logs stream to the UI via
-SSE during the build. After the build finishes, they exist only in
-the operator's stdout — if a log agent (Loki, Fluentd, CloudWatch, etc.)
-is collecting, users get full history with retention. If not, live-stream
-only. This is the trade-off of the no-PVC architecture.
+**Build log persistence.** Build logs stream to the UI via SSE during
+the build. After the build finishes, the final log lines are persisted
+to a ConfigMap `buildlogs-{app}` in the project namespace, capped at
+the last 1 000 lines per app (ring-buffer trim, same pattern as the
+activity store). This gives users build history without a log agent and
+without a PVC. Lines older than the cap exist only in the operator's
+stdout — if a log agent is collecting, users get full retention.
 
-**User app logs:** standard container stdout/stderr. Any log agent on the
-cluster collects them. Mortise does not proxy, aggregate, or store user
-app logs. The UI surfaces live `kubectl logs` output via SSE —
-same as a `stern` tail. Historical log search requires a log agent.
+**User app logs — live streaming.** The UI surfaces live `kubectl logs`
+output via SSE — same as a `stern` tail. Four improvements over bare
+log streaming ship in v1:
+
+1. **Previous-container logs** — `?previous=true` on the k8s log API
+   fetches logs from the container instance before the most recent
+   restart. Surfaced as a "Previous" toggle in the Logs tab header;
+   only shown when the pod has a non-zero restart count. This is the
+   primary path for diagnosing crash loops.
+2. **Timestamps** — `?timestamps=true` requests RFC3339 timestamps from
+   the k8s log API; the UI strips and re-formats them as relative time
+   (e.g. `14:32:01 · 2m ago`) in a fixed-width left gutter.
+3. **Structured JSON pretty-print** — if a log line parses as JSON, the
+   UI renders it as an expandable key/value row with the `level` field
+   color-coded (`error`=red, `warn`=amber, `info`=gray, `debug`=dimmed).
+   Raw text lines render as-is. Frontend-only, no backend change.
+4. **Time-range selector** — `sinceTime` / `sinceSeconds` params on the
+   k8s log API enable "past 15 min / 1 h / 6 h / 24 h" chips. Works as
+   long as the pod is alive and the node log buffer hasn't rotated.
+   When a range is selected, the view switches from SSE streaming to a
+   one-shot fetch rendered as a static scrollable list.
+
+**Historical log search via adapter (post-v1).** Mortise defines a
+minimal HTTP contract (§5.11a) that a thin adapter service implements.
+Users deploy one adapter that translates Mortise's queries into their
+actual log backend (Loki, CloudWatch, OpenSearch, Splunk, etc.). Mortise
+maintains one contract; adapters are maintained as separate projects in
+the tenon model. When `PlatformConfig.spec.observability.logsAdapterEndpoint`
+is set, the Logs tab shows a "History" view alongside live streaming.
+When not set, the live tab is the only view — no placeholder or prompt.
 
 **Per-project Activity store (convenience, not source of truth).** In
 addition to the stdout audit stream, the operator maintains a small
@@ -1034,6 +1062,76 @@ exceeds 500 events/day and the rail starts to feel sparse, users
 point a log agent at the stream and get full history — no Mortise
 change required. A dedicated `ActivityEvent` CRD or annotation ring
 is deferred until real demand; see §10.
+
+### 5.11a Log Adapter Contract (post-v1)
+
+No standardized cross-backend log query API exists (OpenTelemetry has
+an ingest protocol but no query API; Loki's HTTP API is not implemented
+by CloudWatch, Splunk, or OpenSearch). Rather than maintain N backend
+integrations, Mortise defines one minimal HTTP contract and ships
+reference adapter projects as tenons (§9).
+
+**Contract — single endpoint:**
+
+```
+GET /v1/logs
+Authorization: Bearer <token>
+
+Query parameters:
+  namespace  string   required   kubernetes namespace (e.g. project-my-app)
+  app        string   required   app name
+  env        string   required   environment name (e.g. production)
+  start      int64    required   unix timestamp seconds, range start
+  end        int64    required   unix timestamp seconds, range end
+  limit      int      optional   max lines to return (default 500, max 2000)
+  filter     string   optional   freetext substring filter applied by adapter
+
+Response 200:
+  {
+    "lines": [
+      { "ts": "2025-01-01T14:32:01Z", "pod": "my-app-abc-xyz", "text": "log line" }
+    ],
+    "hasMore": true
+  }
+
+Response 503 (backend unavailable):
+  { "error": "backend unavailable", "detail": "..." }
+```
+
+Rules the contract does NOT impose: no query language, no cursor
+pagination (limit is sufficient for the UI's use case), no streaming.
+Adapters are free to interpret `filter` however their backend supports
+(substring, regex, full-text index). If `filter` is unsupported, the
+adapter silently ignores it rather than erroring.
+
+**PlatformConfig additions:**
+
+```yaml
+spec:
+  observability:
+    logsAdapterEndpoint: https://loki-adapter.monitoring.svc   # base URL
+    logsAdapterTokenSecretRef:                                  # optional
+      name: mortise-log-adapter-token
+      key: token
+```
+
+**Mortise backend:** a single `GET /api/projects/{p}/apps/{a}/logs/history`
+handler that reads the adapter URL from PlatformConfig, forwards the
+query with the resolved token, and passes the response through. If the
+config field is absent, returns `{"available": false}`. No adapter SDK
+lives in the Mortise codebase — HTTP only.
+
+**Reference adapters (separate repos, tenon model):**
+- `mortise-loki-adapter` — translates the contract to Loki's
+  `/loki/api/v1/query_range` with a label selector built from the
+  `namespace`/`app`/`env` params. ~60 lines.
+- `mortise-cloudwatch-adapter` — translates to CloudWatch Logs Insights
+  `FilterLogEvents` via the AWS SDK.
+- Additional adapters contributed by the community.
+
+Each adapter is a single-binary container deployed as an App inside
+the cluster (or externally). Users who don't need historical search
+don't deploy one.
 
 ### 5.12 Git Providers (v1)
 
@@ -1172,7 +1270,7 @@ successful login.
 | `Project` | Cluster | Top-level grouping; owns a k8s namespace |
 | `App` | Namespaced | Deploy anything (git or image in v1); lives in a Project's namespace |
 | `PreviewEnvironment` | Namespaced | Ephemeral PR environments (auto-managed) |
-| `PlatformConfig` | Cluster | Platform settings (domain, DNS, default SC) |
+| `PlatformConfig` | Cluster | Platform settings (domain, default SC) |
 | `GitProvider` | Cluster | One per configured git provider |
 
 ---
@@ -1232,9 +1330,12 @@ as a separate chart.
 - **`mortise export` CLI** — export all App / PlatformConfig / GitProvider
   CRs as portable YAML for backup and migration. Pairs with Velero for
   full DR (Velero handles PVCs; `mortise export` handles configuration).
-- **Log UI integration** — PlatformConfig field pointing at the user's log
-  backend (Loki, CloudWatch, Splunk, Elastic, GCP Logging); Mortise UI
-  embeds/links to it per App. Backend-agnostic — no Loki install required.
+- **Log UI integration (§5.11a)** — PlatformConfig `spec.observability.logsAdapterEndpoint`
+  points at a user-deployed adapter that implements Mortise's minimal log
+  query contract. Mortise proxies queries through one `GET /logs/history`
+  endpoint. Reference adapters for Loki and CloudWatch ship as separate
+  tenon repos. No backend SDK lives in core. See §5.11a for the full
+  contract.
 
 ### 6.3 Integration Recipes (Documentation, not code)
 
@@ -1469,8 +1570,9 @@ product.
 helm install mortise oci://ghcr.io/mortise/mortise \
   --namespace mortise-system --create-namespace \
   --set domain=yourdomain.com \
-  --set dns.provider=cloudflare \
-  --set dns.apiToken=xxx
+  --set external-dns.provider.name=cloudflare \
+  --set external-dns.env[0].name=CF_API_TOKEN \
+  --set external-dns.env[0].value=xxx
 ```
 
 One command. The result is the full Railway-equivalent product: deploy from
@@ -2064,7 +2166,7 @@ pattern; anything beyond it is user-at-own-risk.
 | Resource | Argo/Flux-managed? | Why |
 |---|---|---|
 | Mortise Helm release (operator version, chart values) | **Yes, recommended** | Declarative platform config |
-| `PlatformConfig` CRD (domain, DNS, default SC) | **Yes, recommended** | Cluster-wide, rarely changes |
+| `PlatformConfig` CRD (domain, default SC) | **Yes, recommended** | Cluster-wide, rarely changes |
 | `GitProvider` CRDs | **Yes, recommended** | `clientID` is inline; optional `clientSecretRef`/`webhookSecretRef` via ESO / sealed-secrets / SOPS |
 | `App` CRDs | **No** | Authored through Mortise; live in etcd |
 | `PreviewEnvironment` CRDs | **No — operator-created** | Lifecycle is PR-driven |

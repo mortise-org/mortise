@@ -330,7 +330,7 @@ sequenceDiagram
     Op->>Op: apply default PlatformConfig from Helm values
     Op->>K8s: reconcile Traefik and cert-manager and ExternalDNS
     Admin->>Op: open mortise UI and begin first-run wizard
-    Op-->>Admin: wizard steps - domain DNS git admin
+    Op-->>Admin: wizard steps - domain git admin
     Admin->>Op: complete wizard
     Op->>K8s: persist platform config and admin user
     User->>Op: login and create first App

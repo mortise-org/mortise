@@ -13,10 +13,6 @@ import (
 	"github.com/MC-Meesh/mortise/internal/auth"
 )
 
-// defaultProjectName is the name of the Project that is auto-created during
-// first-user setup. "The workspace is never empty."
-const defaultProjectName = "default"
-
 // defaultTeamName is the singleton Team auto-created during first-user setup.
 // v1 never surfaces teams in the UI — the stub exists so v2's multi-team
 // model is additive. See SPEC.md §5.10.
@@ -134,25 +130,6 @@ func (s *Server) Login(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, authResponse{Token: token, User: principal})
-}
-
-// ensureDefaultProject creates the `default` Project if it does not already
-// exist. Idempotent; returns nil when the project is present (fresh or
-// pre-existing).
-func (s *Server) ensureDefaultProject(ctx context.Context) error {
-	project := &mortisev1alpha1.Project{
-		ObjectMeta: metav1.ObjectMeta{Name: defaultProjectName},
-		Spec: mortisev1alpha1.ProjectSpec{
-			Description: "Default project created during first-user setup.",
-		},
-	}
-	if err := s.client.Create(ctx, project); err != nil {
-		if errors.IsAlreadyExists(err) {
-			return nil
-		}
-		return err
-	}
-	return nil
 }
 
 // ensureDefaultTeam creates the singleton `default-team` Team if it does not

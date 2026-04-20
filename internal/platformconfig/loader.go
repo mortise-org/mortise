@@ -43,9 +43,6 @@ type Config struct {
 	// Domain is the base domain for the platform.
 	Domain string
 
-	// DNS holds resolved DNS provider configuration.
-	DNS DNSConfig
-
 	// Storage holds platform storage defaults.
 	Storage StorageConfig
 
@@ -57,14 +54,6 @@ type Config struct {
 
 	// TLS holds TLS/cert-manager configuration.
 	TLS TLSConfig
-}
-
-// DNSConfig is the resolved DNS provider configuration.
-type DNSConfig struct {
-	// Provider is the DNS backend (cloudflare, route53, externaldns-noop).
-	Provider mortisev1alpha1.DNSProviderType
-	// APIToken is the resolved API token value.
-	APIToken string
 }
 
 // StorageConfig is the resolved storage configuration.
@@ -143,16 +132,6 @@ func Load(ctx context.Context, c client.Reader) (*Config, error) {
 		},
 	}
 
-	// Resolve DNS API token.
-	dnsToken, err := resolveSecretKey(ctx, c, pc.Spec.DNS.APITokenSecretRef)
-	if err != nil {
-		return nil, fmt.Errorf("spec.dns.apiTokenSecretRef: %w", err)
-	}
-	cfg.DNS = DNSConfig{
-		Provider: pc.Spec.DNS.Provider,
-		APIToken: dnsToken,
-	}
-
 	// Resolve optional registry credentials.
 	if ref := pc.Spec.Registry.CredentialsSecretRef; ref != nil {
 		secret, err := resolveSecret(ctx, c, *ref)
@@ -175,19 +154,6 @@ func Load(ctx context.Context, c client.Reader) (*Config, error) {
 	}
 
 	return cfg, nil
-}
-
-// resolveSecretKey fetches a single key from a Secret.
-func resolveSecretKey(ctx context.Context, c client.Reader, ref mortisev1alpha1.SecretRef) (string, error) {
-	secret, err := resolveSecret(ctx, c, ref)
-	if err != nil {
-		return "", err
-	}
-	val, ok := secret.Data[ref.Key]
-	if !ok {
-		return "", fmt.Errorf("key %q not present in secret %s/%s", ref.Key, ref.Namespace, ref.Name)
-	}
-	return string(val), nil
 }
 
 // resolveSecret fetches a Secret by namespace/name.

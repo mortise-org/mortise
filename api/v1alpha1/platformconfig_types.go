@@ -30,27 +30,6 @@ const (
 	PlatformConfigPhaseFailed  PlatformConfigPhase = "Failed"
 )
 
-// DNSProviderType identifies the DNS provider backend.
-// +kubebuilder:validation:Enum=cloudflare;route53;externaldns-noop
-type DNSProviderType string
-
-const (
-	DNSProviderCloudflare      DNSProviderType = "cloudflare"
-	DNSProviderRoute53         DNSProviderType = "route53"
-	DNSProviderExternalDNSNoop DNSProviderType = "externaldns-noop"
-)
-
-// DNSConfig holds the DNS provider configuration.
-type DNSConfig struct {
-	// Provider is the DNS provider to use for creating records.
-	// +required
-	Provider DNSProviderType `json:"provider"`
-
-	// APITokenSecretRef references the secret containing the DNS provider API token.
-	// +required
-	APITokenSecretRef SecretRef `json:"apiTokenSecretRef"`
-}
-
 // StorageConfig holds platform-level storage settings.
 type StorageConfig struct {
 	// DefaultStorageClass is the StorageClass to use for App volumes that do not
@@ -121,10 +100,6 @@ type PlatformConfigSpec struct {
 	// this domain automatically (e.g. yourdomain.com → app.yourdomain.com).
 	// +required
 	Domain string `json:"domain"`
-
-	// DNS configures the provider used to create DNS records for App Ingresses.
-	// +required
-	DNS DNSConfig `json:"dns"`
 
 	// Storage configures platform-level storage defaults.
 	// +optional

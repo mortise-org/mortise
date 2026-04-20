@@ -53,7 +53,6 @@ test.describe('git providers oauth', () => {
 			r.fulfill({
 				json: {
 					domain: 'example.com',
-					dns: { provider: 'cloudflare' },
 					tls: { certManagerClusterIssuer: 'letsencrypt-prod' }
 				}
 			})
@@ -91,7 +90,6 @@ test.describe('git providers oauth', () => {
 			r.fulfill({
 				json: {
 					domain: 'example.com',
-					dns: { provider: 'cloudflare' },
 					tls: { certManagerClusterIssuer: 'letsencrypt-prod' }
 				}
 			})
@@ -140,7 +138,6 @@ test.describe('git providers oauth', () => {
 			r.fulfill({
 				json: {
 					domain: 'example.com',
-					dns: { provider: 'cloudflare' },
 					tls: { certManagerClusterIssuer: 'letsencrypt-prod' }
 				}
 			})
@@ -184,7 +181,6 @@ test.describe('git providers oauth', () => {
 				await r.fulfill({
 					json: {
 						domain: 'example.com',
-						dns: { provider: 'cloudflare' },
 						tls: { certManagerClusterIssuer: 'letsencrypt-prod' }
 					}
 				});
@@ -194,7 +190,6 @@ test.describe('git providers oauth', () => {
 				await r.fulfill({
 					json: {
 						domain: 'newdomain.com',
-						dns: { provider: 'cloudflare' },
 						tls: { certManagerClusterIssuer: 'letsencrypt-prod' }
 					}
 				});

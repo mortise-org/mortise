@@ -32,7 +32,19 @@ const (
 )
 
 // maxBuildLogLines is the maximum number of build log lines retained in memory.
-const maxBuildLogLines = 500
+const maxBuildLogLines = 1000
+
+// maxBuildLogLineBytes caps the size of a single log line. Longer lines are
+// truncated and suffixed with truncatedSuffix so the UI and ConfigMap payload
+// don't blow up on pathological output (e.g. a single-line minified asset).
+// Counts bytes, not runes — BuildKit output is ASCII-dominant and the ConfigMap
+// size guard downstream is byte-based too.
+const maxBuildLogLineBytes = 2048
+
+// truncatedSuffix marks a line that was cut at maxBuildLogLineBytes. Uses the
+// UTF-8 ellipsis so truncation is visually distinct from "..." that might
+// appear organically in tool output.
+const truncatedSuffix = "… [truncated]"
 
 // buildTracker holds the state of a single asynchronous build. Only the
 // goroutine that owns the tracker mutates its fields; callers read them under
@@ -55,8 +67,12 @@ func (t *buildTracker) snapshot() (phase buildPhase, revision, image, digest, er
 	return t.phase, t.revision, t.image, t.digest, t.errMsg
 }
 
-// appendLog adds a line to the build log buffer.
+// appendLog adds a line to the build log buffer, truncating lines longer
+// than maxBuildLogLineBytes and trimming the buffer to maxBuildLogLines.
 func (t *buildTracker) appendLog(line string) {
+	if len(line) > maxBuildLogLineBytes {
+		line = line[:maxBuildLogLineBytes] + truncatedSuffix
+	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if len(t.logs) >= maxBuildLogLines {

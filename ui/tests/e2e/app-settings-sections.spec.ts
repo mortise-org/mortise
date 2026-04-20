@@ -85,7 +85,7 @@ async function setupMocks(page: Page, appOverride = mockApp) {
 	await page.route('/api/gitproviders', (r) => r.fulfill({ json: [] }));
 	await page.route('/api/platform', (r) =>
 		r.fulfill({
-			json: { domain: 'example.com', dns: { provider: 'cloudflare' }, tls: { certManagerClusterIssuer: 'letsencrypt-prod' } }
+			json: { domain: 'example.com', tls: { certManagerClusterIssuer: 'letsencrypt-prod' } }
 		})
 	);
 }

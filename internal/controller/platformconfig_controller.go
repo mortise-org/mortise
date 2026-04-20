@@ -65,12 +65,6 @@ func (r *PlatformConfigReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 			fmt.Sprintf("PlatformConfig must be named %q; got %q", singletonName, pc.Name))
 	}
 
-	// Validate DNS API token secret.
-	if err := r.validateSecretRef(ctx, pc.Spec.DNS.APITokenSecretRef, "spec.dns.apiTokenSecretRef"); err != nil {
-		log.Info("DNS secret ref invalid", "error", err)
-		return ctrl.Result{}, r.markFailed(ctx, &pc, "SecretNotFound", err.Error())
-	}
-
 	// Validate optional registry credentials secret.
 	if pc.Spec.Registry.CredentialsSecretRef != nil {
 		if err := r.validateSecretRef(ctx, *pc.Spec.Registry.CredentialsSecretRef, "spec.registry.credentialsSecretRef"); err != nil {

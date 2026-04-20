@@ -326,6 +326,7 @@ func (r *AppReconciler) reconcileGitSource(ctx context.Context, app *mortisev1al
 	go r.runBuild(buildCtx, cancel, tracker, buildParams{
 		appName:    app.Name,
 		namespace:  app.Namespace,
+		revision:   revision,
 		repo:       app.Spec.Source.Repo,
 		branch:     firstNonEmpty(app.Spec.Source.Branch, "main"),
 		token:      token,
@@ -343,6 +344,7 @@ func (r *AppReconciler) reconcileGitSource(ctx context.Context, app *mortisev1al
 type buildParams struct {
 	appName    string
 	namespace  string
+	revision   string // commit SHA (or branch fallback) — persisted into the build-log ConfigMap
 	repo       string
 	branch     string
 	token      string
@@ -357,6 +359,11 @@ type buildParams struct {
 func (r *AppReconciler) runBuild(ctx context.Context, cancel context.CancelFunc, t *buildTracker, p buildParams) {
 	defer cancel()
 	log := logf.Log.WithName("build").WithValues("app", p.appName, "namespace", p.namespace)
+
+	// Persist the final log buffer to a ConfigMap after every terminal outcome
+	// (success or any failure) so the UI Build tab can show the most recent
+	// build across operator restarts. See SPEC §5.11.
+	defer r.persistBuildLog(t, p)
 
 	cloneDir, err := os.MkdirTemp("", "mortise-build-*")
 	if err != nil {
@@ -423,6 +430,122 @@ func (r *AppReconciler) runBuild(ctx context.Context, cancel context.CancelFunc,
 		pushedImage = p.imageRef.Registry + "/" + p.imageRef.Path + "@" + digest
 	}
 	t.setSucceeded(pushedImage, digest)
+}
+
+// buildLogsConfigMapName returns the name of the ConfigMap that stores the
+// most recent build log for the given App. One ConfigMap per App, upserted
+// on every build.
+func buildLogsConfigMapName(appName string) string {
+	return "buildlogs-" + appName
+}
+
+// buildLogConfigMap annotation keys. Kept as constants so the API layer can
+// read them without hard-coding the strings.
+const (
+	buildLogAnnotationTimestamp = "mortise.dev/build-timestamp"
+	buildLogAnnotationCommit    = "mortise.dev/build-commit"
+	buildLogAnnotationStatus    = "mortise.dev/build-status"
+	buildLogAnnotationError     = "mortise.dev/build-error"
+)
+
+// maxBuildLogConfigMapBytes is a soft cap on the `lines` payload written into
+// the ConfigMap. Kubernetes' hard limit is 1 MiB for the entire object; we
+// leave headroom for metadata + annotations.
+const maxBuildLogConfigMapBytes = 900_000
+
+// maxBuildErrorAnnotationBytes caps the build error annotation so a pathological
+// error message can't push the ConfigMap past the API-server limit.
+const maxBuildErrorAnnotationBytes = 1024
+
+// persistBuildLog writes the tracker's final log buffer to a ConfigMap in the
+// App's namespace, owned by the App so it's GC'd on delete. Called from a
+// deferred in runBuild so every terminal path (success + every failure) hits
+// it. Uses a fresh background context with a short timeout so build-context
+// cancellation doesn't skip the write. Failures are logged and swallowed —
+// the build itself already succeeded/failed per the tracker; a ConfigMap
+// write error shouldn't re-fail it.
+func (r *AppReconciler) persistBuildLog(t *buildTracker, p buildParams) {
+	log := logf.Log.WithName("build-log-persist").WithValues("app", p.appName, "namespace", p.namespace)
+
+	phase, _, _, _, errMsg := t.snapshot()
+	lines := t.snapshotLogs()
+
+	// Drop head lines until the joined payload fits under the size cap. The
+	// per-line cap already bounds each line, so this only trims when the log
+	// is long, not when any single line is huge.
+	joined := strings.Join(lines, "\n")
+	for len(joined) > maxBuildLogConfigMapBytes && len(lines) > 0 {
+		lines = lines[1:]
+		joined = strings.Join(lines, "\n")
+	}
+
+	status := "Succeeded"
+	if phase == buildPhaseFailed {
+		status = "Failed"
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Fetch the App to anchor the owner reference. If the App is gone
+	// (deleted mid-build), skip the persist entirely — there's nothing to
+	// own the ConfigMap and GC would delete it immediately anyway.
+	var app mortisev1alpha1.App
+	if err := r.Get(ctx, types.NamespacedName{Name: p.appName, Namespace: p.namespace}, &app); err != nil {
+		if !errors.IsNotFound(err) {
+			log.Error(err, "fetch app for build-log persist")
+		}
+		return
+	}
+
+	annotations := map[string]string{
+		buildLogAnnotationTimestamp: r.clock().Now().UTC().Format(time.RFC3339),
+		buildLogAnnotationCommit:    p.revision,
+		buildLogAnnotationStatus:    status,
+	}
+	if status == "Failed" && errMsg != "" {
+		if len(errMsg) > maxBuildErrorAnnotationBytes {
+			errMsg = errMsg[:maxBuildErrorAnnotationBytes]
+		}
+		annotations[buildLogAnnotationError] = errMsg
+	}
+
+	desired := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        buildLogsConfigMapName(p.appName),
+			Namespace:   p.namespace,
+			Labels:      appLabels(p.appName, ""),
+			Annotations: annotations,
+		},
+		Data: map[string]string{
+			"lines": joined,
+		},
+	}
+	if err := controllerutil.SetControllerReference(&app, desired, r.Scheme); err != nil {
+		log.Error(err, "set owner reference on build-log configmap")
+		return
+	}
+
+	var existing corev1.ConfigMap
+	err := r.Get(ctx, types.NamespacedName{Name: desired.Name, Namespace: desired.Namespace}, &existing)
+	if errors.IsNotFound(err) {
+		if err := r.Create(ctx, desired); err != nil {
+			log.Error(err, "create build-log configmap")
+		}
+		return
+	}
+	if err != nil {
+		log.Error(err, "get build-log configmap")
+		return
+	}
+
+	existing.Labels = desired.Labels
+	existing.Annotations = desired.Annotations
+	existing.Data = desired.Data
+	existing.OwnerReferences = desired.OwnerReferences
+	if err := r.Update(ctx, &existing); err != nil {
+		log.Error(err, "update build-log configmap")
+	}
 }
 
 // applyBuildSuccess writes the successful build result onto the App status.
@@ -893,12 +1016,12 @@ func (r *AppReconciler) reconcileIngress(ctx context.Context, app *mortisev1alph
 	//     from owned — the Secret lifecycle is the user's.
 	//   - env.TLS.ClusterIssuer override: replace the provider default.
 	if env.TLS != nil && env.TLS.SecretName != "" {
-		delete(owned, "cert-manager.io/cluster-issuer")
+		delete(owned, ingress.CertManagerClusterIssuerAnnotation)
 	} else if env.TLS != nil && env.TLS.ClusterIssuer != "" {
 		if owned == nil {
 			owned = make(map[string]string, 1)
 		}
-		owned["cert-manager.io/cluster-issuer"] = env.TLS.ClusterIssuer
+		owned[ingress.CertManagerClusterIssuerAnnotation] = env.TLS.ClusterIssuer
 	}
 
 	desired := &networkingv1.Ingress{

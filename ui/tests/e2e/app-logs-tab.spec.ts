@@ -1,214 +1,245 @@
-import { test, expect, type Page } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
+import {
+  randomSuffix,
+  ensureAdmin,
+  loginViaAPI,
+  injectToken,
+  createProjectViaAPI,
+  createAppViaAPI,
+  deleteProjectViaAPI
+} from './helpers';
 
 // ---------------------------------------------------------------------------
-// LogsTab E2E tests (mocked backend — no live cluster required)
+// LogsTab E2E tests
 //
-// SSE connections (EventSource) are mocked at the network level with a static
-// text/event-stream response. Tests focus on UI structure: env tabs, search
-// input, Copy/Clear buttons, Live tail toggle.
+// Covers the rebuilt LogsTab (UI_SPEC §3.12):
+//   - Live | Build sub-tab bar
+//   - Live: env pills, always-visible pod picker, Previous toggle visibility
+//     rules, time-range chips, Live tail switch, Copy/Clear
+//   - Build: status badge, commit SHA, timestamp, image-source placeholder
+//
+// Tests hit the real Mortise backend (image-source app; no pods in
+// integration envs). Two targeted /pods overrides simulate the restarted-pod
+// case so we can assert Previous-toggle visibility rules without a crashing
+// workload — everything else uses the real API per CLAUDE.md.
 // ---------------------------------------------------------------------------
 
-const mockProject = {
-  name: 'my-project',
-  namespace: 'project-my-project',
-  phase: 'Ready' as const,
-  appCount: 1,
-  description: ''
-};
+test.describe('app drawer Logs tab', () => {
+  let token: string;
+  let project: string;
+  const appName = 'web-app';
 
-const mockApp = {
-  metadata: { name: 'web-app', namespace: 'project-my-project' },
-  spec: {
-    source: { type: 'image' as const, image: 'nginx:1.27' },
-    network: { public: true, port: 8080 },
-    environments: [
-      { name: 'production', replicas: 1 },
-      { name: 'staging', replicas: 1 }
-    ],
-    storage: [],
-    credentials: []
-  },
-  status: {
-    phase: 'Ready' as const,
-    environments: [
-      { name: 'production', readyReplicas: 1, currentImage: 'nginx:1.27', deployHistory: [] }
-    ]
-  }
-};
-
-async function injectAuth(page: Page) {
-  await page.addInitScript(() => {
-    localStorage.setItem('mortise_token', 'test-token');
-    localStorage.setItem(
-      'mortise_user',
-      JSON.stringify({ email: 'admin@example.com', role: 'admin' })
-    );
+  test.beforeAll(async ({ request }) => {
+    await ensureAdmin(request);
+    token = await loginViaAPI(request);
+    project = `e2e-logs-${randomSuffix()}`;
+    await createProjectViaAPI(request, token, project);
+    // Use the default single-env app from the helper (production only).
+    // Tests that need multi-env create their own apps below.
+    await createAppViaAPI(request, token, project, appName, 'nginx:1.27');
   });
-}
 
-async function setupCommonMocks(page: Page) {
-  await page.route('**/api/auth/status', (r) => r.fulfill({ json: { setupRequired: false } }));
-  await page.route('**/api/projects', (r) => r.fulfill({ json: [mockProject] }));
-  await page.route('**/api/projects/my-project', (r) => r.fulfill({ json: mockProject }));
-  await page.route('**/api/projects/my-project/apps', (r) => r.fulfill({ json: [mockApp] }));
-  await page.route('**/api/projects/my-project/apps/web-app', (r) => r.fulfill({ json: mockApp }));
-  await page.route('**/api/projects/my-project/activity', (r) => r.fulfill({ json: [] }));
-  await page.route('**/api/projects/my-project/apps/web-app/domains*', (r) =>
-    r.fulfill({ json: { primary: 'web-app.example.com', custom: [] } })
-  );
-  await page.route('**/api/projects/my-project/apps/web-app/tokens', (r) =>
-    r.fulfill({ json: [] })
-  );
-  await page.route('**/api/projects/my-project/apps/web-app/secrets', (r) =>
-    r.fulfill({ json: [] })
-  );
-  await page.route('**/api/projects/my-project/apps/web-app/env/*', (r) =>
-    r.fulfill({ json: {} })
-  );
-  await page.route('**/api/projects/my-project/apps/web-app/shared', (r) =>
-    r.fulfill({ json: {} })
-  );
-  // Intercept SSE logs endpoint with empty stream.
-  await page.route('**/api/projects/my-project/apps/web-app/logs*', (r) =>
-    r.fulfill({
-      status: 200,
-      headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' },
-      body: ''
-    })
-  );
-}
+  test.afterAll(async ({ request }) => {
+    await deleteProjectViaAPI(request, token, project);
+  });
 
-async function goToLogsTab(page: Page) {
-  await injectAuth(page);
-  await setupCommonMocks(page);
-  await page.goto('/projects/my-project/apps/web-app');
-  // Wait for drawer to appear before clicking tabs, to avoid strict-mode
-  // conflicts with canvas app nodes and ensure the drawer is rendered.
-  await expect(page.getByRole('button', { name: 'Close drawer' })).toBeVisible({ timeout: 8_000 });
-  await page.getByRole('button', { name: 'Logs', exact: true }).click();
-  // Wait for the logs tab content to render.
-  await expect(page.getByText('Live tail')).toBeVisible({ timeout: 8_000 });
-}
+  async function openLogsTab(page: Page) {
+    await injectToken(page, token);
+    await page.goto(`/projects/${project}/apps/${appName}`);
+    // The AppDrawer is always rendered on this route — wait for its close button.
+    await expect(page.getByRole('button', { name: 'Close drawer' })).toBeVisible({
+      timeout: 15_000
+    });
+    await page.getByRole('button', { name: 'Logs', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Live', exact: true })).toBeVisible({
+      timeout: 10_000
+    });
+  }
 
-// ---------------------------------------------------------------------------
-// Test 1: Logs tab shows environment tab buttons for production and staging
-// ---------------------------------------------------------------------------
-test('logs tab shows environment tab buttons for each environment', async ({ page }) => {
-  await goToLogsTab(page);
+  // -------------------------------------------------------------------------
+  // Tab bar + tab switching
+  // -------------------------------------------------------------------------
 
-  // Both environment buttons must be present (when there are multiple envs, the
-  // LogsTab renders buttons rather than a plain text label).
-  // Scope to main to avoid matching the global environment-switcher in the header.
-  const main = page.getByRole('main');
-  await expect(main.getByRole('button', { name: 'production', exact: true })).toBeVisible();
-  await expect(main.getByRole('button', { name: 'staging', exact: true })).toBeVisible();
+  test('shows Live and Build sub-tab buttons', async ({ page }) => {
+    await openLogsTab(page);
+    await expect(page.getByRole('button', { name: 'Live', exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Build', exact: true })).toBeVisible();
+  });
+
+  test('Build sub-tab shows image-source placeholder for image apps', async ({ page }) => {
+    await openLogsTab(page);
+    await page.getByRole('button', { name: 'Build', exact: true }).click();
+    await expect(page.getByText('Image source — builds are skipped')).toBeVisible({
+      timeout: 5_000
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Live sub-tab: pod picker always visible, time-range chips, actions
+  // -------------------------------------------------------------------------
+
+  test('pod picker is always visible and defaults to "All pods"', async ({ page }) => {
+    await openLogsTab(page);
+    const picker = page.getByRole('combobox');
+    await expect(picker).toBeVisible();
+    await expect(picker).toContainText('All pods');
+  });
+
+  test('time-range chips render Now, 15m, 1h, 6h, 24h', async ({ page }) => {
+    await openLogsTab(page);
+    const main = page.getByRole('main');
+    await expect(main.getByRole('button', { name: 'Now', exact: true })).toBeVisible();
+    await expect(main.getByRole('button', { name: '15m', exact: true })).toBeVisible();
+    await expect(main.getByRole('button', { name: '1h', exact: true })).toBeVisible();
+    await expect(main.getByRole('button', { name: '6h', exact: true })).toBeVisible();
+    await expect(main.getByRole('button', { name: '24h', exact: true })).toBeVisible();
+  });
+
+  test('selecting a non-Now range disables the Live tail switch', async ({ page }) => {
+    await openLogsTab(page);
+    const toggle = page.getByRole('switch', { name: 'Live tail' });
+    await expect(toggle).toHaveAttribute('aria-checked', 'true');
+
+    await page.getByRole('button', { name: '1h', exact: true }).click();
+    await expect(toggle).toBeDisabled();
+  });
+
+  test('Live tab shows Copy and Clear buttons', async ({ page }) => {
+    await openLogsTab(page);
+    await expect(page.getByRole('button', { name: 'Copy', exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Clear', exact: true })).toBeVisible();
+  });
+
+  // -------------------------------------------------------------------------
+  // Previous toggle visibility rules — uses a targeted /pods mock to
+  // simulate a restarted pod without relying on a real crashing workload.
+  // -------------------------------------------------------------------------
+
+  test('Previous toggle is hidden when "All pods" is selected', async ({ page }) => {
+    await page.route(`**/api/projects/${project}/apps/${appName}/pods*`, (route) =>
+      route.fulfill({
+        json: [
+          {
+            name: `${appName}-abc123`,
+            phase: 'Running',
+            restartCount: 3,
+            ready: true,
+            createdAt: new Date().toISOString()
+          }
+        ]
+      })
+    );
+    await openLogsTab(page);
+    await expect(page.getByRole('button', { name: 'Previous', exact: true })).toHaveCount(0);
+  });
+
+  test('Previous toggle is hidden when selected pod has no restarts', async ({ page }) => {
+    await page.route(`**/api/projects/${project}/apps/${appName}/pods*`, (route) =>
+      route.fulfill({
+        json: [
+          {
+            name: `${appName}-clean`,
+            phase: 'Running',
+            restartCount: 0,
+            ready: true,
+            createdAt: new Date().toISOString()
+          }
+        ]
+      })
+    );
+    await openLogsTab(page);
+    await page.getByRole('combobox').selectOption(`${appName}-clean`);
+    await expect(page.getByRole('button', { name: 'Previous', exact: true })).toHaveCount(0);
+  });
+
+  test('Previous toggle appears when a restarted pod is selected', async ({ page }) => {
+    await page.route(`**/api/projects/${project}/apps/${appName}/pods*`, (route) =>
+      route.fulfill({
+        json: [
+          {
+            name: `${appName}-flaky`,
+            phase: 'Running',
+            restartCount: 2,
+            ready: true,
+            createdAt: new Date().toISOString()
+          }
+        ]
+      })
+    );
+    await openLogsTab(page);
+    await page.getByRole('combobox').selectOption(`${appName}-flaky`);
+    const prev = page.getByRole('button', { name: 'Previous', exact: true });
+    await expect(prev).toBeVisible();
+    await expect(prev).toHaveAttribute('aria-pressed', 'false');
+    await prev.click();
+    await expect(prev).toHaveAttribute('aria-pressed', 'true');
+  });
 });
 
 // ---------------------------------------------------------------------------
-// Test 2: Search/filter input is present with the correct placeholder
+// Multi-environment case — creates its own app with production + staging.
+// Scopes env-pill queries to the drawer via `#app-drawer` to avoid colliding
+// with the global env switcher in the top nav.
 // ---------------------------------------------------------------------------
-test('logs tab shows a filter input with "Filter logs" placeholder', async ({ page }) => {
-  await goToLogsTab(page);
 
-  const filterInput = page.getByPlaceholder('Filter logs…');
-  await expect(filterInput).toBeVisible();
-});
+test.describe('app drawer Logs tab — multi-env', () => {
+  let token: string;
+  let project: string;
+  const appName = 'multi-env-app';
 
-// ---------------------------------------------------------------------------
-// Test 3: Copy button and Clear button are both visible
-// ---------------------------------------------------------------------------
-test('logs tab shows Copy and Clear buttons', async ({ page }) => {
-  await goToLogsTab(page);
+  test.beforeAll(async ({ request }) => {
+    await ensureAdmin(request);
+    token = await loginViaAPI(request);
+    project = `e2e-logs-multi-${randomSuffix()}`;
+    await createProjectViaAPI(request, token, project);
 
-  await expect(page.getByRole('button', { name: 'Copy' })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Clear' })).toBeVisible();
-});
+    const res = await request.post(`/api/projects/${project}/apps`, {
+      headers: { Authorization: `Bearer ${token}` },
+      data: {
+        name: appName,
+        spec: {
+          source: { type: 'image', image: 'nginx:1.27' },
+          network: { public: true },
+          environments: [
+            { name: 'production', replicas: 1 },
+            { name: 'staging', replicas: 1 }
+          ]
+        }
+      }
+    });
+    if (!res.ok()) {
+      throw new Error(`create multi-env app failed: HTTP ${res.status()}`);
+    }
+  });
 
-// ---------------------------------------------------------------------------
-// Test 4: Switching environment tab changes the selected env button highlight
-// ---------------------------------------------------------------------------
-test('switching environment tab updates the selected button state', async ({ page }) => {
-  await goToLogsTab(page);
+  test.afterAll(async ({ request }) => {
+    await deleteProjectViaAPI(request, token, project);
+  });
 
-  // Staging button starts unselected; clicking it should give it the active style.
-  // Scope to main to avoid matching the global environment-switcher in the header.
-  const main = page.getByRole('main');
-  const stagingBtn = main.getByRole('button', { name: 'staging', exact: true });
-  await stagingBtn.click();
+  test('shows env pills for each environment and switches selection', async ({ page }) => {
+    await injectToken(page, token);
+    await page.goto(`/projects/${project}/apps/${appName}`);
+    await expect(page.getByRole('button', { name: 'Close drawer' })).toBeVisible({
+      timeout: 15_000
+    });
+    await page.getByRole('button', { name: 'Logs', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Live', exact: true })).toBeVisible({
+      timeout: 10_000
+    });
 
-  // After click, the staging button acquires bg-surface-600 (the active class).
-  // We verify it no longer has text-gray-400 (inactive) by checking it is still
-  // visible and the production button does not have the active class.
-  await expect(stagingBtn).toBeVisible();
+    // Scope env-pill queries to main (drawer content lives there) to avoid
+    // colliding with the top-nav env switcher, which renders the same names.
+    const main = page.getByRole('main');
+    const stagingBtn = main.getByRole('button', { name: 'staging', exact: true });
+    const productionBtn = main.getByRole('button', { name: 'production', exact: true });
+    await expect(productionBtn).toBeVisible();
+    await expect(stagingBtn).toBeVisible();
 
-  // Production button should now look inactive (text-gray-400 class present).
-  const productionBtn = main.getByRole('button', { name: 'production', exact: true });
-  await expect(productionBtn).toBeVisible();
-  // Verify the class attribute reflects inactive state.
-  const prodClass = await productionBtn.getAttribute('class');
-  expect(prodClass).toContain('text-gray-400');
-});
-
-// ---------------------------------------------------------------------------
-// Test 5: Live tail toggle is a switch control with correct aria attributes
-// ---------------------------------------------------------------------------
-test('logs tab live tail toggle is a switch with aria-checked attribute', async ({ page }) => {
-  await goToLogsTab(page);
-
-  const toggle = page.getByRole('switch');
-  await expect(toggle).toBeVisible();
-
-  // Starts with live tail on (following = true).
-  await expect(toggle).toHaveAttribute('aria-checked', 'true');
-
-  // Click to turn off.
-  await toggle.click();
-  await expect(toggle).toHaveAttribute('aria-checked', 'false');
-
-  // Click to turn back on.
-  await toggle.click();
-  await expect(toggle).toHaveAttribute('aria-checked', 'true');
-});
-
-// ---------------------------------------------------------------------------
-// Test 6: Empty log container shows the "No logs yet" placeholder text
-// ---------------------------------------------------------------------------
-test('empty logs show placeholder text', async ({ page }) => {
-  await goToLogsTab(page);
-
-  // With an empty SSE stream the log body shows the idle placeholder.
-  await expect(page.getByText('No logs yet…')).toBeVisible({ timeout: 5_000 });
-});
-
-// ---------------------------------------------------------------------------
-// Test 7: Filter input narrows displayed log lines (client-side filtering)
-// ---------------------------------------------------------------------------
-test('filter input hides non-matching log lines', async ({ page }) => {
-  await injectAuth(page);
-  await setupCommonMocks(page);
-
-  // Override the logs route to deliver a couple of log lines via SSE.
-  await page.route('**/api/projects/my-project/apps/web-app/logs*', (r) =>
-    r.fulfill({
-      status: 200,
-      headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' },
-      body: 'data: ERROR something went wrong\n\ndata: INFO service ready\n\n'
-    })
-  );
-
-  await page.goto('/projects/my-project/apps/web-app');
-  await expect(page.getByRole('button', { name: 'Close drawer' })).toBeVisible({ timeout: 8_000 });
-  await page.getByRole('button', { name: 'Logs', exact: true }).click();
-  await expect(page.getByText('Live tail')).toBeVisible({ timeout: 8_000 });
-
-  // Type a filter that only matches one of the lines.
-  const filterInput = page.getByPlaceholder('Filter logs…');
-  await filterInput.fill('ERROR');
-
-  // The "No matching lines" message should appear since SSE data doesn't
-  // arrive in the mocked static response scenario — OR the ERROR line appears.
-  // Either outcome confirms filtering logic engaged.
-  await expect(
-    page.getByText('No matching lines.').or(page.getByText('ERROR something went wrong'))
-  ).toBeVisible({ timeout: 5_000 });
+    await stagingBtn.click();
+    // Active pill carries bg-surface-600; inactive carries text-gray-400.
+    const stagingClass = await stagingBtn.getAttribute('class');
+    expect(stagingClass).toContain('bg-surface-600');
+    const prodClass = await productionBtn.getAttribute('class');
+    expect(prodClass).toContain('text-gray-400');
+  });
 });

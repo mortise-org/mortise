@@ -9,10 +9,7 @@
 
 	// Step 1: Domain
 	let domain = $state('');
-	// Step 2: DNS
-	let dnsProvider = $state('cloudflare');
-	let dnsToken = $state('');
-	// Step 3: GitHub connection (single step - just authorize)
+	// Step 2: GitHub connection (single step - just authorize)
 	let gitStep = $state<'start' | 'polling' | 'done'>('start');
 	let userCode = $state('');
 	let gitError = $state('');
@@ -20,30 +17,28 @@
 	let wizardDeviceCode = $state('');
 	let wizardManualChecking = $state(false);
 
-	const steps = ['Domain', 'DNS', 'GitHub', 'Done'];
+	const steps = ['Domain', 'GitHub', 'Done'];
 
 	async function next() {
 		error = '';
 		if (step === 1) {
 			if (!domain) { error = 'Domain is required'; return; }
-			step = 2;
-		} else if (step === 2) {
 			saving = true;
 			try {
-				await api.patchPlatform({ domain, dns: { provider: dnsProvider, apiTokenSecretRef: dnsToken || 'placeholder' } });
-				step = 3;
+				await api.patchPlatform({ domain });
+				step = 2;
 			} catch(e) {
 				error = e instanceof Error ? e.message : 'Failed to save';
 			} finally { saving = false; }
-		} else if (step === 3) {
-			step = 4;
+		} else if (step === 2) {
+			step = 3;
 		}
 	}
 
-	// Auto-advance to step 4 if GitHub is already connected
+	// Auto-advance to step 3 if GitHub is already connected
 	$effect(() => {
-		if (step === 3 && gitStep === 'done') {
-			step = 4;
+		if (step === 2 && gitStep === 'done') {
+			step = 3;
 		}
 	});
 
@@ -141,27 +136,6 @@
 					class="w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-white placeholder-gray-500 outline-none focus:border-accent" />
 
 			{:else if step === 2}
-				<h2 class="mb-4 text-base font-semibold text-white">DNS Provider</h2>
-				<div class="space-y-3">
-					<div>
-						<label for="dns-provider" class="text-sm text-gray-400">Provider</label>
-						<select id="dns-provider" bind:value={dnsProvider}
-							class="mt-1 w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-white outline-none focus:border-accent">
-							<option value="cloudflare">Cloudflare</option>
-							<option value="route53">Route 53</option>
-							<option value="externaldns-noop">ExternalDNS (skip DNS management)</option>
-						</select>
-					</div>
-					{#if dnsProvider !== 'externaldns-noop'}
-						<div>
-							<label for="dns-token" class="text-sm text-gray-400">API Token</label>
-							<input id="dns-token" type="password" bind:value={dnsToken} placeholder="API token for DNS management"
-								class="mt-1 w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-white placeholder-gray-500 outline-none focus:border-accent" />
-						</div>
-					{/if}
-				</div>
-
-			{:else if step === 3}
 				<h2 class="mb-4 text-base font-semibold text-white">Connect your GitHub account</h2>
 
 				{#if gitStep === 'done'}
@@ -207,7 +181,7 @@
 					<p class="mt-3 text-xs text-danger">{gitError}</p>
 				{/if}
 
-			{:else if step === 4}
+			{:else if step === 3}
 				<div class="py-6 text-center">
 					<div class="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-success/10 text-success"><Rocket class="h-7 w-7" /></div>
 					<h2 class="mb-2 text-lg font-semibold text-white">All set! Go ship something awesome.</h2>
@@ -220,8 +194,8 @@
 			{/if}
 
 			<div class="mt-6 flex justify-between">
-				{#if step > 1 && step < 4}
-					<button type="button" onclick={() => { if (step === 3 && pollTimer) clearInterval(pollTimer); step--; }}
+				{#if step > 1 && step < 3}
+					<button type="button" onclick={() => { if (step === 2 && pollTimer) clearInterval(pollTimer); step--; }}
 						class="rounded-md border border-surface-600 px-4 py-2 text-sm text-gray-400 hover:bg-surface-700 hover:text-white">
 						Back
 					</button>
@@ -229,8 +203,8 @@
 					<div></div>
 				{/if}
 
-				{#if step < 4}
-					{#if step === 3 && gitStep !== 'start'}
+				{#if step < 3}
+					{#if step === 2 && gitStep !== 'start'}
 						<button type="button" onclick={next}
 							class="rounded-md {gitStep === 'done' ? 'bg-accent' : 'border border-surface-600'} px-4 py-2 text-sm font-medium {gitStep === 'done' ? 'text-white hover:bg-accent-hover' : 'text-gray-400 hover:bg-surface-700 hover:text-white'}">
 							{gitStep === 'done' ? 'Continue' : 'Skip for now'}
@@ -238,7 +212,7 @@
 					{:else}
 						<button type="button" onclick={next} disabled={saving}
 							class="rounded-md bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent-hover disabled:opacity-50">
-							{saving ? 'Saving...' : step === 3 ? 'Skip for now' : 'Continue'}
+							{saving ? 'Saving...' : step === 2 ? 'Skip for now' : 'Continue'}
 						</button>
 					{/if}
 				{:else}

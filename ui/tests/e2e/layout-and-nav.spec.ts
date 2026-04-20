@@ -114,7 +114,7 @@ async function setupCommonMocks(page: Page) {
 	await page.route('/api/projects/new/apps', (r) => r.fulfill({ json: [] }));
 	await page.route('/api/projects/new/activity', (r) => r.fulfill({ json: [] }));
 	await page.route('/api/platform', (r) =>
-		r.fulfill({ json: { domain: 'example.com', dns: { provider: 'cloudflare' }, tls: {} } })
+		r.fulfill({ json: { domain: 'example.com', tls: {} } })
 	);
 	await page.route('/api/gitproviders', (r) => r.fulfill({ json: [] }));
 }
@@ -453,7 +453,7 @@ test.describe('user menu', () => {
 	test('Platform Settings link navigates to /admin/settings', async ({ page }) => {
 		await setupCommonMocks(page);
 		await page.route('/api/platform', (r) =>
-			r.fulfill({ json: { domain: 'example.com', dns: { provider: 'cloudflare' }, tls: {} } })
+			r.fulfill({ json: { domain: 'example.com', tls: {} } })
 		);
 
 		await injectAuth(page, true);

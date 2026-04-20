@@ -70,8 +70,9 @@ Spec rule: every outward interface must have at least one real v1 impl
 - `charts/mortise/` has the operator chart: `deployment.yaml`, `service.yaml`,
   `serviceaccount.yaml`, `rbac.yaml`. RBAC covers
   deployments/services/ingresses/pvcs/secrets/pods.
-- `Makefile` targets: `test` (unit + envtest), `test-e2e` (Kind + Ginkgo
-  scaffold), `dev-up` / `dev-down` / `dev-reload` (k3d live-reload).
+- `Makefile` targets: `test` (unit + envtest), `test-integration` (k3d +
+  ephemeral cluster), `test-e2e` (Playwright against `dev-up` cluster),
+  `dev-up` / `dev-down` / `dev-reload` (k3d live-reload).
 - `test/fixtures/` — `image-basic.yaml`, `image-postgres.yaml`.
 - `test/helpers/` — `CreateTestNamespace`, `RequireEventually`,
   `AssertDeploymentExists`, `AssertIngressExists`, `AssertPodsRunning`,
@@ -230,7 +231,7 @@ UI (`ui/src/routes/`) — **UI overhaul landed 2026-04-17 per UI_SPEC.md:**
 - Global Svelte 5 runes store (`store.svelte.ts`), replaces `context.svelte.ts`.
 - Left-rail nav (w-14, icon-only): dashboard scope + project scope (§2.1a).
 - Lucide Svelte icons throughout.
-- `admin/settings`: platform settings (domain, DNS, git providers CRUD, users).
+- `admin/settings`: platform settings (domain, git providers CRUD, users).
 - `projects/[project]/settings`: project settings (general, PR environments toggle, danger zone).
 - `projects/[project]/previews`: PR preview environment list page.
 - `settings/git-providers` → redirects to `/admin/settings`.
@@ -511,8 +512,6 @@ Integration test proves it against in-cluster Gitea + BuildKit + registry.
 
 **CRD fields:**
 - `spec.domain` — base domain for the platform (required).
-- `spec.dns.provider` — enum (`cloudflare | route53 | externaldns-noop`); validated by kubebuilder marker.
-- `spec.dns.apiTokenSecretRef` — `SecretRef{Namespace, Name, Key}` for the DNS provider API token (required).
 - `spec.storage.defaultStorageClass` — optional, falls back to cluster default.
 - `spec.registry.url` — OCI registry endpoint (required if registry is configured).
 - `spec.registry.namespace` — image namespace, defaults to `"mortise"` via kubebuilder default marker.
@@ -530,7 +529,6 @@ Integration test proves it against in-cluster Gitea + BuildKit + registry.
 
 **Reconciler behaviour (`PlatformConfigReconciler`):**
 - Enforces singleton: only the instance named `"platform"` advances past validation; any other name gets `status.phase=Failed` + `reason=InvalidName`.
-- Validates DNS API token secret exists and contains the referenced key.
 - Validates optional registry credentials secret if `credentialsSecretRef` is set.
 - Validates optional BuildKit TLS secret if `tlsSecretRef` is set.
 - On success: `status.phase=Ready` + `Available=True` condition.
@@ -540,8 +538,8 @@ Integration test proves it against in-cluster Gitea + BuildKit + registry.
 **Loader package (`internal/platformconfig/`):**
 - `Load(ctx, c client.Reader) (*Config, error)` — fetches the singleton PlatformConfig, resolves all referenced Secrets, returns a plain Go `Config` struct (no k8s types exposed).
 - `ErrNotFound` sentinel for "not configured yet" — callers use `errors.Is`.
-- `Config` sub-structs: `DNSConfig`, `StorageConfig`, `RegistryConfig`, `BuildConfig`, `TLSConfig`.
-- Unit tests with fake client covering: found+resolved, not-found, bad DNS secret ref, registry credentials resolution, bad registry secret ref, BuildKit TLS resolution.
+- `Config` sub-structs: `StorageConfig`, `RegistryConfig`, `BuildConfig`, `TLSConfig`.
+- Unit tests with fake client covering: found+resolved, not-found, registry credentials resolution, bad registry secret ref, BuildKit TLS resolution.
 
 **Operator wiring — Done:**
 - `cmd/main.go` → `buildStacks` constructs the registry / build / git clients from `platformconfig.Load`.
@@ -704,8 +702,8 @@ Present:
 - **Env-management surface (spec §5.9a) — Done:** GET/PUT/PATCH/import
   endpoints (`internal/api/env.go`), `mortise.dev/env-hash` annotation for
   auto-roll, CLI `mortise env {list,set,unset,import,pull}` (`cmd/cli/env.go`).
-- **First-run wizard — Done:** 4-step wizard at `/setup/wizard` (domain →
-  DNS provider → git provider → done). `ui/src/routes/setup/wizard/+page.svelte`.
+- **First-run wizard — Done:** 3-step wizard at `/setup/wizard` (domain →
+  git provider → done). `ui/src/routes/setup/wizard/+page.svelte`.
 - **Custom domains — Done:** list/add/remove API (`internal/api/domains.go`),
   CLI (`cmd/cli/domain.go`), UI integration.
 - **Deploy tokens — Done:** see Phase 3 detail.
@@ -746,6 +744,26 @@ Present:
   controller auto-creates default GitHub GitProvider from
   `spec.github.clientID`. `ErrAuthFailed` sentinel added to
   `internal/git` for 401/403 detection.
+- **Logs drawer tab rebuild (2026-04-20, UI_SPEC §3.12):** Logs tab
+  split into Live + Build sub-tabs (History sub-tab deferred until the
+  §5.11a adapter contract lands). Backend: `handleLogs` now accepts
+  `previous`, `timestamps`, `sinceSeconds`, `sinceTime`, and `pod`
+  query params; always emits `{pod, ts, line, stream}` JSON; new
+  `GET /api/projects/{p}/apps/{a}/pods` endpoint returns pod summaries
+  (`internal/api/pods.go`). Build logs are persisted to a
+  `buildlogs-{app}` ConfigMap by the existing build goroutine
+  (`persistBuildLog` in `app_controller.go`) — 1 000-line ring buffer
+  with a 2 KB UTF-8 safe per-line cap and a 900 KB total head-trim,
+  annotated with `mortise.dev/build-{timestamp,commit,status,error}`,
+  owner-referenced to the App for GC. `GET /build-logs` falls back to
+  the ConfigMap when no in-memory tracker exists. UI: always-visible
+  pod picker, Previous toggle gated on `selectedPod.restartCount > 0`,
+  time-range chips (Now / 15m / 1h / 6h / 24h) with live-tail auto-
+  disable off-Now, 110 px timestamp gutter, level-based left-border
+  color (error/warn/info/debug), JSON pretty-print with expandable kv
+  table, 8-color hashed pod badge (last 5 chars), 2 s Build polling
+  that auto-stops on `building=false`. Pod list refreshed every 10 s
+  while Live tab active.
 
 Missing:
 - **Authz role upgrade (Issue #9, deferred to v2):** current roles are
@@ -755,6 +773,10 @@ Missing:
   grants have no env field. Decision: v1 ships admin/member only.
 - **Metrics in UI:** spec Phase 7 calls for CPU/memory per pod via
   metrics-server. Not implemented.
+- **Log adapter contract (§5.11a, post-v1):** Minimal HTTP contract
+  for historical log queries via user-deployed adapter. PlatformConfig
+  `spec.observability.logsAdapterEndpoint`. Reference adapters for
+  Loki and CloudWatch as separate tenon repos. Not started.
 - **~~`source.type: external`:~~** Implemented. ExternalName Service + Ingress for public external apps; bindings resolver returns external host/port for well-known keys.
 
 ### Phase 8 — Tenons & integration recipes — **Partial**
@@ -801,12 +823,12 @@ Per UI_SPEC.md §14 flow tracker — updated after the full rebuild:
 | Service bindings | 3.9 | **Partial** | Bindings list + add/remove in Settings tab (§3.9b). BindingsPicker dropdown in Variables tab (§3.9a) exists but not integrated as inline autocomplete on `${{` trigger |
 | Domains | 3.10 | ✅ | Settings tab: list + add/remove. Missing: per-env TLS override fields (§5.6) |
 | Storage (volumes) | 3.11 | **Partial** | Add/remove volumes in Settings tab. "Adopt existing PVC" affordance not built (deferred) |
-| Logs (drawer tab) | 3.12 | **Partial** | SSE viewer + search filter + copy. Missing: category toggle (runtime/build/deploy), replica picker |
+| Logs (drawer tab) | 3.12 | **Partial** | Live + Build sub-tabs. Live: env pills, always-visible pod picker, Previous toggle (shown only for restarted pods), time-range chips (15m/1h/6h/24h), live-tail switch, timestamp gutter, JSON pretty-print with level-based border color, per-pod color badge. Build: status badge, 7-char commit SHA, relative timestamp, 2 s poll while building, persisted to `buildlogs-{app}` ConfigMap (1 000-line ring buffer, 2 KB/line cap, owned by App). Missing: History sub-tab (deferred — needs §5.11a adapter contract) |
 | Deploy tokens | 3.13 | ✅ | Settings tab: create (once-shown value) + revoke; Promote button in Deployments tab |
 | Preview environments | 3.14 | **Partial** | `/projects/{p}/previews` list exists; project settings PR toggle exists but does not fire `setProjectPreview` API call |
 | Environment annotations | 3.15 | **Partial** | Key/value editor in Advanced section of SettingsTab. Missing: standalone Environments settings sub-page (§3.15) |
 | Secret mounts | 3.16 | **Partial** | Add/remove secret mounts in Advanced section of SettingsTab |
-| Platform settings | 3.17 | **Partial** | `/admin/settings`: domain, DNS, git providers. Missing: Registry config, Build config, TLS/cert-manager section, real user list from API |
+| Platform settings | 3.17 | **Partial** | `/admin/settings`: domain, git providers. Missing: Registry config, Build config, TLS/cert-manager section, real user list from API |
 | Project settings | 3.17p | **Partial** | Tabbed layout: General + PR toggle, Environments, Shared Variables info, Members + invite, Danger. Missing: Tokens tab, Webhooks tab, Integrations tab, per-app Remove in Danger |
 | Extensions | 3.18 | ✅ | `/extensions` page |
 | Activity rail | 12.22 | ✅ | ActivityRail fetches `api.listActivity(project)` on mount; filter chips; actor avatars; relative timestamps |
@@ -944,13 +966,13 @@ selector/mock issues documented below.
 | `project-members-and-envs.spec.ts` | Members remove — **fixed pass 3** |
 | `project-settings.spec.ts` | Project settings tabs, danger zone — **fixed pass 3** |
 | `projects.spec.ts` | Project CRUD — **fixed pass 3** |
+| `app-logs-tab.spec.ts` | Live/Build sub-tabs, pod picker, Previous toggle rules, time-range chips, env pills — rewritten 2026-04-20 to use real API per CLAUDE.md §testing (10/10 passing) |
 
 ### Spec files with known failing tests (need selector/mock fixes)
 
 | File | Failing | Root cause |
 |---|---|---|
 | `app-detail.spec.ts` | 2 | `getByRole('button', { name: 'Add' })` strict; `getByRole('button', { name: 'Logs' })` strict (AppNode substring match) |
-| `app-logs-tab.spec.ts` | 4 | `getByRole('button', { name: 'production' })` strict (project switcher); click-timeout on Logs tab (missing mock route causing overlay) |
 | `app-settings-sections.spec.ts` | 8 | `getByText('Source')` strict; PUT route never fires (route URL mismatch or button disabled) |
 | `app-variables-full.spec.ts` | 4 | Click-timeout on Variables tab (missing mock route); `getByRole('button', { name: 'Import' })` strict |
 | `auth.spec.ts` | 1 | 409 setup flash message text doesn't match actual UI |

@@ -26,7 +26,7 @@ func TestAnnotationProvider_Annotations(t *testing.T) {
 	t.Run("includes ExternalDNS hostname annotation", func(t *testing.T) {
 		p := NewAnnotationProvider(AnnotationProviderConfig{})
 		ann := p.Annotations(ref, []string{"app.example.com"}, nil)
-		got, ok := ann["external-dns.alpha.kubernetes.io/hostname"]
+		got, ok := ann[ExternalDNSHostnameAnnotation]
 		if !ok {
 			t.Fatal("missing external-dns annotation")
 		}
@@ -38,7 +38,7 @@ func TestAnnotationProvider_Annotations(t *testing.T) {
 	t.Run("comma-joins multiple hostnames", func(t *testing.T) {
 		p := NewAnnotationProvider(AnnotationProviderConfig{})
 		ann := p.Annotations(ref, []string{"a.example.com", "b.example.com", "c.example.com"}, nil)
-		got := ann["external-dns.alpha.kubernetes.io/hostname"]
+		got := ann[ExternalDNSHostnameAnnotation]
 		want := "a.example.com,b.example.com,c.example.com"
 		if got != want {
 			t.Fatalf("external-dns annotation = %q, want %q", got, want)
@@ -48,7 +48,7 @@ func TestAnnotationProvider_Annotations(t *testing.T) {
 	t.Run("with issuer includes cert-manager annotation", func(t *testing.T) {
 		p := NewAnnotationProvider(AnnotationProviderConfig{DefaultClusterIssuer: "letsencrypt-prod"})
 		ann := p.Annotations(ref, []string{"app.example.com"}, nil)
-		got, ok := ann["cert-manager.io/cluster-issuer"]
+		got, ok := ann[CertManagerClusterIssuerAnnotation]
 		if !ok {
 			t.Fatal("missing cert-manager annotation")
 		}
@@ -60,7 +60,7 @@ func TestAnnotationProvider_Annotations(t *testing.T) {
 	t.Run("without issuer omits cert-manager annotation", func(t *testing.T) {
 		p := NewAnnotationProvider(AnnotationProviderConfig{})
 		ann := p.Annotations(ref, []string{"app.example.com"}, nil)
-		if _, ok := ann["cert-manager.io/cluster-issuer"]; ok {
+		if _, ok := ann[CertManagerClusterIssuerAnnotation]; ok {
 			t.Fatal("cert-manager annotation should not be present without an issuer")
 		}
 	})

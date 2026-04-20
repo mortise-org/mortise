@@ -250,8 +250,8 @@ needs. Derived from the URL, not stored state.
 
 ### 2.4 First-run wizard (pre-auth → admin bootstrap)
 
-Unique to self-hosted. Four steps: domain → DNS provider → first git
-provider → admin user. See §3 Onboarding.
+Unique to self-hosted. Three steps: domain → first git provider → admin
+user. See §3 Onboarding.
 
 ### 2.5 Route table
 
@@ -277,7 +277,7 @@ mobile layout. No tablet breakpoints.
 | `/` | Project list (§3.3). |
 | `/projects/new` | Create project form (§3.4). |
 | `/extensions` | Extensions page (§3.18). |
-| `/admin/settings` | Platform settings (§3.17). Admin-only; non-admin redirects to `/`. Anchor-scrolled sections: General, DNS, Git Providers, Registry, Build, TLS, Users & Invites. |
+| `/admin/settings` | Platform settings (§3.17). Admin-only; non-admin redirects to `/`. Anchor-scrolled sections: General, Git Providers, Registry, Build, TLS, Users & Invites. |
 
 **Project layout** (header + left-rail icons: Canvas, Settings):
 
@@ -660,9 +660,8 @@ can log in and a `default` Project exists.
 **Screens.**
 1. `/setup` — single form: admin email + password. Posts `/api/auth/setup`.
 2. `/setup/wizard` step 1 — platform domain (e.g. `yourdomain.com`).
-3. `/setup/wizard` step 2 — DNS provider + API token (Cloudflare, Route53, noop).
-4. `/setup/wizard` step 3 — connect a git provider (optional — skippable).
-5. `/setup/wizard` step 4 — done; CTA to dashboard.
+3. `/setup/wizard` step 2 — connect a git provider (optional — skippable).
+4. `/setup/wizard` step 3 — done; CTA to dashboard.
 
 **States.** If `/api/auth/status` reports setup already complete, redirect
 `/setup` → `/login`.
@@ -1028,7 +1027,8 @@ Backups are a docs-recipe path via Velero. §12.14.
 
 ### 3.12 Logs
 
-**Goal.** See live and recent logs for an App.
+**Goal.** See live and recent logs for an App, including crash diagnostics
+and build history.
 
 **Entry points.** App detail drawer → **Logs** tab (3rd tab). Also
 reachable from the Deployments tab deploy row kebab → "View logs"
@@ -1037,13 +1037,32 @@ reachable from the Deployments tab deploy row kebab → "View logs"
 **Screens.** Rendered inline in the drawer — same ≈45% width slide-over
 as all other drawer tabs, not a separate panel.
 
-1. Top controls: environment selector (prod / staging / preview-XX),
-   log category toggle (runtime / build / deploy), replica picker
-   (if >1), search input, time-range selector, live-tail toggle.
-2. Body: log stream (SSE) filling the remaining drawer height.
-   Line format: `timestamp | replica | message`. Per-replica color
-   coding (8-color palette, WCAG-AA on `surface-900`).
-3. Footer: download/copy affordance.
+1. **Tab bar (top):** `Live` | `Build` | `History` (History only shown
+   when log adapter is configured in PlatformConfig).
+2. **Live tab** — SSE stream of running pod stdout/stderr.
+   - Header: environment selector, time-range chips (15 min / 1 h /
+     6 h / 24 h), live-tail toggle, Copy, Clear.
+   - "Previous" toggle: shown only when the selected pod has restart
+     count > 0. Switches to the previous container's logs. Invaluable
+     for crash diagnosis.
+   - Time-range chips switch from SSE to one-shot fetch (`sinceTime`
+     param); live-tail toggle re-enables streaming.
+3. **Log line rendering:**
+   - Each line prefixed with a fixed-width timestamp gutter
+     (`14:32:01 · 2m ago`), derived from `?timestamps=true`.
+   - If a line parses as JSON: render as an expandable key/value row.
+     `level` field drives left-border color: `error`=red, `warn`=amber,
+     `info`=gray, `debug`=dimmed. Expand arrow reveals all fields.
+   - Plain text lines render as-is in monospace.
+4. **Build tab** — persisted build log lines from the most recent build
+   (stored in `buildlogs-{app}` ConfigMap, capped at 1 000 lines).
+   Static scrollable list, no streaming. Shows build timestamp + commit
+   SHA in the header.
+5. **History tab** (when log adapter configured) — time-range query
+   against the adapter endpoint. Header: start/end date pickers,
+   freetext filter, pod filter. Body: same log line renderer as Live.
+   Footer: "Showing N lines" + "Load more" if `hasMore=true`.
+6. Footer (all tabs): download/copy affordance.
 
 **States.** Empty (no logs yet — "Deploy this app to see logs" +
 deploy CTA), loading (spinner), streaming (live-tail dot pulses),
@@ -1051,8 +1070,8 @@ disconnected (reconnect banner), error.
 
 **Mortise divergence.** Railway has a top-nav Observability → Log
 Explorer spanning **all services in the workspace**. Mortise v1 is
-per-App only, inside the drawer. Historical search requires a log
-agent (Loki, etc.) as a docs-recipe. §12.12.
+per-App only, inside the drawer. Cross-app historical search is a
+docs-recipe (install a log agent). §12.12.
 
 ### 3.13 Deploy tokens (external CI)
 
@@ -1171,13 +1190,12 @@ layer in v1, so we fold the two:
   to App detail — see §12.5 open question).
 - **Webhooks** — outgoing webhooks for deploy events. Scope TBD v2.
 - **Integrations** — connected git providers (reuse §3.17 git provider
-  list) + external secrets + DNS (cross-links).
+  list) + external secrets (cross-links).
 - **Danger** — Manage Services (per-app Remove with 2-step confirm) +
   Delete Project (destructive).
 
 **Platform Settings** (admin-only, `/admin/settings`):
 - **General** — platform domain, description.
-- **DNS** — provider + token.
 - **Git providers** — list, create (implemented), delete, OAuth-connect.
 - **Registry** — URL, namespace, credentials, pull secret.
 - **Build** — BuildKit address, default platform, TLS.

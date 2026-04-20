@@ -53,7 +53,7 @@ async function setupCommonMocks(page: Page) {
 	await page.route('/api/projects/my-project/members', (r) => r.fulfill({ json: [] }));
 	await page.route('/api/gitproviders', (r) => r.fulfill({ json: [] }));
 	await page.route('/api/platform', (r) =>
-		r.fulfill({ json: { domain: 'example.com', dns: { provider: 'cloudflare' }, tls: {} } })
+		r.fulfill({ json: { domain: 'example.com', tls: {} } })
 	);
 	await page.route('/api/auth/git/github/status', (r) =>
 		r.fulfill({ json: { connected: false } })

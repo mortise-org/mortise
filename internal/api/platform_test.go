@@ -19,7 +19,6 @@ func TestPatchPlatformCreates(t *testing.T) {
 
 	w := doRequest(h, http.MethodPatch, "/api/platform", map[string]any{
 		"domain": "example.com",
-		"dns":    map[string]any{"provider": "cloudflare"},
 	})
 	if w.Code != http.StatusCreated {
 		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
@@ -49,7 +48,6 @@ func TestPatchPlatformUpdates(t *testing.T) {
 	// First PATCH creates.
 	w := doRequest(h, http.MethodPatch, "/api/platform", map[string]any{
 		"domain": "example.com",
-		"dns":    map[string]any{"provider": "cloudflare"},
 	})
 	if w.Code != http.StatusCreated {
 		t.Fatalf("create: expected 201, got %d: %s", w.Code, w.Body.String())
@@ -77,7 +75,6 @@ func TestPatchPlatformForbiddenForMember(t *testing.T) {
 
 	w := doRequest(h, http.MethodPatch, "/api/platform", map[string]any{
 		"domain": "example.com",
-		"dns":    map[string]any{"provider": "cloudflare"},
 	})
 	if w.Code != http.StatusForbidden {
 		t.Errorf("expected 403, got %d: %s", w.Code, w.Body.String())

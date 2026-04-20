@@ -216,7 +216,7 @@ test.describe('platform settings journey', () => {
 		).toBeVisible();
 	});
 
-	test('platform settings has General, DNS, Git Providers, Users sections', async ({
+	test('platform settings has General, Git Providers, Users sections', async ({
 		page
 	}) => {
 		await injectToken(page, adminToken);
@@ -228,7 +228,6 @@ test.describe('platform settings journey', () => {
 
 		// Use heading role to avoid strict mode violations from descriptions.
 		await expect(page.getByRole('heading', { name: 'General' })).toBeVisible();
-		await expect(page.getByRole('heading', { name: 'DNS' })).toBeVisible();
 		await expect(page.getByRole('heading', { name: 'Git Providers' })).toBeVisible();
 		await expect(page.getByText('Users & Invites')).toBeVisible();
 	});

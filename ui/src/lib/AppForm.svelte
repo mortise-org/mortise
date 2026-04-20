@@ -16,6 +16,7 @@
 	// component when the template changes, so reading the initial value once
 	// is intentional. Structured clone keeps the template data immutable.
 	const initial = untrack(() => structuredClone(template.defaults));
+	const IconComp = templateIcons[template.icon];
 
 	let name = $state(initial.name);
 	let sourceType = $state<SourceType>(initial.spec.source.type);
@@ -136,8 +137,7 @@
 	</button>
 
 	<div class="mb-6 flex items-center gap-3">
-		{@const IconComp = templateIcons[template.icon]}
-		{#if IconComp}<svelte:component this={IconComp} class="h-8 w-8 text-accent" />{/if}
+		{#if IconComp}<IconComp class="h-8 w-8 text-accent" />{/if}
 		<div>
 			<h1 class="text-xl font-semibold text-white">{template.name}</h1>
 			<p class="text-sm text-gray-500">{template.description}</p>

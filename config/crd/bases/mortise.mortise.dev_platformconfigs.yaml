@@ -88,40 +88,6 @@ spec:
                 required:
                 - buildkitAddr
                 type: object
-              dns:
-                description: DNS configures the provider used to create DNS records
-                  for App Ingresses.
-                properties:
-                  apiTokenSecretRef:
-                    description: APITokenSecretRef references the secret containing
-                      the DNS provider API token.
-                    properties:
-                      key:
-                        description: Key within the secret.
-                        type: string
-                      name:
-                        description: Name of the secret.
-                        type: string
-                      namespace:
-                        description: Namespace of the secret.
-                        type: string
-                    required:
-                    - key
-                    - name
-                    - namespace
-                    type: object
-                  provider:
-                    description: Provider is the DNS provider to use for creating
-                      records.
-                    enum:
-                    - cloudflare
-                    - route53
-                    - externaldns-noop
-                    type: string
-                required:
-                - apiTokenSecretRef
-                - provider
-                type: object
               domain:
                 description: |-
                   Domain is the base domain for the platform. Apps receive subdomains under
@@ -204,7 +170,6 @@ spec:
                     type: string
                 type: object
             required:
-            - dns
             - domain
             type: object
           status:

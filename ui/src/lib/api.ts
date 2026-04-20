@@ -4,6 +4,7 @@ import type {
 	AppSpec,
 	ActivityEvent,
 	Branch,
+	BuildLogsResponse,
 	CreateGitProviderRequest,
 	DeployRecord,
 	DeployToken,
@@ -16,6 +17,7 @@ import type {
 	Notification,
 	PlatformResponse,
 	PreviewSummary,
+	Pod,
 	Project,
 	ProjectMember,
 	Repository,
@@ -162,22 +164,38 @@ export const api = {
 	rebuild: (project: string, app: string) =>
 		request<{ status: string }>(`/projects/${enc(project)}/apps/${enc(app)}/rebuild`, { method: 'POST' }),
 
+	// --- pods: lightweight list used by the Logs drawer pod picker ---
+	listPods: (project: string, app: string, env: string) =>
+		request<Pod[]>(`/projects/${enc(project)}/apps/${enc(app)}/pods?env=${enc(env)}`),
+
 	// --- logs: returns a ready-to-use SSE URL including the JWT ---
-	logsURL: (project: string, app: string, env: string, tail = 200): string => {
-		const token = localStorage.getItem('mortise_token') ?? '';
-		const params = new URLSearchParams({
-			env,
-			follow: 'true',
-			tail: String(tail)
-		});
-		if (token) {
-			params.set('token', token);
+	logsURL: (
+		project: string,
+		app: string,
+		opts: {
+			env: string;
+			follow?: boolean;
+			tail?: number;
+			pod?: string;
+			previous?: boolean;
+			sinceSeconds?: number;
+			sinceTime?: string;
 		}
+	): string => {
+		const token = localStorage.getItem('mortise_token') ?? '';
+		const params = new URLSearchParams({ env: opts.env });
+		if (opts.follow) params.set('follow', 'true');
+		if (opts.tail !== undefined) params.set('tail', String(opts.tail));
+		if (opts.pod) params.set('pod', opts.pod);
+		if (opts.previous) params.set('previous', 'true');
+		if (opts.sinceSeconds !== undefined) params.set('sinceSeconds', String(opts.sinceSeconds));
+		if (opts.sinceTime) params.set('sinceTime', opts.sinceTime);
+		if (token) params.set('token', token);
 		return `/api/projects/${enc(project)}/apps/${enc(app)}/logs?${params.toString()}`;
 	},
 
 	getBuildLogs: (project: string, app: string) =>
-		request<{ lines: string[]; building: boolean }>(`/projects/${enc(project)}/apps/${enc(app)}/build-logs`),
+		request<BuildLogsResponse>(`/projects/${enc(project)}/apps/${enc(app)}/build-logs`),
 	connectApp: (project: string, app: string) =>
 		request<{ port: number; url: string }>(`/projects/${enc(project)}/apps/${enc(app)}/connect`, { method: 'POST' }),
 	disconnectApp: (project: string, app: string) =>
@@ -253,7 +271,7 @@ export const api = {
 
 	// --- platform config ---
 	getPlatform: () => request<PlatformResponse>('/platform'),
-	patchPlatform: (body: Partial<{ domain: string; dns: { provider: string; apiTokenSecretRef: string }; tls: { certManagerClusterIssuer: string }; storage: { defaultStorageClass: string } }>) =>
+	patchPlatform: (body: Partial<{ domain: string; tls: { certManagerClusterIssuer: string }; storage: { defaultStorageClass: string } }>) =>
 		request<PlatformResponse>('/platform', {
 			method: 'PATCH',
 			body: JSON.stringify(body)

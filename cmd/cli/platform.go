@@ -29,17 +29,16 @@ func newPlatformGetCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			fmt.Printf("Domain:       %s\n", p.Domain)
-			fmt.Printf("DNS Provider: %s\n", p.DNS.Provider)
-			fmt.Printf("Registry:     %s\n", p.Registry.URL)
-			fmt.Printf("BuildKit:     %s\n", p.Build.BuildkitAddr)
+			fmt.Printf("Domain:   %s\n", p.Domain)
+			fmt.Printf("Registry: %s\n", p.Registry.URL)
+			fmt.Printf("BuildKit: %s\n", p.Build.BuildkitAddr)
 			return nil
 		},
 	}
 }
 
 func newPlatformSetCmd() *cobra.Command {
-	var domain, dnsProvider, dnsToken string
+	var domain string
 	cmd := &cobra.Command{
 		Use:   "set",
 		Short: "Update platform configuration",
@@ -48,17 +47,7 @@ func newPlatformSetCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			req := PlatformPatchRequest{Domain: domain}
-			if dnsProvider != "" || dnsToken != "" {
-				req.DNS = map[string]any{}
-				if dnsProvider != "" {
-					req.DNS["provider"] = dnsProvider
-				}
-				if dnsToken != "" {
-					req.DNS["apiToken"] = dnsToken
-				}
-			}
-			p, err := c.PatchPlatform(req)
+			p, err := c.PatchPlatform(PlatformPatchRequest{Domain: domain})
 			if err != nil {
 				return err
 			}
@@ -67,7 +56,5 @@ func newPlatformSetCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&domain, "domain", "", "Platform domain")
-	cmd.Flags().StringVar(&dnsProvider, "dns-provider", "", "DNS provider")
-	cmd.Flags().StringVar(&dnsToken, "dns-token", "", "DNS API token")
 	return cmd
 }

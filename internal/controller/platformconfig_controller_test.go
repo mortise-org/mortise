@@ -46,19 +46,11 @@ var _ = Describe("PlatformConfig Controller", func() {
 		}
 	}
 
-	makePlatformConfig := func(name, dnsSecretName string) *mortisev1alpha1.PlatformConfig {
+	makePlatformConfig := func(name string) *mortisev1alpha1.PlatformConfig {
 		return &mortisev1alpha1.PlatformConfig{
 			ObjectMeta: metav1.ObjectMeta{Name: name},
 			Spec: mortisev1alpha1.PlatformConfigSpec{
 				Domain: "example.com",
-				DNS: mortisev1alpha1.DNSConfig{
-					Provider: mortisev1alpha1.DNSProviderCloudflare,
-					APITokenSecretRef: mortisev1alpha1.SecretRef{
-						Namespace: secretNS,
-						Name:      dnsSecretName,
-						Key:       "token",
-					},
-				},
 			},
 		}
 	}
@@ -78,13 +70,11 @@ var _ = Describe("PlatformConfig Controller", func() {
 		}
 	}
 
-	Context("happy path — singleton named 'platform' with all secrets present", func() {
+	Context("happy path — singleton named 'platform'", func() {
 		const pcName = "platform"
-		const secretName = "pc-dns-secret-ready"
 
 		BeforeEach(func() {
-			makeSecret(secretNS, secretName, "token", "cf-token-value")
-			Expect(k8sClient.Create(ctx, makePlatformConfig(pcName, secretName))).To(Succeed())
+			Expect(k8sClient.Create(ctx, makePlatformConfig(pcName))).To(Succeed())
 		})
 
 		AfterEach(func() { deletePC(pcName) })
@@ -109,15 +99,23 @@ var _ = Describe("PlatformConfig Controller", func() {
 		})
 	})
 
-	// The "missing DNS secret" test also uses name "platform" because the singleton
-	// check runs before the secret check — without the correct name, we'd get
-	// InvalidName rather than SecretNotFound.
-	Context("missing DNS secret", func() {
+	// The "missing registry secret" test uses name "platform" because the
+	// singleton check runs before the secret check — without the correct name,
+	// we'd get InvalidName rather than SecretNotFound.
+	Context("missing registry credentials secret", func() {
 		const pcName = "platform"
 
 		BeforeEach(func() {
-			// Secret deliberately not created.
-			Expect(k8sClient.Create(ctx, makePlatformConfig(pcName, "does-not-exist"))).To(Succeed())
+			pc := makePlatformConfig(pcName)
+			pc.Spec.Registry = mortisev1alpha1.RegistryConfig{
+				URL: "registry.example.com",
+				CredentialsSecretRef: &mortisev1alpha1.SecretRef{
+					Namespace: secretNS,
+					Name:      "does-not-exist",
+					Key:       "username",
+				},
+			}
+			Expect(k8sClient.Create(ctx, pc)).To(Succeed())
 		})
 
 		AfterEach(func() { deletePC(pcName) })
@@ -144,11 +142,11 @@ var _ = Describe("PlatformConfig Controller", func() {
 
 	Context("duplicate config — name is not 'platform'", func() {
 		const pcName = "not-platform"
-		const secretName = "pc-dns-secret-dupe"
+		const secretName = "pc-reg-secret-dupe"
 
 		BeforeEach(func() {
-			makeSecret(secretNS, secretName, "token", "cf-token-value")
-			Expect(k8sClient.Create(ctx, makePlatformConfig(pcName, secretName))).To(Succeed())
+			makeSecret(secretNS, secretName, "username", "admin")
+			Expect(k8sClient.Create(ctx, makePlatformConfig(pcName))).To(Succeed())
 		})
 
 		AfterEach(func() { deletePC(pcName) })

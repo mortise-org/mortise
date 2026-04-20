@@ -2,6 +2,14 @@ package ingress
 
 import "strings"
 
+// Annotation keys emitted by the annotation-driven provider. Exported so
+// callers (e.g. the App controller applying per-env TLS overrides) can
+// reference them without restating the string.
+const (
+	ExternalDNSHostnameAnnotation      = "external-dns.alpha.kubernetes.io/hostname"
+	CertManagerClusterIssuerAnnotation = "cert-manager.io/cluster-issuer"
+)
+
 // AnnotationProviderConfig configures the annotation-driven IngressProvider.
 type AnnotationProviderConfig struct {
 	// ClassName is the Kubernetes ingress class to set on Ingresses. When
@@ -35,11 +43,11 @@ func (p *annotationProvider) Annotations(_ AppRef, hostnames []string, _ []Middl
 	out := make(map[string]string, 2)
 
 	if len(hostnames) > 0 {
-		out["external-dns.alpha.kubernetes.io/hostname"] = strings.Join(hostnames, ",")
+		out[ExternalDNSHostnameAnnotation] = strings.Join(hostnames, ",")
 	}
 
 	if p.cfg.DefaultClusterIssuer != "" {
-		out["cert-manager.io/cluster-issuer"] = p.cfg.DefaultClusterIssuer
+		out[CertManagerClusterIssuerAnnotation] = p.cfg.DefaultClusterIssuer
 	}
 
 	if len(out) == 0 {

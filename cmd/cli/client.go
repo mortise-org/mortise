@@ -390,10 +390,7 @@ func (c *Client) DeleteGitProvider(name string) error {
 // ---------- Platform ----------
 
 type PlatformResponse struct {
-	Domain string `json:"domain"`
-	DNS    struct {
-		Provider string `json:"provider"`
-	} `json:"dns"`
+	Domain   string `json:"domain"`
 	Registry struct {
 		URL string `json:"url"`
 	} `json:"registry"`
@@ -403,8 +400,7 @@ type PlatformResponse struct {
 }
 
 type PlatformPatchRequest struct {
-	Domain string         `json:"domain,omitempty"`
-	DNS    map[string]any `json:"dns,omitempty"`
+	Domain string `json:"domain,omitempty"`
 }
 
 func (c *Client) GetPlatform() (*PlatformResponse, error) {

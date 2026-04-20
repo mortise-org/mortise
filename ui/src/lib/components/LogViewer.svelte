@@ -65,7 +65,7 @@
 			source.close();
 			source = null;
 		}
-		const url = api.logsURL(project, appName, env, tail);
+		const url = api.logsURL(project, appName, { env, follow: true, tail });
 		errored = false;
 		source = new EventSource(url);
 

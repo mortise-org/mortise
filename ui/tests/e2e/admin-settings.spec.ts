@@ -21,7 +21,6 @@ const mockProject = {
 
 const mockPlatform = {
 	domain: 'example.com',
-	dns: { provider: 'cloudflare' },
 	tls: { certManagerClusterIssuer: 'letsencrypt-prod' },
 	storage: { defaultStorageClass: 'local-path' }
 };

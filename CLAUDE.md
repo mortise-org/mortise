@@ -342,7 +342,6 @@ kind: PlatformConfig
 metadata: { name: platform }
 spec:
   domain: yourdomain.com
-  dns: { provider: cloudflare, apiTokenSecret: ... }
   storage: { defaultStorageClass: ... }
 ```
 

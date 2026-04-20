@@ -105,7 +105,7 @@ test.describe('git providers', () => {
 		providerName = '';
 	});
 
-	test('platform settings shows General and DNS sections', async ({ page }) => {
+	test('platform settings shows General section', async ({ page }) => {
 		await injectToken(page, adminToken);
 		await page.goto('/admin/settings');
 
@@ -116,9 +116,6 @@ test.describe('git providers', () => {
 		// General section.
 		await expect(page.getByRole('heading', { name: 'General' })).toBeVisible();
 		await expect(page.getByPlaceholder('yourdomain.com')).toBeVisible();
-
-		// DNS section.
-		await expect(page.getByRole('heading', { name: 'DNS' })).toBeVisible();
 
 		// Users section.
 		await expect(page.getByText('Users & Invites')).toBeVisible();

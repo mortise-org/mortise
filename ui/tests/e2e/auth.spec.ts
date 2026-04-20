@@ -222,16 +222,8 @@ test.describe('setup wizard', () => {
 		await page.getByPlaceholder('apps.example.com').fill('test.example.com');
 		await page.getByRole('button', { name: 'Continue' }).click();
 
-		// -- Step 2: DNS Provider --
-		await expect(page.getByRole('heading', { name: 'DNS Provider' })).toBeVisible();
-
-		// Verify the DNS dropdown has expected options.
-		const dnsSelect = page.locator('select').first();
-		await expect(dnsSelect).toBeVisible();
-		const options = dnsSelect.locator('option');
-		// At least 2 options (Cloudflare, Route 53, and optionally ExternalDNS)
-		const optionCount = await options.count();
-		expect(optionCount).toBeGreaterThanOrEqual(2);
+		// -- Step 2: GitHub --
+		await expect(page.getByRole('heading', { name: /Connect your GitHub/ })).toBeVisible();
 
 		// Go back to step 1.
 		await page.getByRole('button', { name: 'Back' }).click();
@@ -240,27 +232,13 @@ test.describe('setup wizard', () => {
 		// Advance again: fill domain and click Continue.
 		await page.getByPlaceholder('apps.example.com').fill('test.example.com');
 		await page.getByRole('button', { name: 'Continue' }).click();
-		await expect(page.getByRole('heading', { name: 'DNS Provider' })).toBeVisible();
-
-		// Skip step 2 (Continue without changes) to step 3.
-		await page.getByRole('button', { name: 'Continue' }).click();
-
-		// -- Step 3: Git Provider (or "Connect Git Provider") --
-		await expect(page.getByRole('heading', { name: /Git Provider|Connect Git/ })).toBeVisible();
-
-		// Go back to step 2.
-		await page.getByRole('button', { name: 'Back' }).click();
-		await expect(page.getByRole('heading', { name: 'DNS Provider' })).toBeVisible();
+		await expect(page.getByRole('heading', { name: /Connect your GitHub/ })).toBeVisible();
 
 		// Skip step 2 to step 3.
-		await page.getByRole('button', { name: 'Continue' }).click();
-		await expect(page.getByRole('heading', { name: /Git Provider|Connect Git/ })).toBeVisible();
+		await page.getByRole('button', { name: 'Skip for now' }).click();
 
-		// Skip step 3.
-		await page.getByRole('button', { name: /Skip|Continue/ }).click();
-
-		// -- Step 4: Completion --
-		await expect(page.getByRole('heading', { name: /Platform Ready|platform is ready/ })).toBeVisible();
+		// -- Step 3: Completion --
+		await expect(page.getByRole('heading', { name: /All set|platform is ready/ })).toBeVisible();
 		// Final step has a button to go to dashboard.
 		await expect(page.getByRole('button', { name: /Dashboard|Get started/ })).toBeVisible();
 	});

@@ -1,31 +1,12 @@
 # PlatformConfig wiring for integration tests: points the operator at the
 # in-cluster Zot + BuildKit installed by the other manifests in this directory.
 # Must be named "platform" (singleton enforced by PlatformConfigReconciler).
-#
-# The dns.apiTokenSecretRef is required by the CRD schema even though no DNS
-# provider actually runs in the test cluster — we use externaldns-noop so the
-# PlatformConfig reconciler validates OK without real DNS credentials.
-apiVersion: v1
-kind: Secret
-metadata:
-  name: dns-token-stub
-  namespace: mortise-system
-type: Opaque
-stringData:
-  token: "integration-test-placeholder"
----
 apiVersion: mortise.mortise.dev/v1alpha1
 kind: PlatformConfig
 metadata:
   name: platform
 spec:
   domain: integration.test
-  dns:
-    provider: externaldns-noop
-    apiTokenSecretRef:
-      namespace: mortise-system
-      name: dns-token-stub
-      key: token
   registry:
     url: http://registry.mortise-test-deps.svc:5000
     namespace: mortise

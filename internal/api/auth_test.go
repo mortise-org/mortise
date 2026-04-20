@@ -8,10 +8,8 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/fake"
 
-	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
 	"github.com/MC-Meesh/mortise/internal/api"
 	"github.com/MC-Meesh/mortise/internal/auth"
 )
@@ -51,9 +49,9 @@ func TestAuthStatusSetupRequired(t *testing.T) {
 	}
 }
 
-// TestSetupCreatesAdminAndDefaultProject exercises the /api/auth/setup endpoint,
-// verifying both an admin user and a `default` Project are created.
-func TestSetupCreatesAdminAndDefaultProject(t *testing.T) {
+// TestSetupCreatesAdmin exercises the /api/auth/setup endpoint,
+// verifying an admin user is created and a token is returned.
+func TestSetupCreatesAdmin(t *testing.T) {
 	k8sClient := setupEnvtest(t)
 	ctx := context.Background()
 	_ = k8sClient.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "mortise-system"}})
@@ -73,12 +71,6 @@ func TestSetupCreatesAdminAndDefaultProject(t *testing.T) {
 	json.NewDecoder(w.Body).Decode(&resp)
 	if resp["token"] == nil || resp["token"] == "" {
 		t.Error("expected a token in the setup response")
-	}
-
-	// The `default` Project must have been created as part of setup.
-	var project mortisev1alpha1.Project
-	if err := k8sClient.Get(ctx, types.NamespacedName{Name: "default"}, &project); err != nil {
-		t.Fatalf("default project should exist after setup: %v", err)
 	}
 
 	// Second setup attempt should return 409.

@@ -42,20 +42,11 @@ func scheme(t *testing.T) *runtime.Scheme {
 	return s
 }
 
-// minimalPC builds a PlatformConfig that references a DNS secret.
-func minimalPC(dnsNS, dnsName, dnsKey string) *mortisev1alpha1.PlatformConfig {
+func minimalPC() *mortisev1alpha1.PlatformConfig {
 	return &mortisev1alpha1.PlatformConfig{
 		ObjectMeta: metav1.ObjectMeta{Name: "platform"},
 		Spec: mortisev1alpha1.PlatformConfigSpec{
 			Domain: "example.com",
-			DNS: mortisev1alpha1.DNSConfig{
-				Provider: mortisev1alpha1.DNSProviderCloudflare,
-				APITokenSecretRef: mortisev1alpha1.SecretRef{
-					Namespace: dnsNS,
-					Name:      dnsName,
-					Key:       dnsKey,
-				},
-			},
 		},
 	}
 }
@@ -71,10 +62,8 @@ func TestLoad_FoundAndResolved(t *testing.T) {
 	ctx := context.Background()
 	s := scheme(t)
 
-	pc := minimalPC("mortise-system", "dns-token", "token")
-	dns := secret("mortise-system", "dns-token", map[string][]byte{"token": []byte("cf-abc123")})
-
-	c := fake.NewClientBuilder().WithScheme(s).WithObjects(pc, dns).Build()
+	pc := minimalPC()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(pc).Build()
 
 	cfg, err := platformconfig.Load(ctx, c)
 	if err != nil {
@@ -82,12 +71,6 @@ func TestLoad_FoundAndResolved(t *testing.T) {
 	}
 	if cfg.Domain != "example.com" {
 		t.Errorf("Domain = %q, want %q", cfg.Domain, "example.com")
-	}
-	if cfg.DNS.Provider != mortisev1alpha1.DNSProviderCloudflare {
-		t.Errorf("DNS.Provider = %q, want cloudflare", cfg.DNS.Provider)
-	}
-	if cfg.DNS.APIToken != "cf-abc123" {
-		t.Errorf("DNS.APIToken = %q, want %q", cfg.DNS.APIToken, "cf-abc123")
 	}
 }
 
@@ -103,28 +86,11 @@ func TestLoad_NotFound(t *testing.T) {
 	}
 }
 
-func TestLoad_BadDNSSecretRef(t *testing.T) {
-	ctx := context.Background()
-	s := scheme(t)
-
-	// PlatformConfig references a secret that doesn't exist.
-	pc := minimalPC("mortise-system", "missing-secret", "token")
-	c := fake.NewClientBuilder().WithScheme(s).WithObjects(pc).Build()
-
-	_, err := platformconfig.Load(ctx, c)
-	if err == nil {
-		t.Fatal("expected error for missing DNS secret, got nil")
-	}
-	if errors.Is(err, platformconfig.ErrNotFound) {
-		t.Fatal("error should not be ErrNotFound for bad secret ref; got ErrNotFound")
-	}
-}
-
 func TestLoad_RegistryCredentials(t *testing.T) {
 	ctx := context.Background()
 	s := scheme(t)
 
-	pc := minimalPC("ns", "dns-secret", "token")
+	pc := minimalPC()
 	ref := mortisev1alpha1.SecretRef{Namespace: "ns", Name: "reg-creds", Key: "username"}
 	pc.Spec.Registry = mortisev1alpha1.RegistryConfig{
 		URL:                  "registry.example.com",
@@ -132,13 +98,12 @@ func TestLoad_RegistryCredentials(t *testing.T) {
 		CredentialsSecretRef: &ref,
 	}
 
-	dns := secret("ns", "dns-secret", map[string][]byte{"token": []byte("tok")})
 	reg := secret("ns", "reg-creds", map[string][]byte{
 		"username": []byte("admin"),
 		"password": []byte("s3cr3t"),
 	})
 
-	c := fake.NewClientBuilder().WithScheme(s).WithObjects(pc, dns, reg).Build()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(pc, reg).Build()
 
 	cfg, err := platformconfig.Load(ctx, c)
 	if err != nil {
@@ -159,7 +124,7 @@ func TestLoad_BadRegistrySecretRef(t *testing.T) {
 	ctx := context.Background()
 	s := scheme(t)
 
-	pc := minimalPC("ns", "dns-secret", "token")
+	pc := minimalPC()
 	pc.Spec.Registry = mortisev1alpha1.RegistryConfig{
 		URL: "registry.example.com",
 		CredentialsSecretRef: &mortisev1alpha1.SecretRef{
@@ -167,8 +132,7 @@ func TestLoad_BadRegistrySecretRef(t *testing.T) {
 		},
 	}
 
-	dns := secret("ns", "dns-secret", map[string][]byte{"token": []byte("tok")})
-	c := fake.NewClientBuilder().WithScheme(s).WithObjects(pc, dns).Build()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(pc).Build()
 
 	_, err := platformconfig.Load(ctx, c)
 	if err == nil {
@@ -180,20 +144,19 @@ func TestLoad_BuildTLS(t *testing.T) {
 	ctx := context.Background()
 	s := scheme(t)
 
-	pc := minimalPC("ns", "dns-secret", "token")
+	pc := minimalPC()
 	pc.Spec.Build = mortisev1alpha1.BuildConfig{
 		BuildkitAddr: "tcp://buildkitd:1234",
 		TLSSecretRef: &mortisev1alpha1.SecretRef{Namespace: "ns", Name: "bk-tls", Key: "ca.crt"},
 	}
 
-	dns := secret("ns", "dns-secret", map[string][]byte{"token": []byte("tok")})
 	bkTLS := secret("ns", "bk-tls", map[string][]byte{
 		"ca.crt":  []byte("CA"),
 		"tls.crt": []byte("CERT"),
 		"tls.key": []byte("KEY"),
 	})
 
-	c := fake.NewClientBuilder().WithScheme(s).WithObjects(pc, dns, bkTLS).Build()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(pc, bkTLS).Build()
 
 	cfg, err := platformconfig.Load(ctx, c)
 	if err != nil {
