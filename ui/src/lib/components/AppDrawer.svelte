@@ -13,17 +13,17 @@
 	let {
 		project,
 		appName,
-		livePhase = null,
-		liveError = null,
+		liveApp = null,
 		onClose
 	}: {
 		project: string;
 		appName: string;
-		livePhase?: string | null;
-		liveError?: string | null;
+		liveApp?: App | null;
 		onClose: () => void;
 	} = $props();
 
+	// app: stable snapshot set on mount, updated only by user actions (onAppUpdated).
+	// Never replaced by polling — so tabs never re-render from background polls.
 	let app = $state<App | null>(null);
 	let loading = $state(true);
 	let error = $state('');
@@ -31,7 +31,6 @@
 	onMount(async () => {
 		try {
 			app = await api.getApp(project, appName);
-			// Auto-open logs tab when app is building or failed (so user sees build output)
 			if (app?.status?.phase === 'Building' || app?.status?.phase === 'Failed') {
 				store.setDrawerTab('logs');
 			}
@@ -41,11 +40,6 @@
 			loading = false;
 		}
 	});
-
-	function conditionMessage(a: App): string | null {
-		const cond = a.status?.conditions?.find(c => c.status === 'False');
-		return cond?.message ?? null;
-	}
 
 	let appURL = $state<string | null>(null);
 	let connecting = $state(false);
@@ -64,25 +58,34 @@
 		}
 	}
 
-	// Fine-grained phase: polled string + optimistic override.
-	// Primitive props are compared by value so livePhase="Building"==="Building"
-	// causes zero Svelte reconciliation. Only the chip/banner re-render on change.
-	// The app object (and therefore all tabs) is never replaced by polling.
+	// Status display derives from liveApp (polled) with an optimistic override layer.
+	// $derived memoises by value: "Building"==="Building" → zero downstream updates
+	// when the phase hasn't actually changed, even though liveApp is a new object each poll.
 	let optimisticPhase = $state<string | null>(null);
-	const effectivePhase = $derived(optimisticPhase ?? livePhase ?? app?.status?.phase ?? null);
+	const effectivePhase = $derived(
+		optimisticPhase ?? liveApp?.status?.phase ?? app?.status?.phase ?? null
+	);
+
+	// Clear optimistic override once the real polled phase catches up.
+	$effect(() => {
+		if (optimisticPhase && liveApp?.status?.phase && liveApp.status.phase !== optimisticPhase) {
+			optimisticPhase = null;
+		}
+	});
 
 	function applyOptimisticPhase(phase: string) {
 		optimisticPhase = phase;
 	}
 
+	const liveConditions = $derived(liveApp?.status?.conditions ?? app?.status?.conditions ?? []);
 	const buildError = $derived(
 		effectivePhase === 'Failed'
-			? (liveError ?? conditionMessage(app))
+			? (liveConditions.find(c => c.status === 'False')?.message ?? null)
 			: null
 	);
 	const crashError = $derived(
 		effectivePhase === 'CrashLooping'
-			? (liveError ?? app?.status?.conditions?.find(c => c.type === 'PodHealthy' && c.status === 'False')?.message ?? null)
+			? (liveConditions.find(c => c.type === 'PodHealthy' && c.status === 'False')?.message ?? null)
 			: null
 	);
 	const isBuilding = $derived(effectivePhase === 'Building');

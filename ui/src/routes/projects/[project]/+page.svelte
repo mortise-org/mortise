@@ -370,12 +370,10 @@
 </div>
 
 {#if selectedApp}
-	{@const _drawerApp = apps.find(a => a.metadata.name === selectedApp)}
 	<AppDrawer
 		project={projectName}
 		appName={selectedApp}
-		livePhase={_drawerApp?.status?.phase ?? null}
-		liveError={_drawerApp?.status?.conditions?.find(c => c.status === 'False')?.message ?? null}
+		liveApp={apps.find(a => a.metadata.name === selectedApp) ?? null}
 		onClose={() => selectedApp = null}
 	/>
 {/if}
