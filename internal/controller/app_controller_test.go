@@ -2395,6 +2395,138 @@ var _ = Describe("App Controller — git source", func() {
 		})
 	})
 
+	Context("configFiles reconciliation", func() {
+		ctx := context.Background()
+
+		It("creates a ConfigMap owned by the App with the correct data key", func() {
+			const appName = "cf-create"
+			app := &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{Name: appName, Namespace: namespace},
+				Spec: mortisev1alpha1.AppSpec{
+					Source:  mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: testImageNginx},
+					Network: mortisev1alpha1.NetworkConfig{Public: true},
+					ConfigFiles: []mortisev1alpha1.ConfigFile{
+						{Path: "/etc/app/app.conf", Content: "key=value\n"},
+					},
+					Environments: []mortisev1alpha1.Environment{
+						{Name: "production", Replicas: ptr.To[int32](1)},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+
+			r := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := r.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var cm corev1.ConfigMap
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName + "-config-0", Namespace: namespace,
+			}, &cm)).To(Succeed())
+
+			Expect(cm.Data).To(HaveKeyWithValue("app.conf", "key=value\n"))
+			Expect(cm.Labels).To(HaveKeyWithValue("mortise.dev/managed-by", "controller"))
+			Expect(cm.Labels).To(HaveKeyWithValue("app.kubernetes.io/name", appName))
+			Expect(cm.OwnerReferences).To(HaveLen(1))
+			Expect(cm.OwnerReferences[0].Name).To(Equal(appName))
+		})
+
+		It("prunes a ConfigMap when its configFiles entry is removed", func() {
+			const appName = "cf-prune"
+			app := &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{Name: appName, Namespace: namespace},
+				Spec: mortisev1alpha1.AppSpec{
+					Source:  mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: testImageNginx},
+					Network: mortisev1alpha1.NetworkConfig{Public: true},
+					ConfigFiles: []mortisev1alpha1.ConfigFile{
+						{Path: "/etc/a/a.conf", Content: "a"},
+						{Path: "/etc/b/b.conf", Content: "b"},
+					},
+					Environments: []mortisev1alpha1.Environment{
+						{Name: "production", Replicas: ptr.To[int32](1)},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+
+			r := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := r.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Both ConfigMaps exist.
+			var cm0, cm1 corev1.ConfigMap
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: appName + "-config-0", Namespace: namespace}, &cm0)).To(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: appName + "-config-1", Namespace: namespace}, &cm1)).To(Succeed())
+
+			// Drop the second configFile and reconcile again.
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: appName, Namespace: namespace}, app)).To(Succeed())
+			app.Spec.ConfigFiles = app.Spec.ConfigFiles[:1]
+			Expect(k8sClient.Update(ctx, app)).To(Succeed())
+
+			_, err = r.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// -0 is retained, -1 is deleted.
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: appName + "-config-0", Namespace: namespace}, &cm0)).To(Succeed())
+			err = k8sClient.Get(ctx, types.NamespacedName{Name: appName + "-config-1", Namespace: namespace}, &cm1)
+			Expect(err).To(HaveOccurred())
+		})
+
+		It("refuses to hijack a pre-existing ConfigMap not managed by Mortise", func() {
+			const appName = "cf-hijack"
+			cmName := appName + "-config-0"
+
+			// Pre-create a ConfigMap with the reserved name, owned by the user.
+			userCM := &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      cmName,
+					Namespace: namespace,
+					// No mortise.dev/managed-by label — not ours.
+				},
+				Data: map[string]string{"user.conf": "do not touch"},
+			}
+			Expect(k8sClient.Create(ctx, userCM)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, userCM) }()
+
+			app := &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{Name: appName, Namespace: namespace},
+				Spec: mortisev1alpha1.AppSpec{
+					Source:  mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: testImageNginx},
+					Network: mortisev1alpha1.NetworkConfig{Public: true},
+					ConfigFiles: []mortisev1alpha1.ConfigFile{
+						{Path: "/etc/app/new.conf", Content: "new"},
+					},
+					Environments: []mortisev1alpha1.Environment{
+						{Name: "production", Replicas: ptr.To[int32](1)},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+
+			r := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := r.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("not managed by Mortise"))
+
+			// Pre-existing data untouched.
+			var got corev1.ConfigMap
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: cmName, Namespace: namespace}, &got)).To(Succeed())
+			Expect(got.Data).To(HaveKeyWithValue("user.conf", "do not touch"))
+			Expect(got.Data).NotTo(HaveKey("new.conf"))
+		})
+	})
+
 	Context("custom network port", func() {
 		const appName = "custom-port-app"
 		ctx := context.Background()

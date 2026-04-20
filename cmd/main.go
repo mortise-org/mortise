@@ -441,7 +441,7 @@ func main() {
 		setupLog.Info("UI files not available; API will still serve", "err", err)
 	}
 
-	apiServer := api.NewServer(mgr.GetClient(), clientset, authProvider, jwtHelper, uiSub)
+	apiServer := api.NewServer(mgr.GetClient(), clientset, mgr.GetConfig(), authProvider, jwtHelper, uiSub)
 	apiServer.SetBuildLogProvider(&appReconciler.Builds)
 	httpServer := &http.Server{Addr: apiAddr, Handler: apiServer.Handler()}
 	go func() {

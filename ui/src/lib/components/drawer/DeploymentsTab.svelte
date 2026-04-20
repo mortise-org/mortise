@@ -3,7 +3,7 @@
 	import type { App, EnvironmentStatus } from '$lib/types';
 	import { Rocket } from 'lucide-svelte';
 
-	let { project, app }: { project: string; app: App } = $props();
+	let { project, app, onOptimisticPhase }: { project: string; app: App; onOptimisticPhase?: (phase: string) => void } = $props();
 
 	let selectedEnv = $state(app.spec.environments?.[0]?.name ?? 'production');
 	let reloading = $state(false);
@@ -49,10 +49,13 @@
 	async function doRollback(envName: string, index: number) {
 		errorMsg = '';
 		reloading = true;
+		const prevPhase = app.status?.phase;
+		onOptimisticPhase?.('Deploying');
 		try {
 			await api.rollback(project, app.metadata.name, envName, index);
 		} catch (e) {
 			errorMsg = e instanceof Error ? e.message : 'Rollback failed';
+			if (prevPhase) onOptimisticPhase?.(prevPhase);
 		} finally {
 			reloading = false;
 		}
@@ -65,11 +68,16 @@
 		if (!promoteTarget) return;
 		reloading = true;
 		errorMsg = '';
+		const prevPhase = app.status?.phase;
+		onOptimisticPhase?.('Deploying');
+		showPromoteModal = false;
 		try {
 			await api.promote(project, app.metadata.name, selectedEnv, promoteTarget);
-			showPromoteModal = false;
+			promoteTarget = '';
 		} catch (e) {
 			errorMsg = e instanceof Error ? e.message : 'Promote failed';
+			showPromoteModal = true;
+			if (prevPhase) onOptimisticPhase?.(prevPhase);
 		} finally {
 			reloading = false;
 		}
@@ -78,10 +86,13 @@
 	async function doRebuild() {
 		errorMsg = '';
 		reloading = true;
+		const prevPhase = app.status?.phase;
+		onOptimisticPhase?.('Building');
 		try {
 			await api.rebuild(project, app.metadata.name);
 		} catch (e) {
 			errorMsg = e instanceof Error ? e.message : 'Rebuild failed';
+			if (prevPhase) onOptimisticPhase?.(prevPhase);
 		} finally {
 			reloading = false;
 		}
@@ -91,10 +102,13 @@
 		if (!envStatus?.currentImage) return;
 		errorMsg = '';
 		reloading = true;
+		const prevPhase = app.status?.phase;
+		onOptimisticPhase?.('Deploying');
 		try {
 			await api.deploy(project, app.metadata.name, selectedEnv, envStatus.currentImage);
 		} catch (e) {
 			errorMsg = e instanceof Error ? e.message : 'Redeploy failed';
+			if (prevPhase) onOptimisticPhase?.(prevPhase);
 		} finally {
 			reloading = false;
 		}

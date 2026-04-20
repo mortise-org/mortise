@@ -58,7 +58,7 @@ func newTestServerAs(t *testing.T, k8sClient client.Client, role auth.Role) (*ap
 		t.Fatalf("generate token: %v", err)
 	}
 
-	srv := api.NewServer(k8sClient, fake.NewClientset(), authProvider, jwtHelper, nil)
+	srv := api.NewServer(k8sClient, fake.NewClientset(), nil, authProvider, jwtHelper, nil)
 	testToken = token
 	return srv, token
 }

@@ -104,33 +104,42 @@
 	async function addVolume() {
 		if (!newVol.name || !newVol.mountPath) return;
 		savingVolume = true;
+		const prevApp = app;
+		const prevVol = { ...newVol };
+		const optimisticSpec = JSON.parse(JSON.stringify(app.spec));
+		optimisticSpec.storage = [...(optimisticSpec.storage ?? []), {
+			name: newVol.name,
+			mountPath: newVol.mountPath,
+			size: newVol.size || undefined,
+			storageClass: newVol.storageClass || undefined
+		}];
+		onAppUpdated({ ...app, spec: optimisticSpec });
+		showAddVolume = false;
+		newVol = { name: '', mountPath: '', size: '', storageClass: '' };
 		try {
-			const spec = JSON.parse(JSON.stringify(app.spec));
-			spec.storage = [...(spec.storage ?? []), {
-				name: newVol.name,
-				mountPath: newVol.mountPath,
-				size: newVol.size || undefined,
-				storageClass: newVol.storageClass || undefined
-			}];
-			const updated = await api.updateApp(project, app.metadata.name, spec);
+			const updated = await api.updateApp(project, prevApp.metadata.name, optimisticSpec);
 			onAppUpdated(updated);
-			showAddVolume = false;
-			newVol = { name: '', mountPath: '', size: '', storageClass: '' };
 		} catch (e) {
 			errorMsg = e instanceof Error ? e.message : 'Failed to add volume';
+			onAppUpdated(prevApp);
+			showAddVolume = true;
+			newVol = prevVol;
 		} finally {
 			savingVolume = false;
 		}
 	}
 
 	async function removeVolume(idx: number) {
+		const prevApp = app;
+		const optimisticSpec = JSON.parse(JSON.stringify(app.spec));
+		optimisticSpec.storage = (optimisticSpec.storage ?? []).filter((_: unknown, i: number) => i !== idx);
+		onAppUpdated({ ...app, spec: optimisticSpec });
 		try {
-			const spec = JSON.parse(JSON.stringify(app.spec));
-			spec.storage = (spec.storage ?? []).filter((_, i) => i !== idx);
-			const updated = await api.updateApp(project, app.metadata.name, spec);
+			const updated = await api.updateApp(project, prevApp.metadata.name, optimisticSpec);
 			onAppUpdated(updated);
 		} catch (e) {
 			errorMsg = e instanceof Error ? e.message : 'Failed to remove volume';
+			onAppUpdated(prevApp);
 		}
 	}
 
@@ -181,11 +190,15 @@
 	async function saveSource() {
 		saving = true;
 		errorMsg = '';
+		const prevApp = app;
+		const optimisticSpec = buildUpdatedSpec();
+		onAppUpdated({ ...app, spec: optimisticSpec });
 		try {
-			const updated = await api.updateApp(project, app.metadata.name, buildUpdatedSpec());
+			const updated = await api.updateApp(project, prevApp.metadata.name, optimisticSpec);
 			onAppUpdated(updated);
 		} catch (e) {
 			errorMsg = e instanceof Error ? e.message : 'Failed to save';
+			onAppUpdated(prevApp);
 		} finally {
 			saving = false;
 		}
@@ -193,19 +206,22 @@
 
 	async function saveBuild() {
 		savingBuild = true;
+		const prevApp = app;
+		const optimisticSpec = JSON.parse(JSON.stringify(app.spec));
+		optimisticSpec.source = {
+			...optimisticSpec.source,
+			build: {
+				mode: buildMode,
+				dockerfilePath: buildMode === 'dockerfile' ? dockerfilePath : undefined
+			}
+		};
+		onAppUpdated({ ...app, spec: optimisticSpec });
 		try {
-			const spec = JSON.parse(JSON.stringify(app.spec));
-			spec.source = {
-				...spec.source,
-				build: {
-					mode: buildMode,
-					dockerfilePath: buildMode === 'dockerfile' ? dockerfilePath : undefined
-				}
-			};
-			const updated = await api.updateApp(project, app.metadata.name, spec);
+			const updated = await api.updateApp(project, prevApp.metadata.name, optimisticSpec);
 			onAppUpdated(updated);
 		} catch (e) {
 			errorMsg = e instanceof Error ? e.message : 'Failed to save build config';
+			onAppUpdated(prevApp);
 		} finally {
 			savingBuild = false;
 		}
@@ -214,11 +230,15 @@
 	async function saveNetworking() {
 		saving = true;
 		errorMsg = '';
+		const prevApp = app;
+		const optimisticSpec = buildUpdatedSpec();
+		onAppUpdated({ ...app, spec: optimisticSpec });
 		try {
-			const updated = await api.updateApp(project, app.metadata.name, buildUpdatedSpec());
+			const updated = await api.updateApp(project, prevApp.metadata.name, optimisticSpec);
 			onAppUpdated(updated);
 		} catch (e) {
 			errorMsg = e instanceof Error ? e.message : 'Failed to save';
+			onAppUpdated(prevApp);
 		} finally {
 			saving = false;
 		}
@@ -227,19 +247,22 @@
 	async function saveScale() {
 		saving = true;
 		errorMsg = '';
+		const prevApp = app;
+		const optimisticSpec = JSON.parse(JSON.stringify(app.spec));
+		const envIdx = (optimisticSpec.environments ?? []).findIndex((e: { name: string }) => e.name === scaleEnv);
+		if (envIdx >= 0 && optimisticSpec.environments) {
+			optimisticSpec.environments[envIdx].replicas = parseInt(scaleReplicas, 10) || 1;
+			optimisticSpec.environments[envIdx].resources = optimisticSpec.environments[envIdx].resources ?? {};
+			if (scaleCpu) optimisticSpec.environments[envIdx].resources!.cpu = scaleCpu;
+			if (scaleMemory) optimisticSpec.environments[envIdx].resources!.memory = scaleMemory;
+		}
+		onAppUpdated({ ...app, spec: optimisticSpec });
 		try {
-			const spec = JSON.parse(JSON.stringify(app.spec));
-			const envIdx = (spec.environments ?? []).findIndex((e) => e.name === scaleEnv);
-			if (envIdx >= 0 && spec.environments) {
-				spec.environments[envIdx].replicas = parseInt(scaleReplicas, 10) || 1;
-				spec.environments[envIdx].resources = spec.environments[envIdx].resources ?? {};
-				if (scaleCpu) spec.environments[envIdx].resources!.cpu = scaleCpu;
-				if (scaleMemory) spec.environments[envIdx].resources!.memory = scaleMemory;
-			}
-			const updated = await api.updateApp(project, app.metadata.name, spec);
+			const updated = await api.updateApp(project, prevApp.metadata.name, optimisticSpec);
 			onAppUpdated(updated);
 		} catch (e) {
 			errorMsg = e instanceof Error ? e.message : 'Failed to save';
+			onAppUpdated(prevApp);
 		} finally {
 			saving = false;
 		}
@@ -248,21 +271,29 @@
 	async function handleAddDomain() {
 		if (!newDomain.trim() || !domainsEnv) return;
 		savingDomain = true;
+		const domainToAdd = newDomain.trim();
+		const prevDomains = domains;
+		domains = domains ? { ...domains, custom: [...(domains.custom ?? []), domainToAdd] } : domains;
+		newDomain = '';
 		try {
-			domains = await api.addDomain(project, app.metadata.name, domainsEnv, newDomain.trim());
-			newDomain = '';
+			domains = await api.addDomain(project, app.metadata.name, domainsEnv, domainToAdd);
 		} catch (e) {
 			errorMsg = e instanceof Error ? e.message : 'Failed to add domain';
+			domains = prevDomains;
+			newDomain = domainToAdd;
 		} finally {
 			savingDomain = false;
 		}
 	}
 
 	async function handleRemoveDomain(domain: string) {
+		const prevDomains = domains;
+		domains = domains ? { ...domains, custom: (domains.custom ?? []).filter(d => d !== domain) } : domains;
 		try {
 			domains = await api.removeDomain(project, app.metadata.name, domainsEnv, domain);
 		} catch (e) {
 			errorMsg = e instanceof Error ? e.message : 'Failed to remove domain';
+			domains = prevDomains;
 		}
 	}
 
@@ -302,10 +333,12 @@
 	}
 
 	async function revokeToken(id: string) {
+		const prev = tokens;
+		tokens = tokens.filter((t) => t.id !== id);
 		try {
 			await api.revokeToken(project, app.metadata.name, id);
-			tokens = tokens.filter((t) => t.id !== id);
 		} catch (e) {
+			tokens = prev;
 			errorMsg = e instanceof Error ? e.message : 'Failed to revoke token';
 		}
 	}
@@ -313,33 +346,43 @@
 	async function addBinding() {
 		if (!newBindingRef) return;
 		savingBinding = true;
+		const prevApp = app;
+		const savedRef = newBindingRef;
+		const optimisticSpec = JSON.parse(JSON.stringify(app.spec));
+		optimisticSpec.environments = (optimisticSpec.environments ?? []).map((e: typeof optimisticSpec.environments[0]) => ({
+			...e,
+			bindings: [...(e.bindings ?? []), { ref: savedRef }]
+		}));
+		onAppUpdated({ ...app, spec: optimisticSpec });
+		showAddBinding = false;
+		newBindingRef = '';
 		try {
-			const spec = JSON.parse(JSON.stringify(app.spec));
-			spec.environments = (spec.environments ?? []).map((e: typeof spec.environments[0]) => ({
-				...e,
-				bindings: [...(e.bindings ?? []), { ref: newBindingRef }]
-			}));
-			const updated = await api.updateApp(project, app.metadata.name, spec);
+			const updated = await api.updateApp(project, prevApp.metadata.name, optimisticSpec);
 			onAppUpdated(updated);
-			showAddBinding = false; newBindingRef = '';
 		} catch (e) {
 			errorMsg = e instanceof Error ? e.message : 'Failed to add binding';
+			onAppUpdated(prevApp);
+			showAddBinding = true;
+			newBindingRef = savedRef;
 		} finally {
 			savingBinding = false;
 		}
 	}
 
 	async function removeBinding(ref: string) {
+		const prevApp = app;
+		const optimisticSpec = JSON.parse(JSON.stringify(app.spec));
+		optimisticSpec.environments = (optimisticSpec.environments ?? []).map((e: typeof optimisticSpec.environments[0]) => ({
+			...e,
+			bindings: (e.bindings ?? []).filter((b: { ref: string }) => b.ref !== ref)
+		}));
+		onAppUpdated({ ...app, spec: optimisticSpec });
 		try {
-			const spec = JSON.parse(JSON.stringify(app.spec));
-			spec.environments = (spec.environments ?? []).map((e: typeof spec.environments[0]) => ({
-				...e,
-				bindings: (e.bindings ?? []).filter((b: { ref: string }) => b.ref !== ref)
-			}));
-			const updated = await api.updateApp(project, app.metadata.name, spec);
+			const updated = await api.updateApp(project, prevApp.metadata.name, optimisticSpec);
 			onAppUpdated(updated);
 		} catch (e) {
 			errorMsg = e instanceof Error ? e.message : 'Failed to remove binding';
+			onAppUpdated(prevApp);
 		}
 	}
 
@@ -410,12 +453,11 @@
 	async function handleDelete() {
 		if (deleteConfirmText !== app.metadata.name) return;
 		deleting = true;
+		onAppDeleted();
 		try {
 			await api.deleteApp(project, app.metadata.name);
-			onAppDeleted();
-		} catch (e) {
-			errorMsg = e instanceof Error ? e.message : 'Failed to delete app';
-			deleting = false;
+		} catch {
+			// drawer is already closed; error is unrecoverable from the user's perspective
 		}
 	}
 

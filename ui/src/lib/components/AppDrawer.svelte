@@ -13,10 +13,12 @@
 	let {
 		project,
 		appName,
+		liveApp = null,
 		onClose
 	}: {
 		project: string;
 		appName: string;
+		liveApp?: import('$lib/types').App | null;
 		onClose: () => void;
 	} = $props();
 
@@ -58,6 +60,24 @@
 		} finally {
 			connecting = false;
 		}
+	}
+
+	// Sync status from the parent's polled data. Only status — not spec — so
+	// optimistic spec mutations from tabs can't be overwritten by a poll mid-flight.
+	// liveApp only arrives with a new reference when status content actually changed
+	// (deduplicated in the parent), so this write is always meaningful.
+	$effect(() => {
+		if (!liveApp || loading) return;
+		if (app) {
+			app = { ...app, status: liveApp.status };
+		} else {
+			app = liveApp;
+		}
+	});
+
+	function applyOptimisticPhase(phase: string) {
+		if (!app) return;
+		app = { ...app, status: { ...(app.status ?? { phase: 'Pending', environments: [], conditions: [] }), phase: phase as import('$lib/types').AppPhase } };
 	}
 
 	const buildError = $derived(
@@ -107,13 +127,6 @@
 		return phaseChip[p] ?? 'bg-surface-700 text-gray-400';
 	}
 </script>
-
-<!-- Backdrop: click to close -->
-<div
-	class="fixed inset-0 z-40"
-	onclick={onClose}
-	role="presentation"
-></div>
 
 <!-- Drawer panel -->
 <div
@@ -223,7 +236,7 @@
 			<div class="rounded-md bg-danger/10 px-3 py-2 text-sm text-danger">{error}</div>
 		{:else if app}
 			{#if store.drawerTab === 'deployments'}
-				<DeploymentsTab {project} {app} />
+				<DeploymentsTab {project} {app} onOptimisticPhase={applyOptimisticPhase} />
 			{:else if store.drawerTab === 'variables'}
 				<VariablesTab {project} {app} onAppUpdated={(updated) => { app = updated; }} />
 			{:else if store.drawerTab === 'logs'}

@@ -5,15 +5,19 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/scheme"
-	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/remotecommand"
 )
+
+// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=pods/log,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=pods/exec,verbs=create
 
 type execRequest struct {
 	Command []string `json:"command"`
@@ -41,16 +45,24 @@ func (s *Server) ExecInApp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if s.restConfig == nil {
+		slog.Error("exec: server has no rest.Config; exec is unavailable", "namespace", ns, "app", appName)
+		writeJSON(w, http.StatusInternalServerError, errorResponse{"exec is not available on this server"})
+		return
+	}
+
 	// Find the first running pod for this app.
 	podName, err := s.findAppPod(r.Context(), ns, appName)
 	if err != nil {
-		writeJSON(w, http.StatusNotFound, errorResponse{err.Error()})
+		slog.Error("exec: failed to find app pod", "namespace", ns, "app", appName, "err", err)
+		writeJSON(w, http.StatusNotFound, errorResponse{fmt.Sprintf("no running pod found for app %q", appName)})
 		return
 	}
 
 	stdout, stderr, err := s.execInPod(r.Context(), ns, podName, req.Command)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorResponse{"exec failed: " + err.Error()})
+		slog.Error("exec: streaming failed", "namespace", ns, "app", appName, "pod", podName, "err", err)
+		writeJSON(w, http.StatusInternalServerError, errorResponse{"exec failed"})
 		return
 	}
 
@@ -85,12 +97,7 @@ func (s *Server) execInPod(ctx context.Context, ns, podName string, command []st
 			Stderr:  true,
 		}, scheme.ParameterCodec)
 
-	cfg, err := rest.InClusterConfig()
-	if err != nil {
-		return "", "", fmt.Errorf("getting in-cluster config: %w", err)
-	}
-
-	exec, err := remotecommand.NewSPDYExecutor(cfg, "POST", req.URL())
+	exec, err := remotecommand.NewSPDYExecutor(s.restConfig, "POST", req.URL())
 	if err != nil {
 		return "", "", fmt.Errorf("creating executor: %w", err)
 	}

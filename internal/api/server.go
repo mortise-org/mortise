@@ -9,6 +9,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/MC-Meesh/mortise/internal/auth"
@@ -25,6 +26,7 @@ type BuildLogProvider interface {
 type Server struct {
 	client     client.Client
 	clientset  kubernetes.Interface
+	restConfig *rest.Config
 	auth       auth.AuthProvider
 	jwt        *auth.JWTHelper
 	ui         fs.FS
@@ -34,6 +36,12 @@ type Server struct {
 	proxies    *appProxyManager
 }
 
+// RESTConfig returns the rest.Config the server was built with. Exposed for
+// tests that need to assert the config was plumbed through from construction.
+func (s *Server) RESTConfig() *rest.Config {
+	return s.restConfig
+}
+
 // SetBuildLogProvider sets the build log provider (called after reconciler setup).
 func (s *Server) SetBuildLogProvider(p BuildLogProvider) {
 	s.buildLogs = p
@@ -41,13 +49,15 @@ func (s *Server) SetBuildLogProvider(p BuildLogProvider) {
 
 // NewServer creates a new API server.
 // ui is an optional filesystem for serving the SvelteKit UI; pass nil to disable UI serving.
-func NewServer(c client.Client, cs kubernetes.Interface, authProvider auth.AuthProvider, jwt *auth.JWTHelper, ui fs.FS) *Server {
+// restConfig is used for pod/exec streaming; pass nil in tests that don't exercise exec.
+func NewServer(c client.Client, cs kubernetes.Interface, restConfig *rest.Config, authProvider auth.AuthProvider, jwt *auth.JWTHelper, ui fs.FS) *Server {
 	kr := webhook.NewK8sReader(c)
 	wh := webhook.New(kr)
 	df := newDeviceFlowHandler(c)
 	return &Server{
 		client:     c,
 		clientset:  cs,
+		restConfig: restConfig,
 		auth:       authProvider,
 		jwt:        jwt,
 		ui:         ui,

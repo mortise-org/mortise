@@ -61,7 +61,12 @@ spec:
                       description: Content is the file content.
                       type: string
                     path:
-                      description: Path is the absolute mount path inside the container.
+                      description: |-
+                        Path is the absolute mount path inside the container.
+                        Must start with "/", contain no null bytes, and be <= PATH_MAX (4096).
+                      maxLength: 4096
+                      minLength: 2
+                      pattern: ^/[^\x00]+$
                       type: string
                   required:
                   - content
@@ -311,9 +316,13 @@ spec:
                     format: int32
                     type: integer
                   public:
+                    default: true
+                    description: |-
+                      Public toggles whether an Ingress is created for this App.
+                      Note: no `omitempty` on purpose — `false` must survive JSON
+                      marshalling (see commit c7c58a2). The API server applies the default
+                      on create when the field is missing entirely.
                     type: boolean
-                required:
-                - public
                 type: object
               sharedVars:
                 description: |-

@@ -118,44 +118,58 @@
 	async function addVar(key: string) {
 		const s = sections[key];
 		if (!s.newKey.trim()) return;
-		s.saving = true;
+		const updated = { ...s.vars, [s.newKey.trim()]: s.newValue };
+		const prevVars = { ...s.vars };
+		const prevOriginal = { ...s.originalVars };
+		const prevKey = s.newKey;
+		const prevValue = s.newValue;
+		sections[key].vars = updated;
+		sections[key].originalVars = { ...updated };
+		sections[key].editedKeys = new Set();
+		sections[key].newKey = '';
+		sections[key].newValue = '';
+		sections[key].showNewRow = false;
+		sections[key].saving = true;
 		try {
-			const updated = { ...s.vars, [s.newKey.trim()]: s.newValue };
 			if (key === 'shared') {
 				await saveSharedVars(updated);
 			} else {
 				await api.setEnv(project, app.metadata.name, key, updated);
 			}
-			sections[key].vars = updated;
-			sections[key].originalVars = { ...updated };
-			sections[key].editedKeys = new Set();
-			sections[key].newKey = '';
-			sections[key].newValue = '';
-			sections[key].showNewRow = false;
 		} catch (e) {
 			sections[key].error = e instanceof Error ? e.message : 'Failed to save';
+			sections[key].vars = prevVars;
+			sections[key].originalVars = prevOriginal;
+			sections[key].newKey = prevKey;
+			sections[key].newValue = prevValue;
+			sections[key].showNewRow = true;
 		} finally {
 			sections[key].saving = false;
 		}
 	}
 
 	async function deleteVar(key: string, varKey: string) {
-		const s = sections[key];
-		const updated = Object.fromEntries(Object.entries(s.vars).filter(([k]) => k !== varKey));
-		s.saving = true;
+		const updated = Object.fromEntries(Object.entries(sections[key].vars).filter(([k]) => k !== varKey));
+		const prevVars = { ...sections[key].vars };
+		const prevOriginal = { ...sections[key].originalVars };
+		const prevEdited = new Set(sections[key].editedKeys);
+		sections[key].vars = updated;
+		sections[key].originalVars = { ...updated };
+		const next = new Set(sections[key].editedKeys);
+		next.delete(varKey);
+		sections[key].editedKeys = next;
+		sections[key].saving = true;
 		try {
 			if (key === 'shared') {
 				await saveSharedVars(updated);
 			} else {
 				await api.setEnv(project, app.metadata.name, key, updated);
 			}
-			sections[key].vars = updated;
-			sections[key].originalVars = { ...updated };
-			const next = new Set(sections[key].editedKeys);
-			next.delete(varKey);
-			sections[key].editedKeys = next;
 		} catch (e) {
 			sections[key].error = e instanceof Error ? e.message : 'Failed to delete';
+			sections[key].vars = prevVars;
+			sections[key].originalVars = prevOriginal;
+			sections[key].editedKeys = prevEdited;
 		} finally {
 			sections[key].saving = false;
 		}
@@ -164,17 +178,21 @@
 	async function saveEdited(key: string) {
 		const s = sections[key];
 		if (s.editedKeys.size === 0) return;
-		s.saving = true;
+		const prevOriginal = { ...s.originalVars };
+		const prevEdited = new Set(s.editedKeys);
+		sections[key].originalVars = { ...s.vars };
+		sections[key].editedKeys = new Set();
+		sections[key].saving = true;
 		try {
 			if (key === 'shared') {
 				await saveSharedVars(s.vars);
 			} else {
 				await api.setEnv(project, app.metadata.name, key, s.vars);
 			}
-			sections[key].originalVars = { ...s.vars };
-			sections[key].editedKeys = new Set();
 		} catch (e) {
 			sections[key].error = e instanceof Error ? e.message : 'Failed to save';
+			sections[key].originalVars = prevOriginal;
+			sections[key].editedKeys = prevEdited;
 		} finally {
 			sections[key].saving = false;
 		}
@@ -191,20 +209,27 @@
 			parsed[trimmed.slice(0, idx).trim()] = trimmed.slice(idx + 1).trim();
 		}
 		const merged = { ...s.vars, ...parsed };
-		s.saving = true;
+		const prevVars = { ...s.vars };
+		const prevOriginal = { ...s.originalVars };
+		const prevRawText = s.rawText;
+		sections[key].vars = merged;
+		sections[key].originalVars = { ...merged };
+		sections[key].editedKeys = new Set();
+		sections[key].rawText = '';
+		sections[key].rawMode = false;
+		sections[key].saving = true;
 		try {
 			if (key === 'shared') {
 				await saveSharedVars(merged);
 			} else {
 				await api.setEnv(project, app.metadata.name, key, merged);
 			}
-			sections[key].vars = merged;
-			sections[key].originalVars = { ...merged };
-			sections[key].editedKeys = new Set();
-			sections[key].rawText = '';
-			sections[key].rawMode = false;
 		} catch (e) {
 			sections[key].error = e instanceof Error ? e.message : 'Import failed';
+			sections[key].vars = prevVars;
+			sections[key].originalVars = prevOriginal;
+			sections[key].rawText = prevRawText;
+			sections[key].rawMode = true;
 		} finally {
 			sections[key].saving = false;
 		}

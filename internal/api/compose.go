@@ -74,9 +74,11 @@ func composeToAppSpecs(compose *ComposeFile, stackPrefix string, bundledFiles ma
 		// Build the Mortise AppSpec.
 		var port int32 = 8080
 		if len(svc.Ports) > 0 {
-			if p, err := parsePort(svc.Ports[0]); err == nil {
-				port = p
+			p, err := parsePort(svc.Ports[0])
+			if err != nil {
+				return nil, fmt.Errorf("service %q: invalid port %q: %w", svcName, svc.Ports[0], err)
 			}
+			port = p
 		}
 
 		envVars := parseEnvironment(svc.Environment)

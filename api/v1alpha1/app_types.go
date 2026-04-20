@@ -108,6 +108,12 @@ type Build struct {
 }
 
 type NetworkConfig struct {
+	// Public toggles whether an Ingress is created for this App.
+	// Note: no `omitempty` on purpose — `false` must survive JSON
+	// marshalling (see commit c7c58a2). The API server applies the default
+	// on create when the field is missing entirely.
+	// +optional
+	// +kubebuilder:default=true
 	Public bool `json:"public"`
 
 	// Port is the container port the app listens on. Defaults to 8080.
@@ -131,7 +137,11 @@ type VolumeSpec struct {
 // ConfigFile defines a file to mount into the container via a ConfigMap.
 type ConfigFile struct {
 	// Path is the absolute mount path inside the container.
+	// Must start with "/", contain no null bytes, and be <= PATH_MAX (4096).
 	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=2
+	// +kubebuilder:validation:MaxLength=4096
+	// +kubebuilder:validation:Pattern=`^/[^\x00]+$`
 	Path string `json:"path"`
 	// Content is the file content.
 	// +kubebuilder:validation:Required

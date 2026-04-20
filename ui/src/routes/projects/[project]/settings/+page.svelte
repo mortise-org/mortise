@@ -109,10 +109,13 @@
     if (!project) return;
     savingGeneral = true;
     generalError = '';
+    const prevProject = project;
+    project = { ...project, description: editDesc };
     try {
-      project = await api.updateProject(project.name, { description: editDesc });
+      project = await api.updateProject(prevProject.name, { description: editDesc });
     } catch (e) {
       generalError = e instanceof Error ? e.message : 'Failed to save';
+      project = prevProject;
     } finally {
       savingGeneral = false;
     }
@@ -145,23 +148,29 @@
     inviting = true;
     membersError = '';
     inviteLink = '';
+    const email = inviteEmail.trim();
+    members = [...members, { email, role: inviteRole }];
+    inviteEmail = '';
     try {
-      const resp: InviteResponse = await api.inviteMember(projectName, inviteEmail.trim(), inviteRole);
+      const resp: InviteResponse = await api.inviteMember(projectName, email, inviteRole);
       inviteLink = resp.link;
-      inviteEmail = '';
       await loadMembers();
     } catch (e) {
       membersError = e instanceof Error ? e.message : 'Failed to invite';
+      members = members.filter(m => m.email !== email);
+      inviteEmail = email;
     } finally {
       inviting = false;
     }
   }
 
   async function handleRemoveMember(email: string) {
+    const prev = members;
+    members = members.filter(m => m.email !== email);
     try {
       await api.removeMember(projectName, email);
-      members = members.filter(m => m.email !== email);
     } catch (e) {
+      members = prev;
       membersError = e instanceof Error ? e.message : 'Failed to remove member';
     }
   }
@@ -186,42 +195,25 @@
   }
 
   const tabCls = (t: string) =>
-    `px-3 py-2 text-sm transition-colors cursor-pointer ${activeTab === t ? 'border-b-2 border-accent text-white' : 'text-gray-400 hover:text-white'}`;
+    `px-3 py-2 text-sm transition-colors cursor-pointer text-left ${activeTab === t ? 'border-l-2 border-accent text-white bg-surface-700' : 'border-l-2 border-transparent text-gray-400 hover:text-white hover:bg-surface-700'}`;
   const inputCls = 'w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-white placeholder-gray-500 outline-none focus:border-accent';
   const labelCls = 'block text-xs text-gray-500 mb-1';
   const btnPrimary = 'rounded-md bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent-hover disabled:opacity-50';
   const btnSecondary = 'rounded-md border border-surface-600 px-4 py-2 text-sm text-gray-400 hover:bg-surface-700 hover:text-white';
 </script>
 
-<div class="flex h-full flex-col">
-  <!-- Header -->
-  <div class="border-b border-surface-600 bg-surface-800 px-6 pt-5 pb-0">
-    <div class="mb-4">
-      <h1 class="text-lg font-semibold text-white">Project Settings</h1>
-      <p class="text-xs text-gray-500">{projectName}</p>
-    </div>
-    <!-- Tab nav -->
-    <nav class="flex gap-0 border-b-0">
-      <button type="button" class={tabCls('general')} onclick={() => switchTab('general')}>General</button>
-      <button type="button" class={tabCls('environments')} onclick={() => switchTab('environments')}>Environments</button>
-      <button type="button" class={tabCls('shared-vars')} onclick={() => switchTab('shared-vars')}>Shared Variables</button>
-      <button type="button" class={tabCls('members')} onclick={() => switchTab('members')}>Members</button>
-      <button type="button" class={tabCls('tokens')} onclick={() => switchTab('tokens')}>Tokens</button>
-      <button type="button" class={tabCls('webhooks')} onclick={() => switchTab('webhooks')}>Webhooks</button>
-      <button type="button" class={tabCls('integrations')} onclick={() => switchTab('integrations')}>Integrations</button>
-      <button type="button" class={tabCls('danger')} onclick={() => switchTab('danger')}>Danger</button>
-    </nav>
-  </div>
-
-  <!-- Filter input -->
-  <div class="border-b border-surface-600 bg-surface-800 px-6 pb-3">
-    <input
-      type="text"
-      bind:value={filterText}
-      placeholder="Filter settings..."
-      class="w-full rounded-md border border-surface-600 bg-surface-700 px-3 py-1.5 text-sm text-white placeholder-gray-500 outline-none focus:border-accent"
-    />
-  </div>
+<div class="flex h-full">
+  <!-- Left tab rail -->
+  <nav class="flex w-44 shrink-0 flex-col border-r border-surface-600 bg-surface-800 pt-4">
+    <button type="button" class={tabCls('general')} onclick={() => switchTab('general')}>General</button>
+    <button type="button" class={tabCls('environments')} onclick={() => switchTab('environments')}>Environments</button>
+    <button type="button" class={tabCls('shared-vars')} onclick={() => switchTab('shared-vars')}>Shared Variables</button>
+    <button type="button" class={tabCls('members')} onclick={() => switchTab('members')}>Members</button>
+    <button type="button" class={tabCls('tokens')} onclick={() => switchTab('tokens')}>Tokens</button>
+    <button type="button" class={tabCls('webhooks')} onclick={() => switchTab('webhooks')}>Webhooks</button>
+    <button type="button" class={tabCls('integrations')} onclick={() => switchTab('integrations')}>Integrations</button>
+    <button type="button" class={tabCls('danger')} onclick={() => switchTab('danger')}>Danger</button>
+  </nav>
 
   <!-- Tab content -->
   <div class="flex-1 overflow-auto p-6">

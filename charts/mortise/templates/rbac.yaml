@@ -28,11 +28,13 @@ rules:
   - apiGroups: [""]
     resources: ["services", "secrets", "persistentvolumeclaims", "serviceaccounts"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  # ConfigMaps: per-project Activity event store (§5.11). No delete verb — the
-  # ConfigMap is GC'd with the project namespace.
+  # ConfigMaps: per-project Activity event store (§5.11) and App configFiles
+  # (one CM per configFiles entry, named {app}-config-{i}). Delete verb is
+  # required so reconcileConfigMaps can prune orphans when a configFiles
+  # entry is removed.
   - apiGroups: [""]
     resources: ["configmaps"]
-    verbs: ["get", "list", "watch", "create", "update", "patch"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: ["networking.k8s.io"]
     resources: ["ingresses"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
@@ -44,6 +46,10 @@ rules:
   - apiGroups: [""]
     resources: ["pods", "pods/log"]
     verbs: ["get", "list", "watch"]
+  # Pod exec for /api/projects/{project}/apps/{app}/exec
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

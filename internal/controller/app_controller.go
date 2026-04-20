@@ -1078,15 +1078,37 @@ func (r *AppReconciler) reconcilePVCs(ctx context.Context, app *mortisev1alpha1.
 // reconcileConfigMaps creates or updates ConfigMaps for each configFile
 // defined on the App spec. These are mounted into containers as individual files.
 func (r *AppReconciler) reconcileConfigMaps(ctx context.Context, app *mortisev1alpha1.App) error {
+	// Track the set of ConfigMap names we expect to own after this pass so we
+	// can prune orphans below.
+	expected := make(map[string]struct{}, len(app.Spec.ConfigFiles))
+
 	for i, cf := range app.Spec.ConfigFiles {
 		cmName := fmt.Sprintf("%s-config-%d", app.Name, i)
+
+		// Defensive check: the CRD pattern should catch most of this, but a
+		// bad CR (or a CRD schema gap) could yield an empty basename and
+		// produce a ConfigMap with "" as its data key, which fails API
+		// validation in opaque ways.
+		if strings.HasSuffix(cf.Path, "/") {
+			return fmt.Errorf("configFiles[%d].path %q must not end in '/'", i, cf.Path)
+		}
 		fileName := filepath.Base(cf.Path)
+		if fileName == "" || fileName == "." || fileName == "/" {
+			return fmt.Errorf("configFiles[%d].path %q does not yield a valid filename", i, cf.Path)
+		}
+
+		expected[cmName] = struct{}{}
+
+		// ConfigFiles are per-App, not per-environment — the empty env slot
+		// on appLabels is intentional and shared across envs.
+		labels := appLabels(app.Name, "")
+		labels["mortise.dev/managed-by"] = "controller"
 
 		desired := &corev1.ConfigMap{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      cmName,
 				Namespace: app.Namespace,
-				Labels:    appLabels(app.Name, ""),
+				Labels:    labels,
 			},
 			Data: map[string]string{
 				fileName: cf.Content,
@@ -1109,12 +1131,47 @@ func (r *AppReconciler) reconcileConfigMaps(ctx context.Context, app *mortisev1a
 			return err
 		}
 
-		// Update content if changed.
+		// Per CLAUDE.md "Mortise owns only what it creates": refuse to
+		// overwrite a pre-existing ConfigMap with this reserved name.
+		if !isMortiseManaged(&existing) {
+			return fmt.Errorf("ConfigMap %q already exists in namespace %q and is not managed by Mortise; rename or delete it to let Mortise manage configFiles", cmName, app.Namespace)
+		}
+
+		// Update content and labels if changed.
 		if existing.Data[fileName] != cf.Content {
 			existing.Data = desired.Data
+			existing.Labels = desired.Labels
 			if err := r.Update(ctx, &existing); err != nil {
 				return err
 			}
+		}
+	}
+
+	// Prune ConfigMaps that match our naming convention but are no longer
+	// expected (e.g. a configFiles entry was removed). Only touch
+	// Mortise-managed objects — never delete someone else's CM that happens
+	// to match the pattern.
+	var owned corev1.ConfigMapList
+	if err := r.List(ctx, &owned, client.InNamespace(app.Namespace), client.MatchingLabels{
+		"app.kubernetes.io/name":       app.Name,
+		"app.kubernetes.io/managed-by": "mortise",
+	}); err != nil {
+		return fmt.Errorf("list owned ConfigMaps: %w", err)
+	}
+	prefix := app.Name + "-config-"
+	for i := range owned.Items {
+		cm := &owned.Items[i]
+		if !strings.HasPrefix(cm.Name, prefix) {
+			continue
+		}
+		if _, keep := expected[cm.Name]; keep {
+			continue
+		}
+		if !isMortiseManaged(cm) {
+			continue
+		}
+		if err := r.Delete(ctx, cm); err != nil && !errors.IsNotFound(err) {
+			return fmt.Errorf("delete orphan ConfigMap %q: %w", cm.Name, err)
 		}
 	}
 	return nil

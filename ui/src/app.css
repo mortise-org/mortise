@@ -25,11 +25,10 @@
 	display: none !important;
 }
 :global(.svelte-flow__handle) {
-	opacity: 0;
-	transition: opacity 150ms;
+	display: none !important;
 }
-:global(.svelte-flow__node:hover .svelte-flow__handle) {
-	opacity: 1;
+:global(.svelte-flow__attribution) {
+	display: none !important;
 }
 
 /* Override browser default blue focus outline globally */

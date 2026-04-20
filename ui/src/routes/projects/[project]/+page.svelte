@@ -69,7 +69,24 @@
 		}
 	});
 
+	// Start/stop polling when drawer opens or closes.
+	$effect(() => {
+		void selectedApp;
+		if (!loading) startPollingIfBuilding();
+	});
+
 	let pollHandle: ReturnType<typeof setInterval> | null = null;
+
+	// Stable reference for the drawer: only updates when the selected app's STATUS
+	// actually changes so AppDrawer never re-renders from a no-op poll.
+	let drawerLiveApp = $state<App | null>(null);
+	$effect(() => {
+		const found = selectedApp ? (apps.find(a => a.metadata.name === selectedApp) ?? null) : null;
+		if (!found) { drawerLiveApp = null; return; }
+		if (!drawerLiveApp || JSON.stringify(found.status) !== JSON.stringify(drawerLiveApp.status)) {
+			drawerLiveApp = found;
+		}
+	});
 
 	async function load() {
 		loading = true;
@@ -88,19 +105,23 @@
 		}
 	}
 
+	function isTransient(phase?: string) {
+		return phase === 'Building' || phase === 'Deploying' || phase === 'CrashLooping';
+	}
+
 	function startPollingIfBuilding() {
-		const hasBuilding = apps.some(a => a.status?.phase === 'Building' || a.status?.phase === 'Deploying' || a.status?.phase === 'CrashLooping');
-		if (hasBuilding && !pollHandle) {
+		const needsPoll = apps.some(a => isTransient(a.status?.phase)) || selectedApp !== null;
+		if (needsPoll && !pollHandle) {
 			pollHandle = setInterval(async () => {
 				try {
 					apps = await api.listApps(projectName);
-					if (!apps.some(a => a.status?.phase === 'Building' || a.status?.phase === 'Deploying' || a.status?.phase === 'CrashLooping')) {
+					if (!apps.some(a => isTransient(a.status?.phase)) && selectedApp === null) {
 						clearInterval(pollHandle!);
 						pollHandle = null;
 					}
 				} catch { /* ignore */ }
 			}, 3000);
-		} else if (!hasBuilding && pollHandle) {
+		} else if (!needsPoll && pollHandle) {
 			clearInterval(pollHandle);
 			pollHandle = null;
 		}
@@ -233,8 +254,13 @@
 					onAddApp={() => showNewApp = true}
 					onDeleteApp={async (name) => {
 						if (confirm(`Delete app "${name}"? This cannot be undone.`)) {
-							await api.deleteApp(projectName, name);
-							await load();
+							const prevApps = apps;
+							apps = apps.filter(a => a.metadata.name !== name);
+							try {
+								await api.deleteApp(projectName, name);
+							} catch {
+								apps = prevApps;
+							}
 						}
 					}}
 				/>
@@ -355,7 +381,12 @@
 </div>
 
 {#if selectedApp}
-	<AppDrawer project={projectName} appName={selectedApp} onClose={() => selectedApp = null} />
+	<AppDrawer
+		project={projectName}
+		appName={selectedApp}
+		liveApp={drawerLiveApp}
+		onClose={() => selectedApp = null}
+	/>
 {/if}
 
 {#if showNewApp}
