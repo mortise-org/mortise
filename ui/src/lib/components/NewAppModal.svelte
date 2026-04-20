@@ -156,6 +156,7 @@
 	// Supabase stack
 	let supabaseProgress = $state('');
 	let supabaseCreating = $state(false);
+	let supabaseServicesLoaded = $state(false);
 	let supabaseServices = $state<Array<{ name: string; image: string; required: boolean; selected: boolean }>>([]);
 
 	async function loadSupabaseServices() {
