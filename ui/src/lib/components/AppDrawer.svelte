@@ -13,10 +13,14 @@
 	let {
 		project,
 		appName,
+		livePhase = null,
+		liveError = null,
 		onClose
 	}: {
 		project: string;
 		appName: string;
+		livePhase?: string | null;
+		liveError?: string | null;
 		onClose: () => void;
 	} = $props();
 
@@ -60,22 +64,25 @@
 		}
 	}
 
-	// Fine-grained phase override for optimistic updates from user actions.
-	// Keeps re-renders isolated to the status chip/banner only — the full app
-	// object is never replaced by external inputs.
+	// Fine-grained phase: polled string + optimistic override.
+	// Primitive props are compared by value so livePhase="Building"==="Building"
+	// causes zero Svelte reconciliation. Only the chip/banner re-render on change.
+	// The app object (and therefore all tabs) is never replaced by polling.
 	let optimisticPhase = $state<string | null>(null);
-	const effectivePhase = $derived(optimisticPhase ?? app?.status?.phase ?? null);
+	const effectivePhase = $derived(optimisticPhase ?? livePhase ?? app?.status?.phase ?? null);
 
 	function applyOptimisticPhase(phase: string) {
 		optimisticPhase = phase;
 	}
 
 	const buildError = $derived(
-		effectivePhase === 'Failed' ? conditionMessage(app) : null
+		effectivePhase === 'Failed'
+			? (liveError ?? conditionMessage(app))
+			: null
 	);
 	const crashError = $derived(
 		effectivePhase === 'CrashLooping'
-			? (app?.status?.conditions?.find(c => c.type === 'PodHealthy' && c.status === 'False')?.message ?? null)
+			? (liveError ?? app?.status?.conditions?.find(c => c.type === 'PodHealthy' && c.status === 'False')?.message ?? null)
 			: null
 	);
 	const isBuilding = $derived(effectivePhase === 'Building');

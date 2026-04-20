@@ -72,6 +72,11 @@
 
 	let pollHandle: ReturnType<typeof setInterval> | null = null;
 
+	$effect(() => {
+		void selectedApp;
+		if (!loading) startPollingIfBuilding();
+	});
+
 	async function load() {
 		loading = true;
 		error = '';
@@ -94,12 +99,12 @@
 	}
 
 	function startPollingIfBuilding() {
-		const needsPoll = apps.some(a => isTransient(a.status?.phase));
+		const needsPoll = apps.some(a => isTransient(a.status?.phase)) || selectedApp !== null;
 		if (needsPoll && !pollHandle) {
 			pollHandle = setInterval(async () => {
 				try {
 					apps = await api.listApps(projectName);
-					if (!apps.some(a => isTransient(a.status?.phase))) {
+					if (!apps.some(a => isTransient(a.status?.phase)) && selectedApp === null) {
 						clearInterval(pollHandle!);
 						pollHandle = null;
 					}
@@ -365,9 +370,12 @@
 </div>
 
 {#if selectedApp}
+	{@const _drawerApp = apps.find(a => a.metadata.name === selectedApp)}
 	<AppDrawer
 		project={projectName}
 		appName={selectedApp}
+		livePhase={_drawerApp?.status?.phase ?? null}
+		liveError={_drawerApp?.status?.conditions?.find(c => c.status === 'False')?.message ?? null}
 		onClose={() => selectedApp = null}
 	/>
 {/if}
