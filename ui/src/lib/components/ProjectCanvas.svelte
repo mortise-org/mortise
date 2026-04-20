@@ -73,8 +73,9 @@
 		const seen = new Set<string>();
 		const out: Edge[] = [];
 		for (const edge of edges) {
-			if (edge.toProject && edge.toProject !== projectName) continue;
-			const id = `${edge.from}->${edge.to}`;
+			// Cross-project edges render as dashed + labeled; in-project edges render solid.
+			const crossProject = !!edge.toProject && edge.toProject !== projectName;
+			const id = `${edge.from}->${edge.to}${crossProject ? `@${edge.toProject}` : ''}`;
 			if (seen.has(id)) continue;
 			seen.add(id);
 			out.push({
@@ -83,7 +84,11 @@
 				target: edge.to,
 				type: 'smoothstep',
 				animated: true,
-				style: 'stroke: var(--color-surface-500); stroke-width: 1.5;'
+				label: crossProject ? edge.toProject : undefined,
+				labelStyle: crossProject ? 'fill: var(--color-info); font-size: 10px;' : undefined,
+				style: crossProject
+					? 'stroke: var(--color-info); stroke-width: 1.5; stroke-dasharray: 4 3;'
+					: 'stroke: var(--color-surface-500); stroke-width: 1.5;'
 			});
 		}
 		return out;

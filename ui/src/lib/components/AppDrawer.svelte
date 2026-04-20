@@ -1,9 +1,8 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
 	import { api } from '$lib/api';
 	import { store } from '$lib/store.svelte';
-	import type { App, ProjectEnvironment } from '$lib/types';
-	import { X, GitBranch, Container, Cloud, Loader2, ExternalLink, Rocket } from 'lucide-svelte';
+	import type { App } from '$lib/types';
+	import { X, GitBranch, Container, Cloud, ExternalLink, Rocket } from 'lucide-svelte';
 	import DeploymentsTab from './drawer/DeploymentsTab.svelte';
 	import VariablesTab from './drawer/VariablesTab.svelte';
 	import LogsTab from './drawer/LogsTab.svelte';
@@ -14,77 +13,51 @@
 		project,
 		appName,
 		liveApp = null,
-		initialEnv = '',
 		onClose
 	}: {
 		project: string;
 		appName: string;
 		liveApp?: App | null;
-		initialEnv?: string;
 		onClose: () => void;
 	} = $props();
 
-	// Selected env in the drawer. Seeds from navbar's currentEnv; user can
-	// switch within the drawer (DeploymentsTab / LogsTab) and that write
-	// propagates back to the store so the navbar stays in sync.
-	const selectedEnv = $derived(store.currentEnv(project) ?? initialEnv);
+	// Navbar is the single source of truth for env selection. Tabs read the
+	// current env from the store; the drawer does not own env state.
+	const selectedEnv = $derived(store.currentEnv(project) ?? '');
 	const envStatusEntry = $derived(liveApp?.status?.environments?.find((e) => e.name === selectedEnv));
 	const envSpecEntry = $derived(liveApp?.spec.environments?.find((e) => e.name === selectedEnv));
 	const envEnabled = $derived(envSpecEntry?.enabled !== false);
 	const envPhase = $derived.by<string | null>(() => {
-		const p = liveApp?.status?.phase ?? app?.status?.phase ?? null;
+		const p = liveApp?.status?.phase ?? null;
 		if (p === 'Ready' && envStatusEntry && envStatusEntry.readyReplicas === 0) return 'Deploying';
 		return p;
 	});
-
-	// app: stable snapshot set on mount, updated only by user actions (onAppUpdated).
-	// Never replaced by polling — so tabs never re-render from background polls.
-	let app = $state<App | null>(null);
-	let loading = $state(true);
-	let error = $state('');
-	let logsEverViewed = $state(false);
-	let projectEnvs = $state<ProjectEnvironment[]>([]);
-
-	onMount(async () => {
-		try {
-			app = await api.getApp(project, appName);
-			if (app?.status?.phase === 'Building' || app?.status?.phase === 'Failed') {
-				store.setDrawerTab('logs');
-			}
-		} catch (e) {
-			error = e instanceof Error ? e.message : 'Failed to load app';
-		} finally {
-			loading = false;
-		}
-		try {
-			projectEnvs = await api.listProjectEnvironments(project);
-		} catch {
-			projectEnvs = [];
-		}
-	});
-
-	function setEnv(name: string) {
-		store.setEnv(project, name);
-	}
 
 	let appURL = $state<string | null>(null);
 	let connecting = $state(false);
 	let reloading = $state(false);
 	let errorMsg = $state('');
+	let logsEverViewed = $state(false);
 
 	const envImage = $derived(
-		(liveApp ?? app)?.status?.environments?.find((e) => e.name === selectedEnv)?.currentImage ??
-		(liveApp ?? app)?.status?.environments?.[0]?.currentImage ?? null
+		liveApp?.status?.environments?.find((e) => e.name === selectedEnv)?.currentImage ??
+		liveApp?.status?.environments?.[0]?.currentImage ?? null
 	);
 
+	$effect(() => {
+		if (liveApp?.status?.phase === 'Building' || liveApp?.status?.phase === 'Failed') {
+			if (store.drawerTab !== 'logs') store.setDrawerTab('logs');
+		}
+	});
+
 	async function connectApp() {
-		if (!app) return;
+		if (!liveApp) return;
 		connecting = true;
 		try {
-			const resp = await api.connectApp(project, app.metadata.name);
+			const resp = await api.connectApp(project, liveApp.metadata.name);
 			appURL = resp.url;
 			window.open(resp.url, '_blank');
-		} catch (e) {
+		} catch {
 			// ignore
 		} finally {
 			connecting = false;
@@ -113,13 +86,13 @@
 	}
 
 	async function doRebuild() {
-		if (!app) return;
+		if (!liveApp) return;
 		errorMsg = '';
-		const prevPhase = app.status?.phase;
+		const prevPhase = liveApp.status?.phase;
 		applyOptimisticPhase('Building');
 		reloading = true;
 		try {
-			await api.rebuild(project, app.metadata.name);
+			await api.rebuild(project, liveApp.metadata.name);
 		} catch (e) {
 			errorMsg = e instanceof Error ? e.message : 'Rebuild failed';
 			if (prevPhase) applyOptimisticPhase(prevPhase);
@@ -129,15 +102,15 @@
 	}
 
 	async function doRedeploy() {
-		if (!app || !envImage) return;
-		const envName = selectedEnv || app.spec.environments?.[0]?.name;
+		if (!liveApp || !envImage) return;
+		const envName = selectedEnv || liveApp.spec.environments?.[0]?.name;
 		if (!envName) return;
 		errorMsg = '';
-		const prevPhase = app.status?.phase;
+		const prevPhase = liveApp.status?.phase;
 		applyOptimisticPhase('Deploying');
 		reloading = true;
 		try {
-			await api.deploy(project, app.metadata.name, envName, envImage);
+			await api.deploy(project, liveApp.metadata.name, envName, envImage);
 		} catch (e) {
 			errorMsg = e instanceof Error ? e.message : 'Redeploy failed';
 			if (prevPhase) applyOptimisticPhase(prevPhase);
@@ -146,17 +119,6 @@
 		}
 	}
 
-	const liveConditions = $derived(liveApp?.status?.conditions ?? app?.status?.conditions ?? []);
-	const buildError = $derived(
-		effectivePhase === 'Failed'
-			? (liveConditions.find(c => c.status === 'False')?.message ?? null)
-			: null
-	);
-	const crashError = $derived(
-		effectivePhase === 'CrashLooping'
-			? (liveConditions.find(c => c.type === 'PodHealthy' && c.status === 'False')?.message ?? null)
-			: null
-	);
 	const isBuilding = $derived(effectivePhase === 'Building');
 
 	// Build timer — synced to BuildStarted condition timestamp from k8s.
@@ -165,7 +127,7 @@
 
 	$effect(() => {
 		if (isBuilding && !buildTimerHandle) {
-			const cond = app?.status?.conditions?.find(c => c.type === 'BuildStarted' && c.status === 'True');
+			const cond = liveApp?.status?.conditions?.find(c => c.type === 'BuildStarted' && c.status === 'True');
 			const start = cond?.lastTransitionTime ? new Date(cond.lastTransitionTime).getTime() : Date.now();
 			const tick = () => {
 				const s = Math.floor((Date.now() - start) / 1000);
@@ -204,19 +166,16 @@
 	<!-- Header -->
 	<div class="flex shrink-0 items-center justify-between border-b border-surface-600 px-4 py-3">
 		<div class="flex items-center gap-2">
-			{#if app}
-				{#if app.spec.source.type === 'git'}
+			{#if liveApp}
+				{#if liveApp.spec.source.type === 'git'}
 					<GitBranch class="h-4 w-4 text-gray-400" />
-				{:else if app.spec.source.type === 'image'}
+				{:else if liveApp.spec.source.type === 'image'}
 					<Container class="h-4 w-4 text-gray-400" />
 				{:else}
 					<Cloud class="h-4 w-4 text-gray-400" />
 				{/if}
 			{/if}
 			<h2 class="text-sm font-semibold text-white">{appName}</h2>
-			{#if selectedEnv}
-				<span class="rounded-full px-2 py-0.5 text-xs font-medium text-gray-300 bg-surface-700">{selectedEnv}</span>
-			{/if}
 			{#if !envEnabled}
 				<span class="rounded-full bg-surface-700 px-2 py-0.5 text-xs font-medium text-gray-400">Disabled</span>
 			{:else if effectivePhase}
@@ -226,22 +185,22 @@
 			{/if}
 		</div>
 		<div class="flex items-center gap-2">
-			{#if app && app.spec.source.type === 'git' && effectivePhase !== 'Building'}
+			{#if liveApp && liveApp.spec.source.type === 'git' && effectivePhase !== 'Building'}
 				<button
 					type="button"
 					onclick={doRebuild}
-					disabled={reloading}
+					disabled={reloading || !envEnabled}
 					class="flex items-center gap-1 rounded-md px-2 py-1 text-xs text-gray-400 hover:bg-surface-700 hover:text-white transition-colors disabled:opacity-50"
 				>
 					<Rocket class="h-3 w-3" />
 					{reloading ? 'Rebuilding…' : 'Rebuild'}
 				</button>
 			{/if}
-			{#if app && envImage}
+			{#if liveApp && envImage}
 				<button
 					type="button"
 					onclick={doRedeploy}
-					disabled={reloading || effectivePhase === 'Building' || effectivePhase === 'Deploying'}
+					disabled={reloading || !envEnabled || effectivePhase === 'Building' || effectivePhase === 'Deploying'}
 					class="flex items-center gap-1 rounded-md px-2 py-1 text-xs text-gray-400 hover:bg-surface-700 hover:text-white transition-colors disabled:opacity-50"
 				>
 					{reloading ? 'Redeploying…' : 'Redeploy'}
@@ -298,49 +257,38 @@
 
 	<!-- Tab content -->
 	<div class="flex-1 overflow-y-auto px-4 pb-4 {store.drawerTab === 'logs' ? 'pt-0' : 'pt-4'}">
-		{#if loading}
+		{#if errorMsg}
+			<div class="rounded-md bg-danger/10 px-3 py-2 text-sm text-danger mb-2">{errorMsg}</div>
+		{/if}
+		{#if !liveApp}
 			<div class="space-y-3 animate-pulse">
 				<div class="h-6 w-40 rounded bg-surface-700"></div>
 				<div class="h-24 rounded-lg bg-surface-700"></div>
 				<div class="h-12 rounded-lg bg-surface-700"></div>
 				<div class="h-32 rounded-lg bg-surface-700"></div>
 			</div>
-		{:else if error}
-			<div class="rounded-md bg-danger/10 px-3 py-2 text-sm text-danger">{error}</div>
-		{:else if app}
+		{:else}
 			{#if store.drawerTab === 'deployments'}
 				<DeploymentsTab
 					{project}
-					{app}
-					{projectEnvs}
-					selectedEnv={selectedEnv}
-					onSelectEnv={setEnv}
+					app={liveApp}
 					phase={effectivePhase}
 					onOptimisticPhase={applyOptimisticPhase}
 				/>
 			{:else if store.drawerTab === 'variables'}
-				<VariablesTab {project} {app} {projectEnvs} onAppUpdated={(updated) => { app = updated; }} />
+				<VariablesTab {project} app={liveApp} />
 			{:else if store.drawerTab === 'metrics'}
-				<MetricsTab {app} />
+				<MetricsTab app={liveApp} />
 			{:else if store.drawerTab === 'settings'}
 				<SettingsTab
 					{project}
-					{app}
-					{projectEnvs}
-					selectedEnv={selectedEnv}
-					onAppUpdated={(updated) => { app = updated; }}
+					app={liveApp}
 					onAppDeleted={() => onClose()}
 				/>
 			{/if}
 			{#if logsEverViewed || store.drawerTab === 'logs'}
 				<div class="{store.drawerTab !== 'logs' ? 'hidden' : ''}">
-					<LogsTab
-						{project}
-						{app}
-						{projectEnvs}
-						selectedEnv={selectedEnv}
-						onSelectEnv={setEnv}
-					/>
+					<LogsTab {project} app={liveApp} />
 				</div>
 			{/if}
 		{/if}

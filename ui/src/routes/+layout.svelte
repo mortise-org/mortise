@@ -10,7 +10,7 @@
 	import { Folder, Puzzle, Settings, LayoutDashboard, List, Bell, Activity, User, LogOut, ChevronDown, Users } from 'lucide-svelte';
 	import ActivityRail from '$lib/components/ActivityRail.svelte';
 	import NotificationDropdown from '$lib/components/NotificationDropdown.svelte';
-	import type { EnvHealth, ProjectEnvironment } from '$lib/types';
+	import type { EnvHealth } from '$lib/types';
 
 	let { children } = $props();
 
@@ -48,13 +48,27 @@
 	let notificationsEl: HTMLDivElement | null = $state(null);
 	let envSwitcherOpen = $state(false);
 	let envSwitcherEl: HTMLDivElement | null = $state(null);
-	let projectEnvs = $state<ProjectEnvironment[]>([]);
+
+	// Keep the last-rendered envs around during project switches so the navbar
+	// env chip doesn't flicker to empty while the new project's envs are in flight.
+	let lastRenderedEnvs = $state<typeof store.projectEnvs[string]>([]);
+	const projectEnvs = $derived.by(() => {
+		if (!activeProject) return [] as typeof store.projectEnvs[string];
+		const cached = store.projectEnvs[activeProject];
+		if (cached && cached.length > 0) return cached;
+		return lastRenderedEnvs;
+	});
+	$effect(() => {
+		if (!activeProject) return;
+		const cached = store.projectEnvs[activeProject];
+		if (cached && cached.length > 0) lastRenderedEnvs = cached;
+	});
 
 	const currentEnv = $derived.by<string>(() => {
 		if (!activeProject) return '';
 		const stored = store.currentEnv(activeProject);
 		if (stored && projectEnvs.some((e) => e.name === stored)) return stored;
-		return projectEnvs[0]?.name ?? '';
+		return projectEnvs[0]?.name ?? stored ?? '';
 	});
 
 	const currentEnvHealth = $derived<EnvHealth>(
@@ -123,22 +137,19 @@
 	// the URL's ?env= when present.
 	$effect(() => {
 		const proj = urlProject;
-		if (!proj || !store.token) {
-			projectEnvs = [];
-			return;
-		}
-		api.listProjectEnvironments(proj)
+		if (!proj || !store.token) return;
+		store
+			.loadProjectEnvs(proj)
 			.then((envs) => {
-				projectEnvs = [...envs].sort((a, b) => a.displayOrder - b.displayOrder);
 				const urlEnv = page.url.searchParams.get('env');
-				if (urlEnv && projectEnvs.some((e) => e.name === urlEnv)) {
+				if (urlEnv && envs.some((e) => e.name === urlEnv)) {
 					store.setEnv(proj, urlEnv);
-				} else if (!store.currentEnv(proj) && projectEnvs[0]) {
-					store.setEnv(proj, projectEnvs[0].name);
+				} else if (!store.currentEnv(proj) && envs[0]) {
+					store.setEnv(proj, envs[0].name);
 				}
 			})
 			.catch(() => {
-				projectEnvs = [];
+				/* keep previous envs on failure */
 			});
 	});
 

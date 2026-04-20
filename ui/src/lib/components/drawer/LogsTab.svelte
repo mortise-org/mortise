@@ -1,27 +1,18 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { api } from '$lib/api';
+	import { store } from '$lib/store.svelte';
 	import { Loader2 } from 'lucide-svelte';
-	import type { App, BuildLogsResponse, LogLineEvent, Pod, ProjectEnvironment } from '$lib/types';
+	import type { App, BuildLogsResponse, LogLineEvent, Pod } from '$lib/types';
 	import LogLine from '$lib/components/LogLine.svelte';
 
 	let {
 		project,
-		app,
-		projectEnvs = [],
-		selectedEnv: selectedEnvProp = '',
-		onSelectEnv
+		app
 	}: {
 		project: string;
 		app: App;
-		projectEnvs?: ProjectEnvironment[];
-		selectedEnv?: string;
-		onSelectEnv?: (name: string) => void;
 	} = $props();
-
-	function chooseEnv(name: string) {
-		onSelectEnv?.(name);
-	}
 
 	// --- Sub-tabs ---
 	type SubTab = 'live' | 'build';
@@ -38,7 +29,7 @@
 
 	// --- Live sub-tab state ---
 	const selectedEnv = $derived(
-		selectedEnvProp || projectEnvs[0]?.name || app.spec.environments?.[0]?.name || 'production'
+		store.currentEnv(project) || app.spec.environments?.[0]?.name || 'production'
 	);
 	let pods = $state<Pod[]>([]);
 	let podsLoaded = $state(false);
@@ -337,23 +328,6 @@
 	</div>
 
 	{#if subTab === 'live'}
-		<!-- Header row 1: env switcher (multi-env only) -->
-		{#if projectEnvs.length > 1}
-			<div class="flex gap-1">
-				{#each projectEnvs as env}
-					<button
-						type="button"
-						onclick={() => chooseEnv(env.name)}
-						class="rounded px-2.5 py-1 text-xs transition-colors {selectedEnv === env.name
-							? 'bg-surface-600 text-white'
-							: 'text-gray-400 hover:text-white'}"
-					>
-						{env.name}
-					</button>
-				{/each}
-			</div>
-		{/if}
-
 		<!-- Controls row: previous (left) + live tail / copy / clear (right) -->
 		<div class="flex items-center justify-between gap-2">
 			<div class="flex gap-1">

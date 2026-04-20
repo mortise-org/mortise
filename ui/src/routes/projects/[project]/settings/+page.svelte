@@ -3,6 +3,7 @@
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
   import { api } from '$lib/api';
+  import { store } from '$lib/store.svelte';
   import type { Project, ProjectMember, InviteResponse, ProjectEnvironment, App, EnvHealth } from '$lib/types';
   import { Plus, Trash2, Copy, Check, ArrowUp, ArrowDown } from 'lucide-svelte';
 
@@ -40,7 +41,7 @@
     loadingEnvs = true;
     envError = '';
     try {
-      envs = await api.listProjectEnvironments(projectName);
+      envs = await store.loadProjectEnvs(projectName);
     } catch (e) {
       envError = e instanceof Error ? e.message : 'Failed to load environments';
       envs = [];
@@ -62,8 +63,8 @@
     }
     savingEnv = true;
     try {
-      const created = await api.createProjectEnvironment(projectName, name);
-      envs = [...envs, created];
+      await api.createProjectEnvironment(projectName, name);
+      envs = await store.invalidateProjectEnvs(projectName);
       newEnvName = '';
       showAddEnv = false;
     } catch (e) {
@@ -83,6 +84,7 @@
     envs = next.map((e, i) => ({ ...e, displayOrder: i }));
     try {
       await api.updateProjectEnvironment(projectName, name, { displayOrder: target });
+      envs = await store.invalidateProjectEnvs(projectName);
     } catch (e) {
       envs = prev;
       envError = e instanceof Error ? e.message : 'Failed to reorder';
@@ -108,7 +110,7 @@
     const name = envDeleteTarget.name;
     try {
       await api.deleteProjectEnvironment(projectName, name);
-      envs = envs.filter(e => e.name !== name);
+      envs = await store.invalidateProjectEnvs(projectName);
       envDeleteTarget = null;
       envDeleteAffected = [];
     } catch (e) {

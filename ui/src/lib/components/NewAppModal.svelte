@@ -320,9 +320,23 @@
 
 	function buildSpec(): AppSpec {
 		const filteredUserEnv: Array<{ name: string; value: string }> = userEnvVars.filter(e => e.name.trim() !== '');
-		const baseEnv: AppSpec['environments'] = [{ name: 'production', replicas: 1, ...(domain ? { domain } : {}) }];
+		// Env override name: use the currently-active env so any per-env overrides (domain, env vars)
+		// land on the env the user is looking at. If none is set yet, fall back to the project's first
+		// env, else "production".
+		const overrideEnvName = store.currentEnv(project)
+			?? store.projectEnvs[project]?.[0]?.name
+			?? 'production';
+		const hasOverride = !!domain || filteredUserEnv.length > 0 || appKind === 'cron';
+		const baseOverride = hasOverride
+			? { name: overrideEnvName, ...(domain ? { domain } : {}) }
+			: null;
 
 		if (selectedType === 'git') {
+			const envs = appKind === 'cron'
+				? [{ name: overrideEnvName, replicas: 0, annotations: { 'mortise.dev/schedule': schedule }, ...(domain ? { domain } : {}) }]
+				: baseOverride
+					? [{ ...baseOverride, ...(filteredUserEnv.length ? { env: filteredUserEnv } : {}) }]
+					: undefined;
 			return {
 				source: {
 					type: 'git' as const,
@@ -341,23 +355,26 @@
 					}
 				},
 				network: { public: true },
-				environments: appKind === 'cron'
-					? [{ name: 'production', replicas: 0, annotations: { 'mortise.dev/schedule': schedule }, ...(domain ? { domain } : {}) }]
-					: [{ ...baseEnv[0], ...(filteredUserEnv.length ? { env: filteredUserEnv } : {}) }],
+				...(envs ? { environments: envs } : {}),
 				...(appKind === 'cron' ? { kind: 'cron' as const } : {})
 			} as AppSpec;
 		}
 		if (selectedType === 'image' || selectedType === 'database' || selectedType === 'template') {
 			const isDb = selectedType === 'database' && selectedDbTemplate;
+			const combinedEnv = [
+				...(isDb ? selectedDbTemplate!.env : []),
+				...filteredUserEnv
+			].filter(e => e.name) as Array<{ name: string; value: string }>;
+			const hasImageOverride = !!domain || combinedEnv.length > 0 || appKind === 'cron';
 			const envs = appKind === 'cron'
-				? [{ name: 'production', replicas: 0, annotations: { 'mortise.dev/schedule': schedule }, ...(domain ? { domain } : {}) }]
-				: [{
-					...baseEnv[0],
-					env: [
-						...(isDb ? selectedDbTemplate!.env : []),
-						...filteredUserEnv
-					].filter(e => e.name) as Array<{ name: string; value: string }>
-				}];
+				? [{ name: overrideEnvName, replicas: 0, annotations: { 'mortise.dev/schedule': schedule }, ...(domain ? { domain } : {}) }]
+				: hasImageOverride
+					? [{
+						name: overrideEnvName,
+						...(domain ? { domain } : {}),
+						...(combinedEnv.length ? { env: combinedEnv } : {})
+					}]
+					: undefined;
 			return {
 				source: {
 					type: 'image' as const,
@@ -368,7 +385,7 @@
 					public: selectedType === 'image',
 					...(isDb ? { port: selectedDbTemplate!.port } : {})
 				},
-				environments: envs,
+				...(envs ? { environments: envs } : {}),
 				...(appKind === 'cron' ? { kind: 'cron' as const } : {})
 			} as AppSpec;
 		}
@@ -381,14 +398,14 @@
 				},
 				network: { public: true },
 				credentials: externalCredentials.filter(c => c.name),
-				environments: baseEnv
+				...(baseOverride ? { environments: [baseOverride] } : {})
 			} as AppSpec;
 		}
 		// empty
 		return {
 			source: { type: 'image', image: '' },
 			network: { public: true },
-			environments: baseEnv
+			...(baseOverride ? { environments: [baseOverride] } : {})
 		};
 	}
 

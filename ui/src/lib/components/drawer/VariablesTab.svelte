@@ -1,23 +1,20 @@
 <script lang="ts">
 	import { api } from '$lib/api';
-	import type { App, ProjectEnvironment } from '$lib/types';
+	import { store } from '$lib/store.svelte';
+	import type { App } from '$lib/types';
 	import BindingsPicker from '$lib/components/BindingsPicker.svelte';
 	import { Plus, Trash2, Link, Upload, FileText, ChevronDown, X } from 'lucide-svelte';
 
 	let {
 		project,
-		app,
-		projectEnvs = [],
-		onAppUpdated
+		app
 	}: {
 		project: string;
 		app: App;
-		projectEnvs?: ProjectEnvironment[];
-		onAppUpdated: (app: App) => void;
 	} = $props();
 
-	// Per-environment section state: vars, loading, saving, error, editedKeys, originalVars
-	// Keyed by env name, plus 'shared' for the shared vars section.
+	// Per-section state: vars, loading, saving, error, editedKeys, originalVars
+	// Keyed by env name for the active env, and 'shared' for shared vars.
 	type SectionState = {
 		vars: Record<string, string>;
 		loading: boolean;
@@ -43,10 +40,8 @@
 		dismissTimer = setTimeout(() => { restartTriggered = false; }, 4000);
 	}
 
-	const envNames = $derived(
-		projectEnvs.length > 0
-			? projectEnvs.map(e => e.name)
-			: (app.spec.environments?.map(e => e.name) ?? ['production'])
+	const activeEnv = $derived(
+		store.currentEnv(project) || app.spec.environments?.[0]?.name || 'production'
 	);
 
 	function makeSection(expanded: boolean): SectionState {
@@ -67,24 +62,22 @@
 		};
 	}
 
-	// Build initial section map: first env expanded, rest collapsed; shared always expanded.
-	let sections = $state<Record<string, SectionState>>(
-		Object.fromEntries([
-			...envNames.map((name, i) => [name, makeSection(i === 0)]),
-			['shared', makeSection(true)]
-		])
-	);
+	let sections = $state<Record<string, SectionState>>({
+		shared: makeSection(true)
+	});
 
 	const shared = $derived(sections['shared']);
 
-	// Load env vars for each env on mount.
+	// Load the active env's overrides (and shared vars) whenever the env changes.
 	$effect(() => {
-		for (const name of envNames) {
-			if (!sections[name]) {
-				sections[name] = makeSection(false);
-			}
-			void loadEnv(name);
+		const env = activeEnv;
+		if (!env) return;
+		if (!sections[env]) {
+			sections[env] = makeSection(true);
+		} else {
+			sections[env].expanded = true;
 		}
+		void loadEnv(env);
 		loadShared();
 	});
 
@@ -254,13 +247,10 @@
 		}
 	}
 
-	// Write shared vars via updateApp (spec patch).
 	async function saveSharedVars(vars: Record<string, string>) {
 		const plainSpec = JSON.parse(JSON.stringify(app.spec));
 		plainSpec.sharedVars = Object.entries(vars).map(([name, value]) => ({ name, value }));
-		const updated = await api.updateApp(project, app.metadata.name, plainSpec);
-		onAppUpdated(updated);
-		// Sync local state from updated app.
+		await api.updateApp(project, app.metadata.name, plainSpec);
 		sections['shared'].vars = vars;
 		sections['shared'].originalVars = { ...vars };
 		sections['shared'].editedKeys = new Set();
@@ -285,41 +275,41 @@
 		</button>
 	</div>
 {/if}
-	<!-- Environment sections -->
-	{#each envNames as envName}
-		{@const s = sections[envName] ?? makeSection(false)}
+	<!-- Active environment section -->
+	{#if activeEnv}
+		{@const s = sections[activeEnv] ?? makeSection(true)}
 		<div class="rounded-lg border border-surface-600 bg-surface-900">
 			<!-- Section header -->
 			<div class="flex items-center justify-between px-3 py-2.5">
 				<button
 					type="button"
-					onclick={() => toggleExpanded(envName)}
+					onclick={() => toggleExpanded(activeEnv)}
 					class="flex items-center gap-2 text-sm font-medium text-white hover:text-gray-300 flex-1 text-left"
 				>
 					<ChevronDown class="h-4 w-4 shrink-0 transition-transform {s.expanded ? 'rotate-0' : '-rotate-90'}" />
-					{envName}
+					{activeEnv}
 				</button>
 				{#if s.expanded}
 					<div class="flex items-center gap-2">
 						<!-- Mode toggle -->
 						<div class="flex gap-1">
-							<button type="button" onclick={() => { sections[envName].rawMode = false; }}
+							<button type="button" onclick={() => { sections[activeEnv].rawMode = false; }}
 								class="{!s.rawMode ? 'text-white bg-surface-700' : 'text-gray-500 hover:text-white'} text-xs px-2 py-1 rounded">
 								<FileText class="inline h-3 w-3 mr-1" />Table
 							</button>
-							<button type="button" onclick={() => { sections[envName].rawMode = true; }}
+							<button type="button" onclick={() => { sections[activeEnv].rawMode = true; }}
 								class="{s.rawMode ? 'text-white bg-surface-700' : 'text-gray-500 hover:text-white'} text-xs px-2 py-1 rounded">
 								<Upload class="inline h-3 w-3 mr-1" />Raw
 							</button>
 						</div>
 						{#if s.editedKeys.size > 0 && !s.rawMode}
-							<button type="button" onclick={() => saveEdited(envName)} disabled={s.saving}
+							<button type="button" onclick={() => saveEdited(activeEnv)} disabled={s.saving}
 								class="rounded-md bg-accent px-3 py-1 text-xs font-medium text-white hover:bg-accent-hover disabled:opacity-50">
 								{s.saving ? 'Saving...' : `Save ${s.editedKeys.size} change${s.editedKeys.size === 1 ? '' : 's'}`}
 							</button>
 						{/if}
 						{#if !s.rawMode}
-							<button type="button" onclick={() => { sections[envName].showNewRow = true; }}
+							<button type="button" onclick={() => { sections[activeEnv].showNewRow = true; }}
 								class="flex items-center gap-1 rounded-md border border-surface-600 px-2 py-1 text-xs text-gray-400 hover:bg-surface-700 hover:text-white">
 								<Plus class="h-3.5 w-3.5" /> New variable
 							</button>
@@ -339,35 +329,33 @@
 							<div class="inline-block h-4 w-4 animate-spin rounded-full border-2 border-gray-500 border-t-transparent"></div>
 						</div>
 					{:else if s.rawMode}
-						<!-- Raw / Import mode -->
 						<div class="p-3 space-y-3">
 							<p class="text-xs text-gray-500">Paste .env format below. Existing vars will be merged.</p>
-							<textarea bind:value={sections[envName].rawText} rows={8}
+							<textarea bind:value={sections[activeEnv].rawText} rows={8}
 								placeholder="DATABASE_URL=postgres://...&#10;REDIS_URL=redis://..."
 								class="w-full resize-y rounded-md border border-surface-600 bg-surface-700 px-3 py-2 font-mono text-xs text-white placeholder-gray-500 outline-none focus:border-accent">
 							</textarea>
 							<div class="flex gap-2">
-								<button type="button" onclick={() => importRaw(envName)} disabled={!s.rawText.trim() || s.saving}
+								<button type="button" onclick={() => importRaw(activeEnv)} disabled={!s.rawText.trim() || s.saving}
 									class="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white hover:bg-accent-hover disabled:opacity-50">
 									{s.saving ? 'Importing...' : 'Import'}
 								</button>
-								<button type="button" onclick={() => { sections[envName].rawMode = false; }}
+								<button type="button" onclick={() => { sections[activeEnv].rawMode = false; }}
 									class="rounded-md border border-surface-600 px-3 py-1.5 text-sm text-gray-400 hover:bg-surface-700 hover:text-white">
 									Cancel
 								</button>
 							</div>
 						</div>
 					{:else}
-						<!-- New var row -->
 						{#if s.showNewRow}
 							<div class="border-b border-surface-600 px-3 py-2.5 space-y-2 bg-surface-700/30">
 								<div class="flex gap-2">
-									<input type="text" bind:value={sections[envName].newKey} placeholder="VARIABLE_NAME"
+									<input type="text" bind:value={sections[activeEnv].newKey} placeholder="VARIABLE_NAME"
 										class="flex-1 rounded-md border border-surface-600 bg-surface-800 px-3 py-1.5 font-mono text-sm text-white placeholder-gray-500 outline-none focus:border-accent" />
 									<div class="relative flex-1">
-										<input type="text" bind:value={sections[envName].newValue} placeholder="value or binding ref"
+										<input type="text" bind:value={sections[activeEnv].newValue} placeholder="value or binding ref"
 											class="w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-1.5 text-sm text-white placeholder-gray-500 outline-none focus:border-accent pr-8" />
-										<button type="button" onclick={() => { sections[envName].showPicker = !sections[envName].showPicker; }}
+										<button type="button" onclick={() => { sections[activeEnv].showPicker = !sections[activeEnv].showPicker; }}
 											class="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500 hover:text-accent" title="Insert reference">
 											<Link class="h-3.5 w-3.5" />
 										</button>
@@ -375,18 +363,18 @@
 											<BindingsPicker
 												{project}
 												{app}
-												onInsert={(ref) => insertRef(envName, ref)}
-												onClose={() => { sections[envName].showPicker = false; }}
+												onInsert={(ref) => insertRef(activeEnv, ref)}
+												onClose={() => { sections[activeEnv].showPicker = false; }}
 											/>
 										{/if}
 									</div>
 								</div>
 								<div class="flex gap-2">
-									<button type="button" onclick={() => addVar(envName)} disabled={!s.newKey.trim() || s.saving}
+									<button type="button" onclick={() => addVar(activeEnv)} disabled={!s.newKey.trim() || s.saving}
 										class="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white hover:bg-accent-hover disabled:opacity-50">
 										{s.saving ? 'Adding...' : 'Add'}
 									</button>
-									<button type="button" onclick={() => { sections[envName].showNewRow = false; sections[envName].newKey = ''; sections[envName].newValue = ''; }}
+									<button type="button" onclick={() => { sections[activeEnv].showNewRow = false; sections[activeEnv].newKey = ''; sections[activeEnv].newValue = ''; }}
 										class="rounded-md border border-surface-600 px-3 py-1.5 text-sm text-gray-400 hover:bg-surface-700 hover:text-white">
 										Cancel
 									</button>
@@ -394,7 +382,6 @@
 							</div>
 						{/if}
 
-						<!-- Variable rows -->
 						{#if Object.keys(s.vars).length === 0 && !s.showNewRow}
 							<div class="py-8 text-center text-xs text-gray-500">
 								No variables set. Click "New variable" to add one.
@@ -414,11 +401,11 @@
 										</div>
 										<input type="text"
 											value={value}
-											oninput={(e) => handleValueEdit(envName, varKey, (e.target as HTMLInputElement).value)}
+											oninput={(e) => handleValueEdit(activeEnv, varKey, (e.target as HTMLInputElement).value)}
 											class="mt-1 w-full rounded border border-transparent bg-transparent px-1 py-0.5 font-mono text-xs text-gray-400 outline-none focus:border-surface-500 focus:bg-surface-700 hover:border-surface-600"
 											placeholder="(empty)" />
 									</div>
-									<button type="button" onclick={() => deleteVar(envName, varKey)}
+									<button type="button" onclick={() => deleteVar(activeEnv, varKey)}
 										class="shrink-0 rounded p-1.5 text-gray-600 opacity-0 group-hover:opacity-100 hover:bg-surface-600 hover:text-danger transition-all">
 										<Trash2 class="h-3.5 w-3.5" />
 									</button>
@@ -429,7 +416,7 @@
 				</div>
 			{/if}
 		</div>
-	{/each}
+	{/if}
 
 	<!-- Shared variables section -->
 	<div class="rounded-lg border border-surface-600 bg-surface-900">
@@ -489,7 +476,6 @@
 					</div>
 				</div>
 			{:else}
-				<!-- New var row for shared -->
 				{#if shared.showNewRow}
 					<div class="border-b border-surface-600 px-3 py-2.5 space-y-2 bg-surface-700/30">
 						<div class="flex gap-2">
@@ -525,7 +511,6 @@
 					</div>
 				{/if}
 
-				<!-- Shared variable rows -->
 				{#if Object.keys(shared.vars).length === 0 && !shared.showNewRow}
 					<div class="py-8 text-center text-xs text-gray-500">
 						No vars set here yet. Click "New shared variable" to add one.

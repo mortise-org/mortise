@@ -1,31 +1,23 @@
 <script lang="ts">
 	import { api } from '$lib/api';
-	import type { App, ProjectEnvironment } from '$lib/types';
+	import { store } from '$lib/store.svelte';
+	import type { App } from '$lib/types';
 
 	let {
 		project,
 		app,
-		projectEnvs = [],
-		selectedEnv: selectedEnvProp = '',
-		onSelectEnv,
 		phase: phaseProp = null,
 		onOptimisticPhase
 	}: {
 		project: string;
 		app: App;
-		projectEnvs?: ProjectEnvironment[];
-		selectedEnv?: string;
-		onSelectEnv?: (name: string) => void;
 		phase?: string | null;
 		onOptimisticPhase?: (phase: string) => void;
 	} = $props();
 
 	const selectedEnv = $derived(
-		selectedEnvProp || projectEnvs[0]?.name || app.spec.environments?.[0]?.name || 'production'
+		store.currentEnv(project) || app.spec.environments?.[0]?.name || 'production'
 	);
-	function chooseEnv(name: string) {
-		onSelectEnv?.(name);
-	}
 	let reloading = $state(false);
 	let errorMsg = $state('');
 
@@ -80,29 +72,6 @@
 			reloading = false;
 		}
 	}
-
-	let showPromoteModal = $state(false);
-	let promoteTarget = $state('');
-
-	async function doPromote() {
-		if (!promoteTarget) return;
-		reloading = true;
-		errorMsg = '';
-		const prevPhase = app.status?.phase;
-		onOptimisticPhase?.('Deploying');
-		showPromoteModal = false;
-		try {
-			await api.promote(project, app.metadata.name, selectedEnv, promoteTarget);
-			promoteTarget = '';
-		} catch (e) {
-			errorMsg = e instanceof Error ? e.message : 'Promote failed';
-			showPromoteModal = true;
-			if (prevPhase) onOptimisticPhase?.(prevPhase);
-		} finally {
-			reloading = false;
-		}
-	}
-
 </script>
 
 <div class="space-y-4">
@@ -115,23 +84,6 @@
 
 	{#if errorMsg}
 		<div class="rounded-md bg-danger/10 px-3 py-2 text-xs text-danger">{errorMsg}</div>
-	{/if}
-
-	<!-- Environment tabs -->
-	{#if projectEnvs.length > 1}
-		<div class="flex gap-1 border-b border-surface-600 pb-0">
-			{#each projectEnvs as env}
-				<button
-					type="button"
-					onclick={() => chooseEnv(env.name)}
-					class="px-3 py-1.5 text-xs transition-colors {selectedEnv === env.name
-						? 'border-b-2 border-accent text-white'
-						: 'text-gray-400 hover:text-white'}"
-				>
-					{env.name}
-				</button>
-			{/each}
-		</div>
 	{/if}
 
 	<!-- Current deploy -->
@@ -154,16 +106,6 @@
 						class="rounded-md bg-surface-700 px-2 py-1 text-xs text-gray-300 transition-colors hover:bg-surface-600 hover:text-white disabled:opacity-40"
 					>
 						Rollback
-					</button>
-				{/if}
-				{#if projectEnvs.length > 1}
-					<button
-						type="button"
-						onclick={() => showPromoteModal = true}
-						disabled={reloading || !envStatus?.currentImage}
-						class="flex items-center gap-1 rounded-md bg-surface-700 px-2 py-1 text-xs text-gray-300 transition-colors hover:bg-surface-600 hover:text-white disabled:opacity-40"
-					>
-						Promote →
 					</button>
 				{/if}
 			</div>
@@ -212,30 +154,6 @@
 	{:else if !envStatus?.currentImage}
 		<div class="rounded-lg border border-dashed border-surface-600 p-8 text-center">
 			<p class="text-sm text-gray-500">No deployments yet</p>
-		</div>
-	{/if}
-
-	{#if showPromoteModal}
-		<div class="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-			<div class="w-80 rounded-lg border border-surface-600 bg-surface-800 p-5">
-				<h3 class="mb-3 text-sm font-semibold text-white">Promote to environment</h3>
-				<select bind:value={promoteTarget}
-					class="w-full rounded-md border border-surface-600 bg-surface-700 px-3 py-2 text-sm text-white outline-none focus:border-accent">
-					{#each projectEnvs.filter(e => e.name !== selectedEnv) as env}
-						<option value={env.name}>{env.name}</option>
-					{/each}
-				</select>
-				<div class="mt-3 flex justify-end gap-2">
-					<button type="button" onclick={() => showPromoteModal = false}
-						class="rounded-md border border-surface-600 px-3 py-1.5 text-xs text-gray-400 hover:text-white">
-						Cancel
-					</button>
-					<button type="button" onclick={doPromote} disabled={reloading || !promoteTarget}
-						class="rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-white hover:bg-accent-hover disabled:opacity-50">
-						{reloading ? 'Promoting...' : 'Promote'}
-					</button>
-				</div>
-			</div>
 		</div>
 	{/if}
 </div>

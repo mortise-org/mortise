@@ -1,25 +1,21 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { api } from '$lib/api';
-	import type { App, AppSpec, DeployToken, DomainsResponse, SecretMount, ProjectEnvironment } from '$lib/types';
+	import { store } from '$lib/store.svelte';
+	import type { App, AppSpec, DeployToken, DomainsResponse, SecretMount } from '$lib/types';
 	import { Copy, Plus, Trash2, Link, ChevronDown } from 'lucide-svelte';
 
 	let {
 		project,
 		app,
-		projectEnvs = [],
-		selectedEnv = '',
-		onAppUpdated,
 		onAppDeleted
 	}: {
 		project: string;
 		app: App;
-		projectEnvs?: ProjectEnvironment[];
-		selectedEnv?: string;
-		onAppUpdated: (app: App) => void;
 		onAppDeleted: () => void;
 	} = $props();
 
+	const selectedEnv = $derived(store.currentEnv(project) ?? '');
 	const envEntry = $derived(app.spec.environments?.find(e => e.name === selectedEnv));
 	const envEnabled = $derived(envEntry?.enabled !== false);
 	let togglingEnabled = $state(false);
@@ -27,7 +23,6 @@
 	async function toggleEnvEnabled() {
 		if (!selectedEnv) return;
 		togglingEnabled = true;
-		const prevApp = app;
 		const next = !envEnabled;
 		const spec = JSON.parse(JSON.stringify(app.spec));
 		spec.environments = spec.environments ?? [];
@@ -37,13 +32,10 @@
 		} else {
 			spec.environments.push({ name: selectedEnv, enabled: next });
 		}
-		onAppUpdated({ ...app, spec });
 		try {
-			const updated = await api.updateApp(project, prevApp.metadata.name, spec);
-			onAppUpdated(updated);
+			await api.updateApp(project, app.metadata.name, spec);
 		} catch (e) {
 			errorMsg = e instanceof Error ? e.message : 'Failed to toggle environment';
-			onAppUpdated(prevApp);
 		} finally {
 			togglingEnabled = false;
 		}
@@ -68,34 +60,43 @@
 	let netPublic = $state(app.spec.network?.public ?? true);
 	let netPort = $state(String(app.spec.network?.port ?? ''));
 
-	// --- Scale ---
-	let scaleEnv = $state(app.spec.environments?.[0]?.name ?? '');
-	let scaleReplicas = $state(String(app.spec.environments?.[0]?.replicas ?? 1));
-	let scaleCpu = $state(app.spec.environments?.[0]?.resources?.cpu ?? '');
-	let scaleMemory = $state(app.spec.environments?.[0]?.resources?.memory ?? '');
+	// --- Scale (for active env) ---
+	let scaleReplicas = $state('1');
+	let scaleCpu = $state('');
+	let scaleMemory = $state('');
+	$effect(() => {
+		const env = app.spec.environments?.find(e => e.name === selectedEnv);
+		scaleReplicas = String(env?.replicas ?? 1);
+		scaleCpu = env?.resources?.cpu ?? '';
+		scaleMemory = env?.resources?.memory ?? '';
+	});
 
-	// --- Domains ---
+	// --- Domains (for active env) ---
 	let domains = $state<DomainsResponse | null>(null);
-	let domainsEnv = $state(app.spec.environments?.[0]?.name ?? '');
 	let newDomain = $state('');
 	let savingDomain = $state(false);
 
-	// --- TLS overrides ---
-	const env0Tls = (app.spec.environments?.[0] as { tls?: { clusterIssuer?: string; secretName?: string } })?.tls;
-	let tlsClusterIssuer = $state(env0Tls?.clusterIssuer ?? '');
-	let tlsSecretName = $state(env0Tls?.secretName ?? '');
+	// --- TLS overrides (for active env) ---
+	let tlsClusterIssuer = $state('');
+	let tlsSecretName = $state('');
 	let savingTls = $state(false);
+	$effect(() => {
+		const env = app.spec.environments?.find(e => e.name === selectedEnv) as
+			| { tls?: { clusterIssuer?: string; secretName?: string } }
+			| undefined;
+		tlsClusterIssuer = env?.tls?.clusterIssuer ?? '';
+		tlsSecretName = env?.tls?.secretName ?? '';
+	});
 
 	// --- Deploy tokens ---
 	let tokens = $state<DeployToken[]>([]);
 	let loadingTokens = $state(true);
 	let showTokenForm = $state(false);
 	let newTokenName = $state('');
-	let newTokenEnv = $state(app.spec.environments?.[0]?.name ?? '');
 	let createdToken = $state<string | null>(null);
 	let copiedToken = $state(false);
 
-	// --- Bindings ---
+	// --- Bindings (for active env) ---
 	let showAddBinding = $state(false);
 	let newBindingRef = $state('');
 	let savingBinding = $state(false);
@@ -103,26 +104,28 @@
 	$effect(() => {
 		api.listApps(project).then(a => allApps = a).catch(() => {});
 	});
-	const currentBindings = $derived(app.spec.environments?.[0]?.bindings ?? []);
+	const currentBindings = $derived(
+		app.spec.environments?.find(e => e.name === selectedEnv)?.bindings ?? []
+	);
 	const bindableApps = $derived(allApps.filter(a =>
 		a.metadata.name !== app.metadata.name &&
 		a.spec.credentials && a.spec.credentials.length > 0
 	));
 
-	// --- Advanced ---
+	// --- Advanced (for active env) ---
 	let showAdvanced = $state(false);
-	// Environment type doesn't include annotations/secretMounts at the base type;
-	// cast to access the extended fields that the API may return.
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	const env0Ext = (app.spec.environments?.[0] as any) ?? {};
-	let annotations = $state<Record<string, string>>(
-		Object.fromEntries(Object.entries((env0Ext.annotations ?? {}) as Record<string, string>))
-	);
+	let annotations = $state<Record<string, string>>({});
 	let savingAnnotations = $state(false);
-	let secretMounts = $state<SecretMount[]>((env0Ext.secretMounts ?? []) as SecretMount[]);
+	let secretMounts = $state<SecretMount[]>([]);
 	let showAddMount = $state(false);
 	let newMount = $state<{ secretName: string; mountPath: string }>({ secretName: '', mountPath: '' });
 	let savingMounts = $state(false);
+	$effect(() => {
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		const env = (app.spec.environments?.find(e => e.name === selectedEnv) as any) ?? {};
+		annotations = Object.fromEntries(Object.entries((env.annotations ?? {}) as Record<string, string>));
+		secretMounts = (env.secretMounts ?? []) as SecretMount[];
+	});
 
 	// --- Danger ---
 	let confirmDelete = $state(false);
@@ -137,7 +140,6 @@
 	async function addVolume() {
 		if (!newVol.name || !newVol.mountPath) return;
 		savingVolume = true;
-		const prevApp = app;
 		const prevVol = { ...newVol };
 		const optimisticSpec = JSON.parse(JSON.stringify(app.spec));
 		optimisticSpec.storage = [...(optimisticSpec.storage ?? []), {
@@ -146,15 +148,12 @@
 			size: newVol.size || undefined,
 			storageClass: newVol.storageClass || undefined
 		}];
-		onAppUpdated({ ...app, spec: optimisticSpec });
 		showAddVolume = false;
 		newVol = { name: '', mountPath: '', size: '', storageClass: '' };
 		try {
-			const updated = await api.updateApp(project, prevApp.metadata.name, optimisticSpec);
-			onAppUpdated(updated);
+			await api.updateApp(project, app.metadata.name, optimisticSpec);
 		} catch (e) {
 			errorMsg = e instanceof Error ? e.message : 'Failed to add volume';
-			onAppUpdated(prevApp);
 			showAddVolume = true;
 			newVol = prevVol;
 		} finally {
@@ -163,16 +162,12 @@
 	}
 
 	async function removeVolume(idx: number) {
-		const prevApp = app;
 		const optimisticSpec = JSON.parse(JSON.stringify(app.spec));
 		optimisticSpec.storage = (optimisticSpec.storage ?? []).filter((_: unknown, i: number) => i !== idx);
-		onAppUpdated({ ...app, spec: optimisticSpec });
 		try {
-			const updated = await api.updateApp(project, prevApp.metadata.name, optimisticSpec);
-			onAppUpdated(updated);
+			await api.updateApp(project, app.metadata.name, optimisticSpec);
 		} catch (e) {
 			errorMsg = e instanceof Error ? e.message : 'Failed to remove volume';
-			onAppUpdated(prevApp);
 		}
 	}
 
@@ -180,10 +175,14 @@
 		await Promise.all([loadDomains(), loadTokens()]);
 	});
 
+	$effect(() => {
+		if (selectedEnv) void loadDomains();
+	});
+
 	async function loadDomains() {
-		if (!domainsEnv) return;
+		if (!selectedEnv) return;
 		try {
-			domains = await api.listDomains(project, app.metadata.name, domainsEnv);
+			domains = await api.listDomains(project, app.metadata.name, selectedEnv);
 		} catch {
 			domains = null;
 		}
@@ -223,15 +222,11 @@
 	async function saveSource() {
 		saving = true;
 		errorMsg = '';
-		const prevApp = app;
 		const optimisticSpec = buildUpdatedSpec();
-		onAppUpdated({ ...app, spec: optimisticSpec });
 		try {
-			const updated = await api.updateApp(project, prevApp.metadata.name, optimisticSpec);
-			onAppUpdated(updated);
+			await api.updateApp(project, app.metadata.name, optimisticSpec);
 		} catch (e) {
 			errorMsg = e instanceof Error ? e.message : 'Failed to save';
-			onAppUpdated(prevApp);
 		} finally {
 			saving = false;
 		}
@@ -239,7 +234,6 @@
 
 	async function saveBuild() {
 		savingBuild = true;
-		const prevApp = app;
 		const optimisticSpec = JSON.parse(JSON.stringify(app.spec));
 		optimisticSpec.source = {
 			...optimisticSpec.source,
@@ -248,13 +242,10 @@
 				dockerfilePath: buildMode === 'dockerfile' ? dockerfilePath : undefined
 			}
 		};
-		onAppUpdated({ ...app, spec: optimisticSpec });
 		try {
-			const updated = await api.updateApp(project, prevApp.metadata.name, optimisticSpec);
-			onAppUpdated(updated);
+			await api.updateApp(project, app.metadata.name, optimisticSpec);
 		} catch (e) {
 			errorMsg = e instanceof Error ? e.message : 'Failed to save build config';
-			onAppUpdated(prevApp);
 		} finally {
 			savingBuild = false;
 		}
@@ -263,53 +254,49 @@
 	async function saveNetworking() {
 		saving = true;
 		errorMsg = '';
-		const prevApp = app;
 		const optimisticSpec = buildUpdatedSpec();
-		onAppUpdated({ ...app, spec: optimisticSpec });
 		try {
-			const updated = await api.updateApp(project, prevApp.metadata.name, optimisticSpec);
-			onAppUpdated(updated);
+			await api.updateApp(project, app.metadata.name, optimisticSpec);
 		} catch (e) {
 			errorMsg = e instanceof Error ? e.message : 'Failed to save';
-			onAppUpdated(prevApp);
 		} finally {
 			saving = false;
 		}
 	}
 
 	async function saveScale() {
+		if (!selectedEnv) return;
 		saving = true;
 		errorMsg = '';
-		const prevApp = app;
 		const optimisticSpec = JSON.parse(JSON.stringify(app.spec));
-		const envIdx = (optimisticSpec.environments ?? []).findIndex((e: { name: string }) => e.name === scaleEnv);
-		if (envIdx >= 0 && optimisticSpec.environments) {
-			optimisticSpec.environments[envIdx].replicas = parseInt(scaleReplicas, 10) || 1;
-			optimisticSpec.environments[envIdx].resources = optimisticSpec.environments[envIdx].resources ?? {};
-			if (scaleCpu) optimisticSpec.environments[envIdx].resources!.cpu = scaleCpu;
-			if (scaleMemory) optimisticSpec.environments[envIdx].resources!.memory = scaleMemory;
+		optimisticSpec.environments = optimisticSpec.environments ?? [];
+		let envIdx = optimisticSpec.environments.findIndex((e: { name: string }) => e.name === selectedEnv);
+		if (envIdx < 0) {
+			optimisticSpec.environments.push({ name: selectedEnv });
+			envIdx = optimisticSpec.environments.length - 1;
 		}
-		onAppUpdated({ ...app, spec: optimisticSpec });
+		optimisticSpec.environments[envIdx].replicas = parseInt(scaleReplicas, 10) || 1;
+		optimisticSpec.environments[envIdx].resources = optimisticSpec.environments[envIdx].resources ?? {};
+		if (scaleCpu) optimisticSpec.environments[envIdx].resources.cpu = scaleCpu;
+		if (scaleMemory) optimisticSpec.environments[envIdx].resources.memory = scaleMemory;
 		try {
-			const updated = await api.updateApp(project, prevApp.metadata.name, optimisticSpec);
-			onAppUpdated(updated);
+			await api.updateApp(project, app.metadata.name, optimisticSpec);
 		} catch (e) {
 			errorMsg = e instanceof Error ? e.message : 'Failed to save';
-			onAppUpdated(prevApp);
 		} finally {
 			saving = false;
 		}
 	}
 
 	async function handleAddDomain() {
-		if (!newDomain.trim() || !domainsEnv) return;
+		if (!newDomain.trim() || !selectedEnv) return;
 		savingDomain = true;
 		const domainToAdd = newDomain.trim();
 		const prevDomains = domains;
 		domains = domains ? { ...domains, custom: [...(domains.custom ?? []), domainToAdd] } : domains;
 		newDomain = '';
 		try {
-			domains = await api.addDomain(project, app.metadata.name, domainsEnv, domainToAdd);
+			domains = await api.addDomain(project, app.metadata.name, selectedEnv, domainToAdd);
 		} catch (e) {
 			errorMsg = e instanceof Error ? e.message : 'Failed to add domain';
 			domains = prevDomains;
@@ -320,10 +307,11 @@
 	}
 
 	async function handleRemoveDomain(domain: string) {
+		if (!selectedEnv) return;
 		const prevDomains = domains;
 		domains = domains ? { ...domains, custom: (domains.custom ?? []).filter(d => d !== domain) } : domains;
 		try {
-			domains = await api.removeDomain(project, app.metadata.name, domainsEnv, domain);
+			domains = await api.removeDomain(project, app.metadata.name, selectedEnv, domain);
 		} catch (e) {
 			errorMsg = e instanceof Error ? e.message : 'Failed to remove domain';
 			domains = prevDomains;
@@ -331,17 +319,21 @@
 	}
 
 	async function saveTlsOverride() {
+		if (!selectedEnv) return;
 		savingTls = true;
 		try {
 			const spec = JSON.parse(JSON.stringify(app.spec));
-			if (spec.environments?.[0]) {
-				(spec.environments[0] as { tls?: { clusterIssuer?: string; secretName?: string } }).tls = {
-					clusterIssuer: tlsClusterIssuer || undefined,
-					secretName: tlsSecretName || undefined
-				};
+			spec.environments = spec.environments ?? [];
+			let envIdx = spec.environments.findIndex((e: { name: string }) => e.name === selectedEnv);
+			if (envIdx < 0) {
+				spec.environments.push({ name: selectedEnv });
+				envIdx = spec.environments.length - 1;
 			}
-			const updated = await api.updateApp(project, app.metadata.name, spec);
-			onAppUpdated(updated);
+			(spec.environments[envIdx] as { tls?: { clusterIssuer?: string; secretName?: string } }).tls = {
+				clusterIssuer: tlsClusterIssuer || undefined,
+				secretName: tlsSecretName || undefined
+			};
+			await api.updateApp(project, app.metadata.name, spec);
 		} catch (e) {
 			errorMsg = e instanceof Error ? e.message : 'Failed to save TLS config';
 		} finally {
@@ -350,10 +342,10 @@
 	}
 
 	async function createToken() {
-		if (!newTokenName.trim() || !newTokenEnv) return;
+		if (!newTokenName.trim() || !selectedEnv) return;
 		saving = true;
 		try {
-			const tok = await api.createToken(project, app.metadata.name, newTokenName.trim(), newTokenEnv);
+			const tok = await api.createToken(project, app.metadata.name, newTokenName.trim(), selectedEnv);
 			tokens = [...tokens, tok];
 			createdToken = tok.token ?? null;
 			newTokenName = '';
@@ -377,24 +369,26 @@
 	}
 
 	async function addBinding() {
-		if (!newBindingRef) return;
+		if (!newBindingRef || !selectedEnv) return;
 		savingBinding = true;
-		const prevApp = app;
 		const savedRef = newBindingRef;
 		const optimisticSpec = JSON.parse(JSON.stringify(app.spec));
-		optimisticSpec.environments = (optimisticSpec.environments ?? []).map((e: typeof optimisticSpec.environments[0]) => ({
-			...e,
-			bindings: [...(e.bindings ?? []), { ref: savedRef }]
-		}));
-		onAppUpdated({ ...app, spec: optimisticSpec });
+		optimisticSpec.environments = optimisticSpec.environments ?? [];
+		let envIdx = optimisticSpec.environments.findIndex((e: { name: string }) => e.name === selectedEnv);
+		if (envIdx < 0) {
+			optimisticSpec.environments.push({ name: selectedEnv });
+			envIdx = optimisticSpec.environments.length - 1;
+		}
+		optimisticSpec.environments[envIdx].bindings = [
+			...(optimisticSpec.environments[envIdx].bindings ?? []),
+			{ ref: savedRef }
+		];
 		showAddBinding = false;
 		newBindingRef = '';
 		try {
-			const updated = await api.updateApp(project, prevApp.metadata.name, optimisticSpec);
-			onAppUpdated(updated);
+			await api.updateApp(project, app.metadata.name, optimisticSpec);
 		} catch (e) {
 			errorMsg = e instanceof Error ? e.message : 'Failed to add binding';
-			onAppUpdated(prevApp);
 			showAddBinding = true;
 			newBindingRef = savedRef;
 		} finally {
@@ -403,19 +397,17 @@
 	}
 
 	async function removeBinding(ref: string) {
-		const prevApp = app;
+		if (!selectedEnv) return;
 		const optimisticSpec = JSON.parse(JSON.stringify(app.spec));
-		optimisticSpec.environments = (optimisticSpec.environments ?? []).map((e: typeof optimisticSpec.environments[0]) => ({
-			...e,
-			bindings: (e.bindings ?? []).filter((b: { ref: string }) => b.ref !== ref)
-		}));
-		onAppUpdated({ ...app, spec: optimisticSpec });
+		optimisticSpec.environments = (optimisticSpec.environments ?? []).map((e: typeof optimisticSpec.environments[0]) =>
+			e.name === selectedEnv
+				? { ...e, bindings: (e.bindings ?? []).filter((b: { ref: string }) => b.ref !== ref) }
+				: e
+		);
 		try {
-			const updated = await api.updateApp(project, prevApp.metadata.name, optimisticSpec);
-			onAppUpdated(updated);
+			await api.updateApp(project, app.metadata.name, optimisticSpec);
 		} catch (e) {
 			errorMsg = e instanceof Error ? e.message : 'Failed to remove binding';
-			onAppUpdated(prevApp);
 		}
 	}
 
@@ -439,14 +431,18 @@
 	}
 
 	async function saveAnnotations() {
+		if (!selectedEnv) return;
 		savingAnnotations = true;
 		try {
 			const spec = JSON.parse(JSON.stringify(app.spec));
-			spec.environments = (spec.environments ?? []).map((e: typeof spec.environments[0], i: number) =>
-				i === 0 ? { ...e, annotations } : e
-			);
-			const updated = await api.updateApp(project, app.metadata.name, spec);
-			onAppUpdated(updated);
+			spec.environments = spec.environments ?? [];
+			let envIdx = spec.environments.findIndex((e: { name: string }) => e.name === selectedEnv);
+			if (envIdx < 0) {
+				spec.environments.push({ name: selectedEnv });
+				envIdx = spec.environments.length - 1;
+			}
+			spec.environments[envIdx] = { ...spec.environments[envIdx], annotations };
+			await api.updateApp(project, app.metadata.name, spec);
 		} catch (e) {
 			errorMsg = e instanceof Error ? e.message : 'Failed to save annotations';
 		} finally {
@@ -468,14 +464,18 @@
 	}
 
 	async function saveSecretMounts() {
+		if (!selectedEnv) return;
 		savingMounts = true;
 		try {
 			const spec = JSON.parse(JSON.stringify(app.spec));
-			spec.environments = (spec.environments ?? []).map((e: typeof spec.environments[0], i: number) =>
-				i === 0 ? { ...e, secretMounts } : e
-			);
-			const updated = await api.updateApp(project, app.metadata.name, spec);
-			onAppUpdated(updated);
+			spec.environments = spec.environments ?? [];
+			let envIdx = spec.environments.findIndex((e: { name: string }) => e.name === selectedEnv);
+			if (envIdx < 0) {
+				spec.environments.push({ name: selectedEnv });
+				envIdx = spec.environments.length - 1;
+			}
+			spec.environments[envIdx] = { ...spec.environments[envIdx], secretMounts };
+			await api.updateApp(project, app.metadata.name, spec);
 		} catch (e) {
 			errorMsg = e instanceof Error ? e.message : 'Failed to save mounts';
 		} finally {
@@ -624,16 +624,16 @@
 					<label class={labelCls} for="net-port">Port</label>
 					<input id="net-port" type="number" bind:value={netPort} placeholder="8080" class={inputCls} />
 				</div>
-				{#if app.spec.environments?.[0]?.domain}
+				{#if envEntry?.domain}
 					<div>
 						<label class={labelCls}>Primary domain</label>
 						<div class="flex items-center gap-2">
 							<p class="flex-1 rounded-md bg-surface-700 px-3 py-1.5 font-mono text-xs text-gray-300">
-								{app.spec.environments[0].domain}
+								{envEntry.domain}
 							</p>
 							<button
 								type="button"
-								onclick={() => copyText(app.spec.environments![0].domain!)}
+								onclick={() => copyText(envEntry!.domain!)}
 								class="text-gray-500 hover:text-white"
 								aria-label="Copy domain"
 							>
@@ -718,13 +718,13 @@
 		</div>
 	{/if}
 
-	<!-- Environment -->
+	<!-- Environment enabled toggle -->
 	{#if selectedEnv && sectionVisible('environment enabled')}
 		<div class={sectionCls}>
-			<h3 class={headingCls}>Environment: {selectedEnv}</h3>
+			<h3 class={headingCls}>Environment</h3>
 			<div class="flex items-center justify-between">
 				<div>
-					<p class="text-sm text-gray-300">Enabled in this environment</p>
+					<p class="text-sm text-gray-300">Enabled</p>
 					<p class="text-xs text-gray-500">Disabling stops reconciliation and garbage-collects resources for this env.</p>
 				</div>
 				<button
@@ -748,16 +748,6 @@
 		<div class={sectionCls}>
 			<h3 class={headingCls}>Scale</h3>
 			<div class="space-y-2">
-				{#if app.spec.environments && app.spec.environments.length > 1}
-					<div>
-						<label class={labelCls} for="scale-env">Environment</label>
-						<select id="scale-env" bind:value={scaleEnv} class="{inputCls} bg-surface-700">
-							{#each app.spec.environments as env}
-								<option value={env.name}>{env.name}</option>
-							{/each}
-						</select>
-					</div>
-				{/if}
 				<div>
 					<label class={labelCls} for="scale-replicas">Replicas</label>
 					<input id="scale-replicas" type="number" min="0" bind:value={scaleReplicas} class={inputCls} />
@@ -854,20 +844,6 @@
 	{#if sectionVisible('domains')}
 		<div class={sectionCls}>
 			<h3 class={headingCls}>Domains</h3>
-
-			{#if app.spec.environments && app.spec.environments.length > 1}
-				<div class="flex gap-1 border-b border-surface-700 pb-2">
-					{#each app.spec.environments as env}
-						<button
-							type="button"
-							onclick={async () => { domainsEnv = env.name; await loadDomains(); }}
-							class="rounded px-2.5 py-1 text-xs {domainsEnv === env.name ? 'bg-surface-600 text-white' : 'text-gray-400 hover:text-white'}"
-						>
-							{env.name}
-						</button>
-					{/each}
-				</div>
-			{/if}
 
 			{#if domains?.primary}
 				<div class="rounded-md bg-surface-700 px-3 py-2">
@@ -1002,17 +978,9 @@
 						<label class={labelCls} for="tok-name">Token name</label>
 						<input id="tok-name" type="text" bind:value={newTokenName} placeholder="ci-deploy" class={inputCls} />
 					</div>
-					<div>
-						<label class={labelCls} for="tok-env">Environment</label>
-						<select id="tok-env" bind:value={newTokenEnv} class="{inputCls} bg-surface-700">
-							{#each app.spec.environments ?? [] as env}
-								<option value={env.name}>{env.name}</option>
-							{/each}
-						</select>
-					</div>
 					<div class="flex justify-end gap-2">
 						<button type="button" onclick={() => (showTokenForm = false)} class={btnSecondary}>Cancel</button>
-						<button type="button" onclick={createToken} disabled={saving || !newTokenName.trim()} class={btnPrimary}>
+						<button type="button" onclick={createToken} disabled={saving || !newTokenName.trim() || !selectedEnv} class={btnPrimary}>
 							Create
 						</button>
 					</div>

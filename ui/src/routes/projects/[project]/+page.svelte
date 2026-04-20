@@ -8,7 +8,8 @@
 	import ProjectCanvas from '$lib/components/ProjectCanvas.svelte';
 	import NewAppModal from '$lib/components/NewAppModal.svelte';
 	import AppDrawer from '$lib/components/AppDrawer.svelte';
-	import { LayoutDashboard, List, Plus, GitBranch, Container, Cloud, Clock } from 'lucide-svelte';
+	import ViewModeToggle from '$lib/components/ViewModeToggle.svelte';
+	import { Plus, GitBranch, Container, Cloud, Clock } from 'lucide-svelte';
 
 	const projectName = $derived(page.params.project ?? '');
 	// App name from URL (e.g. /projects/foo/apps/bar → 'bar')
@@ -42,7 +43,7 @@
 				await api.updateApp(projectName, appName, change.dirty);
 			}
 			store.discardAll();
-			await load();
+			await refreshApps();
 		} catch (e) {
 			deployError = e instanceof Error ? e.message : 'Deploy failed';
 		} finally {
@@ -92,6 +93,13 @@
 		} finally {
 			loading = false;
 		}
+	}
+
+	async function refreshApps() {
+		try {
+			apps = await api.listApps(projectName);
+			startPollingIfBuilding();
+		} catch { /* ignore */ }
 	}
 
 	function isTransient(phase?: string) {
@@ -209,24 +217,7 @@
 			<div class="relative flex-1 overflow-hidden" style="height: calc(100vh - 57px)">
 				<!-- Floating controls overlay -->
 				<div class="absolute top-3 right-3 z-10 flex items-center gap-2">
-					<div class="flex overflow-hidden rounded-md border border-surface-600 bg-surface-800/90 backdrop-blur-sm">
-						<button
-							type="button"
-							onclick={() => store.setViewMode('canvas')}
-							class="px-2 py-1.5 bg-surface-600 text-white"
-							title="Canvas view"
-						>
-							<LayoutDashboard class="h-4 w-4" />
-						</button>
-						<button
-							type="button"
-							onclick={() => store.setViewMode('list')}
-							class="px-2 py-1.5 text-gray-400 hover:bg-surface-700 hover:text-white"
-							title="List view"
-						>
-							<List class="h-4 w-4" />
-						</button>
-					</div>
+					<ViewModeToggle />
 					<button
 						type="button"
 						onclick={() => showNewApp = true}
@@ -247,6 +238,7 @@
 							apps = apps.filter(a => a.metadata.name !== name);
 							try {
 								await api.deleteApp(projectName, name);
+								await refreshApps();
 							} catch {
 								apps = prevApps;
 							}
@@ -259,24 +251,7 @@
 			<div class="relative flex-1 overflow-auto p-4">
 				<!-- Floating controls overlay -->
 				<div class="absolute top-3 right-3 z-10 flex items-center gap-2">
-					<div class="flex overflow-hidden rounded-md border border-surface-600 bg-surface-800/90">
-						<button
-							type="button"
-							onclick={() => store.setViewMode('canvas')}
-							class="px-2 py-1.5 text-gray-400 hover:bg-surface-700 hover:text-white"
-							title="Canvas view"
-						>
-							<LayoutDashboard class="h-4 w-4" />
-						</button>
-						<button
-							type="button"
-							onclick={() => store.setViewMode('list')}
-							class="px-2 py-1.5 bg-surface-600 text-white"
-							title="List view"
-						>
-							<List class="h-4 w-4" />
-						</button>
-					</div>
+					<ViewModeToggle />
 					<button
 						type="button"
 						onclick={() => showNewApp = true}
@@ -384,7 +359,7 @@
   <NewAppModal
     project={projectName}
     onClose={() => showNewApp = false}
-    onCreated={async (name) => { showNewApp = false; await load(); selectedApp = name; }}
+    onCreated={async (name) => { showNewApp = false; await refreshApps(); selectedApp = name; }}
   />
 {/if}
 

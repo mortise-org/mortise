@@ -1,5 +1,6 @@
 import { browser } from '$app/environment';
-import type { App, AppSpec, Project } from './types';
+import { api } from './api';
+import type { App, AppSpec, Project, ProjectEnvironment } from './types';
 
 interface StagedChange {
 	appName: string;
@@ -24,6 +25,10 @@ class MortiseStore {
 	// each one's last-selected env. `null` means "not yet resolved" — callers
 	// fall back to the first env on the project.
 	currentEnvByProject = $state<Record<string, string>>({});
+
+	// Project environments keyed by project name. Sole source of truth: the
+	// navbar, settings page, drawer, and canvas all read from this map.
+	projectEnvs = $state<Record<string, ProjectEnvironment[]>>({});
 
 	// Staged changes (client-side only, in-memory)
 	stagedChanges = $state<Map<string, StagedChange>>(new Map());
@@ -113,6 +118,17 @@ class MortiseStore {
 		if (browser) {
 			localStorage.setItem('mortise_envs', JSON.stringify(this.currentEnvByProject));
 		}
+	}
+
+	async loadProjectEnvs(projectName: string): Promise<ProjectEnvironment[]> {
+		const envs = await api.listProjectEnvironments(projectName);
+		const sorted = [...envs].sort((a, b) => a.displayOrder - b.displayOrder);
+		this.projectEnvs = { ...this.projectEnvs, [projectName]: sorted };
+		return sorted;
+	}
+
+	async invalidateProjectEnvs(projectName: string): Promise<ProjectEnvironment[]> {
+		return this.loadProjectEnvs(projectName);
 	}
 
 	stageChange(appName: string, original: AppSpec, dirty: AppSpec) {
