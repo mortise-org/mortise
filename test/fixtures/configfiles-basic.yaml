@@ -1,0 +1,20 @@
+apiVersion: mortise.mortise.dev/v1alpha1
+kind: App
+metadata:
+  name: test-configfiles
+spec:
+  source:
+    type: image
+    image: nginx:1.27
+  network:
+    public: false
+  configFiles:
+    - path: /etc/app/app.conf
+      content: |
+        key=value
+  environments:
+    - name: production
+      replicas: 1
+      resources:
+        cpu: "50m"
+        memory: "64Mi"
