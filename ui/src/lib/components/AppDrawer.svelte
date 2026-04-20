@@ -13,12 +13,10 @@
 	let {
 		project,
 		appName,
-		liveApp = null,
 		onClose
 	}: {
 		project: string;
 		appName: string;
-		liveApp?: import('$lib/types').App | null;
 		onClose: () => void;
 	} = $props();
 
@@ -62,33 +60,25 @@
 		}
 	}
 
-	// Sync status from the parent's polled data. Only status — not spec — so
-	// optimistic spec mutations from tabs can't be overwritten by a poll mid-flight.
-	// liveApp only arrives with a new reference when status content actually changed
-	// (deduplicated in the parent), so this write is always meaningful.
-	$effect(() => {
-		if (!liveApp || loading) return;
-		if (app) {
-			app = { ...app, status: liveApp.status };
-		} else {
-			app = liveApp;
-		}
-	});
+	// Fine-grained phase override for optimistic updates from user actions.
+	// Keeps re-renders isolated to the status chip/banner only — the full app
+	// object is never replaced by external inputs.
+	let optimisticPhase = $state<string | null>(null);
+	const effectivePhase = $derived(optimisticPhase ?? app?.status?.phase ?? null);
 
 	function applyOptimisticPhase(phase: string) {
-		if (!app) return;
-		app = { ...app, status: { ...(app.status ?? { phase: 'Pending', environments: [], conditions: [] }), phase: phase as import('$lib/types').AppPhase } };
+		optimisticPhase = phase;
 	}
 
 	const buildError = $derived(
-		app?.status?.phase === 'Failed' ? conditionMessage(app) : null
+		effectivePhase === 'Failed' ? conditionMessage(app) : null
 	);
 	const crashError = $derived(
-		app?.status?.phase === 'CrashLooping'
-			? (app.status?.conditions?.find(c => c.type === 'PodHealthy' && c.status === 'False')?.message ?? null)
+		effectivePhase === 'CrashLooping'
+			? (app?.status?.conditions?.find(c => c.type === 'PodHealthy' && c.status === 'False')?.message ?? null)
 			: null
 	);
-	const isBuilding = $derived(app?.status?.phase === 'Building');
+	const isBuilding = $derived(effectivePhase === 'Building');
 
 	// Build timer — synced to BuildStarted condition timestamp from k8s.
 	let buildElapsed = $state('');
@@ -145,14 +135,14 @@
 				{/if}
 			{/if}
 			<h2 class="text-sm font-semibold text-white">{appName}</h2>
-			{#if app?.status?.phase}
-				<span class="rounded-full px-2 py-0.5 text-xs font-medium {chipClass(app.status.phase)}">
-					{app.status.phase}
+			{#if effectivePhase}
+				<span class="rounded-full px-2 py-0.5 text-xs font-medium {chipClass(effectivePhase)}">
+					{effectivePhase}
 				</span>
 			{/if}
 		</div>
 		<div class="flex items-center gap-2">
-			{#if app?.status?.phase === 'Ready'}
+			{#if effectivePhase === 'Ready'}
 				{#if appURL}
 					<a
 						href={appURL}
@@ -236,7 +226,7 @@
 			<div class="rounded-md bg-danger/10 px-3 py-2 text-sm text-danger">{error}</div>
 		{:else if app}
 			{#if store.drawerTab === 'deployments'}
-				<DeploymentsTab {project} {app} onOptimisticPhase={applyOptimisticPhase} />
+				<DeploymentsTab {project} {app} phase={effectivePhase} onOptimisticPhase={applyOptimisticPhase} />
 			{:else if store.drawerTab === 'variables'}
 				<VariablesTab {project} {app} onAppUpdated={(updated) => { app = updated; }} />
 			{:else if store.drawerTab === 'logs'}

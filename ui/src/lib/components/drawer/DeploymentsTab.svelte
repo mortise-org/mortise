@@ -3,7 +3,7 @@
 	import type { App, EnvironmentStatus } from '$lib/types';
 	import { Rocket } from 'lucide-svelte';
 
-	let { project, app, onOptimisticPhase }: { project: string; app: App; onOptimisticPhase?: (phase: string) => void } = $props();
+	let { project, app, phase: phaseProp = null, onOptimisticPhase }: { project: string; app: App; phase?: string | null; onOptimisticPhase?: (phase: string) => void } = $props();
 
 	let selectedEnv = $state(app.spec.environments?.[0]?.name ?? 'production');
 	let reloading = $state(false);
@@ -13,7 +13,7 @@
 		app.status?.environments?.find((e) => e.name === selectedEnv) ?? null
 	);
 
-	const phase = $derived(app.status?.phase ?? 'Pending');
+	const phase = $derived(phaseProp ?? app.status?.phase ?? 'Pending');
 
 	const phaseChip: Record<string, string> = {
 		Ready: 'bg-success/10 text-success',

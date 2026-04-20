@@ -69,24 +69,8 @@
 		}
 	});
 
-	// Start/stop polling when drawer opens or closes.
-	$effect(() => {
-		void selectedApp;
-		if (!loading) startPollingIfBuilding();
-	});
 
 	let pollHandle: ReturnType<typeof setInterval> | null = null;
-
-	// Stable reference for the drawer: only updates when the selected app's STATUS
-	// actually changes so AppDrawer never re-renders from a no-op poll.
-	let drawerLiveApp = $state<App | null>(null);
-	$effect(() => {
-		const found = selectedApp ? (apps.find(a => a.metadata.name === selectedApp) ?? null) : null;
-		if (!found) { drawerLiveApp = null; return; }
-		if (!drawerLiveApp || JSON.stringify(found.status) !== JSON.stringify(drawerLiveApp.status)) {
-			drawerLiveApp = found;
-		}
-	});
 
 	async function load() {
 		loading = true;
@@ -110,12 +94,12 @@
 	}
 
 	function startPollingIfBuilding() {
-		const needsPoll = apps.some(a => isTransient(a.status?.phase)) || selectedApp !== null;
+		const needsPoll = apps.some(a => isTransient(a.status?.phase));
 		if (needsPoll && !pollHandle) {
 			pollHandle = setInterval(async () => {
 				try {
 					apps = await api.listApps(projectName);
-					if (!apps.some(a => isTransient(a.status?.phase)) && selectedApp === null) {
+					if (!apps.some(a => isTransient(a.status?.phase))) {
 						clearInterval(pollHandle!);
 						pollHandle = null;
 					}
@@ -384,7 +368,6 @@
 	<AppDrawer
 		project={projectName}
 		appName={selectedApp}
-		liveApp={drawerLiveApp}
 		onClose={() => selectedApp = null}
 	/>
 {/if}
