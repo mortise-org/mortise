@@ -156,24 +156,24 @@
 	// Supabase stack
 	let supabaseProgress = $state('');
 	let supabaseCreating = $state(false);
-	let supabaseServices = $state<Array<{ name: string; description: string; image: string; required: boolean; selected: boolean }>>([]);
+	let supabaseServices = $state<Array<{ name: string; image: string; required: boolean; selected: boolean }>>([]);
 
 	async function loadSupabaseServices() {
 		try {
-			const templates = await api.listTemplates();
-			const sb = templates.find((t) => t.name === 'supabase');
+			const tpls = await api.listTemplates();
+			const sb = tpls.find((t) => t.name === 'supabase');
 			if (sb) {
 				supabaseServices = sb.services.map((s) => ({ ...s, selected: true }));
 			}
 		} catch {
 			// Fallback if endpoint not available
 			supabaseServices = [
-				{ name: 'postgres', description: 'PostgreSQL database', image: 'supabase/postgres', required: true, selected: true },
-				{ name: 'auth', description: 'GoTrue authentication', image: 'supabase/gotrue', required: false, selected: true },
-				{ name: 'rest', description: 'PostgREST API', image: 'postgrest/postgrest', required: false, selected: true },
-				{ name: 'storage', description: 'File storage API', image: 'supabase/storage-api', required: false, selected: true },
-				{ name: 'realtime', description: 'Realtime WebSocket server', image: 'supabase/realtime', required: false, selected: true },
-				{ name: 'studio', description: 'Supabase dashboard UI', image: 'supabase/studio', required: false, selected: true }
+				{ name: 'postgres', image: 'supabase/postgres', required: true, selected: true },
+				{ name: 'auth', image: 'supabase/gotrue', required: false, selected: true },
+				{ name: 'rest', image: 'postgrest/postgrest', required: false, selected: true },
+				{ name: 'storage', image: 'supabase/storage-api', required: false, selected: true },
+				{ name: 'realtime', image: 'supabase/realtime', required: false, selected: true },
+				{ name: 'studio', image: 'supabase/studio', required: false, selected: true }
 			];
 		}
 	}
@@ -737,7 +737,7 @@
 													<span class="text-[10px] px-1.5 py-0.5 rounded bg-surface-600 text-gray-400">required</span>
 												{/if}
 											</div>
-											<div class="text-xs text-gray-500">{svc.description}</div>
+											<div class="text-xs text-gray-500">{svc.image}</div>
 										</div>
 									</label>
 								{/each}

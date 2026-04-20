@@ -17,6 +17,8 @@
 	let userCode = $state('');
 	let gitError = $state('');
 	let pollTimer: ReturnType<typeof setInterval> | null = null;
+	let wizardDeviceCode = $state('');
+	let wizardManualChecking = $state(false);
 
 	const steps = ['Domain', 'DNS', 'GitHub', 'Done'];
 
@@ -52,6 +54,7 @@
 			const data = await api.gitDeviceCode('github');
 			userCode = data.user_code;
 			const dc = data.device_code;
+			wizardDeviceCode = dc;
 			try { await navigator.clipboard.writeText(userCode); } catch {}
 
 			let currentInterval = (data.interval || 5) * 1000;
@@ -84,6 +87,23 @@
 			gitError = e instanceof Error ? e.message : 'Connection failed';
 			gitStep = 'start';
 		}
+	}
+
+	async function wizardCheckNow() {
+		if (!wizardDeviceCode) return;
+		wizardManualChecking = true;
+		try {
+			const pd = await api.gitDevicePoll('github', wizardDeviceCode);
+			if (pd.status === 'complete') {
+				if (pollTimer) clearInterval(pollTimer);
+				gitStep = 'done';
+			} else if (pd.status === 'expired' || pd.status === 'denied') {
+				if (pollTimer) clearInterval(pollTimer);
+				gitError = `Authorization ${pd.status}. Try again.`;
+				gitStep = 'start';
+			}
+		} catch { /* ignore */ }
+		finally { wizardManualChecking = false; }
 	}
 
 	async function finish() {
@@ -164,6 +184,14 @@
 							Open github.com/login/device
 						</a>
 						<p class="text-xs text-gray-500 mt-1">Paste the code and authorize. This page updates automatically.</p>
+					<button
+						type="button"
+						onclick={wizardCheckNow}
+						disabled={wizardManualChecking}
+						class="mt-2 rounded-md border border-surface-600 px-3 py-1.5 text-xs text-gray-400 hover:bg-surface-600 hover:text-white disabled:opacity-50"
+					>
+						{wizardManualChecking ? 'Checking...' : 'Check now'}
+					</button>
 					</div>
 
 				{:else}

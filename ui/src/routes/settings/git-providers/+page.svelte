@@ -1,5 +1,5 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
-	onMount(() => goto('/admin/settings', { replaceState: true }));
+	onMount(() => goto('/settings', { replaceState: true }));
 </script>

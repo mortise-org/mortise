@@ -10,6 +10,11 @@
 !go.mod
 !go.sum
 
+# Re-include embedded template files (compose YAML, init SQL, metadata)
+!internal/templates/**/*.yml
+!internal/templates/**/*.yaml
+!internal/templates/**/*.sql
+
 # Re-include UI source for the build stage
 !ui/package.json
 !ui/package-lock.json

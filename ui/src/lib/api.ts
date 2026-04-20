@@ -104,7 +104,6 @@ export const api = {
 				description: string;
 				services: Array<{
 					name: string;
-					description: string;
 					image: string;
 					required: boolean;
 				}>;

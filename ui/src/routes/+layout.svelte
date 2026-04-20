@@ -7,17 +7,11 @@
 	import { store } from '$lib/store.svelte';
 	import { currentProject } from '$lib/context.svelte';
 	// Lucide icons
-	import { Folder, Puzzle, Settings, LayoutDashboard, List, Bell, Activity, User, LogOut, ChevronDown, Users, GitBranch } from 'lucide-svelte';
+	import { Folder, Puzzle, Settings, LayoutDashboard, List, Bell, Activity, User, LogOut, ChevronDown, Users } from 'lucide-svelte';
 	import ActivityRail from '$lib/components/ActivityRail.svelte';
 	import NotificationDropdown from '$lib/components/NotificationDropdown.svelte';
 
 	let { children } = $props();
-
-	// GitHub connection state (per-user device flow)
-	let githubFlowActive = $state(false);
-	let githubUserCode = $state('');
-	let githubError = $state('');
-	let githubPollTimer: ReturnType<typeof setInterval> | null = null;
 
 	async function checkGitHubStatus() {
 		try {
@@ -26,65 +20,6 @@
 		} catch {
 			store.githubConnected = null;
 		}
-	}
-
-	let githubCodeCopied = $state(false);
-
-	async function connectGitHub() {
-		githubError = '';
-		githubFlowActive = true;
-		githubCodeCopied = false;
-		userMenuOpen = false; // close dropdown, modal takes over
-		try {
-			const data = await api.gitDeviceCode('github');
-			githubUserCode = data.user_code;
-			const dc = data.device_code;
-
-			// Copy code to clipboard and open GitHub in new tab
-			try {
-				await navigator.clipboard.writeText(githubUserCode);
-				githubCodeCopied = true;
-			} catch {}
-			window.open('https://github.com/login/device', '_blank');
-
-			let currentInterval = (data.interval || 5) * 1000;
-			let polling = false;
-
-			const doPoll = async () => {
-				if (polling) return;
-				polling = true;
-				try {
-					const pd = await api.gitDevicePoll('github', dc);
-					if (pd.status === 'complete') {
-						if (githubPollTimer) clearInterval(githubPollTimer);
-						githubFlowActive = false;
-						githubUserCode = '';
-						store.githubConnected = true;
-					} else if (pd.status === 'slow_down') {
-						if (githubPollTimer) clearInterval(githubPollTimer);
-						currentInterval += 5000;
-						githubPollTimer = setInterval(doPoll, currentInterval);
-					} else if (pd.status === 'expired' || pd.status === 'denied') {
-						if (githubPollTimer) clearInterval(githubPollTimer);
-						githubError = `Authorization ${pd.status}. Try again.`;
-						githubFlowActive = false;
-						githubUserCode = '';
-					}
-				} catch { /* network hiccup, keep polling */ }
-				finally { polling = false; }
-			};
-
-			githubPollTimer = setInterval(doPoll, currentInterval);
-		} catch (e) {
-			githubError = e instanceof Error ? e.message : 'Connection failed';
-			githubFlowActive = false;
-		}
-	}
-
-	function cancelGitHubFlow() {
-		if (githubPollTimer) clearInterval(githubPollTimer);
-		githubFlowActive = false;
-		githubUserCode = '';
 	}
 
 	// Determine layout type from URL
@@ -351,32 +286,9 @@
 								<p class="text-xs text-gray-500 truncate">{store.user?.email ?? 'Signed in'}</p>
 							</div>
 							<div class="py-1">
-								<!-- GitHub connection -->
-								{#if githubFlowActive}
-									<div class="flex items-center gap-2 px-3 py-2 text-sm text-info">
-										<GitBranch class="h-4 w-4 animate-pulse" /> Waiting for GitHub...
-									</div>
-								{:else if store.githubConnected}
-									<div class="flex items-center gap-2 px-3 py-2 text-sm text-success">
-										<GitBranch class="h-4 w-4" /> GitHub: Connected
-									</div>
-								{:else}
-									<button
-										type="button"
-										onclick={connectGitHub}
-										class="flex w-full items-center gap-2 px-3 py-2 text-sm text-gray-300 hover:bg-surface-700 hover:text-white"
-									>
-										<GitBranch class="h-4 w-4" /> Connect GitHub
-									</button>
-								{/if}
-								{#if githubError}
-									<p class="px-3 text-xs text-danger">{githubError}</p>
-								{/if}
-								{#if store.isAdmin}
-									<a href="/admin/settings" class="flex items-center gap-2 px-3 py-2 text-sm text-gray-300 hover:bg-surface-700 hover:text-white">
-										<Settings class="h-4 w-4" /> Platform Settings
-									</a>
-								{/if}
+								<a href="/settings" class="flex items-center gap-2 px-3 py-2 text-sm text-gray-300 hover:bg-surface-700 hover:text-white">
+									<Settings class="h-4 w-4" /> Settings
+								</a>
 								<button
 									type="button"
 									onclick={logout}
@@ -427,15 +339,13 @@
 					>
 						<Puzzle class="h-5 w-5" />
 					</a>
-					{#if store.isAdmin}
-						<a
-							href="/admin/settings"
-							class="{isActive('/admin') ? railIconActive : railIcon}"
-							title="Settings"
-						>
-							<Settings class="h-5 w-5" />
-						</a>
-					{/if}
+					<a
+						href="/settings"
+						class="{isActive('/settings') ? railIconActive : railIcon}"
+						title="Settings"
+					>
+						<Settings class="h-5 w-5" />
+					</a>
 				{/if}
 			</nav>
 
@@ -450,38 +360,4 @@
 		{/if}
 	</div>
 
-	<!-- GitHub Device Flow Modal -->
-	{#if githubFlowActive && githubUserCode}
-		<div class="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm">
-			<div class="w-full max-w-sm rounded-lg border border-surface-600 bg-surface-800 p-6 shadow-2xl">
-				<h3 class="text-lg font-semibold text-white mb-1">Connect GitHub</h3>
-				<p class="text-sm text-gray-400 mb-4">Enter this code on GitHub to authorize Mortise:</p>
-				<code class="block rounded-lg bg-surface-900 border border-surface-600 px-4 py-3 text-center text-2xl font-mono font-bold text-white tracking-[0.3em] select-all mb-2">{githubUserCode}</code>
-				{#if githubCodeCopied}
-					<p class="text-xs text-success text-center mb-4">Copied to clipboard</p>
-				{:else}
-					<p class="text-xs text-gray-500 text-center mb-4">Click code to select, or copy manually</p>
-				{/if}
-				<a
-					href="https://github.com/login/device"
-					target="_blank"
-					rel="noopener noreferrer"
-					class="block w-full rounded-md bg-accent px-4 py-2 text-center text-sm font-medium text-white hover:bg-accent-hover mb-3"
-				>
-					Open github.com/login/device
-				</a>
-				<div class="flex items-center justify-center gap-2 text-xs text-gray-500">
-					<div class="h-3 w-3 animate-spin rounded-full border-2 border-gray-600 border-t-accent"></div>
-					Waiting for authorization...
-				</div>
-				<button
-					type="button"
-					onclick={cancelGitHubFlow}
-					class="mt-4 w-full text-center text-xs text-gray-500 hover:text-gray-300"
-				>
-					Cancel
-				</button>
-			</div>
-		</div>
-	{/if}
 {/if}

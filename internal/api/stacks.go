@@ -6,12 +6,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
+	"github.com/MC-Meesh/mortise/internal/templates"
 )
 
 type createStackRequest struct {
@@ -59,15 +61,20 @@ func (s *Server) CreateStack(w http.ResponseWriter, r *http.Request) {
 	var bundledFiles map[string]string
 
 	if req.Template != "" {
-		bundle, err := resolveTemplate(req.Template, req.Vars)
+		tpl, err := templates.Load(req.Template)
 		if err != nil {
 			writeJSON(w, http.StatusBadRequest, errorResponse{err.Error()})
 			return
 		}
-		composeYAML = bundle.Compose
-		bundledFiles = bundle.Files
+		composed, err := substituteVars(tpl.Compose, req.Vars)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, errorResponse{err.Error()})
+			return
+		}
+		composeYAML = composed
+		bundledFiles = tpl.Files
 		if stackPrefix == "" {
-			stackPrefix = req.Template
+			stackPrefix = tpl.Name
 		}
 	}
 
@@ -180,53 +187,50 @@ type templateInfo struct {
 }
 
 type serviceInfo struct {
-	Name        string `json:"name"`
-	Description string `json:"description"`
-	Image       string `json:"image"`
-	Required    bool   `json:"required"`
+	Name     string `json:"name"`
+	Image    string `json:"image"`
+	Required bool   `json:"required"`
 }
 
 func (s *Server) ListTemplates(w http.ResponseWriter, r *http.Request) {
-	templates := []templateInfo{
-		{
-			Name:        "supabase",
-			Description: "Self-hosted Supabase (auth, database, storage, realtime, API gateway)",
-			Services: []serviceInfo{
-				{Name: "postgres", Description: "PostgreSQL database", Image: "supabase/postgres:15.6.1.143", Required: true},
-				{Name: "auth", Description: "GoTrue authentication", Image: "supabase/gotrue:v2.164.0", Required: false},
-				{Name: "rest", Description: "PostgREST API", Image: "postgrest/postgrest:v12.2.3", Required: false},
-				{Name: "storage", Description: "File storage API", Image: "supabase/storage-api:v1.11.13", Required: false},
-				{Name: "realtime", Description: "Realtime WebSocket server", Image: "supabase/realtime:v2.85.2", Required: false},
-				{Name: "studio", Description: "Supabase dashboard UI", Image: "supabase/studio:2026.04.13-sha-e95f1cc", Required: false},
-			},
-		},
+	names, err := templates.List()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorResponse{"failed to list templates: " + err.Error()})
+		return
 	}
-	writeJSON(w, http.StatusOK, templates)
-}
 
-// templateBundle is a docker-compose YAML with any referenced files bundled.
-type templateBundle struct {
-	Compose string            // docker-compose.yml content
-	Files   map[string]string // host path -> file content (for volume mounts)
-}
-
-// resolveTemplate returns the compose YAML and bundled files for a built-in template.
-func resolveTemplate(name string, vars map[string]string) (*templateBundle, error) {
-	switch name {
-	case "supabase":
-		composed, err := substituteVars(supabaseTemplate, vars)
+	var result []templateInfo
+	for _, name := range names {
+		tpl, err := templates.Load(name)
 		if err != nil {
-			return nil, err
+			continue
 		}
-		return &templateBundle{
-			Compose: composed,
-			Files: map[string]string{
-				"./volumes/db/init/00-init.sql": supabaseInitSQL,
-			},
-		}, nil
-	default:
-		return nil, fmt.Errorf("unknown template %q", name)
+		// Parse the compose to extract service info.
+		cf, err := parseCompose(tpl.Compose)
+		if err != nil {
+			continue
+		}
+		requiredSet := make(map[string]bool, len(tpl.Required))
+		for _, r := range tpl.Required {
+			requiredSet[r] = true
+		}
+		var services []serviceInfo
+		for svcName, svc := range cf.Services {
+			services = append(services, serviceInfo{
+				Name:     svcName,
+				Image:    svc.Image,
+				Required: requiredSet[svcName],
+			})
+		}
+		// Sort for deterministic output.
+		sort.Slice(services, func(i, j int) bool { return services[i].Name < services[j].Name })
+		result = append(result, templateInfo{
+			Name:        tpl.Name,
+			Description: tpl.Description,
+			Services:    services,
+		})
 	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 func generateRandomHex(n int) string {
@@ -235,7 +239,7 @@ func generateRandomHex(n int) string {
 	return hex.EncodeToString(b)
 }
 
-// substituteVars replaces ${VAR_NAME} placeholders in the template.
+// substituteVars replaces ${VAR_NAME} placeholders in the compose YAML.
 // Any unresolved variables are auto-generated as random 32-char hex strings.
 // This means templates "just work" without requiring the user to provide secrets.
 func substituteVars(tpl string, vars map[string]string) (string, error) {
@@ -263,110 +267,3 @@ func substituteVars(tpl string, vars map[string]string) (string, error) {
 	}
 	return result, nil
 }
-
-const supabaseTemplate = `services:
-  postgres:
-    image: supabase/postgres:15.6.1.143
-    ports: ["5432:5432"]
-    volumes:
-      - ./volumes/db/init/00-init.sql:/docker-entrypoint-initdb.d/00-init.sql
-    environment:
-      POSTGRES_PASSWORD: ${PG_PASSWORD}
-      POSTGRES_DB: supabase
-      JWT_SECRET: ${JWT_SECRET}
-      SUPABASE_AUTH_ADMIN_PASSWORD: ${PG_PASSWORD}
-      SUPABASE_STORAGE_ADMIN_PASSWORD: ${PG_PASSWORD}
-
-  auth:
-    image: supabase/gotrue:v2.164.0
-    depends_on: [postgres]
-    ports: ["9999:9999"]
-    environment:
-      GOTRUE_DB_DRIVER: postgres
-      GOTRUE_DB_DATABASE_URL: postgres://supabase_admin:${PG_PASSWORD}@supabase-postgres-production:5432/supabase?sslmode=disable
-      DATABASE_URL: postgres://supabase_admin:${PG_PASSWORD}@supabase-postgres-production:5432/supabase?sslmode=disable
-      GOTRUE_JWT_SECRET: ${JWT_SECRET}
-      GOTRUE_JWT_EXP: "3600"
-      GOTRUE_SITE_URL: http://localhost
-      API_EXTERNAL_URL: http://localhost
-      GOTRUE_API_HOST: 0.0.0.0
-      GOTRUE_EXTERNAL_EMAIL_ENABLED: "true"
-      GOTRUE_MAILER_AUTOCONFIRM: "true"
-      GOTRUE_DISABLE_SIGNUP: "false"
-      PORT: "9999"
-
-  rest:
-    image: postgrest/postgrest:v12.2.3
-    depends_on: [postgres]
-    ports: ["3000:3000"]
-    environment:
-      PGRST_DB_URI: postgres://supabase_admin:${PG_PASSWORD}@supabase-postgres-production:5432/supabase
-      PGRST_DB_SCHEMA: public,storage
-      PGRST_DB_ANON_ROLE: anon
-      PGRST_JWT_SECRET: ${JWT_SECRET}
-      PGRST_DB_USE_LEGACY_GUCS: "false"
-
-  storage:
-    image: supabase/storage-api:v1.11.13
-    depends_on: [postgres]
-    ports: ["5000:5000"]
-    environment:
-      DATABASE_URL: postgres://supabase_admin:${PG_PASSWORD}@supabase-postgres-production:5432/supabase
-      PGRST_JWT_SECRET: ${JWT_SECRET}
-      ANON_KEY: ${JWT_SECRET}
-      SERVICE_KEY: ${JWT_SECRET}
-      STORAGE_BACKEND: file
-      FILE_STORAGE_BACKEND_PATH: /var/lib/storage
-
-  realtime:
-    image: supabase/realtime:v2.85.2
-    depends_on: [postgres]
-    ports: ["4000:4000"]
-    environment:
-      DB_HOST: supabase-postgres-production
-      DB_PORT: "5432"
-      DB_USER: supabase_admin
-      DB_PASSWORD: ${PG_PASSWORD}
-      DB_NAME: supabase
-      JWT_SECRET: ${JWT_SECRET}
-      API_JWT_SECRET: ${JWT_SECRET}
-      APP_NAME: realtime
-      SELF_HOSTED: "true"
-      PORT: "4000"
-      SECRET_KEY_BASE: ${SECRET_KEY_BASE}
-      METRICS_JWT_SECRET: ${JWT_SECRET}
-      ERL_AFLAGS: "-proto_dist inet_tcp"
-      RLIMIT_NOFILE: "10000"
-      FLY_ALLOC_ID: fly123
-      FLY_APP_NAME: realtime
-      DNS_NODES: "''"
-
-  studio:
-    image: supabase/studio:2026.04.13-sha-e95f1cc
-    depends_on: [postgres]
-    ports: ["3001:3000"]
-    environment:
-      STUDIO_PG_META_URL: http://supabase-rest-production:3000
-      POSTGRES_PASSWORD: ${PG_PASSWORD}
-      SUPABASE_URL: http://supabase-rest-production:3000
-      SUPABASE_REST_URL: http://supabase-rest-production:3000/rest/v1
-      SUPABASE_ANON_KEY: ${ANON_KEY}
-      SUPABASE_SERVICE_ROLE_KEY: ${SERVICE_ROLE_KEY}
-      DEFAULT_ORGANIZATION_NAME: Default Organization
-      DEFAULT_PROJECT_NAME: Default Project
-      PORT: "3000"
-`
-
-// supabaseInitSQL is bundled alongside the compose template.
-// It's referenced by the compose volumes entry and resolved by the generic
-// compose parser — no Supabase-specific Go logic needed.
-const supabaseInitSQL = `-- GoTrue requires these enum types and schemas before its migrations run
-CREATE SCHEMA IF NOT EXISTS auth;
-CREATE SCHEMA IF NOT EXISTS storage;
-CREATE SCHEMA IF NOT EXISTS realtime;
-DO $$ BEGIN CREATE TYPE auth.factor_type AS ENUM ('totp', 'webauthn'); EXCEPTION WHEN duplicate_object THEN null; END $$;
-DO $$ BEGIN CREATE TYPE auth.factor_status AS ENUM ('unverified', 'verified'); EXCEPTION WHEN duplicate_object THEN null; END $$;
-DO $$ BEGIN CREATE TYPE auth.aal_level AS ENUM ('aal1', 'aal2', 'aal3'); EXCEPTION WHEN duplicate_object THEN null; END $$;
-DO $$ BEGIN CREATE TYPE auth.code_challenge_method AS ENUM ('s256', 'plain'); EXCEPTION WHEN duplicate_object THEN null; END $$;
-DO $$ BEGIN CREATE TYPE auth.one_time_token_type AS ENUM ('confirmation_token', 'reauthentication_token', 'recovery_token', 'email_change_token_new', 'email_change_token_current', 'phone_change_token'); EXCEPTION WHEN duplicate_object THEN null; END $$;
-`
