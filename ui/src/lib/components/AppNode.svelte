@@ -1,7 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import type { NodeProps } from '@xyflow/svelte';
-	import { Handle, Position } from '@xyflow/svelte';
 	import { GitBranch, Container, Cloud, Clock, HardDrive } from 'lucide-svelte';
 	import type { App, AppPhase } from '$lib/types';
 
@@ -90,10 +89,6 @@
 	onclick={() => nodeData.onOpen(app.metadata.name)}
 	onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') nodeData.onOpen(app.metadata.name); }}
 >
-	<!-- Handles -->
-	<Handle type="target" position={Position.Left} />
-	<Handle type="source" position={Position.Right} />
-
 	<!-- Header row -->
 	<div class="flex items-center justify-between gap-2">
 		<div class="flex items-center gap-1.5 min-w-0">
