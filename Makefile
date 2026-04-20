@@ -43,7 +43,8 @@ help: ## Display this help.
 
 .PHONY: manifests
 manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects.
-	"$(CONTROLLER_GEN)" rbac:roleName=manager-role crd webhook paths="./..." output:crd:artifacts:config=config/crd/bases
+	@mkdir -p config/webhook
+	"$(CONTROLLER_GEN)" rbac:roleName=manager-role crd webhook paths="./..." output:crd:artifacts:config=config/crd/bases output:webhook:dir=config/webhook
 	# Sync generated CRDs into the Helm chart so `helm install` ships the real schema.
 	cp config/crd/bases/*.yaml charts/mortise/crds/
 

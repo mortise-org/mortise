@@ -2803,6 +2803,9 @@ var _ = Describe("App Controller — git source", func() {
 		ctx := context.Background()
 
 		It("should inject sharedVars into every environment's Deployment", func() {
+			withStagingEnv(ctx)
+			defer withoutStagingEnv(ctx)
+
 			appName := "shared-vars-multi-env"
 			app := &mortisev1alpha1.App{
 				ObjectMeta: metav1.ObjectMeta{
@@ -3715,4 +3718,3 @@ func (c *deploymentConflictClient) Update(ctx context.Context, obj client.Object
 	}
 	return c.Client.Update(ctx, obj, opts...)
 }
-

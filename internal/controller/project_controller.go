@@ -30,7 +30,9 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
 	"github.com/MC-Meesh/mortise/internal/constants"
@@ -40,6 +42,10 @@ const (
 	// projectFinalizer ensures the Project's owned namespace is deleted before
 	// the CRD is removed, so cascade GC completes cleanly.
 	projectFinalizer = "mortise.dev/project-finalizer"
+
+	// DefaultProjectEnvironment is seeded into spec.environments when the
+	// controller observes an empty list. Matches Railway's default.
+	DefaultProjectEnvironment = "production"
 )
 
 // Condition types and reasons exposed on Project.status.conditions.
@@ -114,7 +120,7 @@ type ProjectReconciler struct {
 // +kubebuilder:rbac:groups=mortise.mortise.dev,resources=projects,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=mortise.mortise.dev,resources=projects/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=mortise.mortise.dev,resources=projects/finalizers,verbs=update
-// +kubebuilder:rbac:groups=mortise.mortise.dev,resources=apps,verbs=get;list;watch
+// +kubebuilder:rbac:groups=mortise.mortise.dev,resources=apps,verbs=get;list;watch;patch;update
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch;create;update;patch;delete
 
 func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -146,10 +152,20 @@ func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, nil
 	}
 
-	// Ensure finalizer so we can clean up the namespace on delete.
-	if controllerutil.AddFinalizer(&project, projectFinalizer) {
+	// Ensure finalizer and seed the default environment in a single spec
+	// update. Batching keeps the reconcile count down (the controller only
+	// has one meaningful "wait for spec write" barrier) and avoids the
+	// intermediate state where a Project has a finalizer but still no env.
+	specChanged := controllerutil.AddFinalizer(&project, projectFinalizer)
+	if len(project.Spec.Environments) == 0 {
+		project.Spec.Environments = []mortisev1alpha1.ProjectEnvironment{
+			{Name: DefaultProjectEnvironment},
+		}
+		specChanged = true
+	}
+	if specChanged {
 		if err := r.Update(ctx, &project); err != nil {
-			return ctrl.Result{}, fmt.Errorf("add finalizer: %w", err)
+			return ctrl.Result{}, fmt.Errorf("seed project spec defaults: %w", err)
 		}
 		// Requeue implicitly via the update event.
 		return ctrl.Result{}, nil
@@ -178,12 +194,69 @@ func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, fmt.Errorf("count apps: %w", err)
 	}
 
+	// Cascade: if the project's env set changed since the last reconcile, bump
+	// an annotation on every App in the namespace so the App controller
+	// reconciles with the new env list. The bumped revision is just the
+	// generation — monotonic and guaranteed to change on any spec edit.
+	if envsChanged(project.Spec.Environments, project.Status.Environments) {
+		if err := r.cascadeEnvChange(ctx, &project, nsName); err != nil {
+			return ctrl.Result{}, fmt.Errorf("cascade env change: %w", err)
+		}
+	}
+
 	if err := r.markReady(ctx, &project, nsName, appCount, adopted); err != nil {
 		return ctrl.Result{}, fmt.Errorf("update status: %w", err)
 	}
 
 	return ctrl.Result{}, nil
 }
+
+// envsChanged reports whether the ordered list of project env names in spec
+// differs from what was previously reconciled into status.
+func envsChanged(spec []mortisev1alpha1.ProjectEnvironment, status []string) bool {
+	if len(spec) != len(status) {
+		return true
+	}
+	for i, env := range spec {
+		if env.Name != status[i] {
+			return true
+		}
+	}
+	return false
+}
+
+// cascadeEnvChange patches every App in the project's namespace with a
+// revision annotation so the App controller's informer fires. The annotation
+// value is the project's generation — bumped on any spec edit — so repeated
+// reconciles of the same generation are no-ops.
+func (r *ProjectReconciler) cascadeEnvChange(ctx context.Context, project *mortisev1alpha1.Project, nsName string) error {
+	var apps mortisev1alpha1.AppList
+	if err := r.List(ctx, &apps, client.InNamespace(nsName)); err != nil {
+		return fmt.Errorf("list apps: %w", err)
+	}
+	rev := fmt.Sprintf("%d", project.Generation)
+	for i := range apps.Items {
+		app := &apps.Items[i]
+		patch := client.MergeFrom(app.DeepCopy())
+		if app.Annotations == nil {
+			app.Annotations = map[string]string{}
+		}
+		if app.Annotations[ProjectEnvsRevAnnotation] == rev {
+			continue
+		}
+		app.Annotations[ProjectEnvsRevAnnotation] = rev
+		if err := r.Patch(ctx, app, patch); err != nil {
+			return fmt.Errorf("patch app %q: %w", app.Name, err)
+		}
+	}
+	return nil
+}
+
+// ProjectEnvsRevAnnotation is the App annotation the Project controller bumps
+// when the project's environment set changes. The App reconciler doesn't
+// read it — its only purpose is to force an informer event so the App
+// controller re-runs with the new project spec visible.
+const ProjectEnvsRevAnnotation = "mortise.dev/project-envs-rev"
 
 // ensureNamespace reconciles the Project's backing namespace. It returns
 // adopted=true when it just took ownership of a pre-existing namespace via
@@ -384,7 +457,19 @@ func (r *ProjectReconciler) markReady(ctx context.Context, project *mortisev1alp
 	project.Status.Phase = mortisev1alpha1.ProjectPhaseReady
 	project.Status.Namespace = nsName
 	project.Status.AppCount = appCount
+	project.Status.Environments = specEnvNames(project)
 	return r.Status().Update(ctx, project)
+}
+
+// specEnvNames projects spec.environments onto just the names, preserving
+// spec order. Status consumers use this to know which envs the controller
+// has actually observed (post-defaulting).
+func specEnvNames(project *mortisev1alpha1.Project) []string {
+	names := make([]string, 0, len(project.Spec.Environments))
+	for _, env := range project.Spec.Environments {
+		names = append(names, env.Name)
+	}
+	return names
 }
 
 // markFailed transitions the Project to Failed with a NamespaceReady=False
@@ -402,11 +487,33 @@ func (r *ProjectReconciler) markFailed(ctx context.Context, project *mortisev1al
 	return r.Status().Update(ctx, project)
 }
 
-// SetupWithManager sets up the controller with the Manager.
+// SetupWithManager sets up the controller with the Manager. Watches Apps so
+// that `status.appCount` stays current — App changes enqueue the owning
+// Project, identified via the namespace's `mortise.dev/project` label.
 func (r *ProjectReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	enqueueProjectForApp := handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []reconcile.Request {
+		app, ok := obj.(*mortisev1alpha1.App)
+		if !ok || app == nil {
+			return nil
+		}
+		// Apps live in namespaces named `project-{name}` (or an override).
+		// Look up the namespace's `mortise.dev/project` label to find the
+		// owning project — this handles the NamespaceOverride case too.
+		var ns corev1.Namespace
+		if err := r.Get(ctx, types.NamespacedName{Name: app.Namespace}, &ns); err != nil {
+			return nil
+		}
+		projectName := ns.Labels["mortise.dev/project"]
+		if projectName == "" {
+			return nil
+		}
+		return []reconcile.Request{{NamespacedName: types.NamespacedName{Name: projectName}}}
+	})
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&mortisev1alpha1.Project{}).
 		Owns(&corev1.Namespace{}).
+		Watches(&mortisev1alpha1.App{}, enqueueProjectForApp).
 		Named("project").
 		Complete(r)
 }

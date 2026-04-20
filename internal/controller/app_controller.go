@@ -146,10 +146,31 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		return ctrl.Result{}, fmt.Errorf("reconcile credentials secret: %w", err)
 	}
 
-	for i := range app.Spec.Environments {
-		env := &app.Spec.Environments[i]
+	// Environments are project-scoped: an App auto-exists in every
+	// `Project.Spec.Environments` entry, and `App.Spec.Environments[]`
+	// carries only per-env overrides. If the parent project isn't resolvable
+	// yet (just-created, being deleted, label missing) there's nothing to
+	// reconcile — skip workloads but keep the status pass so the UI sees the
+	// app's current state.
+	project, err := r.fetchParentProject(ctx, &app)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("fetch parent project: %w", err)
+	}
+	var resolvedEnvs []mortisev1alpha1.Environment
+	if project != nil {
+		resolvedEnvs = resolveEnvs(project, &app)
+	}
+
+	for i := range resolvedEnvs {
+		env := &resolvedEnvs[i]
 
 		if app.Spec.Kind == mortisev1alpha1.AppKindCron {
+			// Cron envs without a schedule can't produce a valid CronJob.
+			// Auto-membership in a project env doesn't imply a schedule, so
+			// skip silently — users supply per-env schedules via overrides.
+			if env.Schedule == "" {
+				continue
+			}
 			if err := r.reconcileCronJob(ctx, &app, env, credentialsHash); err != nil {
 				return ctrl.Result{}, fmt.Errorf("reconcile cronjob for env %s: %w", env.Name, err)
 			}
@@ -171,7 +192,17 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		}
 	}
 
-	if err := r.updateStatus(ctx, &app); err != nil {
+	// GC resources left behind by envs that were removed from the project or
+	// opted out via `Enabled: false`. Owner references + foreground delete
+	// handle cascade; we only need to trigger the delete on the top-level
+	// Deployment / CronJob / Service / Ingress for each stale env.
+	if project != nil {
+		if err := r.gcStaleEnvResources(ctx, &app, resolvedEnvs); err != nil {
+			return ctrl.Result{}, fmt.Errorf("gc stale env resources: %w", err)
+		}
+	}
+
+	if err := r.updateStatus(ctx, &app, resolvedEnvs); err != nil {
 		return ctrl.Result{}, fmt.Errorf("update status: %w", err)
 	}
 
@@ -180,7 +211,7 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	// because readyReplicas stays at 0 — the Deployment status doesn't change.
 	if app.Status.Phase == mortisev1alpha1.AppPhaseDeploying ||
 		app.Status.Phase == mortisev1alpha1.AppPhaseCrashLooping {
-		return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
+		return ctrl.Result{RequeueAfter: healthRequeueAfter(&app, r.clock())}, nil
 	}
 
 	return ctrl.Result{}, nil
@@ -688,6 +719,8 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 		},
 	}
 
+	desired.Spec.ProgressDeadlineSeconds = ptr.To(int32(120))
+
 	if err := controllerutil.SetControllerReference(app, desired, r.Scheme); err != nil {
 		return err
 	}
@@ -738,6 +771,9 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 		if !equality.Semantic.DeepEqual(existing.Spec.Template.ObjectMeta.Annotations, desired.Spec.Template.ObjectMeta.Annotations) {
 			needsUpdate = true
 		}
+		if existing.Spec.ProgressDeadlineSeconds == nil || *existing.Spec.ProgressDeadlineSeconds != *desired.Spec.ProgressDeadlineSeconds {
+			needsUpdate = true
+		}
 
 		if !needsUpdate {
 			return nil
@@ -745,6 +781,7 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 
 		// Apply our fields onto the existing Deployment (preserves k8s defaults).
 		existing.Spec.Replicas = desired.Spec.Replicas
+		existing.Spec.ProgressDeadlineSeconds = desired.Spec.ProgressDeadlineSeconds
 		existing.Spec.Template.Spec.Containers[0].Image = desiredContainer.Image
 		existing.Spec.Template.Spec.Containers[0].Env = desiredContainer.Env
 		existing.Spec.Template.Spec.Containers[0].Ports = desiredContainer.Ports
@@ -1512,16 +1549,46 @@ func (r *AppReconciler) checkPodCrashLoop(ctx context.Context, app *mortisev1alp
 
 	for _, pod := range podList.Items {
 		for _, cs := range pod.Status.ContainerStatuses {
-			if cs.State.Waiting != nil && cs.State.Waiting.Reason == "CrashLoopBackOff" {
-				msg := fmt.Sprintf("Container crashing (restart #%d)", cs.RestartCount)
-				if cs.LastTerminationState.Terminated != nil {
-					t := cs.LastTerminationState.Terminated
-					msg += fmt.Sprintf(", exit code %d", t.ExitCode)
-					if t.Reason != "" {
-						msg += fmt.Sprintf(" (%s)", t.Reason)
+			if cs.State.Waiting != nil && cs.State.Waiting.Reason != "" {
+				var msg string
+				if cs.State.Waiting.Reason == "CrashLoopBackOff" {
+					msg = fmt.Sprintf("Container crashing (restart #%d)", cs.RestartCount)
+					if cs.LastTerminationState.Terminated != nil {
+						t := cs.LastTerminationState.Terminated
+						msg += fmt.Sprintf(", exit code %d", t.ExitCode)
+						if t.Reason != "" {
+							msg += fmt.Sprintf(" (%s)", t.Reason)
+						}
+					}
+					msg += " — check logs for details"
+				} else {
+					msg = fmt.Sprintf("Container not ready: %s", cs.State.Waiting.Reason)
+					if cs.State.Waiting.Message != "" {
+						msg += fmt.Sprintf(" — %s", cs.State.Waiting.Message)
 					}
 				}
-				msg += " — check logs for details"
+				return msg
+			}
+		}
+		for _, cs := range pod.Status.InitContainerStatuses {
+			if cs.State.Waiting != nil && cs.State.Waiting.Reason != "" {
+				var msg string
+				if cs.State.Waiting.Reason == "CrashLoopBackOff" {
+					msg = fmt.Sprintf("Init container crashing (restart #%d)", cs.RestartCount)
+					if cs.LastTerminationState.Terminated != nil {
+						t := cs.LastTerminationState.Terminated
+						msg += fmt.Sprintf(", exit code %d", t.ExitCode)
+						if t.Reason != "" {
+							msg += fmt.Sprintf(" (%s)", t.Reason)
+						}
+					}
+					msg += " — check logs for details"
+				} else {
+					msg = fmt.Sprintf("Init container not ready: %s", cs.State.Waiting.Reason)
+					if cs.State.Waiting.Message != "" {
+						msg += fmt.Sprintf(" — %s", cs.State.Waiting.Message)
+					}
+				}
 				return msg
 			}
 		}
@@ -1536,18 +1603,59 @@ func (r *AppReconciler) clock() clock.Clock {
 	return clock.RealClock{}
 }
 
-func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.App) error {
+// healthRequeueAfter returns a backoff requeue interval based on how long the
+// app has been in its current unhealthy phase. Uses PodHealthy condition
+// LastTransitionTime for CrashLooping; DeployHistory timestamp for Deploying.
+func healthRequeueAfter(app *mortisev1alpha1.App, clk clock.Clock) time.Duration {
+	var since time.Duration
+
+	if app.Status.Phase == mortisev1alpha1.AppPhaseCrashLooping {
+		cond := meta.FindStatusCondition(app.Status.Conditions, "PodHealthy")
+		if cond != nil && !cond.LastTransitionTime.IsZero() {
+			since = clk.Since(cond.LastTransitionTime.Time)
+		}
+	} else if app.Status.Phase == mortisev1alpha1.AppPhaseDeploying {
+		for _, es := range app.Status.Environments {
+			if len(es.DeployHistory) > 0 && !es.DeployHistory[0].Timestamp.IsZero() {
+				d := clk.Since(es.DeployHistory[0].Timestamp.Time)
+				if since == 0 || d < since {
+					since = d
+				}
+			}
+		}
+	}
+
+	switch {
+	case since < 2*time.Minute:
+		return 15 * time.Second
+	case since < 5*time.Minute:
+		return 30 * time.Second
+	case since < 15*time.Minute:
+		return time.Minute
+	case since < 30*time.Minute:
+		return 2 * time.Minute
+	default:
+		return 5 * time.Minute
+	}
+}
+
+// updateStatus writes EnvironmentStatus entries driven by the resolved env
+// list (project envs × app overrides, honoring Enabled: false). When the
+// parent project isn't reachable (nil resolvedEnvs), Status.Environments is
+// cleared rather than stale — callers have already logged the underlying
+// cause at fetch time.
+func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.App, resolvedEnvs []mortisev1alpha1.Environment) error {
 	// Index existing environment statuses by name for deploy history carryover.
 	existingByName := make(map[string]mortisev1alpha1.EnvironmentStatus, len(app.Status.Environments))
 	for _, es := range app.Status.Environments {
 		existingByName[es.Name] = es
 	}
 
-	envStatuses := make([]mortisev1alpha1.EnvironmentStatus, 0, len(app.Spec.Environments))
+	envStatuses := make([]mortisev1alpha1.EnvironmentStatus, 0, len(resolvedEnvs))
 
 	isCron := app.Spec.Kind == mortisev1alpha1.AppKindCron
 
-	for _, env := range app.Spec.Environments {
+	for _, env := range resolvedEnvs {
 		es := mortisev1alpha1.EnvironmentStatus{
 			Name:         env.Name,
 			CurrentImage: app.Spec.Source.Image,
@@ -1589,7 +1697,7 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 	for _, es := range envStatuses {
 		expectedReplicas := int32(1)
 		if !isCron {
-			for _, env := range app.Spec.Environments {
+			for _, env := range resolvedEnvs {
 				if env.Name == es.Name && env.Replicas != nil {
 					expectedReplicas = *env.Replicas
 				}
@@ -1917,8 +2025,17 @@ func (r *AppReconciler) reconcileExternalSource(ctx context.Context, app *mortis
 		return ctrl.Result{}, fmt.Errorf("reconcile credentials secret: %w", err)
 	}
 
-	for i := range app.Spec.Environments {
-		env := &app.Spec.Environments[i]
+	project, err := r.fetchParentProject(ctx, app)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("fetch parent project: %w", err)
+	}
+	var resolvedEnvs []mortisev1alpha1.Environment
+	if project != nil {
+		resolvedEnvs = resolveEnvs(project, app)
+	}
+
+	for i := range resolvedEnvs {
+		env := &resolvedEnvs[i]
 
 		if app.Spec.Network.Public && env.Domain != "" {
 			if err := r.reconcileExternalNameService(ctx, app, env); err != nil {

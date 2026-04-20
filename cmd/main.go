@@ -44,6 +44,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
+	"github.com/MC-Meesh/mortise/internal/admission"
 	"github.com/MC-Meesh/mortise/internal/api"
 	"github.com/MC-Meesh/mortise/internal/auth"
 	"github.com/MC-Meesh/mortise/internal/build"
@@ -412,6 +413,26 @@ func main() {
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "PreviewEnvironment")
 		os.Exit(1)
+	}
+	// Admission webhooks — enforce cross-resource invariants (App env names
+	// must exist on the parent Project; a Project can't delete its last env
+	// or remove an env still referenced by an App override).
+	//
+	// Wiring is conditional on webhook TLS being configured, so `make dev-up`
+	// continues to work without cert-manager churn. Production installs pass
+	// --webhook-cert-path and the webhooks engage automatically.
+	if webhookCertPath != "" {
+		if err := (&admission.AppValidator{Client: mgr.GetClient()}).SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "Failed to register admission webhook", "webhook", "App")
+			os.Exit(1)
+		}
+		if err := (&admission.ProjectValidator{Client: mgr.GetClient()}).SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "Failed to register admission webhook", "webhook", "Project")
+			os.Exit(1)
+		}
+	} else {
+		setupLog.Info("Webhook TLS not configured — admission validators disabled; same checks still run in the REST API layer",
+			"hint", "pass --webhook-cert-path to enable admission webhooks")
 	}
 	// +kubebuilder:scaffold:builder
 

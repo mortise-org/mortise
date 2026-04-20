@@ -27,6 +27,7 @@
 	let app = $state<App | null>(null);
 	let loading = $state(true);
 	let error = $state('');
+	let logsEverViewed = $state(false);
 
 	onMount(async () => {
 		try {
@@ -72,6 +73,8 @@
 			optimisticPhase = null;
 		}
 	});
+
+	$effect(() => { if (store.drawerTab === 'logs') logsEverViewed = true; });
 
 	function applyOptimisticPhase(phase: string) {
 		optimisticPhase = phase;
@@ -239,8 +242,6 @@
 				<DeploymentsTab {project} {app} phase={effectivePhase} onOptimisticPhase={applyOptimisticPhase} />
 			{:else if store.drawerTab === 'variables'}
 				<VariablesTab {project} {app} onAppUpdated={(updated) => { app = updated; }} />
-			{:else if store.drawerTab === 'logs'}
-				<LogsTab {project} {app} />
 			{:else if store.drawerTab === 'metrics'}
 				<MetricsTab {app} />
 			{:else if store.drawerTab === 'settings'}
@@ -250,6 +251,11 @@
 					onAppUpdated={(updated) => { app = updated; }}
 					onAppDeleted={() => onClose()}
 				/>
+			{/if}
+			{#if logsEverViewed || store.drawerTab === 'logs'}
+				<div class="{store.drawerTab !== 'logs' ? 'hidden' : ''}">
+					<LogsTab {project} {app} />
+				</div>
 			{/if}
 		{/if}
 	</div>

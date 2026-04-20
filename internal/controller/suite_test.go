@@ -26,6 +26,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -84,7 +85,62 @@ var _ = BeforeSuite(func() {
 	k8sClient, err = client.New(cfg, client.Options{Scheme: scheme.Scheme})
 	Expect(err).NotTo(HaveOccurred())
 	Expect(k8sClient).NotTo(BeNil())
+
+	// App controller tests create Apps in the `default` namespace for
+	// convenience. Now that Apps must belong to a parent Project, seed a
+	// synthetic Project (with the standard production + staging envs) and
+	// wire it to the default namespace via the `mortise.dev/project` label.
+	seedDefaultProject(ctx)
 })
+
+// withStagingEnv adds `staging` to the default-project's environments. Tests
+// that need multi-env reconcile call this first and pair it with
+// withoutStagingEnv in a deferred cleanup so they don't leak state.
+func withStagingEnv(ctx context.Context) {
+	var proj mortisev1alpha1.Project
+	Expect(k8sClient.Get(ctx, client.ObjectKey{Name: "default-project"}, &proj)).To(Succeed())
+	for _, e := range proj.Spec.Environments {
+		if e.Name == "staging" {
+			return
+		}
+	}
+	proj.Spec.Environments = append(proj.Spec.Environments,
+		mortisev1alpha1.ProjectEnvironment{Name: "staging", DisplayOrder: 1})
+	Expect(k8sClient.Update(ctx, &proj)).To(Succeed())
+}
+
+func withoutStagingEnv(ctx context.Context) {
+	var proj mortisev1alpha1.Project
+	Expect(k8sClient.Get(ctx, client.ObjectKey{Name: "default-project"}, &proj)).To(Succeed())
+	kept := proj.Spec.Environments[:0]
+	for _, e := range proj.Spec.Environments {
+		if e.Name != "staging" {
+			kept = append(kept, e)
+		}
+	}
+	proj.Spec.Environments = kept
+	Expect(k8sClient.Update(ctx, &proj)).To(Succeed())
+}
+
+// seedDefaultProject creates the Project record that parents Apps living in
+// the `default` namespace, and labels that namespace so `fetchParentProject`
+// resolves via the override path.
+func seedDefaultProject(ctx context.Context) {
+	proj := &mortisev1alpha1.Project{}
+	proj.Name = "default-project"
+	proj.Spec.Environments = []mortisev1alpha1.ProjectEnvironment{
+		{Name: "production"},
+	}
+	Expect(k8sClient.Create(ctx, proj)).To(Succeed())
+
+	var ns corev1.Namespace
+	Expect(k8sClient.Get(ctx, client.ObjectKey{Name: "default"}, &ns)).To(Succeed())
+	if ns.Labels == nil {
+		ns.Labels = map[string]string{}
+	}
+	ns.Labels["mortise.dev/project"] = proj.Name
+	Expect(k8sClient.Update(ctx, &ns)).To(Succeed())
+}
 
 var _ = AfterSuite(func() {
 	By("tearing down the test environment")

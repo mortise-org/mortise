@@ -74,6 +74,36 @@ spec:
                 description: Description is a short, human-readable note about the
                   project.
                 type: string
+              environments:
+                description: |-
+                  Environments declares the project-level deployment environments. Every
+                  App in the project reconciles into every entry here by default. If
+                  empty, the controller seeds a single `production` entry.
+                items:
+                  description: |-
+                    ProjectEnvironment declares a named deployment environment that belongs to
+                    the Project. Every App in the Project auto-exists in every ProjectEnvironment;
+                    `App.Spec.Environments[]` carries only per-env overrides (resources, env vars,
+                    domain, etc.) and an optional `enabled` opt-out for that App × env pair.
+                  properties:
+                    displayOrder:
+                      description: |-
+                        DisplayOrder controls the UI sort order in the navbar env selector and
+                        project settings list. Lower values appear first; ties fall back to
+                        creation order.
+                      type: integer
+                    name:
+                      description: |-
+                        Name is the environment's DNS-label identifier (e.g. "production",
+                        "staging"). Referenced from App overrides, navbar selector, preview envs,
+                        and resource labels (`mortise.dev/environment`).
+                      maxLength: 63
+                      pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                      type: string
+                  required:
+                  - name
+                  type: object
+                type: array
               namespaceOverride:
                 description: |-
                   NamespaceOverride, when set, makes the controller use this name verbatim
@@ -192,6 +222,16 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              environments:
+                description: |-
+                  Environments is the reconciled set of project environment names. Mirrors
+                  `spec.environments[].name` after the controller has applied defaulting
+                  (e.g. auto-seed `production`) and validation. UI clients should read
+                  from `spec.environments` for ordering and from here to confirm the
+                  controller has observed a spec change.
+                items:
+                  type: string
+                type: array
               namespace:
                 description: Namespace is the name of the Kubernetes namespace backing
                   this Project.

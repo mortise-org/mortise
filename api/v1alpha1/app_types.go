@@ -221,8 +221,18 @@ type ResourceRequirements struct {
 }
 
 type Environment struct {
+	// Name references a `ProjectEnvironment.Name` on the parent Project. The
+	// admission webhook rejects names not present on the parent Project.
 	// +kubebuilder:validation:Required
-	Name          string               `json:"name"`
+	Name string `json:"name"`
+
+	// Enabled, when set to false, opts this App out of the named project
+	// environment. The App controller GCs any resources it previously
+	// reconciled for that env. A nil pointer means "enabled" — Apps
+	// auto-participate in every project environment by default.
+	// +optional
+	Enabled *bool `json:"enabled,omitempty"`
+
 	Replicas      *int32               `json:"replicas,omitempty"`
 	Resources     ResourceRequirements `json:"resources,omitempty"`
 	Env           []EnvVar             `json:"env,omitempty"`
@@ -367,6 +377,12 @@ type AppSpec struct {
 	// +optional
 	SharedVars []EnvVar `json:"sharedVars,omitempty"`
 
+	// Environments carries per-environment overrides (resources, env vars,
+	// domain, replicas, etc.) for the project-level environments declared on
+	// the parent `Project.Spec.Environments`. Any App auto-exists in every
+	// project env; entries here only tune behavior for a specific env or opt
+	// out via `Enabled: false`. Names must match a `ProjectEnvironment.Name`
+	// on the parent Project (enforced by the admission webhook).
 	Environments []Environment `json:"environments,omitempty"`
 }
 

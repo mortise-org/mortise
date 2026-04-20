@@ -100,6 +100,9 @@
 	let advancedOpen = $state(false);
 	let watchPathsDiffer = $state(false);
 
+	let userEnvVars = $state<Array<{ name: string; value: string }>>([]);
+	let envVarsOpen = $state(false);
+
 	// External credentials
 	let externalCredentials = $state<Array<{ name: string; value: string }>>([]);
 
@@ -316,6 +319,7 @@
 	}
 
 	function buildSpec(): AppSpec {
+		const filteredUserEnv: Array<{ name: string; value: string }> = userEnvVars.filter(e => e.name.trim() !== '');
 		const baseEnv: AppSpec['environments'] = [{ name: 'production', replicas: 1, ...(domain ? { domain } : {}) }];
 
 		if (selectedType === 'git') {
@@ -339,7 +343,7 @@
 				network: { public: true },
 				environments: appKind === 'cron'
 					? [{ name: 'production', replicas: 0, annotations: { 'mortise.dev/schedule': schedule }, ...(domain ? { domain } : {}) }]
-					: baseEnv,
+					: [{ ...baseEnv[0], ...(filteredUserEnv.length ? { env: filteredUserEnv } : {}) }],
 				...(appKind === 'cron' ? { kind: 'cron' as const } : {})
 			} as AppSpec;
 		}
@@ -349,7 +353,10 @@
 				? [{ name: 'production', replicas: 0, annotations: { 'mortise.dev/schedule': schedule }, ...(domain ? { domain } : {}) }]
 				: [{
 					...baseEnv[0],
-					...(isDb ? { env: selectedDbTemplate!.env } : {})
+					env: [
+						...(isDb ? selectedDbTemplate!.env : []),
+						...filteredUserEnv
+					].filter(e => e.name) as Array<{ name: string; value: string }>
 				}];
 			return {
 				source: {
@@ -837,6 +844,55 @@
 							/>
 							<p class="mt-0.5 text-xs text-gray-500">Leave blank to auto-assign a subdomain.</p>
 						</div>
+					{/if}
+
+					<!-- Environment variables -->
+					{#if selectedType !== 'external' && selectedType !== 'supabase' && selectedType !== 'compose'}
+					<div class="border-t border-surface-600 pt-3">
+						<button
+							type="button"
+							onclick={() => (envVarsOpen = !envVarsOpen)}
+							class="flex items-center gap-1.5 text-sm text-gray-400 hover:text-white transition-colors"
+						>
+							<span class="text-xs">{envVarsOpen ? '▾' : '▸'}</span>
+							Environment variables
+							{#if userEnvVars.filter(e => e.name.trim()).length > 0}
+								<span class="rounded-full bg-accent/20 px-1.5 py-0.5 text-[10px] text-accent">
+									{userEnvVars.filter(e => e.name.trim()).length}
+								</span>
+							{/if}
+						</button>
+						{#if envVarsOpen}
+							<div class="mt-3 space-y-1.5">
+								{#each userEnvVars as _, i}
+									<div class="flex gap-2">
+										<input
+											type="text"
+											bind:value={userEnvVars[i].name}
+											placeholder="VARIABLE_NAME"
+											class="flex-1 rounded-md border border-surface-600 bg-surface-800 px-2 py-1.5 font-mono text-xs text-white placeholder-gray-500 outline-none focus:border-accent"
+										/>
+										<input
+											type="text"
+											bind:value={userEnvVars[i].value}
+											placeholder="value"
+											class="flex-1 rounded-md border border-surface-600 bg-surface-800 px-2 py-1.5 font-mono text-xs text-white placeholder-gray-500 outline-none focus:border-accent"
+										/>
+										<button
+											type="button"
+											onclick={() => (userEnvVars = userEnvVars.filter((_, idx) => idx !== i))}
+											class="rounded px-1.5 py-1 text-xs text-gray-500 hover:text-danger"
+										>✕</button>
+									</div>
+								{/each}
+								<button
+									type="button"
+									onclick={() => (userEnvVars = [...userEnvVars, { name: '', value: '' }])}
+									class="text-xs text-accent hover:text-accent-hover"
+								>+ Add variable</button>
+							</div>
+						{/if}
+					</div>
 					{/if}
 
 					<!-- Kind selector (git + image only) -->

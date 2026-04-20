@@ -51,6 +51,26 @@ type PreviewConfig struct {
 	BotPR bool `json:"botPR,omitempty"`
 }
 
+// ProjectEnvironment declares a named deployment environment that belongs to
+// the Project. Every App in the Project auto-exists in every ProjectEnvironment;
+// `App.Spec.Environments[]` carries only per-env overrides (resources, env vars,
+// domain, etc.) and an optional `enabled` opt-out for that App × env pair.
+type ProjectEnvironment struct {
+	// Name is the environment's DNS-label identifier (e.g. "production",
+	// "staging"). Referenced from App overrides, navbar selector, preview envs,
+	// and resource labels (`mortise.dev/environment`).
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
+	// +kubebuilder:validation:MaxLength=63
+	Name string `json:"name"`
+
+	// DisplayOrder controls the UI sort order in the navbar env selector and
+	// project settings list. Lower values appear first; ties fall back to
+	// creation order.
+	// +optional
+	DisplayOrder int `json:"displayOrder,omitempty"`
+}
+
 // ProjectSpec defines the desired state of a Project — the top-level grouping
 // above Apps. Each Project owns a Kubernetes namespace (by default
 // `project-{metadata.name}`) into which its Apps are placed.
@@ -58,6 +78,12 @@ type ProjectSpec struct {
 	// Description is a short, human-readable note about the project.
 	// +optional
 	Description string `json:"description,omitempty"`
+
+	// Environments declares the project-level deployment environments. Every
+	// App in the project reconciles into every entry here by default. If
+	// empty, the controller seeds a single `production` entry.
+	// +optional
+	Environments []ProjectEnvironment `json:"environments,omitempty"`
 
 	// Preview controls PR-driven preview environments at the Project scope
 	// (SPEC §5.8). When Enabled=true, every App in this Project participates
@@ -122,6 +148,14 @@ type ProjectStatus struct {
 	// AppCount is the number of Apps currently inside this Project's namespace.
 	// +optional
 	AppCount int32 `json:"appCount,omitempty"`
+
+	// Environments is the reconciled set of project environment names. Mirrors
+	// `spec.environments[].name` after the controller has applied defaulting
+	// (e.g. auto-seed `production`) and validation. UI clients should read
+	// from `spec.environments` for ordering and from here to confirm the
+	// controller has observed a spec change.
+	// +optional
+	Environments []string `json:"environments,omitempty"`
 
 	// +listType=map
 	// +listMapKey=type
