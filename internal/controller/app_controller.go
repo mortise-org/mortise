@@ -132,6 +132,10 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		return ctrl.Result{}, fmt.Errorf("reconcile PVCs: %w", err)
 	}
 
+	if err := r.reconcileConfigMaps(ctx, &app); err != nil {
+		return ctrl.Result{}, fmt.Errorf("reconcile config maps: %w", err)
+	}
+
 	if err := r.reconcileServiceAccount(ctx, &app); err != nil {
 		return ctrl.Result{}, fmt.Errorf("reconcile service account: %w", err)
 	}
@@ -618,10 +622,10 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 					Annotations: podAnno,
 				},
 				Spec: corev1.PodSpec{
-					ServiceAccountName:            app.Name,
-					Containers:                    containers,
-					Volumes:                       volumes,
-					},
+					ServiceAccountName: app.Name,
+					Containers:         containers,
+					Volumes:            volumes,
+				},
 			},
 		},
 	}
@@ -1063,6 +1067,51 @@ func (r *AppReconciler) reconcilePVCs(ctx context.Context, app *mortisev1alpha1.
 			needsUpdate = true
 		}
 		if needsUpdate {
+			if err := r.Update(ctx, &existing); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// reconcileConfigMaps creates or updates ConfigMaps for each configFile
+// defined on the App spec. These are mounted into containers as individual files.
+func (r *AppReconciler) reconcileConfigMaps(ctx context.Context, app *mortisev1alpha1.App) error {
+	for i, cf := range app.Spec.ConfigFiles {
+		cmName := fmt.Sprintf("%s-config-%d", app.Name, i)
+		fileName := filepath.Base(cf.Path)
+
+		desired := &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      cmName,
+				Namespace: app.Namespace,
+				Labels:    appLabels(app.Name, ""),
+			},
+			Data: map[string]string{
+				fileName: cf.Content,
+			},
+		}
+
+		if err := controllerutil.SetControllerReference(app, desired, r.Scheme); err != nil {
+			return err
+		}
+
+		var existing corev1.ConfigMap
+		err := r.Get(ctx, types.NamespacedName{Name: cmName, Namespace: app.Namespace}, &existing)
+		if errors.IsNotFound(err) {
+			if err := r.Create(ctx, desired); err != nil {
+				return err
+			}
+			continue
+		}
+		if err != nil {
+			return err
+		}
+
+		// Update content if changed.
+		if existing.Data[fileName] != cf.Content {
+			existing.Data = desired.Data
 			if err := r.Update(ctx, &existing); err != nil {
 				return err
 			}
@@ -1616,9 +1665,10 @@ func toResourceRequirements(r mortisev1alpha1.ResourceRequirements) corev1.Resou
 }
 
 func toVolumesAndMounts(app *mortisev1alpha1.App) ([]corev1.Volume, []corev1.VolumeMount) {
-	volumes := make([]corev1.Volume, 0, len(app.Spec.Storage))
-	mounts := make([]corev1.VolumeMount, 0, len(app.Spec.Storage))
+	volumes := make([]corev1.Volume, 0, len(app.Spec.Storage)+len(app.Spec.ConfigFiles))
+	mounts := make([]corev1.VolumeMount, 0, len(app.Spec.Storage)+len(app.Spec.ConfigFiles))
 
+	// PVC volumes
 	for _, v := range app.Spec.Storage {
 		volumes = append(volumes, corev1.Volume{
 			Name: v.Name,
@@ -1631,6 +1681,28 @@ func toVolumesAndMounts(app *mortisev1alpha1.App) ([]corev1.Volume, []corev1.Vol
 		mounts = append(mounts, corev1.VolumeMount{
 			Name:      v.Name,
 			MountPath: v.MountPath,
+		})
+	}
+
+	// ConfigMap file mounts — each config file is mounted individually
+	// using SubPath so it doesn't shadow other files in the directory.
+	for i, cf := range app.Spec.ConfigFiles {
+		cmName := fmt.Sprintf("%s-config-%d", app.Name, i)
+		volName := fmt.Sprintf("config-%d", i)
+		fileName := filepath.Base(cf.Path)
+
+		volumes = append(volumes, corev1.Volume{
+			Name: volName,
+			VolumeSource: corev1.VolumeSource{
+				ConfigMap: &corev1.ConfigMapVolumeSource{
+					LocalObjectReference: corev1.LocalObjectReference{Name: cmName},
+				},
+			},
+		})
+		mounts = append(mounts, corev1.VolumeMount{
+			Name:      volName,
+			MountPath: cf.Path,
+			SubPath:   fileName,
 		})
 	}
 

@@ -485,17 +485,17 @@ type DevicePollResponse struct {
 	Error  string `json:"error,omitempty"`
 }
 
-func (c *Client) RequestDeviceCode() (*DeviceCodeResponse, error) {
+func (c *Client) RequestDeviceCode(provider string) (*DeviceCodeResponse, error) {
 	var resp DeviceCodeResponse
-	if err := c.doJSON(http.MethodPost, c.BaseURL+"/api/auth/github/device", nil, &resp); err != nil {
+	if err := c.doJSON(http.MethodPost, c.BaseURL+"/api/auth/git/"+url.PathEscape(provider)+"/device", nil, &resp); err != nil {
 		return nil, err
 	}
 	return &resp, nil
 }
 
-func (c *Client) PollDeviceCode(deviceCode string) (*DevicePollResponse, error) {
+func (c *Client) PollDeviceCode(provider, deviceCode string) (*DevicePollResponse, error) {
 	var resp DevicePollResponse
-	if err := c.doJSON(http.MethodPost, c.BaseURL+"/api/auth/github/device/poll",
+	if err := c.doJSON(http.MethodPost, c.BaseURL+"/api/auth/git/"+url.PathEscape(provider)+"/device/poll",
 		map[string]string{"device_code": deviceCode}, &resp); err != nil {
 		return nil, err
 	}

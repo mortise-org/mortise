@@ -103,14 +103,20 @@ func newGitProviderDeleteCmd() *cobra.Command {
 
 func newGitProviderConnectGitHubCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "connect-github",
-		Short: "Connect GitHub via device flow",
+		Use:   "connect [provider]",
+		Short: "Connect a git provider via device flow",
+		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			provider := "github"
+			if len(args) > 0 {
+				provider = args[0]
+			}
+
 			c, err := newClientFromConfig()
 			if err != nil {
 				return err
 			}
-			code, err := c.RequestDeviceCode()
+			code, err := c.RequestDeviceCode(provider)
 			if err != nil {
 				return fmt.Errorf("requesting device code: %w", err)
 			}
@@ -127,13 +133,13 @@ func newGitProviderConnectGitHubCmd() *cobra.Command {
 
 			for {
 				time.Sleep(time.Duration(interval) * time.Second)
-				poll, err := c.PollDeviceCode(code.DeviceCode)
+				poll, err := c.PollDeviceCode(provider, code.DeviceCode)
 				if err != nil {
 					return fmt.Errorf("polling device code: %w", err)
 				}
 				switch poll.Status {
 				case "complete":
-					fmt.Println("GitHub connected!")
+					fmt.Printf("%s connected!\n", provider)
 					return nil
 				case "expired":
 					return fmt.Errorf("device code expired — please try again")

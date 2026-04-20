@@ -82,7 +82,7 @@ func TestGitProviderSubcommands(t *testing.T) {
 	for _, c := range gp.Commands() {
 		subs[c.Name()] = true
 	}
-	for _, name := range []string{"list", "create", "delete", "connect-github"} {
+	for _, name := range []string{"list", "create", "delete", "connect"} {
 		if !subs[name] {
 			t.Errorf("missing git-provider subcommand: %s", name)
 		}
@@ -91,7 +91,7 @@ func TestGitProviderSubcommands(t *testing.T) {
 
 func TestDeviceCodeRequest(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got, want := r.URL.Path, "/api/auth/github/device"; got != want {
+		if got, want := r.URL.Path, "/api/auth/git/github/device"; got != want {
 			t.Errorf("unexpected path: got %q, want %q", got, want)
 		}
 		if r.Method != http.MethodPost {
@@ -108,7 +108,7 @@ func TestDeviceCodeRequest(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(srv)
-	resp, err := c.RequestDeviceCode()
+	resp, err := c.RequestDeviceCode("github")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,7 +119,7 @@ func TestDeviceCodeRequest(t *testing.T) {
 
 func TestDeviceCodePoll(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got, want := r.URL.Path, "/api/auth/github/device/poll"; got != want {
+		if got, want := r.URL.Path, "/api/auth/git/github/device/poll"; got != want {
 			t.Errorf("unexpected path: got %q, want %q", got, want)
 		}
 		_ = json.NewEncoder(w).Encode(DevicePollResponse{Status: "complete"})
@@ -127,7 +127,7 @@ func TestDeviceCodePoll(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(srv)
-	resp, err := c.PollDeviceCode("dc123")
+	resp, err := c.PollDeviceCode("github", "dc123")
 	if err != nil {
 		t.Fatal(err)
 	}
