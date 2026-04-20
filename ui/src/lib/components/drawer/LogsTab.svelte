@@ -2,10 +2,26 @@
 	import { onMount } from 'svelte';
 	import { api } from '$lib/api';
 	import { Loader2 } from 'lucide-svelte';
-	import type { App, BuildLogsResponse, LogLineEvent, Pod } from '$lib/types';
+	import type { App, BuildLogsResponse, LogLineEvent, Pod, ProjectEnvironment } from '$lib/types';
 	import LogLine from '$lib/components/LogLine.svelte';
 
-	let { project, app }: { project: string; app: App } = $props();
+	let {
+		project,
+		app,
+		projectEnvs = [],
+		selectedEnv: selectedEnvProp = '',
+		onSelectEnv
+	}: {
+		project: string;
+		app: App;
+		projectEnvs?: ProjectEnvironment[];
+		selectedEnv?: string;
+		onSelectEnv?: (name: string) => void;
+	} = $props();
+
+	function chooseEnv(name: string) {
+		onSelectEnv?.(name);
+	}
 
 	// --- Sub-tabs ---
 	type SubTab = 'live' | 'build';
@@ -21,13 +37,14 @@
 	);
 
 	// --- Live sub-tab state ---
-	let selectedEnv = $state(app.spec.environments?.[0]?.name ?? 'production');
+	const selectedEnv = $derived(
+		selectedEnvProp || projectEnvs[0]?.name || app.spec.environments?.[0]?.name || 'production'
+	);
 	let pods = $state<Pod[]>([]);
+	let podsLoaded = $state(false);
 	let selectedPod = $state(''); // '' = all pods
 	let previous = $state(false);
-	type Range = 'now' | '15m' | '1h' | '6h' | '24h';
-	let range = $state<Range>('now');
-	let liveFollow = $state(true); // auto-scroll toggle (only meaningful when range = now)
+	let liveFollow = $state(true);
 	let events = $state<LogLineEvent[]>([]);
 	let es: EventSource | null = null;
 	let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -40,21 +57,6 @@
 	let buildPollHandle: ReturnType<typeof setInterval> | null = null;
 
 	const MAX_EVENTS = 2000;
-
-	function rangeToSeconds(r: Range): number | undefined {
-		switch (r) {
-			case '15m':
-				return 15 * 60;
-			case '1h':
-				return 60 * 60;
-			case '6h':
-				return 6 * 60 * 60;
-			case '24h':
-				return 24 * 60 * 60;
-			default:
-				return undefined;
-		}
-	}
 
 	function scrollToBottom() {
 		if (logContainer) {
@@ -76,7 +78,7 @@
 	function parseEvent(data: string): LogLineEvent | null {
 		// New contract: JSON shape {pod, ts, line, stream}.
 		// Fall back to treating plain strings as a bare line (backward-compat
-		// during the backend rollout window — still render cleanly).
+		// during the backend rollout window - still render cleanly).
 		try {
 			const obj = JSON.parse(data);
 			if (obj && typeof obj === 'object' && typeof obj.line === 'string') {
@@ -93,22 +95,21 @@
 		return { pod: '', ts: '', line: data, stream: undefined };
 	}
 
-	function connectLive() {
+	function connectLive(fresh: boolean = true) {
 		closeStream();
 		if (isBuilding) return; // no pods to stream from yet
-		events = [];
-		disconnected = false;
-
-		const seconds = rangeToSeconds(range);
-		const useFollow = range === 'now';
+		if (pods.length === 0) return; // nothing to stream from - avoid reconnect flicker
+		if (fresh) {
+			events = [];
+			disconnected = false;
+		}
 
 		const url = api.logsURL(project, app.metadata.name, {
 			env: selectedEnv,
-			follow: useFollow,
+			follow: true,
 			tail: 200,
 			pod: selectedPod || undefined,
 			previous: selectedPod && previous ? true : undefined,
-			sinceSeconds: seconds
 		});
 
 		es = new EventSource(url);
@@ -123,11 +124,11 @@
 		es.onerror = () => {
 			disconnected = true;
 			closeStream();
-			// Reconnect only for live-tail mode; one-shot ranges shouldn't loop.
-			if (range === 'now' && !isBuilding) {
+			if (!isBuilding && pods.length > 0) {
 				reconnectTimer = setTimeout(() => {
 					reconnectTimer = null;
-					connectLive();
+					disconnected = false;
+					connectLive(false);
 				}, 2000);
 			}
 		};
@@ -137,13 +138,19 @@
 		try {
 			const list = await api.listPods(project, app.metadata.name, selectedEnv);
 			pods = list ?? [];
+			podsLoaded = true;
+			// If there's exactly one pod and nothing selected, scope the stream to it
+			// so we skip the pod-badge path entirely.
+			if (pods.length === 1 && !selectedPod) {
+				selectedPod = pods[0].name;
+			}
 			// If the selected pod disappeared (rollout), fall back to "all".
 			if (selectedPod && !pods.some((p) => p.name === selectedPod)) {
 				selectedPod = '';
 				previous = false;
 			}
 		} catch {
-			/* ignore — keep previous list */
+			/* ignore - keep previous list */
 		}
 	}
 
@@ -221,7 +228,7 @@
 		void selectedEnv;
 		void selectedPod;
 		void previous;
-		void range;
+		void pods.length; // reconnect when pods transition 0 → >0
 		if (subTab === 'live') connectLive();
 	});
 
@@ -291,9 +298,9 @@
 	);
 </script>
 
-<div class="flex h-full flex-col gap-3">
+<div class="flex h-full flex-col gap-1">
 	<!-- Sub-tab bar -->
-	<div class="flex gap-1 border-b border-surface-600">
+	<div class="flex items-center gap-1 border-b border-surface-600">
 		<button
 			type="button"
 			onclick={() => (subTab = 'live')}
@@ -314,105 +321,68 @@
 		>
 			Build
 		</button>
-	</div>
-
-	{#if subTab === 'live'}
-		<!-- Header row 1: env + pod picker + previous toggle -->
-		<div class="flex flex-wrap items-center gap-2">
-			{#if app.spec.environments && app.spec.environments.length > 1}
-				<div class="flex gap-1">
-					{#each app.spec.environments as env}
-						<button
-							type="button"
-							onclick={() => (selectedEnv = env.name)}
-							class="rounded px-2.5 py-1 text-xs transition-colors {selectedEnv === env.name
-								? 'bg-surface-600 text-white'
-								: 'text-gray-400 hover:text-white'}"
-						>
-							{env.name}
-						</button>
-					{/each}
-				</div>
-			{:else}
-				<span class="text-xs text-gray-500">{selectedEnv}</span>
-			{/if}
-
+		{#if subTab === 'live' && podsLoaded && pods.length > 1}
 			<select
 				bind:value={selectedPod}
-				class="rounded-md border border-surface-600 bg-surface-800 px-2 py-1 text-xs text-white outline-none focus:border-accent"
+				class="ml-auto mb-1 rounded-md border border-surface-600 bg-surface-800 px-2 py-1 text-xs text-white outline-none focus:border-accent"
 			>
-				<option value="">All pods{pods.length ? ` (${pods.length})` : ''}</option>
+				<option value="">All pods ({pods.length})</option>
 				{#each pods as p}
 					<option value={p.name}>
 						{p.name} · {p.phase}{p.restartCount > 0 ? ` ⟳ ${p.restartCount}` : ''}
 					</option>
 				{/each}
 			</select>
+		{/if}
+	</div>
 
-			{#if showPreviousToggle}
-				<button
-					type="button"
-					onclick={() => (previous = !previous)}
-					aria-pressed={previous}
-					class="rounded-full px-2.5 py-1 text-xs transition-colors {previous
-						? 'bg-accent text-white'
-						: 'border border-surface-600 text-gray-400 hover:text-white'}"
-					title="Show logs from the previous container (crash diagnosis)"
-				>
-					Previous
-				</button>
-			{/if}
-		</div>
-
-		<!-- Header row 2: range chips + follow + actions -->
-		<div class="flex flex-wrap items-center justify-between gap-2">
+	{#if subTab === 'live'}
+		<!-- Header row 1: env switcher (multi-env only) -->
+		{#if projectEnvs.length > 1}
 			<div class="flex gap-1">
-				{#each ['now', '15m', '1h', '6h', '24h'] as R (R)}
-					{@const active = range === R}
+				{#each projectEnvs as env}
 					<button
 						type="button"
-						onclick={() => (range = R as Range)}
-						class="rounded px-2 py-0.5 text-xs transition-colors {active
+						onclick={() => chooseEnv(env.name)}
+						class="rounded px-2.5 py-1 text-xs transition-colors {selectedEnv === env.name
 							? 'bg-surface-600 text-white'
-							: 'text-gray-500 hover:text-white'}"
+							: 'text-gray-400 hover:text-white'}"
 					>
-						{R === 'now' ? 'Now' : R}
+						{env.name}
 					</button>
 				{/each}
 			</div>
+		{/if}
 
+		<!-- Controls row: previous (left) + live tail / copy / clear (right) -->
+		<div class="flex items-center justify-between gap-2">
+			<div class="flex gap-1">
+				{#if showPreviousToggle}
+					<button
+						type="button"
+						onclick={() => (previous = !previous)}
+						aria-pressed={previous}
+						title="Show logs from the previous container (crash diagnosis)"
+						class="rounded px-2 py-0.5 text-xs transition-colors {previous
+							? 'bg-accent text-white'
+							: 'border border-surface-600 text-gray-400 hover:text-white'}"
+					>
+						Previous
+					</button>
+				{/if}
+			</div>
 			<div class="flex items-center gap-2">
-				<label
-					class="flex items-center gap-1.5 text-xs {range === 'now'
-						? 'cursor-pointer text-gray-400'
-						: 'cursor-not-allowed text-gray-600'}"
-				>
+				<label class="flex cursor-pointer items-center gap-1.5 text-xs text-gray-400">
 					<span>Live tail</span>
 					<button
 						type="button"
 						role="switch"
 						aria-label="Live tail"
 						aria-checked={liveFollow}
-						disabled={range !== 'now'}
-						onclick={() => {
-							if (range !== 'now') {
-								range = 'now';
-								liveFollow = true;
-							} else {
-								liveFollow = !liveFollow;
-							}
-						}}
-						class="relative inline-flex h-4 w-7 items-center rounded-full transition-colors {liveFollow &&
-						range === 'now'
-							? 'bg-accent'
-							: 'bg-surface-600'} {range !== 'now' ? 'opacity-50' : ''}"
+						onclick={() => (liveFollow = !liveFollow)}
+						class="relative inline-flex h-4 w-7 items-center rounded-full transition-colors {liveFollow ? 'bg-accent' : 'bg-surface-600'}"
 					>
-						<span
-							class="inline-block h-3 w-3 transform rounded-full bg-white shadow transition-transform {liveFollow &&
-							range === 'now'
-								? 'translate-x-3.5'
-								: 'translate-x-0.5'}"
-						></span>
+						<span class="inline-block h-3 w-3 transform rounded-full bg-white shadow transition-transform {liveFollow ? 'translate-x-3.5' : 'translate-x-0.5'}"></span>
 					</button>
 				</label>
 				<button
@@ -495,10 +465,10 @@
 					</span>
 				{/if}
 				<span class="font-mono text-gray-500" title={buildResp?.commitSHA ?? ''}>
-					{buildResp?.commitSHA ? buildResp.commitSHA.slice(0, 7) : '—'}
+					{buildResp?.commitSHA ? buildResp.commitSHA.slice(0, 7) : '-'}
 				</span>
 				<span class="text-gray-500" title={buildResp?.timestamp ?? ''}>
-					{relTime(buildResp?.timestamp) || '—'}
+					{relTime(buildResp?.timestamp) || '-'}
 				</span>
 			</div>
 		</div>
@@ -508,7 +478,7 @@
 			style="min-height: 300px; max-height: calc(100vh - 280px)"
 		>
 			{#if isImageSource}
-				<p class="text-xs italic text-gray-600">Image source — builds are skipped</p>
+				<p class="text-xs italic text-gray-600">Image source: builds are skipped</p>
 			{:else if buildResp === null}
 				<div class="flex items-center gap-2 text-xs text-gray-500">
 					<Loader2 class="h-3.5 w-3.5 animate-spin" />
@@ -528,7 +498,7 @@
 					</div>
 				{:else}
 					<p class="text-xs italic text-gray-600">
-						No build yet — pushes to git will appear here
+						No build yet - pushes to git will appear here
 					</p>
 				{/if}
 			{:else}

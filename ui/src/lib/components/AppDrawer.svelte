@@ -2,8 +2,8 @@
 	import { onMount } from 'svelte';
 	import { api } from '$lib/api';
 	import { store } from '$lib/store.svelte';
-	import type { App } from '$lib/types';
-	import { X, GitBranch, Container, Cloud, AlertTriangle, Loader2, ExternalLink } from 'lucide-svelte';
+	import type { App, ProjectEnvironment } from '$lib/types';
+	import { X, GitBranch, Container, Cloud, Loader2, ExternalLink, Rocket } from 'lucide-svelte';
 	import DeploymentsTab from './drawer/DeploymentsTab.svelte';
 	import VariablesTab from './drawer/VariablesTab.svelte';
 	import LogsTab from './drawer/LogsTab.svelte';
@@ -14,13 +14,28 @@
 		project,
 		appName,
 		liveApp = null,
+		initialEnv = '',
 		onClose
 	}: {
 		project: string;
 		appName: string;
 		liveApp?: App | null;
+		initialEnv?: string;
 		onClose: () => void;
 	} = $props();
+
+	// Selected env in the drawer. Seeds from navbar's currentEnv; user can
+	// switch within the drawer (DeploymentsTab / LogsTab) and that write
+	// propagates back to the store so the navbar stays in sync.
+	const selectedEnv = $derived(store.currentEnv(project) ?? initialEnv);
+	const envStatusEntry = $derived(liveApp?.status?.environments?.find((e) => e.name === selectedEnv));
+	const envSpecEntry = $derived(liveApp?.spec.environments?.find((e) => e.name === selectedEnv));
+	const envEnabled = $derived(envSpecEntry?.enabled !== false);
+	const envPhase = $derived.by<string | null>(() => {
+		const p = liveApp?.status?.phase ?? app?.status?.phase ?? null;
+		if (p === 'Ready' && envStatusEntry && envStatusEntry.readyReplicas === 0) return 'Deploying';
+		return p;
+	});
 
 	// app: stable snapshot set on mount, updated only by user actions (onAppUpdated).
 	// Never replaced by polling — so tabs never re-render from background polls.
@@ -28,6 +43,7 @@
 	let loading = $state(true);
 	let error = $state('');
 	let logsEverViewed = $state(false);
+	let projectEnvs = $state<ProjectEnvironment[]>([]);
 
 	onMount(async () => {
 		try {
@@ -40,10 +56,26 @@
 		} finally {
 			loading = false;
 		}
+		try {
+			projectEnvs = await api.listProjectEnvironments(project);
+		} catch {
+			projectEnvs = [];
+		}
 	});
+
+	function setEnv(name: string) {
+		store.setEnv(project, name);
+	}
 
 	let appURL = $state<string | null>(null);
 	let connecting = $state(false);
+	let reloading = $state(false);
+	let errorMsg = $state('');
+
+	const envImage = $derived(
+		(liveApp ?? app)?.status?.environments?.find((e) => e.name === selectedEnv)?.currentImage ??
+		(liveApp ?? app)?.status?.environments?.[0]?.currentImage ?? null
+	);
 
 	async function connectApp() {
 		if (!app) return;
@@ -64,7 +96,7 @@
 	// when the phase hasn't actually changed, even though liveApp is a new object each poll.
 	let optimisticPhase = $state<string | null>(null);
 	const effectivePhase = $derived(
-		optimisticPhase ?? liveApp?.status?.phase ?? app?.status?.phase ?? null
+		optimisticPhase ?? envPhase
 	);
 
 	// Clear optimistic override once the real polled phase catches up.
@@ -78,6 +110,40 @@
 
 	function applyOptimisticPhase(phase: string) {
 		optimisticPhase = phase;
+	}
+
+	async function doRebuild() {
+		if (!app) return;
+		errorMsg = '';
+		const prevPhase = app.status?.phase;
+		applyOptimisticPhase('Building');
+		reloading = true;
+		try {
+			await api.rebuild(project, app.metadata.name);
+		} catch (e) {
+			errorMsg = e instanceof Error ? e.message : 'Rebuild failed';
+			if (prevPhase) applyOptimisticPhase(prevPhase);
+		} finally {
+			reloading = false;
+		}
+	}
+
+	async function doRedeploy() {
+		if (!app || !envImage) return;
+		const envName = selectedEnv || app.spec.environments?.[0]?.name;
+		if (!envName) return;
+		errorMsg = '';
+		const prevPhase = app.status?.phase;
+		applyOptimisticPhase('Deploying');
+		reloading = true;
+		try {
+			await api.deploy(project, app.metadata.name, envName, envImage);
+		} catch (e) {
+			errorMsg = e instanceof Error ? e.message : 'Redeploy failed';
+			if (prevPhase) applyOptimisticPhase(prevPhase);
+		} finally {
+			reloading = false;
+		}
 	}
 
 	const liveConditions = $derived(liveApp?.status?.conditions ?? app?.status?.conditions ?? []);
@@ -148,14 +214,40 @@
 				{/if}
 			{/if}
 			<h2 class="text-sm font-semibold text-white">{appName}</h2>
-			{#if effectivePhase}
+			{#if selectedEnv}
+				<span class="rounded-full px-2 py-0.5 text-xs font-medium text-gray-300 bg-surface-700">{selectedEnv}</span>
+			{/if}
+			{#if !envEnabled}
+				<span class="rounded-full bg-surface-700 px-2 py-0.5 text-xs font-medium text-gray-400">Disabled</span>
+			{:else if effectivePhase}
 				<span class="rounded-full px-2 py-0.5 text-xs font-medium {chipClass(effectivePhase)}">
 					{effectivePhase}
 				</span>
 			{/if}
 		</div>
 		<div class="flex items-center gap-2">
-			{#if effectivePhase === 'Ready'}
+			{#if app && app.spec.source.type === 'git' && effectivePhase !== 'Building'}
+				<button
+					type="button"
+					onclick={doRebuild}
+					disabled={reloading}
+					class="flex items-center gap-1 rounded-md px-2 py-1 text-xs text-gray-400 hover:bg-surface-700 hover:text-white transition-colors disabled:opacity-50"
+				>
+					<Rocket class="h-3 w-3" />
+					{reloading ? 'Rebuilding…' : 'Rebuild'}
+				</button>
+			{/if}
+			{#if app && envImage}
+				<button
+					type="button"
+					onclick={doRedeploy}
+					disabled={reloading || effectivePhase === 'Building' || effectivePhase === 'Deploying'}
+					class="flex items-center gap-1 rounded-md px-2 py-1 text-xs text-gray-400 hover:bg-surface-700 hover:text-white transition-colors disabled:opacity-50"
+				>
+					{reloading ? 'Redeploying…' : 'Redeploy'}
+				</button>
+			{/if}
+			{#if envEnabled && effectivePhase === 'Ready'}
 				{#if appURL}
 					<a
 						href={appURL}
@@ -190,44 +282,22 @@
 	</div>
 
 	<!-- Tabs -->
-	<div class="flex shrink-0 gap-1 border-b border-surface-600 px-4 py-2">
+	<div class="flex shrink-0 gap-1 border-b border-surface-600 px-4">
 		{#each tabs as tab}
 			<button
 				type="button"
 				onclick={() => store.setDrawerTab(tab)}
-				class="{store.drawerTab === tab
-					? 'rounded px-2.5 py-1 text-xs bg-surface-600 text-white'
-					: 'rounded px-2.5 py-1 text-xs text-gray-400 hover:text-white'}"
+				class="-mb-px border-b-2 px-3 py-1.5 text-xs font-medium transition-colors {store.drawerTab === tab
+					? 'border-accent text-white'
+					: 'border-transparent text-gray-500 hover:text-white'}"
 			>
 				{tab.charAt(0).toUpperCase() + tab.slice(1)}
 			</button>
 		{/each}
 	</div>
 
-	<!-- Build status banner -->
-	{#if isBuilding}
-		<div class="mx-4 mt-3 flex items-center justify-between rounded-md border border-warning/30 bg-warning/10 px-3 py-2">
-			<span class="text-sm text-warning">Building...</span>
-			{#if buildElapsed}
-				<span class="font-mono text-xs text-warning/70">{buildElapsed}</span>
-			{/if}
-		</div>
-	{/if}
-	{#if buildError}
-		<div class="mx-4 mt-3 flex items-start gap-2 rounded-md border border-danger/30 bg-danger/10 px-3 py-2">
-			<AlertTriangle class="mt-0.5 h-4 w-4 shrink-0 text-danger" />
-			<span class="text-sm text-danger">{buildError}</span>
-		</div>
-	{/if}
-	{#if crashError}
-		<div class="mx-4 mt-3 flex items-start gap-2 rounded-md border border-danger/30 bg-danger/10 px-3 py-2">
-			<AlertTriangle class="mt-0.5 h-4 w-4 shrink-0 text-danger" />
-			<span class="text-sm text-danger">{crashError}</span>
-		</div>
-	{/if}
-
 	<!-- Tab content -->
-	<div class="flex-1 overflow-y-auto p-4">
+	<div class="flex-1 overflow-y-auto px-4 pb-4 {store.drawerTab === 'logs' ? 'pt-0' : 'pt-4'}">
 		{#if loading}
 			<div class="space-y-3 animate-pulse">
 				<div class="h-6 w-40 rounded bg-surface-700"></div>
@@ -239,22 +309,38 @@
 			<div class="rounded-md bg-danger/10 px-3 py-2 text-sm text-danger">{error}</div>
 		{:else if app}
 			{#if store.drawerTab === 'deployments'}
-				<DeploymentsTab {project} {app} phase={effectivePhase} onOptimisticPhase={applyOptimisticPhase} />
+				<DeploymentsTab
+					{project}
+					{app}
+					{projectEnvs}
+					selectedEnv={selectedEnv}
+					onSelectEnv={setEnv}
+					phase={effectivePhase}
+					onOptimisticPhase={applyOptimisticPhase}
+				/>
 			{:else if store.drawerTab === 'variables'}
-				<VariablesTab {project} {app} onAppUpdated={(updated) => { app = updated; }} />
+				<VariablesTab {project} {app} {projectEnvs} onAppUpdated={(updated) => { app = updated; }} />
 			{:else if store.drawerTab === 'metrics'}
 				<MetricsTab {app} />
 			{:else if store.drawerTab === 'settings'}
 				<SettingsTab
 					{project}
 					{app}
+					{projectEnvs}
+					selectedEnv={selectedEnv}
 					onAppUpdated={(updated) => { app = updated; }}
 					onAppDeleted={() => onClose()}
 				/>
 			{/if}
 			{#if logsEverViewed || store.drawerTab === 'logs'}
 				<div class="{store.drawerTab !== 'logs' ? 'hidden' : ''}">
-					<LogsTab {project} {app} />
+					<LogsTab
+						{project}
+						{app}
+						{projectEnvs}
+						selectedEnv={selectedEnv}
+						onSelectEnv={setEnv}
+					/>
 				</div>
 			{/if}
 		{/if}
