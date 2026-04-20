@@ -116,6 +116,7 @@ func (s *Server) Handler() http.Handler {
 			r.Post("/auth/git/{provider}/device", s.deviceFlow.RequestCode)
 			r.Post("/auth/git/{provider}/device/poll", s.deviceFlow.Poll)
 			r.Get("/auth/git/{provider}/status", s.deviceFlow.GitTokenStatus)
+			r.Post("/auth/git/{provider}/token", s.deviceFlow.StorePAT)
 
 			r.Get("/gitproviders", s.ListGitProviders)
 			r.Post("/gitproviders", s.CreateGitProvider)
@@ -126,6 +127,13 @@ func (s *Server) Handler() http.Handler {
 			r.Get("/projects", s.ListProjects)
 			r.Get("/projects/{project}", s.GetProject)
 			r.Delete("/projects/{project}", s.DeleteProject)
+
+			r.Get("/projects/{project}/bindings", s.ListBindings)
+
+			r.Get("/projects/{project}/environments", s.ListProjectEnvironments)
+			r.Post("/projects/{project}/environments", s.CreateProjectEnvironment)
+			r.Patch("/projects/{project}/environments/{name}", s.UpdateProjectEnvironment)
+			r.Delete("/projects/{project}/environments/{name}", s.DeleteProjectEnvironment)
 
 			r.Post("/projects/{project}/apps", s.CreateApp)
 			r.Get("/projects/{project}/apps", s.ListApps)

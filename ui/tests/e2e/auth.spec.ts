@@ -223,7 +223,7 @@ test.describe('setup wizard', () => {
 		await page.getByRole('button', { name: 'Continue' }).click();
 
 		// -- Step 2: GitHub --
-		await expect(page.getByRole('heading', { name: /Connect your GitHub/ })).toBeVisible();
+		await expect(page.getByRole('heading', { name: /Connect a Git Provider/ })).toBeVisible();
 
 		// Go back to step 1.
 		await page.getByRole('button', { name: 'Back' }).click();
@@ -232,7 +232,7 @@ test.describe('setup wizard', () => {
 		// Advance again: fill domain and click Continue.
 		await page.getByPlaceholder('apps.example.com').fill('test.example.com');
 		await page.getByRole('button', { name: 'Continue' }).click();
-		await expect(page.getByRole('heading', { name: /Connect your GitHub/ })).toBeVisible();
+		await expect(page.getByRole('heading', { name: /Connect a Git Provider/ })).toBeVisible();
 
 		// Skip step 2 to step 3.
 		await page.getByRole('button', { name: 'Skip for now' }).click();

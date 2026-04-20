@@ -3,6 +3,7 @@ import type {
 	App,
 	AppSpec,
 	ActivityEvent,
+	BindingEdge,
 	Branch,
 	BuildLogsResponse,
 	CreateGitProviderRequest,
@@ -19,6 +20,7 @@ import type {
 	PreviewSummary,
 	Pod,
 	Project,
+	ProjectEnvironment,
 	ProjectMember,
 	Repository,
 	SecretResponse,
@@ -78,6 +80,35 @@ export const api = {
 		request<{ status: string; project: string }>(`/projects/${enc(name)}`, {
 			method: 'DELETE'
 		}),
+
+	// --- project environments ---
+	listProjectEnvironments: (project: string) =>
+		request<ProjectEnvironment[]>(`/projects/${enc(project)}/environments`),
+	createProjectEnvironment: (project: string, name: string, displayOrder = 0) =>
+		request<ProjectEnvironment>(`/projects/${enc(project)}/environments`, {
+			method: 'POST',
+			body: JSON.stringify({ name, displayOrder })
+		}),
+	updateProjectEnvironment: (
+		project: string,
+		currentName: string,
+		patch: { name?: string; displayOrder?: number }
+	) =>
+		request<ProjectEnvironment>(`/projects/${enc(project)}/environments/${enc(currentName)}`, {
+			method: 'PATCH',
+			body: JSON.stringify(patch)
+		}),
+	deleteProjectEnvironment: (project: string, name: string) =>
+		request<{ status: string; name: string }>(
+			`/projects/${enc(project)}/environments/${enc(name)}`,
+			{ method: 'DELETE' }
+		),
+
+	// --- bindings (project+env-scoped canvas edges) ---
+	listBindings: (project: string, environment: string) =>
+		request<BindingEdge[]>(
+			`/projects/${enc(project)}/bindings?environment=${enc(environment)}`
+		),
 
 	// --- apps (project-scoped) ---
 	listApps: (project: string) => request<App[]>(`/projects/${enc(project)}/apps`),
@@ -211,6 +242,11 @@ export const api = {
 		}),
 	gitTokenStatus: (provider: string) =>
 		request<GitHubStatusResponse>(`/auth/git/${enc(provider)}/status`),
+	storeGitToken: (provider: string, token: string, host?: string) =>
+		request<{ ok: boolean }>(`/auth/git/${enc(provider)}/token`, {
+			method: 'POST',
+			body: JSON.stringify({ token, ...(host ? { host } : {}) })
+		}),
 
 	// --- git providers (admin-configured) ---
 	listGitProviders: () => request<GitProviderSummary[]>('/gitproviders'),

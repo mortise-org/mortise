@@ -275,6 +275,131 @@ func TestGitHubStatusRequiresAuth(t *testing.T) {
 	}
 }
 
+// TestStorePATRequiresAuth verifies that the PAT store endpoint requires JWT.
+func TestStorePATRequiresAuth(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/git/gitlab/token", bytes.NewBufferString(`{"token":"glpat-test"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401, got %d", w.Code)
+	}
+}
+
+// TestStorePATMissingToken verifies that an empty token body is rejected.
+func TestStorePATMissingToken(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+
+	w := doRequest(h, http.MethodPost, "/api/auth/git/gitlab/token", map[string]string{"token": ""})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestStorePATInvalidJSON verifies that malformed JSON is rejected.
+func TestStorePATInvalidJSON(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv, token := newTestServer(t, k8sClient)
+	h := srv.Handler()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/git/gitlab/token", bytes.NewBufferString("not json"))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestStorePATHappyPath verifies that a valid PAT is stored as a k8s Secret.
+func TestStorePATHappyPath(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	ctx := context.Background()
+
+	_ = k8sClient.Create(ctx, &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: "mortise-system"},
+	})
+
+	gp := &mortisev1alpha1.GitProvider{
+		ObjectMeta: metav1.ObjectMeta{Name: "gitlab"},
+		Spec: mortisev1alpha1.GitProviderSpec{
+			Type: mortisev1alpha1.GitProviderTypeGitLab,
+			Host: "https://gitlab.com",
+		},
+	}
+	if err := k8sClient.Create(ctx, gp); err != nil {
+		t.Fatalf("create GitProvider: %v", err)
+	}
+
+	srv, _ := newTestServer(t, k8sClient)
+	h := srv.Handler()
+
+	w := doRequest(h, http.MethodPost, "/api/auth/git/gitlab/token", map[string]string{"token": "glpat-supersecret"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Verify the token secret was written.
+	email := "test@example.com"
+	secretName := "user-gitlab-token-" + hex.EncodeToString([]byte(email))
+	var s corev1.Secret
+	if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: "mortise-system", Name: secretName}, &s); err != nil {
+		t.Fatalf("token secret not found: %v", err)
+	}
+	if string(s.Data["token"]) != "glpat-supersecret" {
+		t.Errorf("expected stored token %q, got %q", "glpat-supersecret", string(s.Data["token"]))
+	}
+}
+
+// TestStorePATOverwritesExistingToken verifies that re-submitting a PAT updates the stored token.
+func TestStorePATOverwritesExistingToken(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	ctx := context.Background()
+
+	_ = k8sClient.Create(ctx, &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: "mortise-system"},
+	})
+
+	gp := &mortisev1alpha1.GitProvider{
+		ObjectMeta: metav1.ObjectMeta{Name: "gitea"},
+		Spec: mortisev1alpha1.GitProviderSpec{
+			Type: mortisev1alpha1.GitProviderTypeGitea,
+			Host: "https://gitea.example.com",
+		},
+	}
+	if err := k8sClient.Create(ctx, gp); err != nil {
+		t.Fatalf("create GitProvider: %v", err)
+	}
+
+	srv, _ := newTestServer(t, k8sClient)
+	h := srv.Handler()
+
+	doRequest(h, http.MethodPost, "/api/auth/git/gitea/token", map[string]string{"token": "old-token"})
+	w := doRequest(h, http.MethodPost, "/api/auth/git/gitea/token", map[string]string{"token": "new-token"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	email := "test@example.com"
+	secretName := "user-gitea-token-" + hex.EncodeToString([]byte(email))
+	var s corev1.Secret
+	if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: "mortise-system", Name: secretName}, &s); err != nil {
+		t.Fatalf("token secret not found: %v", err)
+	}
+	if string(s.Data["token"]) != "new-token" {
+		t.Errorf("expected updated token %q, got %q", "new-token", string(s.Data["token"]))
+	}
+}
+
 // TestPerUserTokenStorage verifies that different users get different tokens stored.
 func TestPerUserTokenStorage(t *testing.T) {
 	k8sClient := setupEnvtest(t)

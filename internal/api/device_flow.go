@@ -264,6 +264,48 @@ func (d *DeviceFlowHandler) GitTokenStatus(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, http.StatusOK, map[string]bool{"connected": connected})
 }
 
+// storePATRequest is the JSON body for the PAT store endpoint.
+type storePATRequest struct {
+	Token string `json:"token"`
+	Host  string `json:"host,omitempty"`
+}
+
+// StorePAT stores a personal access token for the given provider, keyed to the
+// authenticated user. Creates the GitProvider CRD if it doesn't exist yet.
+//
+// POST /api/auth/git/{provider}/token
+func (d *DeviceFlowHandler) StorePAT(w http.ResponseWriter, r *http.Request) {
+	providerName := chi.URLParam(r, "provider")
+
+	principal := PrincipalFromContext(r.Context())
+	if principal == nil {
+		writeJSON(w, http.StatusUnauthorized, errorResponse{"authentication required"})
+		return
+	}
+
+	var body storePATRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse{"invalid JSON: " + err.Error()})
+		return
+	}
+	if body.Token == "" {
+		writeJSON(w, http.StatusBadRequest, errorResponse{"token is required"})
+		return
+	}
+
+	if _, err := d.getOrCreateGitProvider(r.Context(), providerName); err != nil {
+		writeJSON(w, http.StatusNotFound, errorResponse{"git provider not found: " + providerName})
+		return
+	}
+
+	if err := d.storeUserToken(r.Context(), providerName, principal.Email, body.Token); err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorResponse{"failed to store token: " + err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
 // getOrCreateGitProvider looks up the GitProvider CRD by name. If it doesn't
 // exist and a default client ID is available (e.g. from the MORTISE_GITHUB_CLIENT_ID
 // env var), it creates the provider on-demand. This eliminates the race between
