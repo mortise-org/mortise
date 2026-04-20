@@ -4,24 +4,64 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
 	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
 	"github.com/MC-Meesh/mortise/internal/api"
 	"github.com/MC-Meesh/mortise/internal/auth"
+	"github.com/MC-Meesh/mortise/internal/constants"
 )
+
+// sharedCfg is the envtest rest.Config. Started once by TestMain and reused
+// by every test via setupEnvtest. Starting envtest takes ~4s, so doing it
+// once per package (instead of per test) is the main cost win.
+var sharedCfg *rest.Config
+
+func TestMain(m *testing.M) {
+	if err := mortisev1alpha1.AddToScheme(scheme.Scheme); err != nil {
+		fmt.Fprintln(os.Stderr, "add scheme:", err)
+		os.Exit(1)
+	}
+
+	testEnv := &envtest.Environment{
+		CRDDirectoryPaths: []string{filepath.Join("..", "..", "config", "crd", "bases")},
+	}
+	cfg, err := testEnv.Start()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "start envtest:", err)
+		os.Exit(1)
+	}
+	sharedCfg = cfg
+
+	// mortise-system holds user Secrets, webhook Secrets, and platform
+	// config. Create it once so the per-test tolerate-AlreadyExists in
+	// newTestServerAs keeps working.
+	if c, err := client.New(sharedCfg, client.Options{Scheme: scheme.Scheme}); err == nil {
+		_ = c.Create(context.Background(), &corev1.Namespace{
+			ObjectMeta: metav1.ObjectMeta{Name: "mortise-system"},
+		})
+	}
+
+	code := m.Run()
+	_ = testEnv.Stop()
+	os.Exit(code)
+}
 
 // newTestServer builds an API server wired against the given k8s client with
 // a real admin user + JWT. Returns the server and the bearer token.
@@ -71,49 +111,156 @@ func newAdminServer(t *testing.T, k8sClient client.Client) *api.Server {
 	return srv
 }
 
+// setupEnvtest returns a client bound to the package-shared envtest cluster.
+// Register a per-test cleanup that deletes every tenant resource so the next
+// test sees a clean state even though the apiserver + etcd persist. Envtest
+// can't finalize Namespaces (no GC controller runs) so those leak across
+// tests; seedProject tolerates AlreadyExists to deal with that.
 func setupEnvtest(t *testing.T) client.Client {
 	t.Helper()
 
-	testEnv := &envtest.Environment{
-		CRDDirectoryPaths: []string{filepath.Join("..", "..", "config", "crd", "bases")},
-	}
-
-	cfg, err := testEnv.Start()
-	if err != nil {
-		t.Fatalf("start envtest: %v", err)
-	}
-	t.Cleanup(func() { _ = testEnv.Stop() })
-
-	err = mortisev1alpha1.AddToScheme(scheme.Scheme)
-	if err != nil {
-		t.Fatalf("add scheme: %v", err)
-	}
-
-	k8sClient, err := client.New(cfg, client.Options{Scheme: scheme.Scheme})
+	k8sClient, err := client.New(sharedCfg, client.Options{Scheme: scheme.Scheme})
 	if err != nil {
 		t.Fatalf("create client: %v", err)
 	}
-
-	// "default" namespace exists by default in k8s — no need to create it.
+	t.Cleanup(func() { cleanupTenantResources(t, k8sClient) })
 	return k8sClient
+}
+
+// cleanupTenantResources wipes everything a test may have created: Apps,
+// PreviewEnvironments, Projects, GitProviders, and Secrets in mortise-system
+// (user Secrets, webhook Secrets, invite Secrets). Finalizers are cleared
+// first because no controllers run in envtest to remove them, so a plain
+// Delete would leave objects stuck in Terminating and collide with the next
+// test's Create.
+func cleanupTenantResources(t *testing.T, c client.Client) {
+	t.Helper()
+	ctx := context.Background()
+
+	var apps mortisev1alpha1.AppList
+	if err := c.List(ctx, &apps); err == nil {
+		for i := range apps.Items {
+			app := &apps.Items[i]
+			if len(app.Finalizers) > 0 {
+				app.Finalizers = nil
+				_ = c.Update(ctx, app)
+			}
+			_ = c.Delete(ctx, app)
+		}
+	}
+
+	var pes mortisev1alpha1.PreviewEnvironmentList
+	if err := c.List(ctx, &pes); err == nil {
+		for i := range pes.Items {
+			pe := &pes.Items[i]
+			if len(pe.Finalizers) > 0 {
+				pe.Finalizers = nil
+				_ = c.Update(ctx, pe)
+			}
+			_ = c.Delete(ctx, pe)
+		}
+	}
+
+	var projs mortisev1alpha1.ProjectList
+	if err := c.List(ctx, &projs); err == nil {
+		for i := range projs.Items {
+			proj := &projs.Items[i]
+			if len(proj.Finalizers) > 0 {
+				proj.Finalizers = nil
+				_ = c.Update(ctx, proj)
+			}
+			_ = c.Delete(ctx, proj)
+		}
+	}
+
+	var gps mortisev1alpha1.GitProviderList
+	if err := c.List(ctx, &gps); err == nil {
+		for i := range gps.Items {
+			gp := &gps.Items[i]
+			if len(gp.Finalizers) > 0 {
+				gp.Finalizers = nil
+				_ = c.Update(ctx, gp)
+			}
+			_ = c.Delete(ctx, gp)
+		}
+	}
+
+	var pcs mortisev1alpha1.PlatformConfigList
+	if err := c.List(ctx, &pcs); err == nil {
+		for i := range pcs.Items {
+			pc := &pcs.Items[i]
+			if len(pc.Finalizers) > 0 {
+				pc.Finalizers = nil
+				_ = c.Update(ctx, pc)
+			}
+			_ = c.Delete(ctx, pc)
+		}
+	}
+
+	var teams mortisev1alpha1.TeamList
+	if err := c.List(ctx, &teams); err == nil {
+		for i := range teams.Items {
+			team := &teams.Items[i]
+			if len(team.Finalizers) > 0 {
+				team.Finalizers = nil
+				_ = c.Update(ctx, team)
+			}
+			_ = c.Delete(ctx, team)
+		}
+	}
+
+	var secrets corev1.SecretList
+	if err := c.List(ctx, &secrets, client.InNamespace("mortise-system")); err == nil {
+		for i := range secrets.Items {
+			_ = c.Delete(ctx, &secrets.Items[i])
+		}
+	}
 }
 
 // seedProject creates a Project CRD and its backing namespace so tests can
 // exercise handlers that require both to be present. Returns the namespace
 // name the handlers will resolve to.
-func seedProject(t *testing.T, c client.Client, name string) string {
+//
+// The project is seeded with a single `production` environment so env-scoped
+// handlers (env vars, domains, deploys) work out of the box — the real
+// project controller seeds the same default, this just short-circuits it for
+// envtest where no reconcile loop is running.
+func seedProject(t *testing.T, c client.Client, name string, envs ...string) string {
 	t.Helper()
 	ctx := context.Background()
 
-	proj := &mortisev1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: name}}
+	if len(envs) == 0 {
+		envs = []string{"production"}
+	}
+	specEnvs := make([]mortisev1alpha1.ProjectEnvironment, 0, len(envs))
+	for i, env := range envs {
+		specEnvs = append(specEnvs, mortisev1alpha1.ProjectEnvironment{Name: env, DisplayOrder: i})
+	}
+
+	proj := &mortisev1alpha1.Project{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Spec:       mortisev1alpha1.ProjectSpec{Environments: specEnvs},
+	}
 	if err := c.Create(ctx, proj); err != nil {
 		t.Fatalf("create project %q: %v", name, err)
 	}
 
-	nsName := "project-" + name
+	nsName := constants.ControlNamespace(name)
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: nsName}}
-	if err := c.Create(ctx, ns); err != nil {
+	if err := c.Create(ctx, ns); err != nil && !apierrors.IsAlreadyExists(err) {
 		t.Fatalf("create namespace %q: %v", nsName, err)
+	}
+
+	// Per-env workload namespaces (pj-{project}-{env}) are where Pods,
+	// Deployments, Services, and other env-scoped resources live. Pivot E
+	// API handlers query these namespaces directly, so seed them alongside
+	// the control ns. Namespaces leak across tests in envtest (no GC
+	// controller runs to finalize them), so tolerate AlreadyExists.
+	for _, env := range envs {
+		envNs := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: constants.EnvNamespace(name, env)}}
+		if err := c.Create(ctx, envNs); err != nil && !apierrors.IsAlreadyExists(err) {
+			t.Fatalf("create env namespace %q: %v", envNs.Name, err)
+		}
 	}
 
 	// Reflect the Project->Namespace binding in status so handlers can read it.
@@ -180,8 +327,8 @@ func TestCreateAndGetApp(t *testing.T) {
 	if app.Spec.Source.Image != "nginx:1.25.0" {
 		t.Errorf("expected image nginx:1.25.0, got %s", app.Spec.Source.Image)
 	}
-	if app.Namespace != "project-default" {
-		t.Errorf("expected namespace project-default, got %s", app.Namespace)
+	if app.Namespace != "pj-default" {
+		t.Errorf("expected namespace pj-default, got %s", app.Namespace)
 	}
 }
 
@@ -285,7 +432,7 @@ func TestDeploy(t *testing.T) {
 
 	// Verify image was updated on the CRD.
 	var app mortisev1alpha1.App
-	err := k8sClient.Get(context.Background(), types.NamespacedName{Name: "deploy-target", Namespace: "project-default"}, &app)
+	err := k8sClient.Get(context.Background(), types.NamespacedName{Name: "deploy-target", Namespace: "pj-default"}, &app)
 	if err != nil {
 		t.Fatalf("get app after deploy: %v", err)
 	}
@@ -400,9 +547,11 @@ func TestRollback(t *testing.T) {
 		t.Fatalf("create app: %v", err)
 	}
 
-	// Create the Deployment the handler will patch.
+	// Create the Deployment the handler will patch. Workload resources live
+	// in the per-env namespace.
+	envNs := constants.EnvNamespace("default", "production")
 	dep := &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{Name: "rollback-app-production", Namespace: ns},
+		ObjectMeta: metav1.ObjectMeta{Name: "rollback-app-production", Namespace: envNs},
 		Spec: appsv1.DeploymentSpec{
 			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "rollback-app"}},
 			Template: corev1.PodTemplateSpec{
@@ -446,7 +595,7 @@ func TestRollback(t *testing.T) {
 	}
 
 	// Verify Deployment was patched.
-	if err := k8sClient.Get(ctx, types.NamespacedName{Name: "rollback-app-production", Namespace: ns}, dep); err != nil {
+	if err := k8sClient.Get(ctx, types.NamespacedName{Name: "rollback-app-production", Namespace: envNs}, dep); err != nil {
 		t.Fatalf("get deployment: %v", err)
 	}
 	if dep.Spec.Template.Spec.Containers[0].Image != "nginx:1.26" {
@@ -535,7 +684,7 @@ func TestPromote(t *testing.T) {
 	k8sClient := setupEnvtest(t)
 	srv := newAdminServer(t, k8sClient)
 	h := srv.Handler()
-	ns := seedProject(t, k8sClient, "default")
+	ns := seedProject(t, k8sClient, "default", "staging", "production")
 
 	ctx := context.Background()
 	app := &mortisev1alpha1.App{
@@ -552,10 +701,11 @@ func TestPromote(t *testing.T) {
 		t.Fatalf("create app: %v", err)
 	}
 
-	// Create Deployments for both envs.
+	// Create Deployments for both envs in their per-env workload namespaces.
 	for _, envName := range []string{"staging", "production"} {
+		depNs := constants.EnvNamespace("default", envName)
 		dep := &appsv1.Deployment{
-			ObjectMeta: metav1.ObjectMeta{Name: "promote-app-" + envName, Namespace: ns},
+			ObjectMeta: metav1.ObjectMeta{Name: "promote-app-" + envName, Namespace: depNs},
 			Spec: appsv1.DeploymentSpec{
 				Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "promote-app", "env": envName}},
 				Template: corev1.PodTemplateSpec{
@@ -587,8 +737,9 @@ func TestPromote(t *testing.T) {
 	}
 
 	// Verify production Deployment has the staging image.
+	prodNs := constants.EnvNamespace("default", "production")
 	var dep appsv1.Deployment
-	if err := k8sClient.Get(ctx, types.NamespacedName{Name: "promote-app-production", Namespace: ns}, &dep); err != nil {
+	if err := k8sClient.Get(ctx, types.NamespacedName{Name: "promote-app-production", Namespace: prodNs}, &dep); err != nil {
 		t.Fatalf("get production deployment: %v", err)
 	}
 	if dep.Spec.Template.Spec.Containers[0].Image != "sha256:abc123" {
