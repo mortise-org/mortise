@@ -21,12 +21,10 @@ import (
 	"fmt"
 	"net/url"
 
-	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -76,35 +74,19 @@ func (r *GitProviderReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 	// Validate optional secret refs.
 	if gp.Spec.ClientSecretRef != nil {
-		if err := r.validateSecretRef(ctx, *gp.Spec.ClientSecretRef, "spec.clientSecretRef"); err != nil {
+		if err := validateSecretRef(ctx, r.Client, *gp.Spec.ClientSecretRef, "spec.clientSecretRef"); err != nil {
 			log.Info("client secret ref invalid", "error", err)
 			return ctrl.Result{}, r.markFailed(ctx, &gp, "SecretNotFound", err.Error())
 		}
 	}
 	if gp.Spec.WebhookSecretRef != nil {
-		if err := r.validateSecretRef(ctx, *gp.Spec.WebhookSecretRef, "spec.webhookSecretRef"); err != nil {
+		if err := validateSecretRef(ctx, r.Client, *gp.Spec.WebhookSecretRef, "spec.webhookSecretRef"); err != nil {
 			log.Info("webhook secret ref invalid", "error", err)
 			return ctrl.Result{}, r.markFailed(ctx, &gp, "SecretNotFound", err.Error())
 		}
 	}
 
 	return ctrl.Result{}, r.markReady(ctx, &gp)
-}
-
-// validateSecretRef returns an error if the secret does not exist or the key is absent.
-func (r *GitProviderReconciler) validateSecretRef(ctx context.Context, ref mortisev1alpha1.SecretRef, desc string) error {
-	var secret corev1.Secret
-	key := types.NamespacedName{Namespace: ref.Namespace, Name: ref.Name}
-	if err := r.Get(ctx, key, &secret); err != nil {
-		if errors.IsNotFound(err) {
-			return fmt.Errorf("%s: secret %s/%s not found", desc, ref.Namespace, ref.Name)
-		}
-		return fmt.Errorf("%s: get secret %s/%s: %w", desc, ref.Namespace, ref.Name, err)
-	}
-	if _, ok := secret.Data[ref.Key]; !ok {
-		return fmt.Errorf("%s: key %q not present in secret %s/%s", desc, ref.Key, ref.Namespace, ref.Name)
-	}
-	return nil
 }
 
 func (r *GitProviderReconciler) markReady(ctx context.Context, gp *mortisev1alpha1.GitProvider) error {

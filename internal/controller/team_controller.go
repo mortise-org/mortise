@@ -29,10 +29,8 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
+	"github.com/MC-Meesh/mortise/internal/constants"
 )
-
-// DefaultTeamName is the required metadata.name for the singleton Team in v1.
-const DefaultTeamName = "default-team"
 
 // TeamReconciler reconciles a Team object.
 //
@@ -59,10 +57,10 @@ func (r *TeamReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		return ctrl.Result{}, err
 	}
 
-	if team.Name != DefaultTeamName {
+	if team.Name != constants.DefaultTeamName {
 		log.Info("rejecting non-singleton Team", "name", team.Name)
 		return ctrl.Result{}, r.markFailed(ctx, &team, "InvalidName",
-			fmt.Sprintf("Team must be named %q in v1; got %q", DefaultTeamName, team.Name))
+			fmt.Sprintf("Team must be named %q in v1; got %q", constants.DefaultTeamName, team.Name))
 	}
 
 	return ctrl.Result{}, r.markReady(ctx, &team)

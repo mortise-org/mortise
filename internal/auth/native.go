@@ -13,17 +13,14 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	"github.com/MC-Meesh/mortise/internal/constants"
 )
 
 const (
 	userLabelKey     = "mortise.dev/user"
 	inviteLabelKey   = "mortise.dev/invite"
 	inviteExpiryDays = 7
-
-	// DefaultTeamName is the singleton Team every v1 user is bound to.
-	// Mirrors controller.DefaultTeamName; duplicated here to keep the auth
-	// package free of a controller import cycle.
-	DefaultTeamName = "default-team"
 )
 
 type NativeAuthProvider struct {
@@ -166,7 +163,7 @@ func (n *NativeAuthProvider) CreateUser(ctx context.Context, email, password str
 			"email":         []byte(email),
 			"password_hash": hash,
 			"role":          []byte(role),
-			"team_ref":      []byte(DefaultTeamName),
+			"team_ref":      []byte(constants.DefaultTeamName),
 		},
 	}
 

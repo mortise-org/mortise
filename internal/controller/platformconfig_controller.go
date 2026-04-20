@@ -20,12 +20,10 @@ import (
 	"context"
 	"fmt"
 
-	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -67,7 +65,7 @@ func (r *PlatformConfigReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 
 	// Validate optional registry credentials secret.
 	if pc.Spec.Registry.CredentialsSecretRef != nil {
-		if err := r.validateSecretRef(ctx, *pc.Spec.Registry.CredentialsSecretRef, "spec.registry.credentialsSecretRef"); err != nil {
+		if err := validateSecretRef(ctx, r.Client, *pc.Spec.Registry.CredentialsSecretRef, "spec.registry.credentialsSecretRef"); err != nil {
 			log.Info("registry credentials secret ref invalid", "error", err)
 			return ctrl.Result{}, r.markFailed(ctx, &pc, "SecretNotFound", err.Error())
 		}
@@ -75,29 +73,13 @@ func (r *PlatformConfigReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 
 	// Validate optional BuildKit TLS secret.
 	if pc.Spec.Build.TLSSecretRef != nil {
-		if err := r.validateSecretRef(ctx, *pc.Spec.Build.TLSSecretRef, "spec.build.tlsSecretRef"); err != nil {
+		if err := validateSecretRef(ctx, r.Client, *pc.Spec.Build.TLSSecretRef, "spec.build.tlsSecretRef"); err != nil {
 			log.Info("buildkit TLS secret ref invalid", "error", err)
 			return ctrl.Result{}, r.markFailed(ctx, &pc, "SecretNotFound", err.Error())
 		}
 	}
 
 	return ctrl.Result{}, r.markReady(ctx, &pc)
-}
-
-// validateSecretRef returns an error if the secret does not exist or the key is absent.
-func (r *PlatformConfigReconciler) validateSecretRef(ctx context.Context, ref mortisev1alpha1.SecretRef, desc string) error {
-	var secret corev1.Secret
-	key := types.NamespacedName{Namespace: ref.Namespace, Name: ref.Name}
-	if err := r.Get(ctx, key, &secret); err != nil {
-		if errors.IsNotFound(err) {
-			return fmt.Errorf("%s: secret %s/%s not found", desc, ref.Namespace, ref.Name)
-		}
-		return fmt.Errorf("%s: get secret %s/%s: %w", desc, ref.Namespace, ref.Name, err)
-	}
-	if _, ok := secret.Data[ref.Key]; !ok {
-		return fmt.Errorf("%s: key %q not present in secret %s/%s", desc, ref.Key, ref.Namespace, ref.Name)
-	}
-	return nil
 }
 
 func (r *PlatformConfigReconciler) markReady(ctx context.Context, pc *mortisev1alpha1.PlatformConfig) error {

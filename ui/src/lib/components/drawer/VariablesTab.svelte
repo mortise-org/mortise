@@ -2,7 +2,7 @@
 	import { api } from '$lib/api';
 	import type { App } from '$lib/types';
 	import BindingsPicker from '$lib/components/BindingsPicker.svelte';
-	import { Plus, Trash2, Link, Upload, FileText, ChevronDown } from 'lucide-svelte';
+	import { Plus, Trash2, Link, Upload, FileText, ChevronDown, X } from 'lucide-svelte';
 
 	let {
 		project,
@@ -31,6 +31,15 @@
 		rawMode: boolean;
 		rawText: string;
 	};
+
+	let restartTriggered = $state(false);
+	let dismissTimer: ReturnType<typeof setTimeout> | null = null;
+
+	function triggerRestartBanner() {
+		restartTriggered = true;
+		if (dismissTimer) clearTimeout(dismissTimer);
+		dismissTimer = setTimeout(() => { restartTriggered = false; }, 4000);
+	}
 
 	const envNames = $derived(app.spec.environments?.map(e => e.name) ?? ['production']);
 
@@ -136,6 +145,7 @@
 			} else {
 				await api.setEnv(project, app.metadata.name, key, updated);
 			}
+			triggerRestartBanner();
 		} catch (e) {
 			sections[key].error = e instanceof Error ? e.message : 'Failed to save';
 			sections[key].vars = prevVars;
@@ -165,6 +175,7 @@
 			} else {
 				await api.setEnv(project, app.metadata.name, key, updated);
 			}
+			triggerRestartBanner();
 		} catch (e) {
 			sections[key].error = e instanceof Error ? e.message : 'Failed to delete';
 			sections[key].vars = prevVars;
@@ -189,6 +200,7 @@
 			} else {
 				await api.setEnv(project, app.metadata.name, key, s.vars);
 			}
+			triggerRestartBanner();
 		} catch (e) {
 			sections[key].error = e instanceof Error ? e.message : 'Failed to save';
 			sections[key].originalVars = prevOriginal;
@@ -224,6 +236,7 @@
 			} else {
 				await api.setEnv(project, app.metadata.name, key, merged);
 			}
+			triggerRestartBanner();
 		} catch (e) {
 			sections[key].error = e instanceof Error ? e.message : 'Import failed';
 			sections[key].vars = prevVars;
@@ -258,6 +271,14 @@
 </script>
 
 <div class="flex h-full flex-col gap-3 overflow-y-auto p-1">
+{#if restartTriggered}
+	<div class="flex items-center justify-between rounded-md border border-blue-500/30 bg-blue-500/10 px-3 py-2 text-xs text-blue-300">
+		<span>Changes saved - rolling restart in progress</span>
+		<button type="button" onclick={() => { restartTriggered = false; if (dismissTimer) clearTimeout(dismissTimer); }} class="ml-2 text-blue-400 hover:text-blue-200">
+			<X class="h-3.5 w-3.5" />
+		</button>
+	</div>
+{/if}
 	<!-- Environment sections -->
 	{#each envNames as envName}
 		{@const s = sections[envName] ?? makeSection(false)}

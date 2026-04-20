@@ -48,7 +48,7 @@
 	}
 	const errorMsg = $derived(failedReason(app));
 
-	// Build timer — synced to the BuildStarted condition timestamp from k8s.
+	// Build timer - synced to the BuildStarted condition timestamp from k8s.
 	let buildElapsed = $state('');
 	let timerHandle: ReturnType<typeof setInterval> | null = null;
 
@@ -108,7 +108,7 @@
 		</span>
 	</div>
 
-	<!-- Status chip (always shown — Pending when no phase yet) -->
+	<!-- Status chip (always shown, Pending when no phase yet) -->
 	<div class="flex items-center gap-1.5">
 		<span class="rounded px-1.5 py-0.5 text-xs font-medium {phaseClass[phase ?? 'Pending'] ?? 'bg-surface-700 text-gray-400'}">
 			{phase ?? 'Pending'}

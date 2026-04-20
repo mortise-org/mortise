@@ -8,12 +8,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
+	"github.com/MC-Meesh/mortise/internal/constants"
 )
-
-// projectNamespacePrefix is the label prefix applied to a Project's backing
-// namespace. Centralised here so the resolver and the project controller
-// agree on the naming convention.
-const projectNamespacePrefix = "project-"
 
 // Resolver resolves bindings for an App environment into env vars
 // that can be injected into a Deployment's container spec.
@@ -36,15 +32,15 @@ func (r *Resolver) Resolve(ctx context.Context, namespace string, bindings []mor
 		if b.Project != "" {
 			// Extract the binder's project name from its namespace.
 			binderProject := ""
-			if len(namespace) > len(projectNamespacePrefix) {
-				binderProject = namespace[len(projectNamespacePrefix):]
+			if len(namespace) > len(constants.ProjectNamespacePrefix) {
+				binderProject = namespace[len(constants.ProjectNamespacePrefix):]
 			}
 			if b.Project != binderProject {
 				return nil, fmt.Errorf("cross-project binding to %q in project %q is not supported in v1; "+
 					"bindings can only reference Apps in the same project (see github.com/MC-Meesh/mortise/issues/2)",
 					b.Ref, b.Project)
 			}
-			ns = projectNamespacePrefix + b.Project
+			ns = constants.ProjectNamespacePrefix + b.Project
 		}
 
 		var boundApp mortisev1alpha1.App

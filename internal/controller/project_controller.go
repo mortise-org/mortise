@@ -33,14 +33,10 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
+	"github.com/MC-Meesh/mortise/internal/constants"
 )
 
 const (
-	// ProjectNamespacePrefix is the prefix applied to a Project's default
-	// backing Kubernetes namespace. A Project named "infra" is backed by the
-	// namespace "project-infra" unless `spec.namespaceOverride` is set.
-	ProjectNamespacePrefix = "project-"
-
 	// projectFinalizer ensures the Project's owned namespace is deleted before
 	// the CRD is removed, so cascade GC completes cleanly.
 	projectFinalizer = "mortise.dev/project-finalizer"
@@ -75,7 +71,7 @@ const (
 // `spec.namespaceOverride` should use ResolveProjectNamespace with the live
 // Project instead.
 func ProjectNamespace(projectName string) string {
-	return ProjectNamespacePrefix + projectName
+	return constants.ProjectNamespacePrefix + projectName
 }
 
 // ResolveProjectNamespace returns the backing namespace name the controller

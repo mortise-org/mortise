@@ -28,9 +28,11 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	storagev1 "k8s.io/api/storage/v1"
+	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/types"
 	clocktesting "k8s.io/utils/clock/testing"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -3614,13 +3616,103 @@ var _ = Describe("App Controller — git source", func() {
 			Expect(passVar.ValueFrom.SecretKeyRef.Name).To(Equal(extDBName + "-credentials"))
 		})
 	})
+
+	Context("Deployment update conflict retry (optimistic locking)", func() {
+		const appName = "conflict-retry"
+		ctx := context.Background()
+
+		var app *mortisev1alpha1.App
+
+		BeforeEach(func() {
+			app = &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      appName,
+					Namespace: "default",
+				},
+				Spec: mortisev1alpha1.AppSpec{
+					Source: mortisev1alpha1.AppSource{
+						Type:  mortisev1alpha1.SourceTypeImage,
+						Image: testImageNginx,
+					},
+					Network: mortisev1alpha1.NetworkConfig{Public: false},
+					Environments: []mortisev1alpha1.Environment{{
+						Name:     "production",
+						Replicas: ptr.To[int32](1),
+					}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+		})
+
+		AfterEach(func() {
+			if app != nil {
+				_ = k8sClient.Delete(ctx, app)
+			}
+		})
+
+		It("recovers from a single optimistic-locking conflict on Deployment update", func() {
+			// First reconcile: creates the Deployment.
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: "default"},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var dep appsv1.Deployment
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName + "-production", Namespace: "default",
+			}, &dep)).To(Succeed())
+
+			// Re-fetch App so we have the latest resource version before updating.
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: appName, Namespace: "default"}, app)).To(Succeed())
+
+			// Mutate the App so the next reconcile has something to update.
+			app.Spec.Source.Image = "nginx:1.28"
+			Expect(k8sClient.Update(ctx, app)).To(Succeed())
+
+			// conflictClient injects one 409 Conflict on the first Deployment
+			// Update, then delegates to the real client on subsequent calls.
+			conflictFired := false
+			conflictClient := &deploymentConflictClient{
+				Client: k8sClient,
+				fired:  &conflictFired,
+			}
+
+			conflictReconciler := &AppReconciler{Client: conflictClient, Scheme: k8sClient.Scheme()}
+			_, err = conflictReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: "default"},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(conflictFired).To(BeTrue(), "conflict interceptor should have fired")
+
+			// Image should be updated despite the transient conflict.
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName + "-production", Namespace: "default",
+			}, &dep)).To(Succeed())
+			Expect(dep.Spec.Template.Spec.Containers[0].Image).To(Equal("nginx:1.28"))
+		})
+	})
 })
 
-func findEnvVar(envVars []corev1.EnvVar, name string) *corev1.EnvVar {
-	for i := range envVars {
-		if envVars[i].Name == name {
-			return &envVars[i]
-		}
-	}
-	return nil
+// deploymentConflictClient wraps a client.Client and returns a 409 Conflict
+// error on the first Update call for a Deployment, then passes through normally.
+// Used to verify the optimistic-locking retry loop in reconcileDeployment.
+type deploymentConflictClient struct {
+	client.Client
+	fired *bool
 }
+
+func (c *deploymentConflictClient) Update(ctx context.Context, obj client.Object, opts ...client.UpdateOption) error {
+	if _, ok := obj.(*appsv1.Deployment); ok && !*c.fired {
+		*c.fired = true
+		// Commit the update to the store so the re-fetch returns a fresh
+		// resource version, then lie to the caller about it conflicting.
+		_ = c.Client.Update(ctx, obj, opts...)
+		return &kerrors.StatusError{ErrStatus: metav1.Status{
+			Reason: metav1.StatusReasonConflict,
+			Code:   409,
+		}}
+	}
+	return c.Client.Update(ctx, obj, opts...)
+}
+

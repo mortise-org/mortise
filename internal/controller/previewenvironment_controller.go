@@ -19,7 +19,6 @@ package controller
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 	"time"
 
@@ -276,7 +275,7 @@ func (r *PreviewEnvironmentReconciler) reconcilePreviewBuild(ctx context.Context
 	}
 	r.builds.set(key, tracker)
 
-	go r.runPreviewBuild(buildCtx, cancel, tracker, buildParams{
+	go runBuild(buildCtx, cancel, tracker, buildParams{
 		appName:    pe.Spec.AppRef,
 		namespace:  pe.Namespace,
 		repo:       app.Spec.Source.Repo,
@@ -286,79 +285,17 @@ func (r *PreviewEnvironmentReconciler) reconcilePreviewBuild(ctx context.Context
 		dockerfile: previewDockerfilePath(app),
 		buildArgs:  previewBuildArgs(app),
 		imageRef:   imageRef,
+	}, r.GitClient, r.BuildClient, buildRunnerOptions{
+		logName:      "preview-build",
+		tmpDirPrefix: "mortise-preview-build-*",
+		appendLog:    false,
 	})
 
 	return ctrl.Result{RequeueAfter: previewBuildPollInterval}, false, nil
 }
 
-// runPreviewBuild clones at the PR's SHA and builds. Same flow as AppReconciler.runBuild.
-func (r *PreviewEnvironmentReconciler) runPreviewBuild(ctx context.Context, cancel context.CancelFunc, t *buildTracker, p buildParams) {
-	defer cancel()
-	log := logf.Log.WithName("preview-build").WithValues("app", p.appName, "namespace", p.namespace)
-
-	cloneDir, err := os.MkdirTemp("", "mortise-preview-build-*")
-	if err != nil {
-		t.setFailed(fmt.Sprintf("create temp dir: %v", err))
-		return
-	}
-	defer os.RemoveAll(cloneDir)
-
-	creds := git.GitCredentials{Token: p.token}
-	if err := r.GitClient.Clone(ctx, p.repo, p.branch, cloneDir, creds); err != nil {
-		t.setFailed(fmt.Sprintf("CloneFailed: %v", err))
-		return
-	}
-	log.Info("cloned repo for preview", "repo", p.repo, "branch", p.branch)
-
-	dockerfileDir := cloneDir
-	if p.path != "" {
-		resolved, err := resolveSourceDir(cloneDir, p.path)
-		if err != nil {
-			t.setFailed(err.Error())
-			return
-		}
-		dockerfileDir = resolved
-	}
-
-	req := build.BuildRequest{
-		AppName:       p.appName,
-		Namespace:     p.namespace,
-		SourceDir:     cloneDir,
-		DockerfileDir: dockerfileDir,
-		Dockerfile:    p.dockerfile,
-		BuildArgs:     p.buildArgs,
-		PushTarget:    p.imageRef.Full,
-	}
-
-	events, err := r.BuildClient.Submit(ctx, req)
-	if err != nil {
-		t.setFailed(fmt.Sprintf("BuildSubmitFailed: %v", err))
-		return
-	}
-
-	digest := ""
-	for ev := range events {
-		switch ev.Type {
-		case build.EventLog:
-			log.V(1).Info("preview build log", "line", ev.Line)
-		case build.EventSuccess:
-			digest = ev.Digest
-			log.Info("preview build succeeded", "image", p.imageRef.Full, "digest", digest)
-		case build.EventFailure:
-			t.setFailed(ev.Error)
-			return
-		}
-	}
-
-	pushedImage := p.imageRef.Full
-	if digest != "" {
-		pushedImage = p.imageRef.Registry + "/" + p.imageRef.Path + "@" + digest
-	}
-	t.setSucceeded(pushedImage, digest)
-}
-
 func (r *PreviewEnvironmentReconciler) reconcilePreviewDeployment(ctx context.Context, pe *mortisev1alpha1.PreviewEnvironment, app *mortisev1alpha1.App) error {
-	name := previewDeploymentName(pe.Spec.AppRef, pe.Spec.PullRequest.Number)
+	name := previewResourceName(pe.Spec.AppRef, pe.Spec.PullRequest.Number)
 	replicas := int32(1)
 	if pe.Spec.Replicas != nil {
 		replicas = *pe.Spec.Replicas
@@ -433,7 +370,7 @@ func (r *PreviewEnvironmentReconciler) reconcilePreviewDeployment(ctx context.Co
 }
 
 func (r *PreviewEnvironmentReconciler) reconcilePreviewService(ctx context.Context, pe *mortisev1alpha1.PreviewEnvironment) error {
-	name := previewServiceName(pe.Spec.AppRef, pe.Spec.PullRequest.Number)
+	name := previewResourceName(pe.Spec.AppRef, pe.Spec.PullRequest.Number)
 	labels := previewLabels(pe.Spec.AppRef, pe.Spec.PullRequest.Number)
 
 	desired := &corev1.Service{
@@ -474,8 +411,8 @@ func (r *PreviewEnvironmentReconciler) reconcilePreviewService(ctx context.Conte
 }
 
 func (r *PreviewEnvironmentReconciler) reconcilePreviewIngress(ctx context.Context, pe *mortisev1alpha1.PreviewEnvironment) error {
-	name := previewIngressName(pe.Spec.AppRef, pe.Spec.PullRequest.Number)
-	svcName := previewServiceName(pe.Spec.AppRef, pe.Spec.PullRequest.Number)
+	name := previewResourceName(pe.Spec.AppRef, pe.Spec.PullRequest.Number)
+	svcName := previewResourceName(pe.Spec.AppRef, pe.Spec.PullRequest.Number)
 	pathType := networkingv1.PathTypePrefix
 	host := pe.Spec.Domain
 	labels := previewLabels(pe.Spec.AppRef, pe.Spec.PullRequest.Number)
@@ -629,15 +566,7 @@ func (r *PreviewEnvironmentReconciler) SetupWithManager(mgr ctrl.Manager) error 
 
 // Naming helpers
 
-func previewDeploymentName(app string, prNumber int) string {
-	return fmt.Sprintf("%s-preview-pr-%d", app, prNumber)
-}
-
-func previewServiceName(app string, prNumber int) string {
-	return fmt.Sprintf("%s-preview-pr-%d", app, prNumber)
-}
-
-func previewIngressName(app string, prNumber int) string {
+func previewResourceName(app string, prNumber int) string {
 	return fmt.Sprintf("%s-preview-pr-%d", app, prNumber)
 }
 

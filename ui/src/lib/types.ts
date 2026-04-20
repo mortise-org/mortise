@@ -39,19 +39,6 @@ export interface PlatformResponse {
 	phase?: string;
 }
 
-export interface RegistryConfig {
-	url: string;
-	namespace?: string;
-	username?: string;
-	password?: string;
-	pullSecretRef?: string;
-}
-
-export interface BuildConfig {
-	address?: string;
-	tlsSecretRef?: string;
-	platform?: string;
-}
 
 export interface VolumeSpec {
 	name: string;
@@ -212,25 +199,6 @@ export interface DevicePollResponse {
 	access_token?: string;
 }
 
-// Canvas position (stored in localStorage for v1)
-export interface CanvasPosition {
-	x: number;
-	y: number;
-}
-
-// Shared variables (sharedVars spec §5.8b)
-export interface SharedVar {
-	key: string;
-	value: string;
-	environments?: string[]; // which envs this applies to; empty = all
-}
-
-// App with extended metadata for canvas
-export interface AppMeta {
-	uiX?: number;
-	uiY?: number;
-}
-
 // Preview environment
 export type PreviewPhase = 'Pending' | 'Building' | 'Ready' | 'Failed' | 'Expired';
 
@@ -264,19 +232,6 @@ export interface DeployToken {
 	createdAt: string;
 	lastUsed?: string;
 	token?: string; // only on create response
-}
-
-// Project environments management
-export interface EnvironmentSpec {
-	name: string;
-	replicas?: number;
-	resources?: ResourceRequirements;
-	env?: EnvVar[];
-	bindings?: Binding[];
-	domain?: string;
-	customDomains?: string[];
-	annotations?: Record<string, string>;
-	secretMounts?: SecretMount[];
 }
 
 export interface SecretMount {

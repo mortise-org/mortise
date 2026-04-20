@@ -24,6 +24,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -323,7 +324,7 @@ func (r *AppReconciler) reconcileGitSource(ctx context.Context, app *mortisev1al
 	}
 	r.Builds.set(key, tracker)
 
-	go r.runBuild(buildCtx, cancel, tracker, buildParams{
+	bp := buildParams{
 		appName:    app.Name,
 		namespace:  app.Namespace,
 		revision:   revision,
@@ -334,6 +335,12 @@ func (r *AppReconciler) reconcileGitSource(ctx context.Context, app *mortisev1al
 		dockerfile: dockerfilePath(app),
 		buildArgs:  buildArgsOf(app),
 		imageRef:   imageRef,
+	}
+	go runBuild(buildCtx, cancel, tracker, bp, r.GitClient, r.BuildClient, buildRunnerOptions{
+		logName:      "build",
+		tmpDirPrefix: "mortise-build-*",
+		appendLog:    true,
+		onDone:       func() { r.persistBuildLog(tracker, bp) },
 	})
 
 	return ctrl.Result{RequeueAfter: buildPollInterval}, false, nil
@@ -352,84 +359,6 @@ type buildParams struct {
 	dockerfile string
 	buildArgs  map[string]string
 	imageRef   registry.ImageRef
-}
-
-// runBuild clones the repo, submits the build to the BuildClient, drains events,
-// and records the outcome on the tracker. Intended to run in its own goroutine.
-func (r *AppReconciler) runBuild(ctx context.Context, cancel context.CancelFunc, t *buildTracker, p buildParams) {
-	defer cancel()
-	log := logf.Log.WithName("build").WithValues("app", p.appName, "namespace", p.namespace)
-
-	// Persist the final log buffer to a ConfigMap after every terminal outcome
-	// (success or any failure) so the UI Build tab can show the most recent
-	// build across operator restarts. See SPEC §5.11.
-	defer r.persistBuildLog(t, p)
-
-	cloneDir, err := os.MkdirTemp("", "mortise-build-*")
-	if err != nil {
-		t.setFailed(fmt.Sprintf("create temp dir: %v", err))
-		return
-	}
-	defer os.RemoveAll(cloneDir)
-
-	creds := git.GitCredentials{Token: p.token}
-	if err := r.GitClient.Clone(ctx, p.repo, p.branch, cloneDir, creds); err != nil {
-		t.setFailed(fmt.Sprintf("CloneFailed: %v", err))
-		return
-	}
-	log.Info("cloned repo", "repo", p.repo, "branch", p.branch, "dir", cloneDir)
-
-	// DockerfileDir is the subdirectory (source.path). The build system
-	// decides the context: if a Dockerfile exists in the subdirectory, it
-	// uses the subdirectory as context (self-contained, Railway-style).
-	// If no Dockerfile in subdirectory, it checks repo root (monorepo pattern)
-	// or falls back to Railpack.
-	dockerfileDir := cloneDir
-	if p.path != "" {
-		resolved, err := resolveSourceDir(cloneDir, p.path)
-		if err != nil {
-			t.setFailed(err.Error())
-			return
-		}
-		dockerfileDir = resolved
-	}
-
-	req := build.BuildRequest{
-		AppName:       p.appName,
-		Namespace:     p.namespace,
-		SourceDir:     cloneDir,
-		DockerfileDir: dockerfileDir,
-		Dockerfile:    p.dockerfile,
-		BuildArgs:     p.buildArgs,
-		PushTarget:    p.imageRef.Full,
-	}
-
-	events, err := r.BuildClient.Submit(ctx, req)
-	if err != nil {
-		t.setFailed(fmt.Sprintf("BuildSubmitFailed: %v", err))
-		return
-	}
-
-	digest := ""
-	for ev := range events {
-		switch ev.Type {
-		case build.EventLog:
-			log.V(1).Info("build log", "line", ev.Line)
-			t.appendLog(ev.Line)
-		case build.EventSuccess:
-			digest = ev.Digest
-			log.Info("build succeeded", "image", p.imageRef.Full, "digest", digest)
-		case build.EventFailure:
-			t.setFailed(ev.Error)
-			return
-		}
-	}
-
-	pushedImage := p.imageRef.Full
-	if digest != "" {
-		pushedImage = p.imageRef.Registry + "/" + p.imageRef.Path + "@" + digest
-	}
-	t.setSucceeded(pushedImage, digest)
 }
 
 // buildLogsConfigMapName returns the name of the ConfigMap that stores the
@@ -680,6 +609,12 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 	layers = append(layers, toEnvVars(env.Env))
 
 	envVars := mergeEnvVars(layers...)
+	if findEnvVar(envVars, "PORT") == nil {
+		envVars = append(envVars, corev1.EnvVar{
+			Name:  "PORT",
+			Value: strconv.Itoa(int(appPort(app))),
+		})
+	}
 
 	containers := []corev1.Container{
 		{
@@ -766,52 +701,73 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 		return err
 	}
 
-	// Only update if the fields we manage actually changed. Comparing the
-	// full spec/template doesn't work because k8s adds dozens of default
-	// fields (securityContext, serviceAccount, terminationMessagePolicy, etc.)
-	// that make our desired spec never match, triggering an infinite
-	// reconcile loop via the Deployment watch.
-	existingContainer := existing.Spec.Template.Spec.Containers[0]
 	desiredContainer := desired.Spec.Template.Spec.Containers[0]
 
-	needsUpdate := false
-	if existingContainer.Image != desiredContainer.Image {
-		needsUpdate = true
-	}
-	if !equality.Semantic.DeepEqual(existingContainer.Env, desiredContainer.Env) {
-		needsUpdate = true
-	}
-	if !equality.Semantic.DeepEqual(existingContainer.Ports, desiredContainer.Ports) {
-		needsUpdate = true
-	}
-	if !equality.Semantic.DeepEqual(existingContainer.VolumeMounts, desiredContainer.VolumeMounts) {
-		needsUpdate = true
-	}
-	if !equality.Semantic.DeepEqual(existingContainer.Resources, desiredContainer.Resources) {
-		needsUpdate = true
-	}
-	if existing.Spec.Replicas == nil || *existing.Spec.Replicas != *desired.Spec.Replicas {
-		needsUpdate = true
-	}
-	if !equality.Semantic.DeepEqual(existing.Spec.Template.ObjectMeta.Annotations, desired.Spec.Template.ObjectMeta.Annotations) {
-		needsUpdate = true
-	}
+	// Retry loop handles optimistic-locking conflicts: another writer (e.g.
+	// the HPA or a rolling rollout) may bump the resource version between our
+	// Get and Update. Re-fetch, re-apply, and retry up to 3 attempts before
+	// surfacing the error and requeuing.
+	const maxConflictRetries = 3
+	for attempt := 0; attempt < maxConflictRetries; attempt++ {
+		// Only update if the fields we manage actually changed. Comparing the
+		// full spec/template doesn't work because k8s adds dozens of default
+		// fields (securityContext, serviceAccount, terminationMessagePolicy, etc.)
+		// that make our desired spec never match, triggering an infinite
+		// reconcile loop via the Deployment watch.
+		existingContainer := existing.Spec.Template.Spec.Containers[0]
 
-	if !needsUpdate {
-		return nil
-	}
+		needsUpdate := false
+		if existingContainer.Image != desiredContainer.Image {
+			needsUpdate = true
+		}
+		if !equality.Semantic.DeepEqual(existingContainer.Env, desiredContainer.Env) {
+			needsUpdate = true
+		}
+		if !equality.Semantic.DeepEqual(existingContainer.Ports, desiredContainer.Ports) {
+			needsUpdate = true
+		}
+		if !equality.Semantic.DeepEqual(existingContainer.VolumeMounts, desiredContainer.VolumeMounts) {
+			needsUpdate = true
+		}
+		if !equality.Semantic.DeepEqual(existingContainer.Resources, desiredContainer.Resources) {
+			needsUpdate = true
+		}
+		if existing.Spec.Replicas == nil || *existing.Spec.Replicas != *desired.Spec.Replicas {
+			needsUpdate = true
+		}
+		if !equality.Semantic.DeepEqual(existing.Spec.Template.ObjectMeta.Annotations, desired.Spec.Template.ObjectMeta.Annotations) {
+			needsUpdate = true
+		}
 
-	// Apply our fields onto the existing Deployment (preserves k8s defaults).
-	existing.Spec.Replicas = desired.Spec.Replicas
-	existing.Spec.Template.Spec.Containers[0].Image = desiredContainer.Image
-	existing.Spec.Template.Spec.Containers[0].Env = desiredContainer.Env
-	existing.Spec.Template.Spec.Containers[0].Ports = desiredContainer.Ports
-	existing.Spec.Template.Spec.Containers[0].VolumeMounts = desiredContainer.VolumeMounts
-	existing.Spec.Template.Spec.Containers[0].Resources = desiredContainer.Resources
-	existing.Spec.Template.ObjectMeta.Annotations = desired.Spec.Template.ObjectMeta.Annotations
-	existing.Spec.Template.ObjectMeta.Labels = desired.Spec.Template.ObjectMeta.Labels
-	existing.Annotations = desired.Annotations
-	return r.Update(ctx, &existing)
+		if !needsUpdate {
+			return nil
+		}
+
+		// Apply our fields onto the existing Deployment (preserves k8s defaults).
+		existing.Spec.Replicas = desired.Spec.Replicas
+		existing.Spec.Template.Spec.Containers[0].Image = desiredContainer.Image
+		existing.Spec.Template.Spec.Containers[0].Env = desiredContainer.Env
+		existing.Spec.Template.Spec.Containers[0].Ports = desiredContainer.Ports
+		existing.Spec.Template.Spec.Containers[0].VolumeMounts = desiredContainer.VolumeMounts
+		existing.Spec.Template.Spec.Containers[0].Resources = desiredContainer.Resources
+		existing.Spec.Template.ObjectMeta.Annotations = desired.Spec.Template.ObjectMeta.Annotations
+		existing.Spec.Template.ObjectMeta.Labels = desired.Spec.Template.ObjectMeta.Labels
+		existing.Annotations = desired.Annotations
+
+		updateErr := r.Update(ctx, &existing)
+		if updateErr == nil {
+			return nil
+		}
+		if !errors.IsConflict(updateErr) || attempt == maxConflictRetries-1 {
+			return updateErr
+		}
+
+		// Conflict: re-fetch the latest version before the next attempt.
+		if getErr := r.Get(ctx, types.NamespacedName{Name: name, Namespace: app.Namespace}, &existing); getErr != nil {
+			return getErr
+		}
+	}
+	return nil
 }
 
 func (r *AppReconciler) reconcileCronJob(ctx context.Context, app *mortisev1alpha1.App, env *mortisev1alpha1.Environment, credentialsHash string) error {
@@ -1806,6 +1762,16 @@ func toEnvVars(envs []mortisev1alpha1.EnvVar) []corev1.EnvVar {
 		result = append(result, ev)
 	}
 	return result
+}
+
+// findEnvVar returns a pointer to the first env var with the given name, or nil.
+func findEnvVar(envVars []corev1.EnvVar, name string) *corev1.EnvVar {
+	for i := range envVars {
+		if envVars[i].Name == name {
+			return &envVars[i]
+		}
+	}
+	return nil
 }
 
 // mergeEnvVars merges multiple env var slices in priority order. Each

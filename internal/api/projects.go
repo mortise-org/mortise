@@ -13,17 +13,13 @@ import (
 
 	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
 	"github.com/MC-Meesh/mortise/internal/auth"
+	"github.com/MC-Meesh/mortise/internal/constants"
 )
-
-// ProjectNamespacePrefix is the name prefix of the Kubernetes namespace that
-// backs each Project. A Project named "infra" runs in namespace
-// "project-infra". Kept in sync with internal/controller.ProjectNamespacePrefix.
-const ProjectNamespacePrefix = "project-"
 
 // maxProjectNameLen is the maximum length of a Project name. The backing
 // namespace is `project-{name}` and k8s caps namespace names at 63 chars, so
 // names can be at most 63 - len("project-") = 55 characters.
-const maxProjectNameLen = 63 - len(ProjectNamespacePrefix)
+const maxProjectNameLen = 63 - len(constants.ProjectNamespacePrefix)
 
 // dns1123LabelRegex matches a valid DNS-1123 label: lowercase alphanumerics
 // and hyphens, must start/end with an alphanumeric. Project names must be
@@ -38,7 +34,7 @@ func validateProjectName(name string) string {
 
 // projectNamespace returns the backing namespace name for a Project.
 func projectNamespace(projectName string) string {
-	return ProjectNamespacePrefix + projectName
+	return constants.ProjectNamespacePrefix + projectName
 }
 
 // createProjectRequest is the JSON body for creating a Project.
