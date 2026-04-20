@@ -54,6 +54,7 @@
 	// --- Build ---
 	let buildMode = $state<'auto' | 'dockerfile' | 'railpack'>(app.spec.source.build?.mode ?? 'auto');
 	let dockerfilePath = $state(app.spec.source.build?.dockerfilePath ?? '');
+	let buildContext = $state<'' | 'root' | 'subdir'>(app.spec.source.build?.context ?? '');
 	let savingBuild = $state(false);
 
 	// --- Networking ---
@@ -239,7 +240,8 @@
 			...optimisticSpec.source,
 			build: {
 				mode: buildMode,
-				dockerfilePath: buildMode === 'dockerfile' ? dockerfilePath : undefined
+				dockerfilePath: buildMode === 'dockerfile' ? dockerfilePath : undefined,
+				context: buildContext === '' ? undefined : buildContext
 			}
 		};
 		try {
@@ -588,6 +590,18 @@
 						<label class={labelCls} for="dockerfile-path">Dockerfile path</label>
 						<input id="dockerfile-path" type="text" bind:value={dockerfilePath} placeholder="Dockerfile"
 							class="mt-1 w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 font-mono text-sm text-white placeholder-gray-500 outline-none focus:border-accent" />
+					</div>
+				{/if}
+				{#if buildMode !== 'railpack' && srcPath}
+					<div>
+						<label class={labelCls} for="build-context">Build context</label>
+						<select id="build-context" bind:value={buildContext}
+							class="mt-1 w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-white outline-none focus:border-accent">
+							<option value="">Auto-detect</option>
+							<option value="subdir">Subdirectory (self-contained)</option>
+							<option value="root">Repo root (monorepo Dockerfile)</option>
+						</select>
+						<p class="mt-1 text-xs text-gray-500">Override the build context root when the Dockerfile references sibling directories.</p>
 					</div>
 				{/if}
 			</div>

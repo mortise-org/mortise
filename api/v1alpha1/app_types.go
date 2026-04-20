@@ -60,6 +60,20 @@ const (
 	BuildModeRailpack   BuildMode = "railpack"
 )
 
+// BuildContext selects the BuildKit build-context root when source.path is set.
+// "root" forces the repo root (monorepo Dockerfile referencing sibling dirs).
+// "subdir" forces the subdirectory (self-contained, Railway-style).
+// Unset = auto: pick subdir if a Dockerfile lives there, unless that Dockerfile
+// references the subdir prefix in COPY/ADD sources, in which case fall back to
+// repo root.
+// +kubebuilder:validation:Enum=root;subdir
+type BuildContext string
+
+const (
+	BuildContextRoot   BuildContext = "root"
+	BuildContextSubdir BuildContext = "subdir"
+)
+
 type AppSource struct {
 	// +kubebuilder:validation:Required
 	Type SourceType `json:"type"`
@@ -103,6 +117,7 @@ type ExternalSource struct {
 type Build struct {
 	Mode           BuildMode         `json:"mode,omitempty"`
 	DockerfilePath string            `json:"dockerfilePath,omitempty"`
+	Context        BuildContext      `json:"context,omitempty"`
 	Cache          *bool             `json:"cache,omitempty"`
 	Args           map[string]string `json:"args,omitempty"`
 }

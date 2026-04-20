@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	bkclient "github.com/moby/buildkit/client"
 	"github.com/moby/buildkit/client/llb"
@@ -156,22 +157,7 @@ func (b *BuildKitClient) buildSolveOpt(ctx context.Context, req BuildRequest, ch
 	} else if req.Mode == BuildModeRailpack {
 		useDockerfile = false
 	} else {
-		// Auto mode: check for Dockerfile in the subdirectory first,
-		// then repo root. Prefer subdirectory (self-contained pattern,
-		// e.g. Railway-style) over repo root (monorepo pattern).
-		subDir := req.dockerfileDir()
-		if _, err := os.Stat(filepath.Join(subDir, dockerfileName)); err == nil {
-			useDockerfile = true
-			// Self-contained Dockerfile: use subdirectory as both context
-			// and dockerfile dir (e.g. backend/Dockerfile with COPY . .)
-			req.SourceDir = subDir
-		} else if subDir != req.SourceDir {
-			// Check repo root for a monorepo Dockerfile.
-			if _, err := os.Stat(filepath.Join(req.SourceDir, dockerfileName)); err == nil {
-				useDockerfile = true
-				req.DockerfileDir = req.SourceDir
-			}
-		}
+		useDockerfile = b.resolveDockerfileContext(&req, dockerfileName, ch)
 	}
 
 	if useDockerfile {
@@ -179,6 +165,140 @@ func (b *BuildKitClient) buildSolveOpt(ctx context.Context, req BuildRequest, ch
 	}
 
 	return b.railpackSolveOpt(ctx, req, ch)
+}
+
+// resolveDockerfileContext picks the BuildKit context root for a Dockerfile
+// build when source.path is set. It honors an explicit req.ContextMode
+// override, otherwise falls back to auto-detection. Returns true if a
+// Dockerfile was found and the build should use the Dockerfile frontend.
+//
+// Auto-detection flow:
+//  1. Dockerfile lives in the subdir (self-contained, Railway-style)
+//     → context = subdir, unless the Dockerfile's COPY/ADD sources reference
+//     the subdir prefix, which signals the user wrote the Dockerfile
+//     assuming repo-root context → fall back to repo-root context.
+//  2. Dockerfile only at repo root (monorepo pattern) → context = repo root.
+//  3. Nothing found → return false (Railpack path).
+//
+// Mutates req: SourceDir and/or DockerfileDir may be rewritten so the caller
+// passes the right dirs to dockerfileSolveOpt.
+func (b *BuildKitClient) resolveDockerfileContext(req *BuildRequest, dockerfileName string, ch chan<- BuildEvent) bool {
+	rootDir := req.SourceDir
+	subDir := req.dockerfileDir()
+	subHasDockerfile := statFile(filepath.Join(subDir, dockerfileName))
+	rootHasDockerfile := subDir != rootDir && statFile(filepath.Join(rootDir, dockerfileName))
+
+	switch req.ContextMode {
+	case ContextModeSubdir:
+		// User forces the subdirectory as the context. Dockerfile must be
+		// in the subdir — a root-only Dockerfile can't be applied to a
+		// subdir context in a meaningful way, so fall through to Railpack.
+		if subHasDockerfile {
+			req.SourceDir = subDir
+			return true
+		}
+		return false
+	case ContextModeRoot:
+		// User forces the repo root as the context. Dockerfile may live
+		// at either location.
+		if rootHasDockerfile {
+			req.DockerfileDir = rootDir
+			return true
+		}
+		if subHasDockerfile {
+			return true // context = rootDir (unchanged), dockerfile dir = subDir
+		}
+		return false
+	}
+
+	// Auto mode.
+	if subHasDockerfile {
+		// Heuristic B: peek at the Dockerfile. If any COPY/ADD source
+		// starts with the subdir prefix (e.g. `COPY reddit-reply/landing/…`),
+		// the Dockerfile was written assuming repo-root context — fall back.
+		if prefix := relSubdirPrefix(rootDir, subDir); prefix != "" && dockerfileNeedsRootContext(filepath.Join(subDir, dockerfileName), prefix) {
+			ch <- BuildEvent{Type: EventLog, Line: fmt.Sprintf("[context] Dockerfile at %s references %s — using repo root as build context", dockerfileName, prefix)}
+			req.DockerfileDir = subDir
+			return true
+		}
+		req.SourceDir = subDir
+		return true
+	}
+	if rootHasDockerfile {
+		req.DockerfileDir = rootDir
+		return true
+	}
+	return false
+}
+
+// statFile reports whether path refers to an existing regular file.
+func statFile(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
+}
+
+// relSubdirPrefix returns the subdir path relative to the repo root, in POSIX
+// form with a trailing slash (e.g. "services/api/"). Returns "" when subdir
+// equals the repo root or is outside it.
+func relSubdirPrefix(root, subdir string) string {
+	rel, err := filepath.Rel(root, subdir)
+	if err != nil || rel == "." || strings.HasPrefix(rel, "..") {
+		return ""
+	}
+	return filepath.ToSlash(rel) + "/"
+}
+
+// dockerfileNeedsRootContext scans a Dockerfile for COPY/ADD sources that
+// begin with the given subdir prefix, indicating the Dockerfile expects the
+// repo root as the build context. Skips `COPY --from=...` (stage copies) and
+// comments. Conservative: on read errors, returns false so we keep the
+// existing self-contained default.
+func dockerfileNeedsRootContext(path, subdirPrefix string) bool {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	for _, raw := range strings.Split(string(data), "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		upper := strings.ToUpper(line)
+		if !strings.HasPrefix(upper, "COPY ") && !strings.HasPrefix(upper, "ADD ") {
+			continue
+		}
+		// Drop the leading COPY/ADD keyword and any flags (--chown=, --from=).
+		// A --from=<stage> copy reads from a build stage, not the local
+		// context, so the source paths can't point at our subdir prefix.
+		rest := line[len("COPY"):]
+		if strings.HasPrefix(upper, "ADD ") {
+			rest = line[len("ADD"):]
+		}
+		fields := strings.Fields(rest)
+		fromStage := false
+		var srcs []string
+		for _, f := range fields {
+			if strings.HasPrefix(f, "--") {
+				if strings.HasPrefix(f, "--from=") {
+					fromStage = true
+				}
+				continue
+			}
+			srcs = append(srcs, f)
+		}
+		if fromStage || len(srcs) < 2 {
+			continue
+		}
+		// The final token is the destination; all others are sources.
+		for _, src := range srcs[:len(srcs)-1] {
+			clean := strings.TrimPrefix(src, "./")
+			clean = strings.TrimPrefix(clean, "/")
+			if strings.HasPrefix(clean, subdirPrefix) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // dockerfileSolveOpt builds a SolveOpt for Dockerfile-based builds.

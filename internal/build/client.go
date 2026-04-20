@@ -10,12 +10,24 @@ const (
 	BuildModeRailpack   BuildMode = "railpack"
 )
 
+// ContextMode selects the BuildKit context root when a subdirectory is in use.
+// Empty = auto-detect (current smart default + heuristic scan of the
+// Dockerfile). "root" pins the context to SourceDir. "subdir" pins it to
+// DockerfileDir.
+type ContextMode string
+
+const (
+	ContextModeRoot   ContextMode = "root"
+	ContextModeSubdir ContextMode = "subdir"
+)
+
 type BuildRequest struct {
 	AppName       string
 	Namespace     string
-	SourceDir     string // Build context root (typically the cloned repo root).
+	SourceDir     string // Repo-root build context.
 	DockerfileDir string // Directory containing the Dockerfile. If empty, same as SourceDir.
 	Mode          BuildMode
+	ContextMode   ContextMode
 	Dockerfile    string
 	BuildArgs     map[string]string
 	CacheFrom     string

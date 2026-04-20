@@ -65,6 +65,7 @@
 	let buildMode = $state<'auto' | 'dockerfile' | 'railpack'>('auto');
 	let buildCache = $state(false);
 	let dockerfilePath = $state('Dockerfile');
+	let buildContext = $state<'' | 'root' | 'subdir'>('');
 	let buildArgs = $state<Record<string, string>>({});
 
 	// Domain (optional, for git/image/database/empty)
@@ -351,6 +352,7 @@
 						mode: buildMode,
 						cache: buildCache || undefined,
 						dockerfilePath: buildMode === 'dockerfile' ? dockerfilePath : undefined,
+						context: buildContext === '' ? undefined : buildContext,
 						args: Object.keys(buildArgs).length > 0 ? buildArgs : undefined
 					}
 				},
@@ -614,6 +616,18 @@
 								<label class="text-sm text-gray-400">Dockerfile path</label>
 								<input type="text" bind:value={dockerfilePath} placeholder="Dockerfile"
 									class="mt-1 w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 font-mono text-sm text-white placeholder-gray-500 outline-none focus:border-accent" />
+							</div>
+						{/if}
+						{#if buildMode !== 'railpack' && gitPath}
+							<div>
+								<label class="text-sm text-gray-400">Build context</label>
+								<select bind:value={buildContext}
+									class="mt-1 w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-white outline-none focus:border-accent">
+									<option value="">Auto-detect</option>
+									<option value="subdir">Subdirectory (self-contained)</option>
+									<option value="root">Repo root (monorepo Dockerfile)</option>
+								</select>
+								<p class="mt-1 text-xs text-gray-500">Override when the Dockerfile references sibling directories.</p>
 							</div>
 						{/if}
 

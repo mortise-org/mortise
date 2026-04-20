@@ -186,6 +186,178 @@ func TestSolveOpt_Platform(t *testing.T) {
 	}
 }
 
+// makeMonorepoTree creates a repo-root / subdir pair with a Dockerfile at a
+// location determined by the caller. Returns (rootDir, subDir).
+func makeMonorepoTree(t *testing.T, subPath string, rootDockerfile, subDockerfile string) (string, string) {
+	t.Helper()
+	root := t.TempDir()
+	sub := filepath.Join(root, subPath)
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if rootDockerfile != "" {
+		if err := os.WriteFile(filepath.Join(root, "Dockerfile"), []byte(rootDockerfile), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if subDockerfile != "" {
+		if err := os.WriteFile(filepath.Join(sub, "Dockerfile"), []byte(subDockerfile), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return root, sub
+}
+
+// TestResolveContext_AutoSelfContained: Dockerfile in subdir with no
+// repo-root-prefixed COPY → context collapses to subdir.
+func TestResolveContext_AutoSelfContained(t *testing.T) {
+	root, sub := makeMonorepoTree(t, "services/api", "", "FROM alpine\nCOPY . .\n")
+	c := newWithSolver(Config{}, &fakeSolverImpl{})
+	req := BuildRequest{SourceDir: root, DockerfileDir: sub, PushTarget: "r/i:t"}
+	ch := make(chan BuildEvent, 8)
+
+	ok := c.resolveDockerfileContext(&req, "Dockerfile", ch)
+	if !ok {
+		t.Fatal("expected Dockerfile path to be taken")
+	}
+	if req.SourceDir != sub {
+		t.Fatalf("SourceDir = %q, want %q (self-contained)", req.SourceDir, sub)
+	}
+}
+
+// TestResolveContext_AutoHeuristicFallback: Dockerfile in subdir whose COPY
+// references the subdir prefix → context falls back to repo root.
+func TestResolveContext_AutoHeuristicFallback(t *testing.T) {
+	df := "FROM alpine\nCOPY services/api/entrypoint.sh /entrypoint.sh\n"
+	root, sub := makeMonorepoTree(t, "services/api", "", df)
+	c := newWithSolver(Config{}, &fakeSolverImpl{})
+	req := BuildRequest{SourceDir: root, DockerfileDir: sub, PushTarget: "r/i:t"}
+	ch := make(chan BuildEvent, 8)
+
+	ok := c.resolveDockerfileContext(&req, "Dockerfile", ch)
+	if !ok {
+		t.Fatal("expected Dockerfile path to be taken")
+	}
+	if req.SourceDir != root {
+		t.Fatalf("SourceDir = %q, want repo root %q", req.SourceDir, root)
+	}
+	if req.DockerfileDir != sub {
+		t.Fatalf("DockerfileDir = %q, want %q", req.DockerfileDir, sub)
+	}
+}
+
+// TestResolveContext_AutoHeuristicIgnoresStageCopy: `COPY --from=<stage>`
+// copies read from a build stage, not the local context — their sources
+// must not trigger the root fallback.
+func TestResolveContext_AutoHeuristicIgnoresStageCopy(t *testing.T) {
+	df := "FROM alpine AS builder\nFROM alpine\nCOPY --from=builder services/api/bin /bin\n"
+	root, sub := makeMonorepoTree(t, "services/api", "", df)
+	c := newWithSolver(Config{}, &fakeSolverImpl{})
+	req := BuildRequest{SourceDir: root, DockerfileDir: sub, PushTarget: "r/i:t"}
+	ch := make(chan BuildEvent, 8)
+
+	ok := c.resolveDockerfileContext(&req, "Dockerfile", ch)
+	if !ok {
+		t.Fatal("expected Dockerfile path to be taken")
+	}
+	if req.SourceDir != sub {
+		t.Fatalf("SourceDir = %q, want subdir %q (stage copies should not trigger fallback)", req.SourceDir, sub)
+	}
+}
+
+// TestResolveContext_ExplicitRoot: context override forces repo root even
+// when a self-contained Dockerfile exists in the subdir.
+func TestResolveContext_ExplicitRoot(t *testing.T) {
+	root, sub := makeMonorepoTree(t, "services/api", "", "FROM alpine\nCOPY . .\n")
+	c := newWithSolver(Config{}, &fakeSolverImpl{})
+	req := BuildRequest{SourceDir: root, DockerfileDir: sub, ContextMode: ContextModeRoot, PushTarget: "r/i:t"}
+	ch := make(chan BuildEvent, 8)
+
+	ok := c.resolveDockerfileContext(&req, "Dockerfile", ch)
+	if !ok {
+		t.Fatal("expected Dockerfile path to be taken")
+	}
+	if req.SourceDir != root {
+		t.Fatalf("SourceDir = %q, want repo root %q", req.SourceDir, root)
+	}
+	if req.DockerfileDir != sub {
+		t.Fatalf("DockerfileDir = %q, want %q", req.DockerfileDir, sub)
+	}
+}
+
+// TestResolveContext_ExplicitSubdir: context override forces subdir even
+// when the Dockerfile has repo-root-prefixed COPY (heuristic would otherwise
+// pick root).
+func TestResolveContext_ExplicitSubdir(t *testing.T) {
+	df := "FROM alpine\nCOPY services/api/entrypoint.sh /entrypoint.sh\n"
+	root, sub := makeMonorepoTree(t, "services/api", "", df)
+	c := newWithSolver(Config{}, &fakeSolverImpl{})
+	req := BuildRequest{SourceDir: root, DockerfileDir: sub, ContextMode: ContextModeSubdir, PushTarget: "r/i:t"}
+	ch := make(chan BuildEvent, 8)
+
+	ok := c.resolveDockerfileContext(&req, "Dockerfile", ch)
+	if !ok {
+		t.Fatal("expected Dockerfile path to be taken")
+	}
+	if req.SourceDir != sub {
+		t.Fatalf("SourceDir = %q, want %q", req.SourceDir, sub)
+	}
+}
+
+// TestResolveContext_MonorepoRoot: no subdir Dockerfile, repo-root Dockerfile
+// exists → keep repo-root context, point DockerfileDir there.
+func TestResolveContext_MonorepoRoot(t *testing.T) {
+	root, sub := makeMonorepoTree(t, "services/api", "FROM alpine\n", "")
+	c := newWithSolver(Config{}, &fakeSolverImpl{})
+	req := BuildRequest{SourceDir: root, DockerfileDir: sub, PushTarget: "r/i:t"}
+	ch := make(chan BuildEvent, 8)
+
+	ok := c.resolveDockerfileContext(&req, "Dockerfile", ch)
+	if !ok {
+		t.Fatal("expected Dockerfile path to be taken")
+	}
+	if req.SourceDir != root {
+		t.Fatalf("SourceDir = %q, want %q", req.SourceDir, root)
+	}
+	if req.DockerfileDir != root {
+		t.Fatalf("DockerfileDir = %q, want %q", req.DockerfileDir, root)
+	}
+}
+
+// TestDockerfileNeedsRootContext covers the parser edge cases: flags,
+// comments, wildcards, multi-source COPY.
+func TestDockerfileNeedsRootContext(t *testing.T) {
+	prefix := "services/api/"
+	cases := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{"plain", "FROM alpine\nCOPY services/api/entrypoint.sh /e\n", true},
+		{"leading-dot-slash", "FROM alpine\nCOPY ./services/api/entrypoint.sh /e\n", true},
+		{"chown-flag", "FROM alpine\nCOPY --chown=1000:1000 services/api/file /f\n", true},
+		{"multi-source", "FROM alpine\nCOPY services/api/a services/api/b /dst/\n", true},
+		{"stage-copy", "FROM alpine AS b\nFROM alpine\nCOPY --from=b services/api/x /x\n", false},
+		{"comment", "FROM alpine\n# COPY services/api/x /x\nCOPY . .\n", false},
+		{"add-directive", "FROM alpine\nADD services/api/tarball.tgz /app\n", true},
+		{"self-contained", "FROM alpine\nCOPY . .\n", false},
+		{"other-subdir", "FROM alpine\nCOPY other/file /x\n", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			p := filepath.Join(dir, "Dockerfile")
+			if err := os.WriteFile(p, []byte(tc.body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			got := dockerfileNeedsRootContext(p, prefix)
+			if got != tc.want {
+				t.Fatalf("got %v, want %v (body: %q)", got, tc.want, tc.body)
+			}
+		})
+	}
+}
+
 // fakeSolverImpl is the concrete fake used in most tests. It feeds log data
 // into the statusChan before returning.
 type fakeSolverImpl struct {

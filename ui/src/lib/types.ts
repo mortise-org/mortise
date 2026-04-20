@@ -18,6 +18,7 @@ export interface AppSource {
 export interface Build {
 	mode?: 'auto' | 'dockerfile' | 'railpack';
 	dockerfilePath?: string;
+	context?: 'root' | 'subdir';
 	cache?: boolean;
 	args?: Record<string, string>;
 }

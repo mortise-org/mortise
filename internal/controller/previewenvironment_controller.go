@@ -318,15 +318,16 @@ func (r *PreviewEnvironmentReconciler) reconcilePreviewBuild(ctx context.Context
 	r.builds.set(key, tracker)
 
 	go runBuild(buildCtx, cancel, tracker, buildParams{
-		appName:    pe.Spec.AppRef,
-		namespace:  pe.Namespace,
-		repo:       app.Spec.Source.Repo,
-		branch:     pe.Spec.PullRequest.Branch,
-		token:      token,
-		path:       app.Spec.Source.Path,
-		dockerfile: previewDockerfilePath(app),
-		buildArgs:  previewBuildArgs(app),
-		imageRef:   imageRef,
+		appName:      pe.Spec.AppRef,
+		namespace:    pe.Namespace,
+		repo:         app.Spec.Source.Repo,
+		branch:       pe.Spec.PullRequest.Branch,
+		token:        token,
+		path:         app.Spec.Source.Path,
+		dockerfile:   previewDockerfilePath(app),
+		buildArgs:    previewBuildArgs(app),
+		buildContext: buildContextOf(app),
+		imageRef:     imageRef,
 	}, r.GitClient, r.BuildClient, buildRunnerOptions{
 		logName:      "preview-build",
 		tmpDirPrefix: "mortise-preview-build-*",

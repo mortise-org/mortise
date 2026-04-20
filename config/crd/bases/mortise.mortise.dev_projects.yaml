@@ -54,8 +54,10 @@ spec:
           spec:
             description: |-
               ProjectSpec defines the desired state of a Project — the top-level grouping
-              above Apps. Each Project owns a Kubernetes namespace (by default
-              `project-{metadata.name}`) into which its Apps are placed.
+              above Apps. Each Project owns a control namespace (by default
+              `pj-{metadata.name}`) which holds its App CRDs plus one env namespace per
+              declared environment (`pj-{metadata.name}-{env}`) which holds the running
+              workloads.
             properties:
               description:
                 description: Description is a short, human-readable note about the

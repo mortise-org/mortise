@@ -144,10 +144,10 @@ spec:
                         properties:
                           project:
                             description: |-
-                              Project, if set, resolves the ref in the namespace of the named Project
-                              (`project-{project}`) instead of the binder's own namespace. Enables
-                              cross-project bindings (e.g. binding app in `web` project to a db in
-                              `infra` project).
+                              Project, if set, resolves the ref in the matching env namespace of the
+                              named Project (`pj-{project}-{env}`) instead of the binder's own env
+                              namespace. Enables cross-project bindings (e.g. binding app in `web`
+                              project to a db in `infra` project).
                             type: string
                           ref:
                             description: |-
@@ -375,6 +375,18 @@ spec:
                         type: object
                       cache:
                         type: boolean
+                      context:
+                        description: |-
+                          BuildContext selects the BuildKit build-context root when source.path is set.
+                          "root" forces the repo root (monorepo Dockerfile referencing sibling dirs).
+                          "subdir" forces the subdirectory (self-contained, Railway-style).
+                          Unset = auto: pick subdir if a Dockerfile lives there, unless that Dockerfile
+                          references the subdir prefix in COPY/ADD sources, in which case fall back to
+                          repo root.
+                        enum:
+                        - root
+                        - subdir
+                        type: string
                       dockerfilePath:
                         type: string
                       mode:

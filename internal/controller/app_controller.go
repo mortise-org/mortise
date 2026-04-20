@@ -390,16 +390,17 @@ func (r *AppReconciler) reconcileGitSource(ctx context.Context, app *mortisev1al
 	r.Builds.set(key, tracker)
 
 	bp := buildParams{
-		appName:    app.Name,
-		namespace:  app.Namespace,
-		revision:   revision,
-		repo:       app.Spec.Source.Repo,
-		branch:     firstNonEmpty(app.Spec.Source.Branch, "main"),
-		token:      token,
-		path:       app.Spec.Source.Path,
-		dockerfile: dockerfilePath(app),
-		buildArgs:  buildArgsOf(app),
-		imageRef:   imageRef,
+		appName:      app.Name,
+		namespace:    app.Namespace,
+		revision:     revision,
+		repo:         app.Spec.Source.Repo,
+		branch:       firstNonEmpty(app.Spec.Source.Branch, "main"),
+		token:        token,
+		path:         app.Spec.Source.Path,
+		dockerfile:   dockerfilePath(app),
+		buildArgs:    buildArgsOf(app),
+		buildContext: buildContextOf(app),
+		imageRef:     imageRef,
 	}
 	go runBuild(buildCtx, cancel, tracker, bp, r.GitClient, r.BuildClient, buildRunnerOptions{
 		logName:      "build",
@@ -414,16 +415,17 @@ func (r *AppReconciler) reconcileGitSource(ctx context.Context, app *mortisev1al
 // buildParams bundles the inputs the background build goroutine needs. Keeping
 // it a value struct avoids the goroutine holding onto the live *App.
 type buildParams struct {
-	appName    string
-	namespace  string
-	revision   string // commit SHA (or branch fallback) — persisted into the build-log ConfigMap
-	repo       string
-	branch     string
-	token      string
-	path       string // subdirectory within the clone used as BuildKit context; "" = repo root
-	dockerfile string
-	buildArgs  map[string]string
-	imageRef   registry.ImageRef
+	appName      string
+	namespace    string
+	revision     string // commit SHA (or branch fallback) — persisted into the build-log ConfigMap
+	repo         string
+	branch       string
+	token        string
+	path         string // subdirectory within the clone used as BuildKit context; "" = repo root
+	dockerfile   string
+	buildArgs    map[string]string
+	buildContext mortisev1alpha1.BuildContext
+	imageRef     registry.ImageRef
 }
 
 // buildLogsConfigMapName returns the name of the ConfigMap that stores the
@@ -627,6 +629,15 @@ func buildArgsOf(app *mortisev1alpha1.App) map[string]string {
 		return app.Spec.Source.Build.Args
 	}
 	return nil
+}
+
+// buildContextOf returns the configured BuildContext override ("" when unset,
+// meaning auto-detect).
+func buildContextOf(app *mortisev1alpha1.App) mortisev1alpha1.BuildContext {
+	if app.Spec.Source.Build != nil {
+		return app.Spec.Source.Build.Context
+	}
+	return ""
 }
 
 // setFailedCondition sets the App phase to Failed, writes a condition, updates

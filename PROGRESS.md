@@ -616,6 +616,20 @@ Integration test proves it against in-cluster Gitea + BuildKit + registry.
 - Fixture: `test/fixtures/git-monorepo.yaml`.
 - UI build grouping (the fourth bullet in SPEC.md §7.6) is deferred
   — backend-only landing.
+- **Build context selection** (`internal/build/buildkit.go`
+  `resolveDockerfileContext`):
+  - `source.build.context` is an explicit override — `root` pins the
+    build context to the repo root, `subdir` pins it to the source
+    path, unset = auto.
+  - Auto picks subdir when a self-contained Dockerfile lives there,
+    with a heuristic fallback: if that Dockerfile's `COPY`/`ADD`
+    sources start with the subdir prefix (indicating it was written
+    for repo-root context), context drops back to the repo root and
+    the fallback is logged into the build stream.
+  - `COPY --from=<stage>` copies and `#` comments are skipped; flags
+    (`--chown=`, etc.) are tolerated; multi-source COPY parsed
+    correctly. Unit coverage in `buildkit_test.go`
+    (`TestResolveContext_*`, `TestDockerfileNeedsRootContext`).
 
 ### Phase 6 — Preview environments — **Done**
 

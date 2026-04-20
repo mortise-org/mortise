@@ -23,9 +23,22 @@ import (
 
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
+	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
 	"github.com/MC-Meesh/mortise/internal/build"
 	"github.com/MC-Meesh/mortise/internal/git"
 )
+
+// toContextMode maps the CRD-level BuildContext to the build package's
+// ContextMode. Unset in the CRD means auto-detect.
+func toContextMode(c mortisev1alpha1.BuildContext) build.ContextMode {
+	switch c {
+	case mortisev1alpha1.BuildContextRoot:
+		return build.ContextModeRoot
+	case mortisev1alpha1.BuildContextSubdir:
+		return build.ContextModeSubdir
+	}
+	return ""
+}
 
 // buildRunnerOptions controls the small set of per-caller differences between
 // the app and preview-environment build flows.
@@ -96,6 +109,7 @@ func runBuild(
 		DockerfileDir: dockerfileDir,
 		Dockerfile:    p.dockerfile,
 		BuildArgs:     p.buildArgs,
+		ContextMode:   toContextMode(p.buildContext),
 		PushTarget:    p.imageRef.Full,
 	}
 

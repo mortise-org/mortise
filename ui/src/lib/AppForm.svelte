@@ -27,6 +27,7 @@
 	let providerRef = $state(initial.spec.source.providerRef ?? '');
 	let buildMode = $state<NonNullable<Build['mode']>>(initial.spec.source.build?.mode ?? 'auto');
 	let dockerfilePath = $state(initial.spec.source.build?.dockerfilePath ?? '');
+	let buildContext = $state<'' | 'root' | 'subdir'>(initial.spec.source.build?.context ?? '');
 	let publicNet = $state(initial.spec.network?.public ?? true);
 
 	const firstEnv = initial.spec.environments?.[0];
@@ -82,6 +83,9 @@
 				const build: Build = { mode: buildMode };
 				if (buildMode === 'dockerfile' && dockerfilePath.trim()) {
 					build.dockerfilePath = dockerfilePath.trim();
+				}
+				if (buildContext !== '') {
+					build.context = buildContext;
 				}
 				source = {
 					type: 'git',
@@ -277,6 +281,22 @@
 						class="w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 font-mono text-sm text-white placeholder-gray-500 outline-none focus:border-accent"
 						placeholder="Dockerfile"
 					/>
+				</div>
+			{/if}
+			{#if buildMode !== 'railpack' && sourcePath}
+				<div>
+					<label for="build-context" class="mb-1 block text-sm text-gray-400">
+						Build Context
+					</label>
+					<select
+						id="build-context"
+						bind:value={buildContext}
+						class="w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-white outline-none focus:border-accent"
+					>
+						<option value="">Auto-detect</option>
+						<option value="subdir">Subdirectory (self-contained)</option>
+						<option value="root">Repo root (monorepo Dockerfile)</option>
+					</select>
 				</div>
 			{/if}
 		{/if}
