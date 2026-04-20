@@ -25,7 +25,7 @@
 		'#4ade80', // green-400
 		'#fbbf24', // amber-400
 		'#fb7185', // rose-400
-		'#60a5fa', // blue-400
+		'#C08050', // warm brown
 		'#f472b6', // pink-400
 		'#34d399' // emerald-400
 	];

@@ -175,6 +175,8 @@
 				{ name: 'realtime', image: 'supabase/realtime', required: false, selected: true },
 				{ name: 'studio', image: 'supabase/studio', required: false, selected: true }
 			];
+		} finally {
+			supabaseServicesLoaded = true;
 		}
 	}
 
@@ -439,9 +441,9 @@
 					<button
 						type="button"
 						onclick={() => selectType(opt.type)}
-						class="flex w-full items-center gap-3 rounded-md px-3 py-2.5 text-left transition-colors hover:bg-surface-700"
+						class="group flex w-full items-center gap-3 rounded-md px-3 py-2.5 text-left transition-colors hover:bg-surface-700"
 					>
-						<span class="flex h-8 w-8 items-center justify-center rounded-md bg-surface-700 text-accent"
+						<span class="flex h-8 w-8 items-center justify-center rounded-md bg-surface-800 transition-colors group-hover:bg-surface-700 text-white"
 							><svelte:component this={opt.icon} class="h-4 w-4" /></span
 						>
 						<div>
@@ -726,7 +728,8 @@
 									<label class="flex items-center gap-3 rounded-md border border-surface-600 bg-surface-800 px-3 py-2 cursor-pointer hover:border-surface-500 transition-colors" class:opacity-60={svc.required && svc.selected}>
 										<input
 											type="checkbox"
-											bind:checked={supabaseServices[i].selected}
+											checked={svc.selected}
+											onchange={(e) => { supabaseServices[i].selected = e.currentTarget.checked; supabaseServices = supabaseServices; }}
 											disabled={svc.required}
 											class="rounded border-surface-500 bg-surface-700 text-accent focus:ring-accent"
 										/>
@@ -886,11 +889,17 @@
 						<button
 							type="button"
 							onclick={handleCreate}
-							disabled={submitting || supabaseCreating || composeCreating || (selectedType !== 'supabase' && selectedType !== 'compose' && !appName) || (selectedType === 'compose' && !composeContent.trim())}
+							disabled={submitting || supabaseCreating || composeCreating || (selectedType === 'supabase' && !supabaseServicesLoaded) || (selectedType !== 'supabase' && selectedType !== 'compose' && !appName) || (selectedType === 'compose' && !composeContent.trim())}
 							class="rounded-md bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50"
 						>
 							{#if selectedType === 'supabase'}
-								{supabaseCreating ? supabaseProgress || 'Creating...' : 'Create Supabase Stack'}
+								{#if supabaseCreating}
+									{supabaseProgress || 'Creating...'}
+								{:else if !supabaseServicesLoaded}
+									Loading services...
+								{:else}
+									Create Supabase Stack
+								{/if}
 							{:else if selectedType === 'compose'}
 								{composeCreating ? 'Deploying...' : 'Deploy Stack'}
 							{:else}

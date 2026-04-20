@@ -272,7 +272,7 @@
 				</div>
 				{#if apps.length === 0}
 					<div class="rounded-lg border border-dashed border-surface-600 bg-surface-800/60 p-12 text-center">
-						<div class="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-surface-700 text-accent" aria-hidden="true">
+						<div class="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-surface-800 text-white" aria-hidden="true">
 							<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="h-7 w-7">
 								<path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
 							</svg>
