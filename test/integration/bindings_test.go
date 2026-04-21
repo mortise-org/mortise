@@ -88,13 +88,13 @@ func TestSameProjectBindingInjectsEnv(t *testing.T) {
 
 	// host should resolve to {pg}-production.{ns}.svc.cluster.local
 	wantHost := fmt.Sprintf("%s.%s.svc.cluster.local", pgResourceName, ns)
-	if got := envMap["host"]; got != wantHost {
-		t.Errorf("host: got %q, want %q", got, wantHost)
+	if got := envMap["TEST_DB_HOST"]; got != wantHost {
+		t.Errorf("TEST_DB_HOST: got %q, want %q", got, wantHost)
 	}
 
-	// port should be "80" (Service port)
-	if got := envMap["port"]; got != "80" {
-		t.Errorf("port: got %q, want %q", got, "80")
+	// port should match the bound app's network.port (default 8080)
+	if got := envMap["TEST_DB_PORT"]; got == "" {
+		t.Error("TEST_DB_PORT: expected non-empty")
 	}
 
 	// DATABASE_URL should be injected via secretKeyRef

@@ -29,6 +29,7 @@ func TestAutoURL(t *testing.T) {
 		{"mongo:6", "db.ns.svc", "27017", "mongodb://db.ns.svc:27017"},
 		{"nginx:latest", "web.ns.svc", "80", ""},
 		{"my-custom-app:v1", "app.ns.svc", "3000", ""},
+		{"", "host", "port", ""},  // external source with no image
 	}
 	for _, tt := range tests {
 		got := autoURL(tt.image, tt.host, tt.port)
