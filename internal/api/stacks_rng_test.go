@@ -1,15 +1,3 @@
-// PENDING — this test exercises an RNG-error-propagation fix that has not
-// landed on main. Keep around as a reference for when the fix (or an
-// equivalent) lands:
-//
-//   - generateRandomHex must return (string, error) instead of silently
-//     swallowing rand.Read failures.
-//   - substituteVars must propagate that error.
-//   - A package-level `randReader io.Reader` (defaulting to crypto/rand.Reader)
-//     must exist so tests can swap it.
-//
-// When all three land, rename this file to `stacks_rng_test.go`, drop the
-// `.txt` suffix, and commit.
 package api
 
 import (

@@ -17,6 +17,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
+	"github.com/MC-Meesh/mortise/internal/constants"
 	"github.com/MC-Meesh/mortise/test/helpers"
 )
 
@@ -376,7 +377,7 @@ func TestPreviewInheritsStagingBindings(t *testing.T) {
 	var envSecret corev1.Secret
 	if err := k8sClient.Get(context.Background(), types.NamespacedName{
 		Name:      dep.Name + "-env",
-		Namespace: previewNs,
+		Namespace: constants.PreviewNamespace(projectName, 10),
 	}, &envSecret); err != nil {
 		t.Fatalf("get preview app env Secret: %v", err)
 	}

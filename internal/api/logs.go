@@ -108,10 +108,7 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 	}
 	name := chi.URLParam(r, "app")
 
-	env := r.URL.Query().Get("env")
-	if env == "" {
-		env = "production"
-	}
+	env := envFromQuery(r)
 	follow := r.URL.Query().Get("follow") == "true"
 	previous := r.URL.Query().Get("previous") == "true"
 	pinnedPod := r.URL.Query().Get("pod")
@@ -152,7 +149,7 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 	envNs := constants.EnvNamespace(projectName, env)
 
 	selSet := map[string]string{
-		constants.AppNameLabel:       name,
+		constants.AppNameLabel:         name,
 		"app.kubernetes.io/managed-by": "mortise",
 		"mortise.dev/environment":      env,
 	}

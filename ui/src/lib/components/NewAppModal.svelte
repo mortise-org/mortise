@@ -140,7 +140,7 @@
 				env: []
 			},
 			{
-				name: 'MinIO', image: 'minio/minio:latest', icon: Package, description: 'S3-compatible object storage',
+				name: 'MinIO', image: 'minio/minio:RELEASE.2024-11-07T00-52-20Z', icon: Package, description: 'S3-compatible object storage',
 				port: 9000,
 				env: [
 					{ name: 'MINIO_ROOT_USER', value: 'admin' },
@@ -386,7 +386,7 @@
 			return {
 				source: {
 					type: 'image' as const,
-					image: imageRef || 'nginx:latest',
+					image: imageRef || 'nginx:1.27',
 					pullSecretRef: pullSecret || undefined
 				},
 				network: {

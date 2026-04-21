@@ -255,11 +255,12 @@ func (h *Handler) dispatchPREvent(ctx context.Context, pr PREvent) {
 func (h *Handler) handlePROpenOrSync(ctx context.Context, app *mortisev1alpha1.App, project *mortisev1alpha1.Project, preview *mortisev1alpha1.PreviewConfig, pr PREvent) {
 	log := logf.FromContext(ctx)
 
-	// Preview envs inherit from staging. If the project doesn't declare a
-	// `staging` env, there's nothing reasonable to clone from — log and skip
-	// so PR webhooks don't fail and the gap is visible in the operator log.
-	if !projectHasStagingEnv(project) {
-		log.Info("skipping preview env: project has no staging env",
+	// Preview envs inherit settings from a source environment. Resolve which
+	// env to clone from: prefer "staging" if it exists, otherwise the first
+	// non-production env. If the project only has "production", warn and skip.
+	sourceEnv := resolvePreviewSourceEnv(project)
+	if sourceEnv == "" {
+		log.Info("skipping preview env: project has no non-production environment to inherit from; add a staging or development environment",
 			"project", project.Name, "app", app.Name, "pr", pr.Number)
 		return
 	}
@@ -282,8 +283,8 @@ func (h *Handler) handlePROpenOrSync(ctx context.Context, app *mortisev1alpha1.A
 		}
 	}
 
-	// Find staging override on the App (may be nil — defaults are fine).
-	staging := findStagingEnv(app)
+	// Find the source env override on the App (may be nil — defaults are fine).
+	sourceEnvOverride := findAppEnv(app, sourceEnv)
 
 	// Check if PreviewEnvironment already exists.
 	existing, err := h.k8s.listPreviewEnvironments(ctx, app.Namespace)
@@ -314,7 +315,7 @@ func (h *Handler) handlePROpenOrSync(ctx context.Context, app *mortisev1alpha1.A
 		},
 		Spec: mortisev1alpha1.PreviewEnvironmentSpec{
 			AppRef:    app.Name,
-			SourceEnv: "staging",
+			SourceEnv: sourceEnv,
 			PullRequest: mortisev1alpha1.PullRequestRef{
 				Number: pr.Number,
 				Branch: pr.Branch,
@@ -325,12 +326,12 @@ func (h *Handler) handlePROpenOrSync(ctx context.Context, app *mortisev1alpha1.A
 		},
 	}
 
-	// Inherit from staging.
-	if staging != nil {
-		pe.Spec.Replicas = staging.Replicas
-		pe.Spec.Resources = staging.Resources
-		pe.Spec.Env = staging.Env
-		pe.Spec.Bindings = staging.Bindings
+	// Inherit from source environment.
+	if sourceEnvOverride != nil {
+		pe.Spec.Replicas = sourceEnvOverride.Replicas
+		pe.Spec.Resources = sourceEnvOverride.Resources
+		pe.Spec.Env = sourceEnvOverride.Env
+		pe.Spec.Bindings = sourceEnvOverride.Bindings
 	}
 
 	// Apply project-level preview overrides.
@@ -720,30 +721,34 @@ func resolvePreviewDomainTemplate(template, appName string, prNumber int) string
 	return result
 }
 
-// findStagingEnv returns the App's staging override, or nil when no override
-// exists. Callers that need defaults should treat nil as "use App defaults".
-// Project-level staging existence is checked separately via
-// projectHasStagingEnv before this is consulted.
-func findStagingEnv(app *mortisev1alpha1.App) *mortisev1alpha1.Environment {
+// findAppEnv returns the App's per-environment override for the named env,
+// or nil when the App declares no override for that env. Callers that need
+// defaults should treat nil as "use App defaults".
+func findAppEnv(app *mortisev1alpha1.App, envName string) *mortisev1alpha1.Environment {
 	for i := range app.Spec.Environments {
-		if app.Spec.Environments[i].Name == "staging" {
+		if app.Spec.Environments[i].Name == envName {
 			return &app.Spec.Environments[i]
 		}
 	}
 	return nil
 }
 
-// projectHasStagingEnv returns true iff the project declares a `staging`
-// environment in its spec. Preview envs require staging to exist as the
-// inheritance source.
-func projectHasStagingEnv(project *mortisev1alpha1.Project) bool {
+// resolvePreviewSourceEnv picks the project environment that preview envs
+// should inherit from. It prefers "staging" if declared, otherwise falls back
+// to the first non-production environment. Returns "" if no suitable env
+// exists (i.e. the project only has "production").
+func resolvePreviewSourceEnv(project *mortisev1alpha1.Project) string {
 	if project == nil {
-		return false
+		return ""
 	}
+	var firstNonProd string
 	for _, env := range project.Spec.Environments {
 		if env.Name == "staging" {
-			return true
+			return "staging"
+		}
+		if env.Name != "production" && firstNonProd == "" {
+			firstNonProd = env.Name
 		}
 	}
-	return false
+	return firstNonProd
 }

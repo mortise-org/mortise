@@ -339,10 +339,6 @@ function Install-Mortise {
     Info "Installing Mortise operator..."
     helm upgrade --install mortise mortise/mortise `
         --namespace $MORTISE_NAMESPACE --create-namespace `
-        --set traefik.enabled=false `
-        --set cert-manager.enabled=false `
-        --set external-dns.enabled=false `
-        --set registry.builtin.enabled=false `
         --wait --timeout 120s `
         @versionFlag
 

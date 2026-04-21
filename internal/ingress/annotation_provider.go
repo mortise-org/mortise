@@ -48,14 +48,14 @@ func (p *annotationProvider) ClassName() string {
 	return p.cfg.ClassName
 }
 
-func (p *annotationProvider) Annotations(_ AppRef, hostnames []string, _ []MiddlewareRef) map[string]string {
+func (p *annotationProvider) Annotations(ctx context.Context, _ AppRef, hostnames []string, _ []MiddlewareRef) map[string]string {
 	out := make(map[string]string, 2)
 
 	if len(hostnames) > 0 {
 		out[ExternalDNSHostnameAnnotation] = strings.Join(hostnames, ",")
 	}
 
-	issuer := p.resolveClusterIssuer()
+	issuer := p.resolveClusterIssuer(ctx)
 	if issuer != "" {
 		out[CertManagerClusterIssuerAnnotation] = issuer
 	}
@@ -68,10 +68,10 @@ func (p *annotationProvider) Annotations(_ AppRef, hostnames []string, _ []Middl
 
 // resolveClusterIssuer reads the cluster issuer from PlatformConfig (live)
 // or falls back to the static default.
-func (p *annotationProvider) resolveClusterIssuer() string {
+func (p *annotationProvider) resolveClusterIssuer(ctx context.Context) string {
 	if p.cfg.Reader != nil {
 		var pc mortisev1alpha1.PlatformConfig
-		if err := p.cfg.Reader.Get(context.Background(), types.NamespacedName{Name: "platform"}, &pc); err == nil {
+		if err := p.cfg.Reader.Get(ctx, types.NamespacedName{Name: "platform"}, &pc); err == nil {
 			if pc.Spec.TLS.CertManagerClusterIssuer != "" {
 				return pc.Spec.TLS.CertManagerClusterIssuer
 			}

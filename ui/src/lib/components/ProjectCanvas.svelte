@@ -31,15 +31,21 @@
 	const currentEnv = $derived(store.currentEnv(projectName) ?? '');
 
 	let serverEdges = $state<BindingEdge[]>([]);
+	let bindingGeneration = 0;
 
 	$effect(() => {
 		if (!projectName || !currentEnv) {
 			serverEdges = [];
 			return;
 		}
+		const gen = ++bindingGeneration;
 		api.listBindings(projectName, currentEnv)
-			.then((e) => (serverEdges = e))
-			.catch(() => (serverEdges = []));
+			.then((e) => {
+				if (gen === bindingGeneration) serverEdges = e;
+			})
+			.catch(() => {
+				if (gen === bindingGeneration) serverEdges = [];
+			});
 	});
 
 	// Register custom node type
@@ -74,9 +80,7 @@
 		const seen = new Set<string>();
 		const out: Edge[] = [];
 		for (const edge of edges) {
-			// Cross-project edges render as dashed + labeled; in-project edges render solid.
-			const crossProject = !!edge.toProject && edge.toProject !== projectName;
-			const id = `${edge.from}->${edge.to}${crossProject ? `@${edge.toProject}` : ''}`;
+			const id = `${edge.from}->${edge.to}`;
 			if (seen.has(id)) continue;
 			seen.add(id);
 			out.push({
@@ -85,11 +89,7 @@
 				target: edge.to,
 				type: 'smoothstep',
 				animated: true,
-				label: crossProject ? edge.toProject : undefined,
-				labelStyle: crossProject ? 'fill: var(--color-info); font-size: 10px;' : undefined,
-				style: crossProject
-					? 'stroke: var(--color-info); stroke-width: 1.5; stroke-dasharray: 4 3;'
-					: 'stroke: var(--color-surface-500); stroke-width: 1.5;'
+				style: 'stroke: var(--color-surface-500); stroke-width: 1.5;'
 			});
 		}
 		return out;

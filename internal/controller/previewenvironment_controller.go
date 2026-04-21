@@ -184,11 +184,11 @@ func (r *PreviewEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.R
 	if err := r.reconcilePreviewDeployment(ctx, &pe, &app, previewNs); err != nil {
 		return ctrl.Result{}, fmt.Errorf("reconcile preview deployment: %w", err)
 	}
-	if err := r.reconcilePreviewService(ctx, &pe, previewNs); err != nil {
+	if err := r.reconcilePreviewService(ctx, &pe, &app, previewNs); err != nil {
 		return ctrl.Result{}, fmt.Errorf("reconcile preview service: %w", err)
 	}
 	if pe.Spec.Domain != "" {
-		if err := r.reconcilePreviewIngress(ctx, &pe, previewNs); err != nil {
+		if err := r.reconcilePreviewIngress(ctx, &pe, &app, previewNs); err != nil {
 			return ctrl.Result{}, fmt.Errorf("reconcile preview ingress: %w", err)
 		}
 	}
@@ -214,7 +214,7 @@ func (r *PreviewEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.R
 
 	// Requeue before TTL expiry so we can clean up.
 	if pe.Status.ExpiresAt != nil {
-		remaining := time.Until(pe.Status.ExpiresAt.Time)
+		remaining := pe.Status.ExpiresAt.Time.Sub(r.clock().Now())
 		if remaining > 0 {
 			return ctrl.Result{RequeueAfter: remaining}, nil
 		}
@@ -238,10 +238,8 @@ func (r *PreviewEnvironmentReconciler) reconcilePreviewBuild(ctx context.Context
 
 	// Short-circuit: already built this SHA.
 	if pe.Status.Image != "" && pe.Status.Phase == mortisev1alpha1.PreviewPhaseReady {
-		// Check if SHA changed (update case).
-		if strings.Contains(pe.Status.Image, shortTag(revision)) || pe.Status.Image == pe.Status.Image {
-			// Need to check if the image was built for this specific SHA.
-			// Use build tracker key that includes the SHA.
+		if strings.Contains(pe.Status.Image, shortTag(revision)) {
+			return ctrl.Result{}, false, nil
 		}
 	}
 
@@ -355,7 +353,9 @@ func (r *PreviewEnvironmentReconciler) reconcilePreviewDeployment(ctx context.Co
 		if err != nil {
 			return fmt.Errorf("resolve bindings: %w", err)
 		}
-		envVars = append(boundVars, envVars...)
+		for _, bv := range boundVars {
+			envVars = append(envVars, corev1.EnvVar{Name: bv.Name, Value: bv.Value})
+		}
 	}
 
 	image := pe.Status.Image
@@ -412,9 +412,13 @@ func (r *PreviewEnvironmentReconciler) reconcilePreviewDeployment(ctx context.Co
 	return r.Update(ctx, &existing)
 }
 
-func (r *PreviewEnvironmentReconciler) reconcilePreviewService(ctx context.Context, pe *mortisev1alpha1.PreviewEnvironment, previewNs string) error {
+func (r *PreviewEnvironmentReconciler) reconcilePreviewService(ctx context.Context, pe *mortisev1alpha1.PreviewEnvironment, app *mortisev1alpha1.App, previewNs string) error {
 	name := pe.Spec.AppRef
 	labels := previewLabels(pe)
+	port := int32(app.Spec.Network.Port)
+	if port == 0 {
+		port = 8080
+	}
 
 	desired := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
@@ -427,8 +431,8 @@ func (r *PreviewEnvironmentReconciler) reconcilePreviewService(ctx context.Conte
 			Ports: []corev1.ServicePort{
 				{
 					Name:       "http",
-					Port:       80,
-					TargetPort: intstr.FromInt32(8080),
+					Port:       port,
+					TargetPort: intstr.FromInt32(port),
 					Protocol:   corev1.ProtocolTCP,
 				},
 			},
@@ -449,23 +453,27 @@ func (r *PreviewEnvironmentReconciler) reconcilePreviewService(ctx context.Conte
 	return r.Update(ctx, &existing)
 }
 
-func (r *PreviewEnvironmentReconciler) reconcilePreviewIngress(ctx context.Context, pe *mortisev1alpha1.PreviewEnvironment, previewNs string) error {
+func (r *PreviewEnvironmentReconciler) reconcilePreviewIngress(ctx context.Context, pe *mortisev1alpha1.PreviewEnvironment, app *mortisev1alpha1.App, previewNs string) error {
 	name := pe.Spec.AppRef
 	svcName := pe.Spec.AppRef
 	pathType := networkingv1.PathTypePrefix
 	host := pe.Spec.Domain
 	labels := previewLabels(pe)
+	port := int32(app.Spec.Network.Port)
+	if port == 0 {
+		port = 8080
+	}
 
 	backend := networkingv1.IngressBackend{
 		Service: &networkingv1.IngressServiceBackend{
 			Name: svcName,
-			Port: networkingv1.ServiceBackendPort{Number: 80},
+			Port: networkingv1.ServiceBackendPort{Number: port},
 		},
 	}
 
 	var owned map[string]string
 	if r.IngressProvider != nil {
-		owned = r.IngressProvider.Annotations(
+		owned = r.IngressProvider.Annotations(ctx,
 			ingress.AppRef{Name: pe.Spec.AppRef, Namespace: previewNs},
 			[]string{host},
 			nil,
@@ -682,9 +690,9 @@ func (r *PreviewEnvironmentReconciler) gcPreviewResources(ctx context.Context, p
 		return nil
 	}
 	selector := client.MatchingLabels{
-		constants.AppNameLabel: pe.Spec.AppRef,
-		constants.ProjectLabel:   projectName,
-		"mortise.dev/pr-number":  fmt.Sprintf("%d", pe.Spec.PullRequest.Number),
+		constants.AppNameLabel:  pe.Spec.AppRef,
+		constants.ProjectLabel:  projectName,
+		"mortise.dev/pr-number": fmt.Sprintf("%d", pe.Spec.PullRequest.Number),
 	}
 	inNs := client.InNamespace(previewNs)
 
@@ -722,7 +730,7 @@ func previewResourceName(app string, prNumber int) string {
 func previewLabels(pe *mortisev1alpha1.PreviewEnvironment) map[string]string {
 	projectName, _ := constants.ProjectFromControlNs(pe.Namespace)
 	return map[string]string{
-		constants.AppNameLabel:       pe.Spec.AppRef,
+		constants.AppNameLabel:         pe.Spec.AppRef,
 		"app.kubernetes.io/managed-by": "mortise",
 		"app.kubernetes.io/component":  "preview",
 		"mortise.dev/pr-number":        fmt.Sprintf("%d", pe.Spec.PullRequest.Number),

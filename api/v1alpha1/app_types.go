@@ -218,16 +218,8 @@ type SecretKeyRef struct {
 }
 
 type Binding struct {
-	// Ref is the name of the bound App. By default the ref is resolved within
-	// the binder's own project namespace.
+	// Ref is the name of the bound App within the same project.
 	Ref string `json:"ref"`
-
-	// Project, if set, resolves the ref in the matching env namespace of the
-	// named Project (`pj-{project}-{env}`) instead of the binder's own env
-	// namespace. Enables cross-project bindings (e.g. binding app in `web`
-	// project to a db in `infra` project).
-	// +optional
-	Project string `json:"project,omitempty"`
 }
 
 type ResourceRequirements struct {

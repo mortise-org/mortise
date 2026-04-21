@@ -1334,7 +1334,7 @@ func TestGitLabPREvent_InvalidToken_Unauthorized(t *testing.T) {
 	}
 }
 
-func TestPREvent_ProjectMissingStagingEnv_NoPECreated(t *testing.T) {
+func TestPREvent_ProjectOnlyProductionEnv_NoPECreated(t *testing.T) {
 	const secret = "prsecret"
 	const providerName = "github-main"
 
@@ -1342,7 +1342,7 @@ func TestPREvent_ProjectMissingStagingEnv_NoPECreated(t *testing.T) {
 
 	gp := makeGitProvider(mortisev1alpha1.GitProviderTypeGitHub, "mortise-system", "wh-secret", "value")
 	app := makeGitApp("my-app", "pj-default", "https://github.com/org/repo", "main")
-	// Project has preview enabled but no staging env declared.
+	// Project has preview enabled but only production env — no non-prod env to inherit from.
 	proj := &mortisev1alpha1.Project{
 		ObjectMeta: metav1.ObjectMeta{Name: "default"},
 		Spec: mortisev1alpha1.ProjectSpec{
@@ -1373,7 +1373,7 @@ func TestPREvent_ProjectMissingStagingEnv_NoPECreated(t *testing.T) {
 		t.Fatalf("expected 202, got %d: %s", rr.Code, rr.Body.String())
 	}
 	if len(kr.createdPreviews) != 0 {
-		t.Errorf("expected no PE created when project lacks staging env, got %d", len(kr.createdPreviews))
+		t.Errorf("expected no PE created when project has only production env, got %d", len(kr.createdPreviews))
 	}
 }
 

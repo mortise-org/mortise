@@ -29,10 +29,11 @@ func newUpCmd() *cobra.Command {
 				return fmt.Errorf("Mortise cluster not found. Run 'mortise install' first")
 			}
 
-			// Check if cluster is running
-			if strings.Contains(out, `"mortise"`) {
-				fmt.Println("Cluster 'mortise' is running")
+			if !strings.Contains(out, `"running"`) {
+				return fmt.Errorf("Mortise cluster exists but is not running. Start Docker and try again")
 			}
+
+			fmt.Println("Cluster 'mortise' is running")
 
 			// Kill existing port-forwards
 			_ = runQuiet("pkill", "-f", "port-forward.*svc/mortise")
@@ -74,8 +75,12 @@ func newDestroyCmd() *cobra.Command {
 
 			fmt.Println("Deleting Mortise cluster...")
 			if err := run("k3d", "cluster", "delete", "mortise"); err != nil {
-				// Try k3s for bare metal
+				// Fallback: clean up Mortise resources directly
 				_ = run("kubectl", "delete", "namespace", "mortise-system")
+				_ = run("kubectl", "delete", "namespace", "mortise-deps")
+				_ = run("kubectl", "delete", "crd", "-l", "app.kubernetes.io/managed-by=mortise")
+				_ = run("kubectl", "delete", "clusterrole", "-l", "app.kubernetes.io/managed-by=mortise")
+				_ = run("kubectl", "delete", "clusterrolebinding", "-l", "app.kubernetes.io/managed-by=mortise")
 				fmt.Println("Cleaned up Mortise resources")
 				return nil
 			}
@@ -131,18 +136,17 @@ func newInstallCmd() *cobra.Command {
 		Short: "Install Mortise (k3d/k3s, cert-manager, BuildKit, registry, operator)",
 		Long:  "Runs the quick-mortise installer. Equivalent to 'bash scripts/install.sh'.",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// Find install.sh relative to the binary or in known locations
-			locations := []string{
-				"scripts/install.sh",
-				"/usr/local/share/mortise/install.sh",
-			}
+			// Find install.sh relative to the binary or in known system locations
+			var locations []string
 
-			// Also check relative to the binary
+			// Check relative to the binary
 			if exe, err := os.Executable(); err == nil {
 				dir := strings.TrimSuffix(exe, "/mortise")
 				dir = strings.TrimSuffix(dir, "/bin/mortise")
-				locations = append([]string{dir + "/scripts/install.sh"}, locations...)
+				locations = append(locations, dir+"/scripts/install.sh")
 			}
+
+			locations = append(locations, "/usr/local/share/mortise/install.sh")
 
 			for _, loc := range locations {
 				if _, err := os.Stat(loc); err == nil {

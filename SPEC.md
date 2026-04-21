@@ -207,27 +207,17 @@ status:
   conditions: []             # NamespaceReady: True | False (reason: NamespaceAlreadyExists | NamespaceOwnedByAnotherProject | NamespaceConflict)
 ```
 
-#### Cross-project bindings
+#### Bindings
 
-Bindings default to within-project (same namespace, cheap Service DNS):
+Bindings resolve within the same project:
 
 ```yaml
-# Same project — the common case
 bindings:
   - ref: my-db
 ```
 
-Cross-project bindings are allowed but explicit:
-
-```yaml
-# Different project — operator resolves into pj-other-proj control namespace
-bindings:
-  - ref: shared-postgres
-    project: infra
-```
-
-The bindings resolver reads `project:` and resolves `ref` in that project's
-namespace. Missing project defaults to the App's own project.
+The resolver looks up the bound App in the same project's control namespace
+and generates host, port, URL, and credential env vars.
 
 #### What Projects provide in v1
 
@@ -1217,7 +1207,7 @@ eliminates the need for callback infrastructure in the GitHub path.
   (git | image) → guided form
 - **App detail** (`/projects/{p}/apps/{a}`) — deploy history, real-time
   build logs, environment tabs, metrics, custom domains, secrets editor,
-  bindings (in-project and cross-project), deploy tokens
+  bindings, deploy tokens
 - **Create project** — name + description
 - **Secret store** — list by app/env, write-only values, rotation
 - **Platform settings** — domain, DNS, git providers, user management
@@ -1733,8 +1723,7 @@ retrofitting the URL scheme, bindings resolver, and UI navigation later.
   (`pj-{name}-{env}`) and sets itself as owner on each
 - App controller respects project namespace boundaries (no logic change —
   Apps are already namespace-scoped; the namespace is now named by the Project)
-- Bindings resolver honors the optional `project:` field for cross-project
-  bindings
+- Bindings resolver resolves within the project's env namespace
 - API routes restructured to `/api/projects/{p}/apps/{a}/...` throughout.
   The pre-Project `?namespace=` query form is removed.
 - First-run setup auto-creates a `default` Project after admin setup
@@ -1743,7 +1732,7 @@ retrofitting the URL scheme, bindings resolver, and UI navigation later.
 - Dashboard becomes the Project list (was App list)
 - New `/projects/{p}` workspace view shows apps in that project
 - `/apps/*` URLs replaced by `/projects/{p}/apps/*` everywhere
-- Project switcher in top bar for cross-project navigation
+- Project switcher in top bar for navigation
 - Create Project form
 
 **CLI:**
@@ -1759,7 +1748,7 @@ retrofitting the URL scheme, bindings resolver, and UI navigation later.
 Tests: create Project → control + env namespaces exist; create App in
 Project → App CRD lands in `pj-{name}` control namespace and its
 Deployments fan out into `pj-{name}-{env}` per declared environment;
-cross-project binding resolves to correct Service DNS; delete Project →
+binding resolves to correct Service DNS; delete Project →
 namespaces and Apps gone.
 
 **Exit criteria:** user logs in → lands in `default` project → creates a

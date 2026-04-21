@@ -335,9 +335,8 @@ spec:
   environments:               # named envs with replicas, resources, env, bindings
     - name: production
       bindings:
-        - ref: my-db                    # same project (default)
+        - ref: my-db
         - ref: shared-cache
-          project: infra                # cross-project binding
   preview: { ... }           # PR-driven preview config (git source only)
 ```
 

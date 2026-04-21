@@ -37,10 +37,7 @@ func (s *Server) ExecInApp(w http.ResponseWriter, r *http.Request) {
 	}
 	appName := chi.URLParam(r, "app")
 
-	env := r.URL.Query().Get("env")
-	if env == "" {
-		env = "production"
-	}
+	env := envFromQuery(r)
 	envNs := constants.EnvNamespace(projectName, env)
 
 	var req execRequest

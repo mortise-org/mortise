@@ -64,17 +64,9 @@ spec:
                 description: Bindings inherited from the staging environment.
                 items:
                   properties:
-                    project:
-                      description: |-
-                        Project, if set, resolves the ref in the matching env namespace of the
-                        named Project (`pj-{project}-{env}`) instead of the binder's own env
-                        namespace. Enables cross-project bindings (e.g. binding app in `web`
-                        project to a db in `infra` project).
-                      type: string
                     ref:
-                      description: |-
-                        Ref is the name of the bound App. By default the ref is resolved within
-                        the binder's own project namespace.
+                      description: Ref is the name of the bound App within the same
+                        project.
                       type: string
                   required:
                   - ref

@@ -1,6 +1,7 @@
 package ingress
 
 import (
+	"context"
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -31,7 +32,7 @@ func TestAnnotationProvider_Annotations(t *testing.T) {
 
 	t.Run("includes ExternalDNS hostname annotation", func(t *testing.T) {
 		p := NewAnnotationProvider(AnnotationProviderConfig{})
-		ann := p.Annotations(ref, []string{"app.example.com"}, nil)
+		ann := p.Annotations(context.Background(), ref, []string{"app.example.com"}, nil)
 		got, ok := ann[ExternalDNSHostnameAnnotation]
 		if !ok {
 			t.Fatal("missing external-dns annotation")
@@ -43,7 +44,7 @@ func TestAnnotationProvider_Annotations(t *testing.T) {
 
 	t.Run("comma-joins multiple hostnames", func(t *testing.T) {
 		p := NewAnnotationProvider(AnnotationProviderConfig{})
-		ann := p.Annotations(ref, []string{"a.example.com", "b.example.com", "c.example.com"}, nil)
+		ann := p.Annotations(context.Background(), ref, []string{"a.example.com", "b.example.com", "c.example.com"}, nil)
 		got := ann[ExternalDNSHostnameAnnotation]
 		want := "a.example.com,b.example.com,c.example.com"
 		if got != want {
@@ -53,7 +54,7 @@ func TestAnnotationProvider_Annotations(t *testing.T) {
 
 	t.Run("with issuer includes cert-manager annotation", func(t *testing.T) {
 		p := NewAnnotationProvider(AnnotationProviderConfig{DefaultClusterIssuer: "letsencrypt-prod"})
-		ann := p.Annotations(ref, []string{"app.example.com"}, nil)
+		ann := p.Annotations(context.Background(), ref, []string{"app.example.com"}, nil)
 		got, ok := ann[CertManagerClusterIssuerAnnotation]
 		if !ok {
 			t.Fatal("missing cert-manager annotation")
@@ -65,7 +66,7 @@ func TestAnnotationProvider_Annotations(t *testing.T) {
 
 	t.Run("without issuer omits cert-manager annotation", func(t *testing.T) {
 		p := NewAnnotationProvider(AnnotationProviderConfig{})
-		ann := p.Annotations(ref, []string{"app.example.com"}, nil)
+		ann := p.Annotations(context.Background(), ref, []string{"app.example.com"}, nil)
 		if _, ok := ann[CertManagerClusterIssuerAnnotation]; ok {
 			t.Fatal("cert-manager annotation should not be present without an issuer")
 		}
@@ -73,7 +74,7 @@ func TestAnnotationProvider_Annotations(t *testing.T) {
 
 	t.Run("no hostnames returns nil", func(t *testing.T) {
 		p := NewAnnotationProvider(AnnotationProviderConfig{})
-		ann := p.Annotations(ref, nil, nil)
+		ann := p.Annotations(context.Background(), ref, nil, nil)
 		if ann != nil {
 			t.Fatalf("expected nil annotations for empty hostnames, got %v", ann)
 		}
@@ -93,7 +94,7 @@ func TestAnnotationProvider_Annotations(t *testing.T) {
 			DefaultClusterIssuer: "stale-issuer",
 			Reader:               c,
 		})
-		ann := p.Annotations(ref, []string{"app.example.com"}, nil)
+		ann := p.Annotations(context.Background(), ref, []string{"app.example.com"}, nil)
 		got := ann[CertManagerClusterIssuerAnnotation]
 		if got != "live-issuer" {
 			t.Fatalf("expected live issuer, got %q", got)
@@ -108,7 +109,7 @@ func TestAnnotationProvider_Annotations(t *testing.T) {
 			DefaultClusterIssuer: "fallback-issuer",
 			Reader:               c,
 		})
-		ann := p.Annotations(ref, []string{"app.example.com"}, nil)
+		ann := p.Annotations(context.Background(), ref, []string{"app.example.com"}, nil)
 		got := ann[CertManagerClusterIssuerAnnotation]
 		if got != "fallback-issuer" {
 			t.Fatalf("expected fallback issuer, got %q", got)

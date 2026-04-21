@@ -40,7 +40,11 @@ func (s *Server) GetEnv(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	envNs := envNamespace(app, envName)
+	envNs, err := envNamespace(app, envName)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorResponse{err.Error()})
+		return
+	}
 	store := &envstore.Store{Client: s.client}
 	envs, err := store.Get(r.Context(), envNs, app.Name)
 	if err != nil {
@@ -69,12 +73,30 @@ func (s *Server) PutEnv(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	envNs := envNamespace(app, envName)
+	envNs, err := envNamespace(app, envName)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorResponse{err.Error()})
+		return
+	}
 	store := &envstore.Store{Client: s.client}
 
-	envVars := make([]envstore.Env, len(vars))
-	for i, v := range vars {
-		envVars[i] = envstore.Env{Name: v.Name, Value: v.Value, Source: "user"}
+	// Read existing vars so we can preserve non-user sources (binding, generated, shared).
+	existing, err := store.Get(r.Context(), envNs, app.Name)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+
+	// Start with non-user vars from the existing Secret.
+	var merged []envstore.Env
+	for _, e := range existing {
+		if e.Source != "user" && e.Source != "" {
+			merged = append(merged, e)
+		}
+	}
+	// Append the new user vars.
+	for _, v := range vars {
+		merged = append(merged, envstore.Env{Name: v.Name, Value: v.Value, Source: "user"})
 	}
 
 	projectName, ok2 := constants.ProjectFromControlNs(app.Namespace)
@@ -87,7 +109,7 @@ func (s *Server) PutEnv(w http.ResponseWriter, r *http.Request) {
 		constants.EnvironmentLabel: envName,
 		constants.AppNameLabel:     app.Name,
 	}
-	if err := store.Set(r.Context(), envNs, app.Name, envVars, labels); err != nil {
+	if err := store.Set(r.Context(), envNs, app.Name, merged, labels); err != nil {
 		writeError(w, err)
 		return
 	}
@@ -114,7 +136,11 @@ func (s *Server) PatchEnv(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	envNs := envNamespace(app, envName)
+	envNs, err := envNamespace(app, envName)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorResponse{err.Error()})
+		return
+	}
 	store := &envstore.Store{Client: s.client}
 
 	// Read existing vars from Secret.
@@ -190,7 +216,11 @@ func (s *Server) ImportEnv(w http.ResponseWriter, r *http.Request) {
 
 	parsed := parseDotEnv(string(body))
 
-	envNs := envNamespace(app, envName)
+	envNs, err := envNamespace(app, envName)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorResponse{err.Error()})
+		return
+	}
 	store := &envstore.Store{Client: s.client}
 
 	var vars []envstore.Env
@@ -277,13 +307,30 @@ func (s *Server) PutSharedVars(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Poke all apps in the project so the controller re-reconciles and
+	// materializes the updated shared vars into each env namespace.
+	var apps mortisev1alpha1.AppList
+	if err := s.client.List(r.Context(), &apps, client.InNamespace(controlNs)); err != nil {
+		writeError(w, err)
+		return
+	}
+	for i := range apps.Items {
+		if err := pokeAppForReconcile(r.Context(), s.client, &apps.Items[i]); err != nil {
+			writeError(w, err)
+			return
+		}
+	}
+
 	writeJSON(w, http.StatusOK, map[string]string{"status": "updated"})
 }
 
 // envNamespace returns the workload namespace for an app + environment.
-func envNamespace(app *mortisev1alpha1.App, envName string) string {
-	projectName, _ := constants.ProjectFromControlNs(app.Namespace)
-	return constants.EnvNamespace(projectName, envName)
+func envNamespace(app *mortisev1alpha1.App, envName string) (string, error) {
+	projectName, ok := constants.ProjectFromControlNs(app.Namespace)
+	if !ok {
+		return "", fmt.Errorf("app %q not in a control namespace (%q)", app.Name, app.Namespace)
+	}
+	return constants.EnvNamespace(projectName, envName), nil
 }
 
 // resolveAppEnv reads the project, app, and environment query param.
@@ -293,7 +340,7 @@ func (s *Server) resolveAppEnv(w http.ResponseWriter, r *http.Request) (*mortise
 		return nil, "", false
 	}
 	appName := chi.URLParam(r, "app")
-	env := r.URL.Query().Get("environment")
+	env := queryEnv(r)
 	if env == "" {
 		writeJSON(w, http.StatusBadRequest, errorResponse{"environment query parameter is required"})
 		return nil, "", false
@@ -324,9 +371,6 @@ func ensureEnvironment(app *mortisev1alpha1.App, name string) *mortisev1alpha1.E
 	app.Spec.Environments = append(app.Spec.Environments, mortisev1alpha1.Environment{Name: name})
 	return &app.Spec.Environments[len(app.Spec.Environments)-1]
 }
-
-
-
 
 // pokeAppForReconcile stamps a timestamp annotation on the App CRD so the
 // controller re-reconciles (picking up the latest Secret contents). The

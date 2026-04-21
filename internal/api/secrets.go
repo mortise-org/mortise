@@ -26,15 +26,25 @@ type secretResponse struct {
 	Keys []string `json:"keys"`
 }
 
-// envFromQuery returns the `env` query parameter, defaulting to "production"
-// when absent. User-facing Secrets are scoped to a specific env namespace
-// because workload pods can only mount Secrets from their own namespace.
-func envFromQuery(r *http.Request) string {
-	env := r.URL.Query().Get("env")
-	if env == "" {
-		env = "production"
+// queryEnv returns the environment query parameter, checking "env" first and
+// falling back to "environment" for backwards compatibility. Returns "" if
+// neither is set.
+func queryEnv(r *http.Request) string {
+	if v := r.URL.Query().Get("env"); v != "" {
+		return v
 	}
-	return env
+	return r.URL.Query().Get("environment")
+}
+
+// envFromQuery returns the environment query parameter, defaulting to
+// "production" when absent. User-facing Secrets are scoped to a specific env
+// namespace because workload pods can only mount Secrets from their own
+// namespace.
+func envFromQuery(r *http.Request) string {
+	if env := queryEnv(r); env != "" {
+		return env
+	}
+	return "production"
 }
 
 func (s *Server) CreateSecret(w http.ResponseWriter, r *http.Request) {
@@ -60,7 +70,7 @@ func (s *Server) CreateSecret(w http.ResponseWriter, r *http.Request) {
 			Name:      req.Name,
 			Namespace: envNs,
 			Labels: map[string]string{
-				constants.AppNameLabel:       appName,
+				constants.AppNameLabel:         appName,
 				"app.kubernetes.io/managed-by": "mortise",
 			},
 		},
@@ -87,7 +97,7 @@ func (s *Server) ListSecrets(w http.ResponseWriter, r *http.Request) {
 	if err := s.client.List(r.Context(), &list,
 		client.InNamespace(envNs),
 		client.MatchingLabels{
-			constants.AppNameLabel:       appName,
+			constants.AppNameLabel:         appName,
 			"app.kubernetes.io/managed-by": "mortise",
 		},
 	); err != nil {
@@ -108,6 +118,7 @@ func (s *Server) DeleteSecret(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	appName := chi.URLParam(r, "app")
 	secretName := chi.URLParam(r, "secretName")
 	envNs := constants.EnvNamespace(projectName, envFromQuery(r))
 
@@ -120,6 +131,12 @@ func (s *Server) DeleteSecret(w http.ResponseWriter, r *http.Request) {
 	// Only delete secrets managed by mortise.
 	if secret.Labels["app.kubernetes.io/managed-by"] != "mortise" {
 		writeJSON(w, http.StatusForbidden, errorResponse{"secret is not managed by mortise"})
+		return
+	}
+
+	// Verify the secret belongs to the app from the URL.
+	if secret.Labels[constants.AppNameLabel] != appName {
+		writeJSON(w, http.StatusNotFound, errorResponse{"secret not found for this app"})
 		return
 	}
 

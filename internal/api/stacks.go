@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"sort"
 	"strings"
@@ -12,10 +13,10 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
-	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"github.com/MC-Meesh/mortise/internal/constants"
 	"github.com/MC-Meesh/mortise/internal/envstore"
 	"github.com/MC-Meesh/mortise/internal/templates"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 type createStackRequest struct {
@@ -67,7 +68,11 @@ func (s *Server) CreateStack(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, errorResponse{err.Error()})
 			return
 		}
-		composeYAML = substituteVars(tpl.Compose, req.Vars)
+		composeYAML, err = substituteVars(tpl.Compose, req.Vars)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, errorResponse{"failed to generate template secrets"})
+			return
+		}
 		bundledFiles = tpl.Files
 		if stackPrefix == "" {
 			stackPrefix = tpl.Name
@@ -95,6 +100,13 @@ func (s *Server) CreateStack(w http.ResponseWriter, r *http.Request) {
 		for name, svc := range cf.Services {
 			svc.DependsOn = filterDependsOn(svc.DependsOn, keep)
 			cf.Services[name] = svc
+		}
+
+		if len(cf.Services) == 0 {
+			writeJSON(w, http.StatusBadRequest, errorResponse{
+				fmt.Sprintf("no services matched filter: %s", strings.Join(req.Services, ", ")),
+			})
+			return
 		}
 	}
 
@@ -156,8 +168,8 @@ func (s *Server) CreateStack(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 		labels := map[string]string{
-			constants.ProjectLabel:  project,
-			"mortise.dev/stack":     stackPrefix,
+			constants.ProjectLabel: project,
+			"mortise.dev/stack":    stackPrefix,
 		}
 		if err := store.MergeSharedSource(r.Context(), controlNs, sharedVars, labels); err != nil {
 			logf.FromContext(r.Context()).Error(err, "failed to persist shared vars to control namespace")
@@ -243,16 +255,22 @@ func (s *Server) ListTemplates(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
-func generateRandomHex(n int) string {
+// randReader is the entropy source for generateRandomHex. Tests swap it
+// via export_test.go to inject deterministic or failing readers.
+var randReader io.Reader = rand.Reader
+
+func generateRandomHex(n int) (string, error) {
 	b := make([]byte, n)
-	_, _ = rand.Read(b)
-	return hex.EncodeToString(b)
+	if _, err := io.ReadFull(randReader, b); err != nil {
+		return "", fmt.Errorf("generating random hex: %w", err)
+	}
+	return hex.EncodeToString(b), nil
 }
 
 // substituteVars replaces ${VAR_NAME} placeholders in the compose YAML.
 // Any unresolved variables are auto-generated as random 32-char hex strings.
 // This means templates "just work" without requiring the user to provide secrets.
-func substituteVars(tpl string, vars map[string]string) string {
+func substituteVars(tpl string, vars map[string]string) (string, error) {
 	if vars == nil {
 		vars = make(map[string]string)
 	}
@@ -271,8 +289,12 @@ func substituteVars(tpl string, vars map[string]string) string {
 			break
 		}
 		varName := result[idx+2 : idx+end]
-		vars[varName] = generateRandomHex(16)
+		generated, err := generateRandomHex(16)
+		if err != nil {
+			return "", err
+		}
+		vars[varName] = generated
 		result = strings.ReplaceAll(result, "${"+varName+"}", vars[varName])
 	}
-	return result
+	return result, nil
 }

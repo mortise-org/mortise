@@ -12,8 +12,8 @@ Deployments, Services, Ingresses, Pods, PVCs, env-scoped Secrets/ConfigMaps fan 
 across env namespaces via the App controller. REST API resolves control vs env
 namespace per handler (CRDs + project-scoped → control ns; Pods, Logs, Exec, Proxy,
 Rollback Deployment → env ns). Webhook handler looks up project via
-`constants.ProjectFromControlNs`. Bindings resolver scopes cross-project to the
-matching env ns. Unit tests, integration tests, and docs swept to the new
+`constants.ProjectFromControlNs`. Bindings resolve within the same project's
+env ns. Unit tests, integration tests, and docs swept to the new
 `pj-` prefix; legacy `project-{name}` literals removed from Go code and docs.)
 Prior reconciliation (2026-04-18): Git auth consolidation — GitProvider
 CRD simplified: `spec.oauth` deleted, replaced by `spec.clientID` (plain string) +
@@ -33,7 +33,7 @@ device flow routes moved to `/api/auth/git/{provider}/...`; poll endpoint requir
 | 0 — Foundation                   | §7.1 / §8   | **Done**         | kubebuilder scaffold, chart skeleton, Makefile, test helpers + fixtures. |
 | 1 — Core operator (image source) | §7.2        | **Done**         | Deployment / Service / Ingress / PVC / ServiceAccount reconciliation works for `source.type: image` and `source.type: git` (git builds asynchronously with a 30-min timeout). Ingress honours `environments[].annotations` passthrough (§5.2a), `environments[].tls.{secretName,clusterIssuer}` overrides (§5.6), `environments[].customDomains` (multi-host rules + TLS), and `IngressProvider`-driven annotations (`AnnotationProvider`: ExternalDNS hostname + cert-manager cluster-issuer). `ingressClassName` configurable via `MORTISE_INGRESS_CLASS` env var. ServiceAccount per App carries `imagePullSecrets` from `RegistryBackend.PullSecretRef()`. |
 | 2 — API + UI skeleton            | §7.3        | **Done**         | Auth, project CRUD, app CRUD, secrets CRUD, deploy webhook, SSE logs, SvelteKit UI. |
-| 3 — Bindings + secrets           | §7.4        | **Partial**      | Resolver writes env vars; `{app}-credentials` Secret materialised (Flavor A, §5.5a) with sha256 pod-template annotation. Cross-project bindings guarded with error (issue #2). Deploy tokens landed: `mrt_` prefixed, per-app+env scoped, hashed k8s Secrets, deploy webhook accepts both JWT and deploy token. Env management surface landed (§5.9a): GET/PUT/PATCH/import + `mortise.dev/env-hash` + CLI. Missing: secret rotation endpoint, cross-project bindings (post-v1). |
+| 3 — Bindings + secrets           | §7.4        | **Partial**      | Resolver writes env vars; `{app}-credentials` Secret materialised (Flavor A, §5.5a) with sha256 pod-template annotation. Deploy tokens landed: `mrt_` prefixed, per-app+env scoped, hashed k8s Secrets, deploy webhook accepts both JWT and deploy token. Env management surface landed (§5.9a): GET/PUT/PATCH/import + `mortise.dev/env-hash` + CLI. Missing: secret rotation endpoint. |
 | 3.5 — Projects                   | §5 / §5.10  | **Done**         | `Project` CRD + controller + REST API + CLI + UI routes + default-project seeding all landed. `spec.namespaceOverride` and admin-only `spec.adoptExistingNamespace` (spec §5.0) are implemented: controller resolves the target namespace name, enforces cross-Project uniqueness (`NamespaceConflict`), surfaces refusals via the `NamespaceReady` condition (`NamespaceAlreadyExists` / `NamespaceOwnedByAnotherProject`), and takes the adoption path only when explicitly opted in. |
 | 4 — Build system (git source)    | §7.5        | **Done**         | All stacks wired end-to-end: webhook patches `mortise.dev/revision` annotation → App reconciler clones + builds + deploys. Operator entrypoint reads config from `PlatformConfig` (env-var fallback for first-boot). Builds run asynchronously in background goroutines; the reconciler returns `Building` immediately and polls on requeue. |
 | 5 — Monorepo support             | §7.6        | **Done**         | `source.path` plumbs into BuildKit context; `source.watchPaths` gates webhook rebuilds (prefix match). UI build grouping deferred. |
@@ -263,10 +263,9 @@ CLI (`cmd/cli/`):
 ### Phase 3 — Bindings & secrets — **Partial**
 
 Works:
-- `internal/bindings/resolver.go` resolves bindings into `[]corev1.EnvVar`.
-- Cross-project bindings supported at the resolver level via
-  `Binding.Project` → env namespace `pj-{project}-{env}` (matching env
-  of the binder).
+- `internal/bindings/resolver.go` resolves bindings into `[]bindings.ResolvedVar`
+  (literal values, no SecretKeyRef). Credentials are resolved directly from the
+  bound app's `{name}-credentials` Secret in the project's env namespace.
 - `internal/api/secrets.go` implements per-app user-secret CRUD.
 - `{app}-credentials` Secret materialised by `reconcileCredentialsSecret` in
   `app_controller.go` from `spec.credentials` (Flavor A, §5.5a). Credential
@@ -290,9 +289,6 @@ Works:
   CLI: `mortise env {list,set,unset,import,pull}`.
 
 Missing:
-- **Issue #2** — cross-project bindings guarded with clear error at reconcile
-  time (prevents silent `CreateContainerConfigError`). Full fix (Secret
-  replication or projected-volume) deferred to post-v1.
 - No rotation endpoint for user secrets.
 
 ### Phase 3.5 — Projects — **Done**
@@ -889,16 +885,10 @@ rollouts on Secret rotation. Cleanup honours the "Mortise owns only what it
 creates" rule. Envtest coverage: 7 cases under "credentials Secret
 materialization".
 
-### Issue #2 — Cross-project bindings can't use `secretKeyRef` — **Guarded**
-`Resolve()` now returns a clear error when `binding.Project` differs from
-the binder App's project, surfaced as a reconcile error on the App's status
-conditions. This prevents the silent `CreateContainerConfigError` at pod
-start. Cross-project bindings remain unsupported in v1; a future version
-could use Secret replication or a projected-volume design.
-
-Unit tests: `TestCrossProjectBindingReturnsError`,
-`TestResolveCrossProjectMissingReturnsError` in
-`internal/bindings/resolver_test.go`.
+### Issue #2 — Cross-project bindings — **Removed**
+Cross-project bindings have been removed from the codebase. The `Binding`
+struct no longer has a `Project` field. All bindings resolve within the
+same project.
 
 ### Issue #3 — Hard-coded cert-manager cluster-issuer — **Resolved**
 Previously, `internal/controller/app_controller.go` wrote

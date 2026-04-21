@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { onMount, onDestroy } from 'svelte';
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import { api } from '$lib/api';
@@ -123,6 +123,13 @@
 			pollHandle = null;
 		}
 	}
+
+	onDestroy(() => {
+		if (pollHandle) {
+			clearInterval(pollHandle);
+			pollHandle = null;
+		}
+	});
 
 	function lastDeploy(app: App): string {
 		const envs = app.status?.environments;

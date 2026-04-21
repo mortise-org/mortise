@@ -167,7 +167,6 @@ export interface ProjectEnvironment {
 export interface BindingEdge {
 	from: string;
 	to: string;
-	toProject?: string;
 	environment: string;
 }
 

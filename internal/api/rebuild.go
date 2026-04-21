@@ -61,10 +61,7 @@ func (s *Server) Redeploy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	appName := chi.URLParam(r, "app")
-	env := r.URL.Query().Get("environment")
-	if env == "" {
-		env = "production"
-	}
+	env := envFromQuery(r)
 
 	envNs := constants.EnvNamespace(projectName, env)
 	if err := restartDeployment(r.Context(), s.client, envNs, appName); err != nil {

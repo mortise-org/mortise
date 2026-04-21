@@ -326,9 +326,10 @@ func (b *BuildKitClient) dockerfileSolveOpt(req BuildRequest) bkclient.SolveOpt 
 		Frontend:      "dockerfile.v0",
 		FrontendAttrs: frontendAttrs,
 		// LocalDirs maps the names "context" and "dockerfile" used by the
-		// dockerfile.v0 frontend. Context is always the repo root so
-		// Dockerfiles can COPY from sibling directories (monorepo pattern).
-		// The dockerfile dir may be a subdirectory (source.path).
+		// dockerfile.v0 frontend. Context may be the repo root or a
+		// subdirectory depending on ContextMode and the auto-detection
+		// in resolveDockerfileContext. The dockerfile dir may differ
+		// from the context dir when source.path is set.
 		LocalDirs: map[string]string{
 			"context":    req.SourceDir,
 			"dockerfile": req.dockerfileDir(),

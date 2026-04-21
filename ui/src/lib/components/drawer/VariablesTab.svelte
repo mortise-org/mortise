@@ -163,14 +163,21 @@
 
 	async function addVar(section: SectionState, isShared: boolean) {
 		if (!section.newKey.trim()) return;
+		let key = section.newKey.trim();
+		// Ensure the key is unique within the section
+		const existingKeys = new Set(section.entries.map(e => e.name));
+		if (existingKeys.has(key)) {
+			let suffix = 2;
+			while (existingKeys.has(`${key}_${suffix}`)) suffix++;
+			key = `${key}_${suffix}`;
+		}
 		section.entries = [...section.entries, {
-			name: section.newKey.trim(),
+			name: key,
 			value: section.newValue,
 			source: isShared ? 'shared' : 'user',
 			revealed: false
 		}];
 		section.showNewRow = false;
-		const key = section.newKey.trim();
 		section.newKey = '';
 		section.newValue = '';
 
@@ -191,6 +198,18 @@
 		section.saving = true;
 		section.error = '';
 		try {
+			// Check for duplicate keys
+			const seen = new Set<string>();
+			const dupes: string[] = [];
+			for (const e of section.entries) {
+				if (seen.has(e.name)) dupes.push(e.name);
+				seen.add(e.name);
+			}
+			if (dupes.length > 0) {
+				section.error = `Duplicate keys: ${[...new Set(dupes)].join(', ')}. Rename or remove duplicates before saving.`;
+				section.saving = false;
+				return;
+			}
 			const vars: Record<string, string> = {};
 			for (const e of section.entries) {
 				vars[e.name] = e.value;
@@ -226,15 +245,13 @@
 			parsed[key] = val;
 		}
 
-		// Merge into existing
-		for (const [key, val] of Object.entries(parsed)) {
-			const existing = section.entries.findIndex(e => e.name === key);
-			if (existing >= 0) {
-				section.entries[existing] = { ...section.entries[existing], value: val };
-			} else {
-				section.entries = [...section.entries, { name: key, value: val, source: 'user', revealed: false }];
-			}
-		}
+		// Replace all entries with parsed result (raw mode is sole source of truth)
+		section.entries = Object.entries(parsed).map(([key, val]) => ({
+			name: key,
+			value: val,
+			source: isShared ? 'shared' : 'user',
+			revealed: false
+		}));
 		section.rawMode = false;
 		section.rawText = '';
 		section.editedKeys = new Set(Object.keys(parsed));

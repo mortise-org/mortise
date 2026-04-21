@@ -4,7 +4,6 @@ package integration
 
 import (
 	"context"
-	"fmt"
 	"path/filepath"
 	"runtime"
 	"testing"

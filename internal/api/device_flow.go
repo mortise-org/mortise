@@ -83,8 +83,9 @@ func tokenEndpoint(host string) string {
 func (d *DeviceFlowHandler) RequestCode(w http.ResponseWriter, r *http.Request) {
 	log := logf.FromContext(r.Context())
 	providerName := chi.URLParam(r, "provider")
+	providerType, defaultHost := inferProviderType(providerName)
 
-	gp, err := d.getOrCreateGitProvider(r.Context(), providerName)
+	gp, err := d.getOrCreateGitProvider(r.Context(), providerName, providerType, defaultHost)
 	if err != nil {
 		log.Error(err, "get git provider", "provider", providerName)
 		writeJSON(w, http.StatusNotFound, errorResponse{err.Error()})
@@ -162,7 +163,8 @@ func (d *DeviceFlowHandler) Poll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	gp, err := d.getOrCreateGitProvider(r.Context(), providerName)
+	providerType, defaultHost := inferProviderType(providerName)
+	gp, err := d.getOrCreateGitProvider(r.Context(), providerName, providerType, defaultHost)
 	if err != nil {
 		log.Error(err, "get git provider", "provider", providerName)
 		writeJSON(w, http.StatusNotFound, errorResponse{"git provider not found: " + providerName})
@@ -293,7 +295,13 @@ func (d *DeviceFlowHandler) StorePAT(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, err := d.getOrCreateGitProvider(r.Context(), providerName); err != nil {
+	providerType, defaultHost := inferProviderType(providerName)
+	host := body.Host
+	if host == "" {
+		host = defaultHost
+	}
+
+	if _, err := d.getOrCreateGitProvider(r.Context(), providerName, providerType, host); err != nil {
 		writeJSON(w, http.StatusNotFound, errorResponse{"git provider not found: " + providerName})
 		return
 	}
@@ -306,11 +314,36 @@ func (d *DeviceFlowHandler) StorePAT(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
+// providerDefaults maps provider types to their default hosts and env var names
+// for client ID lookup.
+var providerDefaults = map[mortisev1alpha1.GitProviderType]struct {
+	host        string
+	clientIDEnv string
+}{
+	mortisev1alpha1.GitProviderTypeGitHub: {host: "https://github.com", clientIDEnv: "MORTISE_GITHUB_CLIENT_ID"},
+	mortisev1alpha1.GitProviderTypeGitLab: {host: "https://gitlab.com", clientIDEnv: "MORTISE_GITLAB_CLIENT_ID"},
+	mortisev1alpha1.GitProviderTypeGitea:  {host: "https://gitea.com", clientIDEnv: "MORTISE_GITEA_CLIENT_ID"},
+}
+
+// inferProviderType maps a URL-parameter provider name to the corresponding
+// CRD type and default host. Falls back to GitHub for unrecognized names.
+func inferProviderType(name string) (mortisev1alpha1.GitProviderType, string) {
+	switch {
+	case strings.HasPrefix(name, "gitlab"):
+		return mortisev1alpha1.GitProviderTypeGitLab, providerDefaults[mortisev1alpha1.GitProviderTypeGitLab].host
+	case strings.HasPrefix(name, "gitea"):
+		return mortisev1alpha1.GitProviderTypeGitea, providerDefaults[mortisev1alpha1.GitProviderTypeGitea].host
+	default:
+		return mortisev1alpha1.GitProviderTypeGitHub, providerDefaults[mortisev1alpha1.GitProviderTypeGitHub].host
+	}
+}
+
 // getOrCreateGitProvider looks up the GitProvider CRD by name. If it doesn't
-// exist and a default client ID is available (e.g. from the MORTISE_GITHUB_CLIENT_ID
-// env var), it creates the provider on-demand. This eliminates the race between
-// PlatformConfig reconciliation and the user clicking "Connect."
-func (d *DeviceFlowHandler) getOrCreateGitProvider(ctx context.Context, name string) (*mortisev1alpha1.GitProvider, error) {
+// exist and a default client ID is available (e.g. from MORTISE_GITHUB_CLIENT_ID,
+// MORTISE_GITLAB_CLIENT_ID, or MORTISE_GITEA_CLIENT_ID), it creates the provider
+// on-demand. This eliminates the race between PlatformConfig reconciliation and
+// the user clicking "Connect."
+func (d *DeviceFlowHandler) getOrCreateGitProvider(ctx context.Context, name string, providerType mortisev1alpha1.GitProviderType, host string) (*mortisev1alpha1.GitProvider, error) {
 	var gp mortisev1alpha1.GitProvider
 	err := d.client.Get(ctx, types.NamespacedName{Name: name}, &gp)
 	if err == nil {
@@ -320,10 +353,14 @@ func (d *DeviceFlowHandler) getOrCreateGitProvider(ctx context.Context, name str
 		return nil, fmt.Errorf("get git provider %q: %w", name, err)
 	}
 
-	// Provider doesn't exist — try to create a default GitHub provider.
-	clientID := os.Getenv("MORTISE_GITHUB_CLIENT_ID")
+	// Provider doesn't exist — try to create with the appropriate type.
+	defaults, ok := providerDefaults[providerType]
+	if !ok {
+		return nil, fmt.Errorf("git provider %q not found and unsupported provider type %q", name, providerType)
+	}
+	clientID := os.Getenv(defaults.clientIDEnv)
 	if clientID == "" {
-		return nil, fmt.Errorf("git provider %q not found and no default client ID available", name)
+		return nil, fmt.Errorf("git provider %q not found and no default client ID available (set %s)", name, defaults.clientIDEnv)
 	}
 
 	// Auto-generate webhook secret.
@@ -352,8 +389,8 @@ func (d *DeviceFlowHandler) getOrCreateGitProvider(ctx context.Context, name str
 	newGP := &mortisev1alpha1.GitProvider{
 		ObjectMeta: metav1.ObjectMeta{Name: name},
 		Spec: mortisev1alpha1.GitProviderSpec{
-			Type:     mortisev1alpha1.GitProviderTypeGitHub,
-			Host:     "https://github.com",
+			Type:     providerType,
+			Host:     host,
 			ClientID: clientID,
 			WebhookSecretRef: &mortisev1alpha1.SecretRef{
 				Namespace: git.TokenSecretNamespace,

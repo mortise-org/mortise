@@ -400,6 +400,52 @@ func TestStorePATOverwritesExistingToken(t *testing.T) {
 	}
 }
 
+// TestStorePATAutoCreatesGitLabProvider verifies that StorePAT with a "gitlab"
+// provider name auto-creates a GitProvider with Type=gitlab (not github) when
+// no GitProvider CRD exists and a client ID env var is set.
+func TestStorePATAutoCreatesGitLabProvider(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	ctx := context.Background()
+
+	_ = k8sClient.Create(ctx, &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: "mortise-system"},
+	})
+
+	// Set the GitLab client ID env var so auto-create succeeds.
+	t.Setenv("MORTISE_GITLAB_CLIENT_ID", "test-gitlab-client-id")
+
+	srv, _ := newTestServer(t, k8sClient)
+	h := srv.Handler()
+
+	w := doRequest(h, http.MethodPost, "/api/auth/git/gitlab/token", map[string]string{"token": "glpat-test123"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Verify the GitProvider was auto-created with the correct type.
+	var gp mortisev1alpha1.GitProvider
+	if err := k8sClient.Get(ctx, types.NamespacedName{Name: "gitlab"}, &gp); err != nil {
+		t.Fatalf("auto-created GitProvider not found: %v", err)
+	}
+	if gp.Spec.Type != mortisev1alpha1.GitProviderTypeGitLab {
+		t.Errorf("expected provider type %q, got %q", mortisev1alpha1.GitProviderTypeGitLab, gp.Spec.Type)
+	}
+	if gp.Spec.Host != "https://gitlab.com" {
+		t.Errorf("expected host %q, got %q", "https://gitlab.com", gp.Spec.Host)
+	}
+
+	// Verify the token was also stored.
+	email := "test@example.com"
+	secretName := "user-gitlab-token-" + hex.EncodeToString([]byte(email))
+	var s corev1.Secret
+	if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: "mortise-system", Name: secretName}, &s); err != nil {
+		t.Fatalf("token secret not found: %v", err)
+	}
+	if string(s.Data["token"]) != "glpat-test123" {
+		t.Errorf("expected stored token %q, got %q", "glpat-test123", string(s.Data["token"]))
+	}
+}
+
 // TestPerUserTokenStorage verifies that different users get different tokens stored.
 func TestPerUserTokenStorage(t *testing.T) {
 	k8sClient := setupEnvtest(t)

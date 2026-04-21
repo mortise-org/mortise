@@ -14,7 +14,6 @@ import (
 type bindingEdge struct {
 	From        string `json:"from"`
 	To          string `json:"to"`
-	ToProject   string `json:"toProject,omitempty"`
 	Environment string `json:"environment"`
 }
 
@@ -27,7 +26,7 @@ func (s *Server) ListBindings(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	envName := r.URL.Query().Get("environment")
+	envName := queryEnv(r)
 	if envName == "" {
 		writeJSON(w, http.StatusBadRequest, errorResponse{"environment query parameter is required"})
 		return
@@ -55,7 +54,6 @@ func (s *Server) ListBindings(w http.ResponseWriter, r *http.Request) {
 			edges = append(edges, bindingEdge{
 				From:        app.Name,
 				To:          b.Ref,
-				ToProject:   b.Project,
 				Environment: envName,
 			})
 		}

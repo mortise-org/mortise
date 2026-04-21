@@ -59,9 +59,7 @@ metadata:
     app.kubernetes.io/name: mortise
     app.kubernetes.io/managed-by: {{ .Release.Service }}
 spec:
-  {{- if and .Values.traefik.enabled (not .Values.ingress.className) }}
-  ingressClassName: traefik
-  {{- else if .Values.ingress.className }}
+  {{- if .Values.ingress.className }}
   ingressClassName: {{ .Values.ingress.className }}
   {{- end }}
   rules:

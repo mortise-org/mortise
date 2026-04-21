@@ -962,13 +962,10 @@ Apps this App is bound to. Adding a binding here makes the bound App's
 
 **Screens.**
 1. **Bindings list** — one row per entry in `spec.bindings[]`:
-   `{ref}` (app name + source icon), optional `{project}` badge for
-   cross-project bindings, kebab (Edit / Remove). Empty state: "No
-   bindings yet — bind another app to inject its credentials."
+   `{ref}` (app name + source icon), kebab (Edit / Remove). Empty state:
+   "No bindings yet — bind another app to inject its credentials."
 2. **"Add binding" button** → modal with an app picker: lists Apps in
-   this project (default), "Bind from another project" expander that
-   swaps to a project picker + app picker. **Only Apps with
-   `credentials:` declared appear.**
+   this project. **Only Apps with `credentials:` declared appear.**
 3. **Preview panel** in the modal — once an App is selected, shows the
    credential keys that will be injected (matching the bound App's
    `credentials:` list). User picks:
@@ -1441,9 +1438,6 @@ binder App to the bound App.
 - **Selected:** stroke `accent`, `strokeWidth: 2`.
 - **Edge type:** `smoothstep` (Svelte Flow built-in — avoids node
   overlap better than `bezier` for horizontal layouts).
-
-Cross-project bindings (if visible) render with a dotted line and a
-project badge on the edge label.
 
 #### Interaction
 

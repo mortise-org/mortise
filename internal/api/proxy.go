@@ -48,10 +48,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	appName := chi.URLParam(r, "app")
 	key := projectName + "/" + appName
 
-	env := r.URL.Query().Get("env")
-	if env == "" {
-		env = "production"
-	}
+	env := envFromQuery(r)
 	envNs := constants.EnvNamespace(projectName, env)
 
 	// If already proxying, return the existing URL.

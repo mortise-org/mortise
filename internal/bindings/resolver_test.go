@@ -47,77 +47,85 @@ func newDB(name, controlNs string) *mortisev1alpha1.App {
 	}
 }
 
-// TestResolveSameProjectBinding verifies that a bare ref (no project) resolves
-// to the binder's own per-env namespace — the common case.
+func credentialsSecret(appName, namespace string, data map[string]string) *corev1.Secret {
+	d := make(map[string][]byte, len(data))
+	for k, v := range data {
+		d[k] = []byte(v)
+	}
+	return &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: appName + "-credentials", Namespace: namespace},
+		Data:       d,
+	}
+}
+
 func TestResolveSameProjectBinding(t *testing.T) {
 	db := newDB("db", "pj-web")
-	c := newFakeClient(t, db)
+	creds := credentialsSecret("db", "pj-web-production", map[string]string{
+		"username": "postgres",
+		"password": "hunter2",
+	})
+	c := newFakeClient(t, db, creds)
 	r := &bindings.Resolver{Client: c}
 
-	envVars, err := r.Resolve(context.Background(), "web", "production", []mortisev1alpha1.Binding{
+	vars, err := r.Resolve(context.Background(), "web", "production", []mortisev1alpha1.Binding{
 		{Ref: "db"},
 	})
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
 
-	hostVar := findEnv(envVars, "DB_HOST")
+	hostVar := findVar(vars, "DB_HOST")
 	if hostVar == nil {
 		t.Fatal("expected host env var to be set")
 	}
 	if hostVar.Value != "db.pj-web-production.svc.cluster.local" {
 		t.Errorf("expected host pointing at same-project env service, got %q", hostVar.Value)
 	}
-}
 
-// TestCrossProjectBindingResolves verifies that a cross-project binding
-// resolves inside the target project's matching env namespace.
-func TestCrossProjectBindingResolves(t *testing.T) {
-	sharedDB := newDB("shared-postgres", "pj-infra")
-	c := newFakeClient(t, sharedDB)
-	r := &bindings.Resolver{Client: c}
-
-	envVars, err := r.Resolve(context.Background(), "web", "production", []mortisev1alpha1.Binding{
-		{Ref: "shared-postgres", Project: "infra"},
-	})
-	if err != nil {
-		t.Fatalf("cross-project resolve: %v", err)
+	pwVar := findVar(vars, "DB_PASSWORD")
+	if pwVar == nil {
+		t.Fatal("expected DB_PASSWORD")
 	}
-
-	hostVar := findEnv(envVars, "SHARED_POSTGRES_HOST")
-	if hostVar == nil {
-		t.Fatal("expected host env var to be set")
-	}
-	if hostVar.Value != "shared-postgres.pj-infra-production.svc.cluster.local" {
-		t.Errorf("expected host pointing at target-project env service, got %q", hostVar.Value)
+	if pwVar.Value != "hunter2" {
+		t.Errorf("DB_PASSWORD: got %q, want %q", pwVar.Value, "hunter2")
 	}
 }
 
-// TestSameProjectExplicitProjectBinding verifies that a binding with Project
-// set to the SAME project as the binder still resolves successfully.
-func TestSameProjectExplicitProjectBinding(t *testing.T) {
+func TestMultipleBindingsInSameProject(t *testing.T) {
 	db := newDB("db", "pj-web")
-	c := newFakeClient(t, db)
+	dbCreds := credentialsSecret("db", "pj-web-production", map[string]string{
+		"username": "postgres",
+		"password": "hunter2",
+	})
+	cache := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "cache", Namespace: "pj-web"},
+		Spec: mortisev1alpha1.AppSpec{
+			Source:  mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: "redis:7"},
+			Network: mortisev1alpha1.NetworkConfig{Port: 6379},
+			Environments: []mortisev1alpha1.Environment{
+				{Name: "production"},
+			},
+		},
+	}
+	c := newFakeClient(t, db, dbCreds, cache)
 	r := &bindings.Resolver{Client: c}
 
-	envVars, err := r.Resolve(context.Background(), "web", "production", []mortisev1alpha1.Binding{
-		{Ref: "db", Project: "web"},
+	vars, err := r.Resolve(context.Background(), "web", "production", []mortisev1alpha1.Binding{
+		{Ref: "db"},
+		{Ref: "cache"},
 	})
 	if err != nil {
-		t.Fatalf("resolve same-project explicit: %v", err)
+		t.Fatalf("resolve: %v", err)
 	}
 
-	hostVar := findEnv(envVars, "DB_HOST")
-	if hostVar == nil {
-		t.Fatal("expected host env var to be set")
+	if findVar(vars, "DB_HOST") == nil {
+		t.Error("expected DB_HOST")
 	}
-	if hostVar.Value != "db.pj-web-production.svc.cluster.local" {
-		t.Errorf("expected host pointing at same-project service, got %q", hostVar.Value)
+	if findVar(vars, "CACHE_HOST") == nil {
+		t.Error("expected CACHE_HOST")
 	}
 }
 
-// TestResolveMissingBindingReturnsError verifies the resolver surfaces a
-// descriptive error when a bound app is missing from the target namespace.
 func TestResolveMissingBindingReturnsError(t *testing.T) {
 	c := newFakeClient(t)
 	r := &bindings.Resolver{Client: c}
@@ -130,8 +138,6 @@ func TestResolveMissingBindingReturnsError(t *testing.T) {
 	}
 }
 
-// TestResolveExternalSourceBinding verifies that host and port come from
-// source.external rather than the managed-service DNS formula.
 func TestResolveExternalSourceBinding(t *testing.T) {
 	redis := &mortisev1alpha1.App{
 		ObjectMeta: metav1.ObjectMeta{Name: "redis", Namespace: "pj-web"},
@@ -155,14 +161,14 @@ func TestResolveExternalSourceBinding(t *testing.T) {
 	c := newFakeClient(t, redis)
 	r := &bindings.Resolver{Client: c}
 
-	envVars, err := r.Resolve(context.Background(), "web", "production", []mortisev1alpha1.Binding{
+	vars, err := r.Resolve(context.Background(), "web", "production", []mortisev1alpha1.Binding{
 		{Ref: "redis"},
 	})
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
 
-	hostVar := findEnv(envVars, "REDIS_HOST")
+	hostVar := findVar(vars, "REDIS_HOST")
 	if hostVar == nil {
 		t.Fatal("expected REDIS_HOST env var to be set")
 	}
@@ -170,7 +176,7 @@ func TestResolveExternalSourceBinding(t *testing.T) {
 		t.Errorf("expected external host, got %q", hostVar.Value)
 	}
 
-	portVar := findEnv(envVars, "REDIS_PORT")
+	portVar := findVar(vars, "REDIS_PORT")
 	if portVar == nil {
 		t.Fatal("expected REDIS_PORT env var to be set")
 	}
@@ -179,8 +185,6 @@ func TestResolveExternalSourceBinding(t *testing.T) {
 	}
 }
 
-// TestResolveExternalSourceNoPort verifies that a zero port produces an empty
-// port env var rather than "0".
 func TestResolveExternalSourceNoPort(t *testing.T) {
 	redis := &mortisev1alpha1.App{
 		ObjectMeta: metav1.ObjectMeta{Name: "redis", Namespace: "pj-web"},
@@ -204,14 +208,14 @@ func TestResolveExternalSourceNoPort(t *testing.T) {
 	c := newFakeClient(t, redis)
 	r := &bindings.Resolver{Client: c}
 
-	envVars, err := r.Resolve(context.Background(), "web", "production", []mortisev1alpha1.Binding{
+	vars, err := r.Resolve(context.Background(), "web", "production", []mortisev1alpha1.Binding{
 		{Ref: "redis"},
 	})
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
 
-	hostVar := findEnv(envVars, "REDIS_HOST")
+	hostVar := findVar(vars, "REDIS_HOST")
 	if hostVar == nil {
 		t.Fatal("expected REDIS_HOST env var to be set")
 	}
@@ -219,7 +223,7 @@ func TestResolveExternalSourceNoPort(t *testing.T) {
 		t.Errorf("expected external host, got %q", hostVar.Value)
 	}
 
-	portVar := findEnv(envVars, "REDIS_PORT")
+	portVar := findVar(vars, "REDIS_PORT")
 	if portVar == nil {
 		t.Fatal("expected REDIS_PORT env var to be set")
 	}
@@ -228,8 +232,6 @@ func TestResolveExternalSourceNoPort(t *testing.T) {
 	}
 }
 
-// TestResolveAppWithNoCredentials verifies that binding to an App with no
-// credentials still injects HOST and PORT.
 func TestResolveAppWithNoCredentials(t *testing.T) {
 	svc := &mortisev1alpha1.App{
 		ObjectMeta: metav1.ObjectMeta{Name: "sidecar", Namespace: "pj-web"},
@@ -244,26 +246,23 @@ func TestResolveAppWithNoCredentials(t *testing.T) {
 	c := newFakeClient(t, svc)
 	r := &bindings.Resolver{Client: c}
 
-	envVars, err := r.Resolve(context.Background(), "web", "production", []mortisev1alpha1.Binding{
+	vars, err := r.Resolve(context.Background(), "web", "production", []mortisev1alpha1.Binding{
 		{Ref: "sidecar"},
 	})
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
-	// Should have at least HOST and PORT (no URL for nginx).
-	if findEnv(envVars, "SIDECAR_HOST") == nil {
+	if findVar(vars, "SIDECAR_HOST") == nil {
 		t.Error("expected SIDECAR_HOST")
 	}
-	if findEnv(envVars, "SIDECAR_PORT") == nil {
+	if findVar(vars, "SIDECAR_PORT") == nil {
 		t.Error("expected SIDECAR_PORT")
 	}
-	if findEnv(envVars, "SIDECAR_URL") != nil {
+	if findVar(vars, "SIDECAR_URL") != nil {
 		t.Error("nginx should not generate a URL")
 	}
 }
 
-// TestResolveMultipleBindingsNoPrefixCollision verifies that binding to two
-// apps produces distinct prefixed env vars with no collisions.
 func TestResolveMultipleBindingsNoPrefixCollision(t *testing.T) {
 	pg := &mortisev1alpha1.App{
 		ObjectMeta: metav1.ObjectMeta{Name: "postgres", Namespace: "pj-web"},
@@ -276,18 +275,21 @@ func TestResolveMultipleBindingsNoPrefixCollision(t *testing.T) {
 			Environments: []mortisev1alpha1.Environment{{Name: "production"}},
 		},
 	}
+	pgCreds := credentialsSecret("postgres", "pj-web-production", map[string]string{
+		"password": "pgpass",
+	})
 	redis := &mortisev1alpha1.App{
 		ObjectMeta: metav1.ObjectMeta{Name: "cache", Namespace: "pj-web"},
 		Spec: mortisev1alpha1.AppSpec{
-			Source:  mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: "redis:7"},
-			Network: mortisev1alpha1.NetworkConfig{Port: 6379},
+			Source:       mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: "redis:7"},
+			Network:      mortisev1alpha1.NetworkConfig{Port: 6379},
 			Environments: []mortisev1alpha1.Environment{{Name: "production"}},
 		},
 	}
-	c := newFakeClient(t, pg, redis)
+	c := newFakeClient(t, pg, pgCreds, redis)
 	r := &bindings.Resolver{Client: c}
 
-	envVars, err := r.Resolve(context.Background(), "web", "production", []mortisev1alpha1.Binding{
+	vars, err := r.Resolve(context.Background(), "web", "production", []mortisev1alpha1.Binding{
 		{Ref: "postgres"},
 		{Ref: "cache"},
 	})
@@ -295,40 +297,36 @@ func TestResolveMultipleBindingsNoPrefixCollision(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Verify distinct prefixes — no collisions.
-	if findEnv(envVars, "POSTGRES_HOST") == nil {
+	if findVar(vars, "POSTGRES_HOST") == nil {
 		t.Error("expected POSTGRES_HOST")
 	}
-	if findEnv(envVars, "POSTGRES_PORT") == nil {
+	if findVar(vars, "POSTGRES_PORT") == nil {
 		t.Error("expected POSTGRES_PORT")
 	}
-	if findEnv(envVars, "POSTGRES_URL") == nil {
+	if findVar(vars, "POSTGRES_URL") == nil {
 		t.Error("expected POSTGRES_URL for postgres image")
 	}
-	if findEnv(envVars, "POSTGRES_PASSWORD") == nil {
+	if findVar(vars, "POSTGRES_PASSWORD") == nil {
 		t.Error("expected POSTGRES_PASSWORD from credentials")
 	}
-	if findEnv(envVars, "CACHE_HOST") == nil {
+	if findVar(vars, "CACHE_HOST") == nil {
 		t.Error("expected CACHE_HOST")
 	}
-	if findEnv(envVars, "CACHE_PORT") == nil {
+	if findVar(vars, "CACHE_PORT") == nil {
 		t.Error("expected CACHE_PORT")
 	}
-	if findEnv(envVars, "CACHE_URL") == nil {
+	if findVar(vars, "CACHE_URL") == nil {
 		t.Error("expected CACHE_URL for redis image")
 	}
 
-	// Verify no unprefixed vars leaked.
-	if findEnv(envVars, "host") != nil {
+	if findVar(vars, "host") != nil {
 		t.Error("unprefixed 'host' should not exist")
 	}
-	if findEnv(envVars, "port") != nil {
+	if findVar(vars, "port") != nil {
 		t.Error("unprefixed 'port' should not exist")
 	}
 }
 
-// TestResolveBoundAppDisabledInEnv verifies the resolver errors when the
-// bound app has an override setting `enabled: false` for the binder's env.
 func TestResolveBoundAppDisabledInEnv(t *testing.T) {
 	disabled := false
 	svc := &mortisev1alpha1.App{
@@ -357,7 +355,93 @@ func TestResolveBoundAppDisabledInEnv(t *testing.T) {
 	}
 }
 
-func findEnv(vars []corev1.EnvVar, name string) *corev1.EnvVar {
+func TestResolveCredentialsMissingSecretReturnsError(t *testing.T) {
+	db := newDB("db", "pj-web")
+	c := newFakeClient(t, db)
+	r := &bindings.Resolver{Client: c}
+
+	_, err := r.Resolve(context.Background(), "web", "production", []mortisev1alpha1.Binding{
+		{Ref: "db"},
+	})
+	if err == nil {
+		t.Fatal("expected error when credentials Secret is missing")
+	}
+	if !strings.Contains(err.Error(), "credentials") {
+		t.Errorf("expected error to mention credentials, got: %v", err)
+	}
+}
+
+func TestToEnvPrefixSanitizesDots(t *testing.T) {
+	vars, err := resolveWithApp(t, "my.database", "pj-web", "postgres:16")
+	if err != nil {
+		t.Fatal(err)
+	}
+	host := findVar(vars, "MY_DATABASE_HOST")
+	if host == nil {
+		t.Fatal("expected MY_DATABASE_HOST after dot sanitization")
+	}
+}
+
+func TestToEnvPrefixStripsLeadingDigits(t *testing.T) {
+	vars, err := resolveWithApp(t, "3scale", "pj-web", "nginx:1.25")
+	if err != nil {
+		t.Fatal(err)
+	}
+	host := findVar(vars, "SCALE_HOST")
+	if host == nil {
+		t.Fatal("expected SCALE_HOST after leading digit strip")
+	}
+}
+
+func TestAutoURLRegistryPrefixedImage(t *testing.T) {
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "db", Namespace: "pj-web"},
+		Spec: mortisev1alpha1.AppSpec{
+			Source:  mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: "docker.io/library/postgres:16"},
+			Network: mortisev1alpha1.NetworkConfig{Port: 5432},
+			Environments: []mortisev1alpha1.Environment{
+				{Name: "production"},
+			},
+		},
+	}
+	c := newFakeClient(t, app)
+	r := &bindings.Resolver{Client: c}
+
+	vars, err := r.Resolve(context.Background(), "web", "production", []mortisev1alpha1.Binding{
+		{Ref: "db"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	urlVar := findVar(vars, "DB_URL")
+	if urlVar == nil {
+		t.Fatal("expected DB_URL for registry-prefixed postgres image")
+	}
+	if !strings.HasPrefix(urlVar.Value, "postgres://") {
+		t.Errorf("expected postgres:// URL, got %q", urlVar.Value)
+	}
+}
+
+func resolveWithApp(t *testing.T, appName, controlNs, image string) ([]bindings.ResolvedVar, error) {
+	t.Helper()
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: appName, Namespace: controlNs},
+		Spec: mortisev1alpha1.AppSpec{
+			Source:  mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: image},
+			Network: mortisev1alpha1.NetworkConfig{Port: 8080},
+			Environments: []mortisev1alpha1.Environment{
+				{Name: "production"},
+			},
+		},
+	}
+	c := newFakeClient(t, app)
+	r := &bindings.Resolver{Client: c}
+	return r.Resolve(context.Background(), "web", "production", []mortisev1alpha1.Binding{
+		{Ref: appName},
+	})
+}
+
+func findVar(vars []bindings.ResolvedVar, name string) *bindings.ResolvedVar {
 	for i := range vars {
 		if vars[i].Name == name {
 			return &vars[i]

@@ -47,8 +47,11 @@ services:
     environment:
       DATABASE_URL: postgres://supabase_admin:${PG_PASSWORD}@supabase-postgres:5432/supabase
       PGRST_JWT_SECRET: ${JWT_SECRET}
-      ANON_KEY: ${JWT_SECRET}
-      SERVICE_KEY: ${JWT_SECRET}
+      # ANON_KEY and SERVICE_KEY must be JWTs signed with JWT_SECRET.
+      # substituteVars auto-generates placeholder values; replace them with
+      # real Supabase JWTs for a working setup (see https://supabase.com/docs/guides/self-hosting#api-keys).
+      ANON_KEY: ${ANON_KEY}
+      SERVICE_KEY: ${SERVICE_ROLE_KEY}
       STORAGE_BACKEND: file
       FILE_STORAGE_BACKEND_PATH: /var/lib/storage
 

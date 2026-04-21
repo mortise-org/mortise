@@ -11,6 +11,7 @@ import (
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 
 	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"

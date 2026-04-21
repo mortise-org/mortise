@@ -1,5 +1,7 @@
 package ingress
 
+import "context"
+
 type AppRef struct {
 	Name      string
 	Namespace string
@@ -12,5 +14,5 @@ type MiddlewareRef struct {
 
 type IngressProvider interface {
 	ClassName() string
-	Annotations(app AppRef, hostnames []string, middleware []MiddlewareRef) map[string]string
+	Annotations(ctx context.Context, app AppRef, hostnames []string, middleware []MiddlewareRef) map[string]string
 }

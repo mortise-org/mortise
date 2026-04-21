@@ -36,4 +36,6 @@ serviceAccount:
 
 # GitHub OAuth App client ID for device flow.
 github:
-  clientID: "Ov23lizLTd25E32VrWwl"
+  # Required: Create a GitHub OAuth App and set clientID here.
+  # See https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/creating-an-oauth-app
+  clientID: ""

@@ -127,7 +127,7 @@ flowchart TB
 | **Zot** | `mortise-system` | OCI image registry. Default target for builds unless external registry configured. | Installed conditionally (omitted if user picks GHCR/Docker Hub/custom). |
 | **BuildKit** | `mortise-builds` | Builds container images from git sources. Consumes LLB or Dockerfile input; pushes to registry. | Installed lazily on first git App. Pooling / scale-out is post-v1 operator work if queue wait becomes a problem. |
 | **User App pods** | `pj-{name}-{env}` | The actual workloads Mortise deploys. An App spawns one Deployment per declared environment; each env's pods live in the matching `pj-{name}-{env}` namespace. | Pure 12-factor; no Mortise SDK or sidecar required. |
-| **Backing service pods** | `pj-{name}-{env}` | Apps with `credentials:` declared — typically stateful (Postgres, Redis). Other Apps in the same project+env bind trivially via Service DNS; cross-project bindings are allowed but must name the project explicitly. | v1 = `image` source + PVC + manual credentials. Users who need HA/PITR install CNPG or redis-operator directly and point Apps at them (SPEC §6.3). |
+| **Backing service pods** | `pj-{name}-{env}` | Apps with `credentials:` declared — typically stateful (Postgres, Redis). Other Apps in the same project+env bind via Service DNS. | v1 = `image` source + PVC + manual credentials. Users who need HA/PITR install CNPG or redis-operator directly and point Apps at them (SPEC §6.3). |
 
 ---
 

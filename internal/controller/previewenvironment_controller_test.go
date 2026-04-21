@@ -282,7 +282,7 @@ var _ = Describe("PreviewEnvironment Controller", func() {
 			var svc corev1.Service
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "webapp", Namespace: previewNs}, &svc)).To(Succeed())
 			Expect(svc.Spec.Ports).To(HaveLen(1))
-			Expect(svc.Spec.Ports[0].Port).To(Equal(int32(80)))
+			Expect(svc.Spec.Ports[0].Port).To(Equal(int32(8080)))
 
 			// Verify Ingress.
 			var ing networkingv1.Ingress

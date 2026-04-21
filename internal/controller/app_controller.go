@@ -1004,7 +1004,7 @@ func (r *AppReconciler) reconcileIngress(ctx context.Context, app *mortisev1alph
 	backend := networkingv1.IngressBackend{
 		Service: &networkingv1.IngressServiceBackend{
 			Name: svcName,
-			Port: networkingv1.ServiceBackendPort{Number: 80},
+			Port: networkingv1.ServiceBackendPort{Number: int32(appPort(app))},
 		},
 	}
 	var rules []networkingv1.IngressRule
@@ -1035,7 +1035,7 @@ func (r *AppReconciler) reconcileIngress(ctx context.Context, app *mortisev1alph
 	// cert-manager issuer). Nil-safe: if no provider is set, start empty.
 	var owned map[string]string
 	if r.IngressProvider != nil {
-		owned = r.IngressProvider.Annotations(
+		owned = r.IngressProvider.Annotations(ctx,
 			ingress.AppRef{Name: app.Name, Namespace: envNs},
 			allHosts,
 			nil,
@@ -1296,7 +1296,7 @@ func (r *AppReconciler) reconcileConfigMaps(ctx context.Context, app *mortisev1a
 	// to match the pattern.
 	var owned corev1.ConfigMapList
 	if err := r.List(ctx, &owned, client.InNamespace(envNs), client.MatchingLabels{
-		constants.AppNameLabel:       app.Name,
+		constants.AppNameLabel:         app.Name,
 		"app.kubernetes.io/managed-by": "mortise",
 	}); err != nil {
 		return fmt.Errorf("list owned ConfigMaps: %w", err)
@@ -1335,7 +1335,7 @@ func (r *AppReconciler) reconcileEnvSecret(ctx context.Context, app *mortisev1al
 	labels := map[string]string{
 		constants.ProjectLabel:     projectName,
 		constants.EnvironmentLabel: env.Name,
-		constants.AppNameLabel:   app.Name,
+		constants.AppNameLabel:     app.Name,
 	}
 	sharedLabels := map[string]string{
 		constants.ProjectLabel:     projectName,
@@ -1361,15 +1361,14 @@ func (r *AppReconciler) reconcileEnvSecret(ctx context.Context, app *mortisev1al
 		}
 	}
 
-	// Check if the {app}-env Secret has been seeded. We use an annotation
-	// rather than checking for empty data so that "user cleared all vars"
-	// is distinguishable from "first deploy."
-	existing, err := store.Get(ctx, envNs, app.Name)
+	// Check if the {app}-env Secret has been seeded by testing whether
+	// the Secret object exists — not whether it has data. This lets us
+	// distinguish "first deploy" (no Secret) from "user cleared all vars"
+	// (empty Secret).
+	seeded, err := store.SecretExists(ctx, envNs, app.Name)
 	if err != nil {
-		return fmt.Errorf("get app env secret: %w", err)
+		return fmt.Errorf("check app env secret existence: %w", err)
 	}
-
-	seeded := len(existing) > 0 // nil means Secret doesn't exist
 	if !seeded {
 		var seed []envstore.Env
 		for _, ev := range env.Env {
@@ -1383,8 +1382,6 @@ func (r *AppReconciler) reconcileEnvSecret(ctx context.Context, app *mortisev1al
 		}
 	}
 
-	// Always merge binding-injected vars. Resolve SecretKeyRef values to
-	// literals so they're stored as plain strings in the env Secret.
 	if len(env.Bindings) > 0 {
 		resolver := &bindings.Resolver{Client: r.Client}
 		boundVars, err := resolver.Resolve(ctx, projectName, env.Name, env.Bindings)
@@ -1393,19 +1390,9 @@ func (r *AppReconciler) reconcileEnvSecret(ctx context.Context, app *mortisev1al
 		}
 		var bindingEnvs []envstore.Env
 		for _, bv := range boundVars {
-			val := bv.Value
-			// Resolve SecretKeyRef to a literal value.
-			if val == "" && bv.ValueFrom != nil && bv.ValueFrom.SecretKeyRef != nil {
-				ref := bv.ValueFrom.SecretKeyRef
-				var secret corev1.Secret
-				secretKey := types.NamespacedName{Namespace: envNs, Name: ref.Name}
-				if err := r.Get(ctx, secretKey, &secret); err == nil {
-					val = string(secret.Data[ref.Key])
-				}
-			}
 			bindingEnvs = append(bindingEnvs, envstore.Env{
 				Name:   bv.Name,
-				Value:  val,
+				Value:  bv.Value,
 				Source: "binding",
 			})
 		}
@@ -1667,7 +1654,7 @@ func (r *AppReconciler) checkPodCrashLoopInEnv(ctx context.Context, app *mortise
 	if err := r.List(ctx, &podList,
 		client.InNamespace(envNs),
 		client.MatchingLabels{
-			constants.AppNameLabel:       app.Name,
+			constants.AppNameLabel:         app.Name,
 			"app.kubernetes.io/managed-by": "mortise",
 			"mortise.dev/environment":      envName,
 		}); err != nil {
@@ -1973,12 +1960,40 @@ func (r *AppReconciler) autoDefaultDomain(ctx context.Context, app *mortisev1alp
 		label = app.Name + "-" + envName
 	}
 
-	// DNS labels are capped at 63 characters.
-	if len(label) > 63 {
+	// DNS labels must be at most 63 characters, contain only lowercase
+	// alphanumeric characters or hyphens, must not start or end with a
+	// hyphen, and must not start with a digit.
+	if !isValidDNSLabel(label) {
 		return ""
 	}
 
 	return fmt.Sprintf("%s.%s", label, pc.Spec.Domain)
+}
+
+// isValidDNSLabel checks that s is a valid DNS label per RFC 1123: at most 63
+// characters, only lowercase alphanumeric or hyphens, no leading/trailing
+// hyphens, no leading digits, no underscores/dots.
+func isValidDNSLabel(s string) bool {
+	if len(s) == 0 || len(s) > 63 {
+		return false
+	}
+	for i, c := range s {
+		switch {
+		case c >= 'a' && c <= 'z':
+			// ok
+		case c >= '0' && c <= '9':
+			if i == 0 {
+				return false // no leading digits
+			}
+		case c == '-':
+			if i == 0 || i == len(s)-1 {
+				return false // no leading/trailing hyphens
+			}
+		default:
+			return false // uppercase, underscores, dots, etc.
+		}
+	}
+	return true
 }
 
 // appLabels stamps the standard Mortise ownership labels. `mortise.dev/project`
@@ -1996,7 +2011,7 @@ func appLabels(app *mortisev1alpha1.App, env string) map[string]string {
 		panic(fmt.Sprintf("appLabels: app %q not in a control namespace (%q)", app.Name, app.Namespace))
 	}
 	l := map[string]string{
-		constants.AppNameLabel:       app.Name,
+		constants.AppNameLabel:         app.Name,
 		"app.kubernetes.io/managed-by": "mortise",
 		constants.ProjectLabel:         projectName,
 	}
@@ -2305,12 +2320,18 @@ func (r *AppReconciler) reconcileExternalNameService(ctx context.Context, app *m
 		return err
 	}
 
+	// Transitioning between Service types (e.g. ClusterIP → ExternalName)
+	// requires deleting and recreating the Service because the API server
+	// rejects updates that clear ClusterIP on a ClusterIP-type Service.
+	if existing.Spec.Type != corev1.ServiceTypeExternalName {
+		if err := r.Delete(ctx, &existing); err != nil {
+			return fmt.Errorf("delete service for type change: %w", err)
+		}
+		return r.Create(ctx, desired)
+	}
+
 	existing.Annotations = desired.Annotations
-	existing.Spec.Type = desired.Spec.Type
 	existing.Spec.ExternalName = desired.Spec.ExternalName
-	// ExternalName services must not have a selector or ClusterIP.
-	existing.Spec.Selector = nil
-	existing.Spec.ClusterIP = ""
 	return r.Update(ctx, &existing)
 }
 

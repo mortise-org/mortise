@@ -38,10 +38,7 @@ func (s *Server) handleListPods(w http.ResponseWriter, r *http.Request) {
 	}
 	name := chi.URLParam(r, "app")
 
-	env := r.URL.Query().Get("env")
-	if env == "" {
-		env = "production"
-	}
+	env := envFromQuery(r)
 
 	var app mortisev1alpha1.App
 	if err := s.client.Get(r.Context(), types.NamespacedName{Name: name, Namespace: ns}, &app); err != nil {
@@ -52,7 +49,7 @@ func (s *Server) handleListPods(w http.ResponseWriter, r *http.Request) {
 	envNs := constants.EnvNamespace(projectName, env)
 
 	sel := labels.SelectorFromSet(map[string]string{
-		constants.AppNameLabel:       name,
+		constants.AppNameLabel:         name,
 		"app.kubernetes.io/managed-by": "mortise",
 		"mortise.dev/environment":      env,
 	})

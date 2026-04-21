@@ -48,7 +48,7 @@ func (r *AppReconciler) gcAppAcrossEnvs(ctx context.Context, app *mortisev1alpha
 	}
 	selector := client.MatchingLabels{
 		constants.AppNameLabel: app.Name,
-		constants.ProjectLabel:   projectName,
+		constants.ProjectLabel: projectName,
 	}
 
 	if err := r.deleteMatching(ctx, &appsv1.DeploymentList{}, selector); err != nil {
@@ -97,7 +97,7 @@ func (r *AppReconciler) gcOptedOutEnvs(ctx context.Context, app *mortisev1alpha1
 		envNs := constants.EnvNamespace(projectName, projEnv.Name)
 		selector := client.MatchingLabels{
 			constants.AppNameLabel: app.Name,
-			constants.ProjectLabel:   projectName,
+			constants.ProjectLabel: projectName,
 		}
 		inNs := client.InNamespace(envNs)
 		if err := r.deleteMatching(ctx, &appsv1.DeploymentList{}, selector, inNs); err != nil {

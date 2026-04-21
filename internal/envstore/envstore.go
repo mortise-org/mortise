@@ -12,6 +12,7 @@ package envstore
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -78,6 +79,28 @@ type Env struct {
 	Source string `json:"source,omitempty"` // "user", "binding", "generated", "shared", ""
 }
 
+// validEnvVarName matches POSIX-compliant environment variable names.
+var validEnvVarName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// ValidateEnvVarName checks that a name is a valid POSIX env var name.
+// This also prevents comma injection into source-tracking annotations.
+func ValidateEnvVarName(name string) error {
+	if !validEnvVarName.MatchString(name) {
+		return fmt.Errorf("invalid env var name %q: must match [A-Za-z_][A-Za-z0-9_]*", name)
+	}
+	return nil
+}
+
+// validateEnvVars checks all env var names in a slice.
+func validateEnvVars(vars []Env) error {
+	for _, v := range vars {
+		if err := ValidateEnvVarName(v.Name); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // Get reads all env vars from an app's env Secret.
 func (s *Store) Get(ctx context.Context, namespace, appName string) ([]Env, error) {
 	secret, err := s.getSecret(ctx, namespace, AppEnvSecretName(appName))
@@ -106,18 +129,27 @@ func (s *Store) GetShared(ctx context.Context, namespace string) ([]Env, error) 
 // source indicates where the vars came from ("user", "binding", "generated").
 // If source is empty, existing source annotations for those keys are preserved.
 func (s *Store) Set(ctx context.Context, namespace, appName string, vars []Env, labels map[string]string) error {
+	if err := validateEnvVars(vars); err != nil {
+		return err
+	}
 	name := AppEnvSecretName(appName)
 	return s.upsertSecret(ctx, namespace, name, vars, labels)
 }
 
 // SetShared writes env vars to the shared-env Secret, creating it if needed.
 func (s *Store) SetShared(ctx context.Context, namespace string, vars []Env, labels map[string]string) error {
+	if err := validateEnvVars(vars); err != nil {
+		return err
+	}
 	return s.upsertSecret(ctx, namespace, SharedEnvName, vars, labels)
 }
 
 // Merge reads the existing Secret, merges in new vars (overwriting duplicates),
 // and writes back. Returns the merged set.
 func (s *Store) Merge(ctx context.Context, namespace, appName string, vars []Env, labels map[string]string) error {
+	if err := validateEnvVars(vars); err != nil {
+		return err
+	}
 	name := AppEnvSecretName(appName)
 	existing, err := s.getSecret(ctx, namespace, name)
 	if err != nil && !k8serrors.IsNotFound(err) {
@@ -143,6 +175,9 @@ func (s *Store) Merge(ctx context.Context, namespace, appName string, vars []Env
 
 // MergeShared is like Merge but for the shared-env Secret.
 func (s *Store) MergeShared(ctx context.Context, namespace string, vars []Env, labels map[string]string) error {
+	if err := validateEnvVars(vars); err != nil {
+		return err
+	}
 	existing, err := s.getSecret(ctx, namespace, SharedEnvName)
 	if err != nil && !k8serrors.IsNotFound(err) {
 		return err
@@ -180,6 +215,22 @@ func (s *Store) Delete(ctx context.Context, namespace, appName, key string) erro
 	return s.Client.Update(ctx, secret)
 }
 
+// SecretExists reports whether the app's env Secret exists in the namespace,
+// regardless of whether it contains any data. This lets callers distinguish
+// "Secret not yet created" from "Secret exists but user cleared all vars."
+func (s *Store) SecretExists(ctx context.Context, namespace, appName string) (bool, error) {
+	name := AppEnvSecretName(appName)
+	var existing corev1.Secret
+	err := s.Client.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, &existing)
+	if err == nil {
+		return true, nil
+	}
+	if k8serrors.IsNotFound(err) {
+		return false, nil
+	}
+	return false, err
+}
+
 // EnsureExists creates the env Secret if it doesn't exist (empty).
 func (s *Store) EnsureExists(ctx context.Context, namespace, appName string, labels map[string]string) error {
 	name := AppEnvSecretName(appName)
@@ -208,11 +259,17 @@ func (s *Store) GetSharedSource(ctx context.Context, controlNs string) ([]Env, e
 
 // SetSharedSource writes shared vars to the control-namespace source of truth.
 func (s *Store) SetSharedSource(ctx context.Context, controlNs string, vars []Env, labels map[string]string) error {
+	if err := validateEnvVars(vars); err != nil {
+		return err
+	}
 	return s.upsertSecret(ctx, controlNs, SharedVarsSourceName, vars, labels)
 }
 
 // MergeSharedSource merges shared vars into the control-namespace source.
 func (s *Store) MergeSharedSource(ctx context.Context, controlNs string, vars []Env, labels map[string]string) error {
+	if err := validateEnvVars(vars); err != nil {
+		return err
+	}
 	existing, err := s.getSecret(ctx, controlNs, SharedVarsSourceName)
 	if err != nil && !k8serrors.IsNotFound(err) {
 		return err
@@ -270,7 +327,19 @@ func (s *Store) upsertSecret(ctx context.Context, namespace, name string, vars [
 	}
 
 	existing.Data = desired.Data
-	existing.Annotations = mergeAnnotations(existing.Annotations, desired.Annotations)
+	// Replace mortise source-tracking annotations entirely from desired,
+	// preserving any non-mortise annotations on the existing Secret.
+	if existing.Annotations == nil {
+		existing.Annotations = make(map[string]string)
+	}
+	for k := range existing.Annotations {
+		if strings.HasPrefix(k, "mortise.dev/") {
+			delete(existing.Annotations, k)
+		}
+	}
+	for k, v := range desired.Annotations {
+		existing.Annotations[k] = v
+	}
 	if existing.Labels == nil {
 		existing.Labels = make(map[string]string)
 	}
@@ -381,16 +450,6 @@ func removeKeyFromAnnotations(secret *corev1.Secret, key string) {
 			}
 		}
 	}
-}
-
-func mergeAnnotations(existing, desired map[string]string) map[string]string {
-	if existing == nil {
-		return desired
-	}
-	for k, v := range desired {
-		existing[k] = v
-	}
-	return existing
 }
 
 func boolPtr(b bool) *bool { return &b }
