@@ -108,7 +108,7 @@
 		sharedSection.loading = true;
 		sharedSection.error = '';
 		try {
-			const rows = await api.getSharedVars(project, activeEnv);
+			const rows = await api.getSharedVars(project);
 			sharedSection.entries = (rows ?? []).map(r => ({
 				name: r.name, value: r.value, source: r.source ?? 'shared', revealed: false
 			}));
@@ -200,7 +200,7 @@
 			}
 			if (isShared) {
 				const entries = Object.entries(vars).map(([name, value]) => ({ name, value }));
-				await api.setSharedVars(project, activeEnv, entries);
+				await api.setSharedVars(project, entries);
 			} else {
 				await api.setEnv(project, app.metadata.name, activeEnv, vars);
 			}

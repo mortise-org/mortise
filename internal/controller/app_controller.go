@@ -1335,9 +1335,20 @@ func (r *AppReconciler) reconcileEnvSecret(ctx context.Context, app *mortisev1al
 		constants.EnvironmentLabel: env.Name,
 	}
 
-	// Ensure shared-env Secret exists in the env namespace.
-	if err := store.EnsureSharedExists(ctx, envNs, sharedLabels); err != nil {
-		return fmt.Errorf("ensure shared-env: %w", err)
+	// Materialize shared vars from the control namespace into shared-env in
+	// the env namespace. The control-ns Secret is the source of truth (written
+	// by the API and stack deploy). This avoids the race condition where the
+	// env namespace doesn't exist when the API runs.
+	controlNs := app.Namespace // App CRDs live in the control namespace.
+	sharedSource, _ := store.GetSharedSource(ctx, controlNs)
+	if len(sharedSource) > 0 {
+		if err := store.SetShared(ctx, envNs, sharedSource, sharedLabels); err != nil {
+			return fmt.Errorf("materialize shared-env: %w", err)
+		}
+	} else {
+		if err := store.EnsureSharedExists(ctx, envNs, sharedLabels); err != nil {
+			return fmt.Errorf("ensure shared-env: %w", err)
+		}
 	}
 
 	// Build the merged env var set.

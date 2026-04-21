@@ -360,13 +360,13 @@ export const api = {
 	listActivity: (project: string) =>
 		request<ActivityEvent[]>(`/projects/${enc(project)}/activity`),
 
-	// --- shared variables ---
-	getSharedVars: (project: string, environment: string) =>
+	// --- shared variables (project-level, controller fans out to all envs) ---
+	getSharedVars: (project: string) =>
 		request<Array<{ name: string; value: string; source?: string }>>(
-			`/projects/${enc(project)}/shared-vars?environment=${enc(environment)}`
+			`/projects/${enc(project)}/shared-vars`
 		),
-	setSharedVars: (project: string, environment: string, vars: Array<{ name: string; value: string }>) =>
-		request<void>(`/projects/${enc(project)}/shared-vars?environment=${enc(environment)}`, {
+	setSharedVars: (project: string, vars: Array<{ name: string; value: string }>) =>
+		request<void>(`/projects/${enc(project)}/shared-vars`, {
 			method: 'PUT',
 			body: JSON.stringify(vars)
 		}),

@@ -22,7 +22,7 @@
 			[allApps, secrets, sharedVars] = await Promise.all([
 				api.listApps(project),
 				api.listSecrets(project, app.metadata.name),
-				api.getSharedVars(project, 'production').catch(() => [])
+				api.getSharedVars(project).catch(() => [])
 			]);
 		} finally {
 			loading = false;

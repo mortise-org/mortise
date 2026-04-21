@@ -26,8 +26,15 @@ const (
 	// AppEnvSuffix is appended to the app name for the per-app env Secret.
 	AppEnvSuffix = "-env"
 
-	// SharedEnvName is the name of the shared env Secret per project-environment.
+	// SharedEnvName is the name of the shared env Secret per project-environment
+	// in the workload namespace. Materialized by the controller from the
+	// control-namespace source of truth.
 	SharedEnvName = "shared-env"
+
+	// SharedVarsSourceName is the name of the shared vars Secret in the control
+	// namespace. This is the source of truth — the API reads/writes here, the
+	// controller copies to SharedEnvName in each env namespace.
+	SharedVarsSourceName = "shared-vars"
 
 	// ManagedByLabel marks Secrets owned by Mortise.
 	ManagedByLabel = "app.kubernetes.io/managed-by"
@@ -185,6 +192,45 @@ func (s *Store) EnsureExists(ctx context.Context, namespace, appName string, lab
 		return err
 	}
 	return s.Client.Create(ctx, buildSecret(namespace, name, nil, labels))
+}
+
+// GetSharedSource reads shared vars from the control-namespace source of truth.
+func (s *Store) GetSharedSource(ctx context.Context, controlNs string) ([]Env, error) {
+	secret, err := s.getSecret(ctx, controlNs, SharedVarsSourceName)
+	if err != nil {
+		if k8serrors.IsNotFound(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return secretToEnvs(secret), nil
+}
+
+// SetSharedSource writes shared vars to the control-namespace source of truth.
+func (s *Store) SetSharedSource(ctx context.Context, controlNs string, vars []Env, labels map[string]string) error {
+	return s.upsertSecret(ctx, controlNs, SharedVarsSourceName, vars, labels)
+}
+
+// MergeSharedSource merges shared vars into the control-namespace source.
+func (s *Store) MergeSharedSource(ctx context.Context, controlNs string, vars []Env, labels map[string]string) error {
+	existing, err := s.getSecret(ctx, controlNs, SharedVarsSourceName)
+	if err != nil && !k8serrors.IsNotFound(err) {
+		return err
+	}
+	merged := make(map[string]Env)
+	if existing != nil {
+		for _, e := range secretToEnvs(existing) {
+			merged[e.Name] = e
+		}
+	}
+	for _, e := range vars {
+		merged[e.Name] = e
+	}
+	flat := make([]Env, 0, len(merged))
+	for _, e := range merged {
+		flat = append(flat, e)
+	}
+	return s.upsertSecret(ctx, controlNs, SharedVarsSourceName, flat, labels)
 }
 
 // EnsureSharedExists creates the shared-env Secret if it doesn't exist.

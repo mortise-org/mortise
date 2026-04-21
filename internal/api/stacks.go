@@ -10,7 +10,6 @@ import (
 	"strings"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
 
 	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
 	"github.com/MC-Meesh/mortise/internal/constants"
@@ -146,32 +145,25 @@ func (s *Server) CreateStack(w http.ResponseWriter, r *http.Request) {
 		created = append(created, as.Name)
 	}
 
-	// Write auto-generated template vars to shared-env in each env namespace.
-	// These are the ${VAR} values that substituteVars() generated — stored once
-	// in shared-env so they're visible, editable, and survive partial redeploys.
+	// Write auto-generated template vars to the control namespace.
+	// The controller materializes these into shared-env in each env namespace
+	// during reconcile — no race condition since the control ns always exists.
 	if len(req.Vars) > 0 {
-		var proj mortisev1alpha1.Project
-		if err := s.client.Get(r.Context(), types.NamespacedName{Name: project}, &proj); err == nil {
-			store := &envstore.Store{Client: s.client}
-			var sharedVars []envstore.Env
-			for k, v := range req.Vars {
-				sharedVars = append(sharedVars, envstore.Env{
-					Name:   k,
-					Value:  v,
-					Source: "generated",
-				})
-			}
-			for _, env := range proj.Spec.Environments {
-				envNs := constants.EnvNamespace(project, env.Name)
-				labels := map[string]string{
-					constants.ProjectLabel:     project,
-					constants.EnvironmentLabel: env.Name,
-					"mortise.dev/stack":        stackPrefix,
-				}
-				// Best-effort: env namespace may not exist yet (controller creates it async).
-				_ = store.MergeShared(r.Context(), envNs, sharedVars, labels)
-			}
+		controlNs := constants.ControlNamespace(project)
+		store := &envstore.Store{Client: s.client}
+		var sharedVars []envstore.Env
+		for k, v := range req.Vars {
+			sharedVars = append(sharedVars, envstore.Env{
+				Name:   k,
+				Value:  v,
+				Source: "generated",
+			})
 		}
+		labels := map[string]string{
+			constants.ProjectLabel:  project,
+			"mortise.dev/stack":     stackPrefix,
+		}
+		_ = store.MergeSharedSource(r.Context(), controlNs, sharedVars, labels)
 	}
 
 	writeJSON(w, http.StatusCreated, createStackResponse{Apps: created})

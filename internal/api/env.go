@@ -230,21 +230,18 @@ func (s *Server) ImportEnv(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "imported", "count": fmt.Sprintf("%d", len(parsed))})
 }
 
-// GetSharedVars returns shared env vars for a project environment.
+// GetSharedVars returns shared env vars for a project.
+// Reads from the shared-vars Secret in the control namespace (source of truth).
+// The controller materializes these into shared-env in each env namespace.
 func (s *Server) GetSharedVars(w http.ResponseWriter, r *http.Request) {
 	project, ok := s.getProject(w, r)
 	if !ok {
 		return
 	}
-	env := r.URL.Query().Get("environment")
-	if env == "" {
-		writeJSON(w, http.StatusBadRequest, errorResponse{"environment query parameter is required"})
-		return
-	}
 
-	envNs := constants.EnvNamespace(project.Name, env)
+	controlNs := constants.ControlNamespace(project.Name)
 	store := &envstore.Store{Client: s.client}
-	envs, err := store.GetShared(r.Context(), envNs)
+	envs, err := store.GetSharedSource(r.Context(), controlNs)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -257,15 +254,13 @@ func (s *Server) GetSharedVars(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// PutSharedVars replaces all shared env vars for a project environment.
+// PutSharedVars replaces all shared env vars for a project.
+// Writes to the shared-vars Secret in the control namespace.
+// The controller materializes these into shared-env in each env namespace
+// on the next reconcile of any app in the project.
 func (s *Server) PutSharedVars(w http.ResponseWriter, r *http.Request) {
 	project, ok := s.getProject(w, r)
 	if !ok {
-		return
-	}
-	env := r.URL.Query().Get("environment")
-	if env == "" {
-		writeJSON(w, http.StatusBadRequest, errorResponse{"environment query parameter is required"})
 		return
 	}
 
@@ -275,7 +270,7 @@ func (s *Server) PutSharedVars(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	envNs := constants.EnvNamespace(project.Name, env)
+	controlNs := constants.ControlNamespace(project.Name)
 	store := &envstore.Store{Client: s.client}
 
 	envVars := make([]envstore.Env, len(vars))
@@ -284,10 +279,9 @@ func (s *Server) PutSharedVars(w http.ResponseWriter, r *http.Request) {
 	}
 
 	labels := map[string]string{
-		constants.ProjectLabel:     project.Name,
-		constants.EnvironmentLabel: env,
+		constants.ProjectLabel: project.Name,
 	}
-	if err := store.SetShared(r.Context(), envNs, envVars, labels); err != nil {
+	if err := store.SetSharedSource(r.Context(), controlNs, envVars, labels); err != nil {
 		writeError(w, err)
 		return
 	}
