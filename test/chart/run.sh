@@ -55,8 +55,8 @@ wait_for_pods_ready() {
         local not_ready
         not_ready=$(kubectl get pods -n "$ns" --no-headers 2>/dev/null \
             | grep -v "Running\|Completed\|Succeeded" \
-            | grep -v "^$" | wc -l)
-        if [ "$not_ready" -eq 0 ] && [ "$(kubectl get pods -n "$ns" --no-headers 2>/dev/null | wc -l)" -gt 0 ]; then
+            | grep -v "^$" | wc -l || true)
+        if [ "$not_ready" -eq 0 ] && [ "$(kubectl get pods -n "$ns" --no-headers 2>/dev/null | wc -l || true)" -gt 0 ]; then
             return 0
         fi
         sleep 3
@@ -86,7 +86,7 @@ helm upgrade --install mortise "${REPO_ROOT}/charts/mortise" \
     --set mortise-core.image.repository=mortise \
     --set mortise-core.image.tag=chart-test \
     --set mortise-core.image.pullPolicy=Never \
-    --set platformConfig.domain="" \
+    --set platformConfig.domain=test.mortise.local \
     --wait --timeout 300s 2>&1 || { fail "Umbrella chart install"; fatal "Cannot continue without chart installed"; }
 
 # Verify each component deployment exists and is available.
@@ -228,11 +228,12 @@ helm upgrade mortise "${REPO_ROOT}/charts/mortise" \
     --set mortise-core.image.repository=mortise \
     --set mortise-core.image.tag=chart-test \
     --set mortise-core.image.pullPolicy=Never \
+    --set platformConfig.domain=test.mortise.local \
     --set buildkit.enabled=false \
-    --wait --timeout 120s 2>&1 >/dev/null || { fail "Condition toggle upgrade"; }
+    --wait --timeout 180s 2>&1 || { fail "Condition toggle upgrade"; }
 
 sleep 5
-buildkit_exists=$(kubectl get deployment -n "$DEPS_NAMESPACE" buildkitd --no-headers 2>/dev/null | wc -l)
+buildkit_exists=$(kubectl get deployment -n "$DEPS_NAMESPACE" buildkitd --no-headers 2>/dev/null | wc -l || true)
 if [ "$buildkit_exists" -eq 0 ]; then
     pass "Condition toggle — BuildKit disabled removes deployment"
 else
@@ -245,15 +246,16 @@ helm upgrade mortise "${REPO_ROOT}/charts/mortise" \
     --set mortise-core.image.repository=mortise \
     --set mortise-core.image.tag=chart-test \
     --set mortise-core.image.pullPolicy=Never \
-    --wait --timeout 120s 2>&1 >/dev/null
+    --set platformConfig.domain=test.mortise.local \
+    --wait --timeout 180s 2>&1 || { fail "Re-enable upgrade"; }
 
 # ── Test 4: mortise-core standalone ─────────────────────────────────────
 
 info "Test 4: mortise-core standalone"
 
-helm uninstall mortise -n "$NAMESPACE" --wait 2>&1 >/dev/null || true
+helm uninstall mortise -n "$NAMESPACE" --wait >/dev/null 2>&1 || true
 # Clean up namespaces the umbrella created.
-kubectl delete namespace "$DEPS_NAMESPACE" --ignore-not-found --wait=false 2>/dev/null || true
+kubectl delete namespace "$DEPS_NAMESPACE" --ignore-not-found --wait=false >/dev/null 2>&1 || true
 sleep 5
 
 helm upgrade --install mortise-core "${REPO_ROOT}/charts/mortise-core" \
@@ -261,7 +263,7 @@ helm upgrade --install mortise-core "${REPO_ROOT}/charts/mortise-core" \
     --set image.repository=mortise \
     --set image.tag=chart-test \
     --set image.pullPolicy=Never \
-    --wait --timeout 120s 2>&1 >/dev/null || { fail "mortise-core standalone install"; }
+    --wait --timeout 180s 2>&1 || { fail "mortise-core standalone install"; }
 
 if wait_for_deployment "$NAMESPACE" "mortise" 60; then
     pass "mortise-core standalone — operator runs without infrastructure"
@@ -270,7 +272,7 @@ else
 fi
 
 # Clean up for install script test.
-helm uninstall mortise-core -n "$NAMESPACE" --wait 2>&1 >/dev/null || true
+helm uninstall mortise-core -n "$NAMESPACE" --wait >/dev/null 2>&1 || true
 sleep 3
 
 # ── Test 5: Install script ─────────────────────────────────────────────

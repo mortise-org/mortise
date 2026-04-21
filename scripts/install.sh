@@ -188,9 +188,9 @@ install_mortise() {
 
     # k3s bundles Traefik — disable the chart's copy to avoid conflicts.
     local traefik_flag="--set traefik.enabled=true"
-    if command_exists k3s || (command_exists k3d && k3d cluster list mortise >/dev/null 2>&1); then
+    if command_exists k3s && ! command_exists k3d; then
         traefik_flag="--set traefik.enabled=false"
-        info "k3s/k3d detected — using built-in Traefik, skipping chart Traefik"
+        info "k3s detected — using built-in Traefik, skipping chart Traefik"
     fi
 
     # Check for a default StorageClass. The chart defaults to PVC for registry
@@ -212,7 +212,13 @@ install_mortise() {
         if command -v docker >/dev/null 2>&1 && [ -f "${script_dir}/../Dockerfile" ]; then
             info "Building Mortise Docker image..."
             docker build -t mortise:dev "${script_dir}/.." -q
-            k3d image import mortise:dev -c mortise 2>/dev/null || true
+            if command -v k3d >/dev/null 2>&1; then
+                local k3d_cluster
+                k3d_cluster=$(k3d cluster list -o json 2>/dev/null | grep -o '"name":"[^"]*"' | head -1 | cut -d'"' -f4 || true)
+                if [ -n "$k3d_cluster" ]; then
+                    k3d image import mortise:dev -c "$k3d_cluster" 2>/dev/null || true
+                fi
+            fi
         fi
     else
         info "Adding Mortise Helm repository..."

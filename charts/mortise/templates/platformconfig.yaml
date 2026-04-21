@@ -6,9 +6,7 @@ metadata:
   labels:
     {{- include "mortise.labels" . | nindent 4 }}
 spec:
-  {{- if .Values.platformConfig.domain }}
-  domain: {{ .Values.platformConfig.domain }}
-  {{- end }}
+  domain: {{ .Values.platformConfig.domain | default "" | quote }}
   {{- if .Values.registry.enabled }}
   registry:
     url: http://{{ include "mortise.registryAddr" . }}

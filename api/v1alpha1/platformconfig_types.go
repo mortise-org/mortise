@@ -98,8 +98,9 @@ type TLSConfig struct {
 type PlatformConfigSpec struct {
 	// Domain is the base domain for the platform. Apps receive subdomains under
 	// this domain automatically (e.g. yourdomain.com → app.yourdomain.com).
-	// +required
-	Domain string `json:"domain"`
+	// When empty, apps are only reachable via port-forward or ClusterIP.
+	// +optional
+	Domain string `json:"domain,omitempty"`
 
 	// Storage configures platform-level storage defaults.
 	// +optional
