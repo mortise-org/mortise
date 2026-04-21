@@ -216,9 +216,18 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 			return ctrl.Result{}, fmt.Errorf("reconcile service for env %s: %w", env.Name, err)
 		}
 
-		if app.Spec.Network.Public && env.Domain != "" {
-			if err := r.reconcileIngress(ctx, &app, env, envNs); err != nil {
-				return ctrl.Result{}, fmt.Errorf("reconcile ingress for env %s: %w", env.Name, err)
+		if app.Spec.Network.Public {
+			if env.Domain == "" {
+				// Auto-compute domain from platform config: {app}.{platformDomain}
+				// for production, {app}-{env}.{platformDomain} for other envs.
+				if computed := r.autoDefaultDomain(ctx, &app, env.Name); computed != "" {
+					env.Domain = computed
+				}
+			}
+			if env.Domain != "" {
+				if err := r.reconcileIngress(ctx, &app, env, envNs); err != nil {
+					return ctrl.Result{}, fmt.Errorf("reconcile ingress for env %s: %w", env.Name, err)
+				}
 			}
 		}
 	}
@@ -1340,7 +1349,10 @@ func (r *AppReconciler) reconcileEnvSecret(ctx context.Context, app *mortisev1al
 	// by the API and stack deploy). This avoids the race condition where the
 	// env namespace doesn't exist when the API runs.
 	controlNs := app.Namespace // App CRDs live in the control namespace.
-	sharedSource, _ := store.GetSharedSource(ctx, controlNs)
+	sharedSource, err := store.GetSharedSource(ctx, controlNs)
+	if err != nil {
+		return fmt.Errorf("get shared vars from control ns: %w", err)
+	}
 	if len(sharedSource) > 0 {
 		if err := store.SetShared(ctx, envNs, sharedSource, sharedLabels); err != nil {
 			return fmt.Errorf("materialize shared-env: %w", err)
@@ -1351,11 +1363,16 @@ func (r *AppReconciler) reconcileEnvSecret(ctx context.Context, app *mortisev1al
 		}
 	}
 
-	// Check if the {app}-env Secret already exists.
-	existing, _ := store.Get(ctx, envNs, app.Name)
+	// Check if the {app}-env Secret has been seeded. We use an annotation
+	// rather than checking for empty data so that "user cleared all vars"
+	// is distinguishable from "first deploy."
+	existing, err := store.Get(ctx, envNs, app.Name)
+	if err != nil {
+		return fmt.Errorf("get app env secret: %w", err)
+	}
 
-	if len(existing) == 0 {
-		// First deploy: seed the Secret from the CRD spec (initial values).
+	seeded := len(existing) > 0 // nil means Secret doesn't exist
+	if !seeded {
 		var seed []envstore.Env
 		for _, ev := range env.Env {
 			seed = append(seed, envstore.Env{Name: ev.Name, Value: ev.Value, Source: "user"})
@@ -1368,7 +1385,8 @@ func (r *AppReconciler) reconcileEnvSecret(ctx context.Context, app *mortisev1al
 		}
 	}
 
-	// Always merge binding-injected vars (computed at reconcile time, not stored).
+	// Always merge binding-injected vars. Resolve SecretKeyRef values to
+	// literals so they're stored as plain strings in the env Secret.
 	if len(env.Bindings) > 0 {
 		resolver := &bindings.Resolver{Client: r.Client}
 		boundVars, err := resolver.Resolve(ctx, projectName, env.Name, env.Bindings)
@@ -1377,9 +1395,19 @@ func (r *AppReconciler) reconcileEnvSecret(ctx context.Context, app *mortisev1al
 		}
 		var bindingEnvs []envstore.Env
 		for _, bv := range boundVars {
+			val := bv.Value
+			// Resolve SecretKeyRef to a literal value.
+			if val == "" && bv.ValueFrom != nil && bv.ValueFrom.SecretKeyRef != nil {
+				ref := bv.ValueFrom.SecretKeyRef
+				var secret corev1.Secret
+				secretKey := types.NamespacedName{Namespace: envNs, Name: ref.Name}
+				if err := r.Get(ctx, secretKey, &secret); err == nil {
+					val = string(secret.Data[ref.Key])
+				}
+			}
 			bindingEnvs = append(bindingEnvs, envstore.Env{
 				Name:   bv.Name,
-				Value:  bv.Value,
+				Value:  val,
 				Source: "binding",
 			})
 		}
@@ -1586,7 +1614,11 @@ func (r *AppReconciler) ensureWebhook(ctx context.Context, app *mortisev1alpha1.
 		return nil // no domain configured, can't register webhooks
 	}
 
-	webhookURL := fmt.Sprintf("https://%s/api/webhooks/%s", pc.Spec.Domain, gp.Name)
+	scheme := "https"
+	if pc.Spec.TLS.CertManagerClusterIssuer == "" {
+		scheme = "http"
+	}
+	webhookURL := fmt.Sprintf("%s://%s/api/webhooks/%s", scheme, pc.Spec.Domain, gp.Name)
 
 	// Resolve webhook secret.
 	var webhookSecret string
@@ -1759,9 +1791,15 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 	firstCrashMsg := ""
 
 	for _, env := range resolvedEnvs {
+		// Resolve the domain for status (same logic as reconcile).
+		domain := env.Domain
+		if domain == "" && app.Spec.Network.Public {
+			domain = r.autoDefaultDomain(ctx, app, env.Name)
+		}
 		es := mortisev1alpha1.EnvironmentStatus{
 			Name:         env.Name,
 			CurrentImage: app.Spec.Source.Image,
+			Domain:       domain,
 		}
 		envNs, nsErr := appEnvNs(app, env.Name)
 		if nsErr != nil {
@@ -1919,6 +1957,33 @@ func deploymentName(appName string) string { return appName }
 func cronJobName(appName string) string    { return appName }
 func serviceName(appName string) string    { return appName }
 func ingressName(appName string) string    { return appName }
+
+// autoDefaultDomain computes a domain for public apps that don't have one set.
+// Returns "{app}.{platformDomain}" for the first/default environment, or
+// "{app}-{env}.{platformDomain}" for others. Returns "" if PlatformConfig has
+// no domain configured.
+func (r *AppReconciler) autoDefaultDomain(ctx context.Context, app *mortisev1alpha1.App, envName string) string {
+	var pc mortisev1alpha1.PlatformConfig
+	if err := r.Get(ctx, types.NamespacedName{Name: "platform"}, &pc); err != nil || pc.Spec.Domain == "" {
+		return ""
+	}
+
+	// For the first environment (typically "production"), use {app}.{domain}.
+	// For other environments, use {app}-{env}.{domain} to avoid collisions.
+	var label string
+	if envName == "production" {
+		label = app.Name
+	} else {
+		label = app.Name + "-" + envName
+	}
+
+	// DNS labels are capped at 63 characters.
+	if len(label) > 63 {
+		return ""
+	}
+
+	return fmt.Sprintf("%s.%s", label, pc.Spec.Domain)
+}
 
 // appLabels stamps the standard Mortise ownership labels. `mortise.dev/project`
 // enables cross-namespace GC on App delete (owner refs don't cascade across
@@ -2188,12 +2253,19 @@ func (r *AppReconciler) reconcileExternalSource(ctx context.Context, app *mortis
 			return ctrl.Result{}, fmt.Errorf("reconcile credentials secret for env %s: %w", env.Name, err)
 		}
 
-		if app.Spec.Network.Public && env.Domain != "" {
-			if err := r.reconcileExternalNameService(ctx, app, env, envNs); err != nil {
-				return ctrl.Result{}, fmt.Errorf("reconcile externalname service for env %s: %w", env.Name, err)
+		if app.Spec.Network.Public {
+			if env.Domain == "" {
+				if computed := r.autoDefaultDomain(ctx, app, env.Name); computed != "" {
+					env.Domain = computed
+				}
 			}
-			if err := r.reconcileIngress(ctx, app, env, envNs); err != nil {
-				return ctrl.Result{}, fmt.Errorf("reconcile ingress for env %s: %w", env.Name, err)
+			if env.Domain != "" {
+				if err := r.reconcileExternalNameService(ctx, app, env, envNs); err != nil {
+					return ctrl.Result{}, fmt.Errorf("reconcile externalname service for env %s: %w", env.Name, err)
+				}
+				if err := r.reconcileIngress(ctx, app, env, envNs); err != nil {
+					return ctrl.Result{}, fmt.Errorf("reconcile ingress for env %s: %w", env.Name, err)
+				}
 			}
 		}
 	}

@@ -1,10 +1,16 @@
 package ingress
 
-import "strings"
+import (
+	"context"
+	"strings"
 
-// Annotation keys emitted by the annotation-driven provider. Exported so
-// callers (e.g. the App controller applying per-env TLS overrides) can
-// reference them without restating the string.
+	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
+)
+
+// Annotation keys emitted by the annotation-driven provider.
 const (
 	ExternalDNSHostnameAnnotation      = "external-dns.alpha.kubernetes.io/hostname"
 	CertManagerClusterIssuerAnnotation = "cert-manager.io/cluster-issuer"
@@ -16,15 +22,18 @@ type AnnotationProviderConfig struct {
 	// empty, no ingressClassName is set (cluster default is used).
 	ClassName string
 
-	// DefaultClusterIssuer is the cert-manager ClusterIssuer written onto
-	// every Ingress unless the environment opts out. When empty, no
-	// cert-manager annotation is emitted.
+	// DefaultClusterIssuer is a static fallback. When Reader is set, the
+	// provider reads PlatformConfig live and this field is only used if
+	// PlatformConfig has no issuer configured.
 	DefaultClusterIssuer string
+
+	// Reader, if set, enables live PlatformConfig reads. The provider
+	// reads spec.tls.certManagerClusterIssuer on each Annotations() call
+	// so changes take effect without a pod restart. Uses the informer
+	// cache, so reads are cheap.
+	Reader client.Reader
 }
 
-// annotationProvider is the single "annotation-driven" implementation of
-// IngressProvider. It emits standard annotations consumed by ExternalDNS and
-// cert-manager — no vendor-specific CRDs.
 type annotationProvider struct {
 	cfg AnnotationProviderConfig
 }
@@ -46,12 +55,27 @@ func (p *annotationProvider) Annotations(_ AppRef, hostnames []string, _ []Middl
 		out[ExternalDNSHostnameAnnotation] = strings.Join(hostnames, ",")
 	}
 
-	if p.cfg.DefaultClusterIssuer != "" {
-		out[CertManagerClusterIssuerAnnotation] = p.cfg.DefaultClusterIssuer
+	issuer := p.resolveClusterIssuer()
+	if issuer != "" {
+		out[CertManagerClusterIssuerAnnotation] = issuer
 	}
 
 	if len(out) == 0 {
 		return nil
 	}
 	return out
+}
+
+// resolveClusterIssuer reads the cluster issuer from PlatformConfig (live)
+// or falls back to the static default.
+func (p *annotationProvider) resolveClusterIssuer() string {
+	if p.cfg.Reader != nil {
+		var pc mortisev1alpha1.PlatformConfig
+		if err := p.cfg.Reader.Get(context.Background(), types.NamespacedName{Name: "platform"}, &pc); err == nil {
+			if pc.Spec.TLS.CertManagerClusterIssuer != "" {
+				return pc.Spec.TLS.CertManagerClusterIssuer
+			}
+		}
+	}
+	return p.cfg.DefaultClusterIssuer
 }

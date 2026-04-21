@@ -69,21 +69,18 @@ func TestSameProjectBindingInjectsEnv(t *testing.T) {
 		t.Fatalf("get API Deployment: %v", err)
 	}
 
-	containers := dep.Spec.Template.Spec.Containers
-	if len(containers) == 0 {
-		t.Fatal("API Deployment has no containers")
+	// Binding vars are stored in the {app}-env Secret (mounted via envFrom),
+	// not as literal Env entries on the container.
+	var envSecret corev1.Secret
+	if err := k8sClient.Get(context.Background(), types.NamespacedName{
+		Name:      apiApp.Name + "-env",
+		Namespace: ns,
+	}, &envSecret); err != nil {
+		t.Fatalf("get API app env Secret: %v", err)
 	}
-
-	env := containers[0].Env
 	envMap := make(map[string]string)
-	for _, e := range env {
-		if e.Value != "" {
-			envMap[e.Name] = e.Value
-		} else if e.ValueFrom != nil && e.ValueFrom.SecretKeyRef != nil {
-			// Mark secretKeyRef-backed vars as present with a sentinel.
-			envMap[e.Name] = fmt.Sprintf("secretKeyRef:%s/%s",
-				e.ValueFrom.SecretKeyRef.Name, e.ValueFrom.SecretKeyRef.Key)
-		}
+	for k, v := range envSecret.Data {
+		envMap[k] = string(v)
 	}
 
 	// host should resolve to {pg}-production.{ns}.svc.cluster.local

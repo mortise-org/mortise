@@ -372,19 +372,17 @@ func TestPreviewInheritsStagingBindings(t *testing.T) {
 		t.Fatalf("get preview Deployment: %v", err)
 	}
 
-	containers := dep.Spec.Template.Spec.Containers
-	if len(containers) == 0 {
-		t.Fatal("preview Deployment has no containers")
+	// Binding vars are in the {app}-env Secret (envFrom), not container Env.
+	var envSecret corev1.Secret
+	if err := k8sClient.Get(context.Background(), types.NamespacedName{
+		Name:      dep.Name + "-env",
+		Namespace: previewNs,
+	}, &envSecret); err != nil {
+		t.Fatalf("get preview app env Secret: %v", err)
 	}
-
 	envMap := make(map[string]string)
-	for _, e := range containers[0].Env {
-		if e.Value != "" {
-			envMap[e.Name] = e.Value
-		} else if e.ValueFrom != nil && e.ValueFrom.SecretKeyRef != nil {
-			envMap[e.Name] = fmt.Sprintf("secretKeyRef:%s/%s",
-				e.ValueFrom.SecretKeyRef.Name, e.ValueFrom.SecretKeyRef.Key)
-		}
+	for k, v := range envSecret.Data {
+		envMap[k] = string(v)
 	}
 
 	// host should resolve to the postgres service DNS name.

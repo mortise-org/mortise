@@ -559,6 +559,12 @@ spec:
                         - timestamp
                         type: object
                       type: array
+                    domain:
+                      description: |-
+                        Domain is the resolved hostname for this environment. Computed by the
+                        controller from spec or auto-generated from the platform domain. The
+                        UI reads this to show "Your app is at {domain}".
+                      type: string
                     message:
                       type: string
                     name:
