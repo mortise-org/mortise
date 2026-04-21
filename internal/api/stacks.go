@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"sort"
 	"strings"
@@ -163,7 +164,9 @@ func (s *Server) CreateStack(w http.ResponseWriter, r *http.Request) {
 			constants.ProjectLabel:  project,
 			"mortise.dev/stack":     stackPrefix,
 		}
-		_ = store.MergeSharedSource(r.Context(), controlNs, sharedVars, labels)
+		if err := store.MergeSharedSource(r.Context(), controlNs, sharedVars, labels); err != nil {
+			log.Printf("warning: failed to persist shared vars to control namespace: %v", err)
+		}
 	}
 
 	writeJSON(w, http.StatusCreated, createStackResponse{Apps: created})

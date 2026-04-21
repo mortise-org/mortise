@@ -3,6 +3,7 @@ package bindings
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -18,21 +19,13 @@ type Resolver struct {
 }
 
 // Resolve looks up each bound App and returns env vars for all declared
-// credentials. `host` / `port` credentials synthesize literal env vars
-// pointing at the bound App's in-cluster Service; every other credential
-// becomes a SecretKeyRef projection to the bound App's credentials secret.
+// credentials plus auto-generated host, port, and URL vars.
 //
-// `binderProject` is the project the binder App belongs to; `binderEnv` is
-// the environment the binder is reconciling for. A same-project binding
-// (no `Binding.Project`) resolves inside that project's env namespace
-// (`pj-{binderProject}-{binderEnv}`). A cross-project binding (`project: Y`)
-// resolves inside the target project's matching env namespace
-// (`pj-Y-{binderEnv}`) — if Y doesn't declare `binderEnv`, callers should
-// either use an External app or split the binding into a shared instance.
-//
-// The bound App CRD itself always lives in the target project's control
-// namespace (`pj-{project}`); we Get it there to read credentials/source,
-// then render Service DNS at the env namespace.
+// All injected env var names are prefixed with the bound app name in
+// UPPER_SNAKE_CASE to avoid collisions when binding to multiple apps.
+// For example, binding to "database" injects DATABASE_HOST, DATABASE_PORT,
+// DATABASE_URL (if image is recognized), plus any declared credentials
+// like DATABASE_PASSWORD.
 func (r *Resolver) Resolve(
 	ctx context.Context,
 	binderProject string,
@@ -56,10 +49,7 @@ func (r *Resolver) Resolve(
 			return nil, fmt.Errorf("resolve binding %q in project %q: %w", b.Ref, targetProject, err)
 		}
 
-		if len(boundApp.Spec.Credentials) == 0 {
-			continue
-		}
-
+		// Compute host and port for the bound service.
 		var hostValue, portValue string
 		if boundApp.Spec.Source.Type == mortisev1alpha1.SourceTypeExternal && boundApp.Spec.Source.External != nil {
 			hostValue = boundApp.Spec.Source.External.Host
@@ -68,8 +58,7 @@ func (r *Resolver) Resolve(
 			}
 		} else {
 			if !boundAppEnabledIn(&boundApp, binderEnv) {
-				return nil, fmt.Errorf("binding %q: bound app has no enabled instance in env %q of project %q "+
-					"(use an External app for cross-env shared instances)",
+				return nil, fmt.Errorf("binding %q: bound app has no enabled instance in env %q of project %q",
 					b.Ref, binderEnv, targetProject)
 			}
 			hostValue = fmt.Sprintf("%s.%s.svc.cluster.local", boundApp.Name, envNs)
@@ -80,23 +69,28 @@ func (r *Resolver) Resolve(
 			portValue = fmt.Sprintf("%d", port)
 		}
 
-		secretName := fmt.Sprintf("%s-credentials", boundApp.Name)
+		prefix := toEnvPrefix(b.Ref)
 
-		for _, cred := range boundApp.Spec.Credentials {
-			switch cred.Name {
-			case "host":
+		// Always inject HOST and PORT.
+		result = append(result,
+			corev1.EnvVar{Name: prefix + "_HOST", Value: hostValue},
+			corev1.EnvVar{Name: prefix + "_PORT", Value: portValue},
+		)
+
+		// Auto-generate a connection URL for recognized images.
+		if url := autoURL(boundApp.Spec.Source.Image, hostValue, portValue); url != "" {
+			result = append(result, corev1.EnvVar{Name: prefix + "_URL", Value: url})
+		}
+
+		// Inject declared credentials with prefixed names.
+		if len(boundApp.Spec.Credentials) > 0 {
+			secretName := fmt.Sprintf("%s-credentials", boundApp.Name)
+			for _, cred := range boundApp.Spec.Credentials {
+				if cred.Name == "host" || cred.Name == "port" {
+					continue // already injected above
+				}
 				result = append(result, corev1.EnvVar{
-					Name:  "host",
-					Value: hostValue,
-				})
-			case "port":
-				result = append(result, corev1.EnvVar{
-					Name:  "port",
-					Value: portValue,
-				})
-			default:
-				result = append(result, corev1.EnvVar{
-					Name: cred.Name,
+					Name: prefix + "_" + strings.ToUpper(cred.Name),
 					ValueFrom: &corev1.EnvVarSource{
 						SecretKeyRef: &corev1.SecretKeySelector{
 							LocalObjectReference: corev1.LocalObjectReference{Name: secretName},
@@ -111,9 +105,30 @@ func (r *Resolver) Resolve(
 	return result, nil
 }
 
+// toEnvPrefix converts an app name like "my-database" to "MY_DATABASE".
+func toEnvPrefix(name string) string {
+	return strings.ToUpper(strings.ReplaceAll(name, "-", "_"))
+}
+
+// autoURL generates a connection URL for well-known images.
+// Returns "" if the image isn't recognized.
+func autoURL(image, host, port string) string {
+	img := strings.ToLower(image)
+	switch {
+	case strings.HasPrefix(img, "postgres:") || strings.HasPrefix(img, "supabase/postgres:"):
+		return fmt.Sprintf("postgres://postgres@%s:%s/postgres?sslmode=disable", host, port)
+	case strings.HasPrefix(img, "redis:"):
+		return fmt.Sprintf("redis://%s:%s", host, port)
+	case strings.HasPrefix(img, "mysql:") || strings.HasPrefix(img, "mariadb:"):
+		return fmt.Sprintf("mysql://root@%s:%s/mysql", host, port)
+	case strings.HasPrefix(img, "mongo:"):
+		return fmt.Sprintf("mongodb://%s:%s", host, port)
+	}
+	return ""
+}
+
 // boundAppEnabledIn reports whether the bound App has an override for env
-// that explicitly disables it. A missing override is treated as enabled —
-// apps auto-participate in every project env unless opted out.
+// that explicitly disables it.
 func boundAppEnabledIn(app *mortisev1alpha1.App, env string) bool {
 	for i := range app.Spec.Environments {
 		e := &app.Spec.Environments[i]
