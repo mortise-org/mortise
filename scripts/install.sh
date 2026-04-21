@@ -400,14 +400,13 @@ install_mortise() {
     fi
 
     info "Installing Mortise operator..."
+    # The chart is just the operator + CRDs + RBAC. No subchart dependencies.
+    # Infrastructure (ingress, cert-manager, BuildKit, registry) is installed
+    # separately above.
     # shellcheck disable=SC2086
     helm upgrade --install mortise "$chart_ref" \
         --namespace "$MORTISE_NAMESPACE" --create-namespace \
         --set image.pullPolicy=IfNotPresent \
-        --set traefik.enabled=false \
-        --set cert-manager.enabled=false \
-        --set external-dns.enabled=false \
-        --set registry.builtin.enabled=false \
         --wait --timeout 120s \
         $chart_version_flag
 

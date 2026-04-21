@@ -5,20 +5,7 @@ type: application
 version: 0.1.0
 appVersion: "0.1.0"
 
-dependencies:
-  - name: traefik
-    version: "~34.0"
-    repository: "https://traefik.github.io/charts"
-    condition: traefik.enabled
-  - name: cert-manager
-    version: "~v1.17"
-    repository: "https://charts.jetstack.io"
-    condition: cert-manager.enabled
-  - name: external-dns
-    version: "~1.16"
-    repository: "https://kubernetes-sigs.github.io/external-dns"
-    condition: external-dns.enabled
-  - name: zot
-    version: "~0.1"
-    repository: "https://zotregistry.dev/helm-charts"
-    condition: registry.builtin.enabled
+# No subchart dependencies. The operator is a polite k8s citizen that speaks
+# annotations (ExternalDNS, cert-manager) and standard Ingress API. Infrastructure
+# (ingress controller, cert-manager, registry, BuildKit) is the user's
+# responsibility — or use `scripts/install.sh` which installs everything.

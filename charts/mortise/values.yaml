@@ -35,29 +35,5 @@ serviceAccount:
   name: mortise-controller
 
 # GitHub OAuth App client ID for device flow.
-# This is the Mortise project's public OAuth App — safe to ship.
 github:
   clientID: "Ov23lizLTd25E32VrWwl"
-
-# ---------------------------------------------------------------------------
-# Bundled infrastructure — disable if your cluster already has these
-# ---------------------------------------------------------------------------
-traefik:
-  enabled: true
-  # Traefik values passthrough (users can configure any traefik chart value here)
-
-cert-manager:
-  enabled: true
-  crds:
-    enabled: true    # install CRDs automatically
-
-external-dns:
-  enabled: true
-  provider:
-    name: cloudflare  # default; override in values
-  # env passthrough for provider credentials
-
-# Built-in OCI registry (Zot). Disable if using an external registry.
-registry:
-  builtin:
-    enabled: true
