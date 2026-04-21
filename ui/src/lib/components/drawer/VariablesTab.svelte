@@ -36,22 +36,9 @@
 	};
 
 	let needsRedeploy = $state(false);
-	let redeploying = $state(false);
 
 	function markStale() {
 		needsRedeploy = true;
-	}
-
-	async function triggerRedeploy() {
-		redeploying = true;
-		try {
-			await api.redeploy(project, app.metadata.name, activeEnv);
-			needsRedeploy = false;
-		} catch (e) {
-			envSection.error = e instanceof Error ? e.message : 'Redeploy failed';
-		} finally {
-			redeploying = false;
-		}
 	}
 
 	const activeEnv = $derived(
@@ -279,11 +266,11 @@
 
 <div class="flex h-full flex-col gap-3 overflow-y-auto p-1">
 {#if needsRedeploy}
-	<div class="flex items-center justify-between rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning">
-		<span>Environment variables changed — redeploy to apply</span>
-		<button type="button" onclick={triggerRedeploy} disabled={redeploying}
-			class="ml-2 rounded-md bg-warning/20 px-2.5 py-1 text-xs font-medium text-warning hover:bg-warning/30 disabled:opacity-50">
-			{redeploying ? 'Redeploying...' : 'Redeploy'}
+	<div class="flex items-center justify-between rounded-md border border-info/30 bg-info/10 px-3 py-2 text-xs text-info">
+		<span>Changes saved — redeploying automatically</span>
+		<button type="button" onclick={() => { needsRedeploy = false; }}
+			class="ml-2 text-info/60 hover:text-info">
+			<X class="h-3.5 w-3.5" />
 		</button>
 	</div>
 {/if}
