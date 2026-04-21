@@ -495,6 +495,42 @@ wait_and_print_success() {
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Step 8: Install Mortise CLI binary
+# ---------------------------------------------------------------------------
+install_cli() {
+    if command -v mortise >/dev/null 2>&1; then
+        info "Mortise CLI is already installed, skipping"
+        return
+    fi
+
+    local script_dir
+    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    local repo_root="${script_dir}/.."
+    local cli_src="${repo_root}/cmd/cli"
+
+    if [ -f "${cli_src}/main.go" ] && command -v go >/dev/null 2>&1; then
+        info "Building Mortise CLI from source..."
+        local install_dir="/usr/local/bin"
+        if [ "$OS" = "darwin" ] || [ "$(id -u)" -ne 0 ]; then
+            install_dir="${HOME}/.local/bin"
+            mkdir -p "$install_dir"
+        fi
+        GOBIN="$install_dir" go install "${repo_root}/cmd/cli@latest" 2>/dev/null || \
+            (cd "$repo_root" && go build -o "${install_dir}/mortise" ./cmd/cli/)
+        if [ -f "${install_dir}/mortise" ]; then
+            info "Mortise CLI installed to ${install_dir}/mortise"
+            # Ensure it's on PATH
+            if ! echo "$PATH" | grep -q "$install_dir"; then
+                info "Add ${install_dir} to your PATH"
+            fi
+        fi
+    else
+        info "Skipping CLI install (Go not available or not running from repo)"
+        info "Install later: go install github.com/MC-Meesh/mortise/cmd/cli@latest"
+    fi
+}
+
 main() {
     info "Starting Mortise installation..."
     detect_platform
@@ -505,6 +541,7 @@ main() {
     deploy_build_infra
     install_mortise
     create_platform_config
+    install_cli
     wait_and_print_success
 }
 
