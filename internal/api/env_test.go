@@ -91,45 +91,7 @@ func TestEnsureEnvironment_FindsExisting(t *testing.T) {
 	}
 }
 
-func TestAnnotateEnvHash_Changes(t *testing.T) {
-	app := &mortisev1alpha1.App{
-		Spec: mortisev1alpha1.AppSpec{
-			Environments: []mortisev1alpha1.Environment{
-				{Name: "prod", Env: []mortisev1alpha1.EnvVar{{Name: "A", Value: "1"}}},
-			},
-		},
-	}
-
-	annotateEnvHash(app, "prod")
-	hash1 := app.Spec.Environments[0].Annotations["mortise.dev/env-hash"]
-	if hash1 == "" {
-		t.Fatal("expected env-hash annotation")
-	}
-
-	// Change env vars — hash should change.
-	app.Spec.Environments[0].Env = []mortisev1alpha1.EnvVar{{Name: "A", Value: "2"}}
-	annotateEnvHash(app, "prod")
-	hash2 := app.Spec.Environments[0].Annotations["mortise.dev/env-hash"]
-
-	if hash1 == hash2 {
-		t.Error("expected different hashes after env var change")
-	}
-}
-
-func TestSetEnvVars_Replaces(t *testing.T) {
-	app := &mortisev1alpha1.App{
-		Spec: mortisev1alpha1.AppSpec{
-			Environments: []mortisev1alpha1.Environment{
-				{Name: "prod", Env: []mortisev1alpha1.EnvVar{{Name: "OLD", Value: "x"}}},
-			},
-		},
-	}
-
-	newVars := []mortisev1alpha1.EnvVar{{Name: "NEW", Value: "y"}}
-	setEnvVars(app, "prod", newVars)
-
-	env := findEnvironment(app, "prod")
-	if len(env.Env) != 1 || env.Env[0].Name != "NEW" {
-		t.Errorf("expected complete replacement, got %+v", env.Env)
-	}
-}
+// TestAnnotateEnvHash_Changes and TestSetEnvVars_Replaces removed —
+// these tested functions (annotateEnvHash, setEnvVars) that were deleted
+// in the env var refactor. Env vars are now stored in k8s Secrets, not
+// on the CRD spec. See internal/envstore/ for the replacement tests.
