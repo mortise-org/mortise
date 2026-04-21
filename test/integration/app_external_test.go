@@ -129,12 +129,12 @@ func TestExternalSourceBindingInjectsHostPort(t *testing.T) {
 	}
 
 	// For external Apps, host is the external hostname, not in-cluster DNS.
-	if got := envMap["host"]; got != "db.example.com" {
-		t.Errorf("host: got %q, want %q", got, "db.example.com")
+	if got := envMap["TEST_EXTERNAL_DB_HOST"]; got != "db.example.com" {
+		t.Errorf("TEST_EXTERNAL_DB_HOST: got %q, want %q", got, "db.example.com")
 	}
 
-	if got := envMap["port"]; got != "5432" {
-		t.Errorf("port: got %q, want %q", got, "5432")
+	if got := envMap["TEST_EXTERNAL_DB_PORT"]; got != "5432" {
+		t.Errorf("TEST_EXTERNAL_DB_PORT: got %q, want %q", got, "5432")
 	}
 
 	// password was declared as an inline credential; it should arrive via secretKeyRef.

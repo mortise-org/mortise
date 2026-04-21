@@ -12,6 +12,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"github.com/MC-Meesh/mortise/internal/constants"
 	"github.com/MC-Meesh/mortise/internal/envstore"
 	"github.com/MC-Meesh/mortise/internal/templates"
@@ -163,7 +164,9 @@ func (s *Server) CreateStack(w http.ResponseWriter, r *http.Request) {
 			constants.ProjectLabel:  project,
 			"mortise.dev/stack":     stackPrefix,
 		}
-		_ = store.MergeSharedSource(r.Context(), controlNs, sharedVars, labels)
+		if err := store.MergeSharedSource(r.Context(), controlNs, sharedVars, labels); err != nil {
+			logf.FromContext(r.Context()).Error(err, "failed to persist shared vars to control namespace")
+		}
 	}
 
 	writeJSON(w, http.StatusCreated, createStackResponse{Apps: created})

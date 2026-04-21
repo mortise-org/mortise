@@ -61,7 +61,7 @@ func TestResolveSameProjectBinding(t *testing.T) {
 		t.Fatalf("resolve: %v", err)
 	}
 
-	hostVar := findEnv(envVars, "host")
+	hostVar := findEnv(envVars, "DB_HOST")
 	if hostVar == nil {
 		t.Fatal("expected host env var to be set")
 	}
@@ -84,7 +84,7 @@ func TestCrossProjectBindingResolves(t *testing.T) {
 		t.Fatalf("cross-project resolve: %v", err)
 	}
 
-	hostVar := findEnv(envVars, "host")
+	hostVar := findEnv(envVars, "SHARED_POSTGRES_HOST")
 	if hostVar == nil {
 		t.Fatal("expected host env var to be set")
 	}
@@ -107,7 +107,7 @@ func TestSameProjectExplicitProjectBinding(t *testing.T) {
 		t.Fatalf("resolve same-project explicit: %v", err)
 	}
 
-	hostVar := findEnv(envVars, "host")
+	hostVar := findEnv(envVars, "DB_HOST")
 	if hostVar == nil {
 		t.Fatal("expected host env var to be set")
 	}
@@ -162,17 +162,17 @@ func TestResolveExternalSourceBinding(t *testing.T) {
 		t.Fatalf("resolve: %v", err)
 	}
 
-	hostVar := findEnv(envVars, "host")
+	hostVar := findEnv(envVars, "REDIS_HOST")
 	if hostVar == nil {
-		t.Fatal("expected host env var to be set")
+		t.Fatal("expected REDIS_HOST env var to be set")
 	}
 	if hostVar.Value != "redis.example.com" {
 		t.Errorf("expected external host, got %q", hostVar.Value)
 	}
 
-	portVar := findEnv(envVars, "port")
+	portVar := findEnv(envVars, "REDIS_PORT")
 	if portVar == nil {
-		t.Fatal("expected port env var to be set")
+		t.Fatal("expected REDIS_PORT env var to be set")
 	}
 	if portVar.Value != "6379" {
 		t.Errorf("expected port %q, got %q", "6379", portVar.Value)
@@ -211,17 +211,17 @@ func TestResolveExternalSourceNoPort(t *testing.T) {
 		t.Fatalf("resolve: %v", err)
 	}
 
-	hostVar := findEnv(envVars, "host")
+	hostVar := findEnv(envVars, "REDIS_HOST")
 	if hostVar == nil {
-		t.Fatal("expected host env var to be set")
+		t.Fatal("expected REDIS_HOST env var to be set")
 	}
 	if hostVar.Value != "redis.example.com" {
 		t.Errorf("expected external host, got %q", hostVar.Value)
 	}
 
-	portVar := findEnv(envVars, "port")
+	portVar := findEnv(envVars, "REDIS_PORT")
 	if portVar == nil {
-		t.Fatal("expected port env var to be set")
+		t.Fatal("expected REDIS_PORT env var to be set")
 	}
 	if portVar.Value != "" {
 		t.Errorf("expected empty port for zero port value, got %q", portVar.Value)
@@ -229,12 +229,13 @@ func TestResolveExternalSourceNoPort(t *testing.T) {
 }
 
 // TestResolveAppWithNoCredentials verifies that binding to an App with no
-// credentials is silently skipped — no error, empty result.
+// credentials still injects HOST and PORT.
 func TestResolveAppWithNoCredentials(t *testing.T) {
 	svc := &mortisev1alpha1.App{
 		ObjectMeta: metav1.ObjectMeta{Name: "sidecar", Namespace: "pj-web"},
 		Spec: mortisev1alpha1.AppSpec{
-			Source: mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: "nginx:1.25"},
+			Source:  mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: "nginx:1.25"},
+			Network: mortisev1alpha1.NetworkConfig{Port: 80},
 			Environments: []mortisev1alpha1.Environment{
 				{Name: "production"},
 			},
@@ -247,10 +248,82 @@ func TestResolveAppWithNoCredentials(t *testing.T) {
 		{Ref: "sidecar"},
 	})
 	if err != nil {
-		t.Fatalf("expected no error for app with no credentials, got: %v", err)
+		t.Fatalf("expected no error, got: %v", err)
 	}
-	if len(envVars) != 0 {
-		t.Errorf("expected empty env var slice, got %d vars", len(envVars))
+	// Should have at least HOST and PORT (no URL for nginx).
+	if findEnv(envVars, "SIDECAR_HOST") == nil {
+		t.Error("expected SIDECAR_HOST")
+	}
+	if findEnv(envVars, "SIDECAR_PORT") == nil {
+		t.Error("expected SIDECAR_PORT")
+	}
+	if findEnv(envVars, "SIDECAR_URL") != nil {
+		t.Error("nginx should not generate a URL")
+	}
+}
+
+// TestResolveMultipleBindingsNoPrefixCollision verifies that binding to two
+// apps produces distinct prefixed env vars with no collisions.
+func TestResolveMultipleBindingsNoPrefixCollision(t *testing.T) {
+	pg := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "postgres", Namespace: "pj-web"},
+		Spec: mortisev1alpha1.AppSpec{
+			Source:  mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: "postgres:16"},
+			Network: mortisev1alpha1.NetworkConfig{Port: 5432},
+			Credentials: []mortisev1alpha1.Credential{
+				{Name: "host"}, {Name: "port"}, {Name: "password", Value: "pgpass"},
+			},
+			Environments: []mortisev1alpha1.Environment{{Name: "production"}},
+		},
+	}
+	redis := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "cache", Namespace: "pj-web"},
+		Spec: mortisev1alpha1.AppSpec{
+			Source:  mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: "redis:7"},
+			Network: mortisev1alpha1.NetworkConfig{Port: 6379},
+			Environments: []mortisev1alpha1.Environment{{Name: "production"}},
+		},
+	}
+	c := newFakeClient(t, pg, redis)
+	r := &bindings.Resolver{Client: c}
+
+	envVars, err := r.Resolve(context.Background(), "web", "production", []mortisev1alpha1.Binding{
+		{Ref: "postgres"},
+		{Ref: "cache"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify distinct prefixes — no collisions.
+	if findEnv(envVars, "POSTGRES_HOST") == nil {
+		t.Error("expected POSTGRES_HOST")
+	}
+	if findEnv(envVars, "POSTGRES_PORT") == nil {
+		t.Error("expected POSTGRES_PORT")
+	}
+	if findEnv(envVars, "POSTGRES_URL") == nil {
+		t.Error("expected POSTGRES_URL for postgres image")
+	}
+	if findEnv(envVars, "POSTGRES_PASSWORD") == nil {
+		t.Error("expected POSTGRES_PASSWORD from credentials")
+	}
+	if findEnv(envVars, "CACHE_HOST") == nil {
+		t.Error("expected CACHE_HOST")
+	}
+	if findEnv(envVars, "CACHE_PORT") == nil {
+		t.Error("expected CACHE_PORT")
+	}
+	if findEnv(envVars, "CACHE_URL") == nil {
+		t.Error("expected CACHE_URL for redis image")
+	}
+
+	// Verify no unprefixed vars leaked.
+	if findEnv(envVars, "host") != nil {
+		t.Error("unprefixed 'host' should not exist")
+	}
+	if findEnv(envVars, "port") != nil {
+		t.Error("unprefixed 'port' should not exist")
 	}
 }
 

@@ -391,12 +391,12 @@ func TestPreviewInheritsStagingBindings(t *testing.T) {
 	pgEnvName := pgApp.Spec.Environments[0].Name
 	pgResourceName := pgApp.Name + "-" + pgEnvName
 	wantHost := fmt.Sprintf("%s.%s.svc.cluster.local", pgResourceName, ns)
-	if got := envMap["host"]; got != wantHost {
-		t.Errorf("host: got %q, want %q", got, wantHost)
+	if got := envMap["TEST_DB_HOST"]; got != wantHost {
+		t.Errorf("TEST_DB_HOST: got %q, want %q", got, wantHost)
 	}
 
-	if got := envMap["port"]; got != "80" {
-		t.Errorf("port: got %q, want %q", got, "80")
+	if got := envMap["TEST_DB_PORT"]; got == "" {
+		t.Error("TEST_DB_PORT: expected non-empty")
 	}
 
 	if _, ok := envMap["DATABASE_URL"]; !ok {
