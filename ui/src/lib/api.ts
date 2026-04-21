@@ -310,7 +310,7 @@ export const api = {
 
 	// --- platform config ---
 	getPlatform: () => request<PlatformResponse>('/platform'),
-	patchPlatform: (body: Partial<{ domain: string; tls: { certManagerClusterIssuer: string }; storage: { defaultStorageClass: string } }>) =>
+	patchPlatform: (body: Partial<{ domain: string; tls: { certManagerClusterIssuer: string }; storage: { defaultStorageClass: string }; registry: { url: string; namespace: string }; build: { buildkitAddr: string; defaultPlatform: string } }>) =>
 		request<PlatformResponse>('/platform', {
 			method: 'PATCH',
 			body: JSON.stringify(body)

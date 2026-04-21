@@ -17,9 +17,11 @@ const platformConfigName = "platform"
 // patchPlatformRequest is the JSON body accepted by PATCH /api/platform.
 // All fields are optional; only non-zero fields overwrite the existing value.
 type patchPlatformRequest struct {
-	Domain  string                `json:"domain,omitempty"`
-	TLS     *patchPlatformTLS     `json:"tls,omitempty"`
-	Storage *patchPlatformStorage `json:"storage,omitempty"`
+	Domain   string                 `json:"domain,omitempty"`
+	TLS      *patchPlatformTLS      `json:"tls,omitempty"`
+	Storage  *patchPlatformStorage  `json:"storage,omitempty"`
+	Registry *patchPlatformRegistry `json:"registry,omitempty"`
+	Build    *patchPlatformBuild    `json:"build,omitempty"`
 }
 
 type patchPlatformTLS struct {
@@ -28,6 +30,16 @@ type patchPlatformTLS struct {
 
 type patchPlatformStorage struct {
 	DefaultStorageClass string `json:"defaultStorageClass,omitempty"`
+}
+
+type patchPlatformRegistry struct {
+	URL       string `json:"url,omitempty"`
+	Namespace string `json:"namespace,omitempty"`
+}
+
+type patchPlatformBuild struct {
+	BuildkitAddr    string `json:"buildkitAddr,omitempty"`
+	DefaultPlatform string `json:"defaultPlatform,omitempty"`
 }
 
 // platformResponse is the JSON shape returned from GET and PATCH.
@@ -126,6 +138,22 @@ func buildPlatformSpec(base mortisev1alpha1.PlatformConfigSpec, req *patchPlatfo
 	}
 	if req.Storage != nil {
 		base.Storage.DefaultStorageClass = req.Storage.DefaultStorageClass
+	}
+	if req.Registry != nil {
+		if req.Registry.URL != "" {
+			base.Registry.URL = req.Registry.URL
+		}
+		if req.Registry.Namespace != "" {
+			base.Registry.Namespace = req.Registry.Namespace
+		}
+	}
+	if req.Build != nil {
+		if req.Build.BuildkitAddr != "" {
+			base.Build.BuildkitAddr = req.Build.BuildkitAddr
+		}
+		if req.Build.DefaultPlatform != "" {
+			base.Build.DefaultPlatform = req.Build.DefaultPlatform
+		}
 	}
 	return base
 }

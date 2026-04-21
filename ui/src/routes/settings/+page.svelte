@@ -216,16 +216,10 @@
 					clientID: newProviderClientID
 				});
 			}
-			// Store the PAT via the same token storage path
-			// For now, we use the device flow poll endpoint behavior — but PAT needs a direct store endpoint.
-			// TODO: Add POST /api/auth/git/{provider}/token endpoint for direct token storage.
-			// For now, we'll create the provider and let the user know PAT storage isn't wired yet.
-			error = 'PAT storage endpoint not yet implemented. Use Device Flow for GitHub, or contact your admin.';
-			// When implemented, this would be:
-			// await api.storeGitToken(providerName, patToken);
-			// connectionStatus[providerName] = true;
-			// providers = await api.listGitProviders().catch(() => []);
-			// closeAddModal();
+			await api.storeGitToken(providerName, patToken.trim(), newProviderHost || undefined);
+			connectionStatus[providerName] = true;
+			providers = await api.listGitProviders().catch(() => []);
+			closeAddModal();
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'Failed to save token';
 		} finally {
@@ -286,14 +280,14 @@
 
 	async function saveRegistry() {
 		savingRegistry = true;
-		try { await api.patchPlatform({}); }
+		try { await api.patchPlatform({ registry: { url: registryUrl, namespace: registryNamespace } }); }
 		catch (e) { error = e instanceof Error ? e.message : 'Failed to save registry config'; }
 		finally { savingRegistry = false; }
 	}
 
 	async function saveBuildConfig() {
 		savingBuild = true;
-		try { await api.patchPlatform({}); }
+		try { await api.patchPlatform({ build: { buildkitAddr: buildkitAddress, defaultPlatform: buildkitPlatform } }); }
 		catch (e) { error = e instanceof Error ? e.message : 'Failed to save build config'; }
 		finally { savingBuild = false; }
 	}
@@ -502,7 +496,8 @@
 
 <!-- Add Git Connection Modal -->
 {#if showAddModal}
-	<div class="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm">
+	<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+	<div class="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm" tabindex="-1" onkeydown={(e) => { if (e.key === 'Escape') closeAddModal(); }}>
 		<div class="w-full max-w-md rounded-lg border border-surface-600 bg-surface-800 shadow-2xl">
 			<!-- Header -->
 			<div class="flex items-center justify-between border-b border-surface-600 px-6 py-4">

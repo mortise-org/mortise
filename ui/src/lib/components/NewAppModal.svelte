@@ -124,37 +124,40 @@
 		return Array.from(arr, b => chars[b % chars.length]).join('');
 	}
 
-	const DB_TEMPLATES: DbTemplate[] = [
-		{
-			name: 'Postgres', image: 'postgres:16', icon: Database, description: 'PostgreSQL 16',
-			port: 5432,
-			env: [
-				{ name: 'POSTGRES_PASSWORD', value: generatePassword() },
-				{ name: 'POSTGRES_DB', value: 'app' }
-			]
-		},
-		{
-			name: 'Redis', image: 'redis:7', icon: Database, description: 'Redis 7 in-memory store',
-			port: 6379,
-			env: []
-		},
-		{
-			name: 'MinIO', image: 'minio/minio:latest', icon: Package, description: 'S3-compatible object storage',
-			port: 9000,
-			env: [
-				{ name: 'MINIO_ROOT_USER', value: 'admin' },
-				{ name: 'MINIO_ROOT_PASSWORD', value: generatePassword() }
-			]
-		},
-		{
-			name: 'MySQL', image: 'mysql:8', icon: Database, description: 'MySQL 8',
-			port: 3306,
-			env: [
-				{ name: 'MYSQL_ROOT_PASSWORD', value: generatePassword() },
-				{ name: 'MYSQL_DATABASE', value: 'app' }
-			]
-		}
-	];
+	function freshDbTemplates(): DbTemplate[] {
+		return [
+			{
+				name: 'Postgres', image: 'postgres:16', icon: Database, description: 'PostgreSQL 16',
+				port: 5432,
+				env: [
+					{ name: 'POSTGRES_PASSWORD', value: generatePassword() },
+					{ name: 'POSTGRES_DB', value: 'app' }
+				]
+			},
+			{
+				name: 'Redis', image: 'redis:7', icon: Database, description: 'Redis 7 in-memory store',
+				port: 6379,
+				env: []
+			},
+			{
+				name: 'MinIO', image: 'minio/minio:latest', icon: Package, description: 'S3-compatible object storage',
+				port: 9000,
+				env: [
+					{ name: 'MINIO_ROOT_USER', value: 'admin' },
+					{ name: 'MINIO_ROOT_PASSWORD', value: generatePassword() }
+				]
+			},
+			{
+				name: 'MySQL', image: 'mysql:8', icon: Database, description: 'MySQL 8',
+				port: 3306,
+				env: [
+					{ name: 'MYSQL_ROOT_PASSWORD', value: generatePassword() },
+					{ name: 'MYSQL_DATABASE', value: 'app' }
+				]
+			}
+		];
+	}
+	let DB_TEMPLATES = $state<DbTemplate[]>(freshDbTemplates());
 	let selectedDbTemplate = $state<DbTemplate | null>(null);
 
 	// Supabase stack
@@ -242,6 +245,9 @@
 	function selectType(t: AppType) {
 		selectedType = t;
 		error = '';
+		if (t === 'database') {
+			DB_TEMPLATES = freshDbTemplates();
+		}
 		if (t === 'supabase' && supabaseServices.length === 0) {
 			loadSupabaseServices();
 		}
@@ -444,7 +450,8 @@
 </script>
 
 <!-- Backdrop -->
-<div class="fixed inset-0 z-40 bg-black/60" onclick={onClose} role="presentation"></div>
+<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+<div class="fixed inset-0 z-40 bg-black/60" onclick={onClose} onkeydown={(e) => { if (e.key === 'Escape') onClose(); }} tabindex="-1" role="presentation"></div>
 
 <!-- Modal panel -->
 <div class="fixed inset-0 z-50 flex items-center justify-center p-4">
