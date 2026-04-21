@@ -516,11 +516,19 @@
 								{/each}
 							</select>
 						</div>
+						{:else}
+						<div class="rounded-lg border border-dashed border-surface-600 bg-surface-800/60 p-6 text-center">
+							<p class="text-sm font-medium text-white">No git provider connected</p>
+							<p class="mt-1 text-xs text-gray-400">Connect GitHub, GitLab, or Gitea in Settings to deploy from a git repository.</p>
+							<a href="/settings" class="mt-3 inline-block rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-white hover:bg-accent-hover">Go to Settings</a>
+						</div>
 						{/if}
 
 						<!-- Repo selector -->
 						<div>
-						{#if reposLoading}
+						{#if providers.length === 0}
+							<!-- no-op: empty state shown above -->
+						{:else if reposLoading}
 							<div class="flex items-center justify-center h-[14rem] text-sm text-gray-500">Loading repositories...</div>
 						{:else if repos.length > 0}
 							<div>

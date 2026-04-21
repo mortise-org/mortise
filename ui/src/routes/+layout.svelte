@@ -7,7 +7,7 @@
 	import { store } from '$lib/store.svelte';
 	import { currentProject } from '$lib/context.svelte';
 	// Lucide icons
-	import { Folder, Puzzle, Settings, LayoutDashboard, List, Bell, Activity, User, LogOut, ChevronDown, Users } from 'lucide-svelte';
+	import { Folder, Puzzle, Settings, LayoutDashboard, List, Bell, Activity, User, LogOut, ChevronDown, Users, Rocket } from 'lucide-svelte';
 	import ActivityRail from '$lib/components/ActivityRail.svelte';
 	import NotificationDropdown from '$lib/components/NotificationDropdown.svelte';
 	import type { EnvHealth } from '$lib/types';
@@ -401,6 +401,13 @@
 						title="Settings"
 					>
 						<Settings class="h-5 w-5" />
+					</a>
+					<a
+						href="/getting-started"
+						class="{isActive('/getting-started') ? railIconActive : railIcon}"
+						title="Getting Started"
+					>
+						<Rocket class="h-5 w-5" />
 					</a>
 				{/if}
 			</nav>

@@ -92,15 +92,19 @@ Then configure the tunnel token via environment variables in the UI.
 ## DNS setup
 
 If you configured a wildcard hostname in the tunnel, Cloudflare
-automatically proxies `*.yourdomain.com` through the tunnel. Mortise's
-ExternalDNS creates the DNS records; Cloudflare routes the traffic through
-the tunnel to Traefik inside your cluster.
+automatically proxies `*.yourdomain.com` through the tunnel to your
+cluster's ingress. No additional DNS records are needed — the tunnel
+config handles routing.
 
-For non-wildcard setups, add CNAME records pointing to the tunnel:
+For non-wildcard setups, add CNAME records in Cloudflare DNS pointing
+to the tunnel:
 
 ```
 app.yourdomain.com  CNAME  <tunnel-id>.cfargotunnel.com
 ```
+
+ExternalDNS is **not required** for Cloudflare Tunnel setups. The tunnel
+itself handles traffic routing.
 
 ## Verify
 

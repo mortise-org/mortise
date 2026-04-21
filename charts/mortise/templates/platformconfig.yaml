@@ -1,0 +1,25 @@
+{{- if .Values.platformConfig.enabled }}
+apiVersion: mortise.mortise.dev/v1alpha1
+kind: PlatformConfig
+metadata:
+  name: platform
+  labels:
+    {{- include "mortise.labels" . | nindent 4 }}
+spec:
+  {{- if .Values.platformConfig.domain }}
+  domain: {{ .Values.platformConfig.domain }}
+  {{- end }}
+  {{- if .Values.registry.enabled }}
+  registry:
+    url: http://{{ include "mortise.registryAddr" . }}
+    namespace: mortise
+    insecureSkipTLSVerify: true
+  {{- end }}
+  {{- if .Values.buildkit.enabled }}
+  build:
+    buildkitAddr: {{ include "mortise.buildkitAddr" . }}
+    {{- if .Values.platformConfig.buildPlatform }}
+    defaultPlatform: {{ .Values.platformConfig.buildPlatform }}
+    {{- end }}
+  {{- end }}
+{{- end }}

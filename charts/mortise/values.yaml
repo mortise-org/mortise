@@ -1,41 +1,100 @@
-image:
-  repository: mortise
-  tag: dev
-  pullPolicy: IfNotPresent
+# ============================================================================
+# Mortise — batteries-included deploy platform
+# ============================================================================
+# This chart bundles the operator (mortise-core), an ingress controller
+# (Traefik), cert-manager, a container registry, and BuildKit. Each
+# dependency can be disabled if you already have it or don't need it.
+#
+# For a minimal install (operator + CRDs only), use the mortise-core chart.
 
-replicaCount: 1
+# ---------------------------------------------------------------------------
+# Operator (mortise-core subchart)
+# ---------------------------------------------------------------------------
+mortise-core:
+  image:
+    repository: mortise
+    tag: dev
+    pullPolicy: IfNotPresent
 
-api:
-  port: 8090
+  replicaCount: 1
 
-operator:
-  # ingressClassName sets the Kubernetes IngressClass on App Ingresses.
-  # When empty, the cluster default is used.
-  ingressClassName: ""
+  api:
+    port: 8090
 
-service:
-  type: ClusterIP
-  port: 80
+  operator:
+    ingressClassName: ""
 
-ingress:
-  enabled: false
-  # className: ""
-  # host: mortise.example.com
+  service:
+    type: ClusterIP
+    port: 80
 
-resources:
-  limits:
-    cpu: 2000m
-    memory: 512Mi
-  requests:
-    cpu: 200m
-    memory: 128Mi
+  ingress:
+    enabled: false
 
-serviceAccount:
-  create: true
-  name: mortise-controller
+  resources:
+    limits:
+      cpu: 2000m
+      memory: 512Mi
+    requests:
+      cpu: 200m
+      memory: 128Mi
 
-# GitHub OAuth App client ID for device flow.
-github:
-  # Required: Create a GitHub OAuth App and set clientID here.
-  # See https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/creating-an-oauth-app
-  clientID: ""
+  serviceAccount:
+    create: true
+    name: mortise-controller
+
+  github:
+    clientID: ""
+
+# ---------------------------------------------------------------------------
+# Traefik — ingress controller
+# ---------------------------------------------------------------------------
+# Disable if your cluster already has an ingress controller (e.g. k3s
+# bundles Traefik, EKS may use ALB, etc.)
+traefik:
+  enabled: true
+  # Values passed to the Traefik subchart. See:
+  # https://github.com/traefik/traefik-helm-chart/blob/master/traefik/values.yaml
+
+# ---------------------------------------------------------------------------
+# cert-manager — automatic TLS certificates
+# ---------------------------------------------------------------------------
+# Disable if cert-manager is already installed in your cluster.
+cert-manager:
+  enabled: true
+  # Values passed to the cert-manager subchart.
+  crds:
+    enabled: true
+
+# ---------------------------------------------------------------------------
+# Build infrastructure namespace
+# ---------------------------------------------------------------------------
+buildInfra:
+  namespace: mortise-deps
+
+# ---------------------------------------------------------------------------
+# OCI registry — stores images built from git source
+# ---------------------------------------------------------------------------
+registry:
+  enabled: true
+  image: distribution/distribution:2.8.3
+  storage: emptyDir
+  # storageSize: 10Gi  # only used when storage != emptyDir
+
+# ---------------------------------------------------------------------------
+# BuildKit — builds container images from git source
+# ---------------------------------------------------------------------------
+buildkit:
+  enabled: true
+  image: moby/buildkit:v0.29.0
+  privileged: true
+  storage: emptyDir
+  # storageSize: 10Gi  # only used when storage != emptyDir
+
+# ---------------------------------------------------------------------------
+# PlatformConfig — auto-created default configuration
+# ---------------------------------------------------------------------------
+platformConfig:
+  enabled: true
+  domain: ""
+  buildPlatform: ""

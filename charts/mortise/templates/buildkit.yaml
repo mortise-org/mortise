@@ -1,0 +1,111 @@
+{{- if .Values.buildkit.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: buildkitd-config
+  namespace: {{ include "mortise.depsNamespace" . }}
+  labels:
+    app.kubernetes.io/name: buildkitd
+    {{- include "mortise.labels" . | nindent 4 }}
+data:
+  buildkitd.toml: |
+    debug = false
+    [grpc]
+      address = ["tcp://0.0.0.0:1234"]
+    {{- if .Values.registry.enabled }}
+    [registry."{{ include "mortise.registryAddr" . }}"]
+      http = true
+      insecure = true
+    {{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: buildkitd
+  namespace: {{ include "mortise.depsNamespace" . }}
+  labels:
+    app.kubernetes.io/name: buildkitd
+    {{- include "mortise.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: buildkitd
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: buildkitd
+    spec:
+      containers:
+        - name: buildkitd
+          image: {{ .Values.buildkit.image }}
+          imagePullPolicy: IfNotPresent
+          args:
+            - --addr
+            - tcp://0.0.0.0:1234
+            - --config
+            - /etc/buildkit/buildkitd.toml
+          readinessProbe:
+            exec:
+              command: ["buildctl", "--addr", "tcp://127.0.0.1:1234", "debug", "workers"]
+            initialDelaySeconds: 5
+            periodSeconds: 3
+            failureThreshold: 30
+          ports:
+            - name: grpc
+              containerPort: 1234
+          {{- if .Values.buildkit.privileged }}
+          securityContext:
+            privileged: true
+          {{- end }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/buildkit
+            - name: data
+              mountPath: /var/lib/buildkit
+      volumes:
+        - name: config
+          configMap:
+            name: buildkitd-config
+        - name: data
+          {{- if eq .Values.buildkit.storage "emptyDir" }}
+          emptyDir: {}
+          {{- else }}
+          persistentVolumeClaim:
+            claimName: buildkitd-data
+          {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: buildkitd
+  namespace: {{ include "mortise.depsNamespace" . }}
+  labels:
+    app.kubernetes.io/name: buildkitd
+    {{- include "mortise.labels" . | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/name: buildkitd
+  ports:
+    - name: grpc
+      port: 1234
+      targetPort: 1234
+{{- if ne .Values.buildkit.storage "emptyDir" }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: buildkitd-data
+  namespace: {{ include "mortise.depsNamespace" . }}
+  labels:
+    app.kubernetes.io/name: buildkitd
+    {{- include "mortise.labels" . | nindent 4 }}
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: {{ .Values.buildkit.storageSize | default "10Gi" }}
+{{- end }}
+{{- end }}

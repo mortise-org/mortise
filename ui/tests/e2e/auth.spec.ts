@@ -159,10 +159,10 @@ test.describe('auth redirects', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Setup wizard (/setup/wizard)
+// Getting started page (/setup/wizard)
 // ---------------------------------------------------------------------------
 
-test.describe('setup wizard', () => {
+test.describe('getting started page', () => {
 	let adminToken: string;
 
 	test.beforeAll(async ({ request }) => {
@@ -170,76 +170,17 @@ test.describe('setup wizard', () => {
 		adminToken = await loginViaAPI(request);
 	});
 
-	test('shows step 1 (Platform Domain) by default', async ({ page }) => {
-		// Inject token so the wizard doesn't redirect to /login.
+	test('shows getting started checklist with configuration guidance', async ({ page }) => {
 		await injectToken(page, adminToken);
-
-		// Intercept the PlatformConfig GET so the wizard can render.
-		await page.route('**/api/platform', (route) => {
-			if (route.request().method() === 'GET') {
-				return route.fulfill({
-					status: 200,
-					contentType: 'application/json',
-					body: JSON.stringify({ domain: '' })
-				});
-			}
-			return route.continue();
-		});
-
 		await page.goto('/setup/wizard');
 
-		// Step 1 content — "Platform Domain" heading.
-		await expect(page.getByRole('heading', { name: 'Platform Domain' })).toBeVisible({ timeout: 10_000 });
-		await expect(page.getByPlaceholder('apps.example.com')).toBeVisible();
-		await expect(page.getByRole('button', { name: 'Continue' })).toBeVisible();
-	});
+		await expect(page.getByRole('heading', { name: "You're in" })).toBeVisible({ timeout: 10_000 });
 
-	test('can navigate through all wizard steps', async ({ page }) => {
-		await injectToken(page, adminToken);
+		await expect(page.getByText('Platform domain')).toBeVisible();
+		await expect(page.getByText('Git provider')).toBeVisible();
+		await expect(page.getByText('HTTPS, storage, registry')).toBeVisible();
 
-		// Mock PlatformConfig so wizard doesn't redirect, and PATCH succeeds.
-		await page.route('**/api/platform', (route) => {
-			if (route.request().method() === 'GET') {
-				return route.fulfill({
-					status: 200,
-					contentType: 'application/json',
-					body: JSON.stringify({ domain: '' })
-				});
-			}
-			return route.fulfill({
-				status: 200,
-				contentType: 'application/json',
-				body: JSON.stringify({})
-			});
-		});
-
-		await page.goto('/setup/wizard');
-
-		// -- Step 1: Platform Domain --
-		await expect(page.getByRole('heading', { name: 'Platform Domain' })).toBeVisible({ timeout: 10_000 });
-
-		// Enter a domain and click Continue to advance to step 2.
-		await page.getByPlaceholder('apps.example.com').fill('test.example.com');
-		await page.getByRole('button', { name: 'Continue' }).click();
-
-		// -- Step 2: GitHub --
-		await expect(page.getByRole('heading', { name: /Connect a Git Provider/ })).toBeVisible();
-
-		// Go back to step 1.
-		await page.getByRole('button', { name: 'Back' }).click();
-		await expect(page.getByRole('heading', { name: 'Platform Domain' })).toBeVisible();
-
-		// Advance again: fill domain and click Continue.
-		await page.getByPlaceholder('apps.example.com').fill('test.example.com');
-		await page.getByRole('button', { name: 'Continue' }).click();
-		await expect(page.getByRole('heading', { name: /Connect a Git Provider/ })).toBeVisible();
-
-		// Skip step 2 to step 3.
-		await page.getByRole('button', { name: 'Skip for now' }).click();
-
-		// -- Step 3: Completion --
-		await expect(page.getByRole('heading', { name: /All set|platform is ready/ })).toBeVisible();
-		// Final step has a button to go to dashboard.
-		await expect(page.getByRole('button', { name: /Dashboard|Get started/ })).toBeVisible();
+		await expect(page.getByRole('button', { name: /Go to Dashboard/, exact: false })).toBeVisible();
+		await expect(page.getByRole('link', { name: 'Settings' })).toBeVisible();
 	});
 });

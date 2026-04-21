@@ -19,7 +19,7 @@
 		},
 		{
 			name: 'ExternalDNS',
-			description: 'Automatic DNS record management for Cloudflare, AWS Route53, and other providers. Bundled by default.',
+			description: 'Optional. Automatically creates per-app DNS records at your DNS provider. Not needed if you use a wildcard DNS record or Cloudflare Tunnel.',
 			category: 'Infrastructure',
 			action: 'https://kubernetes-sigs.github.io/external-dns/',
 			actionLabel: 'Docs'

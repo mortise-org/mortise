@@ -1464,7 +1464,7 @@ cluster-down:
 	k3d cluster delete mortise-test
 
 chart-install:
-	helm upgrade --install mortise ./charts/mortise \
+	helm upgrade --install mortise ./charts/mortise-core \
 	  --namespace mortise-system --create-namespace \
 	  --set image.tag=dev --wait
 

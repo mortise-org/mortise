@@ -77,9 +77,12 @@ Spec rule: every outward interface must have at least one real v1 impl
   + embedded API server + CLI.
 - Operator registers all 5 controllers in `cmd/main.go` (three of them are
   no-op stubs, see below).
-- `charts/mortise/` has the operator chart: `deployment.yaml`, `service.yaml`,
-  `serviceaccount.yaml`, `rbac.yaml`. RBAC covers
+- `charts/mortise-core/` has the operator-only chart: `deployment.yaml`,
+  `service.yaml`, `serviceaccount.yaml`, `rbac.yaml`. RBAC covers
   deployments/services/ingresses/pvcs/secrets/pods.
+- `charts/mortise/` is the batteries-included umbrella chart: depends on
+  mortise-core + Traefik + cert-manager, and includes custom templates for
+  BuildKit, OCI registry, PlatformConfig, and the mortise-deps namespace.
 - `Makefile` targets: `test` (unit + envtest), `test-integration` (k3d +
   ephemeral cluster), `test-e2e` (Playwright against `dev-up` cluster),
   `dev-up` / `dev-down` / `dev-reload` (k3d live-reload).
@@ -818,15 +821,19 @@ Missing:
 
 ### Phase 8 — Tenons & integration recipes — **Partial**
 
-- `charts/mortise/Chart.yaml` declares optional Helm dependencies:
-  Traefik (~34.0), cert-manager (~v1.17), external-dns (~1.16), Zot (~0.1).
-  Each is enabled by default and conditional (`traefik.enabled`,
-  `cert-manager.enabled`, `external-dns.enabled`, `registry.builtin.enabled`).
+- Two-chart structure: `charts/mortise-core/` (operator only) and
+  `charts/mortise/` (batteries-included umbrella).
+- `charts/mortise/Chart.yaml` declares subchart dependencies: mortise-core
+  (file reference), Traefik (~34.3), cert-manager (~v1.17). Each is
+  condition-gated (`traefik.enabled`, `cert-manager.enabled`).
+- `charts/mortise/` includes custom templates for BuildKit (ConfigMap +
+  Deployment + Service), OCI registry (Deployment + Service), default
+  PlatformConfig, and the mortise-deps namespace.
 - `charts/mortise/values.yaml` exposes toggles for all bundled components
-  with sensible defaults (cert-manager CRDs auto-installed, ExternalDNS
-  defaults to Cloudflare provider).
-- Deployment template includes an Ingress resource that references Traefik's
-  IngressClass when the bundled Traefik is enabled.
+  with sensible defaults (cert-manager CRDs auto-installed, BuildKit
+  privileged by default, registry uses emptyDir).
+- `scripts/install.sh` is now thin: k3s/k3d + Helm + `helm install mortise`.
+  The chart handles all infrastructure.
 - Vendored dependency charts gitignored (`charts/mortise/charts/`).
 - Integration recipe docs in `docs/recipes/`: external-ci, oidc,
   monitoring, external-secrets, backup, cloudflare-tunnel.

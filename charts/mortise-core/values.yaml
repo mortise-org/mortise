@@ -1,0 +1,42 @@
+image:
+  repository: mortise
+  tag: dev
+  pullPolicy: IfNotPresent
+
+replicaCount: 1
+
+api:
+  port: 8090
+
+operator:
+  # ingressClassName sets the Kubernetes IngressClass on App Ingresses.
+  # When empty, the cluster default is used.
+  ingressClassName: ""
+
+service:
+  type: ClusterIP
+  port: 80
+
+ingress:
+  enabled: false
+  # className: ""
+  # host: mortise.example.com
+
+resources:
+  limits:
+    cpu: 2000m
+    memory: 512Mi
+  requests:
+    cpu: 200m
+    memory: 128Mi
+
+serviceAccount:
+  create: true
+  name: mortise-controller
+
+# GitHub OAuth App client ID for device flow (optional).
+# Only needed if you want to deploy from GitHub using the one-click device flow.
+# Not required for image deploys, or if you connect GitHub via personal access token instead.
+# To create one: https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/creating-an-oauth-app
+github:
+  clientID: ""

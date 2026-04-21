@@ -1,0 +1,8 @@
+{{- if or .Values.registry.enabled .Values.buildkit.enabled }}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ include "mortise.depsNamespace" . }}
+  labels:
+    {{- include "mortise.labels" . | nindent 4 }}
+{{- end }}

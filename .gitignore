@@ -40,6 +40,7 @@ __pycache__/
 
 # Vendored Helm dependency charts (downloaded by helm dep update)
 charts/mortise/charts/
+charts/mortise/Chart.lock
 
 # UI
 ui/node_modules/

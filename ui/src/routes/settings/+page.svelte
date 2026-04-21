@@ -407,9 +407,14 @@
 		<!-- General -->
 		<section class="mb-8 space-y-4" id="general" style:display={sectionVisible('general') ? '' : 'none'}>
 			<h2 class="border-b border-surface-600 pb-2 text-sm font-medium text-gray-300">Platform Domain</h2>
+			<div class="space-y-2 text-xs text-gray-500">
+				<p>The base domain for automatic app URLs. When set, every public app gets a URL like <span class="font-mono text-gray-300">myapp.{domain || 'yourdomain.com'}</span> for production, or <span class="font-mono text-gray-300">myapp-staging.{domain || 'yourdomain.com'}</span> for other environments. Without this, apps still run normally — they just won't get automatic public URLs. You can always set a custom domain on any individual app regardless of this setting.</p>
+				<p>This domain also serves as the callback address for git push webhooks. Your git provider sends push notifications here to trigger automatic builds. For <span class="font-mono text-gray-300">github.com</span> or <span class="font-mono text-gray-300">gitlab.com</span>, that means the domain must be reachable from the public internet. For self-hosted git (Gitea, GitLab), it just needs to be reachable from wherever your git server runs — a local network address works fine. If webhooks aren't an option, you can always trigger deploys via the API or CLI.</p>
+				<p>DNS setup: point a wildcard record (<span class="font-mono text-gray-300">*.{domain || 'yourdomain.com'}</span>) at your server's IP address. If you're using a Cloudflare Tunnel, the tunnel config handles routing and no wildcard DNS record is needed.</p>
+			</div>
 			<div>
 				<label class="text-sm text-gray-400" for="platform-domain">Domain</label>
-				<input id="platform-domain" type="text" bind:value={domain} placeholder="yourdomain.com"
+				<input id="platform-domain" type="text" bind:value={domain} placeholder="apps.example.com"
 					class="mt-1 w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-white placeholder-gray-500 outline-none focus:border-accent" />
 			</div>
 			<button type="button" onclick={savePlatform} disabled={saving}

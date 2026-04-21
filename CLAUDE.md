@@ -34,10 +34,10 @@ Do not write progress info into this file (`CLAUDE.md`) or into
 - **Operator + API:** Go, kubebuilder, controller-runtime
 - **UI:** SvelteKit + TypeScript (embedded in operator binary via embed.FS)
 - **CLI:** Go (cobra)
-- **Helm chart:** charts/mortise/
+- **Helm charts:** charts/mortise/ (batteries-included umbrella), charts/mortise-core/ (operator only)
 - **CRDs:** Project, App, PlatformConfig, GitProvider, PreviewEnvironment, Team (v2 forward-compat stub)
-- **Bundled tools:** BuildKit (image builds), Zot (OCI registry), Traefik
-  (ingress), cert-manager (TLS), ExternalDNS (DNS records)
+- **Bundled tools (in umbrella chart):** BuildKit (image builds), OCI registry, Traefik
+  (ingress), cert-manager (TLS)
 
 ## Architecture rules
 
@@ -293,7 +293,8 @@ test/
     fixtures.go
     assertions.go
 charts/
-  mortise/                   # single Helm chart
+  mortise/                   # batteries-included umbrella chart
+  mortise-core/              # operator-only chart (CRDs, RBAC, deployment)
 ui/                          # SvelteKit app
 Makefile
 ```

@@ -1,15 +1,12 @@
 dependencies:
+- name: mortise-core
+  repository: file://../mortise-core
+  version: 0.1.0
 - name: traefik
   repository: https://traefik.github.io/charts
-  version: 34.0.0
+  version: 34.3.0
 - name: cert-manager
   repository: https://charts.jetstack.io
-  version: v1.17.4
-- name: external-dns
-  repository: https://kubernetes-sigs.github.io/external-dns
-  version: 1.16.1
-- name: zot
-  repository: https://zotregistry.dev/helm-charts
-  version: 0.1.104
-digest: sha256:9a5d7ea3d5a2026f764a273a278ac8f133014782bc705b3aac36c8d3e4cc558c
-generated: "2026-04-16T18:12:06.579308-07:00"
+  version: v1.17.1
+digest: sha256:92703a3f3ffad0c1b134465c4f23d7f6ca6f2081dfea0e74905174dd34b4ddd3
+generated: "2026-04-21T14:00:35.196130755-06:00"

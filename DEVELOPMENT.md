@@ -179,7 +179,8 @@ internal/
   ingress/                    IngressProvider interface (annotation-driven)
   registry/                   RegistryBackend interface (generic OCI)
   ui/                         SvelteKit static files embedded via //go:embed
-charts/mortise/               Helm chart (single chart, no subcharts)
+charts/mortise/               Batteries-included umbrella chart (operator + Traefik + cert-manager + BuildKit + registry)
+charts/mortise-core/          Operator-only chart (CRDs, RBAC, Deployment, Service)
 test/
   fixtures/                   Canonical App CRDs for tests
   helpers/                    Test utilities (envtest bootstrap, assertions)

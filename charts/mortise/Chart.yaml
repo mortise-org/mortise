@@ -1,11 +1,21 @@
 apiVersion: v2
 name: mortise
-description: Self-hosted Railway-style deploy platform for Kubernetes
+description: Self-hosted Railway-style deploy platform for Kubernetes (batteries included)
 type: application
 version: 0.1.0
 appVersion: "0.1.0"
 
-# No subchart dependencies. The operator is a polite k8s citizen that speaks
-# annotations (ExternalDNS, cert-manager) and standard Ingress API. Infrastructure
-# (ingress controller, cert-manager, registry, BuildKit) is the user's
-# responsibility — or use `scripts/install.sh` which installs everything.
+dependencies:
+  - name: mortise-core
+    version: "0.1.0"
+    repository: "file://../mortise-core"
+
+  - name: traefik
+    version: "34.3.0"
+    repository: "https://traefik.github.io/charts"
+    condition: traefik.enabled
+
+  - name: cert-manager
+    version: "v1.17.1"
+    repository: "https://charts.jetstack.io"
+    condition: cert-manager.enabled

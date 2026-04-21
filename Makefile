@@ -46,7 +46,7 @@ manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and Cust
 	@mkdir -p config/webhook
 	"$(CONTROLLER_GEN)" rbac:roleName=manager-role crd webhook paths="./..." output:crd:artifacts:config=config/crd/bases output:webhook:dir=config/webhook
 	# Sync generated CRDs into the Helm chart so `helm install` ships the real schema.
-	cp config/crd/bases/*.yaml charts/mortise/crds/
+	cp config/crd/bases/*.yaml charts/mortise-core/crds/
 
 .PHONY: generate
 generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
@@ -118,9 +118,9 @@ dev-up: build-ui ## Create k3d dev cluster with build infra, install Mortise, po
 	@echo "==> Loading image into k3d..."
 	k3d image import $(DEV_IMG) -c $(DEV_CLUSTER)
 	@echo "==> Installing CRDs..."
-	kubectl apply -f charts/mortise/crds/
+	kubectl apply -f charts/mortise-core/crds/
 	@echo "==> Installing Mortise via Helm..."
-	helm upgrade --install mortise charts/mortise \
+	helm upgrade --install mortise charts/mortise-core \
 		--namespace mortise-system --create-namespace \
 		--set image.repository=mortise \
 		--set image.tag=dev \
@@ -150,16 +150,6 @@ dev-down: ## Delete k3d dev cluster and stop port-forward
 	@pkill -f "port-forward.*mortise" >/dev/null 2>&1 || true
 	k3d cluster delete $(DEV_CLUSTER)
 
-.PHONY: dev-reload
-dev-reload: build-ui ## Rebuild image and redeploy to existing dev cluster (no cluster recreate)
-	$(CONTAINER_TOOL) build -t $(DEV_IMG) .
-	k3d image import $(DEV_IMG) -c $(DEV_CLUSTER)
-	kubectl -n mortise-system rollout restart deployment/mortise
-	kubectl -n mortise-system rollout status deployment/mortise --timeout=60s
-	@pkill -f "port-forward.*mortise" >/dev/null 2>&1 || true
-	@kubectl port-forward -n mortise-system svc/mortise 8090:80 >/dev/null 2>&1 &
-	@sleep 2
-	@echo "✓ Reloaded — http://localhost:8090"
 
 .PHONY: dev-reset
 dev-reset: ## Tear down dev cluster completely, rebuild, and start fresh
@@ -185,7 +175,7 @@ test-integration: ## Create k3d cluster, install chart + test deps, run integrat
 	@echo "==> Loading image into k3d..."
 	k3d image import $(INT_IMG) -c $(INT_CLUSTER)
 	@echo "==> Installing CRDs..."
-	kubectl apply -f charts/mortise/crds/
+	kubectl apply -f charts/mortise-core/crds/
 	@echo "==> Installing test-only dependencies (Zot, Gitea, BuildKit)..."
 	kubectl create namespace mortise-system --dry-run=client -o yaml | kubectl apply -f -
 	kubectl apply -f test/integration/manifests/
@@ -194,7 +184,7 @@ test-integration: ## Create k3d cluster, install chart + test deps, run integrat
 	kubectl -n mortise-test-deps rollout status deployment/gitea     --timeout=180s
 	kubectl -n mortise-test-deps rollout status deployment/buildkitd --timeout=180s
 	@echo "==> Installing Mortise via Helm..."
-	helm upgrade --install mortise charts/mortise \
+	helm upgrade --install mortise charts/mortise-core \
 		--namespace mortise-system --create-namespace \
 		--set image.repository=mortise \
 		--set image.tag=int \
@@ -238,17 +228,21 @@ test-e2e: ## Run Playwright E2E suite against the dev cluster (requires make dev
 		npx playwright test
 
 .PHONY: dev-reload
-dev-reload: ## Rebuild image, re-apply CRDs + chart, restart Mortise in existing cluster
+dev-reload: build-ui ## Rebuild image, re-apply CRDs + chart, restart Mortise in existing cluster
 	$(CONTAINER_TOOL) build -t $(DEV_IMG) .
 	k3d image import $(DEV_IMG) -c $(DEV_CLUSTER)
-	kubectl apply -f charts/mortise/crds/
-	helm upgrade mortise charts/mortise \
+	kubectl apply -f charts/mortise-core/crds/
+	helm upgrade mortise charts/mortise-core \
 		--namespace mortise-system \
 		--set image.repository=mortise \
 		--set image.tag=dev \
 		--set image.pullPolicy=Never
 	kubectl rollout restart deployment/mortise -n mortise-system
 	kubectl rollout status deployment/mortise -n mortise-system --timeout 60s
+	@pkill -f "port-forward.*mortise" >/dev/null 2>&1 || true
+	@kubectl port-forward -n mortise-system svc/mortise 8090:80 >/dev/null 2>&1 &
+	@sleep 2
+	@echo "Reloaded — http://localhost:8090"
 
 # If you wish to build the manager image targeting other platforms you can use the --platform flag.
 # (i.e. docker build --platform linux/arm64). However, you must enable docker buildKit for it.

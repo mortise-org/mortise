@@ -8,27 +8,35 @@ service-to-service bindings. Kubernetes is fully abstracted away from the user.
 
 ## Quick Install
 
-**One command, zero to running in ~80 seconds:**
+Have a Kubernetes cluster? Install Mortise with Helm:
 
 ```bash
-# macOS (requires Docker Desktop)
-bash scripts/install.sh
-
-# Linux (bare metal / VPS)
-curl -fsSL https://raw.githubusercontent.com/MC-Meesh/mortise/main/scripts/install.sh | bash
+helm repo add mortise https://mc-meesh.github.io/mortise
+helm repo update
+helm install mortise mortise/mortise \
+  --namespace mortise-system --create-namespace
 ```
 
-This installs k3s/k3d, cert-manager, BuildKit, a container registry, the Mortise
-operator, and the `mortise` CLI. After install:
+This installs everything: the operator, Traefik, cert-manager, BuildKit, and
+an OCI registry. If you already have an ingress controller and cert-manager,
+use the operator-only chart instead:
 
 ```bash
-mortise up              # start Mortise (port-forward to localhost:8090)
-mortise cluster-status  # check health
-mortise down            # stop port-forward
-mortise destroy         # tear everything down
+helm install mortise mortise/mortise-core \
+  --namespace mortise-system --create-namespace
 ```
 
-Open **http://localhost:8090** to access the UI.
+Access the UI:
+
+```bash
+kubectl port-forward -n mortise-system svc/mortise 8090:80
+```
+
+Open **http://localhost:8090**, create your admin account, and deploy your
+first app.
+
+No cluster yet? See the [Quickstart](docs/quickstart.md) for a full
+walkthrough from zero.
 
 ## What's Included
 
@@ -38,8 +46,7 @@ Open **http://localhost:8090** to access the UI.
 | **REST API** | Project, app, env var, deploy, rollback, domain management |
 | **SvelteKit UI** | Canvas-based dashboard, app drawer, env var editor, settings |
 | **CLI** | `mortise login`, `mortise app create`, `mortise deploy`, `mortise env` |
-| **Helm Chart** | Single chart, published at `https://mc-meesh.github.io/mortise` |
-| **Install Script** | Zero-to-running installer for Linux, macOS, and Windows |
+| **Helm Charts** | `mortise` (batteries-included) and `mortise-core` (operator only), published at `https://mc-meesh.github.io/mortise` |
 
 ## Features
 
@@ -72,6 +79,17 @@ projects — Mortise coexists with them through standard k8s primitives.
 See [ARCHITECTURE.md](ARCHITECTURE.md) for system diagrams.
 
 ## Docs
+
+**For users:**
+
+| Doc | Purpose |
+|-----|---------|
+| [Quickstart](docs/quickstart.md) | Zero to deployed app in 10 minutes |
+| [Install](docs/install.md) | Helm install, values reference, uninstall |
+| [Cluster setup](docs/cluster-setup.md) | Getting a k8s cluster running (k3d, k3s, EKS, GKE, AKS) |
+| [Configuration](docs/configuration.md) | Domain, git providers, HTTPS, storage, environments |
+
+**For contributors:**
 
 | Doc | Purpose |
 |-----|---------|
