@@ -372,9 +372,27 @@ BUILDKIT_EOF
 # Step 6: Install Mortise operator via Helm
 # ---------------------------------------------------------------------------
 install_mortise() {
-    info "Adding Mortise Helm repository..."
-    helm repo add mortise "$MORTISE_CHART_REPO" 2>/dev/null || true
-    helm repo update mortise
+    # Determine chart source: local chart if running from repo, otherwise Helm repo.
+    local chart_ref="mortise/mortise"
+    local script_dir
+    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    local local_chart="${script_dir}/../charts/mortise"
+
+    if [ -f "${local_chart}/Chart.yaml" ]; then
+        info "Using local chart at ${local_chart}"
+        chart_ref="$local_chart"
+
+        # Local chart needs the Docker image built and imported into k3d.
+        if command -v docker >/dev/null 2>&1 && [ -f "${script_dir}/../Dockerfile" ]; then
+            info "Building Mortise Docker image..."
+            docker build -t mortise:dev "${script_dir}/.." -q
+            k3d image import mortise:dev -c mortise 2>/dev/null || true
+        fi
+    else
+        info "Adding Mortise Helm repository..."
+        helm repo add mortise "$MORTISE_CHART_REPO" 2>/dev/null || true
+        helm repo update mortise 2>/dev/null || true
+    fi
 
     local chart_version_flag=""
     if [ -n "$MORTISE_CHART_VERSION" ]; then
@@ -382,12 +400,10 @@ install_mortise() {
     fi
 
     info "Installing Mortise operator..."
-    # Disable bundled sub-charts: cert-manager is installed separately above,
-    # Traefik is provided by k3s, and the built-in Zot registry is replaced by
-    # the dedicated registry in mortise-deps.
     # shellcheck disable=SC2086
-    helm upgrade --install mortise mortise/mortise \
+    helm upgrade --install mortise "$chart_ref" \
         --namespace "$MORTISE_NAMESPACE" --create-namespace \
+        --set image.pullPolicy=IfNotPresent \
         --set traefik.enabled=false \
         --set cert-manager.enabled=false \
         --set external-dns.enabled=false \
