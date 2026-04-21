@@ -1951,13 +1951,19 @@ func (r *AppReconciler) autoDefaultDomain(ctx context.Context, app *mortisev1alp
 
 	// For the first environment (typically "production"), use {app}.{domain}.
 	// For other environments, use {app}-{env}.{domain} to avoid collisions.
-	project, _ := appProjectName(app)
-	_ = project // project name not needed in domain — app names are unique within a project
-
+	var label string
 	if envName == "production" {
-		return fmt.Sprintf("%s.%s", app.Name, pc.Spec.Domain)
+		label = app.Name
+	} else {
+		label = app.Name + "-" + envName
 	}
-	return fmt.Sprintf("%s-%s.%s", app.Name, envName, pc.Spec.Domain)
+
+	// DNS labels are capped at 63 characters.
+	if len(label) > 63 {
+		return ""
+	}
+
+	return fmt.Sprintf("%s.%s", label, pc.Spec.Domain)
 }
 
 // appLabels stamps the standard Mortise ownership labels. `mortise.dev/project`

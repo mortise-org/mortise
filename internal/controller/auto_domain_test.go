@@ -63,6 +63,32 @@ func TestAutoDefaultDomainNoPlatformConfig(t *testing.T) {
 	}
 }
 
+func TestAutoDefaultDomainLongName(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = mortisev1alpha1.AddToScheme(scheme)
+
+	pc := &mortisev1alpha1.PlatformConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "platform"},
+		Spec: mortisev1alpha1.PlatformConfigSpec{
+			Domain: "example.com",
+		},
+	}
+
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(pc).Build()
+	r := &AppReconciler{Client: c}
+
+	// 64-char app name exceeds DNS label limit
+	longName := "this-is-an-extremely-long-application-name-that-exceeds-dns-limi"
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: longName, Namespace: "pj-myproject"},
+	}
+
+	got := r.autoDefaultDomain(context.Background(), app, "production")
+	if got != "" {
+		t.Errorf("expected empty domain for long name, got %q", got)
+	}
+}
+
 func TestAutoDefaultDomainEmptyDomain(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = mortisev1alpha1.AddToScheme(scheme)
