@@ -60,7 +60,7 @@ func (s *Server) CreateSecret(w http.ResponseWriter, r *http.Request) {
 			Name:      req.Name,
 			Namespace: envNs,
 			Labels: map[string]string{
-				"app.kubernetes.io/name":       appName,
+				constants.AppNameLabel:       appName,
 				"app.kubernetes.io/managed-by": "mortise",
 			},
 		},
@@ -87,7 +87,7 @@ func (s *Server) ListSecrets(w http.ResponseWriter, r *http.Request) {
 	if err := s.client.List(r.Context(), &list,
 		client.InNamespace(envNs),
 		client.MatchingLabels{
-			"app.kubernetes.io/name":       appName,
+			constants.AppNameLabel:       appName,
 			"app.kubernetes.io/managed-by": "mortise",
 		},
 	); err != nil {

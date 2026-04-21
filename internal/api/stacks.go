@@ -67,12 +67,7 @@ func (s *Server) CreateStack(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, errorResponse{err.Error()})
 			return
 		}
-		composed, err := substituteVars(tpl.Compose, req.Vars)
-		if err != nil {
-			writeJSON(w, http.StatusBadRequest, errorResponse{err.Error()})
-			return
-		}
-		composeYAML = composed
+		composeYAML = substituteVars(tpl.Compose, req.Vars)
 		bundledFiles = tpl.Files
 		if stackPrefix == "" {
 			stackPrefix = tpl.Name
@@ -248,18 +243,16 @@ func (s *Server) ListTemplates(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
-func generateRandomHex(n int) (string, error) {
+func generateRandomHex(n int) string {
 	b := make([]byte, n)
-	if _, err := rand.Read(b); err != nil {
-		return "", fmt.Errorf("crypto/rand: %w", err)
-	}
-	return hex.EncodeToString(b), nil
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
 }
 
 // substituteVars replaces ${VAR_NAME} placeholders in the compose YAML.
 // Any unresolved variables are auto-generated as random 32-char hex strings.
 // This means templates "just work" without requiring the user to provide secrets.
-func substituteVars(tpl string, vars map[string]string) (string, error) {
+func substituteVars(tpl string, vars map[string]string) string {
 	if vars == nil {
 		vars = make(map[string]string)
 	}
@@ -278,12 +271,8 @@ func substituteVars(tpl string, vars map[string]string) (string, error) {
 			break
 		}
 		varName := result[idx+2 : idx+end]
-		generated, err := generateRandomHex(16)
-		if err != nil {
-			return "", err
-		}
-		vars[varName] = generated
-		result = strings.ReplaceAll(result, "${"+varName+"}", generated)
+		vars[varName] = generateRandomHex(16)
+		result = strings.ReplaceAll(result, "${"+varName+"}", vars[varName])
 	}
-	return result, nil
+	return result
 }

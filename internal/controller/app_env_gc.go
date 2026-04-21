@@ -47,7 +47,7 @@ func (r *AppReconciler) gcAppAcrossEnvs(ctx context.Context, app *mortisev1alpha
 		return nil
 	}
 	selector := client.MatchingLabels{
-		"app.kubernetes.io/name": app.Name,
+		constants.AppNameLabel: app.Name,
 		constants.ProjectLabel:   projectName,
 	}
 
@@ -96,7 +96,7 @@ func (r *AppReconciler) gcOptedOutEnvs(ctx context.Context, app *mortisev1alpha1
 		}
 		envNs := constants.EnvNamespace(projectName, projEnv.Name)
 		selector := client.MatchingLabels{
-			"app.kubernetes.io/name": app.Name,
+			constants.AppNameLabel: app.Name,
 			constants.ProjectLabel:   projectName,
 		}
 		inNs := client.InNamespace(envNs)

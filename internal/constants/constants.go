@@ -78,6 +78,9 @@ const (
 	NamespaceRoleEnv     = "env"
 	NamespaceRolePreview = "preview"
 
+	// AppNameLabel identifies the app by name on managed resources.
+	AppNameLabel = "app.kubernetes.io/name"
+
 	// ProjectLabel is the name of the owning Project; stamped on every
 	// namespace and on every resource Mortise creates.
 	ProjectLabel = "mortise.dev/project"

@@ -2,6 +2,7 @@ package api
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
 	"github.com/MC-Meesh/mortise/internal/constants"
@@ -75,25 +77,22 @@ func (s *Server) PutEnv(w http.ResponseWriter, r *http.Request) {
 		envVars[i] = envstore.Env{Name: v.Name, Value: v.Value, Source: "user"}
 	}
 
-	projectName, _ := constants.ProjectFromControlNs(app.Namespace)
+	projectName, ok2 := constants.ProjectFromControlNs(app.Namespace)
+	if !ok2 {
+		writeJSON(w, http.StatusInternalServerError, errorResponse{fmt.Sprintf("app %q not in a control namespace (%q)", app.Name, app.Namespace)})
+		return
+	}
 	labels := map[string]string{
 		constants.ProjectLabel:     projectName,
 		constants.EnvironmentLabel: envName,
-		"app.kubernetes.io/name":   app.Name,
+		constants.AppNameLabel:     app.Name,
 	}
 	if err := store.Set(r.Context(), envNs, app.Name, envVars, labels); err != nil {
 		writeError(w, err)
 		return
 	}
 
-	// Poke the App CRD to trigger a controller reconcile (which re-reads
-	// the Secret and updates the Deployment). We do NOT sync env vars back
-	// to the CRD spec — the Secret is the source of truth.
-	if app.Annotations == nil {
-		app.Annotations = make(map[string]string)
-	}
-	app.Annotations["mortise.dev/env-updated"] = fmt.Sprintf("%d", time.Now().UnixMilli())
-	if err := s.client.Update(r.Context(), app); err != nil {
+	if err := pokeAppForReconcile(r.Context(), s.client, app); err != nil {
 		writeError(w, err)
 		return
 	}
@@ -153,23 +152,22 @@ func (s *Server) PatchEnv(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	projectName, _ := constants.ProjectFromControlNs(app.Namespace)
+	projectName, ok2 := constants.ProjectFromControlNs(app.Namespace)
+	if !ok2 {
+		writeJSON(w, http.StatusInternalServerError, errorResponse{fmt.Sprintf("app %q not in a control namespace (%q)", app.Name, app.Namespace)})
+		return
+	}
 	labels := map[string]string{
 		constants.ProjectLabel:     projectName,
 		constants.EnvironmentLabel: envName,
-		"app.kubernetes.io/name":   app.Name,
+		constants.AppNameLabel:     app.Name,
 	}
 	if err := store.Set(r.Context(), envNs, app.Name, result, labels); err != nil {
 		writeError(w, err)
 		return
 	}
 
-	// Poke CRD to trigger reconcile — Secret is the source of truth.
-	if app.Annotations == nil {
-		app.Annotations = make(map[string]string)
-	}
-	app.Annotations["mortise.dev/env-updated"] = fmt.Sprintf("%d", time.Now().UnixMilli())
-	if err := s.client.Update(r.Context(), app); err != nil {
+	if err := pokeAppForReconcile(r.Context(), s.client, app); err != nil {
 		writeError(w, err)
 		return
 	}
@@ -200,23 +198,22 @@ func (s *Server) ImportEnv(w http.ResponseWriter, r *http.Request) {
 		vars = append(vars, envstore.Env{Name: k, Value: v, Source: "user"})
 	}
 
-	projectName, _ := constants.ProjectFromControlNs(app.Namespace)
+	projectName, ok2 := constants.ProjectFromControlNs(app.Namespace)
+	if !ok2 {
+		writeJSON(w, http.StatusInternalServerError, errorResponse{fmt.Sprintf("app %q not in a control namespace (%q)", app.Name, app.Namespace)})
+		return
+	}
 	labels := map[string]string{
 		constants.ProjectLabel:     projectName,
 		constants.EnvironmentLabel: envName,
-		"app.kubernetes.io/name":   app.Name,
+		constants.AppNameLabel:     app.Name,
 	}
 	if err := store.Merge(r.Context(), envNs, app.Name, vars, labels); err != nil {
 		writeError(w, err)
 		return
 	}
 
-	// Poke CRD to trigger reconcile.
-	if app.Annotations == nil {
-		app.Annotations = make(map[string]string)
-	}
-	app.Annotations["mortise.dev/env-updated"] = fmt.Sprintf("%d", time.Now().UnixMilli())
-	if err := s.client.Update(r.Context(), app); err != nil {
+	if err := pokeAppForReconcile(r.Context(), s.client, app); err != nil {
 		writeError(w, err)
 		return
 	}
@@ -330,6 +327,17 @@ func ensureEnvironment(app *mortisev1alpha1.App, name string) *mortisev1alpha1.E
 
 
 
+
+// pokeAppForReconcile stamps a timestamp annotation on the App CRD so the
+// controller re-reconciles (picking up the latest Secret contents). The
+// Secret is the source of truth — we never sync env vars back to the CRD spec.
+func pokeAppForReconcile(ctx context.Context, k8s client.Client, app *mortisev1alpha1.App) error {
+	if app.Annotations == nil {
+		app.Annotations = make(map[string]string)
+	}
+	app.Annotations["mortise.dev/env-updated"] = fmt.Sprintf("%d", time.Now().UnixMilli())
+	return k8s.Update(ctx, app)
+}
 
 // parseDotEnv parses KEY=value lines from a .env file string.
 func parseDotEnv(content string) map[string]string {

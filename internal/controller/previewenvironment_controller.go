@@ -604,7 +604,7 @@ func (r *PreviewEnvironmentReconciler) SetupWithManager(mgr ctrl.Manager) error 
 		if labels["app.kubernetes.io/component"] != "preview" {
 			return nil
 		}
-		appName := labels["app.kubernetes.io/name"]
+		appName := labels[constants.AppNameLabel]
 		projectName := labels[constants.ProjectLabel]
 		prStr := labels["mortise.dev/pr-number"]
 		if appName == "" || projectName == "" || prStr == "" {
@@ -682,7 +682,7 @@ func (r *PreviewEnvironmentReconciler) gcPreviewResources(ctx context.Context, p
 		return nil
 	}
 	selector := client.MatchingLabels{
-		"app.kubernetes.io/name": pe.Spec.AppRef,
+		constants.AppNameLabel: pe.Spec.AppRef,
 		constants.ProjectLabel:   projectName,
 		"mortise.dev/pr-number":  fmt.Sprintf("%d", pe.Spec.PullRequest.Number),
 	}
@@ -722,7 +722,7 @@ func previewResourceName(app string, prNumber int) string {
 func previewLabels(pe *mortisev1alpha1.PreviewEnvironment) map[string]string {
 	projectName, _ := constants.ProjectFromControlNs(pe.Namespace)
 	return map[string]string{
-		"app.kubernetes.io/name":       pe.Spec.AppRef,
+		constants.AppNameLabel:       pe.Spec.AppRef,
 		"app.kubernetes.io/managed-by": "mortise",
 		"app.kubernetes.io/component":  "preview",
 		"mortise.dev/pr-number":        fmt.Sprintf("%d", pe.Spec.PullRequest.Number),

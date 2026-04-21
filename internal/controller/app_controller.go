@@ -1249,8 +1249,6 @@ func (r *AppReconciler) reconcileConfigMaps(ctx context.Context, app *mortisev1a
 		expected[cmName] = struct{}{}
 
 		labels := appLabels(app, envName)
-		labels["mortise.dev/managed-by"] = "controller"
-
 		desired := &corev1.ConfigMap{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      cmName,
@@ -1298,7 +1296,7 @@ func (r *AppReconciler) reconcileConfigMaps(ctx context.Context, app *mortisev1a
 	// to match the pattern.
 	var owned corev1.ConfigMapList
 	if err := r.List(ctx, &owned, client.InNamespace(envNs), client.MatchingLabels{
-		"app.kubernetes.io/name":       app.Name,
+		constants.AppNameLabel:       app.Name,
 		"app.kubernetes.io/managed-by": "mortise",
 	}); err != nil {
 		return fmt.Errorf("list owned ConfigMaps: %w", err)
@@ -1337,7 +1335,7 @@ func (r *AppReconciler) reconcileEnvSecret(ctx context.Context, app *mortisev1al
 	labels := map[string]string{
 		constants.ProjectLabel:     projectName,
 		constants.EnvironmentLabel: env.Name,
-		"app.kubernetes.io/name":   app.Name,
+		constants.AppNameLabel:   app.Name,
 	}
 	sharedLabels := map[string]string{
 		constants.ProjectLabel:     projectName,
@@ -1485,8 +1483,6 @@ func (r *AppReconciler) reconcileCredentialsSecret(ctx context.Context, app *mor
 	hash := hashCredentialData(data)
 
 	labels := appLabels(app, envName)
-	labels["mortise.dev/managed-by"] = "controller"
-
 	desired := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
@@ -1586,11 +1582,11 @@ func hashCredentialData(data map[string][]byte) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-// isMortiseManaged returns true iff the object carries the Mortise
-// managed-by label this controller stamps on everything it creates.
+// isMortiseManaged returns true iff the object carries the standard
+// Kubernetes managed-by label that Mortise stamps on everything it creates.
 func isMortiseManaged(obj client.Object) bool {
 	labels := obj.GetLabels()
-	return labels["mortise.dev/managed-by"] == "controller"
+	return labels[envstore.ManagedByLabel] == envstore.ManagedByValue
 }
 
 // ensureWebhook registers a webhook on the git repo if not already done.
@@ -1671,7 +1667,7 @@ func (r *AppReconciler) checkPodCrashLoopInEnv(ctx context.Context, app *mortise
 	if err := r.List(ctx, &podList,
 		client.InNamespace(envNs),
 		client.MatchingLabels{
-			"app.kubernetes.io/name":       app.Name,
+			constants.AppNameLabel:       app.Name,
 			"app.kubernetes.io/managed-by": "mortise",
 			"mortise.dev/environment":      envName,
 		}); err != nil {
@@ -2000,7 +1996,7 @@ func appLabels(app *mortisev1alpha1.App, env string) map[string]string {
 		panic(fmt.Sprintf("appLabels: app %q not in a control namespace (%q)", app.Name, app.Namespace))
 	}
 	l := map[string]string{
-		"app.kubernetes.io/name":       app.Name,
+		constants.AppNameLabel:       app.Name,
 		"app.kubernetes.io/managed-by": "mortise",
 		constants.ProjectLabel:         projectName,
 	}
@@ -2333,7 +2329,7 @@ func (r *AppReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		if labels == nil {
 			return nil
 		}
-		appName := labels["app.kubernetes.io/name"]
+		appName := labels[constants.AppNameLabel]
 		projectName := labels[constants.ProjectLabel]
 		if appName == "" || projectName == "" {
 			return nil
@@ -2358,6 +2354,3 @@ func (r *AppReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Named("app").
 		Complete(r)
 }
-
-// ensure ptr is available
-var _ = ptr.To[int32]

@@ -52,7 +52,7 @@ func (s *Server) handleListPods(w http.ResponseWriter, r *http.Request) {
 	envNs := constants.EnvNamespace(projectName, env)
 
 	sel := labels.SelectorFromSet(map[string]string{
-		"app.kubernetes.io/name":       name,
+		constants.AppNameLabel:       name,
 		"app.kubernetes.io/managed-by": "mortise",
 		"mortise.dev/environment":      env,
 	})

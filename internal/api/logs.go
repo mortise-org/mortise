@@ -152,7 +152,7 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 	envNs := constants.EnvNamespace(projectName, env)
 
 	selSet := map[string]string{
-		"app.kubernetes.io/name":       name,
+		constants.AppNameLabel:       name,
 		"app.kubernetes.io/managed-by": "mortise",
 		"mortise.dev/environment":      env,
 	}
@@ -174,7 +174,7 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 			writeError(w, err)
 			return
 		}
-		if pod.Labels["app.kubernetes.io/name"] != name || pod.Labels["mortise.dev/environment"] != env {
+		if pod.Labels[constants.AppNameLabel] != name || pod.Labels["mortise.dev/environment"] != env {
 			writeJSON(w, http.StatusNotFound, errorResponse{fmt.Sprintf("pod %q does not belong to app %q env %q", pinnedPod, name, env)})
 			return
 		}
