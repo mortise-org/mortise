@@ -1,0 +1,14 @@
+apiVersion: v1
+entries:
+  mortise:
+  - apiVersion: v2
+    appVersion: 0.1.0
+    created: "2026-04-21T08:24:38.254708-07:00"
+    description: Self-hosted Railway-style deploy platform for Kubernetes
+    digest: eb6ab1195c56e3ea3a0e3ad94e61d8bfd3074fa22c1b1dc67381ed5deb424858
+    name: mortise
+    type: application
+    urls:
+    - https://mc-meesh.github.io/mortise/mortise-0.1.0.tgz
+    version: 0.1.0
+generated: "2026-04-21T08:24:38.253903-07:00"
