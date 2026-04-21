@@ -1,0 +1,350 @@
+// Package envstore manages per-app and shared environment variable Secrets.
+//
+// Each app-environment has one Secret ({app}-env) in the workload namespace.
+// Each project-environment has one shared Secret (shared-env) in the workload
+// namespace. Deployments mount both via envFrom — shared first, app-specific
+// second (app wins on conflict).
+//
+// Source annotations track where each key came from so the UI can show badges
+// (e.g. "binding", "generated", "shared") without storing vars in multiple places.
+package envstore
+
+import (
+	"context"
+	"fmt"
+	"sort"
+	"strings"
+
+	corev1 "k8s.io/api/core/v1"
+	k8serrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+)
+
+const (
+	// AppEnvSuffix is appended to the app name for the per-app env Secret.
+	AppEnvSuffix = "-env"
+
+	// SharedEnvName is the name of the shared env Secret per project-environment.
+	SharedEnvName = "shared-env"
+
+	// ManagedByLabel marks Secrets owned by Mortise.
+	ManagedByLabel = "app.kubernetes.io/managed-by"
+	ManagedByValue = "mortise"
+
+	// Source annotations — comma-separated key lists tracking origin of each var.
+	AnnotationBindingKeys   = "mortise.dev/binding-keys"
+	AnnotationGeneratedKeys = "mortise.dev/generated-keys"
+	AnnotationSharedKeys    = "mortise.dev/shared-keys"
+)
+
+// AppEnvSecretName returns the Secret name for an app's env vars.
+func AppEnvSecretName(appName string) string {
+	return appName + AppEnvSuffix
+}
+
+// EnvFromSources returns the envFrom entries for a Deployment container.
+// Order: shared-env (lowest priority) then {app}-env (wins on conflict).
+func EnvFromSources(appName string) []corev1.EnvFromSource {
+	return []corev1.EnvFromSource{
+		{SecretRef: &corev1.SecretEnvSource{
+			LocalObjectReference: corev1.LocalObjectReference{Name: SharedEnvName},
+			Optional:             boolPtr(true),
+		}},
+		{SecretRef: &corev1.SecretEnvSource{
+			LocalObjectReference: corev1.LocalObjectReference{Name: AppEnvSecretName(appName)},
+			Optional:             boolPtr(true),
+		}},
+	}
+}
+
+// Store is the read/write interface for env var Secrets.
+type Store struct {
+	Client client.Client
+}
+
+// Env represents a single env var with its source.
+type Env struct {
+	Name   string `json:"name"`
+	Value  string `json:"value"`
+	Source string `json:"source,omitempty"` // "user", "binding", "generated", "shared", ""
+}
+
+// Get reads all env vars from an app's env Secret.
+func (s *Store) Get(ctx context.Context, namespace, appName string) ([]Env, error) {
+	secret, err := s.getSecret(ctx, namespace, AppEnvSecretName(appName))
+	if err != nil {
+		if k8serrors.IsNotFound(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return secretToEnvs(secret), nil
+}
+
+// GetShared reads all env vars from the shared-env Secret.
+func (s *Store) GetShared(ctx context.Context, namespace string) ([]Env, error) {
+	secret, err := s.getSecret(ctx, namespace, SharedEnvName)
+	if err != nil {
+		if k8serrors.IsNotFound(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return secretToEnvs(secret), nil
+}
+
+// Set writes env vars to an app's env Secret, creating it if needed.
+// source indicates where the vars came from ("user", "binding", "generated").
+// If source is empty, existing source annotations for those keys are preserved.
+func (s *Store) Set(ctx context.Context, namespace, appName string, vars []Env, labels map[string]string) error {
+	name := AppEnvSecretName(appName)
+	return s.upsertSecret(ctx, namespace, name, vars, labels)
+}
+
+// SetShared writes env vars to the shared-env Secret, creating it if needed.
+func (s *Store) SetShared(ctx context.Context, namespace string, vars []Env, labels map[string]string) error {
+	return s.upsertSecret(ctx, namespace, SharedEnvName, vars, labels)
+}
+
+// Merge reads the existing Secret, merges in new vars (overwriting duplicates),
+// and writes back. Returns the merged set.
+func (s *Store) Merge(ctx context.Context, namespace, appName string, vars []Env, labels map[string]string) error {
+	name := AppEnvSecretName(appName)
+	existing, err := s.getSecret(ctx, namespace, name)
+	if err != nil && !k8serrors.IsNotFound(err) {
+		return err
+	}
+
+	merged := make(map[string]Env)
+	if existing != nil {
+		for _, e := range secretToEnvs(existing) {
+			merged[e.Name] = e
+		}
+	}
+	for _, e := range vars {
+		merged[e.Name] = e
+	}
+
+	flat := make([]Env, 0, len(merged))
+	for _, e := range merged {
+		flat = append(flat, e)
+	}
+	return s.upsertSecret(ctx, namespace, name, flat, labels)
+}
+
+// MergeShared is like Merge but for the shared-env Secret.
+func (s *Store) MergeShared(ctx context.Context, namespace string, vars []Env, labels map[string]string) error {
+	existing, err := s.getSecret(ctx, namespace, SharedEnvName)
+	if err != nil && !k8serrors.IsNotFound(err) {
+		return err
+	}
+
+	merged := make(map[string]Env)
+	if existing != nil {
+		for _, e := range secretToEnvs(existing) {
+			merged[e.Name] = e
+		}
+	}
+	for _, e := range vars {
+		merged[e.Name] = e
+	}
+
+	flat := make([]Env, 0, len(merged))
+	for _, e := range merged {
+		flat = append(flat, e)
+	}
+	return s.upsertSecret(ctx, namespace, SharedEnvName, flat, labels)
+}
+
+// Delete removes a key from an app's env Secret.
+func (s *Store) Delete(ctx context.Context, namespace, appName, key string) error {
+	name := AppEnvSecretName(appName)
+	secret, err := s.getSecret(ctx, namespace, name)
+	if err != nil {
+		if k8serrors.IsNotFound(err) {
+			return nil
+		}
+		return err
+	}
+	delete(secret.Data, key)
+	removeKeyFromAnnotations(secret, key)
+	return s.Client.Update(ctx, secret)
+}
+
+// EnsureExists creates the env Secret if it doesn't exist (empty).
+func (s *Store) EnsureExists(ctx context.Context, namespace, appName string, labels map[string]string) error {
+	name := AppEnvSecretName(appName)
+	var existing corev1.Secret
+	err := s.Client.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, &existing)
+	if err == nil {
+		return nil // already exists
+	}
+	if !k8serrors.IsNotFound(err) {
+		return err
+	}
+	return s.Client.Create(ctx, buildSecret(namespace, name, nil, labels))
+}
+
+// EnsureSharedExists creates the shared-env Secret if it doesn't exist.
+func (s *Store) EnsureSharedExists(ctx context.Context, namespace string, labels map[string]string) error {
+	var existing corev1.Secret
+	err := s.Client.Get(ctx, types.NamespacedName{Namespace: namespace, Name: SharedEnvName}, &existing)
+	if err == nil {
+		return nil
+	}
+	if !k8serrors.IsNotFound(err) {
+		return err
+	}
+	return s.Client.Create(ctx, buildSecret(namespace, SharedEnvName, nil, labels))
+}
+
+// --- internal helpers ---
+
+func (s *Store) getSecret(ctx context.Context, namespace, name string) (*corev1.Secret, error) {
+	var secret corev1.Secret
+	err := s.Client.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, &secret)
+	if err != nil {
+		return nil, err
+	}
+	return &secret, nil
+}
+
+func (s *Store) upsertSecret(ctx context.Context, namespace, name string, vars []Env, labels map[string]string) error {
+	desired := buildSecret(namespace, name, vars, labels)
+
+	var existing corev1.Secret
+	err := s.Client.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, &existing)
+	if k8serrors.IsNotFound(err) {
+		return s.Client.Create(ctx, desired)
+	}
+	if err != nil {
+		return fmt.Errorf("get env secret %s/%s: %w", namespace, name, err)
+	}
+
+	existing.Data = desired.Data
+	existing.Annotations = mergeAnnotations(existing.Annotations, desired.Annotations)
+	if existing.Labels == nil {
+		existing.Labels = make(map[string]string)
+	}
+	for k, v := range desired.Labels {
+		existing.Labels[k] = v
+	}
+	return s.Client.Update(ctx, &existing)
+}
+
+func buildSecret(namespace, name string, vars []Env, extraLabels map[string]string) *corev1.Secret {
+	data := make(map[string][]byte, len(vars))
+	bindingKeys := []string{}
+	generatedKeys := []string{}
+	sharedKeys := []string{}
+
+	for _, e := range vars {
+		data[e.Name] = []byte(e.Value)
+		switch e.Source {
+		case "binding":
+			bindingKeys = append(bindingKeys, e.Name)
+		case "generated":
+			generatedKeys = append(generatedKeys, e.Name)
+		case "shared":
+			sharedKeys = append(sharedKeys, e.Name)
+		}
+	}
+
+	labels := map[string]string{
+		ManagedByLabel: ManagedByValue,
+	}
+	for k, v := range extraLabels {
+		labels[k] = v
+	}
+
+	annotations := map[string]string{}
+	if len(bindingKeys) > 0 {
+		sort.Strings(bindingKeys)
+		annotations[AnnotationBindingKeys] = strings.Join(bindingKeys, ",")
+	}
+	if len(generatedKeys) > 0 {
+		sort.Strings(generatedKeys)
+		annotations[AnnotationGeneratedKeys] = strings.Join(generatedKeys, ",")
+	}
+	if len(sharedKeys) > 0 {
+		sort.Strings(sharedKeys)
+		annotations[AnnotationSharedKeys] = strings.Join(sharedKeys, ",")
+	}
+
+	return &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        name,
+			Namespace:   namespace,
+			Labels:      labels,
+			Annotations: annotations,
+		},
+		Data: data,
+	}
+}
+
+func secretToEnvs(secret *corev1.Secret) []Env {
+	bindingSet := parseKeySet(secret.Annotations[AnnotationBindingKeys])
+	generatedSet := parseKeySet(secret.Annotations[AnnotationGeneratedKeys])
+	sharedSet := parseKeySet(secret.Annotations[AnnotationSharedKeys])
+
+	envs := make([]Env, 0, len(secret.Data))
+	for k, v := range secret.Data {
+		source := "user"
+		if bindingSet[k] {
+			source = "binding"
+		} else if generatedSet[k] {
+			source = "generated"
+		} else if sharedSet[k] {
+			source = "shared"
+		}
+		envs = append(envs, Env{Name: k, Value: string(v), Source: source})
+	}
+	sort.Slice(envs, func(i, j int) bool { return envs[i].Name < envs[j].Name })
+	return envs
+}
+
+func parseKeySet(csv string) map[string]bool {
+	if csv == "" {
+		return nil
+	}
+	set := make(map[string]bool)
+	for _, k := range strings.Split(csv, ",") {
+		if k = strings.TrimSpace(k); k != "" {
+			set[k] = true
+		}
+	}
+	return set
+}
+
+func removeKeyFromAnnotations(secret *corev1.Secret, key string) {
+	for _, ann := range []string{AnnotationBindingKeys, AnnotationGeneratedKeys, AnnotationSharedKeys} {
+		if csv, ok := secret.Annotations[ann]; ok {
+			keys := strings.Split(csv, ",")
+			filtered := keys[:0]
+			for _, k := range keys {
+				if strings.TrimSpace(k) != key {
+					filtered = append(filtered, k)
+				}
+			}
+			if len(filtered) == 0 {
+				delete(secret.Annotations, ann)
+			} else {
+				secret.Annotations[ann] = strings.Join(filtered, ",")
+			}
+		}
+	}
+}
+
+func mergeAnnotations(existing, desired map[string]string) map[string]string {
+	if existing == nil {
+		return desired
+	}
+	for k, v := range desired {
+		existing[k] = v
+	}
+	return existing
+}
+
+func boolPtr(b bool) *bool { return &b }

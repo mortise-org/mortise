@@ -13,12 +13,15 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
+	"github.com/MC-Meesh/mortise/internal/constants"
+	"github.com/MC-Meesh/mortise/internal/envstore"
 )
 
 // envVarResponse is the JSON shape for a single env var.
 type envVarResponse struct {
-	Name  string `json:"name"`
-	Value string `json:"value"`
+	Name   string `json:"name"`
+	Value  string `json:"value"`
+	Source string `json:"source,omitempty"`
 }
 
 // patchEnvRequest is the JSON body for PATCH .../env.
@@ -28,28 +31,32 @@ type patchEnvRequest struct {
 }
 
 // GetEnv returns env vars for a specific environment on an app.
+// Reads from the {app}-env Secret in the env namespace.
 func (s *Server) GetEnv(w http.ResponseWriter, r *http.Request) {
-	app, env, ok := s.resolveAppEnv(w, r)
+	app, envName, ok := s.resolveAppEnv(w, r)
 	if !ok {
 		return
 	}
 
-	envSpec := findEnvironment(app, env)
-	if envSpec == nil {
-		writeJSON(w, http.StatusOK, []envVarResponse{})
+	envNs := envNamespace(app, envName)
+	store := &envstore.Store{Client: s.client}
+	envs, err := store.Get(r.Context(), envNs, app.Name)
+	if err != nil {
+		writeError(w, err)
 		return
 	}
 
-	resp := make([]envVarResponse, 0, len(envSpec.Env))
-	for _, v := range envSpec.Env {
-		resp = append(resp, envVarResponse{Name: v.Name, Value: v.Value})
+	resp := make([]envVarResponse, 0, len(envs))
+	for _, e := range envs {
+		resp = append(resp, envVarResponse{Name: e.Name, Value: e.Value, Source: e.Source})
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
 
 // PutEnv replaces all env vars for a specific environment on an app.
+// Writes to the {app}-env Secret in the env namespace.
 func (s *Server) PutEnv(w http.ResponseWriter, r *http.Request) {
-	app, env, ok := s.resolveAppEnv(w, r)
+	app, envName, ok := s.resolveAppEnv(w, r)
 	if !ok {
 		return
 	}
@@ -60,14 +67,33 @@ func (s *Server) PutEnv(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	envVars := make([]mortisev1alpha1.EnvVar, len(vars))
+	envNs := envNamespace(app, envName)
+	store := &envstore.Store{Client: s.client}
+
+	envVars := make([]envstore.Env, len(vars))
 	for i, v := range vars {
-		envVars[i] = mortisev1alpha1.EnvVar{Name: v.Name, Value: v.Value}
+		envVars[i] = envstore.Env{Name: v.Name, Value: v.Value, Source: "user"}
 	}
 
-	setEnvVars(app, env, envVars)
-	annotateEnvHash(app, env)
+	projectName, _ := constants.ProjectFromControlNs(app.Namespace)
+	labels := map[string]string{
+		constants.ProjectLabel:     projectName,
+		constants.EnvironmentLabel: envName,
+		"app.kubernetes.io/name":   app.Name,
+	}
+	if err := store.Set(r.Context(), envNs, app.Name, envVars, labels); err != nil {
+		writeError(w, err)
+		return
+	}
 
+	// Also update the CRD spec so the controller picks up the change and
+	// triggers a Deployment rollout.
+	crdEnvVars := make([]mortisev1alpha1.EnvVar, len(vars))
+	for i, v := range vars {
+		crdEnvVars[i] = mortisev1alpha1.EnvVar{Name: v.Name, Value: v.Value}
+	}
+	setEnvVars(app, envName, crdEnvVars)
+	annotateEnvHash(app, envName)
 	if err := s.client.Update(r.Context(), app); err != nil {
 		writeError(w, err)
 		return
@@ -77,8 +103,9 @@ func (s *Server) PutEnv(w http.ResponseWriter, r *http.Request) {
 }
 
 // PatchEnv does a partial update of env vars for a specific environment.
+// Reads existing vars from the Secret, applies changes, writes back.
 func (s *Server) PatchEnv(w http.ResponseWriter, r *http.Request) {
-	app, env, ok := s.resolveAppEnv(w, r)
+	app, envName, ok := s.resolveAppEnv(w, r)
 	if !ok {
 		return
 	}
@@ -89,38 +116,62 @@ func (s *Server) PatchEnv(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	envSpec := ensureEnvironment(app, env)
+	envNs := envNamespace(app, envName)
+	store := &envstore.Store{Client: s.client}
+
+	// Read existing vars from Secret.
+	existing, err := store.Get(r.Context(), envNs, app.Name)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
 
 	// Apply unsets.
 	unsetMap := make(map[string]bool, len(req.Unset))
 	for _, k := range req.Unset {
 		unsetMap[k] = true
 	}
-	filtered := envSpec.Env[:0]
-	for _, v := range envSpec.Env {
-		if !unsetMap[v.Name] {
-			filtered = append(filtered, v)
+	var result []envstore.Env
+	for _, e := range existing {
+		if !unsetMap[e.Name] {
+			result = append(result, e)
 		}
 	}
-	envSpec.Env = filtered
 
-	// Apply sets (update existing or append).
+	// Apply sets.
 	for k, v := range req.Set {
 		found := false
-		for i := range envSpec.Env {
-			if envSpec.Env[i].Name == k {
-				envSpec.Env[i].Value = v
+		for i := range result {
+			if result[i].Name == k {
+				result[i].Value = v
+				result[i].Source = "user"
 				found = true
 				break
 			}
 		}
 		if !found {
-			envSpec.Env = append(envSpec.Env, mortisev1alpha1.EnvVar{Name: k, Value: v})
+			result = append(result, envstore.Env{Name: k, Value: v, Source: "user"})
 		}
 	}
 
-	annotateEnvHash(app, env)
+	projectName, _ := constants.ProjectFromControlNs(app.Namespace)
+	labels := map[string]string{
+		constants.ProjectLabel:     projectName,
+		constants.EnvironmentLabel: envName,
+		"app.kubernetes.io/name":   app.Name,
+	}
+	if err := store.Set(r.Context(), envNs, app.Name, result, labels); err != nil {
+		writeError(w, err)
+		return
+	}
 
+	// Sync back to CRD spec for controller rollout trigger.
+	crdVars := make([]mortisev1alpha1.EnvVar, len(result))
+	for i, e := range result {
+		crdVars[i] = mortisev1alpha1.EnvVar{Name: e.Name, Value: e.Value}
+	}
+	setEnvVars(app, envName, crdVars)
+	annotateEnvHash(app, envName)
 	if err := s.client.Update(r.Context(), app); err != nil {
 		writeError(w, err)
 		return
@@ -129,10 +180,9 @@ func (s *Server) PatchEnv(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "updated"})
 }
 
-// ImportEnv parses a .env file body (text/plain) and merges into the
-// environment's env vars.
+// ImportEnv parses a .env file body and merges into the environment's env vars.
 func (s *Server) ImportEnv(w http.ResponseWriter, r *http.Request) {
-	app, env, ok := s.resolveAppEnv(w, r)
+	app, envName, ok := s.resolveAppEnv(w, r)
 	if !ok {
 		return
 	}
@@ -144,24 +194,34 @@ func (s *Server) ImportEnv(w http.ResponseWriter, r *http.Request) {
 	}
 
 	parsed := parseDotEnv(string(body))
-	envSpec := ensureEnvironment(app, env)
 
+	envNs := envNamespace(app, envName)
+	store := &envstore.Store{Client: s.client}
+
+	var vars []envstore.Env
 	for k, v := range parsed {
-		found := false
-		for i := range envSpec.Env {
-			if envSpec.Env[i].Name == k {
-				envSpec.Env[i].Value = v
-				found = true
-				break
-			}
-		}
-		if !found {
-			envSpec.Env = append(envSpec.Env, mortisev1alpha1.EnvVar{Name: k, Value: v})
-		}
+		vars = append(vars, envstore.Env{Name: k, Value: v, Source: "user"})
 	}
 
-	annotateEnvHash(app, env)
+	projectName, _ := constants.ProjectFromControlNs(app.Namespace)
+	labels := map[string]string{
+		constants.ProjectLabel:     projectName,
+		constants.EnvironmentLabel: envName,
+		"app.kubernetes.io/name":   app.Name,
+	}
+	if err := store.Merge(r.Context(), envNs, app.Name, vars, labels); err != nil {
+		writeError(w, err)
+		return
+	}
 
+	// Read back merged result for CRD sync.
+	merged, _ := store.Get(r.Context(), envNs, app.Name)
+	crdVars := make([]mortisev1alpha1.EnvVar, len(merged))
+	for i, e := range merged {
+		crdVars[i] = mortisev1alpha1.EnvVar{Name: e.Name, Value: e.Value}
+	}
+	setEnvVars(app, envName, crdVars)
+	annotateEnvHash(app, envName)
 	if err := s.client.Update(r.Context(), app); err != nil {
 		writeError(w, err)
 		return
@@ -170,11 +230,13 @@ func (s *Server) ImportEnv(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "imported", "count": fmt.Sprintf("%d", len(parsed))})
 }
 
-// resolveAppEnv reads the project, app, and environment query param. It fetches
-// the App CRD and returns it along with the environment name. The env name is
-// verified against the parent Project's `spec.environments` — unknown names
-// return 400 with a remediation message rather than falling through to an
-// unconfigured override write.
+// envNamespace returns the workload namespace for an app + environment.
+func envNamespace(app *mortisev1alpha1.App, envName string) string {
+	projectName, _ := constants.ProjectFromControlNs(app.Namespace)
+	return constants.EnvNamespace(projectName, envName)
+}
+
+// resolveAppEnv reads the project, app, and environment query param.
 func (s *Server) resolveAppEnv(w http.ResponseWriter, r *http.Request) (*mortisev1alpha1.App, string, bool) {
 	project, ok := s.getProject(w, r)
 	if !ok {
@@ -226,8 +288,6 @@ func annotateEnvHash(app *mortisev1alpha1.App, envName string) {
 	if env == nil {
 		return
 	}
-
-	// Build a deterministic string from env vars.
 	var b strings.Builder
 	for _, v := range env.Env {
 		b.WriteString(v.Name)
@@ -235,16 +295,16 @@ func annotateEnvHash(app *mortisev1alpha1.App, envName string) {
 		b.WriteString(v.Value)
 		b.WriteByte('\n')
 	}
-	hash := sha256.Sum256([]byte(b.String()))
-
+	sum := sha256.Sum256([]byte(b.String()))
+	hash := fmt.Sprintf("%x", sum[:8])
 	if env.Annotations == nil {
 		env.Annotations = make(map[string]string)
 	}
-	env.Annotations["mortise.dev/env-hash"] = fmt.Sprintf("%x", hash[:8])
+	env.Annotations["mortise.dev/env-hash"] = hash
 }
 
-// parseDotEnv parses KEY=value lines from a .env file string. Blank lines and
-// lines starting with # are skipped. Values may be optionally quoted.
+
+// parseDotEnv parses KEY=value lines from a .env file string.
 func parseDotEnv(content string) map[string]string {
 	result := make(map[string]string)
 	scanner := bufio.NewScanner(strings.NewReader(content))
@@ -259,7 +319,6 @@ func parseDotEnv(content string) map[string]string {
 		}
 		key := strings.TrimSpace(line[:idx])
 		val := strings.TrimSpace(line[idx+1:])
-		// Strip optional surrounding quotes.
 		if len(val) >= 2 && ((val[0] == '"' && val[len(val)-1] == '"') || (val[0] == '\'' && val[len(val)-1] == '\'')) {
 			val = val[1 : len(val)-1]
 		}

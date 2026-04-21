@@ -53,6 +53,7 @@ import (
 	"github.com/MC-Meesh/mortise/internal/bindings"
 	"github.com/MC-Meesh/mortise/internal/build"
 	"github.com/MC-Meesh/mortise/internal/constants"
+	"github.com/MC-Meesh/mortise/internal/envstore"
 	"github.com/MC-Meesh/mortise/internal/git"
 	"github.com/MC-Meesh/mortise/internal/ingress"
 	"github.com/MC-Meesh/mortise/internal/registry"
@@ -665,42 +666,27 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 		replicas = *env.Replicas
 	}
 
-	// Build env vars in resolution order (spec §5.8b): bound credentials <
-	// sharedVars < env-level vars. Later slices override earlier on key conflict.
-	var layers [][]corev1.EnvVar
-
-	if len(env.Bindings) > 0 {
-		projectName, err := appProjectName(app)
-		if err != nil {
-			return err
-		}
-		resolver := &bindings.Resolver{Client: r.Client}
-		boundVars, err := resolver.Resolve(ctx, projectName, env.Name, env.Bindings)
-		if err != nil {
-			return fmt.Errorf("resolve bindings: %w", err)
-		}
-		layers = append(layers, boundVars)
+	// Reconcile the {app}-env Secret — merges bindings, shared vars, and
+	// user-set env vars into a single Secret mounted via envFrom. This
+	// replaces the old pattern of baking env var literals onto the
+	// Deployment container spec.
+	if err := r.reconcileEnvSecret(ctx, app, env, envNs); err != nil {
+		return fmt.Errorf("reconcile env secret: %w", err)
 	}
 
-	if len(app.Spec.SharedVars) > 0 {
-		layers = append(layers, toEnvVars(app.Spec.SharedVars))
-	}
-
-	layers = append(layers, toEnvVars(env.Env))
-
-	envVars := mergeEnvVars(layers...)
-	if findEnvVar(envVars, "PORT") == nil {
-		envVars = append(envVars, corev1.EnvVar{
-			Name:  "PORT",
-			Value: strconv.Itoa(int(appPort(app))),
-		})
-	}
+	// PORT is injected directly (not via Secret) because it's a Mortise
+	// convention that must always be present and match the container port.
+	portEnv := []corev1.EnvVar{{
+		Name:  "PORT",
+		Value: strconv.Itoa(int(appPort(app))),
+	}}
 
 	containers := []corev1.Container{
 		{
-			Name:  app.Name,
-			Image: app.Spec.Source.Image,
-			Env:   envVars,
+			Name:    app.Name,
+			Image:   app.Spec.Source.Image,
+			Env:     portEnv,
+			EnvFrom: envstore.EnvFromSources(app.Name),
 			Ports: []corev1.ContainerPort{
 				{
 					Name:          "http",
@@ -805,6 +791,9 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 		if !equality.Semantic.DeepEqual(existingContainer.Env, desiredContainer.Env) {
 			needsUpdate = true
 		}
+		if !equality.Semantic.DeepEqual(existingContainer.EnvFrom, desiredContainer.EnvFrom) {
+			needsUpdate = true
+		}
 		if !equality.Semantic.DeepEqual(existingContainer.Ports, desiredContainer.Ports) {
 			needsUpdate = true
 		}
@@ -833,6 +822,7 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 		existing.Spec.ProgressDeadlineSeconds = desired.Spec.ProgressDeadlineSeconds
 		existing.Spec.Template.Spec.Containers[0].Image = desiredContainer.Image
 		existing.Spec.Template.Spec.Containers[0].Env = desiredContainer.Env
+		existing.Spec.Template.Spec.Containers[0].EnvFrom = desiredContainer.EnvFrom
 		existing.Spec.Template.Spec.Containers[0].Ports = desiredContainer.Ports
 		existing.Spec.Template.Spec.Containers[0].VolumeMounts = desiredContainer.VolumeMounts
 		existing.Spec.Template.Spec.Containers[0].Resources = desiredContainer.Resources
@@ -859,26 +849,16 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 func (r *AppReconciler) reconcileCronJob(ctx context.Context, app *mortisev1alpha1.App, env *mortisev1alpha1.Environment, envNs, credentialsHash string) error {
 	name := cronJobName(app.Name)
 
-	envVars := toEnvVars(env.Env)
-
-	if len(env.Bindings) > 0 {
-		projectName, err := appProjectName(app)
-		if err != nil {
-			return err
-		}
-		resolver := &bindings.Resolver{Client: r.Client}
-		boundVars, err := resolver.Resolve(ctx, projectName, env.Name, env.Bindings)
-		if err != nil {
-			return fmt.Errorf("resolve bindings: %w", err)
-		}
-		envVars = append(boundVars, envVars...)
+	// Reconcile env Secret — same as Deployment path.
+	if err := r.reconcileEnvSecret(ctx, app, env, envNs); err != nil {
+		return fmt.Errorf("reconcile env secret: %w", err)
 	}
 
 	containers := []corev1.Container{
 		{
-			Name:  app.Name,
-			Image: app.Spec.Source.Image,
-			Env:   envVars,
+			Name:    app.Name,
+			Image:   app.Spec.Source.Image,
+			EnvFrom: envstore.EnvFromSources(app.Name),
 		},
 	}
 
@@ -1335,6 +1315,90 @@ func (r *AppReconciler) reconcileConfigMaps(ctx context.Context, app *mortisev1a
 
 func pvcName(app, volume string) string {
 	return fmt.Sprintf("%s-%s", app, volume)
+}
+
+// reconcileEnvSecret merges all env var sources into the {app}-env Secret.
+// Sources (in override priority order): bindings < sharedVars < env-level vars.
+// The Deployment mounts this Secret via envFrom instead of carrying literal env
+// vars on its container spec. Also ensures the shared-env Secret exists.
+func (r *AppReconciler) reconcileEnvSecret(ctx context.Context, app *mortisev1alpha1.App, env *mortisev1alpha1.Environment, envNs string) error {
+	store := &envstore.Store{Client: r.Client}
+	projectName, _ := appProjectName(app)
+
+	labels := map[string]string{
+		constants.ProjectLabel:     projectName,
+		constants.EnvironmentLabel: env.Name,
+		"app.kubernetes.io/name":   app.Name,
+	}
+	sharedLabels := map[string]string{
+		constants.ProjectLabel:     projectName,
+		constants.EnvironmentLabel: env.Name,
+	}
+
+	// Ensure shared-env Secret exists in the env namespace.
+	if err := store.EnsureSharedExists(ctx, envNs, sharedLabels); err != nil {
+		return fmt.Errorf("ensure shared-env: %w", err)
+	}
+
+	// Build the merged env var set.
+	var envs []envstore.Env
+
+	// Layer 1: bindings (lowest priority).
+	if len(env.Bindings) > 0 {
+		resolver := &bindings.Resolver{Client: r.Client}
+		boundVars, err := resolver.Resolve(ctx, projectName, env.Name, env.Bindings)
+		if err != nil {
+			return fmt.Errorf("resolve bindings: %w", err)
+		}
+		for _, bv := range boundVars {
+			envs = append(envs, envstore.Env{
+				Name:   bv.Name,
+				Value:  bv.Value,
+				Source: "binding",
+			})
+		}
+	}
+
+	// Layer 2: shared vars.
+	for _, sv := range app.Spec.SharedVars {
+		envs = append(envs, envstore.Env{
+			Name:   sv.Name,
+			Value:  sv.Value,
+			Source: "shared",
+		})
+	}
+
+	// Layer 3: per-environment vars (highest priority).
+	for _, ev := range env.Env {
+		envs = append(envs, envstore.Env{
+			Name:   ev.Name,
+			Value:  ev.Value,
+			Source: "user",
+		})
+	}
+
+	// Deduplicate — later entries override earlier (same priority semantics).
+	seen := make(map[string]int)
+	for i, e := range envs {
+		if prev, ok := seen[e.Name]; ok {
+			envs[prev] = envs[i] // overwrite with higher priority
+		}
+		seen[e.Name] = i
+	}
+	deduped := make([]envstore.Env, 0, len(seen))
+	added := make(map[string]bool)
+	for _, e := range envs {
+		if !added[e.Name] {
+			deduped = append(deduped, envstore.Env{
+				Name:   e.Name,
+				Value:  envs[seen[e.Name]].Value,
+				Source: envs[seen[e.Name]].Source,
+			})
+			added[e.Name] = true
+		}
+	}
+
+	return store.Set(ctx, envNs, app.Name, deduped, labels)
 }
 
 // credentialsSecretName is the name of the {app}-credentials Secret this
