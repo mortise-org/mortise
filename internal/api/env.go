@@ -2,12 +2,12 @@ package api
 
 import (
 	"bufio"
-	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"k8s.io/apimachinery/pkg/types"
@@ -86,14 +86,13 @@ func (s *Server) PutEnv(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Also update the CRD spec so the controller picks up the change and
-	// triggers a Deployment rollout.
-	crdEnvVars := make([]mortisev1alpha1.EnvVar, len(vars))
-	for i, v := range vars {
-		crdEnvVars[i] = mortisev1alpha1.EnvVar{Name: v.Name, Value: v.Value}
+	// Poke the App CRD to trigger a controller reconcile (which re-reads
+	// the Secret and updates the Deployment). We do NOT sync env vars back
+	// to the CRD spec — the Secret is the source of truth.
+	if app.Annotations == nil {
+		app.Annotations = make(map[string]string)
 	}
-	setEnvVars(app, envName, crdEnvVars)
-	annotateEnvHash(app, envName)
+	app.Annotations["mortise.dev/env-updated"] = fmt.Sprintf("%d", time.Now().UnixMilli())
 	if err := s.client.Update(r.Context(), app); err != nil {
 		writeError(w, err)
 		return
@@ -165,13 +164,11 @@ func (s *Server) PatchEnv(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Sync back to CRD spec for controller rollout trigger.
-	crdVars := make([]mortisev1alpha1.EnvVar, len(result))
-	for i, e := range result {
-		crdVars[i] = mortisev1alpha1.EnvVar{Name: e.Name, Value: e.Value}
+	// Poke CRD to trigger reconcile — Secret is the source of truth.
+	if app.Annotations == nil {
+		app.Annotations = make(map[string]string)
 	}
-	setEnvVars(app, envName, crdVars)
-	annotateEnvHash(app, envName)
+	app.Annotations["mortise.dev/env-updated"] = fmt.Sprintf("%d", time.Now().UnixMilli())
 	if err := s.client.Update(r.Context(), app); err != nil {
 		writeError(w, err)
 		return
@@ -214,14 +211,11 @@ func (s *Server) ImportEnv(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Read back merged result for CRD sync.
-	merged, _ := store.Get(r.Context(), envNs, app.Name)
-	crdVars := make([]mortisev1alpha1.EnvVar, len(merged))
-	for i, e := range merged {
-		crdVars[i] = mortisev1alpha1.EnvVar{Name: e.Name, Value: e.Value}
+	// Poke CRD to trigger reconcile.
+	if app.Annotations == nil {
+		app.Annotations = make(map[string]string)
 	}
-	setEnvVars(app, envName, crdVars)
-	annotateEnvHash(app, envName)
+	app.Annotations["mortise.dev/env-updated"] = fmt.Sprintf("%d", time.Now().UnixMilli())
 	if err := s.client.Update(r.Context(), app); err != nil {
 		writeError(w, err)
 		return
@@ -334,33 +328,7 @@ func ensureEnvironment(app *mortisev1alpha1.App, name string) *mortisev1alpha1.E
 	return &app.Spec.Environments[len(app.Spec.Environments)-1]
 }
 
-// setEnvVars replaces all env vars for the named environment.
-func setEnvVars(app *mortisev1alpha1.App, envName string, vars []mortisev1alpha1.EnvVar) {
-	env := ensureEnvironment(app, envName)
-	env.Env = vars
-}
 
-// annotateEnvHash sets the mortise.dev/env-hash annotation on the environment
-// to trigger a rolling restart when env vars change.
-func annotateEnvHash(app *mortisev1alpha1.App, envName string) {
-	env := findEnvironment(app, envName)
-	if env == nil {
-		return
-	}
-	var b strings.Builder
-	for _, v := range env.Env {
-		b.WriteString(v.Name)
-		b.WriteByte('=')
-		b.WriteString(v.Value)
-		b.WriteByte('\n')
-	}
-	sum := sha256.Sum256([]byte(b.String()))
-	hash := fmt.Sprintf("%x", sum[:8])
-	if env.Annotations == nil {
-		env.Annotations = make(map[string]string)
-	}
-	env.Annotations["mortise.dev/env-hash"] = hash
-}
 
 
 // parseDotEnv parses KEY=value lines from a .env file string.

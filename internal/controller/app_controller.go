@@ -1351,67 +1351,45 @@ func (r *AppReconciler) reconcileEnvSecret(ctx context.Context, app *mortisev1al
 		}
 	}
 
-	// Build the merged env var set.
-	var envs []envstore.Env
+	// Check if the {app}-env Secret already exists.
+	existing, _ := store.Get(ctx, envNs, app.Name)
 
-	// Layer 1: bindings (lowest priority).
+	if len(existing) == 0 {
+		// First deploy: seed the Secret from the CRD spec (initial values).
+		var seed []envstore.Env
+		for _, ev := range env.Env {
+			seed = append(seed, envstore.Env{Name: ev.Name, Value: ev.Value, Source: "user"})
+		}
+		for _, sv := range app.Spec.SharedVars {
+			seed = append(seed, envstore.Env{Name: sv.Name, Value: sv.Value, Source: "shared"})
+		}
+		if err := store.Set(ctx, envNs, app.Name, seed, labels); err != nil {
+			return fmt.Errorf("seed env secret: %w", err)
+		}
+	}
+
+	// Always merge binding-injected vars (computed at reconcile time, not stored).
 	if len(env.Bindings) > 0 {
 		resolver := &bindings.Resolver{Client: r.Client}
 		boundVars, err := resolver.Resolve(ctx, projectName, env.Name, env.Bindings)
 		if err != nil {
 			return fmt.Errorf("resolve bindings: %w", err)
 		}
+		var bindingEnvs []envstore.Env
 		for _, bv := range boundVars {
-			envs = append(envs, envstore.Env{
+			bindingEnvs = append(bindingEnvs, envstore.Env{
 				Name:   bv.Name,
 				Value:  bv.Value,
 				Source: "binding",
 			})
 		}
-	}
-
-	// Layer 2: shared vars.
-	for _, sv := range app.Spec.SharedVars {
-		envs = append(envs, envstore.Env{
-			Name:   sv.Name,
-			Value:  sv.Value,
-			Source: "shared",
-		})
-	}
-
-	// Layer 3: per-environment vars (highest priority).
-	for _, ev := range env.Env {
-		envs = append(envs, envstore.Env{
-			Name:   ev.Name,
-			Value:  ev.Value,
-			Source: "user",
-		})
-	}
-
-	// Deduplicate — later entries override earlier (same priority semantics).
-	seen := make(map[string]int)
-	for i, e := range envs {
-		if prev, ok := seen[e.Name]; ok {
-			envs[prev] = envs[i] // overwrite with higher priority
-		}
-		seen[e.Name] = i
-	}
-	deduped := make([]envstore.Env, 0, len(seen))
-	added := make(map[string]bool)
-	for _, e := range envs {
-		if !added[e.Name] {
-			deduped = append(deduped, envstore.Env{
-				Name:   e.Name,
-				Value:  envs[seen[e.Name]].Value,
-				Source: envs[seen[e.Name]].Source,
-			})
-			added[e.Name] = true
+		if err := store.Merge(ctx, envNs, app.Name, bindingEnvs, labels); err != nil {
+			return fmt.Errorf("merge binding vars: %w", err)
 		}
 	}
 
-	// Merge rather than overwrite — preserves keys written by external tools
-	// (ESO, Vault, manual kubectl) that Mortise doesn't manage.
-	return store.Merge(ctx, envNs, app.Name, deduped, labels)
+	// Ensure the Secret exists even if there are no vars.
+	return store.EnsureExists(ctx, envNs, app.Name, labels)
 }
 
 // credentialsSecretName is the name of the {app}-credentials Secret this

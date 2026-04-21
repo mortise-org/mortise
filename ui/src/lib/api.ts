@@ -314,12 +314,10 @@ export const api = {
 		}),
 
 	// --- env management ---
-	getEnv: async (project: string, app: string, env: string): Promise<Record<string, string>> => {
-		const rows = await request<Array<{ name: string; value: string }>>(
+	getEnv: (project: string, app: string, env: string) =>
+		request<Array<{ name: string; value: string; source?: string }>>(
 			`/projects/${enc(project)}/apps/${enc(app)}/env?environment=${enc(env)}`
-		);
-		return Object.fromEntries((rows ?? []).map((r) => [r.name, r.value]));
-	},
+		),
 	setEnv: (project: string, app: string, env: string, vars: Record<string, string>) =>
 		request<void>(
 			`/projects/${enc(project)}/apps/${enc(app)}/env?environment=${enc(env)}`,

@@ -67,10 +67,17 @@
 
 	let envSection = $state<SectionState>(makeSection());
 	let sharedSection = $state<SectionState>(makeSection());
+	let lastLoadedEnv = $state('');
+	let lastLoadedApp = $state('');
 
 	$effect(() => {
 		const env = activeEnv;
+		const appName = app.metadata.name;
 		if (!env) return;
+		// Only reload when the env or app actually changes, not on every re-render.
+		if (env === lastLoadedEnv && appName === lastLoadedApp) return;
+		lastLoadedEnv = env;
+		lastLoadedApp = appName;
 		void loadEnv(env);
 		void loadShared();
 	});
@@ -80,19 +87,12 @@
 		envSection.error = '';
 		try {
 			const rows = await api.getEnv(project, app.metadata.name, envName);
-			// API now returns {name, value, source}
-			const entries: EnvEntry[] = Array.isArray(rows)
-				? (typeof rows[0] === 'object' && 'source' in (rows[0] ?? {})
-					? (rows as Array<{name: string; value: string; source?: string}>).map(r => ({
-						name: r.name,
-						value: r.value,
-						source: r.source ?? 'user',
-						revealed: false
-					}))
-					: Object.entries(rows as Record<string, string>).map(([name, value]) => ({
-						name, value, source: 'user', revealed: false
-					})))
-				: [];
+			const entries: EnvEntry[] = (rows ?? []).map(r => ({
+				name: r.name,
+				value: r.value,
+				source: r.source ?? 'user',
+				revealed: false
+			}));
 			envSection.entries = entries;
 			envSection.originalEntries = entries.map(e => ({ ...e }));
 			envSection.editedKeys = new Set();
