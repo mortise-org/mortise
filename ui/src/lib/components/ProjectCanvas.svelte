@@ -23,9 +23,10 @@
 		onAppOpen: (appName: string) => void;
 		onAddApp?: () => void;
 		onDeleteApp?: (appName: string) => void;
+		onPaneClick?: () => void;
 	}
 
-	let { projectName, apps, selectedApp = null, onAppOpen, onAddApp, onDeleteApp }: Props = $props();
+	let { projectName, apps, selectedApp = null, onAppOpen, onAddApp, onDeleteApp, onPaneClick }: Props = $props();
 
 	const currentEnv = $derived(store.currentEnv(projectName) ?? '');
 
@@ -152,6 +153,7 @@
 			snapGrid={[20, 20]}
 			onnodedragstop={({ nodes: n }) => onNodeDragStop({ nodes: n })}
 			onnodeclick={({ node }) => onAppOpen(node.id)}
+			onpaneclick={() => onPaneClick?.()}
 			onnodecontextmenu={onNodeContextMenu}
 			colorMode="dark"
 		>

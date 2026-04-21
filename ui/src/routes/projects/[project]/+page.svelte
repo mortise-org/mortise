@@ -231,6 +231,7 @@
 					{apps}
 					selectedApp={urlApp}
 					onAppOpen={(name) => selectedApp = name}
+					onPaneClick={() => selectedApp = null}
 					onAddApp={() => showNewApp = true}
 					onDeleteApp={async (name) => {
 						if (confirm(`Delete app "${name}"? This cannot be undone.`)) {
