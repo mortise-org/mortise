@@ -1,0 +1,18 @@
+// PENDING — this file exposes a test-only shim for swapping the entropy
+// source used by generateRandomHex. It depends on a package-level
+// `randReader io.Reader` being added to stacks.go, which has not landed
+// on main.
+//
+// When that lands, rename to `export_test.go` and commit.
+package api
+
+import "io"
+
+// SwapRandReader replaces the entropy source used by generateRandomHex.
+// Test-only; returns a function that restores the previous reader. Exposed
+// via export_test.go so the api_test package can exercise failure modes.
+func SwapRandReader(r io.Reader) func() {
+	orig := randReader
+	randReader = r
+	return func() { randReader = orig }
+}
