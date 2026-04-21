@@ -195,6 +195,9 @@ export const api = {
 	rebuild: (project: string, app: string) =>
 		request<{ status: string }>(`/projects/${enc(project)}/apps/${enc(app)}/rebuild`, { method: 'POST' }),
 
+	redeploy: (project: string, app: string, environment?: string) =>
+		request<{ status: string }>(`/projects/${enc(project)}/apps/${enc(app)}/redeploy${environment ? `?environment=${enc(environment)}` : ''}`, { method: 'POST' }),
+
 	// --- pods: lightweight list used by the Logs drawer pod picker ---
 	listPods: (project: string, app: string, env: string) =>
 		request<Pod[]>(`/projects/${enc(project)}/apps/${enc(app)}/pods?env=${enc(env)}`),
@@ -314,12 +317,10 @@ export const api = {
 		}),
 
 	// --- env management ---
-	getEnv: async (project: string, app: string, env: string): Promise<Record<string, string>> => {
-		const rows = await request<Array<{ name: string; value: string }>>(
+	getEnv: (project: string, app: string, env: string) =>
+		request<Array<{ name: string; value: string; source?: string }>>(
 			`/projects/${enc(project)}/apps/${enc(app)}/env?environment=${enc(env)}`
-		);
-		return Object.fromEntries((rows ?? []).map((r) => [r.name, r.value]));
-	},
+		),
 	setEnv: (project: string, app: string, env: string, vars: Record<string, string>) =>
 		request<void>(
 			`/projects/${enc(project)}/apps/${enc(app)}/env?environment=${enc(env)}`,
@@ -360,11 +361,13 @@ export const api = {
 	listActivity: (project: string) =>
 		request<ActivityEvent[]>(`/projects/${enc(project)}/activity`),
 
-	// --- shared variables ---
-	getSharedVars: (project: string, app: string) =>
-		request<Record<string, string>>(`/projects/${enc(project)}/apps/${enc(app)}/shared`),
-	setSharedVars: (project: string, app: string, vars: Record<string, string>) =>
-		request<void>(`/projects/${enc(project)}/apps/${enc(app)}/shared`, {
+	// --- shared variables (project-level, controller fans out to all envs) ---
+	getSharedVars: (project: string) =>
+		request<Array<{ name: string; value: string; source?: string }>>(
+			`/projects/${enc(project)}/shared-vars`
+		),
+	setSharedVars: (project: string, vars: Array<{ name: string; value: string }>) =>
+		request<void>(`/projects/${enc(project)}/shared-vars`, {
 			method: 'PUT',
 			body: JSON.stringify(vars)
 		}),

@@ -1,8 +1,8 @@
 // Package templates provides embedded compose-based stack templates.
 //
-// Each subdirectory is a template containing a docker-compose.yml, an optional
-// template.yaml metadata file, and an optional files/ directory for
-// volume-mounted content (e.g. init SQL).
+// Each subdirectory is a template containing a docker-compose.yml and an
+// optional files/ directory for volume-mounted content (e.g. init SQL).
+// Templates are just docker-compose files — no custom metadata format.
 package templates
 
 import (
@@ -11,27 +11,16 @@ import (
 	"io/fs"
 	"path"
 	"strings"
-
-	"gopkg.in/yaml.v3"
 )
 
 //go:embed all:supabase
 var embedded embed.FS
 
-// templateMeta is the optional template.yaml metadata file.
-type templateMeta struct {
-	Name             string   `yaml:"name"`
-	Description      string   `yaml:"description"`
-	RequiredServices []string `yaml:"required_services"`
-}
-
 // Template holds a resolved template's compose YAML and bundled files.
 type Template struct {
-	Name        string
-	Description string
-	Compose     string            // raw docker-compose.yml content
-	Files       map[string]string // host path (from volume mounts) -> file content
-	Required    []string          // service names that are required
+	Name    string
+	Compose string            // raw docker-compose.yml content
+	Files   map[string]string // host path (from volume mounts) -> file content
 }
 
 // List returns all available template names.
@@ -66,18 +55,6 @@ func Load(name string) (*Template, error) {
 		Files:   make(map[string]string),
 	}
 
-	// Read optional metadata.
-	if metaBytes, err := embedded.ReadFile(path.Join(name, "template.yaml")); err == nil {
-		var meta templateMeta
-		if err := yaml.Unmarshal(metaBytes, &meta); err == nil {
-			if meta.Name != "" {
-				t.Name = meta.Name
-			}
-			t.Description = meta.Description
-			t.Required = meta.RequiredServices
-		}
-	}
-
 	// Read bundled files from the files/ subdirectory.
 	filesDir := path.Join(name, "files")
 	_ = fs.WalkDir(embedded, filesDir, func(p string, d fs.DirEntry, err error) error {
@@ -88,8 +65,6 @@ func Load(name string) (*Template, error) {
 		if err != nil {
 			return err
 		}
-		// Map the embedded path to the relative path used in volume mounts.
-		// e.g. "supabase/files/init.sql" -> "./files/init.sql"
 		relPath := "./" + strings.TrimPrefix(p, name+"/")
 		t.Files[relPath] = string(content)
 		return nil

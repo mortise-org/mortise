@@ -147,6 +147,7 @@ func (s *Server) Handler() http.Handler {
 			r.Post("/projects/{project}/apps/{app}/exec", s.ExecInApp)
 			r.Post("/projects/{project}/apps/{app}/rollback", s.Rollback)
 			r.Post("/projects/{project}/apps/{app}/rebuild", s.Rebuild)
+			r.Post("/projects/{project}/apps/{app}/redeploy", s.Redeploy)
 			r.Post("/projects/{project}/apps/{app}/promote", s.Promote)
 			r.Get("/projects/{project}/apps/{app}/build-logs", s.handleBuildLogs)
 			r.Get("/projects/{project}/apps/{app}/pods", s.handleListPods)
@@ -165,6 +166,9 @@ func (s *Server) Handler() http.Handler {
 			r.Put("/projects/{project}/apps/{app}/env", s.PutEnv)
 			r.Patch("/projects/{project}/apps/{app}/env", s.PatchEnv)
 			r.Post("/projects/{project}/apps/{app}/env/import", s.ImportEnv)
+
+			r.Get("/projects/{project}/shared-vars", s.GetSharedVars)
+			r.Put("/projects/{project}/shared-vars", s.PutSharedVars)
 
 			r.Get("/projects/{project}/apps/{app}/domains", s.ListDomains)
 			r.Post("/projects/{project}/apps/{app}/domains", s.AddDomain)

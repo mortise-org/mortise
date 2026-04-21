@@ -14,7 +14,7 @@
 	let filterText = $state('');
 	let allApps = $state<App[]>([]);
 	let secrets = $state<SecretResponse[]>([]);
-	let sharedVars = $state<Record<string, string>>({});
+	let sharedVars = $state<Array<{ name: string; value: string; source?: string }>>([]);
 	let loading = $state(true);
 
 	onMount(async () => {
@@ -22,7 +22,7 @@
 			[allApps, secrets, sharedVars] = await Promise.all([
 				api.listApps(project),
 				api.listSecrets(project, app.metadata.name),
-				api.getSharedVars(project, app.metadata.name).catch(() => ({}))
+				api.getSharedVars(project).catch(() => [])
 			]);
 		} finally {
 			loading = false;
@@ -54,9 +54,9 @@
 	);
 
 	const sharedRows = $derived(
-		Object.keys(sharedVars).map(k => ({
-			key: k,
-			ref: `\${{shared.${k}}}`
+		sharedVars.map(v => ({
+			key: v.name,
+			ref: `\${{shared.${v.name}}}`
 		})).filter(r => !filterText || r.key.toLowerCase().includes(filterText.toLowerCase()))
 	);
 </script>

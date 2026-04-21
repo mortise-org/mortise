@@ -12,6 +12,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
+	"github.com/MC-Meesh/mortise/internal/constants"
+	"github.com/MC-Meesh/mortise/internal/envstore"
 	"github.com/MC-Meesh/mortise/internal/templates"
 )
 
@@ -143,6 +145,27 @@ func (s *Server) CreateStack(w http.ResponseWriter, r *http.Request) {
 		created = append(created, as.Name)
 	}
 
+	// Write auto-generated template vars to the control namespace.
+	// The controller materializes these into shared-env in each env namespace
+	// during reconcile — no race condition since the control ns always exists.
+	if len(req.Vars) > 0 {
+		controlNs := constants.ControlNamespace(project)
+		store := &envstore.Store{Client: s.client}
+		var sharedVars []envstore.Env
+		for k, v := range req.Vars {
+			sharedVars = append(sharedVars, envstore.Env{
+				Name:   k,
+				Value:  v,
+				Source: "generated",
+			})
+		}
+		labels := map[string]string{
+			constants.ProjectLabel:  project,
+			"mortise.dev/stack":     stackPrefix,
+		}
+		_ = store.MergeSharedSource(r.Context(), controlNs, sharedVars, labels)
+	}
+
 	writeJSON(w, http.StatusCreated, createStackResponse{Apps: created})
 }
 
@@ -179,15 +202,13 @@ func filterDependsOn(v interface{}, keep map[string]bool) interface{} {
 }
 
 type templateInfo struct {
-	Name        string        `json:"name"`
-	Description string        `json:"description"`
-	Services    []serviceInfo `json:"services"`
+	Name     string        `json:"name"`
+	Services []serviceInfo `json:"services"`
 }
 
 type serviceInfo struct {
-	Name     string `json:"name"`
-	Image    string `json:"image"`
-	Required bool   `json:"required"`
+	Name  string `json:"name"`
+	Image string `json:"image"`
 }
 
 func (s *Server) ListTemplates(w http.ResponseWriter, r *http.Request) {
@@ -208,24 +229,17 @@ func (s *Server) ListTemplates(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			continue
 		}
-		requiredSet := make(map[string]bool, len(tpl.Required))
-		for _, r := range tpl.Required {
-			requiredSet[r] = true
-		}
 		var services []serviceInfo
 		for svcName, svc := range cf.Services {
 			services = append(services, serviceInfo{
-				Name:     svcName,
-				Image:    svc.Image,
-				Required: requiredSet[svcName],
+				Name:  svcName,
+				Image: svc.Image,
 			})
 		}
-		// Sort for deterministic output.
 		sort.Slice(services, func(i, j int) bool { return services[i].Name < services[j].Name })
 		result = append(result, templateInfo{
-			Name:        tpl.Name,
-			Description: tpl.Description,
-			Services:    services,
+			Name:     tpl.Name,
+			Services: services,
 		})
 	}
 	writeJSON(w, http.StatusOK, result)
