@@ -21,7 +21,6 @@
 	// --- Derived app-level flags ---
 	const isBuilding = $derived(app.status?.phase === 'Building');
 	const isFailed = $derived(app.status?.phase === 'Failed');
-	const isCrashLooping = $derived(app.status?.phase === 'CrashLooping');
 	const isImageSource = $derived(app.spec.source?.type === 'image');
 	const failedMessage = $derived(
 		app.status?.conditions?.find((c) => c.status === 'False')?.message ?? null
@@ -396,12 +395,6 @@
 			{:else if isFailed && pods.length === 0 && failedMessage}
 				<div class="space-y-2">
 					<p class="text-xs font-medium text-danger">Build failed:</p>
-					<pre
-						class="whitespace-pre-wrap break-all rounded bg-surface-800 p-2 text-xs text-danger/80">{failedMessage}</pre>
-				</div>
-			{:else if isCrashLooping && failedMessage}
-				<div class="space-y-2">
-					<p class="text-xs font-medium text-danger">Container crash:</p>
 					<pre
 						class="whitespace-pre-wrap break-all rounded bg-surface-800 p-2 text-xs text-danger/80">{failedMessage}</pre>
 				</div>
