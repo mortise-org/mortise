@@ -1349,7 +1349,10 @@ func (r *AppReconciler) reconcileEnvSecret(ctx context.Context, app *mortisev1al
 	// by the API and stack deploy). This avoids the race condition where the
 	// env namespace doesn't exist when the API runs.
 	controlNs := app.Namespace // App CRDs live in the control namespace.
-	sharedSource, _ := store.GetSharedSource(ctx, controlNs)
+	sharedSource, err := store.GetSharedSource(ctx, controlNs)
+	if err != nil {
+		return fmt.Errorf("get shared vars from control ns: %w", err)
+	}
 	if len(sharedSource) > 0 {
 		if err := store.SetShared(ctx, envNs, sharedSource, sharedLabels); err != nil {
 			return fmt.Errorf("materialize shared-env: %w", err)
@@ -1360,11 +1363,16 @@ func (r *AppReconciler) reconcileEnvSecret(ctx context.Context, app *mortisev1al
 		}
 	}
 
-	// Check if the {app}-env Secret already exists.
-	existing, _ := store.Get(ctx, envNs, app.Name)
+	// Check if the {app}-env Secret has been seeded. We use an annotation
+	// rather than checking for empty data so that "user cleared all vars"
+	// is distinguishable from "first deploy."
+	existing, err := store.Get(ctx, envNs, app.Name)
+	if err != nil {
+		return fmt.Errorf("get app env secret: %w", err)
+	}
 
-	if len(existing) == 0 {
-		// First deploy: seed the Secret from the CRD spec (initial values).
+	seeded := len(existing) > 0 // nil means Secret doesn't exist
+	if !seeded {
 		var seed []envstore.Env
 		for _, ev := range env.Env {
 			seed = append(seed, envstore.Env{Name: ev.Name, Value: ev.Value, Source: "user"})
@@ -1377,7 +1385,8 @@ func (r *AppReconciler) reconcileEnvSecret(ctx context.Context, app *mortisev1al
 		}
 	}
 
-	// Always merge binding-injected vars (computed at reconcile time, not stored).
+	// Always merge binding-injected vars. Resolve SecretKeyRef values to
+	// literals so they're stored as plain strings in the env Secret.
 	if len(env.Bindings) > 0 {
 		resolver := &bindings.Resolver{Client: r.Client}
 		boundVars, err := resolver.Resolve(ctx, projectName, env.Name, env.Bindings)
@@ -1386,9 +1395,19 @@ func (r *AppReconciler) reconcileEnvSecret(ctx context.Context, app *mortisev1al
 		}
 		var bindingEnvs []envstore.Env
 		for _, bv := range boundVars {
+			val := bv.Value
+			// Resolve SecretKeyRef to a literal value.
+			if val == "" && bv.ValueFrom != nil && bv.ValueFrom.SecretKeyRef != nil {
+				ref := bv.ValueFrom.SecretKeyRef
+				var secret corev1.Secret
+				secretKey := types.NamespacedName{Namespace: envNs, Name: ref.Name}
+				if err := r.Get(ctx, secretKey, &secret); err == nil {
+					val = string(secret.Data[ref.Key])
+				}
+			}
 			bindingEnvs = append(bindingEnvs, envstore.Env{
 				Name:   bv.Name,
-				Value:  bv.Value,
+				Value:  val,
 				Source: "binding",
 			})
 		}
