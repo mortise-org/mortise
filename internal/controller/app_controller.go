@@ -1572,25 +1572,22 @@ func (r *AppReconciler) ensureWebhook(ctx context.Context, app *mortisev1alpha1.
 	return nil
 }
 
-// checkPodCrashLoop checks pods for CrashLoopBackOff and returns a
-// user-facing message describing the crash. Returns "" if no crash detected.
+// checkPodCrashLoopInEnv checks pods for CrashLoopBackOff within a single env
+// namespace and returns a user-facing message describing the crash, or "" if no
+// crash detected.
 //
 // Note: this List call hits the API server directly (not the controller cache)
 // because Pods are not in our watch set. This is acceptable at 15s intervals
 // with namespace + label scoping.
-func (r *AppReconciler) checkPodCrashLoop(ctx context.Context, app *mortisev1alpha1.App) string {
-	// Pods live in env namespaces, not the control ns. Listing cluster-wide
-	// by project+app label finds them without having to re-walk project envs.
-	projectName, err := appProjectName(app)
-	if err != nil {
-		return ""
-	}
+func (r *AppReconciler) checkPodCrashLoopInEnv(ctx context.Context, app *mortisev1alpha1.App, envName, envNs string) string {
 	var podList corev1.PodList
-	if err := r.List(ctx, &podList, client.MatchingLabels{
-		"app.kubernetes.io/name":       app.Name,
-		"app.kubernetes.io/managed-by": "mortise",
-		constants.ProjectLabel:         projectName,
-	}); err != nil {
+	if err := r.List(ctx, &podList,
+		client.InNamespace(envNs),
+		client.MatchingLabels{
+			"app.kubernetes.io/name":       app.Name,
+			"app.kubernetes.io/managed-by": "mortise",
+			"mortise.dev/environment":      envName,
+		}); err != nil {
 		return ""
 	}
 
@@ -1702,6 +1699,10 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 
 	isCron := app.Spec.Kind == mortisev1alpha1.AppKindCron
 
+	anyNotReady := false
+	anyCrash := false
+	firstCrashMsg := ""
+
 	for _, env := range resolvedEnvs {
 		es := mortisev1alpha1.EnvironmentStatus{
 			Name:         env.Name,
@@ -1739,43 +1740,47 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 			}
 		}
 
+		// Per-env phase: Ready if readyReplicas meets expectation; else check
+		// for CrashLooping; otherwise Deploying.
+		expectedReplicas := int32(1)
+		if !isCron && env.Replicas != nil {
+			expectedReplicas = *env.Replicas
+		}
+		ready := es.ReadyReplicas >= expectedReplicas
+		if ready {
+			es.Phase = mortisev1alpha1.AppPhaseReady
+		} else {
+			es.Phase = mortisev1alpha1.AppPhaseDeploying
+			if !isCron {
+				if crashMsg := r.checkPodCrashLoopInEnv(ctx, app, env.Name, envNs); crashMsg != "" {
+					es.Phase = mortisev1alpha1.AppPhaseCrashLooping
+					es.Message = crashMsg
+					anyCrash = true
+					if firstCrashMsg == "" {
+						firstCrashMsg = crashMsg
+					}
+				}
+			}
+			anyNotReady = true
+		}
+
 		envStatuses = append(envStatuses, es)
 	}
 
+	// Aggregate phase across envs (kept for backward compat + top-level UI).
 	phase := mortisev1alpha1.AppPhaseDeploying
-	allReady := true
-	for _, es := range envStatuses {
-		expectedReplicas := int32(1)
-		if !isCron {
-			for _, env := range resolvedEnvs {
-				if env.Name == es.Name && env.Replicas != nil {
-					expectedReplicas = *env.Replicas
-				}
-			}
-		}
-		if es.ReadyReplicas < expectedReplicas {
-			allReady = false
-			break
-		}
-	}
-	if allReady && len(envStatuses) > 0 {
+	if !anyNotReady && len(envStatuses) > 0 {
 		phase = mortisev1alpha1.AppPhaseReady
 	}
-
-	// Check if any pods are crash-looping. This surfaces container exit
-	// reasons to the user instead of showing a generic "Deploying" phase.
-	if !allReady && !isCron {
-		crashMsg := r.checkPodCrashLoop(ctx, app)
-		if crashMsg != "" {
-			phase = mortisev1alpha1.AppPhaseCrashLooping
-			meta.SetStatusCondition(&app.Status.Conditions, metav1.Condition{
-				Type:               "PodHealthy",
-				Status:             metav1.ConditionFalse,
-				Reason:             "CrashLoopBackOff",
-				Message:            crashMsg,
-				ObservedGeneration: app.Generation,
-			})
-		}
+	if anyCrash {
+		phase = mortisev1alpha1.AppPhaseCrashLooping
+		meta.SetStatusCondition(&app.Status.Conditions, metav1.Condition{
+			Type:               "PodHealthy",
+			Status:             metav1.ConditionFalse,
+			Reason:             "CrashLoopBackOff",
+			Message:            firstCrashMsg,
+			ObservedGeneration: app.Generation,
+		})
 	} else {
 		// Clear the crash condition if pods recovered.
 		meta.RemoveStatusCondition(&app.Status.Conditions, "PodHealthy")

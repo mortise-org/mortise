@@ -103,6 +103,8 @@ export interface DeployRecord {
 
 export interface EnvironmentStatus {
 	name: string;
+	phase?: AppPhase;
+	message?: string;
 	readyReplicas?: number;
 	currentImage?: string;
 	currentDigest?: string;

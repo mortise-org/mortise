@@ -412,6 +412,8 @@ type DeployRecord struct {
 // EnvironmentStatus tracks the observed state of a single environment.
 type EnvironmentStatus struct {
 	Name          string         `json:"name"`
+	Phase         AppPhase       `json:"phase,omitempty"`
+	Message       string         `json:"message,omitempty"`
 	ReadyReplicas int32          `json:"readyReplicas,omitempty"`
 	CurrentImage  string         `json:"currentImage,omitempty"`
 	CurrentDigest string         `json:"currentDigest,omitempty"`

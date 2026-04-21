@@ -559,7 +559,19 @@ spec:
                         - timestamp
                         type: object
                       type: array
+                    message:
+                      type: string
                     name:
+                      type: string
+                    phase:
+                      description: AppPhase represents the overall lifecycle phase.
+                      enum:
+                      - Pending
+                      - Building
+                      - Deploying
+                      - Ready
+                      - CrashLooping
+                      - Failed
                       type: string
                     readyReplicas:
                       format: int32

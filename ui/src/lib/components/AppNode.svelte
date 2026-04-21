@@ -18,10 +18,12 @@
 	const envEntry = $derived(app.spec.environments?.find((e) => e.name === envName));
 	const envStatusEntry = $derived(app.status?.environments?.find((e) => e.name === envName));
 	const enabled = $derived(envEntry?.enabled !== false);
+	// Building is app-aggregate (one build serves all envs); everything else is
+	// per-env from EnvironmentStatus.phase.
 	const phase = $derived.by<AppPhase | undefined>(() => {
-		const p = app.status?.phase;
-		if (p === 'Ready' && envStatusEntry && envStatusEntry.readyReplicas === 0) return 'Deploying';
-		return p;
+		if (app.status?.phase === 'Building') return 'Building';
+		if (app.status?.phase === 'Failed') return 'Failed';
+		return envStatusEntry?.phase ?? app.status?.phase;
 	});
 	const isExternal = $derived(app.spec.source.type === 'external' as string);
 	const isPrivate = $derived(app.spec.network?.public === false);
@@ -36,16 +38,17 @@
 		Pending: 'bg-info/10 text-info'
 	};
 
-	const domain = $derived(envEntry?.domain ?? app.spec.environments?.[0]?.domain ?? null);
-	const replicas = $derived(envEntry?.replicas ?? app.spec.environments?.[0]?.replicas ?? 1);
+	const domain = $derived(envEntry?.domain ?? null);
+	const replicas = $derived(envEntry?.replicas ?? 1);
 	const volumes = $derived(app.spec.storage ?? []);
 
-	function failedReason(a: App): string | null {
-		if (a.status?.phase !== 'Failed' && a.status?.phase !== 'CrashLooping') return null;
-		const cond = a.status.conditions?.find(c => c.status === 'False');
+	function failedReason(a: App, envMsg: string | undefined): string | null {
+		if (phase !== 'Failed' && phase !== 'CrashLooping') return null;
+		if (envMsg) return envMsg;
+		const cond = a.status?.conditions?.find(c => c.status === 'False');
 		return cond?.message ?? null;
 	}
-	const errorMsg = $derived(failedReason(app));
+	const errorMsg = $derived(failedReason(app, envStatusEntry?.message));
 
 	// Build timer - synced to the BuildStarted condition timestamp from k8s.
 	let buildElapsed = $state('');

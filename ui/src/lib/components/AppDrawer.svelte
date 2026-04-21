@@ -27,10 +27,13 @@
 	const envStatusEntry = $derived(liveApp?.status?.environments?.find((e) => e.name === selectedEnv));
 	const envSpecEntry = $derived(liveApp?.spec.environments?.find((e) => e.name === selectedEnv));
 	const envEnabled = $derived(envSpecEntry?.enabled !== false);
+	// Building is app-aggregate (one build serves all envs); everything else
+	// derives from per-env EnvironmentStatus.phase.
 	const envPhase = $derived.by<string | null>(() => {
-		const p = liveApp?.status?.phase ?? null;
-		if (p === 'Ready' && envStatusEntry && envStatusEntry.readyReplicas === 0) return 'Deploying';
-		return p;
+		const agg = liveApp?.status?.phase ?? null;
+		if (agg === 'Building') return 'Building';
+		if (agg === 'Failed') return 'Failed';
+		return envStatusEntry?.phase ?? agg;
 	});
 
 	let appURL = $state<string | null>(null);

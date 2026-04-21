@@ -87,12 +87,12 @@
 
 	function connectLive(fresh: boolean = true) {
 		closeStream();
-		if (isBuilding) return; // no pods to stream from yet
-		if (pods.length === 0) return; // nothing to stream from - avoid reconnect flicker
 		if (fresh) {
 			events = [];
 			disconnected = false;
 		}
+		if (isBuilding) return; // no pods to stream from yet
+		if (pods.length === 0) return; // nothing to stream from - avoid reconnect flicker
 
 		const url = api.logsURL(project, app.metadata.name, {
 			env: selectedEnv,
@@ -210,6 +210,22 @@
 		} else {
 			stopBuildPoll();
 		}
+	});
+
+	// Env change: clear the stale pod selection and refetch pods immediately
+	// so the pod-picker + stream reflect the new env on the next tick rather
+	// than waiting for the 10s poll.
+	let lastEnv = $state('');
+	$effect(() => {
+		if (lastEnv === selectedEnv) return;
+		const firstRun = lastEnv === '';
+		lastEnv = selectedEnv;
+		if (firstRun) return;
+		selectedPod = '';
+		previous = false;
+		pods = [];
+		podsLoaded = false;
+		if (subTab === 'live') void loadPods();
 	});
 
 	// Reconnect the stream whenever the user changes knobs that affect the URL.
