@@ -86,16 +86,16 @@ func TestListGitProvidersSummary(t *testing.T) {
 	}
 }
 
-// TestListGitProvidersForbiddenForMember verifies that non-admin users cannot
-// list git providers.
-func TestListGitProvidersForbiddenForMember(t *testing.T) {
+// TestListGitProvidersAsMember verifies that members can list git providers
+// (needed for device flow and git-source app creation).
+func TestListGitProvidersAsMember(t *testing.T) {
 	k8sClient := setupEnvtest(t)
 	srv, _ := newTestServerAs(t, k8sClient, auth.RoleMember)
 	h := srv.Handler()
 
 	w := doRequest(h, http.MethodGet, "/api/gitproviders", nil)
-	if w.Code != http.StatusForbidden {
-		t.Errorf("expected 403, got %d: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 }
 
@@ -255,6 +255,19 @@ func TestCreateGitProviderForbiddenForMember(t *testing.T) {
 	h := srv.Handler()
 
 	w := doRequest(h, http.MethodPost, "/api/gitproviders", validCreateGitProviderBody("github-main"))
+	if w.Code != http.StatusForbidden {
+		t.Errorf("expected 403, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestGetWebhookSecretForbiddenForMember verifies that members cannot read
+// webhook secrets (requires gitprovider update permission, admin-only).
+func TestGetWebhookSecretForbiddenForMember(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv, _ := newTestServerAs(t, k8sClient, auth.RoleMember)
+	h := srv.Handler()
+
+	w := doRequest(h, http.MethodGet, "/api/gitproviders/github-main/webhook-secret", nil)
 	if w.Code != http.StatusForbidden {
 		t.Errorf("expected 403, got %d: %s", w.Code, w.Body.String())
 	}

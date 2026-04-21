@@ -166,6 +166,32 @@ func TestCreateProjectEnvironmentAsMemberForbidden(t *testing.T) {
 	}
 }
 
+// TestUpdateProjectEnvironmentAsMemberForbidden verifies members cannot update envs.
+func TestUpdateProjectEnvironmentAsMemberForbidden(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	seedProject(t, k8sClient, "demo", "production", "staging")
+	srv, _ := newTestServerAs(t, k8sClient, auth.RoleMember)
+	h := srv.Handler()
+
+	w := doRequest(h, http.MethodPatch, "/api/projects/demo/environments/staging", map[string]any{"displayOrder": 10})
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestDeleteProjectEnvironmentAsMemberForbidden verifies members cannot delete envs.
+func TestDeleteProjectEnvironmentAsMemberForbidden(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	seedProject(t, k8sClient, "demo", "production", "staging")
+	srv, _ := newTestServerAs(t, k8sClient, auth.RoleMember)
+	h := srv.Handler()
+
+	w := doRequest(h, http.MethodDelete, "/api/projects/demo/environments/staging", nil)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
 // TestUpdateProjectEnvironmentRename renames an env and cascades to any App
 // overrides in the project namespace.
 func TestUpdateProjectEnvironmentRename(t *testing.T) {

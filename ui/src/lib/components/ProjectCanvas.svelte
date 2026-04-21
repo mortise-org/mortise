@@ -147,6 +147,7 @@
 			{nodes}
 			{edges}
 			{nodeTypes}
+			proOptions={{ hideAttribution: true }}
 			fitView={!initialFitDone}
 			fitViewOptions={{ padding: 0.3, maxZoom: 0.75 }}
 			oninit={() => { initialFitDone = true; }}

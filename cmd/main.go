@@ -47,6 +47,7 @@ import (
 	"github.com/MC-Meesh/mortise/internal/admission"
 	"github.com/MC-Meesh/mortise/internal/api"
 	"github.com/MC-Meesh/mortise/internal/auth"
+	"github.com/MC-Meesh/mortise/internal/authz"
 	"github.com/MC-Meesh/mortise/internal/build"
 	"github.com/MC-Meesh/mortise/internal/controller"
 	"github.com/MC-Meesh/mortise/internal/git"
@@ -463,7 +464,7 @@ func main() {
 		setupLog.Info("UI files not available; API will still serve", "err", err)
 	}
 
-	apiServer := api.NewServer(mgr.GetClient(), clientset, mgr.GetConfig(), authProvider, jwtHelper, uiSub)
+	apiServer := api.NewServer(mgr.GetClient(), clientset, mgr.GetConfig(), authProvider, jwtHelper, uiSub, authz.NewNativePolicyEngine())
 	apiServer.SetBuildLogProvider(&appReconciler.Builds)
 	httpServer := &http.Server{Addr: apiAddr, Handler: apiServer.Handler()}
 	go func() {

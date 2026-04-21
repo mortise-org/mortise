@@ -9,6 +9,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
+	"github.com/MC-Meesh/mortise/internal/authz"
 )
 
 // hostnameRegex validates a bare hostname (no scheme, no port).
@@ -30,6 +31,9 @@ type addDomainRequest struct {
 //
 // GET /api/projects/{project}/apps/{app}/domains?environment=production
 func (s *Server) ListDomains(w http.ResponseWriter, r *http.Request) {
+	if !s.authorize(w, r, authz.Resource{Kind: "app"}, authz.ActionRead) {
+		return
+	}
 	app, envName, ok := s.resolveAppEnv(w, r)
 	if !ok {
 		return
@@ -52,6 +56,9 @@ func (s *Server) ListDomains(w http.ResponseWriter, r *http.Request) {
 //
 // POST /api/projects/{project}/apps/{app}/domains?environment=production
 func (s *Server) AddDomain(w http.ResponseWriter, r *http.Request) {
+	if !s.authorize(w, r, authz.Resource{Kind: "app"}, authz.ActionUpdate) {
+		return
+	}
 	app, envName, ok := s.resolveAppEnv(w, r)
 	if !ok {
 		return
@@ -90,6 +97,9 @@ func (s *Server) AddDomain(w http.ResponseWriter, r *http.Request) {
 //
 // DELETE /api/projects/{project}/apps/{app}/domains/{domain}?environment=production
 func (s *Server) RemoveDomain(w http.ResponseWriter, r *http.Request) {
+	if !s.authorize(w, r, authz.Resource{Kind: "app"}, authz.ActionUpdate) {
+		return
+	}
 	app, envName, ok := s.resolveAppEnv(w, r)
 	if !ok {
 		return

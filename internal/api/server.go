@@ -13,6 +13,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/MC-Meesh/mortise/internal/auth"
+	"github.com/MC-Meesh/mortise/internal/authz"
 	"github.com/MC-Meesh/mortise/internal/webhook"
 )
 
@@ -32,6 +33,7 @@ type Server struct {
 	ui         fs.FS
 	webhook    *webhook.Handler
 	deviceFlow *DeviceFlowHandler
+	authz      authz.PolicyEngine
 	buildLogs  BuildLogProvider
 	proxies    *appProxyManager
 }
@@ -50,7 +52,7 @@ func (s *Server) SetBuildLogProvider(p BuildLogProvider) {
 // NewServer creates a new API server.
 // ui is an optional filesystem for serving the SvelteKit UI; pass nil to disable UI serving.
 // restConfig is used for pod/exec streaming; pass nil in tests that don't exercise exec.
-func NewServer(c client.Client, cs kubernetes.Interface, restConfig *rest.Config, authProvider auth.AuthProvider, jwt *auth.JWTHelper, ui fs.FS) *Server {
+func NewServer(c client.Client, cs kubernetes.Interface, restConfig *rest.Config, authProvider auth.AuthProvider, jwt *auth.JWTHelper, ui fs.FS, policy authz.PolicyEngine) *Server {
 	kr := webhook.NewK8sReader(c)
 	wh := webhook.New(kr)
 	df := newDeviceFlowHandler(c)
@@ -61,10 +63,31 @@ func NewServer(c client.Client, cs kubernetes.Interface, restConfig *rest.Config
 		auth:       authProvider,
 		jwt:        jwt,
 		ui:         ui,
+		authz:      policy,
 		webhook:    wh,
 		deviceFlow: df,
 		proxies:    newAppProxyManager(),
 	}
+}
+
+// authorize checks whether the authenticated principal is allowed to perform
+// action on resource. Writes 401/403 and returns false on denial.
+func (s *Server) authorize(w http.ResponseWriter, r *http.Request, resource authz.Resource, action authz.Action) bool {
+	p := PrincipalFromContext(r.Context())
+	if p == nil {
+		writeJSON(w, http.StatusUnauthorized, errorResponse{"authentication required"})
+		return false
+	}
+	ok, err := s.authz.Authorize(r.Context(), *p, resource, action)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorResponse{"authorization check failed"})
+		return false
+	}
+	if !ok {
+		writeJSON(w, http.StatusForbidden, errorResponse{"forbidden"})
+		return false
+	}
+	return true
 }
 
 // Handler returns the root HTTP handler with all routes mounted.

@@ -9,6 +9,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
+	"github.com/MC-Meesh/mortise/internal/authz"
 )
 
 // deployRequest is the JSON body for POST /api/projects/{p}/apps/{a}/deploy.
@@ -42,8 +43,12 @@ func (s *Server) Deploy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check auth: JWT principal already set by middleware, or deploy token.
-	if PrincipalFromContext(r.Context()) == nil {
+	// Check auth: JWT principal (policy-checked) or deploy token (inline check).
+	if p := PrincipalFromContext(r.Context()); p != nil {
+		if !s.authorize(w, r, authz.Resource{Kind: "app", Namespace: ns}, authz.ActionUpdate) {
+			return
+		}
+	} else {
 		// No JWT principal — try deploy token auth.
 		header := r.Header.Get("Authorization")
 		token := strings.TrimPrefix(header, "Bearer ")

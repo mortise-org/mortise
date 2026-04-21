@@ -6,6 +6,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
+	"github.com/MC-Meesh/mortise/internal/authz"
 )
 
 // bindingEdge represents a single from-app→to-app binding resolved for a
@@ -22,6 +23,9 @@ type bindingEdge struct {
 //
 // GET /api/projects/{project}/bindings?environment=staging
 func (s *Server) ListBindings(w http.ResponseWriter, r *http.Request) {
+	if !s.authorize(w, r, authz.Resource{Kind: "app"}, authz.ActionRead) {
+		return
+	}
 	project, ok := s.getProject(w, r)
 	if !ok {
 		return

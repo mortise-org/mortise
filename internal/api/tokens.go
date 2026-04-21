@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/MC-Meesh/mortise/internal/authz"
 	"github.com/go-chi/chi/v5"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -38,6 +39,9 @@ type tokenResponse struct {
 func (s *Server) CreateToken(w http.ResponseWriter, r *http.Request) {
 	ns, _, ok := s.resolveProject(w, r)
 	if !ok {
+		return
+	}
+	if !s.authorize(w, r, authz.Resource{Kind: "app", Namespace: ns}, authz.ActionUpdate) {
 		return
 	}
 	appName := chi.URLParam(r, "app")
@@ -103,6 +107,9 @@ func (s *Server) ListTokens(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if !s.authorize(w, r, authz.Resource{Kind: "app", Namespace: ns}, authz.ActionRead) {
+		return
+	}
 	appName := chi.URLParam(r, "app")
 
 	var list corev1.SecretList
@@ -137,6 +144,9 @@ func (s *Server) ListTokens(w http.ResponseWriter, r *http.Request) {
 func (s *Server) DeleteToken(w http.ResponseWriter, r *http.Request) {
 	ns, _, ok := s.resolveProject(w, r)
 	if !ok {
+		return
+	}
+	if !s.authorize(w, r, authz.Resource{Kind: "app", Namespace: ns}, authz.ActionDelete) {
 		return
 	}
 	appName := chi.URLParam(r, "app")

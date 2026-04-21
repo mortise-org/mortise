@@ -17,6 +17,7 @@ import (
 	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
 	"github.com/MC-Meesh/mortise/internal/api"
 	"github.com/MC-Meesh/mortise/internal/auth"
+	"github.com/MC-Meesh/mortise/internal/authz"
 	"github.com/MC-Meesh/mortise/internal/constants"
 )
 
@@ -46,7 +47,7 @@ func newLogsServer(t *testing.T, k8sClient client.Client, cs *fake.Clientset) (*
 	}
 	testToken = token
 
-	srv := api.NewServer(k8sClient, cs, nil, authProvider, jwtHelper, nil)
+	srv := api.NewServer(k8sClient, cs, nil, authProvider, jwtHelper, nil, authz.NewNativePolicyEngine())
 	return srv, token
 }
 

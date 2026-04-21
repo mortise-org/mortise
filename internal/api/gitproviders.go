@@ -15,6 +15,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
+	"github.com/MC-Meesh/mortise/internal/authz"
 	"github.com/MC-Meesh/mortise/internal/git"
 )
 
@@ -39,7 +40,7 @@ type createGitProviderRequest struct {
 //
 // GET /api/gitproviders
 func (s *Server) ListGitProviders(w http.ResponseWriter, r *http.Request) {
-	if !requireAdmin(w, r) {
+	if !s.authorize(w, r, authz.Resource{Kind: "gitprovider"}, authz.ActionRead) {
 		return
 	}
 
@@ -67,7 +68,7 @@ func (s *Server) ListGitProviders(w http.ResponseWriter, r *http.Request) {
 //
 // POST /api/gitproviders
 func (s *Server) CreateGitProvider(w http.ResponseWriter, r *http.Request) {
-	if !requireAdmin(w, r) {
+	if !s.authorize(w, r, authz.Resource{Kind: "gitprovider"}, authz.ActionCreate) {
 		return
 	}
 
@@ -156,7 +157,7 @@ func (s *Server) CreateGitProvider(w http.ResponseWriter, r *http.Request) {
 //
 // DELETE /api/gitproviders/{name}
 func (s *Server) DeleteGitProvider(w http.ResponseWriter, r *http.Request) {
-	if !requireAdmin(w, r) {
+	if !s.authorize(w, r, authz.Resource{Kind: "gitprovider"}, authz.ActionDelete) {
 		return
 	}
 
@@ -193,7 +194,7 @@ func (s *Server) DeleteGitProvider(w http.ResponseWriter, r *http.Request) {
 //
 // GET /api/gitproviders/{name}/webhook-secret
 func (s *Server) GetWebhookSecret(w http.ResponseWriter, r *http.Request) {
-	if !requireAdmin(w, r) {
+	if !s.authorize(w, r, authz.Resource{Kind: "gitprovider"}, authz.ActionUpdate) {
 		return
 	}
 

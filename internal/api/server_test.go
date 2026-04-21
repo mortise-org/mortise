@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -25,6 +26,7 @@ import (
 	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
 	"github.com/MC-Meesh/mortise/internal/api"
 	"github.com/MC-Meesh/mortise/internal/auth"
+	"github.com/MC-Meesh/mortise/internal/authz"
 	"github.com/MC-Meesh/mortise/internal/constants"
 )
 
@@ -98,7 +100,7 @@ func newTestServerAs(t *testing.T, k8sClient client.Client, role auth.Role) (*ap
 		t.Fatalf("generate token: %v", err)
 	}
 
-	srv := api.NewServer(k8sClient, fake.NewClientset(), nil, authProvider, jwtHelper, nil)
+	srv := api.NewServer(k8sClient, fake.NewClientset(), nil, authProvider, jwtHelper, nil, authz.NewNativePolicyEngine())
 	testToken = token
 	return srv, token
 }
@@ -287,6 +289,19 @@ func doRequestWithToken(handler http.Handler, method, path string, body any, tok
 		_ = json.NewEncoder(&buf).Encode(body)
 	}
 	req := httptest.NewRequest(method, path, &buf)
+	req.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	return w
+}
+
+// doRequestRawBody sends a request with a pre-formed body string (not
+// JSON-encoded). Use this for testing invalid-JSON and .env import paths.
+func doRequestRawBody(handler http.Handler, method, path, rawBody, token string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(method, path, strings.NewReader(rawBody))
 	req.Header.Set("Content-Type", "application/json")
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
@@ -803,5 +818,78 @@ func TestPromoteRequiresAuth(t *testing.T) {
 	}, "")
 	if w.Code != http.StatusUnauthorized {
 		t.Errorf("expected 401, got %d", w.Code)
+	}
+}
+
+// TestMemberCanCRUDApps verifies members have full CRUD access to apps.
+func TestMemberCanCRUDApps(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	seedProject(t, k8sClient, "default")
+	srv, _ := newTestServerAs(t, k8sClient, auth.RoleMember)
+	h := srv.Handler()
+
+	w := doRequest(h, http.MethodPost, "/api/projects/default/apps", map[string]any{
+		"name": "member-app",
+		"spec": map[string]any{
+			"source": map[string]any{"type": "image", "image": "nginx:1.25.0"},
+		},
+	})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create: expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+
+	w = doRequest(h, http.MethodGet, "/api/projects/default/apps/member-app", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("get: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	w = doRequest(h, http.MethodGet, "/api/projects/default/apps", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("list: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	w = doRequest(h, http.MethodPut, "/api/projects/default/apps/member-app", map[string]any{
+		"source": map[string]any{"type": "image", "image": "nginx:1.26.0"},
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("update: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	w = doRequest(h, http.MethodDelete, "/api/projects/default/apps/member-app", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("delete: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestMemberCanCRUDSecrets verifies members have full CRUD access to secrets.
+func TestMemberCanCRUDSecrets(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	seedProject(t, k8sClient, "default")
+	srv, _ := newTestServerAs(t, k8sClient, auth.RoleMember)
+	h := srv.Handler()
+
+	doRequest(h, http.MethodPost, "/api/projects/default/apps", map[string]any{
+		"name": "sec-app",
+		"spec": map[string]any{
+			"source": map[string]any{"type": "image", "image": "nginx:1.25.0"},
+		},
+	})
+
+	w := doRequest(h, http.MethodPost, "/api/projects/default/apps/sec-app/secrets", map[string]any{
+		"name": "db-pass",
+		"data": map[string]string{"password": "s3cret"},
+	})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create secret: expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+
+	w = doRequest(h, http.MethodGet, "/api/projects/default/apps/sec-app/secrets", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("list secrets: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	w = doRequest(h, http.MethodDelete, "/api/projects/default/apps/sec-app/secrets/db-pass", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("delete secret: expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 }

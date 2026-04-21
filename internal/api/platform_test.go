@@ -81,6 +81,18 @@ func TestPatchPlatformForbiddenForMember(t *testing.T) {
 	}
 }
 
+// TestGetPlatformAsMember verifies members can read platform config.
+func TestGetPlatformAsMember(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv, _ := newTestServerAs(t, k8sClient, auth.RoleMember)
+	h := srv.Handler()
+
+	w := doRequest(h, http.MethodGet, "/api/platform", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 for member reading platform, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
 func TestGetPlatformEmpty(t *testing.T) {
 	k8sClient := setupEnvtest(t)
 	srv := newAdminServer(t, k8sClient)

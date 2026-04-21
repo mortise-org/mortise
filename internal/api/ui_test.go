@@ -10,6 +10,7 @@ import (
 
 	"github.com/MC-Meesh/mortise/internal/api"
 	"github.com/MC-Meesh/mortise/internal/auth"
+	"github.com/MC-Meesh/mortise/internal/authz"
 )
 
 // TestUIRootServesIndex verifies the root path returns the SvelteKit index.html
@@ -24,7 +25,7 @@ func TestUIRootServesIndex(t *testing.T) {
 		"_app/immutable.css": &fstest.MapFile{Data: []byte("body {}")},
 	}
 
-	srv := api.NewServer(k8sClient, fake.NewClientset(), nil, authProvider, jwtHelper, uiFS)
+	srv := api.NewServer(k8sClient, fake.NewClientset(), nil, authProvider, jwtHelper, uiFS, authz.NewNativePolicyEngine())
 	h := srv.Handler()
 
 	w := doRequestWithToken(h, http.MethodGet, "/", nil, "")
@@ -46,7 +47,7 @@ func TestUISPAFallback(t *testing.T) {
 		"index.html": &fstest.MapFile{Data: []byte(`<!DOCTYPE html><html><body>mortise spa</body></html>`)},
 	}
 
-	srv := api.NewServer(k8sClient, fake.NewClientset(), nil, authProvider, jwtHelper, uiFS)
+	srv := api.NewServer(k8sClient, fake.NewClientset(), nil, authProvider, jwtHelper, uiFS, authz.NewNativePolicyEngine())
 	h := srv.Handler()
 
 	// Request a SPA route that doesn't exist as a file.
@@ -69,7 +70,7 @@ func TestUIDoesNotInterceptAPI(t *testing.T) {
 		"index.html": &fstest.MapFile{Data: []byte(`<html></html>`)},
 	}
 
-	srv := api.NewServer(k8sClient, fake.NewClientset(), nil, authProvider, jwtHelper, uiFS)
+	srv := api.NewServer(k8sClient, fake.NewClientset(), nil, authProvider, jwtHelper, uiFS, authz.NewNativePolicyEngine())
 	h := srv.Handler()
 
 	// /api/projects should still require auth (not be caught by the UI handler).
@@ -85,7 +86,7 @@ func TestNoUIFS(t *testing.T) {
 	authProvider := auth.NewNativeAuthProvider(k8sClient)
 	jwtHelper := auth.NewJWTHelper(k8sClient)
 
-	srv := api.NewServer(k8sClient, fake.NewClientset(), nil, authProvider, jwtHelper, nil)
+	srv := api.NewServer(k8sClient, fake.NewClientset(), nil, authProvider, jwtHelper, nil, authz.NewNativePolicyEngine())
 	h := srv.Handler()
 
 	// Root should 404 since no UI is mounted.

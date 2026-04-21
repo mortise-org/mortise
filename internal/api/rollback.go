@@ -11,6 +11,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
+	"github.com/MC-Meesh/mortise/internal/authz"
 	"github.com/MC-Meesh/mortise/internal/constants"
 )
 
@@ -26,6 +27,9 @@ type rollbackRequest struct {
 func (s *Server) Rollback(w http.ResponseWriter, r *http.Request) {
 	ns, projectName, ok := s.resolveProject(w, r)
 	if !ok {
+		return
+	}
+	if !s.authorize(w, r, authz.Resource{Kind: "app", Namespace: ns}, authz.ActionUpdate) {
 		return
 	}
 	appName := chi.URLParam(r, "app")
@@ -102,6 +106,9 @@ type promoteRequest struct {
 func (s *Server) Promote(w http.ResponseWriter, r *http.Request) {
 	ns, projectName, ok := s.resolveProject(w, r)
 	if !ok {
+		return
+	}
+	if !s.authorize(w, r, authz.Resource{Kind: "app", Namespace: ns}, authz.ActionUpdate) {
 		return
 	}
 	appName := chi.URLParam(r, "app")

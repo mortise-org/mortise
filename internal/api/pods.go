@@ -11,6 +11,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
+	"github.com/MC-Meesh/mortise/internal/authz"
 	"github.com/MC-Meesh/mortise/internal/constants"
 )
 
@@ -32,6 +33,9 @@ type podSummary struct {
 //
 // GET /api/projects/{project}/apps/{app}/pods?env={env}
 func (s *Server) handleListPods(w http.ResponseWriter, r *http.Request) {
+	if !s.authorize(w, r, authz.Resource{Kind: "app"}, authz.ActionRead) {
+		return
+	}
 	ns, projectName, ok := s.resolveProject(w, r)
 	if !ok {
 		return

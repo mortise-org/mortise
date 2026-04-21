@@ -11,6 +11,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/MC-Meesh/mortise/internal/authz"
 	"github.com/MC-Meesh/mortise/internal/constants"
 )
 
@@ -52,6 +53,9 @@ func (s *Server) CreateSecret(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if !s.authorize(w, r, authz.Resource{Kind: "secret"}, authz.ActionCreate) {
+		return
+	}
 	appName := chi.URLParam(r, "app")
 	envNs := constants.EnvNamespace(projectName, envFromQuery(r))
 
@@ -90,6 +94,9 @@ func (s *Server) ListSecrets(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if !s.authorize(w, r, authz.Resource{Kind: "secret"}, authz.ActionRead) {
+		return
+	}
 	appName := chi.URLParam(r, "app")
 	envNs := constants.EnvNamespace(projectName, envFromQuery(r))
 
@@ -116,6 +123,9 @@ func (s *Server) ListSecrets(w http.ResponseWriter, r *http.Request) {
 func (s *Server) DeleteSecret(w http.ResponseWriter, r *http.Request) {
 	_, projectName, ok := s.resolveProject(w, r)
 	if !ok {
+		return
+	}
+	if !s.authorize(w, r, authz.Resource{Kind: "secret"}, authz.ActionDelete) {
 		return
 	}
 	appName := chi.URLParam(r, "app")

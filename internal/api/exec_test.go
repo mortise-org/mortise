@@ -10,6 +10,7 @@ import (
 
 	"github.com/MC-Meesh/mortise/internal/api"
 	"github.com/MC-Meesh/mortise/internal/auth"
+	"github.com/MC-Meesh/mortise/internal/authz"
 )
 
 // TestServerCarriesInjectedRESTConfig verifies the constructor plumbs the
@@ -21,12 +22,54 @@ func TestServerCarriesInjectedRESTConfig(t *testing.T) {
 	jwtHelper := auth.NewJWTHelper(k8sClient)
 	cfg := &rest.Config{Host: "https://example.test"}
 
-	srv := api.NewServer(k8sClient, fake.NewClientset(), cfg, authProvider, jwtHelper, nil)
+	srv := api.NewServer(k8sClient, fake.NewClientset(), cfg, authProvider, jwtHelper, nil, authz.NewNativePolicyEngine())
 	if srv.RESTConfig() == nil {
 		t.Fatal("expected Server.RESTConfig() to return the injected config, got nil")
 	}
 	if srv.RESTConfig().Host != "https://example.test" {
 		t.Errorf("expected host https://example.test, got %q", srv.RESTConfig().Host)
+	}
+}
+
+// TestExecEmptyCommand verifies the handler rejects an empty command list.
+func TestExecEmptyCommand(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+	seedProject(t, k8sClient, "default")
+
+	w := doRequest(h, http.MethodPost, "/api/projects/default/apps/anything/exec", map[string]any{
+		"command": []string{},
+	})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for empty command, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestExecInvalidJSON verifies the handler rejects malformed JSON.
+func TestExecInvalidJSON(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+	seedProject(t, k8sClient, "default")
+
+	w := doRequestRawBody(h, http.MethodPost, "/api/projects/default/apps/anything/exec", "{bad json", testToken)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for invalid JSON, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestExecMissingProject verifies exec returns 404 for a nonexistent project.
+func TestExecMissingProject(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+
+	w := doRequest(h, http.MethodPost, "/api/projects/ghost/apps/anything/exec", map[string]any{
+		"command": []string{"ls"},
+	})
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for missing project, got %d: %s", w.Code, w.Body.String())
 	}
 }
 

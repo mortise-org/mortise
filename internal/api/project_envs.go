@@ -13,6 +13,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
+	"github.com/MC-Meesh/mortise/internal/authz"
 )
 
 // maxProjectEnvNameLen caps project env names. Environment names are used as
@@ -57,6 +58,9 @@ type patchProjectEnvRequest struct {
 //
 // GET /api/projects/{project}/environments
 func (s *Server) ListProjectEnvironments(w http.ResponseWriter, r *http.Request) {
+	if !s.authorize(w, r, authz.Resource{Kind: "project"}, authz.ActionRead) {
+		return
+	}
 	project, ok := s.getProject(w, r)
 	if !ok {
 		return
@@ -88,7 +92,7 @@ func (s *Server) ListProjectEnvironments(w http.ResponseWriter, r *http.Request)
 //
 // POST /api/projects/{project}/environments  { "name": "staging" }
 func (s *Server) CreateProjectEnvironment(w http.ResponseWriter, r *http.Request) {
-	if !requireAdmin(w, r) {
+	if !s.authorize(w, r, authz.Resource{Kind: "project"}, authz.ActionCreate) {
 		return
 	}
 	project, ok := s.getProject(w, r)
@@ -135,7 +139,7 @@ func (s *Server) CreateProjectEnvironment(w http.ResponseWriter, r *http.Request
 //
 // PATCH /api/projects/{project}/environments/{name}  { "name": "stage", "displayOrder": 2 }
 func (s *Server) UpdateProjectEnvironment(w http.ResponseWriter, r *http.Request) {
-	if !requireAdmin(w, r) {
+	if !s.authorize(w, r, authz.Resource{Kind: "project"}, authz.ActionUpdate) {
 		return
 	}
 	project, ok := s.getProject(w, r)
@@ -197,7 +201,7 @@ func (s *Server) UpdateProjectEnvironment(w http.ResponseWriter, r *http.Request
 //
 // DELETE /api/projects/{project}/environments/{name}
 func (s *Server) DeleteProjectEnvironment(w http.ResponseWriter, r *http.Request) {
-	if !requireAdmin(w, r) {
+	if !s.authorize(w, r, authz.Resource{Kind: "project"}, authz.ActionDelete) {
 		return
 	}
 	project, ok := s.getProject(w, r)

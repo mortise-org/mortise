@@ -13,6 +13,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
+	"github.com/MC-Meesh/mortise/internal/authz"
 	"github.com/MC-Meesh/mortise/internal/constants"
 )
 
@@ -40,6 +41,9 @@ func newAppProxyManager() *appProxyManager {
 //
 // POST /api/projects/{project}/apps/{app}/connect
 func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
+	if !s.authorize(w, r, authz.Resource{Kind: "app"}, authz.ActionRead) {
+		return
+	}
 	log := logf.FromContext(r.Context())
 	ns, projectName, ok := s.resolveProject(w, r)
 	if !ok {
@@ -121,6 +125,9 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 //
 // POST /api/projects/{project}/apps/{app}/disconnect
 func (s *Server) handleDisconnect(w http.ResponseWriter, r *http.Request) {
+	if !s.authorize(w, r, authz.Resource{Kind: "app"}, authz.ActionRead) {
+		return
+	}
 	projectName := chi.URLParam(r, "project")
 	appName := chi.URLParam(r, "app")
 	key := projectName + "/" + appName

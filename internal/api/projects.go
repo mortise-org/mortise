@@ -12,7 +12,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
-	"github.com/MC-Meesh/mortise/internal/auth"
+	"github.com/MC-Meesh/mortise/internal/authz"
 	"github.com/MC-Meesh/mortise/internal/constants"
 )
 
@@ -78,7 +78,7 @@ func toProjectResponse(p *mortisev1alpha1.Project) projectResponse {
 
 // CreateProject creates a new Project. Admin-only.
 func (s *Server) CreateProject(w http.ResponseWriter, r *http.Request) {
-	if !requireAdmin(w, r) {
+	if !s.authorize(w, r, authz.Resource{Kind: "project"}, authz.ActionCreate) {
 		return
 	}
 
@@ -111,6 +111,9 @@ func (s *Server) CreateProject(w http.ResponseWriter, r *http.Request) {
 
 // ListProjects returns every Project in the cluster.
 func (s *Server) ListProjects(w http.ResponseWriter, r *http.Request) {
+	if !s.authorize(w, r, authz.Resource{Kind: "project"}, authz.ActionRead) {
+		return
+	}
 	var list mortisev1alpha1.ProjectList
 	if err := s.client.List(r.Context(), &list); err != nil {
 		writeError(w, err)
@@ -125,6 +128,9 @@ func (s *Server) ListProjects(w http.ResponseWriter, r *http.Request) {
 
 // GetProject returns a single Project.
 func (s *Server) GetProject(w http.ResponseWriter, r *http.Request) {
+	if !s.authorize(w, r, authz.Resource{Kind: "project"}, authz.ActionRead) {
+		return
+	}
 	name := chi.URLParam(r, "project")
 
 	var project mortisev1alpha1.Project
@@ -139,7 +145,7 @@ func (s *Server) GetProject(w http.ResponseWriter, r *http.Request) {
 // tearing down the backing namespace, which cascades to every App inside.
 // Admin-only.
 func (s *Server) DeleteProject(w http.ResponseWriter, r *http.Request) {
-	if !requireAdmin(w, r) {
+	if !s.authorize(w, r, authz.Resource{Kind: "project"}, authz.ActionDelete) {
 		return
 	}
 
@@ -192,15 +198,4 @@ func (s *Server) resolveProject(w http.ResponseWriter, r *http.Request) (namespa
 		ns = projectNamespace(project.Name)
 	}
 	return ns, project.Name, true
-}
-
-// requireAdmin writes a 403 and returns false if the authenticated principal
-// isn't an admin.
-func requireAdmin(w http.ResponseWriter, r *http.Request) bool {
-	p := PrincipalFromContext(r.Context())
-	if p == nil || p.Role != auth.RoleAdmin {
-		writeJSON(w, http.StatusForbidden, errorResponse{"admin role required"})
-		return false
-	}
-	return true
 }

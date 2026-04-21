@@ -11,6 +11,81 @@ import (
 	"github.com/MC-Meesh/mortise/internal/api"
 )
 
+// TestCreateStackMissingSource verifies that omitting both compose and template
+// returns 400.
+func TestCreateStackMissingSource(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+	seedProject(t, k8sClient, "default")
+
+	w := doRequest(h, http.MethodPost, "/api/projects/default/stacks", map[string]any{})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 when neither compose nor template provided, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestCreateStackBothSourcesRejects verifies that providing both compose and
+// template returns 400 (mutually exclusive).
+func TestCreateStackBothSourcesRejects(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+	seedProject(t, k8sClient, "default")
+
+	w := doRequest(h, http.MethodPost, "/api/projects/default/stacks", map[string]any{
+		"compose":  "services:\n  web:\n    image: nginx\n",
+		"template": "supabase",
+	})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 when both compose and template provided, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestCreateStackInvalidComposeYAML verifies that malformed compose YAML
+// returns 400.
+func TestCreateStackInvalidComposeYAML(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+	seedProject(t, k8sClient, "default")
+
+	w := doRequest(h, http.MethodPost, "/api/projects/default/stacks", map[string]any{
+		"compose": "not: valid: compose: {yaml",
+	})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for invalid compose YAML, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestCreateStackInvalidJSON verifies that malformed JSON returns 400.
+func TestCreateStackInvalidJSON(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+	seedProject(t, k8sClient, "default")
+
+	w := doRequestRawBody(h, http.MethodPost, "/api/projects/default/stacks", "{bad json", testToken)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for invalid JSON, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestCreateStackMissingProject verifies that creating a stack in a
+// nonexistent project returns 404.
+func TestCreateStackMissingProject(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+
+	w := doRequest(h, http.MethodPost, "/api/projects/ghost/stacks", map[string]any{
+		"compose": "services:\n  web:\n    image: nginx\n",
+	})
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for missing project, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
 // TestCreateStackFilterExcludesSome verifies that when a filter matches a
 // subset of services, only the matching ones are created (201 with survivors).
 func TestCreateStackFilterExcludesSome(t *testing.T) {

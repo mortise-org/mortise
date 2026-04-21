@@ -95,6 +95,37 @@ func TestDeleteProjectAsMemberForbidden(t *testing.T) {
 	}
 }
 
+// TestListProjectsAsMember verifies members can list projects (read-only access).
+func TestListProjectsAsMember(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	seedProject(t, k8sClient, "visible")
+	srv, _ := newTestServerAs(t, k8sClient, auth.RoleMember)
+	h := srv.Handler()
+
+	w := doRequest(h, http.MethodGet, "/api/projects", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 for member listing projects, got %d: %s", w.Code, w.Body.String())
+	}
+	var projects []map[string]any
+	_ = json.NewDecoder(w.Body).Decode(&projects)
+	if len(projects) != 1 {
+		t.Fatalf("expected 1 project, got %d", len(projects))
+	}
+}
+
+// TestGetProjectAsMember verifies members can read a single project.
+func TestGetProjectAsMember(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	seedProject(t, k8sClient, "readable")
+	srv, _ := newTestServerAs(t, k8sClient, auth.RoleMember)
+	h := srv.Handler()
+
+	w := doRequest(h, http.MethodGet, "/api/projects/readable", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 for member getting project, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
 // TestListProjects verifies the list handler returns every Project in the cluster.
 func TestListProjects(t *testing.T) {
 	k8sClient := setupEnvtest(t)

@@ -49,7 +49,7 @@ Spec rule: every outward interface must have at least one real v1 impl
 | Interface         | Impls                              | Status          |
 |-------------------|------------------------------------|-----------------|
 | `AuthProvider`    | `NativeAuthProvider` (k8s Secret + bcrypt + JWT) | **Done**    |
-| `PolicyEngine`    | `NativePolicyEngine` (roles: `admin` / `member`)   | **Done (v1)** — matches SPEC §5.10 v1 scope (admin / member). Implicit `default-team` stub lands as a forward-compat CRD; v2 will add team-scoped grants additively. |
+| `PolicyEngine`    | `NativePolicyEngine` (roles: `admin` / `member`)   | **Done (v1)** — matches SPEC §5.10 v1 scope (admin / member). Wired into every API handler via `s.authorize()` (Issue #83). Implicit `default-team` stub lands as a forward-compat CRD; v2 will add team-scoped grants additively. |
 | `GitAPI`          | `GitHubAPI`, `GitHubAppAPI`, `GitLabAPI`, `GiteaAPI` (`internal/git/{github,github_app,gitlab,gitea}.go`); factory at `internal/git/factory.go` | **Done** |
 | `GitClient`       | `GoGitClient` (`internal/git/gogit_client.go`) — single impl per CLAUDE.md | **Done** |
 | `BuildClient`     | `BuildKitClient` (`internal/build/buildkit.go`) — mockable `solveClient` boundary for unit tests | **Done** |
@@ -906,6 +906,20 @@ five roles: `platform-admin`, `platform-viewer`, `team-admin`,
 environment scoping. No `Team` CRD exists; grants have no env field.
 **Decision: v1 ships admin/member only.** The 5-role team model is tracked
 as Issue #9 for v2.
+
+### Issue #83 — Wire PolicyEngine into API middleware — **Resolved**
+`NativePolicyEngine` existed (`internal/authz/`) but was never called from
+any API handler — every authenticated user could access every resource.
+Authorization was limited to 10 `requireAdmin` inline role checks. Fixed:
+added `PolicyEngine` to `Server` struct, created `authorize()` helper method,
+wired `s.authorize(resource, action)` into every authenticated handler (~40
+endpoints). Fixed bugs in the engine: "secret" fell through to default deny
+(members couldn't manage secrets); "project" and "gitprovider" kinds were
+missing. `ListGitProviders` changed from admin-only to member-readable
+(members need it for device flow). Deploy endpoint uses dual auth: policy
+check for JWT path, inline validation for deploy token path. `requireAdmin`
+deleted. New tests: member CRUD apps, member CRUD secrets, member list
+projects, member read platform, member list git providers.
 
 ### Issue #29 — Git auth consolidation — **Resolved**
 GitProvider CRD carried a `spec.oauth` block (`OAuthConfig` with

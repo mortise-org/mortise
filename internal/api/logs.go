@@ -21,6 +21,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
+	"github.com/MC-Meesh/mortise/internal/authz"
 	"github.com/MC-Meesh/mortise/internal/constants"
 )
 
@@ -54,6 +55,9 @@ func parseLogLine(raw string) (ts, content string) {
 //
 // GET /api/projects/{project}/apps/{app}/build-logs
 func (s *Server) handleBuildLogs(w http.ResponseWriter, r *http.Request) {
+	if !s.authorize(w, r, authz.Resource{Kind: "app"}, authz.ActionRead) {
+		return
+	}
 	ns, _, ok := s.resolveProject(w, r)
 	if !ok {
 		return
@@ -102,6 +106,9 @@ func (s *Server) handleBuildLogs(w http.ResponseWriter, r *http.Request) {
 // during the stream (e.g. rollouts) are picked up via a pod watcher and their
 // logs are joined into the stream.
 func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
+	if !s.authorize(w, r, authz.Resource{Kind: "app"}, authz.ActionRead) {
+		return
+	}
 	ns, projectName, ok := s.resolveProject(w, r)
 	if !ok {
 		return

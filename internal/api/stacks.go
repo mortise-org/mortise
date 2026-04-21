@@ -13,6 +13,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
+	"github.com/MC-Meesh/mortise/internal/authz"
 	"github.com/MC-Meesh/mortise/internal/constants"
 	"github.com/MC-Meesh/mortise/internal/envstore"
 	"github.com/MC-Meesh/mortise/internal/templates"
@@ -40,6 +41,9 @@ type createStackResponse struct {
 func (s *Server) CreateStack(w http.ResponseWriter, r *http.Request) {
 	ns, project, ok := s.resolveProject(w, r)
 	if !ok {
+		return
+	}
+	if !s.authorize(w, r, authz.Resource{Kind: "app", Namespace: ns}, authz.ActionCreate) {
 		return
 	}
 
@@ -222,6 +226,9 @@ type serviceInfo struct {
 }
 
 func (s *Server) ListTemplates(w http.ResponseWriter, r *http.Request) {
+	if !s.authorize(w, r, authz.Resource{Kind: "app"}, authz.ActionRead) {
+		return
+	}
 	names, err := templates.List()
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, errorResponse{"failed to list templates: " + err.Error()})

@@ -9,6 +9,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
+	"github.com/MC-Meesh/mortise/internal/authz"
 )
 
 // platformConfigName is the well-known singleton name.
@@ -54,6 +55,9 @@ type platformResponse struct {
 //
 // GET /api/platform
 func (s *Server) GetPlatform(w http.ResponseWriter, r *http.Request) {
+	if !s.authorize(w, r, authz.Resource{Kind: "platform", Name: "platform"}, authz.ActionRead) {
+		return
+	}
 	var pc mortisev1alpha1.PlatformConfig
 	err := s.client.Get(r.Context(), types.NamespacedName{Name: platformConfigName}, &pc)
 	if errors.IsNotFound(err) {
@@ -77,7 +81,7 @@ func (s *Server) GetPlatform(w http.ResponseWriter, r *http.Request) {
 //
 // PATCH /api/platform
 func (s *Server) PatchPlatform(w http.ResponseWriter, r *http.Request) {
-	if !requireAdmin(w, r) {
+	if !s.authorize(w, r, authz.Resource{Kind: "platform", Name: "platform"}, authz.ActionUpdate) {
 		return
 	}
 

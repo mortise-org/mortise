@@ -12,6 +12,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
+	"github.com/MC-Meesh/mortise/internal/authz"
 	"github.com/MC-Meesh/mortise/internal/constants"
 )
 
@@ -23,6 +24,9 @@ import (
 func (s *Server) Rebuild(w http.ResponseWriter, r *http.Request) {
 	ns, _, ok := s.resolveProject(w, r)
 	if !ok {
+		return
+	}
+	if !s.authorize(w, r, authz.Resource{Kind: "app", Namespace: ns}, authz.ActionUpdate) {
 		return
 	}
 	appName := chi.URLParam(r, "app")
@@ -58,6 +62,9 @@ func (s *Server) Rebuild(w http.ResponseWriter, r *http.Request) {
 func (s *Server) Redeploy(w http.ResponseWriter, r *http.Request) {
 	_, projectName, ok := s.resolveProject(w, r)
 	if !ok {
+		return
+	}
+	if !s.authorize(w, r, authz.Resource{Kind: "app"}, authz.ActionUpdate) {
 		return
 	}
 	appName := chi.URLParam(r, "app")

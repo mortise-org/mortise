@@ -7,7 +7,7 @@ import (
 )
 
 type Resource struct {
-	Kind      string // "app", "secret", "platform", "user"
+	Kind      string // "app", "secret", "platform", "user", "project", "gitprovider"
 	Namespace string
 	Name      string
 }

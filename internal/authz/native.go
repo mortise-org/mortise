@@ -21,9 +21,9 @@ func (e *NativePolicyEngine) Authorize(_ context.Context, p auth.Principal, reso
 		switch resource.Kind {
 		case "user":
 			return false, nil
-		case "platform":
+		case "platform", "project", "gitprovider":
 			return action == ActionRead, nil
-		case "app":
+		case "app", "secret":
 			return true, nil
 		}
 	}

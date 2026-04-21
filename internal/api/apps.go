@@ -12,6 +12,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
+	"github.com/MC-Meesh/mortise/internal/authz"
 )
 
 // maxAppNameLen caps app names. App names are suffixed with "-{env}" in
@@ -33,6 +34,9 @@ type createAppRequest struct {
 func (s *Server) CreateApp(w http.ResponseWriter, r *http.Request) {
 	ns, _, ok := s.resolveProject(w, r)
 	if !ok {
+		return
+	}
+	if !s.authorize(w, r, authz.Resource{Kind: "app", Namespace: ns}, authz.ActionCreate) {
 		return
 	}
 
@@ -81,6 +85,9 @@ func (s *Server) ListApps(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if !s.authorize(w, r, authz.Resource{Kind: "app", Namespace: ns}, authz.ActionRead) {
+		return
+	}
 
 	var list mortisev1alpha1.AppList
 	if err := s.client.List(r.Context(), &list, client.InNamespace(ns)); err != nil {
@@ -94,6 +101,9 @@ func (s *Server) ListApps(w http.ResponseWriter, r *http.Request) {
 func (s *Server) GetApp(w http.ResponseWriter, r *http.Request) {
 	ns, _, ok := s.resolveProject(w, r)
 	if !ok {
+		return
+	}
+	if !s.authorize(w, r, authz.Resource{Kind: "app", Namespace: ns}, authz.ActionRead) {
 		return
 	}
 	name := chi.URLParam(r, "app")
@@ -110,6 +120,9 @@ func (s *Server) GetApp(w http.ResponseWriter, r *http.Request) {
 func (s *Server) UpdateApp(w http.ResponseWriter, r *http.Request) {
 	ns, _, ok := s.resolveProject(w, r)
 	if !ok {
+		return
+	}
+	if !s.authorize(w, r, authz.Resource{Kind: "app", Namespace: ns}, authz.ActionUpdate) {
 		return
 	}
 	name := chi.URLParam(r, "app")
@@ -138,6 +151,9 @@ func (s *Server) UpdateApp(w http.ResponseWriter, r *http.Request) {
 func (s *Server) DeleteApp(w http.ResponseWriter, r *http.Request) {
 	ns, _, ok := s.resolveProject(w, r)
 	if !ok {
+		return
+	}
+	if !s.authorize(w, r, authz.Resource{Kind: "app", Namespace: ns}, authz.ActionDelete) {
 		return
 	}
 	name := chi.URLParam(r, "app")

@@ -8,6 +8,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
+	"github.com/MC-Meesh/mortise/internal/authz"
 	"github.com/MC-Meesh/mortise/internal/git"
 )
 
@@ -16,6 +17,9 @@ import (
 //
 // GET /api/repos?provider=github
 func (s *Server) ListRepos(w http.ResponseWriter, r *http.Request) {
+	if !s.authorize(w, r, authz.Resource{Kind: "gitprovider"}, authz.ActionRead) {
+		return
+	}
 	api, err := s.resolveGitAPI(r)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, errorResponse{err.Error()})
@@ -35,6 +39,9 @@ func (s *Server) ListRepos(w http.ResponseWriter, r *http.Request) {
 //
 // GET /api/repos/{owner}/{repo}/branches?provider=github
 func (s *Server) ListBranches(w http.ResponseWriter, r *http.Request) {
+	if !s.authorize(w, r, authz.Resource{Kind: "gitprovider"}, authz.ActionRead) {
+		return
+	}
 	owner := chi.URLParam(r, "owner")
 	repo := chi.URLParam(r, "repo")
 	fullRepo := owner + "/" + repo
@@ -58,6 +65,9 @@ func (s *Server) ListBranches(w http.ResponseWriter, r *http.Request) {
 //
 // GET /api/repos/{owner}/{repo}/tree?provider=github&branch=Y&path=Z
 func (s *Server) GetRepoTree(w http.ResponseWriter, r *http.Request) {
+	if !s.authorize(w, r, authz.Resource{Kind: "gitprovider"}, authz.ActionRead) {
+		return
+	}
 	owner := chi.URLParam(r, "owner")
 	repo := chi.URLParam(r, "repo")
 	branch := r.URL.Query().Get("branch")
