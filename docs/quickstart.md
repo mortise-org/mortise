@@ -62,6 +62,30 @@ If you want real URLs (e.g. `web.apps.example.com`), set a platform domain
 in **Settings > Platform Domain**. See [Configuring your platform](./configuration.md)
 for DNS setup details.
 
+## Data persistence
+
+Your data is safe across restarts. All platform state (apps, projects,
+users, env vars, credentials) is stored in Kubernetes and survives pod
+and node reboots. Built container images and the build cache are stored
+on persistent volumes that also survive restarts.
+
+**Disaster recovery** (server dies, disk fails): The persistent volumes
+use your cluster's default storage, which on a single server is local disk.
+To survive hardware failure, set up backups:
+
+- **Simplest (k3s):** k3s auto-snapshots its database every 12 hours.
+  Push snapshots to S3 with one command:
+  ```bash
+  k3s etcd-snapshot save --s3 --s3-bucket=mortise-backups \
+    --s3-endpoint=s3.amazonaws.com
+  ```
+  This covers all platform state. See the
+  [k3s docs](https://docs.k3s.io/cli/etcd-snapshot) for scheduling.
+
+- **Full backup (including app data):** Use Velero to back up everything
+  — Kubernetes objects and persistent volumes — to S3. See
+  [Backup with Velero](./recipes/backup.md).
+
 ## What's next
 
 - [Configuration guide](./configuration.md) — domain, git providers, HTTPS, storage

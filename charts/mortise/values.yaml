@@ -75,21 +75,26 @@ buildInfra:
 # ---------------------------------------------------------------------------
 # OCI registry — stores images built from git source
 # ---------------------------------------------------------------------------
+# Storage defaults to PVC so built images survive pod restarts. Requires a
+# default StorageClass (k3s ships with local-path, cloud providers have their
+# own). Set to "emptyDir" only for throwaway dev/test clusters.
 registry:
   enabled: true
   image: distribution/distribution:2.8.3
-  storage: emptyDir
-  # storageSize: 10Gi  # only used when storage != emptyDir
+  storage: pvc
+  storageSize: 10Gi
 
 # ---------------------------------------------------------------------------
 # BuildKit — builds container images from git source
 # ---------------------------------------------------------------------------
+# Storage defaults to PVC so the layer cache survives restarts (faster
+# rebuilds). Set to "emptyDir" if you don't care about build cache.
 buildkit:
   enabled: true
   image: moby/buildkit:v0.29.0
   privileged: true
-  storage: emptyDir
-  # storageSize: 10Gi  # only used when storage != emptyDir
+  storage: pvc
+  storageSize: 10Gi
 
 # ---------------------------------------------------------------------------
 # PlatformConfig — auto-created default configuration

@@ -193,6 +193,15 @@ install_mortise() {
         info "k3s/k3d detected — using built-in Traefik, skipping chart Traefik"
     fi
 
+    # Check for a default StorageClass. The chart defaults to PVC for registry
+    # and BuildKit. If no StorageClass exists, fall back to emptyDir with a warning.
+    local storage_flags=""
+    if ! kubectl get storageclass 2>/dev/null | grep -q "(default)"; then
+        warn "No default StorageClass found. Registry and BuildKit will use ephemeral storage."
+        warn "Built images will be lost on pod restart. Install a StorageClass for persistent storage."
+        storage_flags="--set registry.storage=emptyDir --set buildkit.storage=emptyDir"
+    fi
+
     if [ -f "${local_chart}/Chart.yaml" ]; then
         info "Using local chart at ${local_chart}"
         chart_ref="$local_chart"
@@ -223,6 +232,7 @@ install_mortise() {
         --set mortise-core.image.pullPolicy=IfNotPresent \
         --set platformConfig.buildPlatform="${BUILD_PLATFORM}" \
         $traefik_flag \
+        $storage_flags \
         --wait --timeout 300s \
         $chart_version_flag
 

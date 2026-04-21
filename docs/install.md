@@ -121,8 +121,12 @@ All values are optional. A bare `helm install` with no overrides works.
 | `buildkit.enabled` | `true` | Deploy BuildKit for git-source builds |
 | `buildkit.image` | `moby/buildkit:v0.29.0` | BuildKit image |
 | `buildkit.privileged` | `true` | Run BuildKit privileged (required for most setups) |
+| `buildkit.storage` | `pvc` | `pvc` for persistent, `emptyDir` for ephemeral |
+| `buildkit.storageSize` | `10Gi` | PVC size for BuildKit layer cache |
 | `registry.enabled` | `true` | Deploy OCI registry for built images |
 | `registry.image` | `distribution/distribution:2.8.3` | Registry image |
+| `registry.storage` | `pvc` | `pvc` for persistent, `emptyDir` for ephemeral |
+| `registry.storageSize` | `10Gi` | PVC size for registry image storage |
 | `platformConfig.enabled` | `true` | Auto-create default PlatformConfig |
 | `platformConfig.domain` | `""` | Platform domain for app URLs |
 | `buildInfra.namespace` | `mortise-deps` | Namespace for BuildKit + registry |
@@ -158,6 +162,41 @@ Operator values are nested under `mortise-core.`:
 | `resources.requests.memory` | `128Mi` | Memory request |
 | `resources.limits.cpu` | `2000m` | CPU limit |
 | `resources.limits.memory` | `512Mi` | Memory limit |
+
+## Persistence and storage
+
+The chart creates PersistentVolumeClaims for the OCI registry (built
+images) and BuildKit (layer cache). This requires a default StorageClass
+in your cluster.
+
+**Most clusters already have one:**
+- k3s/k3d: `local-path` (data at `/var/lib/rancher/k3s/storage/`)
+- EKS: `gp2` or `gp3`
+- GKE: `standard` or `premium-rwo`
+- AKS: `managed-premium` or `managed-csi`
+
+Check yours with `kubectl get storageclass`. The one marked `(default)` is
+what Mortise uses.
+
+**No StorageClass?** Either install one
+([local-path-provisioner](https://github.com/rancher/local-path-provisioner)
+is the simplest for single-node setups) or opt into ephemeral storage:
+
+```bash
+helm install mortise mortise/mortise \
+  --namespace mortise-system --create-namespace \
+  --set registry.storage=emptyDir \
+  --set buildkit.storage=emptyDir
+```
+
+With `emptyDir`, built images are lost on pod restart. Image-only deploys
+(no git source) are unaffected since they pull from external registries.
+
+**Backups:** Platform state (apps, projects, users, credentials) is stored
+in Kubernetes objects that live in etcd and survive reboots. For disaster
+recovery, see [Backup with Velero](./recipes/backup.md) or use
+[k3s etcd snapshots](https://docs.k3s.io/cli/etcd-snapshot) for the
+simplest approach on k3s.
 
 ## Uninstall
 
