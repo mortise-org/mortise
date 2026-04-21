@@ -116,7 +116,7 @@ install_k3s_native() {
 
     # Make kubeconfig readable for the current user if running via sudo.
     if [ -n "${SUDO:-}" ]; then
-        $SUDO chmod 644 "$KUBECONFIG"
+        $SUDO chmod 600 "$KUBECONFIG"
     fi
 
     info "Waiting for k3s to be ready..."

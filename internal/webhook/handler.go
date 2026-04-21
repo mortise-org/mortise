@@ -86,7 +86,8 @@ func (h *Handler) handleWebhook(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 	} else {
-		log.Info("WARNING: no webhook secret configured for provider — HMAC verification skipped", "provider", providerName)
+		http.Error(w, "webhook secret not configured", http.StatusForbidden)
+		return
 	}
 
 	// Construct an ephemeral GitAPI for signature verification only.

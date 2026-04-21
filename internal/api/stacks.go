@@ -248,10 +248,12 @@ func (s *Server) ListTemplates(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
-func generateRandomHex(n int) string {
+func generateRandomHex(n int) (string, error) {
 	b := make([]byte, n)
-	_, _ = rand.Read(b)
-	return hex.EncodeToString(b)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("crypto/rand: %w", err)
+	}
+	return hex.EncodeToString(b), nil
 }
 
 // substituteVars replaces ${VAR_NAME} placeholders in the compose YAML.
@@ -276,7 +278,10 @@ func substituteVars(tpl string, vars map[string]string) (string, error) {
 			break
 		}
 		varName := result[idx+2 : idx+end]
-		generated := generateRandomHex(16)
+		generated, err := generateRandomHex(16)
+		if err != nil {
+			return "", err
+		}
 		vars[varName] = generated
 		result = strings.ReplaceAll(result, "${"+varName+"}", generated)
 	}

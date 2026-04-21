@@ -176,7 +176,7 @@ func stacksFromEnv(log logr.Logger) stacks {
 			URL:                   registryURL,
 			Username:              os.Getenv("MORTISE_REGISTRY_USERNAME"),
 			Password:              os.Getenv("MORTISE_REGISTRY_PASSWORD"),
-			InsecureSkipTLSVerify: true, // safe default for dev/fallback
+			InsecureSkipTLSVerify: false,
 		}),
 		git: git.NewGoGitClient(),
 	}
