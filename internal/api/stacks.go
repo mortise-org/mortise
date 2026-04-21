@@ -210,15 +210,13 @@ func filterDependsOn(v interface{}, keep map[string]bool) interface{} {
 }
 
 type templateInfo struct {
-	Name        string        `json:"name"`
-	Description string        `json:"description"`
-	Services    []serviceInfo `json:"services"`
+	Name     string        `json:"name"`
+	Services []serviceInfo `json:"services"`
 }
 
 type serviceInfo struct {
-	Name     string `json:"name"`
-	Image    string `json:"image"`
-	Required bool   `json:"required"`
+	Name  string `json:"name"`
+	Image string `json:"image"`
 }
 
 func (s *Server) ListTemplates(w http.ResponseWriter, r *http.Request) {
@@ -239,24 +237,17 @@ func (s *Server) ListTemplates(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			continue
 		}
-		requiredSet := make(map[string]bool, len(tpl.Required))
-		for _, r := range tpl.Required {
-			requiredSet[r] = true
-		}
 		var services []serviceInfo
 		for svcName, svc := range cf.Services {
 			services = append(services, serviceInfo{
-				Name:     svcName,
-				Image:    svc.Image,
-				Required: requiredSet[svcName],
+				Name:  svcName,
+				Image: svc.Image,
 			})
 		}
-		// Sort for deterministic output.
 		sort.Slice(services, func(i, j int) bool { return services[i].Name < services[j].Name })
 		result = append(result, templateInfo{
-			Name:        tpl.Name,
-			Description: tpl.Description,
-			Services:    services,
+			Name:     tpl.Name,
+			Services: services,
 		})
 	}
 	writeJSON(w, http.StatusOK, result)

@@ -1,4 +1,0 @@
-name: supabase
-description: Self-hosted Supabase (auth, database, storage, realtime, dashboard)
-required_services:
-  - postgres

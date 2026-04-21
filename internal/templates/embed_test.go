@@ -31,9 +31,6 @@ func TestLoadSupabase(t *testing.T) {
 	if tpl.Name != "supabase" {
 		t.Errorf("expected name=supabase, got %q", tpl.Name)
 	}
-	if tpl.Description == "" {
-		t.Error("expected non-empty description")
-	}
 	if tpl.Compose == "" {
 		t.Fatal("expected non-empty compose")
 	}
@@ -43,10 +40,6 @@ func TestLoadSupabase(t *testing.T) {
 	}
 	if _, ok := tpl.Files["./files/init.sql"]; !ok {
 		t.Errorf("expected ./files/init.sql in bundled files, got %v", tpl.Files)
-	}
-	// Should have postgres as required.
-	if len(tpl.Required) == 0 || tpl.Required[0] != "postgres" {
-		t.Errorf("expected postgres in required, got %v", tpl.Required)
 	}
 }
 
