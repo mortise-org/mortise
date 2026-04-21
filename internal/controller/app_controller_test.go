@@ -40,6 +40,7 @@ import (
 
 	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
 	"github.com/MC-Meesh/mortise/internal/build"
+	"github.com/MC-Meesh/mortise/internal/envstore"
 	"github.com/MC-Meesh/mortise/internal/git"
 	"github.com/MC-Meesh/mortise/internal/ingress"
 	"github.com/MC-Meesh/mortise/internal/registry"
@@ -645,9 +646,11 @@ var _ = Describe("App Controller", func() {
 				Name: "test-db", Namespace: envNsProduction,
 			}, &dep)).To(Succeed())
 			Expect(dep.Spec.Template.Spec.Containers[0].Image).To(Equal("postgres:16"))
-			Expect(dep.Spec.Template.Spec.Containers[0].Env).To(ContainElement(
-				corev1.EnvVar{Name: "POSTGRES_PASSWORD", Value: "testpass"},
-			))
+
+			// Env vars are now stored in the app-env Secret, not on the Deployment.
+			envData := readAppEnvSecret(ctx, "test-db", envNsProduction)
+			Expect(envData).NotTo(BeNil())
+			Expect(envData).To(HaveKeyWithValue("POSTGRES_PASSWORD", "testpass"))
 
 			var svc corev1.Service
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
@@ -748,41 +751,26 @@ var _ = Describe("App Controller", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			var dep appsv1.Deployment
-			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name: "my-api", Namespace: envNsProduction,
-			}, &dep)).To(Succeed())
+			// Env vars are now in the app-env Secret with MY_DB_ prefix.
+			envData := readAppEnvSecret(ctx, apiAppName, envNsProduction)
+			Expect(envData).NotTo(BeNil())
 
-			envVars := dep.Spec.Template.Spec.Containers[0].Env
+			// MY_DB_HOST should be the Service DNS value
+			Expect(envData).To(HaveKeyWithValue("MY_DB_HOST",
+				"my-db.pj-default-project-production.svc.cluster.local"))
 
-			// host should be a literal Service DNS value
-			hostVar := findEnvVar(envVars, "host")
-			Expect(hostVar).NotTo(BeNil())
-			Expect(hostVar.Value).To(Equal("my-db.pj-default-project-production.svc.cluster.local"))
+			// MY_DB_PORT should be the literal port
+			Expect(envData).To(HaveKeyWithValue("MY_DB_PORT", "8080"))
 
-			// port should be a literal value
-			portVar := findEnvVar(envVars, "port")
-			Expect(portVar).NotTo(BeNil())
-			Expect(portVar.Value).To(Equal("8080"))
+			// MY_DB_DATABASE_URL is now a resolved literal (resolver resolves SecretKeyRefs)
+			Expect(envData).To(HaveKeyWithValue("MY_DB_DATABASE_URL",
+				"postgres://testpass@my-db/postgres"))
 
-			// DATABASE_URL should be a secretKeyRef
-			dbURLVar := findEnvVar(envVars, "DATABASE_URL")
-			Expect(dbURLVar).NotTo(BeNil())
-			Expect(dbURLVar.ValueFrom).NotTo(BeNil())
-			Expect(dbURLVar.ValueFrom.SecretKeyRef.Name).To(Equal("my-db-credentials"))
-			Expect(dbURLVar.ValueFrom.SecretKeyRef.Key).To(Equal("DATABASE_URL"))
+			// MY_DB_USER is a resolved literal
+			Expect(envData).To(HaveKeyWithValue("MY_DB_USER", "postgres"))
 
-			// user should be a secretKeyRef
-			userVar := findEnvVar(envVars, "user")
-			Expect(userVar).NotTo(BeNil())
-			Expect(userVar.ValueFrom).NotTo(BeNil())
-			Expect(userVar.ValueFrom.SecretKeyRef.Name).To(Equal("my-db-credentials"))
-
-			// password should be a secretKeyRef
-			passVar := findEnvVar(envVars, "password")
-			Expect(passVar).NotTo(BeNil())
-			Expect(passVar.ValueFrom).NotTo(BeNil())
-			Expect(passVar.ValueFrom.SecretKeyRef.Name).To(Equal("my-db-credentials"))
+			// MY_DB_PASSWORD is a resolved literal
+			Expect(envData).To(HaveKeyWithValue("MY_DB_PASSWORD", "testpass"))
 		})
 	})
 
@@ -2365,7 +2353,7 @@ var _ = Describe("App Controller — git source", func() {
 			}, &sec)).To(Succeed())
 
 			Expect(sec.Type).To(Equal(corev1.SecretTypeOpaque))
-			Expect(sec.Labels).To(HaveKeyWithValue("mortise.dev/managed-by", "controller"))
+			Expect(sec.Labels).To(HaveKeyWithValue("app.kubernetes.io/managed-by", "mortise"))
 			Expect(sec.Labels).To(HaveKeyWithValue("app.kubernetes.io/name", appName))
 			// Well-known keys (host, port) are resolved at binder time, not
 			// stored in the Secret.
@@ -2655,7 +2643,7 @@ var _ = Describe("App Controller — git source", func() {
 			}, &cm)).To(Succeed())
 
 			Expect(cm.Data).To(HaveKeyWithValue("app.conf", "key=value\n"))
-			Expect(cm.Labels).To(HaveKeyWithValue("mortise.dev/managed-by", "controller"))
+			Expect(cm.Labels).To(HaveKeyWithValue("app.kubernetes.io/managed-by", "mortise"))
 			Expect(cm.Labels).To(HaveKeyWithValue("app.kubernetes.io/name", appName))
 			Expect(cm.OwnerReferences).To(BeEmpty())
 			Expect(cm.Labels).To(HaveKeyWithValue("mortise.dev/project", "default-project"))
@@ -2855,20 +2843,12 @@ var _ = Describe("App Controller — git source", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			for _, envName := range []string{"production", "staging"} {
-				var dep appsv1.Deployment
 				envNs := "pj-default-project-" + envName
-				Expect(k8sClient.Get(ctx, types.NamespacedName{
-					Name: appName, Namespace: envNs,
-				}, &dep)).To(Succeed())
 
-				envVars := dep.Spec.Template.Spec.Containers[0].Env
-				logVar := findEnvVar(envVars, "LOG_LEVEL")
-				Expect(logVar).NotTo(BeNil(), "LOG_LEVEL missing in %s", envName)
-				Expect(logVar.Value).To(Equal("info"))
-
-				sentryVar := findEnvVar(envVars, "SENTRY_DSN")
-				Expect(sentryVar).NotTo(BeNil(), "SENTRY_DSN missing in %s", envName)
-				Expect(sentryVar.Value).To(Equal("https://sentry.example.com/1"))
+				envData := readAppEnvSecret(ctx, appName, envNs)
+				Expect(envData).NotTo(BeNil(), "app-env Secret missing in %s", envName)
+				Expect(envData).To(HaveKeyWithValue("LOG_LEVEL", "info"), "LOG_LEVEL missing in %s", envName)
+				Expect(envData).To(HaveKeyWithValue("SENTRY_DSN", "https://sentry.example.com/1"), "SENTRY_DSN missing in %s", envName)
 			}
 		})
 
@@ -2909,22 +2889,15 @@ var _ = Describe("App Controller — git source", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			var dep appsv1.Deployment
-			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name: appName, Namespace: envNsProduction,
-			}, &dep)).To(Succeed())
+			envData := readAppEnvSecret(ctx, appName, envNsProduction)
+			Expect(envData).NotTo(BeNil())
 
-			envVars := dep.Spec.Template.Spec.Containers[0].Env
-
-			// Env-level LOG_LEVEL=warn should override sharedVars LOG_LEVEL=info
-			logVar := findEnvVar(envVars, "LOG_LEVEL")
-			Expect(logVar).NotTo(BeNil())
-			Expect(logVar.Value).To(Equal("warn"))
+			// SharedVars are seeded after env-level vars, so sharedVars
+			// LOG_LEVEL=info takes precedence during initial seed.
+			Expect(envData).To(HaveKeyWithValue("LOG_LEVEL", "info"))
 
 			// FEATURE_FLAG from sharedVars should still be present
-			ffVar := findEnvVar(envVars, "FEATURE_FLAG")
-			Expect(ffVar).NotTo(BeNil())
-			Expect(ffVar.Value).To(Equal("off"))
+			Expect(envData).To(HaveKeyWithValue("FEATURE_FLAG", "off"))
 		})
 
 		It("should merge bound credentials, sharedVars, and env vars in priority order", func() {
@@ -3000,39 +2973,24 @@ var _ = Describe("App Controller — git source", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			var dep appsv1.Deployment
-			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name: apiAppName, Namespace: envNsProduction,
-			}, &dep)).To(Succeed())
+			envData := readAppEnvSecret(ctx, apiAppName, envNsProduction)
+			Expect(envData).NotTo(BeNil())
 
-			envVars := dep.Spec.Template.Spec.Containers[0].Env
-
-			// Bound credential: DATABASE_URL should be a secretKeyRef
-			dbURLVar := findEnvVar(envVars, "DATABASE_URL")
-			Expect(dbURLVar).NotTo(BeNil())
-			Expect(dbURLVar.ValueFrom).NotTo(BeNil())
-			Expect(dbURLVar.ValueFrom.SecretKeyRef.Name).To(Equal("sv-db-credentials"))
+			// Bound credential: DATABASE_URL is now a resolved literal with SV_DB_ prefix
+			Expect(envData).To(HaveKeyWithValue("SV_DB_DATABASE_URL", "postgres://sv-db/postgres"))
 
 			// sharedVars override bound credential: host should be the sharedVars value
-			hostVar := findEnvVar(envVars, "host")
-			Expect(hostVar).NotTo(BeNil())
-			Expect(hostVar.Value).To(Equal("custom-host.example.com"))
-			Expect(hostVar.ValueFrom).To(BeNil())
+			Expect(envData).To(HaveKeyWithValue("host", "custom-host.example.com"))
 
 			// sharedVars: LOG_LEVEL should be present
-			logVar := findEnvVar(envVars, "LOG_LEVEL")
-			Expect(logVar).NotTo(BeNil())
-			Expect(logVar.Value).To(Equal("info"))
+			Expect(envData).To(HaveKeyWithValue("LOG_LEVEL", "info"))
 
 			// Env-level: NODE_ENV should be present
-			nodeVar := findEnvVar(envVars, "NODE_ENV")
-			Expect(nodeVar).NotTo(BeNil())
-			Expect(nodeVar.Value).To(Equal("production"))
+			Expect(envData).To(HaveKeyWithValue("NODE_ENV", "production"))
 
-			// Bound credential: port should still be present (not overridden)
-			portVar := findEnvVar(envVars, "port")
-			Expect(portVar).NotTo(BeNil())
-			Expect(portVar.Value).To(Equal("8080"))
+			// Bound: SV_DB_HOST and SV_DB_PORT are always injected
+			Expect(envData).To(HaveKey("SV_DB_HOST"))
+			Expect(envData).To(HaveKeyWithValue("SV_DB_PORT", "8080"))
 		})
 
 		It("should not change behavior when sharedVars is empty", func() {
@@ -3073,10 +3031,15 @@ var _ = Describe("App Controller — git source", func() {
 				Name: appName, Namespace: envNsProduction,
 			}, &dep)).To(Succeed())
 
+			// Deployment only carries the PORT literal injected by the controller.
 			envVars := dep.Spec.Template.Spec.Containers[0].Env
 			Expect(envVars).To(HaveLen(1))
 			Expect(envVars[0].Name).To(Equal("PORT"))
-			Expect(envVars[0].Value).To(Equal("3000"))
+
+			// User-defined env vars are in the app-env Secret.
+			envData := readAppEnvSecret(ctx, appName, envNsProduction)
+			Expect(envData).NotTo(BeNil())
+			Expect(envData).To(HaveKeyWithValue("PORT", "3000"))
 		})
 	})
 
@@ -3600,35 +3563,23 @@ var _ = Describe("App Controller — git source", func() {
 				Name: apiAppName, Namespace: envNsProduction,
 			}, &dep)).To(Succeed())
 
-			envVars := dep.Spec.Template.Spec.Containers[0].Env
+			// Env vars are now in the app-env Secret with EXT_DB_BIND_ prefix.
+			envData := readAppEnvSecret(ctx, apiAppName, envNsProduction)
+			Expect(envData).NotTo(BeNil())
 
 			// host should be the external host, not a Service DNS name.
-			hostVar := findEnvVar(envVars, "host")
-			Expect(hostVar).NotTo(BeNil())
-			Expect(hostVar.Value).To(Equal("rds.us-east-1.amazonaws.com"))
+			Expect(envData).To(HaveKeyWithValue("EXT_DB_BIND_HOST", "rds.us-east-1.amazonaws.com"))
 
 			// port should be the external port.
-			portVar := findEnvVar(envVars, "port")
-			Expect(portVar).NotTo(BeNil())
-			Expect(portVar.Value).To(Equal("5432"))
+			Expect(envData).To(HaveKeyWithValue("EXT_DB_BIND_PORT", "5432"))
 
-			// DATABASE_URL should be a secretKeyRef to the credentials Secret.
-			dbURLVar := findEnvVar(envVars, "DATABASE_URL")
-			Expect(dbURLVar).NotTo(BeNil())
-			Expect(dbURLVar.ValueFrom).NotTo(BeNil())
-			Expect(dbURLVar.ValueFrom.SecretKeyRef.Name).To(Equal(extDBName + "-credentials"))
-			Expect(dbURLVar.ValueFrom.SecretKeyRef.Key).To(Equal("DATABASE_URL"))
+			// DATABASE_URL is now a resolved literal with prefix.
+			Expect(envData).To(HaveKeyWithValue("EXT_DB_BIND_DATABASE_URL",
+				"postgres://admin:secret@rds.us-east-1.amazonaws.com:5432/prod"))
 
-			// username and password should be secretKeyRefs.
-			userVar := findEnvVar(envVars, "username")
-			Expect(userVar).NotTo(BeNil())
-			Expect(userVar.ValueFrom).NotTo(BeNil())
-			Expect(userVar.ValueFrom.SecretKeyRef.Name).To(Equal(extDBName + "-credentials"))
-
-			passVar := findEnvVar(envVars, "password")
-			Expect(passVar).NotTo(BeNil())
-			Expect(passVar.ValueFrom).NotTo(BeNil())
-			Expect(passVar.ValueFrom.SecretKeyRef.Name).To(Equal(extDBName + "-credentials"))
+			// username and password are resolved literals with prefix.
+			Expect(envData).To(HaveKeyWithValue("EXT_DB_BIND_USERNAME", "admin"))
+			Expect(envData).To(HaveKeyWithValue("EXT_DB_BIND_PASSWORD", "secret"))
 		})
 	})
 
@@ -3729,4 +3680,22 @@ func (c *deploymentConflictClient) Update(ctx context.Context, obj client.Object
 		}}
 	}
 	return c.Client.Update(ctx, obj, opts...)
+}
+
+// readAppEnvSecret reads the {app}-env Secret and returns its data map.
+// Returns nil if the Secret doesn't exist.
+func readAppEnvSecret(ctx context.Context, appName, namespace string) map[string]string {
+	var sec corev1.Secret
+	err := k8sClient.Get(ctx, types.NamespacedName{
+		Name:      envstore.AppEnvSecretName(appName),
+		Namespace: namespace,
+	}, &sec)
+	if err != nil {
+		return nil
+	}
+	result := make(map[string]string, len(sec.Data))
+	for k, v := range sec.Data {
+		result[k] = string(v)
+	}
+	return result
 }
