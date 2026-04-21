@@ -1,0 +1,28 @@
+# k3d cluster config for chart integration tests.
+#
+# Traefik is disabled in k3s so the umbrella chart's Traefik subchart can
+# run without conflicts. The registry mirror rewrites kubelet pulls of
+# registry.mortise-deps.svc:5000 to a node-local hostPort so containerd
+# (which can't resolve cluster DNS in k3d) can pull built images.
+apiVersion: k3d.io/v1alpha5
+kind: Simple
+metadata:
+  name: mortise-chart
+servers: 1
+agents: 0
+options:
+  k3s:
+    extraArgs:
+      - arg: "--disable=traefik"
+        nodeFilters:
+          - "server:0"
+registries:
+  config: |
+    mirrors:
+      "registry.mortise-deps.svc:5000":
+        endpoint:
+          - "http://127.0.0.1:30500"
+    configs:
+      "127.0.0.1:30500":
+        tls:
+          insecure_skip_verify: true

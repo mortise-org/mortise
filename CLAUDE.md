@@ -156,7 +156,9 @@ For multi-step tasks, state a brief plan:
 
 ```bash
 make test                 # unit + envtest, <10s, run before every commit
+make test-charts          # helm lint + template tests, no cluster, <30s
 make test-integration     # spins up k3d, installs chart, runs suite, tears down
+make test-chart-integration # [release only] full chart: k3d + PVC + install script (~10min)
 make test-e2e             # Playwright E2E against dev cluster (requires make dev-up)
 make dev-up               # persistent k3d + tilt live-reload for active dev
 make dev-down             # tear down dev cluster
@@ -169,7 +171,9 @@ make test-integration-fast # run integration suite against existing dev cluster
 |---|---|---|---|
 | Unit | go test + fake client | Pure logic, no cluster | <10s |
 | envtest | controller-runtime envtest | Reconcile loops, real apiserver+etcd | ~2s/test |
+| Chart lint | helm lint + template | Chart schema, toggle combos, PVC defaults | <30s |
 | Integration | k3d + Helm install | Real cluster, real pods, real networking | <3min total |
+| Chart integration | k3d + umbrella chart | Full chart deploy, PVC persistence, install script | ~10min (release only) |
 | UI E2E | Playwright | Critical user flows against k3d | Per PR |
 
 ### Conventions

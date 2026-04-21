@@ -201,6 +201,54 @@ test-integration: ## Create k3d cluster, install chart + test deps, run integrat
 test-integration-fast: ## Run integration tests against the existing dev cluster (requires make dev-up + chart installed)
 	go test -tags integration -count=1 -timeout 5m ./test/integration/...
 
+##@ Chart Tests
+
+.PHONY: test-charts
+test-charts: ## Lint and template-test both Helm charts (no cluster required)
+	@echo "==> Linting mortise-core..."
+	helm lint charts/mortise-core
+	@echo "==> Linting mortise (umbrella)..."
+	helm dependency build charts/mortise 2>/dev/null || true
+	helm lint charts/mortise
+	@echo "==> Template: umbrella defaults (all enabled, PVC storage)..."
+	helm template test charts/mortise --namespace mortise-system >/dev/null
+	@echo "==> Verifying PVCs render by default..."
+	helm template test charts/mortise --namespace mortise-system \
+		--show-only templates/registry.yaml | grep -q "PersistentVolumeClaim"
+	helm template test charts/mortise --namespace mortise-system \
+		--show-only templates/buildkit.yaml | grep -q "PersistentVolumeClaim"
+	@echo "==> Template: all infra disabled (operator only)..."
+	helm template test charts/mortise --namespace mortise-system \
+		--set traefik.enabled=false \
+		--set cert-manager.enabled=false \
+		--set buildkit.enabled=false \
+		--set registry.enabled=false \
+		--set platformConfig.enabled=false \
+		| grep -q "kind: Deployment"
+	@echo "==> Verify disabled components don't render..."
+	! helm template test charts/mortise --namespace mortise-system \
+		--set traefik.enabled=false \
+		--set cert-manager.enabled=false \
+		--set buildkit.enabled=false \
+		--set registry.enabled=false \
+		--set platformConfig.enabled=false \
+		| grep -q "buildkitd"
+	@echo "==> Template: emptyDir fallback..."
+	! helm template test charts/mortise --namespace mortise-system \
+		--set registry.storage=emptyDir \
+		--set buildkit.storage=emptyDir \
+		--show-only templates/registry.yaml | grep -q "PersistentVolumeClaim"
+	@echo "==> Template: mortise-core standalone..."
+	helm template test charts/mortise-core --namespace mortise-system >/dev/null
+	@echo ""
+	@echo "All chart lint and template tests passed."
+
+CHART_CLUSTER ?= mortise-chart
+
+.PHONY: test-chart-integration
+test-chart-integration: build-ui ## [Release only] Full chart integration: k3d + PVC persistence + install script (~10min)
+	bash test/chart/run.sh
+
 E2E_PORT ?= 8091
 E2E_EMAIL ?= admin@local
 E2E_PASSWORD ?= admin123
