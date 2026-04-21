@@ -1,12 +1,18 @@
 package api
 
 import (
+	"context"
+	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
+	appsv1 "k8s.io/api/apps/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
+	"github.com/MC-Meesh/mortise/internal/constants"
 )
 
 // Rebuild triggers a fresh build from the latest git commit.
@@ -42,4 +48,42 @@ func (s *Server) Rebuild(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "rebuilding"})
+}
+
+// Redeploy triggers a rolling restart of an app's Deployment(s) by annotating
+// the pod template. Works for any source type (git, image, external).
+// This is the correct way to pick up Secret changes mounted via envFrom.
+//
+// POST /api/projects/{project}/apps/{app}/redeploy
+func (s *Server) Redeploy(w http.ResponseWriter, r *http.Request) {
+	_, projectName, ok := s.resolveProject(w, r)
+	if !ok {
+		return
+	}
+	appName := chi.URLParam(r, "app")
+	env := r.URL.Query().Get("environment")
+	if env == "" {
+		env = "production"
+	}
+
+	envNs := constants.EnvNamespace(projectName, env)
+	if err := restartDeployment(r.Context(), s.client, envNs, appName); err != nil {
+		writeError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "restarting"})
+}
+
+func restartDeployment(ctx context.Context, c client.Client, namespace, appName string) error {
+	var dep appsv1.Deployment
+	if err := c.Get(ctx, types.NamespacedName{Name: appName, Namespace: namespace}, &dep); err != nil {
+		return err
+	}
+
+	if dep.Spec.Template.Annotations == nil {
+		dep.Spec.Template.Annotations = make(map[string]string)
+	}
+	dep.Spec.Template.Annotations["mortise.dev/restartedAt"] = fmt.Sprintf("%d", time.Now().UnixMilli())
+	return c.Update(ctx, &dep)
 }

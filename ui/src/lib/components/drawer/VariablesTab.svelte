@@ -35,13 +35,23 @@
 		rawText: string;
 	};
 
-	let restartTriggered = $state(false);
-	let dismissTimer: ReturnType<typeof setTimeout> | null = null;
+	let needsRedeploy = $state(false);
+	let redeploying = $state(false);
 
-	function triggerRestartBanner() {
-		restartTriggered = true;
-		if (dismissTimer) clearTimeout(dismissTimer);
-		dismissTimer = setTimeout(() => { restartTriggered = false; }, 4000);
+	function markStale() {
+		needsRedeploy = true;
+	}
+
+	async function triggerRedeploy() {
+		redeploying = true;
+		try {
+			await api.redeploy(project, app.metadata.name, activeEnv);
+			needsRedeploy = false;
+		} catch (e) {
+			envSection.error = e instanceof Error ? e.message : 'Redeploy failed';
+		} finally {
+			redeploying = false;
+		}
 	}
 
 	const activeEnv = $derived(
@@ -206,7 +216,7 @@
 			}
 			section.originalEntries = section.entries.map(e => ({ ...e }));
 			section.editedKeys = new Set();
-			triggerRestartBanner();
+			markStale();
 		} catch (e) {
 			section.error = e instanceof Error ? e.message : 'Failed to save';
 		} finally {
@@ -268,11 +278,12 @@
 </script>
 
 <div class="flex h-full flex-col gap-3 overflow-y-auto p-1">
-{#if restartTriggered}
-	<div class="flex items-center justify-between rounded-md border border-blue-500/30 bg-blue-500/10 px-3 py-2 text-xs text-blue-300">
-		<span>Changes saved — rolling restart in progress</span>
-		<button type="button" onclick={() => { restartTriggered = false; if (dismissTimer) clearTimeout(dismissTimer); }} class="ml-2 text-blue-400 hover:text-blue-200">
-			<X class="h-3.5 w-3.5" />
+{#if needsRedeploy}
+	<div class="flex items-center justify-between rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning">
+		<span>Environment variables changed — redeploy to apply</span>
+		<button type="button" onclick={triggerRedeploy} disabled={redeploying}
+			class="ml-2 rounded-md bg-warning/20 px-2.5 py-1 text-xs font-medium text-warning hover:bg-warning/30 disabled:opacity-50">
+			{redeploying ? 'Redeploying...' : 'Redeploy'}
 		</button>
 	</div>
 {/if}
@@ -342,9 +353,11 @@
 						<div class="flex items-center gap-2 border-b border-surface-600 px-3 py-2 bg-surface-700/30">
 							<input type="text" bind:value={envSection.newKey} placeholder="VARIABLE_NAME"
 								onpaste={(e) => handleKeyPaste(envSection, e)}
+								onkeydown={(e) => { if (e.key === 'Enter' && envSection.newKey.trim()) addVar(envSection, false); }}
 								class="w-[40%] rounded-md border border-surface-600 bg-surface-800 px-2.5 py-1.5 font-mono text-sm text-white placeholder-gray-500 outline-none focus:border-accent" />
 							<div class="relative flex-1">
 								<input type="text" bind:value={envSection.newValue} placeholder="value"
+									onkeydown={(e) => { if (e.key === 'Enter' && envSection.newKey.trim()) addVar(envSection, false); }}
 									class="w-full rounded-md border border-surface-600 bg-surface-800 px-2.5 py-1.5 text-sm text-white placeholder-gray-500 outline-none focus:border-accent pr-8" />
 								<button type="button" onclick={() => { envSection.showPicker = !envSection.showPicker; }}
 									class="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500 hover:text-accent" title="Insert reference">
@@ -472,8 +485,10 @@
 					<div class="flex items-center gap-2 border-b border-surface-600 px-3 py-2 bg-surface-700/30">
 						<input type="text" bind:value={sharedSection.newKey} placeholder="VARIABLE_NAME"
 							onpaste={(e) => handleKeyPaste(sharedSection, e)}
+							onkeydown={(e) => { if (e.key === 'Enter' && sharedSection.newKey.trim()) addVar(sharedSection, true); }}
 							class="w-[40%] rounded-md border border-surface-600 bg-surface-800 px-2.5 py-1.5 font-mono text-sm text-white placeholder-gray-500 outline-none focus:border-accent" />
 						<input type="text" bind:value={sharedSection.newValue} placeholder="value"
+							onkeydown={(e) => { if (e.key === 'Enter' && sharedSection.newKey.trim()) addVar(sharedSection, true); }}
 							class="flex-1 rounded-md border border-surface-600 bg-surface-800 px-2.5 py-1.5 text-sm text-white placeholder-gray-500 outline-none focus:border-accent" />
 						<button type="button" onclick={() => addVar(sharedSection, true)} disabled={!sharedSection.newKey.trim() || sharedSection.saving}
 							class="rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-white hover:bg-accent-hover disabled:opacity-50">Add</button>
