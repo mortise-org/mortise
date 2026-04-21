@@ -17,8 +17,8 @@ services:
     ports: ["9999:9999"]
     environment:
       GOTRUE_DB_DRIVER: postgres
-      GOTRUE_DB_DATABASE_URL: postgres://supabase_admin:${PG_PASSWORD}@supabase-postgres-production:5432/supabase?sslmode=disable
-      DATABASE_URL: postgres://supabase_admin:${PG_PASSWORD}@supabase-postgres-production:5432/supabase?sslmode=disable
+      GOTRUE_DB_DATABASE_URL: postgres://supabase_admin:${PG_PASSWORD}@supabase-postgres:5432/supabase?sslmode=disable
+      DATABASE_URL: postgres://supabase_admin:${PG_PASSWORD}@supabase-postgres:5432/supabase?sslmode=disable
       GOTRUE_JWT_SECRET: ${JWT_SECRET}
       GOTRUE_JWT_EXP: "3600"
       GOTRUE_SITE_URL: http://localhost
@@ -34,7 +34,7 @@ services:
     depends_on: [postgres]
     ports: ["3000:3000"]
     environment:
-      PGRST_DB_URI: postgres://supabase_admin:${PG_PASSWORD}@supabase-postgres-production:5432/supabase
+      PGRST_DB_URI: postgres://supabase_admin:${PG_PASSWORD}@supabase-postgres:5432/supabase
       PGRST_DB_SCHEMA: public,storage
       PGRST_DB_ANON_ROLE: anon
       PGRST_JWT_SECRET: ${JWT_SECRET}
@@ -45,7 +45,7 @@ services:
     depends_on: [postgres]
     ports: ["5000:5000"]
     environment:
-      DATABASE_URL: postgres://supabase_admin:${PG_PASSWORD}@supabase-postgres-production:5432/supabase
+      DATABASE_URL: postgres://supabase_admin:${PG_PASSWORD}@supabase-postgres:5432/supabase
       PGRST_JWT_SECRET: ${JWT_SECRET}
       ANON_KEY: ${JWT_SECRET}
       SERVICE_KEY: ${JWT_SECRET}
@@ -57,7 +57,7 @@ services:
     depends_on: [postgres]
     ports: ["4000:4000"]
     environment:
-      DB_HOST: supabase-postgres-production
+      DB_HOST: supabase-postgres
       DB_PORT: "5432"
       DB_USER: supabase_admin
       DB_PASSWORD: ${PG_PASSWORD}
@@ -80,10 +80,10 @@ services:
     depends_on: [postgres]
     ports: ["3001:3000"]
     environment:
-      STUDIO_PG_META_URL: http://supabase-rest-production:3000
+      STUDIO_PG_META_URL: http://supabase-rest:3000
       POSTGRES_PASSWORD: ${PG_PASSWORD}
-      SUPABASE_URL: http://supabase-rest-production:3000
-      SUPABASE_REST_URL: http://supabase-rest-production:3000/rest/v1
+      SUPABASE_URL: http://supabase-rest:3000
+      SUPABASE_REST_URL: http://supabase-rest:3000/rest/v1
       SUPABASE_ANON_KEY: ${ANON_KEY}
       SUPABASE_SERVICE_ROLE_KEY: ${SERVICE_ROLE_KEY}
       DEFAULT_ORGANIZATION_NAME: Default Organization
