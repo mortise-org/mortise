@@ -166,6 +166,9 @@ func (s *Server) Handler() http.Handler {
 			r.Patch("/projects/{project}/apps/{app}/env", s.PatchEnv)
 			r.Post("/projects/{project}/apps/{app}/env/import", s.ImportEnv)
 
+			r.Get("/projects/{project}/shared-vars", s.GetSharedVars)
+			r.Put("/projects/{project}/shared-vars", s.PutSharedVars)
+
 			r.Get("/projects/{project}/apps/{app}/domains", s.ListDomains)
 			r.Post("/projects/{project}/apps/{app}/domains", s.AddDomain)
 			r.Delete("/projects/{project}/apps/{app}/domains/{domain}", s.RemoveDomain)

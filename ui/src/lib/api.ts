@@ -361,10 +361,12 @@ export const api = {
 		request<ActivityEvent[]>(`/projects/${enc(project)}/activity`),
 
 	// --- shared variables ---
-	getSharedVars: (project: string, app: string) =>
-		request<Record<string, string>>(`/projects/${enc(project)}/apps/${enc(app)}/shared`),
-	setSharedVars: (project: string, app: string, vars: Record<string, string>) =>
-		request<void>(`/projects/${enc(project)}/apps/${enc(app)}/shared`, {
+	getSharedVars: (project: string, environment: string) =>
+		request<Array<{ name: string; value: string; source?: string }>>(
+			`/projects/${enc(project)}/shared-vars?environment=${enc(environment)}`
+		),
+	setSharedVars: (project: string, environment: string, vars: Array<{ name: string; value: string }>) =>
+		request<void>(`/projects/${enc(project)}/shared-vars?environment=${enc(environment)}`, {
 			method: 'PUT',
 			body: JSON.stringify(vars)
 		}),

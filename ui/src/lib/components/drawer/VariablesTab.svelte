@@ -105,13 +105,21 @@
 	}
 
 	async function loadShared() {
-		// Read shared vars from app.spec.sharedVars (no dedicated API yet).
-		const raw = app.spec.sharedVars ?? [];
-		sharedSection.entries = raw.map((v: {name: string; value: string}) => ({
-			name: v.name, value: v.value, source: 'shared', revealed: false
-		}));
-		sharedSection.originalEntries = sharedSection.entries.map(e => ({ ...e }));
-		sharedSection.editedKeys = new Set();
+		sharedSection.loading = true;
+		sharedSection.error = '';
+		try {
+			const rows = await api.getSharedVars(project, activeEnv);
+			sharedSection.entries = (rows ?? []).map(r => ({
+				name: r.name, value: r.value, source: r.source ?? 'shared', revealed: false
+			}));
+			sharedSection.originalEntries = sharedSection.entries.map(e => ({ ...e }));
+			sharedSection.editedKeys = new Set();
+		} catch (e) {
+			sharedSection.error = e instanceof Error ? e.message : 'Failed to load shared vars';
+			sharedSection.entries = [];
+		} finally {
+			sharedSection.loading = false;
+		}
 	}
 
 	// ---- Actions ----
@@ -191,9 +199,8 @@
 				vars[e.name] = e.value;
 			}
 			if (isShared) {
-				const plainSpec = JSON.parse(JSON.stringify(app.spec));
-				plainSpec.sharedVars = Object.entries(vars).map(([name, value]) => ({ name, value }));
-				await api.updateApp(project, app.metadata.name, plainSpec);
+				const entries = Object.entries(vars).map(([name, value]) => ({ name, value }));
+				await api.setSharedVars(project, activeEnv, entries);
 			} else {
 				await api.setEnv(project, app.metadata.name, activeEnv, vars);
 			}

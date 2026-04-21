@@ -230,6 +230,71 @@ func (s *Server) ImportEnv(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "imported", "count": fmt.Sprintf("%d", len(parsed))})
 }
 
+// GetSharedVars returns shared env vars for a project environment.
+func (s *Server) GetSharedVars(w http.ResponseWriter, r *http.Request) {
+	project, ok := s.getProject(w, r)
+	if !ok {
+		return
+	}
+	env := r.URL.Query().Get("environment")
+	if env == "" {
+		writeJSON(w, http.StatusBadRequest, errorResponse{"environment query parameter is required"})
+		return
+	}
+
+	envNs := constants.EnvNamespace(project.Name, env)
+	store := &envstore.Store{Client: s.client}
+	envs, err := store.GetShared(r.Context(), envNs)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+
+	resp := make([]envVarResponse, 0, len(envs))
+	for _, e := range envs {
+		resp = append(resp, envVarResponse{Name: e.Name, Value: e.Value, Source: e.Source})
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// PutSharedVars replaces all shared env vars for a project environment.
+func (s *Server) PutSharedVars(w http.ResponseWriter, r *http.Request) {
+	project, ok := s.getProject(w, r)
+	if !ok {
+		return
+	}
+	env := r.URL.Query().Get("environment")
+	if env == "" {
+		writeJSON(w, http.StatusBadRequest, errorResponse{"environment query parameter is required"})
+		return
+	}
+
+	var vars []envVarResponse
+	if err := json.NewDecoder(r.Body).Decode(&vars); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse{"invalid JSON: " + err.Error()})
+		return
+	}
+
+	envNs := constants.EnvNamespace(project.Name, env)
+	store := &envstore.Store{Client: s.client}
+
+	envVars := make([]envstore.Env, len(vars))
+	for i, v := range vars {
+		envVars[i] = envstore.Env{Name: v.Name, Value: v.Value, Source: "shared"}
+	}
+
+	labels := map[string]string{
+		constants.ProjectLabel:     project.Name,
+		constants.EnvironmentLabel: env,
+	}
+	if err := store.SetShared(r.Context(), envNs, envVars, labels); err != nil {
+		writeError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "updated"})
+}
+
 // envNamespace returns the workload namespace for an app + environment.
 func envNamespace(app *mortisev1alpha1.App, envName string) string {
 	projectName, _ := constants.ProjectFromControlNs(app.Namespace)

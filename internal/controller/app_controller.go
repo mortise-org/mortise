@@ -1398,7 +1398,9 @@ func (r *AppReconciler) reconcileEnvSecret(ctx context.Context, app *mortisev1al
 		}
 	}
 
-	return store.Set(ctx, envNs, app.Name, deduped, labels)
+	// Merge rather than overwrite — preserves keys written by external tools
+	// (ESO, Vault, manual kubectl) that Mortise doesn't manage.
+	return store.Merge(ctx, envNs, app.Name, deduped, labels)
 }
 
 // credentialsSecretName is the name of the {app}-credentials Secret this
