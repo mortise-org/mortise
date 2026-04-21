@@ -22,7 +22,7 @@ func TestServerCarriesInjectedRESTConfig(t *testing.T) {
 	jwtHelper := auth.NewJWTHelper(k8sClient)
 	cfg := &rest.Config{Host: "https://example.test"}
 
-	srv := api.NewServer(k8sClient, fake.NewClientset(), cfg, authProvider, jwtHelper, nil, authz.NewNativePolicyEngine())
+	srv := api.NewServer(k8sClient, fake.NewClientset(), nil, cfg, authProvider, jwtHelper, nil, authz.NewNativePolicyEngine())
 	if srv.RESTConfig() == nil {
 		t.Fatal("expected Server.RESTConfig() to return the injected config, got nil")
 	}

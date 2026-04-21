@@ -367,6 +367,19 @@ func (s *sseWriter) writeEvent(line logLine) {
 	s.flusher.Flush()
 }
 
+// writeNamedEvent writes a typed SSE event with an "event:" field so the
+// client can dispatch via EventSource.addEventListener(eventType, ...).
+func (s *sseWriter) writeNamedEvent(eventType string, data any) {
+	raw, err := json.Marshal(data)
+	if err != nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, _ = fmt.Fprintf(s.w, "event: %s\ndata: %s\n\n", eventType, raw)
+	s.flusher.Flush()
+}
+
 // podTracker records which pod names have already had a streaming goroutine
 // started so a pod watcher re-reporting an existing pod doesn't spawn
 // duplicate log streams.

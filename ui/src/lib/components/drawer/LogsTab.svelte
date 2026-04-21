@@ -8,10 +8,14 @@
 
 	let {
 		project,
-		app
+		app,
+		sseBuildLogs = null,
+		ssePods = new Map()
 	}: {
 		project: string;
 		app: App;
+		sseBuildLogs?: BuildLogsResponse | null;
+		ssePods?: Map<string, Pod[]>;
 	} = $props();
 
 	// --- Sub-tabs ---
@@ -30,6 +34,8 @@
 	const selectedEnv = $derived(
 		store.currentEnv(project) || app.spec.environments?.[0]?.name || 'production'
 	);
+	// Pods fed from SSE via parent; fall back to REST fetch on first load.
+	const ssePodKey = $derived(`${app.metadata.name}/${selectedEnv}`);
 	let pods = $state<Pod[]>([]);
 	let podsLoaded = $state(false);
 	let selectedPod = $state(''); // '' = all pods
@@ -40,11 +46,10 @@
 	let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 	let disconnected = $state(false);
 	let logContainer: HTMLElement | null = $state(null);
-	let podPollHandle: ReturnType<typeof setInterval> | null = null;
 
-	// --- Build sub-tab state ---
-	let buildResp = $state<BuildLogsResponse | null>(null);
-	let buildPollHandle: ReturnType<typeof setInterval> | null = null;
+	// Build logs: SSE prop takes priority; fall back to one-shot REST fetch.
+	let fetchedBuildLogs = $state<BuildLogsResponse | null>(null);
+	const buildResp = $derived(sseBuildLogs ?? fetchedBuildLogs);
 
 	const MAX_EVENTS = 2000;
 
@@ -129,92 +134,54 @@
 			const list = await api.listPods(project, app.metadata.name, selectedEnv);
 			pods = list ?? [];
 			podsLoaded = true;
-			// If there's exactly one pod and nothing selected, scope the stream to it
-			// so we skip the pod-badge path entirely.
-			if (pods.length === 1 && !selectedPod) {
-				selectedPod = pods[0].name;
-			}
-			// If the selected pod disappeared (rollout), fall back to "all".
-			if (selectedPod && !pods.some((p) => p.name === selectedPod)) {
-				selectedPod = '';
-				previous = false;
-			}
+			reconcilePodSelection();
 		} catch {
 			/* ignore - keep previous list */
 		}
 	}
 
-	async function pollBuildLogs() {
-		try {
-			buildResp = await api.getBuildLogs(project, app.metadata.name);
-		} catch {
-			/* ignore */
+	function reconcilePodSelection() {
+		if (pods.length === 1 && !selectedPod) {
+			selectedPod = pods[0].name;
 		}
-	}
-
-	function startBuildPoll() {
-		if (buildPollHandle) return;
-		void pollBuildLogs();
-		buildPollHandle = setInterval(() => {
-			void pollBuildLogs();
-			// Stop polling once a terminal state is reached.
-			if (buildResp && !buildResp.building) {
-				if (buildPollHandle) {
-					clearInterval(buildPollHandle);
-					buildPollHandle = null;
-				}
-			}
-		}, 2000);
-	}
-
-	function stopBuildPoll() {
-		if (buildPollHandle) {
-			clearInterval(buildPollHandle);
-			buildPollHandle = null;
-		}
-	}
-
-	function startPodPoll() {
-		if (podPollHandle) return;
-		void loadPods();
-		podPollHandle = setInterval(() => void loadPods(), 10000);
-	}
-
-	function stopPodPoll() {
-		if (podPollHandle) {
-			clearInterval(podPollHandle);
-			podPollHandle = null;
+		if (selectedPod && !pods.some((p) => p.name === selectedPod)) {
+			selectedPod = '';
+			previous = false;
 		}
 	}
 
 	// --- Reactive wiring ---
 
+	// SSE pod updates: when SSE delivers pods for this app/env, apply them.
+	$effect(() => {
+		const ssePodList = ssePods.get(ssePodKey);
+		if (ssePodList) {
+			pods = ssePodList;
+			podsLoaded = true;
+			reconcilePodSelection();
+		}
+	});
+
 	// Sub-tab lifecycle.
 	$effect(() => {
 		if (subTab === 'live') {
-			startPodPoll();
+			if (!podsLoaded) void loadPods();
 			connectLive();
 		} else {
-			stopPodPoll();
 			closeStream();
 		}
-		// Build polling is driven by the build sub-tab + isBuilding state below.
 	});
 
-	// Build tab: fetch once on entry, poll only while building.
+	// Build tab: fetch build logs once on entry if SSE hasn't delivered yet.
 	$effect(() => {
-		if (subTab === 'build') {
-			if (!buildResp) void pollBuildLogs();
-			if (isBuilding && !isImageSource) startBuildPoll();
-			else stopBuildPoll();
-		} else {
-			stopBuildPoll();
+		if (subTab === 'build' && !buildResp && !isImageSource) {
+			api.getBuildLogs(project, app.metadata.name).then((resp) => {
+				if (!sseBuildLogs) fetchedBuildLogs = resp;
+			}).catch(() => {});
 		}
 	});
 
-	// Env change: clear the stale pod selection and refetch pods immediately
-	// so the pod-picker + stream reflect the new env on the next tick rather
-	// than waiting for the 10s poll.
+	// Env change: clear stale pod selection.
 	let lastEnv = $state('');
 	$effect(() => {
 		if (lastEnv === selectedEnv) return;
@@ -230,11 +197,10 @@
 
 	// Reconnect the stream whenever the user changes knobs that affect the URL.
 	$effect(() => {
-		// Touch all inputs for reactivity.
 		void selectedEnv;
 		void selectedPod;
 		void previous;
-		void pods.length; // reconnect when pods transition 0 → >0
+		void pods.length;
 		if (subTab === 'live') connectLive();
 	});
 
@@ -246,8 +212,6 @@
 	onMount(() => {
 		return () => {
 			closeStream();
-			stopBuildPoll();
-			stopPodPoll();
 		};
 	});
 

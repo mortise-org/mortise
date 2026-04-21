@@ -284,4 +284,3 @@ func TestGetSharedVarsMissingProject(t *testing.T) {
 		t.Fatalf("expected 404 for missing project, got %d: %s", w.Code, w.Body.String())
 	}
 }
-

@@ -33,6 +33,7 @@ import (
 	"github.com/go-logr/logr"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -454,6 +455,12 @@ func main() {
 		os.Exit(1)
 	}
 
+	dynamicClient, err := dynamic.NewForConfig(mgr.GetConfig())
+	if err != nil {
+		setupLog.Error(err, "Failed to create dynamic client")
+		os.Exit(1)
+	}
+
 	authProvider := auth.NewNativeAuthProvider(mgr.GetClient())
 	jwtHelper := auth.NewJWTHelper(mgr.GetClient())
 
@@ -464,7 +471,7 @@ func main() {
 		setupLog.Info("UI files not available; API will still serve", "err", err)
 	}
 
-	apiServer := api.NewServer(mgr.GetClient(), clientset, mgr.GetConfig(), authProvider, jwtHelper, uiSub, authz.NewNativePolicyEngine())
+	apiServer := api.NewServer(mgr.GetClient(), clientset, dynamicClient, mgr.GetConfig(), authProvider, jwtHelper, uiSub, authz.NewNativePolicyEngine())
 	apiServer.SetBuildLogProvider(&appReconciler.Builds)
 	httpServer := &http.Server{Addr: apiAddr, Handler: apiServer.Handler()}
 	go func() {

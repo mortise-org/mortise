@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { api } from '$lib/api';
 	import { store } from '$lib/store.svelte';
-	import type { App } from '$lib/types';
+	import type { App, BuildLogsResponse, Pod } from '$lib/types';
 	import { X, GitBranch, Container, Cloud, ExternalLink, Rocket } from 'lucide-svelte';
 	import DeploymentsTab from './drawer/DeploymentsTab.svelte';
 	import VariablesTab from './drawer/VariablesTab.svelte';
@@ -13,11 +13,15 @@
 		project,
 		appName,
 		liveApp = null,
+		liveBuildLogs = null,
+		livePods = new Map(),
 		onClose
 	}: {
 		project: string;
 		appName: string;
 		liveApp?: App | null;
+		liveBuildLogs?: BuildLogsResponse | null;
+		livePods?: Map<string, Pod[]>;
 		onClose: () => void;
 	} = $props();
 
@@ -291,7 +295,7 @@
 			{/if}
 			{#if logsEverViewed || store.drawerTab === 'logs'}
 				<div class="{store.drawerTab !== 'logs' ? 'hidden' : ''}">
-					<LogsTab {project} app={liveApp} />
+					<LogsTab {project} app={liveApp} sseBuildLogs={liveBuildLogs} ssePods={livePods} />
 				</div>
 			{/if}
 		{/if}

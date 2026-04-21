@@ -8,6 +8,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -25,17 +26,18 @@ type BuildLogProvider interface {
 
 // Server is the REST API server that translates HTTP requests into CRD operations.
 type Server struct {
-	client     client.Client
-	clientset  kubernetes.Interface
-	restConfig *rest.Config
-	auth       auth.AuthProvider
-	jwt        *auth.JWTHelper
-	ui         fs.FS
-	webhook    *webhook.Handler
-	deviceFlow *DeviceFlowHandler
-	authz      authz.PolicyEngine
-	buildLogs  BuildLogProvider
-	proxies    *appProxyManager
+	client        client.Client
+	clientset     kubernetes.Interface
+	dynamicClient dynamic.Interface
+	restConfig    *rest.Config
+	auth          auth.AuthProvider
+	jwt           *auth.JWTHelper
+	ui            fs.FS
+	webhook       *webhook.Handler
+	deviceFlow    *DeviceFlowHandler
+	authz         authz.PolicyEngine
+	buildLogs     BuildLogProvider
+	proxies       *appProxyManager
 }
 
 // RESTConfig returns the rest.Config the server was built with. Exposed for
@@ -52,21 +54,22 @@ func (s *Server) SetBuildLogProvider(p BuildLogProvider) {
 // NewServer creates a new API server.
 // ui is an optional filesystem for serving the SvelteKit UI; pass nil to disable UI serving.
 // restConfig is used for pod/exec streaming; pass nil in tests that don't exercise exec.
-func NewServer(c client.Client, cs kubernetes.Interface, restConfig *rest.Config, authProvider auth.AuthProvider, jwt *auth.JWTHelper, ui fs.FS, policy authz.PolicyEngine) *Server {
+func NewServer(c client.Client, cs kubernetes.Interface, dc dynamic.Interface, restConfig *rest.Config, authProvider auth.AuthProvider, jwt *auth.JWTHelper, ui fs.FS, policy authz.PolicyEngine) *Server {
 	kr := webhook.NewK8sReader(c)
 	wh := webhook.New(kr)
 	df := newDeviceFlowHandler(c)
 	return &Server{
-		client:     c,
-		clientset:  cs,
-		restConfig: restConfig,
-		auth:       authProvider,
-		jwt:        jwt,
-		ui:         ui,
-		authz:      policy,
-		webhook:    wh,
-		deviceFlow: df,
-		proxies:    newAppProxyManager(),
+		client:        c,
+		clientset:     cs,
+		dynamicClient: dc,
+		restConfig:    restConfig,
+		auth:          authProvider,
+		jwt:           jwt,
+		ui:            ui,
+		authz:         policy,
+		webhook:       wh,
+		deviceFlow:    df,
+		proxies:       newAppProxyManager(),
 	}
 }
 
@@ -106,6 +109,7 @@ func (s *Server) authorize(w http.ResponseWriter, r *http.Request, resource auth
 //	/api/projects/{project}/apps/{app}/deploy                      deploy webhook
 //	/api/projects/{project}/apps/{app}/rollback                   rollback to previous deploy
 //	/api/projects/{project}/apps/{app}/promote                    promote image between envs
+//	/api/projects/{project}/events                                 SSE project event stream
 //	/api/projects/{project}/apps/{app}/logs                        SSE log stream
 //	/api/projects/{project}/apps/{app}/pods                        list pod summaries
 //	/api/projects/{project}/apps/{app}/secrets                     list/create
@@ -213,13 +217,14 @@ func (s *Server) Handler() http.Handler {
 			r.Post("/projects/{project}/apps/{app}/deploy", s.Deploy)
 		})
 
-		// /logs: JWT may come via `?token=` query param as an EventSource
+		// SSE endpoints: JWT may come via `?token=` query param as an EventSource
 		// workaround. sseTokenQueryParamMiddleware runs before jwtAuthMiddleware
 		// and promotes the query param onto the Authorization header.
 		r.Group(func(r chi.Router) {
 			r.Use(sseTokenQueryParamMiddleware)
 			r.Use(s.jwtAuthMiddleware)
 			r.Get("/projects/{project}/apps/{app}/logs", s.handleLogs)
+			r.Get("/projects/{project}/events", s.handleProjectEvents)
 		})
 	})
 

@@ -4,7 +4,8 @@
 	import { goto } from '$app/navigation';
 	import { api } from '$lib/api';
 	import { store } from '$lib/store.svelte';
-	import type { App, AppPhase, Project } from '$lib/types';
+	import type { App, AppPhase, Project, BuildLogsResponse, Pod } from '$lib/types';
+	import { connectProjectEvents } from '$lib/projectEvents';
 	import ProjectCanvas from '$lib/components/ProjectCanvas.svelte';
 	import NewAppModal from '$lib/components/NewAppModal.svelte';
 	import AppDrawer from '$lib/components/AppDrawer.svelte';
@@ -25,6 +26,12 @@
 	let deployError = $state('');
 	let showDetailsModal = $state(false);
 
+	// SSE-fed state for build logs and pods (passed to drawer/LogsTab)
+	let buildLogs = $state<Map<string, BuildLogsResponse>>(new Map());
+	let podsByAppEnv = $state<Map<string, Pod[]>>(new Map());
+
+	let eventStream: ReturnType<typeof connectProjectEvents> | null = null;
+
 	onMount(async () => {
 		if (!localStorage.getItem('mortise_token')) {
 			goto('/login');
@@ -43,7 +50,6 @@
 				await api.updateApp(projectName, appName, change.dirty);
 			}
 			store.discardAll();
-			await refreshApps();
 		} catch (e) {
 			deployError = e instanceof Error ? e.message : 'Deploy failed';
 		} finally {
@@ -70,13 +76,28 @@
 		}
 	});
 
-
-	let pollHandle: ReturnType<typeof setInterval> | null = null;
-
-	$effect(() => {
-		void selectedApp;
-		if (!loading) startPollingIfBuilding();
-	});
+	function connectSSE() {
+		eventStream?.close();
+		eventStream = connectProjectEvents(projectName, {
+			onAppUpdated: (app) => {
+				const idx = apps.findIndex(a => a.metadata.name === app.metadata.name);
+				if (idx >= 0) {
+					apps = [...apps.slice(0, idx), app, ...apps.slice(idx + 1)];
+				} else {
+					apps = [...apps, app];
+				}
+			},
+			onAppDeleted: (name) => {
+				apps = apps.filter(a => a.metadata.name !== name);
+			},
+			onPods: (appName, env, pods) => {
+				podsByAppEnv = new Map(podsByAppEnv).set(`${appName}/${env}`, pods);
+			},
+			onBuildLog: (appName, resp) => {
+				buildLogs = new Map(buildLogs).set(appName, resp);
+			}
+		});
+	}
 
 	async function load() {
 		loading = true;
@@ -87,7 +108,7 @@
 				api.listApps(projectName)
 			]);
 			store.setProject(projectName);
-			startPollingIfBuilding();
+			connectSSE();
 		} catch (err) {
 			error = err instanceof Error ? err.message : 'Failed to load project';
 		} finally {
@@ -98,37 +119,11 @@
 	async function refreshApps() {
 		try {
 			apps = await api.listApps(projectName);
-			startPollingIfBuilding();
 		} catch { /* ignore */ }
 	}
 
-	function isTransient(phase?: string) {
-		return phase === 'Building' || phase === 'Deploying' || phase === 'CrashLooping';
-	}
-
-	function startPollingIfBuilding() {
-		const needsPoll = apps.some(a => isTransient(a.status?.phase)) || selectedApp !== null;
-		if (needsPoll && !pollHandle) {
-			pollHandle = setInterval(async () => {
-				try {
-					apps = await api.listApps(projectName);
-					if (!apps.some(a => isTransient(a.status?.phase)) && selectedApp === null) {
-						clearInterval(pollHandle!);
-						pollHandle = null;
-					}
-				} catch { /* ignore */ }
-			}, 3000);
-		} else if (!needsPoll && pollHandle) {
-			clearInterval(pollHandle);
-			pollHandle = null;
-		}
-	}
-
 	onDestroy(() => {
-		if (pollHandle) {
-			clearInterval(pollHandle);
-			pollHandle = null;
-		}
+		eventStream?.close();
 	});
 
 	function lastDeploy(app: App): string {
@@ -358,6 +353,8 @@
 			project={projectName}
 			appName={selectedApp}
 			liveApp={apps.find(a => a.metadata.name === selectedApp) ?? null}
+			liveBuildLogs={buildLogs.get(selectedApp ?? '') ?? null}
+			livePods={podsByAppEnv}
 			onClose={() => selectedApp = null}
 		/>
 	{/key}

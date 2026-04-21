@@ -47,7 +47,7 @@ func newLogsServer(t *testing.T, k8sClient client.Client, cs *fake.Clientset) (*
 	}
 	testToken = token
 
-	srv := api.NewServer(k8sClient, cs, nil, authProvider, jwtHelper, nil, authz.NewNativePolicyEngine())
+	srv := api.NewServer(k8sClient, cs, nil, nil, authProvider, jwtHelper, nil, authz.NewNativePolicyEngine())
 	return srv, token
 }
 

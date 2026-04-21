@@ -217,6 +217,7 @@ REST surface (`internal/api/server.go`):
 - `POST /api/projects/{project}/apps/{app}/deploy` — deploy webhook (JWT + deploy token auth).
 - `POST/GET/DELETE /api/projects/{project}/apps/{app}/secrets[/{secretName}]`.
 - `GET /api/projects/{project}/apps/{app}/logs` — SSE log stream.
+- `GET /api/projects/{project}/events` — SSE project-level events (app updates, pods, build logs, heartbeat).
 - `GET/PUT/PATCH /api/projects/{project}/apps/{app}/env[/{env}]` — env management (§5.9a).
 - `POST /api/projects/{project}/apps/{app}/env/import` — bulk .env import.
 - `POST /api/projects/{project}/apps/{app}/rollback` — rollback to deploy history index.
@@ -786,9 +787,20 @@ Present:
   time-range chips (Now / 15m / 1h / 6h / 24h) with live-tail auto-
   disable off-Now, 110 px timestamp gutter, level-based left-border
   color (error/warn/info/debug), JSON pretty-print with expandable kv
-  table, 8-color hashed pod badge (last 5 chars), 2 s Build polling
-  that auto-stops on `building=false`. Pod list refreshed every 10 s
-  while Live tab active.
+  table, 8-color hashed pod badge (last 5 chars). Build logs and pod
+  lists pushed via project-level SSE (see below).
+- **Project-level SSE (2026-04-21, Issue #75):** single `GET
+  /api/projects/{p}/events` SSE endpoint replaces three UI polling loops
+  (app list 3 s, build logs 2 s, pod list 10 s). Backend
+  (`internal/api/events.go`) runs four goroutines per connection:
+  `watchApps` (k8s dynamic-client watch on App CRDs → `app.updated` /
+  `app.deleted`), `watchProjectPods` (pod watches across env namespaces →
+  `pods`), `streamBuildLogs` (1 s server-side poll of in-memory
+  `buildTrackerStore` → `build.log`), and `heartbeat` (30 s keepalive).
+  Frontend `ui/src/lib/projectEvents.ts` wraps `EventSource`; project
+  page connects after initial REST load and feeds deltas into reactive
+  state. `AppDrawer` and `LogsTab` receive build logs and pods as SSE-fed
+  props instead of polling internally.
 
 Missing:
 - **Authz role upgrade (Issue #9, deferred to v2):** current roles are
