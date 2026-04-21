@@ -8,6 +8,11 @@ replicaCount: 1
 api:
   port: 8090
 
+operator:
+  # ingressClassName sets the Kubernetes IngressClass on App Ingresses.
+  # When empty, the cluster default is used.
+  ingressClassName: ""
+
 service:
   type: ClusterIP
   port: 80

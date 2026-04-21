@@ -30,6 +30,10 @@ spec:
           env:
             - name: MORTISE_GITHUB_CLIENT_ID
               value: {{ .Values.github.clientID | quote }}
+            {{- if .Values.operator.ingressClassName }}
+            - name: MORTISE_INGRESS_CLASS
+              value: {{ .Values.operator.ingressClassName | quote }}
+            {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           livenessProbe:

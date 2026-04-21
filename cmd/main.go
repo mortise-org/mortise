@@ -368,6 +368,7 @@ func main() {
 	ingressProvider := ingress.NewAnnotationProvider(ingress.AnnotationProviderConfig{
 		ClassName:            os.Getenv("MORTISE_INGRESS_CLASS"),
 		DefaultClusterIssuer: stk.TLS.CertManagerClusterIssuer,
+		Reader:               mgr.GetClient(),
 	})
 
 	appReconciler := &controller.AppReconciler{

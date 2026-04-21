@@ -418,6 +418,12 @@ type EnvironmentStatus struct {
 	CurrentImage  string         `json:"currentImage,omitempty"`
 	CurrentDigest string         `json:"currentDigest,omitempty"`
 	DeployHistory []DeployRecord `json:"deployHistory,omitempty"`
+
+	// Domain is the resolved hostname for this environment. Computed by the
+	// controller from spec or auto-generated from the platform domain. The
+	// UI reads this to show "Your app is at {domain}".
+	// +optional
+	Domain string `json:"domain,omitempty"`
 }
 
 // AppPhase represents the overall lifecycle phase.

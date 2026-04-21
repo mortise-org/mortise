@@ -2,6 +2,12 @@ package ingress
 
 import (
 	"testing"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+
+	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
 )
 
 func TestAnnotationProvider_ClassName(t *testing.T) {
@@ -70,6 +76,42 @@ func TestAnnotationProvider_Annotations(t *testing.T) {
 		ann := p.Annotations(ref, nil, nil)
 		if ann != nil {
 			t.Fatalf("expected nil annotations for empty hostnames, got %v", ann)
+		}
+	})
+
+	t.Run("live PlatformConfig read overrides static default", func(t *testing.T) {
+		scheme := runtime.NewScheme()
+		_ = mortisev1alpha1.AddToScheme(scheme)
+		pc := &mortisev1alpha1.PlatformConfig{
+			ObjectMeta: metav1.ObjectMeta{Name: "platform"},
+			Spec: mortisev1alpha1.PlatformConfigSpec{
+				TLS: mortisev1alpha1.TLSConfig{CertManagerClusterIssuer: "live-issuer"},
+			},
+		}
+		c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(pc).Build()
+		p := NewAnnotationProvider(AnnotationProviderConfig{
+			DefaultClusterIssuer: "stale-issuer",
+			Reader:               c,
+		})
+		ann := p.Annotations(ref, []string{"app.example.com"}, nil)
+		got := ann[CertManagerClusterIssuerAnnotation]
+		if got != "live-issuer" {
+			t.Fatalf("expected live issuer, got %q", got)
+		}
+	})
+
+	t.Run("falls back to static default when PlatformConfig missing", func(t *testing.T) {
+		scheme := runtime.NewScheme()
+		_ = mortisev1alpha1.AddToScheme(scheme)
+		c := fake.NewClientBuilder().WithScheme(scheme).Build()
+		p := NewAnnotationProvider(AnnotationProviderConfig{
+			DefaultClusterIssuer: "fallback-issuer",
+			Reader:               c,
+		})
+		ann := p.Annotations(ref, []string{"app.example.com"}, nil)
+		got := ann[CertManagerClusterIssuerAnnotation]
+		if got != "fallback-issuer" {
+			t.Fatalf("expected fallback issuer, got %q", got)
 		}
 	})
 }

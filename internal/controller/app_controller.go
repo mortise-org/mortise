@@ -216,9 +216,18 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 			return ctrl.Result{}, fmt.Errorf("reconcile service for env %s: %w", env.Name, err)
 		}
 
-		if app.Spec.Network.Public && env.Domain != "" {
-			if err := r.reconcileIngress(ctx, &app, env, envNs); err != nil {
-				return ctrl.Result{}, fmt.Errorf("reconcile ingress for env %s: %w", env.Name, err)
+		if app.Spec.Network.Public {
+			if env.Domain == "" {
+				// Auto-compute domain from platform config: {app}.{platformDomain}
+				// for production, {app}-{env}.{platformDomain} for other envs.
+				if computed := r.autoDefaultDomain(ctx, &app, env.Name); computed != "" {
+					env.Domain = computed
+				}
+			}
+			if env.Domain != "" {
+				if err := r.reconcileIngress(ctx, &app, env, envNs); err != nil {
+					return ctrl.Result{}, fmt.Errorf("reconcile ingress for env %s: %w", env.Name, err)
+				}
 			}
 		}
 	}
@@ -1586,7 +1595,11 @@ func (r *AppReconciler) ensureWebhook(ctx context.Context, app *mortisev1alpha1.
 		return nil // no domain configured, can't register webhooks
 	}
 
-	webhookURL := fmt.Sprintf("https://%s/api/webhooks/%s", pc.Spec.Domain, gp.Name)
+	scheme := "https"
+	if pc.Spec.TLS.CertManagerClusterIssuer == "" {
+		scheme = "http"
+	}
+	webhookURL := fmt.Sprintf("%s://%s/api/webhooks/%s", scheme, pc.Spec.Domain, gp.Name)
 
 	// Resolve webhook secret.
 	var webhookSecret string
@@ -1759,9 +1772,15 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 	firstCrashMsg := ""
 
 	for _, env := range resolvedEnvs {
+		// Resolve the domain for status (same logic as reconcile).
+		domain := env.Domain
+		if domain == "" && app.Spec.Network.Public {
+			domain = r.autoDefaultDomain(ctx, app, env.Name)
+		}
 		es := mortisev1alpha1.EnvironmentStatus{
 			Name:         env.Name,
 			CurrentImage: app.Spec.Source.Image,
+			Domain:       domain,
 		}
 		envNs, nsErr := appEnvNs(app, env.Name)
 		if nsErr != nil {
@@ -1919,6 +1938,27 @@ func deploymentName(appName string) string { return appName }
 func cronJobName(appName string) string    { return appName }
 func serviceName(appName string) string    { return appName }
 func ingressName(appName string) string    { return appName }
+
+// autoDefaultDomain computes a domain for public apps that don't have one set.
+// Returns "{app}.{platformDomain}" for the first/default environment, or
+// "{app}-{env}.{platformDomain}" for others. Returns "" if PlatformConfig has
+// no domain configured.
+func (r *AppReconciler) autoDefaultDomain(ctx context.Context, app *mortisev1alpha1.App, envName string) string {
+	var pc mortisev1alpha1.PlatformConfig
+	if err := r.Get(ctx, types.NamespacedName{Name: "platform"}, &pc); err != nil || pc.Spec.Domain == "" {
+		return ""
+	}
+
+	// For the first environment (typically "production"), use {app}.{domain}.
+	// For other environments, use {app}-{env}.{domain} to avoid collisions.
+	project, _ := appProjectName(app)
+	_ = project // project name not needed in domain — app names are unique within a project
+
+	if envName == "production" {
+		return fmt.Sprintf("%s.%s", app.Name, pc.Spec.Domain)
+	}
+	return fmt.Sprintf("%s-%s.%s", app.Name, envName, pc.Spec.Domain)
+}
 
 // appLabels stamps the standard Mortise ownership labels. `mortise.dev/project`
 // enables cross-namespace GC on App delete (owner refs don't cascade across
@@ -2188,12 +2228,19 @@ func (r *AppReconciler) reconcileExternalSource(ctx context.Context, app *mortis
 			return ctrl.Result{}, fmt.Errorf("reconcile credentials secret for env %s: %w", env.Name, err)
 		}
 
-		if app.Spec.Network.Public && env.Domain != "" {
-			if err := r.reconcileExternalNameService(ctx, app, env, envNs); err != nil {
-				return ctrl.Result{}, fmt.Errorf("reconcile externalname service for env %s: %w", env.Name, err)
+		if app.Spec.Network.Public {
+			if env.Domain == "" {
+				if computed := r.autoDefaultDomain(ctx, app, env.Name); computed != "" {
+					env.Domain = computed
+				}
 			}
-			if err := r.reconcileIngress(ctx, app, env, envNs); err != nil {
-				return ctrl.Result{}, fmt.Errorf("reconcile ingress for env %s: %w", env.Name, err)
+			if env.Domain != "" {
+				if err := r.reconcileExternalNameService(ctx, app, env, envNs); err != nil {
+					return ctrl.Result{}, fmt.Errorf("reconcile externalname service for env %s: %w", env.Name, err)
+				}
+				if err := r.reconcileIngress(ctx, app, env, envNs); err != nil {
+					return ctrl.Result{}, fmt.Errorf("reconcile ingress for env %s: %w", env.Name, err)
+				}
 			}
 		}
 	}
