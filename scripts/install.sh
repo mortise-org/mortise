@@ -478,12 +478,15 @@ wait_and_print_success() {
     printf '  Build infra        : %s\n' "$DEPS_NAMESPACE"
     printf '  Node IP            : %s\n' "$node_ip"
     printf '\n'
-    printf '  To access the Mortise UI, create an Ingress or run:\n'
-    printf '    kubectl port-forward -n %s svc/mortise %s:80\n' "$MORTISE_NAMESPACE" "$svc_port"
-    printf '    then open http://localhost:%s\n' "$svc_port"
+    # Auto-start port-forward so the UI is immediately accessible.
+    local pf_port=8090
+    pkill -f "port-forward.*svc/mortise" >/dev/null 2>&1 || true
+    kubectl port-forward -n "$MORTISE_NAMESPACE" svc/mortise "${pf_port}:80" >/dev/null 2>&1 &
+
+    printf '  Mortise UI         : http://localhost:%s\n' "$pf_port"
     printf '\n'
-    printf '  To set a real domain, edit the PlatformConfig:\n'
-    printf '    kubectl edit platformconfigs.mortise.mortise.dev platform\n'
+    printf '  Port-forward is running in the background.\n'
+    printf '  To restart it later: kubectl port-forward -n %s svc/mortise %s:80\n' "$MORTISE_NAMESPACE" "$pf_port"
     printf '\n'
     printf '  Docs: https://mortise.dev/docs\n'
     printf '\n'
