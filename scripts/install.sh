@@ -60,9 +60,14 @@ detect_build_platform() {
 }
 
 # ---------------------------------------------------------------------------
-# Step 1: Ensure root/sudo
+# Step 1: Ensure root/sudo (Linux only — macOS uses Docker Desktop + k3d)
 # ---------------------------------------------------------------------------
 check_privileges() {
+    if [ "$OS" = "darwin" ]; then
+        SUDO=""
+        return
+    fi
+
     if [ "$(id -u)" -ne 0 ]; then
         if command_exists sudo; then
             SUDO="sudo"
@@ -76,19 +81,29 @@ check_privileges() {
 }
 
 # ---------------------------------------------------------------------------
-# Step 2: Install k3s (if no kubectl / k3s already present)
+# Step 2: Install Kubernetes
+#   Linux  — k3s (native)
+#   macOS  — k3d (k3s-in-Docker, requires Docker Desktop)
 # ---------------------------------------------------------------------------
 install_k3s() {
-    if command_exists k3s; then
-        info "k3s is already installed, skipping"
-        export KUBECONFIG="${KUBECONFIG:-/etc/rancher/k3s/k3s.yaml}"
+    # If kubectl is available and a cluster is reachable, assume an existing
+    # Kubernetes cluster and skip installation entirely.
+    if command_exists kubectl && kubectl cluster-info >/dev/null 2>&1; then
+        info "Existing Kubernetes cluster detected, skipping k3s/k3d install"
         return
     fi
 
-    # If kubectl is available and a cluster is reachable, assume an existing
-    # Kubernetes cluster and skip k3s entirely.
-    if command_exists kubectl && kubectl cluster-info >/dev/null 2>&1; then
-        info "Existing Kubernetes cluster detected, skipping k3s install"
+    if [ "$OS" = "darwin" ]; then
+        install_k3d
+    else
+        install_k3s_native
+    fi
+}
+
+install_k3s_native() {
+    if command_exists k3s; then
+        info "k3s is already installed, skipping"
+        export KUBECONFIG="${KUBECONFIG:-/etc/rancher/k3s/k3s.yaml}"
         return
     fi
 
@@ -121,6 +136,39 @@ install_k3s() {
     # Wait for the node to be Ready.
     kubectl wait --for=condition=Ready node --all --timeout=120s
     info "k3s is ready"
+}
+
+install_k3d() {
+    # Require Docker Desktop on macOS — k3d runs k3s inside Docker containers.
+    if ! docker info >/dev/null 2>&1; then
+        error "Docker Desktop is required on macOS. Install from https://docker.com/products/docker-desktop and ensure it is running."
+    fi
+
+    if ! command_exists k3d; then
+        info "Installing k3d..."
+        if command_exists brew; then
+            brew install k3d
+        else
+            curl -fsSL https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | bash
+        fi
+    else
+        info "k3d is already installed, skipping"
+    fi
+
+    # Create cluster if it doesn't already exist.
+    if k3d cluster list mortise >/dev/null 2>&1; then
+        info "k3d cluster 'mortise' already exists, skipping creation"
+    else
+        info "Creating k3d cluster 'mortise'..."
+        k3d cluster create mortise \
+            --port "80:80@loadbalancer" \
+            --port "443:443@loadbalancer" \
+            --wait
+    fi
+
+    info "Waiting for k3d cluster to be ready..."
+    kubectl wait --for=condition=Ready node --all --timeout=120s
+    info "k3d cluster is ready"
 }
 
 # ---------------------------------------------------------------------------
