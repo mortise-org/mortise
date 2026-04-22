@@ -6,40 +6,41 @@ Connect a git repo or pick a pre-built image — Mortise handles builds, deploys
 domains, TLS, environment variables, volumes, preview environments, and
 service-to-service bindings. Kubernetes is fully abstracted away from the user.
 
-## Quick Install
+## Install
 
-Zero to running PaaS in one command (Linux or macOS, Docker Desktop required on macOS):
+Two paths — pick one, then run through the [Quickstart](docs/quickstart.md)
+to create an admin account and deploy your first app.
+
+### Quick install (no cluster yet)
+
+One command. Installs k3s on Linux or k3d on macOS/Windows, then helm-installs
+the full stack and port-forwards the UI to `localhost:8090`.
 
 ```bash
+# macOS (requires Docker Desktop)
 curl -fsSL https://mortise.me/install | bash
+
+# Linux (requires sudo; installs k3s natively)
+curl -fsSL https://mortise.me/install | bash
+
+# Windows 10+ (requires Docker Desktop)
+iwr -useb https://mortise.me/install.ps1 | iex
 ```
 
-This installs k3s (or k3d on macOS), Helm, and the full Mortise stack from the
-published chart, then port-forwards the UI to `http://localhost:8090`.
-
-### Already have a cluster?
+### Helm (existing cluster)
 
 ```bash
 helm repo add mortise https://mortise-org.github.io/mortise
-helm repo update
 helm install mortise mortise/mortise \
   --namespace mortise-system --create-namespace
 ```
 
-That pulls the batteries-included chart: operator, Traefik, cert-manager,
-BuildKit, OCI registry. If you already run your own ingress + cert-manager,
-use the operator-only chart instead:
+`mortise` is the batteries-included chart: operator + Traefik + cert-manager
++ BuildKit + OCI registry. For operator-only (BYO ingress / cert-manager /
+registry / buildkit), use `mortise/mortise-core` instead.
 
-```bash
-helm install mortise mortise/mortise-core \
-  --namespace mortise-system --create-namespace
-```
-
-Access the UI with `kubectl port-forward -n mortise-system svc/mortise 8090:80`,
-open **http://localhost:8090**, create your admin account, and deploy your
-first app.
-
-More detail: [Quickstart](docs/quickstart.md) · [Install](docs/install.md).
+Full flow with prereqs, toggles, upgrade, and uninstall:
+**[docs/install.md](docs/install.md)**.
 
 ## What's Included
 
