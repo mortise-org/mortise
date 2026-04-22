@@ -1,7 +1,7 @@
 # Quickstart
 
 **Prereq: Mortise is installed.** If you haven't installed yet, start at
-[Install](./install.md) — then come back here. This guide takes you from
+[Install](./install.md): then come back here. This guide takes you from
 "installer finished" to a running app in about 5 minutes.
 
 ## 1. Open the UI
@@ -39,7 +39,7 @@ GitHub, personal access token for GitLab/Gitea). Takes about a minute.
 
 ## 4. Access your app
 
-Click the app on the canvas to open the drawer, then click **Open** — the
+Click the app on the canvas to open the drawer, then click **Open**: the
 operator proxies to your pod through the API. No domain or TLS needed to
 poke at it.
 
@@ -52,7 +52,7 @@ Want real URLs like `web.apps.example.com`? Set a platform domain in
 Open an app → drawer → **Bindings** tab → Add. Pick the service you want
 (e.g. the Postgres app you created). Mortise injects `DATABASE_URL`,
 `DATABASE_HOST`, `DATABASE_PORT`, `DATABASE_USERNAME`, and
-`DATABASE_PASSWORD` env vars on your app — no secret wiring.
+`DATABASE_PASSWORD` env vars on your app: no secret wiring.
 
 ## Data persistence
 
@@ -61,7 +61,7 @@ Kubernetes and survives pod and node reboots. Built images and the build
 cache are on PVCs that also survive restarts.
 
 **Disaster recovery** (hardware failure): the PVCs use your cluster's
-default storage class — local disk on a single-node install. To survive
+default storage class: local disk on a single-node install. To survive
 that, set up backups:
 
 - **k3s quick path:** k3s snapshots its etcd every 12 hours; push them to
@@ -72,7 +72,7 @@ that, set up backups:
 
 ## Next steps
 
-- [Configuration](./configuration.md) — domain, git providers, HTTPS, storage
-- [External CI deploys](./recipes/external-ci.md) — deploy from GitHub Actions or any CI
-- [Cloudflare Tunnel](./recipes/cloudflare-tunnel.md) — expose without a public IP
-- [OIDC / SSO](./recipes/oidc.md) — Authentik, Keycloak, Okta, Google
+- [Configuration](./configuration.md): domain, git providers, HTTPS, storage
+- [External CI deploys](./recipes/external-ci.md): deploy from GitHub Actions or any CI
+- [Cloudflare Tunnel](./recipes/cloudflare-tunnel.md): expose without a public IP
+- [OIDC / SSO](./recipes/oidc.md): Authentik, Keycloak, Okta, Google

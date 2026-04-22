@@ -31,7 +31,7 @@ Raspberry Pi to a cloud VPS.
 # Install k3s
 curl -sfL https://get.k3s.io | sh -
 
-# k3s includes kubectl — copy the kubeconfig to the standard location
+# k3s includes kubectl: copy the kubeconfig to the standard location
 mkdir -p ~/.kube
 sudo cp /etc/rancher/k3s/k3s.yaml ~/.kube/config
 sudo chown $(id -u):$(id -g) ~/.kube/config

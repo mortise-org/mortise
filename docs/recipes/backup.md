@@ -18,7 +18,7 @@ data). This guide covers how to back it all up.
 ## Option 1: k3s etcd snapshots (simplest)
 
 If you're running k3s, this is the easiest way to back up all Kubernetes
-objects (CRDs, Secrets, ConfigMaps — everything except PVC data).
+objects (CRDs, Secrets, ConfigMaps: everything except PVC data).
 
 k3s auto-snapshots every 12 hours to `/var/lib/rancher/k3s/server/db/snapshots/`.
 To push snapshots to S3:
@@ -40,7 +40,7 @@ k3s etcd-snapshot save --s3 \
 # etcd-s3-region: us-east-1
 ```
 
-**What this covers:** All platform state — users, apps, projects,
+**What this covers:** All platform state: users, apps, projects,
 credentials, env vars, PlatformConfig. Everything except files on disk
 (PVC data).
 
@@ -84,10 +84,10 @@ velero schedule create mortise-daily \
 ```
 
 This backs up:
-- `mortise-system` — operator, user accounts, JWT keys
-- `mortise-deps` — registry images, BuildKit cache
-- `pj-*` — all project namespaces (app definitions, env vars, workloads, PVCs)
-- Cluster-scoped CRDs — Projects, PlatformConfig, GitProviders
+- `mortise-system`: operator, user accounts, JWT keys
+- `mortise-deps`: registry images, BuildKit cache
+- `pj-*`: all project namespaces (app definitions, env vars, workloads, PVCs)
+- Cluster-scoped CRDs: Projects, PlatformConfig, GitProviders
 
 ### Restore
 

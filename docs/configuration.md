@@ -24,7 +24,7 @@ When you push to a connected repo, your git host sends a notification to
 
 **When you don't:**
 - You're deploying on a LAN and accessing apps through the UI's "Open"
-  button (which proxies through the API — works without any domain)
+  button (which proxies through the API: works without any domain)
 - You're only running internal/private services
 
 ### Setting it up
@@ -68,7 +68,7 @@ When you push to a connected repo, your git host sends a notification to
    **Optional: ExternalDNS.** If you prefer Mortise to create per-app DNS
    records automatically (instead of a wildcard), you can install
    [ExternalDNS](https://github.com/kubernetes-sigs/external-dns). Mortise
-   annotates every app's Ingress with the hostname — ExternalDNS reads
+   annotates every app's Ingress with the hostname: ExternalDNS reads
    that annotation and creates the DNS record at your provider. This is a
    power-user option; most setups work fine with a wildcard record.
 
@@ -174,7 +174,7 @@ Then set the issuer name in **Settings > TLS** (e.g. `letsencrypt-prod`).
 (databases, file uploads, etc.).
 
 Most clusters already have a default storage class. Mortise uses it
-automatically. Only change this if you want to override it — for example,
+automatically. Only change this if you want to override it: for example,
 to use a specific NFS provisioner or a particular cloud disk type.
 
 Check your cluster's available storage classes:

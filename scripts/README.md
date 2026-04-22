@@ -1,6 +1,6 @@
 # Mortise Scripts
 
-## install.sh — Quick Mortise Installer (Linux / macOS)
+## install.sh: Quick Mortise Installer (Linux / macOS)
 
 Single-command installer that takes a bare machine to a running Mortise PaaS.
 
@@ -10,22 +10,22 @@ Single-command installer that takes a bare machine to a running Mortise PaaS.
 # Remote
 curl -fsSL https://mortise.me/install | bash
 
-# Local — Linux
+# Local: Linux
 sudo bash scripts/install.sh
 
-# Local — macOS (no sudo needed, uses Docker Desktop + k3d)
+# Local: macOS (no sudo needed, uses Docker Desktop + k3d)
 bash scripts/install.sh
 ```
 
 ### What it installs
 
-1. **Kubernetes** — k3s on Linux (native), k3d on macOS (k3s-in-Docker)
-2. **Helm** — package manager (skipped if already present)
-3. **cert-manager** — TLS certificate management
-4. **OCI registry** — in-cluster image storage (in `mortise-deps` namespace)
-5. **BuildKit** — container image builds (in `mortise-deps` namespace)
-6. **Mortise operator** — via Helm chart (in `mortise-system` namespace)
-7. **PlatformConfig** — default configuration with auto-detected build platform
+1. **Kubernetes**: k3s on Linux (native), k3d on macOS (k3s-in-Docker)
+2. **Helm**: package manager (skipped if already present)
+3. **cert-manager**: TLS certificate management
+4. **OCI registry**: in-cluster image storage (in `mortise-deps` namespace)
+5. **BuildKit**: container image builds (in `mortise-deps` namespace)
+6. **Mortise operator**: via Helm chart (in `mortise-system` namespace)
+7. **PlatformConfig**: default configuration with auto-detected build platform
 
 ### Platform-specific behavior
 
@@ -36,7 +36,7 @@ bash scripts/install.sh
 
 On macOS, the script checks for a running Docker daemon via `docker info` and installs k3d via Homebrew (if available) or direct download. The k3d cluster is created with ports 80 and 443 mapped to the host loadbalancer.
 
-## install.ps1 — Quick Mortise Installer (Windows)
+## install.ps1: Quick Mortise Installer (Windows)
 
 PowerShell installer for Windows. Equivalent to `install.sh` but uses k3d (Docker Desktop required).
 
@@ -56,13 +56,13 @@ powershell -ExecutionPolicy Bypass -File scripts\install.ps1
 
 Same components as the Linux/macOS script:
 
-1. **k3d** — k3s-in-Docker cluster
-2. **Helm** — package manager
-3. **cert-manager** — TLS certificate management
-4. **OCI registry** — in-cluster image storage
-5. **BuildKit** — container image builds
-6. **Mortise operator** — via Helm chart
-7. **PlatformConfig** — default configuration
+1. **k3d**: k3s-in-Docker cluster
+2. **Helm**: package manager
+3. **cert-manager**: TLS certificate management
+4. **OCI registry**: in-cluster image storage
+5. **BuildKit**: container image builds
+6. **Mortise operator**: via Helm chart
+7. **PlatformConfig**: default configuration
 
 ## Supported platforms
 

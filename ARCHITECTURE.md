@@ -1,4 +1,4 @@
-# Mortise — Architecture & System Diagrams
+# Mortise: Architecture & System Diagrams
 
 > Companion to [`SPEC.md`](./SPEC.md). Diagrams render natively on GitHub via
 > Mermaid. For each diagram: the picture first, then a short "how to read it."
@@ -96,15 +96,15 @@ flowchart TB
 - **Bindings** (bottom dotted arrow): resolved by the operator at reconcile
   time and baked into the binder's Deployment spec (literal env for Service
   DNS facts; `secretKeyRef` for credentials pulled from k8s Secrets). The
-  kubelet injects env the normal way at pod start — no admission webhook, no
-  init container, no runtime agent. Apps are 12-factor — they just read
+  kubelet injects env the normal way at pod start: no admission webhook, no
+  init container, no runtime agent. Apps are 12-factor: they just read
   `DATABASE_URL`.
-- **No external datastore.** The operator is stateless — deploy history
+- **No external datastore.** The operator is stateless: deploy history
   lives in App CRD status (bounded list), users and sessions are k8s
   Secrets in `mortise-system`, audit events are structured JSON on stdout.
   No PVC, no database. User-visible app
   secrets are stored as regular Kubernetes Secrets in the App's own
-  namespace — no separate Mortise-managed secret store, no `SecretBackend`
+  namespace: no separate Mortise-managed secret store, no `SecretBackend`
   abstraction. External secret managers (Vault, AWS SM, etc.) integrate via
   the ExternalSecrets Operator, which produces k8s Secrets that Mortise
   reads like any other. See SPEC §5.9.
@@ -120,14 +120,14 @@ flowchart TB
 |---|---|---|---|
 | **Mortise Operator** | `mortise-system` | Reconciles CRDs (`Project`, `App`, `PreviewEnvironment`, `PlatformConfig`, `GitProvider`). Serves the REST API and UI. Handles webhooks. Owns everything the platform creates. | Never touches resources outside what it created; coexists with Argo CD, manual kubectl, other tools. |
 | **Project** (CRD) | cluster-scoped | Top-level grouping. Each Project owns a control namespace named `pj-{name}` plus one `pj-{name}-{env}` per declared environment, all via owner reference; deleting the Project deletes the namespaces and cascades to every resource inside. | Users interact via project name only; the `pj-` prefix is internal plumbing. |
-| **Operator state** | `mortise-system` | Deploy history in App CRD status; users/sessions as k8s Secrets; audit/build logs to stdout. No PVC, no database — operator is stateless. | Never stores user app data. |
+| **Operator state** | `mortise-system` | Deploy history in App CRD status; users/sessions as k8s Secrets; audit/build logs to stdout. No PVC, no database: operator is stateless. | Never stores user app data. |
 | **Traefik** | `mortise-system` | Ingress controller. Routes external HTTPS traffic to user Apps and the Mortise API/UI. | Installed and managed by the Mortise chart; can be disabled when the cluster has an existing controller (SPEC §8.3). |
 | **cert-manager** | `mortise-system` | Issues TLS certs via ACME (or self-signed in dev/test). Triggered by annotations on Ingress resources. | Core chart dependency; not touched by user. |
 | **ExternalDNS** | `mortise-system` | Watches Ingress resources and creates matching DNS records at the configured provider. | Core chart dependency; configured once during install. |
 | **Zot** | `mortise-system` | OCI image registry. Default target for builds unless external registry configured. | Installed conditionally (omitted if user picks GHCR/Docker Hub/custom). |
 | **BuildKit** | `mortise-builds` | Builds container images from git sources. Consumes LLB or Dockerfile input; pushes to registry. | Installed lazily on first git App. Pooling / scale-out is post-v1 operator work if queue wait becomes a problem. |
 | **User App pods** | `pj-{name}-{env}` | The actual workloads Mortise deploys. An App spawns one Deployment per declared environment; each env's pods live in the matching `pj-{name}-{env}` namespace. | Pure 12-factor; no Mortise SDK or sidecar required. |
-| **Backing service pods** | `pj-{name}-{env}` | Apps with `credentials:` declared — typically stateful (Postgres, Redis). Other Apps in the same project+env bind via Service DNS. | v1 = `image` source + PVC + manual credentials. Users who need HA/PITR install CNPG or redis-operator directly and point Apps at them (SPEC §6.3). |
+| **Backing service pods** | `pj-{name}-{env}` | Apps with `credentials:` declared: typically stateful (Postgres, Redis). Other Apps in the same project+env bind via Service DNS. | v1 = `image` source + PVC + manual credentials. Users who need HA/PITR install CNPG or redis-operator directly and point Apps at them (SPEC §6.3). |
 
 ---
 
@@ -188,10 +188,10 @@ sequenceDiagram
 
 - **Top half** = the build and deploy reaction to a push.
 - **Bottom line** = the steady-state user traffic (Traefik handles this
-  independently of the operator — the operator is not in the request path).
+  independently of the operator: the operator is not in the request path).
 - **Preview PRs** follow the same shape, plus the operator creates a
   `PreviewEnvironment` CR at PR-open and deletes it at PR-close.
-- **External CI** skips everything down to "patch Deployment" — the deploy
+- **External CI** skips everything down to "patch Deployment": the deploy
   webhook jumps straight there, providing a pre-built image digest.
 
 ---
@@ -241,13 +241,13 @@ flowchart TB
 **How to read it:**
 
 - **Top** (Callers → Public → Ctrl) = the inward contract surface. CRDs,
-  REST API, and SSE — versioned carefully; breaking changes require
+  REST API, and SSE: versioned carefully; breaking changes require
   CRD version bumps and migrations.
 - **Ctrl node** = Mortise's controllers and reconcilers. Imports only
   Mortise's own types; never imports third-party SDKs directly.
 - **Middle chains** (Ctrl → each iface → impl) = internal abstractions.
   Go interfaces used for test seams and for keeping third-party SDKs out
-  of controller code. **Not plug-in APIs** — third parties do not implement
+  of controller code. **Not plug-in APIs**: third parties do not implement
   these. ~10 in-tree impls total across all contracts.
 - **Bottom path** (Ctrl → k8s Secrets ← ESO) = the real third-party
   integration path. External secret managers reach Mortise through
@@ -266,7 +266,7 @@ flowchart TB
 
 What lands on a cluster during install. One chart, no addon subcharts, no
 umbrella. Adjacent capabilities (OIDC, monitoring, logs, backups, external
-secret managers) are upstream projects the user installs themselves — they
+secret managers) are upstream projects the user installs themselves: they
 do not go through this chart.
 
 ```mermaid
@@ -294,7 +294,7 @@ flowchart TB
 **How to read it:**
 
 - **Solid arrows** = always installed when the Mortise chart is installed.
-  This is the whole product — §6.1 invariant #1.
+  This is the whole product: §6.1 invariant #1.
 - **"disable-able" deps** = Traefik, cert-manager, ExternalDNS are bundled
   for a one-command install but can each be turned off when the cluster
   already has them (SPEC §8.3). Disabling swaps the implementation; the
@@ -306,11 +306,11 @@ flowchart TB
   scrapes pods; Velero snapshots namespaces; an OIDC provider exposes an
   `issuerURL`. None of these require code in Mortise.
 - **Not in the chart either:** the `external` / `helm` source types and
-  Cloudflare Tunnel automation are post-v1 operator features (SPEC §6.2) —
+  Cloudflare Tunnel automation are post-v1 operator features (SPEC §6.2).
   they add code to the same operator binary, not new subcharts. App preset
   repositories are data, not code (SPEC §6.5).
 - **BuildKit is intentionally absent.** It's installed on-demand by the
-  operator the first time a `git` App is created — not at chart install
+  operator the first time a `git` App is created: not at chart install
   time. Keeps the base install lean for image-only users.
 - **User app namespaces** are not in this diagram because they're not part
   of the chart. They're created dynamically by the operator when an App is
@@ -373,15 +373,15 @@ when reading the code or debugging a specific interaction.
 
 ## 6. What This Does Not Show
 
-- **Multi-cluster topology** — out of scope for v1; a future Cluster CRD
+- **Multi-cluster topology**: out of scope for v1; a future Cluster CRD
   layers on top of this diagram with zero changes to the single-cluster
   picture.
 - **Upstream projects users install alongside Mortise** (Authentik,
-  Prometheus, Loki, Velero, ESO, CNPG, etc.) — those each have their own
+  Prometheus, Loki, Velero, ESO, CNPG, etc.): those each have their own
   docs and architecture; Mortise coexists with them through standard
   Kubernetes primitives (see SPEC §6.3) and does not wrap them.
-- **CI pipeline for Mortise itself** — GitHub Actions running `make test`
+- **CI pipeline for Mortise itself**: GitHub Actions running `make test`
   and `make test-integration`; covered in SPEC §7.
-- **RBAC and service account details** — operator has cluster-wide read
+- **RBAC and service account details**: operator has cluster-wide read
   across CRDs + write within namespaces it creates; detailed RBAC manifest
   lives in the chart, not in this overview.

@@ -14,7 +14,7 @@ diagrams. This file is the operating manual for working in this codebase.
 
 `PROGRESS.md` at the repo root is the single source of truth for what is
 implemented vs. what the spec still calls for. **Read it at the start of
-any task that touches feature scope** — it records phase-by-phase status,
+any task that touches feature scope**: it records phase-by-phase status,
 interface / CRD coverage, and known landmines that the code itself will
 not tell you about (e.g. resolver bugs, doc drift, hard-coded values that
 should go behind an interface).
@@ -27,7 +27,7 @@ spec scope change). If you finish a task and `PROGRESS.md` still shows the
 old state, your task isn't done.
 
 Do not write progress info into this file (`CLAUDE.md`) or into
-`README.md` — they drift. Put it in `PROGRESS.md`.
+`README.md`: they drift. Put it in `PROGRESS.md`.
 
 ## Releases
 
@@ -36,7 +36,7 @@ git tag (`v0.1.1`) triggers the `release.yml` workflow, which builds a
 multi-arch image (`ghcr.io/mortise-org/mortise:0.1.1`), stamps and
 packages both charts, publishes to `gh-pages`, and creates a GitHub
 Release. Chart version, `appVersion`, and image tag are always the same
-number. Never edit `Chart.yaml` `version:` or `appVersion:` by hand —
+number. Never edit `Chart.yaml` `version:` or `appVersion:` by hand.
 CI owns them.
 
 ## Tech stack
@@ -56,10 +56,10 @@ These are non-negotiable. Violating any of them is a bug.
 ### Standards, not implementations
 
 Mortise couples to standards, not specific tools:
-- k8s Ingress API — not Traefik-specific annotations
-- OCI Distribution Spec — not Zot-specific APIs
-- OIDC — not Authentik-specific APIs
-- ACME (via cert-manager) — not Let's Encrypt-specific
+- k8s Ingress API: not Traefik-specific annotations
+- OCI Distribution Spec: not Zot-specific APIs
+- OIDC: not Authentik-specific APIs
+- ACME (via cert-manager): not Let's Encrypt-specific
 
 If you're about to write code that only works with one specific tool (Traefik,
 Zot, GitHub), it must be behind an interface in internal/<name>/.
@@ -85,7 +85,7 @@ controller  →  RegistryBackend  →  generic OCI (config-driven)
 controller  →  IngressProvider  →  generic annotation-driven
 ```
 
-DNS is annotation-driven via ExternalDNS (no Go interface — see SPEC §11.1).
+DNS is annotation-driven via ExternalDNS (no Go interface: see SPEC §11.1).
 
 No interface without a real v1 implementation behind it.
 
@@ -127,7 +127,7 @@ standard metrics). If you're tempted to add a plug-in system, stop.
 ### Think before coding
 
 - State assumptions explicitly. If uncertain, ask.
-- If multiple interpretations exist, present them — don't pick silently.
+- If multiple interpretations exist, present them: don't pick silently.
 - If a simpler approach exists, say so.
 
 ### Simplicity first
@@ -221,7 +221,7 @@ make test-integration-fast # run integration suite against existing dev cluster
 
 This is the expected workflow. Tests should be boring and repetitive, not
 clever. If a test requires novel infrastructure, that's a sign the harness
-needs extending — fix the harness first.
+needs extending: fix the harness first.
 
 ### UI E2E (Playwright) standards
 
@@ -229,12 +229,12 @@ needs extending — fix the harness first.
 element that exists in the UI must be exercised by at least one test. Every
 user-facing feature must have end-to-end coverage. No exceptions.
 
-**Real API only:** E2E tests call the real backend API — no `page.route()`
+**Real API only:** E2E tests call the real backend API: no `page.route()`
 mocking of Mortise business logic. Use `loginViaAPI`, `createProjectViaAPI`,
 `createAppViaAPI`, etc. from `tests/e2e/helpers.ts`. The only acceptable
 mocks are OAuth redirect flows and external third-party services.
 
-**Selector discipline — these are bugs, not style preferences:**
+**Selector discipline: these are bugs, not style preferences:**
 
 - Always use `{ exact: true }` with `getByRole('button', { name: 'X' })`.
   Canvas AppNode divs have `tabindex="0" role="button"` and their accessible
@@ -246,7 +246,7 @@ mocks are OAuth redirect flows and external third-party services.
 - Use `getByRole('heading', { name: 'X' })` instead of `getByText('X')` for
   section headings. `getByText` does partial substring matching and will match
   description paragraphs, option values, and nav links in addition to the
-  heading — causing strict-mode violations.
+  heading: causing strict-mode violations.
 
 - Use `getByTitle('X', { exact: true })` when there are multiple elements
   with similar title= attributes (e.g., "Activity" vs "Activity rail").
@@ -254,7 +254,7 @@ mocks are OAuth redirect flows and external third-party services.
 - Variable name placeholder is `'VARIABLE_NAME'` (not `'KEY'`).
   Variable value placeholder is `'value or binding ref'` (not `'value'`).
 
-- Project settings has a tabbed layout — click `getByRole('button', { name:
+- Project settings has a tabbed layout: click `getByRole('button', { name:
   'Danger' })` before asserting on danger-zone content.
 
 - `page.locator('div').filter({ hasText: 'X' }).last()` picks the innermost
@@ -316,7 +316,7 @@ Makefile
 ## CRD quick reference
 
 ```yaml
-# Project — top-level grouping, cluster-scoped
+# Project: top-level grouping, cluster-scoped
 apiVersion: mortise.dev/v1alpha1
 kind: Project
 metadata:
@@ -330,7 +330,7 @@ status:
 ```
 
 ```yaml
-# App — the user-facing workload resource
+# App: the user-facing workload resource
 # Apps live in their Project's control namespace: metadata.namespace = pj-{project-name}
 # Workloads fan out into pj-{project-name}-{env-name} per environment.
 apiVersion: mortise.dev/v1alpha1
@@ -356,7 +356,7 @@ spec:
 ```
 
 ```yaml
-# PlatformConfig — cluster-scoped, one per install
+# PlatformConfig: cluster-scoped, one per install
 apiVersion: mortise.dev/v1alpha1
 kind: PlatformConfig
 metadata: { name: platform }
@@ -366,7 +366,7 @@ spec:
 ```
 
 ```yaml
-# GitProvider — cluster-scoped, one per git host
+# GitProvider: cluster-scoped, one per git host
 apiVersion: mortise.dev/v1alpha1
 kind: GitProvider
 metadata: { name: github-main }
@@ -397,7 +397,7 @@ Deleting the App garbage-collects everything.
 - Using `time.Now()` instead of injected clock
 - Writing integration tests that depend on test execution order
 - Adding "helpful" abstractions or plug-in machinery
-- Using `:latest` tags anywhere — always pin digests or specific versions
+- Using `:latest` tags anywhere: always pin digests or specific versions
 - Adding comments that describe WHAT instead of WHY
 - Writing workload resources (Deployment, Service, Ingress, Pod, PVC,
   env-scoped Secret/ConfigMap) into the control namespace `pj-{project}`.
@@ -405,5 +405,5 @@ Deleting the App garbage-collects everything.
   project-scoped CRDs (App, PreviewEnvironment) and project-level
   resources (activity ConfigMap, registry creds) live in the control ns.
 - Hard-coding the legacy `project-{name}` prefix. The current convention
-  is `pj-{name}` for control ns and `pj-{name}-{env}` for env ns —
+  is `pj-{name}` for control ns and `pj-{name}-{env}` for env ns.
   always go through `internal/constants` helpers.

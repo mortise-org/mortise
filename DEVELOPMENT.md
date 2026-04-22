@@ -124,7 +124,7 @@ make test-integration-fast  # run suite against existing dev cluster (requires m
 ### UI E2E tests (Playwright)
 
 ```bash
-make test-e2e               # requires make dev-up — handles port-forward, admin bootstrap, and teardown
+make test-e2e               # requires make dev-up: handles port-forward, admin bootstrap, and teardown
 ```
 
 - Requires `make dev-up` to have been run first (a running dev cluster).
@@ -133,7 +133,7 @@ make test-e2e               # requires make dev-up — handles port-forward, adm
 - Override defaults: `E2E_PORT=9090 E2E_EMAIL=me@local E2E_PASSWORD=secret make test-e2e`
 - Tests live in `ui/tests/e2e/`. Config at `ui/playwright.config.ts`.
 - Runs in Chromium only, single worker, serial execution.
-- **All tests hit the real API** — no mocking of business logic. This
+- **All tests hit the real API**: no mocking of business logic. This
   verifies the full UI → API integration path. Each test creates its own
   projects/apps and cleans up after itself.
 - 64 tests across 7 files:
@@ -143,13 +143,13 @@ make test-e2e               # requires make dev-up — handles port-forward, adm
 | `auth.spec.ts` | 14 | Setup page validation, login, auth redirects, setup wizard |
 | `projects.spec.ts` | 7 | Dashboard, project CRUD via UI, name validation |
 | `apps.spec.ts` | 8 | New-app page, Docker deploy, template deploys (Postgres, Redis) |
-| `app-detail.spec.ts` | 12 | Deploy, env vars, secrets, domains, logs, delete — all via real API |
+| `app-detail.spec.ts` | 12 | Deploy, env vars, secrets, domains, logs, delete: all via real API |
 | `navigation.spec.ts` | 18 | Header, project switcher, extensions, breadcrumbs |
 | `git-providers.spec.ts` | 1 | Git provider CRUD |
 | `journey.spec.ts` | 4 | Full user lifecycle journeys (login → deploy → manage → delete) |
 
 - The `journey.spec.ts` file contains end-to-end user journeys that chain
-  multiple pages and API operations in sequence — the most valuable tests
+  multiple pages and API operations in sequence: the most valuable tests
   for catching real integration bugs.
 
 ### Live cluster (manual smoke test)
@@ -269,7 +269,7 @@ make dev-reload
 
 ```bash
 make dev-down
-docker system prune -f         # optional — frees disk
+docker system prune -f         # optional: frees disk
 make dev-up
 ```
 

@@ -93,7 +93,7 @@ Then configure the tunnel token via environment variables in the UI.
 
 If you configured a wildcard hostname in the tunnel, Cloudflare
 automatically proxies `*.yourdomain.com` through the tunnel to your
-cluster's ingress. No additional DNS records are needed — the tunnel
+cluster's ingress. No additional DNS records are needed: the tunnel
 config handles routing.
 
 For non-wildcard setups, add CNAME records in Cloudflare DNS pointing
@@ -113,7 +113,7 @@ itself handles traffic routing.
 kubectl get pods -n mortise-system -l app=cloudflared
 
 # Check tunnel status in Cloudflare dashboard
-# Visit your app's URL — it should resolve through the tunnel
+# Visit your app's URL: it should resolve through the tunnel
 curl -I https://myapp.yourdomain.com
 ```
 

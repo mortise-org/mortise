@@ -1,9 +1,9 @@
-# Mortise — Product & Engineering Spec
+# Mortise: Product & Engineering Spec
 
-> Name: **Mortise** — a self-hosted Railway-style deploy target for Kubernetes.
+> Name: **Mortise**: a self-hosted Railway-style deploy target for Kubernetes.
 > Status: Draft for engineering kickoff
 > Audience: engineers building v1
-> Companion: [`ARCHITECTURE.md`](./ARCHITECTURE.md) — system diagrams
+> Companion: [`ARCHITECTURE.md`](./ARCHITECTURE.md): system diagrams
 
 ---
 
@@ -13,15 +13,15 @@ A self-hosted, Railway-style developer platform that runs on top of an existing
 Kubernetes cluster. Developers connect a git repo (or point at a pre-built image),
 and Mortise handles builds, deploys, domains, TLS, environment variables,
 volumes, preview environments, and service-to-service bindings. The user-facing
-experience abstracts Kubernetes away entirely — users think in "apps," not
+experience abstracts Kubernetes away entirely: users think in "apps," not
 Deployments, Services, Ingresses, or Helm charts.
 
 **Mortise is a single product, not a platform with optional layers.** The
 Helm chart installs one operator that delivers the complete Railway UX. No
 addons, no plug-in protocol, no multi-tier product. Everything Mortise does,
-Mortise does in core. Users who want capabilities beyond Mortise's scope —
+Mortise does in core. Users who want capabilities beyond Mortise's scope.
 SSO, centralized monitoring, log aggregation, backups, external secret
-managers — install those projects directly (Authentik, Prometheus, Loki,
+managers: install those projects directly (Authentik, Prometheus, Loki,
 Velero, ExternalSecrets Operator, etc.) and Mortise coexists with them via
 standard Kubernetes primitives. See §6 for the scope boundary.
 
@@ -29,13 +29,13 @@ standard Kubernetes primitives. See §6 for the scope boundary.
 
 ## 2. Positioning
 
-**Mortise is a deploy target, not a platform.** It does the Railway UX —
-git-to-URL, bindings, previews, domains, TLS, environment variables — on
+**Mortise is a deploy target, not a platform.** It does the Railway UX.
+git-to-URL, bindings, previews, domains, TLS, environment variables: on
 top of a Kubernetes cluster the user already has. It does not try to be the
 "batteries-included internal developer platform" (SSO for every service,
 monitoring stack, log aggregation, policy engine, cost allocation, secrets
 vault, backup orchestrator). Users who want those capabilities install the
-upstream projects directly — Mortise is a polite Kubernetes citizen and
+upstream projects directly: Mortise is a polite Kubernetes citizen and
 coexists with whatever else runs in the cluster. See §6 for what's out of
 scope and why.
 
@@ -48,7 +48,7 @@ in isolation. See §6.1 for the scope invariants.
 Mortise is what a developer installs when there is no platform team. It
 produces the Kubernetes manifests (internally, via CRD reconciliation) and
 runs the CD itself. The user writes an `App` (or clicks through the UI)
-and Mortise handles everything downstream — build, push, deploy, domain,
+and Mortise handles everything downstream: build, push, deploy, domain,
 TLS, metrics, secrets, bindings.
 
 **Not competing with** Argo CD / Flux CD (GitOps CD engines for platform
@@ -57,14 +57,14 @@ teams can GitOps-manage the cluster infra and Mortise itself; developers
 deploy apps through Mortise without touching manifest repos.
 
 **Differentiated from:**
-- **Kubero** — closest existing product, but manual webhook setup, manual
+- **Kubero**: closest existing product, but manual webhook setup, manual
   DNS/TLS, buildpack-only builds, deprecated Bitnami catalog.
-- **Coolify** — excellent UX on Docker/VPS, no Kubernetes mode.
-- **Gimlet** — archived March 2025. The niche needs a sustainable plan from day one.
-- **Otomi** — dead May 2024; tried to be a batteries-included platform first and
+- **Coolify**: excellent UX on Docker/VPS, no Kubernetes mode.
+- **Gimlet**: archived March 2025. The niche needs a sustainable plan from day one.
+- **Otomi**: dead May 2024; tried to be a batteries-included platform first and
   added developer UX second. Mortise commits to the opposite discipline: ship
   the Railway UX as the whole product, never accrete a platform around it.
-- **Railway / Render** — SaaS only, not self-hostable.
+- **Railway / Render**: SaaS only, not self-hostable.
 
 ---
 
@@ -75,13 +75,13 @@ deploy apps through Mortise without touching manifest repos.
 - **Small dev teams** (2–15 engineers) who want self-hosted Railway on their own
   cloud k8s without a dedicated platform team
 - **Regulated / on-prem teams** that need Railway-quality UX and cannot send
-  code or data through third-party infra — using the **image source + deploy
+  code or data through third-party infra: using the **image source + deploy
   webhook** path with their existing internal CI. (Mortise does not build
   inside an airgap; see §8.5.)
 
 **Assumption:** a Kubernetes cluster already exists. Mortise installs as a Helm
 chart onto it. Cluster provisioning (k3s bootstrap, RKE2 HA, cloud k8s) is
-explicitly out of scope for v1 — "not the problem we're solving." A CLI
+explicitly out of scope for v1: "not the problem we're solving." A CLI
 wrapper for bootstrap may return later.
 
 ---
@@ -89,7 +89,7 @@ wrapper for bootstrap may return later.
 ## 4. Core Design Principles
 
 1. **Kubernetes is invisible to the user.** The App CRD is an internal
-   implementation detail. Users interact via UI, CLI, or the REST API — never
+   implementation detail. Users interact via UI, CLI, or the REST API: never
    kubectl. No user doc in v1 shows YAML for a Deployment, Service, or Ingress.
 2. **Everything is an App.** One unified concept. Source type (`git` | `image`
    in v1) determines how it deploys; bindings and network flags handle
@@ -111,11 +111,11 @@ wrapper for bootstrap may return later.
 
 ---
 
-## 5. v1 Scope — The Railway Clone
+## 5. v1 Scope: The Railway Clone
 
-### 5.0 Projects — the top-level grouping
+### 5.0 Projects: the top-level grouping
 
-Apps do not stand alone. They live inside a **Project** — the equivalent of
+Apps do not stand alone. They live inside a **Project**: the equivalent of
 a Railway "project" or a Vercel "team." A project groups related apps
 (frontend + backend + database) that deploy together, tear down together,
 and bind freely to one another. The Project is the first concept a user
@@ -134,7 +134,7 @@ scoped to its containing project.
   Secrets/ConfigMaps.
 - Apps live in the control namespace (`metadata.namespace = pj-{name}`);
   their workloads are fanned out across the env namespaces by the App
-  controller. Users never type namespace names directly — the UI, API,
+  controller. Users never type namespace names directly: the UI, API,
   and CLI accept project + environment names and translate.
 - Deleting the Project deletes all its namespaces, which cascades (via
   standard k8s garbage collection) to every App, Deployment, Service,
@@ -148,14 +148,14 @@ surfaced only in CLI/debug output.
 **Overriding the derived name.** Two optional spec fields let users opt out
 of `pj-{name}`:
 
-- `spec.namespaceOverride: my-namespace` — use this name as the control
+- `spec.namespaceOverride: my-namespace`: use this name as the control
   namespace instead of `pj-{name}` (env namespaces still derive from it
   as `{override}-{env}`). The controller validates DNS-1123 and enforces
   cluster-wide uniqueness across Projects (two Projects cannot target the
   same namespace). Use cases: match an existing corporate naming
   convention (`corp-team-acme-prod`), migrate an existing namespace under
   Mortise management, keep the short name.
-- `spec.adoptExistingNamespace: true` — **admin-only.** Permits the
+- `spec.adoptExistingNamespace: true`: **admin-only.** Permits the
   controller to adopt a namespace that already exists (from a previous
   install, Argo CD, `kubectl create ns`) instead of refusing to overwrite.
   Without this flag, encountering an existing namespace sets the
@@ -164,7 +164,7 @@ of `pj-{name}`:
   writes an owner reference that will cascade-delete the namespace
   when the Project is deleted.
 
-Both fields are immutable after the Project is `Ready` — renaming a
+Both fields are immutable after the Project is `Ready`: renaming a
 namespace mid-flight would orphan every resource in it. Change requires
 delete + recreate.
 
@@ -221,12 +221,12 @@ and generates host, port, URL, and credential env vars.
 
 #### What Projects provide in v1
 
-- **Grouping** — UI organizes apps under their project
-- **Isolation** — hard Kubernetes namespace boundary between projects
-- **Lifecycle** — one-click teardown of a whole stack
-- **Bindings scope** — default target for `bindings[].ref`
-- **URL scoping** — `/projects/{p}/apps/{a}` paths throughout API, UI, CLI
-- **Teams and per-project access control** — Team CRD groups users;
+- **Grouping**: UI organizes apps under their project
+- **Isolation**: hard Kubernetes namespace boundary between projects
+- **Lifecycle**: one-click teardown of a whole stack
+- **Bindings scope**: default target for `bindings[].ref`
+- **URL scoping**: `/projects/{p}/apps/{a}` paths throughout API, UI, CLI
+- **Teams and per-project access control**: Team CRD groups users;
   grants attach roles (`team-admin`, `team-deployer`, `team-viewer`) to a
   (team, project) pair, optionally scoped to specific environments.
   Platform admins bypass grants entirely. See §5.10 for the access
@@ -239,9 +239,9 @@ domain" concept does not exist.
 
 #### What Projects do NOT provide in v1
 
-- **Quotas** — no CPU/memory/storage caps per project (post-v1)
-- **Project locking / freeze** — no way to make a project read-only yet
-- **Project export/import** — post-v1. All the data lives in CRDs, so
+- **Quotas**: no CPU/memory/storage caps per project (post-v1)
+- **Project locking / freeze**: no way to make a project read-only yet
+- **Project export/import**: post-v1. All the data lives in CRDs, so
   this is mostly a YAML-emission tool; the work is in the restore-side
   (creating a new project with renamed resources, re-injecting secrets).
   Tractable, just not v1 shape.
@@ -271,11 +271,11 @@ user data to migrate.
 
 #### UI routing
 
-- `/` — project dashboard (list of projects with app count badge)
-- `/projects/new` — create a new project
-- `/projects/{p}` — apps in project (main working surface)
-- `/projects/{p}/apps/new` — template picker + new-app form
-- `/projects/{p}/apps/{a}` — app detail page
+- `/`: project dashboard (list of projects with app count badge)
+- `/projects/new`: create a new project
+- `/projects/{p}`: apps in project (main working surface)
+- `/projects/{p}/apps/new`: template picker + new-app form
+- `/projects/{p}/apps/{a}`: app detail page
 
 A top-bar project switcher dropdown lets users jump between projects
 without returning to the dashboard (Railway pattern).
@@ -331,21 +331,21 @@ mortise deploy web --env production --image registry/web:abc123
 
 ### 5.1 App Kinds and Source Types (v1)
 
-**Kinds** — set via `spec.kind`:
+**Kinds**: set via `spec.kind`:
 
-- **`service`** (default) — long-running workload reconciled to a Deployment.
+- **`service`** (default): long-running workload reconciled to a Deployment.
   HTTP/TCP services, backing services, anything that stays up.
-- **`cron`** — scheduled workload reconciled to a CronJob. See §5.8a.
+- **`cron`**: scheduled workload reconciled to a CronJob. See §5.8a.
 
-**Source types** — set via `spec.source.type`:
+**Source types**: set via `spec.source.type`:
 
-- **`git`** — build from source. Auto-detects Dockerfile or language. Full
+- **`git`**: build from source. Auto-detects Dockerfile or language. Full
   build pipeline, preview environments, deploy history. Monorepo-aware via
   `source.path` + `source.watchPaths`.
-- **`image`** — pre-built image. No build. Covers self-hosted apps
+- **`image`**: pre-built image. No build. Covers self-hosted apps
   (Paperless-ngx, Vaultwarden, etc.) and the v1 Postgres/Redis path
   (image + PVC + manual credentials block).
-- **`external`** — no Deployment, no pods. The App is a facade over an
+- **`external`**: no Deployment, no pods. The App is a facade over an
   already-running service (a DB on a VM, a cloud-managed Redis, an S3
   bucket, an API at another company). Mortise owns the domain, TLS, and
   bindable credentials; it does not run the workload. See §5.5a.
@@ -441,7 +441,7 @@ spec:
   # the App. There is no `spec.preview` on an App in v1.
 ```
 
-### 5.2a Annotations — the escape hatch
+### 5.2a Annotations: the escape hatch
 
 Annotations are how everything in the Kubernetes ecosystem talks to
 everything else. cert-manager reads `cert-manager.io/cluster-issuer`,
@@ -451,14 +451,14 @@ Prometheus reads `prometheus.io/scrape`, nginx reads a hundred
 `nginx.ingress.kubernetes.io/*` knobs. Mortise already writes several of
 these itself (the Ingress carries its own cert-manager and ExternalDNS
 annotations; the webhook uses `mortise.dev/revision` to talk to the
-reconciler). The platform is annotation-driven by design — see §11.1a.
+reconciler). The platform is annotation-driven by design: see §11.1a.
 
 Users need to add their own. A team on EKS needs IRSA role annotations
 on the ServiceAccount. A team running Linkerd needs
 `linkerd.io/inject: enabled` on the pod template. A team on
 nginx-ingress needs a rate-limit annotation. Locking these out would
 force every such team to give up on Mortise-authored resources and
-hand-roll their own Deployments — which defeats the point.
+hand-roll their own Deployments: which defeats the point.
 
 `environments[].annotations` is a single flat map that Mortise merges
 onto the metadata of **every resource it creates for that environment**:
@@ -476,17 +476,17 @@ environments:
 
 **User wins on conflict.** If the user sets a key Mortise also sets (e.g.
 `cert-manager.io/cluster-issuer`), the user's value replaces Mortise's.
-This is deliberate — it's how a team overrides Mortise's default
+This is deliberate: it's how a team overrides Mortise's default
 cluster-issuer without dropping out to raw Kubernetes, and it's how
 §5.6's `tls.clusterIssuer` override is implemented under the hood.
 
-**Footgun — by design.** Setting `mortise.dev/revision` here will break
+**Footgun: by design.** Setting `mortise.dev/revision` here will break
 the webhook → reconciler handshake that triggers redeploys on git push.
 Setting `kubernetes.io/ingress.class` conflicts with the
 `ingressClassName` field Mortise sets. Setting a malformed
 `cert-manager.io/*` value will break TLS issuance. These footguns are
 not guardrailed. This field is for advanced users who already know what
-each annotation means in their stack — if you don't know what you're
+each annotation means in their stack: if you don't know what you're
 setting, don't set it.
 
 **Scope is intentionally environment-level only.** No app-level
@@ -526,7 +526,7 @@ by default.
 **Monorepo fan-out:** one webhook per push; operator iterates every App whose
 `source.repo` matches, compares changed paths against each App's `watchPaths`
 prefixes, rebuilds only matching Apps. UI groups builds by commit ("3 of 12
-apps rebuilding from commit abc123"). Previews follow the same rule — PR
+apps rebuilding from commit abc123"). Previews follow the same rule: PR
 touching `services/api/` creates a preview for the `api` App only; PR touching
 `shared/` creates previews for every App that watches `shared/`.
 
@@ -554,15 +554,15 @@ curl -X POST https://mortise.yourdomain.com/api/deploy \
 - CI snippet shown alongside on creation
 
 This is the extensibility seam for any CI system. Users keep GitHub Actions,
-GitLab CI, Woodpecker, Jenkins, bash — Mortise just handles build (if git
+GitLab CI, Woodpecker, Jenkins, bash: Mortise just handles build (if git
 source) and deploy. No CI integration needed in v1.
 
-### 5.5 Bindings — The Magic
+### 5.5 Bindings: The Magic
 
 An App with `credentials` declared is a backing service. Other Apps bind to it
 by `ref`. At **reconcile time** the operator resolves the bound App's
 credentials (password from the secret store, constructed `DATABASE_URL`,
-host/port from Service DNS) and bakes them into the binder's Deployment —
+host/port from Service DNS) and bakes them into the binder's Deployment.
 literal env values for Service DNS facts, `secretKeyRef` projections for
 credentials sourced from the secret backend. No admission webhook, no init
 container, no runtime agent: the Deployment spec is the single source of truth
@@ -593,10 +593,10 @@ and collapsing them would force duplication elsewhere.
 
 A "New Postgres" template button in the UI pre-fills this form. Looks like
 Railway; under the hood it's just an image source plus bindings. Operator-backed
-catalog with HA/PITR/backups is post-v1 (see §6.3 — the recommended path is
+catalog with HA/PITR/backups is post-v1 (see §6.3: the recommended path is
 to install CNPG / a Redis operator directly and point Apps at them).
 
-### 5.5a External Services — binding to things Mortise doesn't run
+### 5.5a External Services: binding to things Mortise doesn't run
 
 Not every backing service lives inside the cluster. Teams have DBs on
 RDS, Redis on ElastiCache, Postgres on a VM, an internal API that
@@ -604,14 +604,14 @@ predates Mortise by five years. They still want the Railway moment:
 click → `DATABASE_URL` in my API pod.
 
 An App with `spec.source.type: external` is the Mortise object for these.
-No Deployment, no pods, no build — just a domain, TLS, and a bindable
+No Deployment, no pods, no build: just a domain, TLS, and a bindable
 credentials surface. Mortise writes a `Service` of `type: ExternalName`
 (or headless Service with a static Endpoints) pointing at the upstream
 host so in-cluster binders reach it by cluster-internal DNS, and a
 `Secret` holding the credentials. Everything else (bindings, projected
 env, `{app}-credentials` Secret) works identically to any other App.
 
-**Flavor A — user-provided credentials (the common case).**
+**Flavor A: user-provided credentials (the common case).**
 The user types the hostname, port, and credentials into the Mortise UI
 or CRD. Mortise writes a new `Secret` it owns. Useful when the external
 service exists but has no corresponding Kubernetes resource yet.
@@ -635,7 +635,7 @@ spec:
         - { name: user,     value: "app" }
 ```
 
-**Flavor B — `importFrom` an existing Service + Secret.**
+**Flavor B: `importFrom` an existing Service + Secret.**
 When the external service was installed by another operator (Crossplane,
 CNPG, ACK, the cluster owner), it already exposes a `Service` and a
 `Secret`. No point re-typing the same credentials into Mortise. `importFrom`
@@ -657,7 +657,7 @@ spec:
 
 Mortise reads the referenced `Service`/`Secret` at reconcile time,
 projects the values into its own `{app}-credentials` Secret in the App's
-namespace (so cross-namespace `secretKeyRef` works — see Issue #2), and
+namespace (so cross-namespace `secretKeyRef` works: see Issue #2), and
 watches the source Secret for rotation. The source resources are **not**
 owned by Mortise; deleting the App does not delete them.
 
@@ -665,18 +665,18 @@ owned by Mortise; deleting the App does not delete them.
 - `network.public: true` still means "give it a domain and TLS," routed
   via Ingress → ExternalName Service → upstream host. Useful for
   exposing a behind-the-firewall service at `api.yourdomain.com`.
-- No `build:`, `replicas:`, `storage:` — the App is a facade, not a
+- No `build:`, `replicas:`, `storage:`: the App is a facade, not a
   workload. Setting these is a validation error.
-- No health checks or deploy history — the upstream's lifecycle is the
+- No health checks or deploy history: the upstream's lifecycle is the
   user's problem.
 - Cross-namespace refs in `importFrom` require the operator's
   ServiceAccount to have read access on the source namespace. Chart
   ships with a `ClusterRole` for `services` + `secrets` GET/WATCH;
   restrictive setups can scope this down with a supplemental RoleBinding.
 
-### 5.5b Secret Mounts — files alongside env-var bindings
+### 5.5b Secret Mounts: files alongside env-var bindings
 
-Bindings are env-vars-only by design (see §5.5 — the 12-factor contract
+Bindings are env-vars-only by design (see §5.5: the 12-factor contract
 is the whole point). But many real apps need credentials as *files*:
 Java keystores (`truststore.jks`), mTLS client certs, JWT signing keys
 that the underlying library insists on reading from disk, Authelia /
@@ -701,9 +701,9 @@ environments:
 
 This is a deliberately separate primitive from bindings:
 
-- **Bindings** — cross-App contract. Names a Mortise App and projects its
+- **Bindings**: cross-App contract. Names a Mortise App and projects its
   declared credentials as env vars. The resolver owns the Secret name.
-- **`secretMounts`** — existing-Secret contract. Names a k8s Secret that
+- **`secretMounts`**: existing-Secret contract. Names a k8s Secret that
   already exists (because ESO wrote it, because a user ran
   `kubectl create secret`, because an operator produced it) and mounts
   it. The user owns the Secret name.
@@ -730,7 +730,7 @@ deployments. `environments[].tls` provides two levers:
 ```yaml
 environments:
   - name: production
-    # Option A — use a different ClusterIssuer for this env.
+    # Option A: use a different ClusterIssuer for this env.
     # Mortise still writes the cert-manager annotation; cert-manager
     # talks to the named issuer instead of the platform default.
     tls:
@@ -740,7 +740,7 @@ environments:
 ```yaml
 environments:
   - name: production
-    # Option B — bring your own cert. Mortise writes the Ingress
+    # Option B: bring your own cert. Mortise writes the Ingress
     # tls: [{ secretName }] block directly and does NOT add the
     # cert-manager annotation. The Secret must already contain a
     # valid tls.crt / tls.key pair, typically written by ESO,
@@ -749,7 +749,7 @@ environments:
       secretName: app-prod-tls
 ```
 
-The two are mutually exclusive — setting both is a validation error.
+The two are mutually exclusive: setting both is a validation error.
 Setting neither inherits the platform default. Custom domains
 (`customDomains:`) pick up the same TLS config; per-host overrides are
 post-v1 if real demand appears.
@@ -764,12 +764,12 @@ cluster's default SC). For v1:
   Fine for most apps.
 - **Multi-node or cloud:** use the cluster's default SC.
 - **RWX volumes:** supported if the user picks a StorageClass that provides it
-  (NFS, EFS, Longhorn-over-NFS). No storage wizard in v1 — sizing guidance
+  (NFS, EFS, Longhorn-over-NFS). No storage wizard in v1: sizing guidance
   is docs (see §6.3).
 
 **v1 simplifications:**
 - `accessMode: auto` infers RWO for replicas=1, otherwise reads the SC's capability
-- `perReplica` / StatefulSet-per-volume is **deferred post-v1** (§6.2) —
+- `perReplica` / StatefulSet-per-volume is **deferred post-v1** (§6.2).
   v1 supports single volume per App with RWO or RWX
 - Multi-volume is supported (list of volumes) but automatic tier-detection
   (fast / shared / default) is not in v1
@@ -788,7 +788,7 @@ cluster's default SC). For v1:
   everything deleted. URL posted as PR comment.
 
   **Scope semantics (option a).** *Every* App in the project reconciles
-  into the preview namespace — including `kind: cron` Apps and Apps
+  into the preview namespace: including `kind: cron` Apps and Apps
   with `network.public: false`. They just don't get a public URL
   (nothing to route to). This keeps bindings coherent: a preview API
   can reach its preview DB and preview worker's cache without manual
@@ -799,8 +799,8 @@ cluster's default SC). For v1:
 ### 5.8a Cron Apps
 
 An App with `kind: cron` reconciles to a Kubernetes `CronJob` instead of a
-`Deployment`. Everything else — source, build pipeline, env/secrets/bindings,
-environments, preview envs, rollback, image digest tracking — works the same.
+`Deployment`. Everything else: source, build pipeline, env/secrets/bindings,
+environments, preview envs, rollback, image digest tracking: works the same.
 
 ```yaml
 kind: App
@@ -821,14 +821,14 @@ Constraints:
 - `replicas` is ignored (CronJobs don't replicate; concurrency is controlled by `concurrencyPolicy`).
 - **Preview environments include cron Apps.** When the parent project
   has `spec.preview.enabled: true`, cron Apps reconcile into each
-  preview namespace alongside every other App — they just don't get a
+  preview namespace alongside every other App: they just don't get a
   public URL. They *do* run per their schedule, which means real
   side-effects if the cron hits external systems. Users with
   heavy or side-effecting crons should split them into a sibling
   project with previews off. A per-App preview exclusion toggle may
   arrive in v2.
 - Logs and run history are surfaced in the UI the same way as Deployment
-  rollouts — per-run stdout/stderr, exit code, duration.
+  rollouts: per-run stdout/stderr, exit code, duration.
 
 Why this shape: CronJob is a k8s primitive; the only work is reconciling one
 instead of a Deployment at the end of the same pipeline. No separate "Jobs"
@@ -836,19 +836,19 @@ product, no new lifecycle.
 
 ### 5.8b Variable Resolution
 
-Four levels of variable contribute to a pod's final env, resolved in order —
+Four levels of variable contribute to a pod's final env, resolved in order.
 later levels override earlier:
 
-1. **Platform defaults** — a fixed set the operator always injects
+1. **Platform defaults**: a fixed set the operator always injects
    (`MORTISE_APP`, `MORTISE_ENVIRONMENT`, `MORTISE_DEPLOY_ID`).
-2. **Bound App credentials** — short-form `bindings: [{ ref: my-db }]`
+2. **Bound App credentials**: short-form `bindings: [{ ref: my-db }]`
    projects every key in the bound App's `credentials:` block as env
    (`DATABASE_URL`, `host`, `port`, …). Long-form `valueFrom.fromBinding`
    projects a single key under a different env name.
-3. **App-level `sharedVars`** — project/App-wide values visible to every
+3. **App-level `sharedVars`**: project/App-wide values visible to every
    environment of this App. Use for `LOG_LEVEL`, `SENTRY_DSN`, feature
    flags. Supports both literal `value:` and `valueFrom.secretRef:`.
-4. **Environment-level `env`** — per-environment overrides. Wins on
+4. **Environment-level `env`**: per-environment overrides. Wins on
    conflict.
 
 All three of `value:`, `valueFrom.secretRef:`, and `valueFrom.fromBinding:`
@@ -886,7 +886,7 @@ separately-installed project Mortise does not own. The pattern:
 
 Mortise never imports ESO's Go types or talks to the backend directly.
 The integration is two CRs passing k8s Secrets between them. If ESO is
-not installed, Mortise falls back to native k8s Secrets — nothing breaks,
+not installed, Mortise falls back to native k8s Secrets: nothing breaks,
 users just don't have the external-backend option. See §11.1 for why
 this is not a "plug-in protocol."
 
@@ -897,16 +897,16 @@ dedicated editing path so users never need to `kubectl edit` YAML or do a
 full `PUT` on the App CRD to change a variable.
 
 **API:**
-- `GET /api/projects/{project}/apps/{app}/env` — returns all envs, references
+- `GET /api/projects/{project}/apps/{app}/env`: returns all envs, references
   unresolved (shows `@from:db.host`, not the resolved value).
-- `GET /api/projects/{project}/apps/{app}/env/{env}` — single environment.
-- `PUT /api/projects/{project}/apps/{app}/env/{env}` — full replace of one
+- `GET /api/projects/{project}/apps/{app}/env/{env}`: single environment.
+- `PUT /api/projects/{project}/apps/{app}/env/{env}`: full replace of one
   environment's `env` array.
-- `PATCH /api/projects/{project}/apps/{app}/env` — op-list (`set`/`unset`)
+- `PATCH /api/projects/{project}/apps/{app}/env`: op-list (`set`/`unset`)
   with `scope: shared|env`, applied atomically. `fromBinding` validated at
-  PATCH time; `secretRef` is not (matches `secretMounts` semantics — Pod
+  PATCH time; `secretRef` is not (matches `secretMounts` semantics: Pod
   blocks in `ContainerCreating` if the Secret doesn't exist).
-- `POST /api/projects/{project}/apps/{app}/env/import` — bulk import from
+- `POST /api/projects/{project}/apps/{app}/env/import`: bulk import from
   `.env` file body.
 
 **CLI:**
@@ -937,7 +937,7 @@ full `PUT` on the App CRD to change a variable.
 
 ### 5.10 Auth (login for Mortise itself)
 
-Auth is scoped to **Mortise's own UI and API** — logging developers and
+Auth is scoped to **Mortise's own UI and API**: logging developers and
 admins into Mortise. User apps' authentication is the user's problem,
 out of scope (see note below).
 
@@ -947,12 +947,12 @@ out of scope (see note below).
   `mortise-system` (hashed, never plaintext). One admin created during
   first-run wizard; invites via generated link.
 - **Generic OIDC**: configured with `issuerURL + clientID + clientSecret`.
-  Covers every mainstream IdP via the OIDC standard — Authentik, Keycloak,
+  Covers every mainstream IdP via the OIDC standard: Authentik, Keycloak,
   Okta, Auth0, Google, GitHub, GitLab, Microsoft Entra, Zitadel, etc.
   One code path, one set of tests.
 
 Selection is per-deployment via `PlatformConfig.auth.mode: {native, oidc}`.
-Not pluggable at runtime — if you want OIDC, set the flag and restart the
+Not pluggable at runtime: if you want OIDC, set the flag and restart the
 operator. That's enough flexibility for 90%+ of real users. SAML and LDAP
 are out of scope for v1 and can be added in-tree later as separate modes if
 demand appears.
@@ -963,12 +963,12 @@ Two roles, platform-wide:
 
 | Role | Can do |
 |---|---|
-| **admin** | Everything — users, providers, DNS, platform settings, all Projects and Apps. Create/delete Projects. |
+| **admin** | Everything: users, providers, DNS, platform settings, all Projects and Apps. Create/delete Projects. |
 | **member** | Create/edit/delete Apps within any Project; view logs and metrics; edit env/secrets; deploy, rollback, promote. Cannot create/delete Projects, manage users, or edit platform settings. |
 
 **Implicit default team (v1 forward-compat stub).** The operator creates
 a single `Team` CRD named `default-team` at first-run setup and binds
-every user to it. The UI renders no team chrome in v1 — users never see
+every user to it. The UI renders no team chrome in v1: users never see
 or interact with the Team. The stub exists purely so v2's richer team
 model (see below) is additive: splitting the implicit team into N
 teams, adding per-team roles, and adding env-scoped grants all happen
@@ -984,18 +984,18 @@ additive extensions on the `Team` CRD already present in v1.
 Railway's is: hand users env vars and a URL. A user who wants their Gitea
 to "Login with Authentik" installs Authentik themselves, creates the OIDC
 client in Authentik's UI, and pastes the client ID + secret into Mortise's
-secrets editor — same flow as on Railway. Forward-auth middleware and
+secrets editor: same flow as on Railway. Forward-auth middleware and
 automated OIDC/SAML client provisioning for user apps are post-v1 topics
 to be specced if and when real demand shows up; they are not a v1 contract.
 
 ### 5.11 Observability (v1)
 
-**Metrics:** `metrics-server` baseline — CPU/memory per pod/environment
+**Metrics:** `metrics-server` baseline: CPU/memory per pod/environment
 surfaced in UI. No Prometheus installed by core. Users who want deeper
 observability install kube-prometheus-stack themselves (see §6.3). UI
-degrades gracefully — charts show what's available.
+degrades gracefully: charts show what's available.
 
-**Logs — structured JSON on stdout.** The operator emits all output as
+**Logs: structured JSON on stdout.** The operator emits all output as
 structured JSON to stdout. Three log categories, distinguished by
 `component` field:
 
@@ -1015,25 +1015,25 @@ to a ConfigMap `buildlogs-{app}` in the project namespace, capped at
 the last 1 000 lines per app (ring-buffer trim, same pattern as the
 activity store). This gives users build history without a log agent and
 without a PVC. Lines older than the cap exist only in the operator's
-stdout — if a log agent is collecting, users get full retention.
+stdout: if a log agent is collecting, users get full retention.
 
-**User app logs — live streaming.** The UI surfaces live `kubectl logs`
-output via SSE — same as a `stern` tail. Four improvements over bare
+**User app logs: live streaming.** The UI surfaces live `kubectl logs`
+output via SSE: same as a `stern` tail. Four improvements over bare
 log streaming ship in v1:
 
-1. **Previous-container logs** — `?previous=true` on the k8s log API
+1. **Previous-container logs**: `?previous=true` on the k8s log API
    fetches logs from the container instance before the most recent
    restart. Surfaced as a "Previous" toggle in the Logs tab header;
    only shown when the pod has a non-zero restart count. This is the
    primary path for diagnosing crash loops.
-2. **Timestamps** — `?timestamps=true` requests RFC3339 timestamps from
+2. **Timestamps**: `?timestamps=true` requests RFC3339 timestamps from
    the k8s log API; the UI strips and re-formats them as relative time
    (e.g. `14:32:01 · 2m ago`) in a fixed-width left gutter.
-3. **Structured JSON pretty-print** — if a log line parses as JSON, the
+3. **Structured JSON pretty-print**: if a log line parses as JSON, the
    UI renders it as an expandable key/value row with the `level` field
    color-coded (`error`=red, `warn`=amber, `info`=gray, `debug`=dimmed).
    Raw text lines render as-is. Frontend-only, no backend change.
-4. **Time-range selector** — `sinceTime` / `sinceSeconds` params on the
+4. **Time-range selector**: `sinceTime` / `sinceSeconds` params on the
    k8s log API enable "past 15 min / 1 h / 6 h / 24 h" chips. Works as
    long as the pod is alive and the node log buffer hasn't rotated.
    When a range is selected, the view switches from SSE streaming to a
@@ -1046,7 +1046,7 @@ actual log backend (Loki, CloudWatch, OpenSearch, Splunk, etc.). Mortise
 maintains one contract; adapters are maintained as separate projects in
 the tenon model. When `PlatformConfig.spec.observability.logsAdapterEndpoint`
 is set, the Logs tab shows a "History" view alongside live streaming.
-When not set, the live tab is the only view — no placeholder or prompt.
+When not set, the live tab is the only view: no placeholder or prompt.
 
 **Per-project Activity store (convenience, not source of truth).** In
 addition to the stdout audit stream, the operator maintains a small
@@ -1060,7 +1060,7 @@ verb, resource, summary}`). Written by every write handler in the
 REST API (see §5.13). The stdout stream remains authoritative for
 compliance retention; the ConfigMap is a cache for UX. If a project
 exceeds 500 events/day and the rail starts to feel sparse, users
-point a log agent at the stream and get full history — no Mortise
+point a log agent at the stream and get full history: no Mortise
 change required. A dedicated `ActivityEvent` CRD or annotation ring
 is deferred until real demand; see §10.
 
@@ -1072,7 +1072,7 @@ by CloudWatch, Splunk, or OpenSearch). Rather than maintain N backend
 integrations, Mortise defines one minimal HTTP contract and ships
 reference adapter projects as tenons (§9).
 
-**Contract — single endpoint:**
+**Contract: single endpoint:**
 
 ```
 GET /v1/logs
@@ -1120,13 +1120,13 @@ spec:
 handler that reads the adapter URL from PlatformConfig, forwards the
 query with the resolved token, and passes the response through. If the
 config field is absent, returns `{"available": false}`. No adapter SDK
-lives in the Mortise codebase — HTTP only.
+lives in the Mortise codebase: HTTP only.
 
 **Reference adapters (separate repos, tenon model):**
-- `mortise-loki-adapter` — translates the contract to Loki's
+- `mortise-loki-adapter`: translates the contract to Loki's
   `/loki/api/v1/query_range` with a label selector built from the
   `namespace`/`app`/`env` params. ~60 lines.
-- `mortise-cloudwatch-adapter` — translates to CloudWatch Logs Insights
+- `mortise-cloudwatch-adapter`: translates to CloudWatch Logs Insights
   `FilterLogEvents` via the AWS SDK.
 - Additional adapters contributed by the community.
 
@@ -1139,7 +1139,7 @@ don't deploy one.
 Each supported forge gets a GitProvider CRD instance (e.g.
 `github-main`, `gitea-homelab`). Cluster-scoped.
 
-**GitHub — device flow (primary).** The admin creates an OAuth App on
+**GitHub: device flow (primary).** The admin creates an OAuth App on
 GitHub and pastes only the **client ID** (a public value) into Mortise.
 No client secret needed. Each user authenticates via the OAuth device
 authorization grant (RFC 8628): Mortise shows a user code + verification
@@ -1147,7 +1147,7 @@ URL, the user authorises in their browser, Mortise polls until the grant
 completes. Tokens are stored **per-user per-provider** (see below).
 Zero callback URLs, zero shared secrets, zero server-side redirects.
 
-**GitLab / Gitea — device flow where supported, code grant as future
+**GitLab / Gitea: device flow where supported, code grant as future
 work.** The GitProvider CRD carries an optional `spec.clientSecretRef`
 (`*SecretRef`) for forges that require the OAuth authorization code
 grant. The code grant flow is not implemented in v1; it will land when
@@ -1155,15 +1155,15 @@ GitLab/Gitea support is prioritised. For now, `spec.clientSecretRef`
 is a forward-compat field.
 
 **CRD schema (simplified):**
-- `spec.type` — enum `github | gitlab | gitea`.
-- `spec.host` — base URL.
-- `spec.clientID` — plain string, the public OAuth client ID.
-- `spec.clientSecretRef` — optional `*SecretRef`, for future code grant
+- `spec.type`: enum `github | gitlab | gitea`.
+- `spec.host`: base URL.
+- `spec.clientID`: plain string, the public OAuth client ID.
+- `spec.clientSecretRef`: optional `*SecretRef`, for future code grant
   (GitLab/Gitea). Not used by the device flow.
-- `spec.webhookSecretRef` — optional `*SecretRef` for HMAC verification.
-- `status.phase` — `Pending | Ready | Failed`; plus standard `Conditions`.
+- `spec.webhookSecretRef`: optional `*SecretRef` for HMAC verification.
+- `status.phase`: `Pending | Ready | Failed`; plus standard `Conditions`.
 
-**Token storage — per-user per-provider.** Every authenticated user gets
+**Token storage: per-user per-provider.** Every authenticated user gets
 their own token Secret named `user-{providerName}-token-{hex(email)}`
 in `mortise-system`. There is no shared per-provider token. This means
 each user's API calls use their own rate limit and permission scope.
@@ -1182,9 +1182,9 @@ automatically by the GitProvider controller when a user connects a repo
 (POST `/repos/{owner}/{repo}/hooks` on GitHub; equivalent on the others).
 
 **Device flow API routes:**
-- `POST /api/auth/git/{provider}/device` — initiates device flow, returns user code + verification URI.
-- `GET /api/auth/git/{provider}/device/poll` — polls for grant completion (requires JWT).
-- `GET /api/auth/git/{provider}/status` — checks whether the current user has a valid token for this provider.
+- `POST /api/auth/git/{provider}/device`: initiates device flow, returns user code + verification URI.
+- `GET /api/auth/git/{provider}/device/poll`: polls for grant completion (requires JWT).
+- `GET /api/auth/git/{provider}/status`: checks whether the current user has a valid token for this provider.
 
 **Error handling:** The `internal/git` package exports an `ErrAuthFailed`
 sentinel error for 401/403 detection. Callers use `errors.Is` to
@@ -1199,19 +1199,19 @@ eliminates the need for callback infrastructure in the GitHub path.
 
 ### 5.13 Web UI (v1)
 
-- **Project dashboard** — list of Projects, each card shows app count,
+- **Project dashboard**: list of Projects, each card shows app count,
   status summary, last activity
-- **Project workspace** (`/projects/{p}`) — apps in this project, status
+- **Project workspace** (`/projects/{p}`): apps in this project, status
   badges, last deploy; primary working surface
-- **New app** (`/projects/{p}/apps/new`) — template picker → source picker
+- **New app** (`/projects/{p}/apps/new`): template picker → source picker
   (git | image) → guided form
-- **App detail** (`/projects/{p}/apps/{a}`) — deploy history, real-time
+- **App detail** (`/projects/{p}/apps/{a}`): deploy history, real-time
   build logs, environment tabs, metrics, custom domains, secrets editor,
   bindings, deploy tokens
-- **Create project** — name + description
-- **Secret store** — list by app/env, write-only values, rotation
-- **Platform settings** — domain, DNS, git providers, user management
-- **Activity rail** (project scope only) — toggled by a pulse button in
+- **Create project**: name + description
+- **Secret store**: list by app/env, write-only values, rotation
+- **Platform settings**: domain, DNS, git providers, user management
+- **Activity rail** (project scope only): toggled by a pulse button in
   the top bar. Closed by default; opens as a slide-out over the
   canvas/drawer. Renders the per-project activity store (§5.11) merged
   with synthesized deploy rows from App `status.deploys` history.
@@ -1228,7 +1228,7 @@ writes (controllers, webhooks) are stamped `system`. This is the
 backend foundation for the Activity rail, deploy-history authorship,
 and any future per-user audit surface.
 
-UX standard: Railway-quality. Source types abstracted — users see "your apps."
+UX standard: Railway-quality. Source types abstracted: users see "your apps."
 
 ### 5.14 CLI (v1)
 
@@ -1236,7 +1236,7 @@ Railway-style: short commands, positional args, interactive prompts when
 ambiguous. Full flags for scripting/CI.
 
 ```bash
-# Projects — the top-level context
+# Projects: the top-level context
 mortise project list
 mortise project create my-saas
 mortise project delete my-saas                # prompts confirmation; admin only
@@ -1280,14 +1280,14 @@ successful login.
 
 **There are no first-party Mortise addons.** Everything below is either a
 post-v1 operator feature in core, a documentation recipe, or a user-installs-
-upstream pattern. Mortise ships one product — the operator + its CRDs + the
-UI — and that product is the complete deliverable. This is the structural
+upstream pattern. Mortise ships one product: the operator + its CRDs + the
+UI: and that product is the complete deliverable. This is the structural
 commitment that keeps §2's positioning honest.
 
 ### 6.1 Scope Invariants
 
 Any feature proposal, now or in future, gets checked against these invariants
-before scope-in. If it violates any, it doesn't ship — regardless of how
+before scope-in. If it violates any, it doesn't ship: regardless of how
 useful it would be in isolation.
 
 1. **Core is the whole product.** Mortise has one install: `helm install
@@ -1310,7 +1310,7 @@ useful it would be in isolation.
    parties do not implement them; there are ~10 total in-tree
    implementations across all interfaces (§11.1).
 5. **When an upstream project we rely on becomes unmaintained, we swap,
-   document a workaround, or scope the feature out — we do not fork.** We
+   document a workaround, or scope the feature out: we do not fork.** We
    are not in the business of maintaining abandoned third-party software.
 
 ### 6.2 Post-v1 Operator Features
@@ -1319,19 +1319,19 @@ Capabilities that stay in the core operator but are deliberately deferred
 from the v1 cut. Each lands as a core feature flag or CRD extension, not
 as a separate chart.
 
-- **Cloudflare Tunnel automation** — creates a CF Tunnel via API and wires
+- **Cloudflare Tunnel automation**: creates a CF Tunnel via API and wires
   cloudflared into the cluster; enables Mortise to be reachable from the
   internet without a public IP. Operator feature, not an install chart for
   `cloudflared` (users who want a generic tunnel chart use the upstream).
-- **`perReplica` volumes / StatefulSet workloads** — extend the App CRD to
+- **`perReplica` volumes / StatefulSet workloads**: extend the App CRD to
   support StatefulSet-shaped workloads with per-replica PVCs.
-- **Multi-cluster** — `Cluster` CRD, bearer-token trust model, aggregated
+- **Multi-cluster**: `Cluster` CRD, bearer-token trust model, aggregated
   UI. Single-cluster remains the primary deployment shape; multi-cluster
   is purely additive.
-- **`mortise export` CLI** — export all App / PlatformConfig / GitProvider
+- **`mortise export` CLI**: export all App / PlatformConfig / GitProvider
   CRs as portable YAML for backup and migration. Pairs with Velero for
   full DR (Velero handles PVCs; `mortise export` handles configuration).
-- **Log UI integration (§5.11a)** — PlatformConfig `spec.observability.logsAdapterEndpoint`
+- **Log UI integration (§5.11a)**: PlatformConfig `spec.observability.logsAdapterEndpoint`
   points at a user-deployed adapter that implements Mortise's minimal log
   query contract. Mortise proxies queries through one `GET /logs/history`
   endpoint. Reference adapters for Loki and CloudWatch ship as separate
@@ -1371,22 +1371,22 @@ is a Mortise-maintained artifact.
 Things that could conceivably exist but won't be built speculatively.
 Scoped in only when users with that specific need show up.
 
-- **Cloudflare Worker relay for GitHub App OAuth** — infrastructure we'd
+- **Cloudflare Worker relay for GitHub App OAuth**: infrastructure we'd
   have to host and maintain forever to support GitHub App mode. Device
   flow and PAT modes cover 95%+ of git-provider users; this stays off
   the roadmap until there's concrete demand.
-- **Cloudflare for SaaS custom hostnames** — genuinely useful for users
+- **Cloudflare for SaaS custom hostnames**: genuinely useful for users
   building SaaS on Mortise where end-customers want custom domains. A real
   feature for a narrow audience; specced and built when that audience
   shows up.
-- **`helm` source type** — deploying arbitrary Helm charts through the
+- **`helm` source type**: deploying arbitrary Helm charts through the
   Mortise UI. Scope expansion into "generic Helm dashboard" territory
   where other tools (Lens, k9s, Argo CD) already serve users better. Not
   shipped unless the Mortise-specific angle becomes clear.
 
 ### 6.5 Community-Maintained (Not Mortise's Scope)
 
-- **App preset repository** — a separate, community-contributed collection
+- **App preset repository**: a separate, community-contributed collection
   of App CRD templates for common self-hosted software (Paperless,
   Vaultwarden, etc.). Data, not code. Not maintained by the Mortise team.
   Mortise's side of the integration is a small UI feature that can import
@@ -1410,7 +1410,7 @@ won't happen, and regressions will bury us.
 | **E2E** | Dogfooding k3s cluster | Real GitHub webhooks, real Cloudflare DNS, real LE staging | Nightly |
 | **UI E2E** | Playwright against k3d integration stack | Critical user flows | Per PR |
 
-**No KWOK** (node simulator) in v1 — not useful when we actually need pods to
+**No KWOK** (node simulator) in v1: not useful when we actually need pods to
 run builds and bind volumes.
 
 ### 7.2 Repo Layout (Claude-friendly conventions)
@@ -1443,7 +1443,7 @@ run builds and bind volumes.
 └── README.md
 ```
 
-### 7.3 Makefile — the entire test bench
+### 7.3 Makefile: the entire test bench
 
 ```makefile
 # Fast feedback
@@ -1536,9 +1536,9 @@ test-all: test test-integration
 ### 7.8 CI (for Mortise itself)
 
 GitHub Actions, hosted runners. Not self-hosted. Workflows:
-- `test.yml` — `make test` on every PR (fast)
-- `test-integration.yml` — `make test-integration` on every PR (k3d in GH Actions runner)
-- `nightly.yml` — `make test-e2e` against the dogfooding cluster
+- `test.yml`: `make test` on every PR (fast)
+- `test-integration.yml`: `make test-integration` on every PR (k3d in GH Actions runner)
+- `nightly.yml`: `make test-e2e` against the dogfooding cluster
 
 Self-hosting the Mortise project's own CI is out of scope.
 
@@ -1550,7 +1550,7 @@ Self-hosting the Mortise project's own CI is out of scope.
 
 ```
 charts/
-└── mortise/               # single chart — not an umbrella
+└── mortise/               # single chart: not an umbrella
     ├── Chart.yaml          # depends on traefik, cert-manager, external-dns (bundled), zot (conditional)
     ├── values.yaml
     └── templates/          # operator Deployment, RBAC, CRDs, Service, etc.
@@ -1592,22 +1592,22 @@ Each is on by default but switchable at install:
 | `externalDNS.enabled` | `true` | Operator still annotates Ingress; user's existing ExternalDNS picks it up, or DNS is managed manually |
 | `zot.enabled` | `true` | Operator pushes to external registry; user sets `registry.url` + `registry.pullSecret` |
 
-Each toggle corresponds to an outward interface (§11.1) — `IngressProvider`,
-`RegistryBackend` — or an annotation-driven integration (ExternalDNS).
+Each toggle corresponds to an outward interface (§11.1): `IngressProvider`,
+`RegistryBackend`: or an annotation-driven integration (ExternalDNS).
 Disabling a bundled component does not disable the feature; it swaps the
 implementation.
 
 ### 8.4 Restricted-Network Installs (Proxied / Custom-CA)
 
 For on-prem or regulated clusters where Mortise must reach internal git,
-internal registry, internal ACME — but still has *some* outbound path
+internal registry, internal ACME: but still has *some* outbound path
 (directly or via proxy):
 
 | Values flag | Purpose |
 |---|---|
-| `global.caBundle` | PEM-encoded CA chain mounted into the operator pod — for internal ACME, internal registries, internal git forges signed by a private CA |
+| `global.caBundle` | PEM-encoded CA chain mounted into the operator pod: for internal ACME, internal registries, internal git forges signed by a private CA |
 | `global.httpProxy` / `httpsProxy` / `noProxy` | Propagated as env to the operator |
-| `global.imageRegistry` | Prefix for all Mortise-internal images (operator, Traefik, cert-manager, Zot) — for mirrored registries |
+| `global.imageRegistry` | Prefix for all Mortise-internal images (operator, Traefik, cert-manager, Zot): for mirrored registries |
 | `global.pullSecret` | Pull secret for `global.imageRegistry` |
 | `tls.clusterIssuer` | Point cert-manager at an internal ACME (Smallstep, step-ca, Venafi) instead of Let's Encrypt |
 
@@ -1615,7 +1615,7 @@ internal registry, internal ACME — but still has *some* outbound path
 
 **Airgapped builds are out of scope.** Railpack fetches buildpack metadata,
 BuildKit pulls base images, Go/Node/Python toolchains download at build time
-— mirroring all of this reliably is a project unto itself and one that
+: mirroring all of this reliably is a project unto itself and one that
 airgapped teams typically already solve with their existing CI.
 
 The supported airgap path is **image source only**:
@@ -1628,7 +1628,7 @@ The supported airgap path is **image source only**:
 
 What Mortise *does* provide in an airgap: internal-registry image pulls,
 internal CA trust for its own outbound calls (to internal git forges for
-webhooks only — not for cloning, since no `git` source), internal ACME via
+webhooks only: not for cloning, since no `git` source), internal ACME via
 `tls.clusterIssuer`, and the deploy webhook.
 
 What Mortise does *not* provide in an airgap: source-to-image builds. Git
@@ -1640,9 +1640,9 @@ limitation to be lifted later.
 ## 9. Implementation Phases
 
 Phases are ordered by dependency, not by timeline. Each phase leaves the repo
-in a shippable state — nothing half-done carried over.
+in a shippable state: nothing half-done carried over.
 
-### Phase 0 — Foundation
+### Phase 0: Foundation
 
 **Repo bootstrapping:**
 - Go module layout (`cmd/`, `api/`, `controllers/`, `internal/`)
@@ -1660,9 +1660,9 @@ in a shippable state — nothing half-done carried over.
 **Exit criteria:** `make test` and `make test-integration` both pass on a
 near-empty codebase. The harness is real before any product logic is written.
 
-### Phase 1 — Core Operator (image source)
+### Phase 1: Core Operator (image source)
 
-Chosen first because it excludes the build subsystem — the simplest complete
+Chosen first because it excludes the build subsystem: the simplest complete
 path from CRD to running pod.
 
 - App reconcile for `source.type: image`
@@ -1683,7 +1683,7 @@ change replicas → scales; change image → rolls; delete → namespace cleaned
 **Exit criteria:** Paperless-ngx deployable end-to-end from a YAML file via
 `kubectl apply` with no UI.
 
-### Phase 2 — API + UI Skeleton
+### Phase 2: API + UI Skeleton
 
 - REST API with OpenAPI spec
 - Auth: native accounts, JWT, first-user bootstrap via Helm values
@@ -1695,10 +1695,10 @@ change replicas → scales; change image → rolls; delete → namespace cleaned
 **Exit criteria:** deploy a single-container image App (e.g. Paperless-ngx in
 sqlite mode, or any standalone service) entirely through the UI or CLI; no
 YAML visible to the user. Multi-service apps needing bindings (Paperless-ngx
-with Postgres + Redis) land in Phase 3 — this phase validates the CRUD and
+with Postgres + Redis) land in Phase 3: this phase validates the CRUD and
 deploy surface, not the Railway moment.
 
-### Phase 3 — Bindings + Secrets
+### Phase 3: Bindings + Secrets
 
 - `credentials` block on App; bound-App's credentials injected as env in
   binder's pod
@@ -1711,7 +1711,7 @@ deploy surface, not the Railway moment.
 binds to it, DATABASE_URL appears in API's pod env." The Railway moment,
 without builds yet.
 
-### Phase 3.5 — Projects
+### Phase 3.5: Projects
 
 Introduces the top-level grouping concept before Phase 4 layers builds,
 previews, and the rest on top. Landing Projects before Phase 4 avoids
@@ -1721,7 +1721,7 @@ retrofitting the URL scheme, bindings resolver, and UI navigation later.
 - `Project` CRD (cluster-scoped) + controller that reconciles a control
   namespace (`pj-{name}`) plus one env namespace per declared environment
   (`pj-{name}-{env}`) and sets itself as owner on each
-- App controller respects project namespace boundaries (no logic change —
+- App controller respects project namespace boundaries (no logic change.
   Apps are already namespace-scoped; the namespace is now named by the Project)
 - Bindings resolver resolves within the project's env namespace
 - API routes restructured to `/api/projects/{p}/apps/{a}/...` throughout.
@@ -1756,9 +1756,9 @@ Postgres App + a bound API App inside that project → creates a second
 project `staging` → moves (recreates) the app stack there → deletes
 `staging` → everything in it disappears, `default` unaffected.
 
-### Phase 4 — Build System (git source)
+### Phase 4: Build System (git source)
 
-- Git provider CRD + controllers: GitHub (device flow), GitLab, Gitea — per-user token auth
+- Git provider CRD + controllers: GitHub (device flow), GitLab, Gitea: per-user token auth
 - Webhook receiver + HMAC verification
 - Repo clone into temp workspace
 - Dockerfile mode: BuildKit `dockerfile.v0` frontend, submit via Go client
@@ -1776,7 +1776,7 @@ project `staging` → moves (recreates) the app stack there → deletes
 **Exit criteria:** connect a GitHub repo, push, see build logs in UI, pod
 rolls with the new image.
 
-### Phase 5 — Monorepo Support
+### Phase 5: Monorepo Support
 
 - `source.path` sets BuildKit context subdirectory
 - `source.watchPaths` filters rebuilds by changed paths (prefix match, no
@@ -1787,9 +1787,9 @@ rolls with the new image.
 **Exit criteria:** one repo backs two Apps at different subdirectories; a push
 touching only one subdir rebuilds only that App.
 
-### Phase 6 — Preview Environments
+### Phase 6: Preview Environments
 
-- **Project-level toggle** — `ProjectSpec.Preview.Enabled`. No per-App
+- **Project-level toggle**: `ProjectSpec.Preview.Enabled`. No per-App
   opt-in. When enabled, every App in the project participates (§5.8).
 - `PreviewEnvironment` CRD auto-managed by a dedicated controller
 - PR open → for each App in the project with previews enabled,
@@ -1807,7 +1807,7 @@ touching only one subdir rebuilds only that App.
 get a live preview URL in the PR comment, close the PR, preview
 disappears.
 
-### Phase 7 — Polish & v1 Release
+### Phase 7: Polish & v1 Release
 
 - Promote (staging → production, no rebuild)
 - Rollback UI (deploy history browser)
@@ -1822,7 +1822,7 @@ disappears.
 **Exit criteria:** a new user goes from "empty k3s cluster" to "deployed app
 with preview envs" in under 15 minutes using only the UI and CLI.
 
-### Phase 8 — Tenons & Integration Recipes
+### Phase 8: Tenons & Integration Recipes
 
 Tenons are independent projects that consume Mortise's REST API for specific
 workflows or audiences. They live in their own repos, ship as their own Helm
@@ -1831,16 +1831,16 @@ or two reference tenons as living documentation; everything else is
 community- or user-built.
 
 **Reference tenons** (separate repos under `mortise-tenons/`):
-- **cf-for-saas** — customer-managed domains via Cloudflare custom hostnames.
+- **cf-for-saas**: customer-managed domains via Cloudflare custom hostnames.
   Web app that accepts signups, creates Apps in per-customer namespaces, wires
   CF custom hostnames. Canonical example of "host other people's apps."
-- **backup-tenon** — scheduled App backups (PVs + Secrets) to S3/NFS via
+- **backup-tenon**: scheduled App backups (PVs + Secrets) to S3/NFS via
   Velero. Homelab-friendly; replaces a potential core feature.
-- **cost-dashboard** (optional) — watches Apps, aggregates resource usage,
+- **cost-dashboard** (optional): watches Apps, aggregates resource usage,
   attributes cost per App/team. Uses metrics-server or Prometheus if present.
 
 **Integration recipes** (documentation pages in the main docs site, not code):
-- **External CI path** — how to build images in GitHub Actions / GitLab CI /
+- **External CI path**: how to build images in GitHub Actions / GitLab CI /
   Woodpecker / bash / anything, push to any registry, and call the deploy
   webhook. Mortise's built-in BuildKit is an opt-in convenience; teams with
   existing CI or cluster-CPU constraints use this path and skip BuildKit
@@ -1848,32 +1848,32 @@ community- or user-built.
 - **OIDC setup** against Authentik / Keycloak / Okta / Google Workspace
 - **Prometheus + Grafana** via kube-prometheus-stack, using Mortise's
   standard `ServiceMonitor` output
-- **Log aggregation via Loki** — Mortise pods emit stdout logs; Loki
+- **Log aggregation via Loki**: Mortise pods emit stdout logs; Loki
   collects; UI optionally surfaces via a Loki endpoint configured in
   platform settings
 - **External secret managers** (Vault, AWS Secrets Manager) via
-  ExternalSecrets Operator — ESO writes k8s Secrets, Mortise reads them.
+  ExternalSecrets Operator: ESO writes k8s Secrets, Mortise reads them.
   No Mortise-side changes.
-- **Policy enforcement** via OPA/Kyverno — gate Mortise's admission writes
+- **Policy enforcement** via OPA/Kyverno: gate Mortise's admission writes
   with cluster-wide policies
-- **Custom ingress controllers** (Gateway API, Istio, NGINX) — Mortise emits
+- **Custom ingress controllers** (Gateway API, Istio, NGINX): Mortise emits
   standard Ingress resources; the user's chosen controller reconciles them
 - **Backing services** (Postgres via CNPG, Redis via redis-operator, MinIO,
-  Supabase) — users install the upstream project, Mortise Apps bind to
+  Supabase): users install the upstream project, Mortise Apps bind to
   services via Service DNS + Secret refs
-- **Storage sizing guidance** — RWX StorageClass options for homelab vs cloud
+- **Storage sizing guidance**: RWX StorageClass options for homelab vs cloud
 
 **Platform polish within the single binary** (last-mile v1 work):
-- **First-run wizard** — admin setup, platform domain, DNS provider, storage
+- **First-run wizard**: admin setup, platform domain, DNS provider, storage
   class detection/recommendation
-- **Rollback UI** — deploy history browser with one-click rollback (backend
+- **Rollback UI**: deploy history browser with one-click rollback (backend
   already supports)
-- **Promote** — staging → production without rebuild (re-tag the digest)
-- **Custom domains UI** — add CNAME-based custom domains per environment
-- **Metrics in UI** — CPU/memory per pod via `metrics-server`
-- **User/team management UI** — invite flow, role management (API already
+- **Promote**: staging → production without rebuild (re-tag the digest)
+- **Custom domains UI**: add CNAME-based custom domains per environment
+- **Metrics in UI**: CPU/memory per pod via `metrics-server`
+- **User/team management UI**: invite flow, role management (API already
   supports)
-- **Infrastructure bundle** — cert-manager, ExternalDNS, Traefik as optional
+- **Infrastructure bundle**: cert-manager, ExternalDNS, Traefik as optional
   Helm chart dependencies for "one-command install with working TLS/DNS"
 
 **Exit criteria for Phase 8 / full v1:**
@@ -1886,20 +1886,20 @@ community- or user-built.
 
 ### Post-v1
 
-Organized by §6's taxonomy — operator features, integration recipes, deferred
+Organized by §6's taxonomy: operator features, integration recipes, deferred
 items, and community-maintained data. None of these are "addons"; none add a
 new install surface. Order depends on user demand after v1 ships.
 
-**Operator features** (§6.2) — code changes inside the single binary:
+**Operator features** (§6.2): code changes inside the single binary:
 - **`perReplica` volumes / StatefulSet support**
-- **Multi-cluster** — Cluster CRD, bearer-token trust, aggregated UI
-- **`mortise export` CLI** — render the managed resources for airgap inspection
-- **Log UI integration** — if a Loki endpoint is configured, surface logs
+- **Multi-cluster**: Cluster CRD, bearer-token trust, aggregated UI
+- **`mortise export` CLI**: render the managed resources for airgap inspection
+- **Log UI integration**: if a Loki endpoint is configured, surface logs
   in the App view (no bundling of Loki itself)
-- **Cloudflare Tunnel automation** — operator manages Tunnel + DNS for users
+- **Cloudflare Tunnel automation**: operator manages Tunnel + DNS for users
   who opt in
 
-**Integration recipes** (§6.3) — documentation only, no code:
+**Integration recipes** (§6.3): documentation only, no code:
 - OIDC setup against Authentik / Keycloak / Okta / Google / etc.
 - Monitoring via kube-prometheus-stack
 - Log aggregation via Loki
@@ -1914,7 +1914,7 @@ new install surface. Order depends on user demand after v1 ships.
 - `helm` source type
 
 **Community-maintained** (§6.5):
-- App preset repository — data-only CRD templates, not core-team owned
+- App preset repository: data-only CRD templates, not core-team owned
 
 ---
 
@@ -1924,20 +1924,20 @@ new install surface. Order depends on user demand after v1 ships.
    into CRD apiVersions (`mortise.dev/v1alpha1`), Helm chart, CLI binary,
    config path, and the domain for any hosted assets (relay Worker later).
    Pick before tagging v1.
-2. ~~**Operator datastore.**~~ **Resolved — no external datastore in v1.**
+2. ~~**Operator datastore.**~~ **Resolved: no external datastore in v1.**
    The operator is stateless. Deploy history lives in `App` CRD status
    (bounded list per environment). Users and sessions are k8s Secrets in
-   `mortise-system`. Audit events are structured JSON on stdout — the
+   `mortise-system`. Audit events are structured JSON on stdout: the
    user's log aggregation (Loki, CloudWatch, etc.) handles retention and
    querying; Mortise does not store or index them. Build logs stream via
    SSE during the build and are emitted to stdout for collection.
    This removes the PVC requirement, enables multi-replica operator from
    day one (leader election for controllers, stateless API layer), and
    means backup = etcd snapshot. If deep audit querying or analytics
-   becomes a real need post-v1, add an optional Postgres projection —
+   becomes a real need post-v1, add an optional Postgres projection.
    CRD status remains source of truth.
 3. **UI packaging.** Served by the operator binary (embed via `embed.FS`) or
-   separate Deployment? Recommendation: embed — one fewer pod, simpler install.
+   separate Deployment? Recommendation: embed: one fewer pod, simpler install.
 4. **Helm chart distribution.** OCI (ghcr.io) or classic Helm repo? OCI is the
    direction; ghcr.io fits if the source lives on GitHub.
 5. **Minimum supported Kubernetes version.** Propose 1.28+ (matches k3s latest
@@ -1946,14 +1946,14 @@ new install surface. Order depends on user demand after v1 ships.
    in a ConfigMap (§5.11). A project that generates >500 events/day
    will see entries fall off the rail faster than users can read them.
    Defer a richer store (dedicated `ActivityEvent` CRD, sharded
-   ConfigMaps, or a Postgres projection) until real demand — until
+   ConfigMaps, or a Postgres projection) until real demand: until
    then, users who need long-range audit point a log agent at the
    stdout stream, which is already the source of truth. Flag for
    re-evaluation once first large deployment lands.
 
 ---
 
-## 11. Interface Contracts — Two Layers
+## 11. Interface Contracts: Two Layers
 
 There are two contract layers in the codebase, pointing in opposite directions.
 Keeping them straight is the single most important architectural discipline in
@@ -1963,7 +1963,7 @@ the project.
 
 Go interfaces that **Mortise's own code agrees to** when it talks to
 external systems or configurable capabilities. These are **internal
-plumbing, not plug-in APIs** — they exist for testability, for code
+plumbing, not plug-in APIs**: they exist for testability, for code
 clarity, and to keep third-party SDKs from leaking into controller code.
 They are not an extension surface for outside implementers; third-party
 integration happens via Kubernetes primitives (see below), not by
@@ -1984,7 +1984,7 @@ Mortise controller  →  RegistryBackend  →  generic OCI (config-driven)
 Mortise controller  →  IngressProvider  →  generic annotation-driven
 ```
 
-**DNS is annotation-driven — no Go interface.** The `IngressProvider` emits
+**DNS is annotation-driven: no Go interface.** The `IngressProvider` emits
 `external-dns.alpha.kubernetes.io/hostname` on every Ingress; ExternalDNS
 picks it up. Swapping DNS providers (Cloudflare → Route53 → Infoblox) is a
 Helm value change on ExternalDNS, not a code change in Mortise. A
@@ -1994,7 +1994,7 @@ chosen to provide, violating both "no interface without a real v1 impl" and
 
 Notably **absent**: `SecretBackend`. Mortise uses k8s Secrets natively.
 External secret managers (Vault, AWS SM, etc.) are integrated via
-ExternalSecrets Operator — ESO writes a k8s Secret, Mortise reads it.
+ExternalSecrets Operator: ESO writes a k8s Secret, Mortise reads it.
 No Mortise-side contract is crossed. See §5.9.
 
 Also absent: user-app SSO (forward-auth, OIDC client provisioning). Out of
@@ -2003,7 +2003,7 @@ scope for v1 and not a v1 contract.
 **v1 interfaces:**
 
 ```go
-// internal/auth/provider.go — login for Mortise itself
+// internal/auth/provider.go: login for Mortise itself
 type AuthProvider interface {
     Authenticate(ctx context.Context, creds Credentials) (Principal, error)
     Principal(ctx context.Context, session SessionToken) (Principal, error)
@@ -2017,7 +2017,7 @@ type AuthProvider interface {
 type PolicyEngine interface {
     Authorize(ctx context.Context, p Principal, resource Resource, action Action) (bool, error)
 }
-// one in-tree impl: team-scoped RBAC (platform-admin / platform-viewer / team-admin / team-deployer / team-viewer), with grants optionally scoped to specific environments — see §5.10
+// one in-tree impl: team-scoped RBAC (platform-admin / platform-viewer / team-admin / team-deployer / team-viewer), with grants optionally scoped to specific environments: see §5.10
 
 // internal/build/client.go
 type BuildClient interface {
@@ -2041,7 +2041,7 @@ type IngressProvider interface {
 }
 // one in-tree impl: generic annotation-driven (config map per controller family)
 
-// internal/git/api.go — forge-specific API calls
+// internal/git/api.go: forge-specific API calls
 type GitAPI interface {
     RegisterWebhook(ctx context.Context, repo string, cfg WebhookConfig) error
     PostCommitStatus(ctx context.Context, repo, sha string, status CommitStatus) error
@@ -2050,7 +2050,7 @@ type GitAPI interface {
 }
 // three in-tree impls: GitHub, GitLab, Gitea
 
-// internal/git/client.go — git protocol (single impl, all forges)
+// internal/git/client.go: git protocol (single impl, all forges)
 type GitClient interface {
     Clone(ctx context.Context, repo, ref, dest string, creds GitCredentials) error
     Fetch(ctx context.Context, dir, ref string) error
@@ -2064,7 +2064,7 @@ identical across forges (one impl). Webhook registration and commit status
 are REST calls that differ per forge. Split lets the forge fakes stay tiny
 while the single `GitClient` impl is shared.
 
-**Why these interfaces exist** — in order of importance:
+**Why these interfaces exist**: in order of importance:
 
 1. **Test seams.** Controllers take interfaces via constructor injection;
    unit tests pass in in-memory fakes. No network, no flake, no credentials,
@@ -2073,7 +2073,7 @@ while the single `GitClient` impl is shared.
    touches one file, not fifty.
 3. **Config-driven swapping within the bounded impl set.** `IngressProvider`
    picking "nginx vs traefik" is flipping a config value that selects a
-   different annotation map — still one Go impl, different data.
+   different annotation map: still one Go impl, different data.
 
 **Why these are not extension points:** with ~10 impls total and ~1 realistic
 impl per contract, a plug-in protocol would be engineering for imagined
@@ -2105,13 +2105,13 @@ benefits from all of it without reinventing any of it.
 ### 11.2 Inward Contracts (CRD + REST API)
 
 Contracts that **external callers agree to** when they talk to Mortise.
-These are the public surface — versioned with semver, documented, and not
+These are the public surface: versioned with semver, documented, and not
 broken lightly.
 
-- **`App` CRD and related CRDs** — the YAML shape users write (directly or
+- **`App` CRD and related CRDs**: the YAML shape users write (directly or
   via UI/CLI that writes it for them). Versioned as `mortise.dev/v1alpha1`
   today, moving to `v1beta1` and `v1` over time.
-- **REST API** — `POST /api/deploy`, `POST /api/secrets`, etc. Used by the
+- **REST API**: `POST /api/deploy`, `POST /api/secrets`, etc. Used by the
   UI, the CLI, and external CI systems via the deploy webhook. Full OpenAPI
   spec published.
 
@@ -2145,21 +2145,21 @@ Two layers, two directions, two sets of rules:
 
 | Layer | Who sees it | Freedom to change |
 |---|---|---|
-| Inward (CRD + REST API) | External users, pods, CI | Low — breaking changes require version bumps and migration |
-| Outward (interfaces) | Mortise's own code only | High — refactor freely; implementations can be swapped without touching controllers |
+| Inward (CRD + REST API) | External users, pods, CI | Low: breaking changes require version bumps and migration |
+| Outward (interfaces) | Mortise's own code only | High: refactor freely; implementations can be swapped without touching controllers |
 
 ---
 
 ## 12. GitOps Coexistence (Argo CD / Flux)
 
 Mortise is not a replacement for Argo CD or Flux and does not compete with
-them — they operate at different layers. There is one supported coexistence
+them: they operate at different layers. There is one supported coexistence
 pattern; anything beyond it is user-at-own-risk.
 
 **The layer split:**
 - **Platform team owns the cluster and Mortise itself via GitOps.** Helm
   releases for Mortise, cert-manager, Traefik, ExternalDNS, ingress classes,
-  node pools, the Mortise umbrella chart values — all in Argo/Flux.
+  node pools, the Mortise umbrella chart values: all in Argo/Flux.
 - **Dev teams own `App` CRDs via Mortise's UI/CLI/API.** App CRDs live in
   etcd, not git. The Railway UX is the whole point; GitOps'ing the
   user-authored surface would give it back.
@@ -2172,9 +2172,9 @@ pattern; anything beyond it is user-at-own-risk.
 | `PlatformConfig` CRD (domain, default SC) | **Yes, recommended** | Cluster-wide, rarely changes |
 | `GitProvider` CRDs | **Yes, recommended** | `clientID` is inline; optional `clientSecretRef`/`webhookSecretRef` via ESO / sealed-secrets / SOPS |
 | `App` CRDs | **No** | Authored through Mortise; live in etcd |
-| `PreviewEnvironment` CRDs | **No — operator-created** | Lifecycle is PR-driven |
-| Deployments / Services / Ingresses | **No — operator-created** | Mortise owns these |
-| Secrets (user-visible) | **No — written via Mortise API** | Write-only UX, rotation |
+| `PreviewEnvironment` CRDs | **No: operator-created** | Lifecycle is PR-driven |
+| Deployments / Services / Ingresses | **No: operator-created** | Mortise owns these |
+| Secrets (user-visible) | **No: written via Mortise API** | Write-only UX, rotation |
 
 **Flux-specific:** identical. Flux users substitute `Kustomization` or
 `HelmRelease` for `Application`. Everything else is the same.
@@ -2188,7 +2188,7 @@ there is no drift to manage.
 Flux-managed `App` CRDs. Users who check App YAML into git and sync it with
 Argo may make it work, but the operator is not designed to avoid writing to
 `spec.*` on those resources, and a successful build will patch
-`spec.environments[].image` — which Argo will revert on the next sync,
+`spec.environments[].image`: which Argo will revert on the next sync,
 causing the pod to flap. Revisit if user demand justifies the extra
 machinery (a companion `AppDeployment` CR, `managed-by` annotation
 handling, read-only UI mode); for now, pick one tool or the other per App.
@@ -2202,16 +2202,16 @@ handling, read-only UI mode); for now, pick one tool or the other per App.
 - Not a service mesh (no Istio, no mTLS)
 - Not a CI system for users' apps (deploy webhook integrates with whatever CI
   they have)
-- Not a replacement for Argo CD / Flux at the platform layer — see §12
+- Not a replacement for Argo CD / Flux at the platform layer: see §12
 - **Not an airgapped build system.** Source-to-image builds require outbound
   network for Railpack metadata, BuildKit base images, and language
   toolchains. Airgapped clusters use the image source + deploy webhook
   path with their own internal CI; see §8.5.
 - Optimized for 4–8GB clusters as a baseline; much heavier once the user
   also runs monitoring / log aggregation / etc. alongside (which they install
-  themselves — see §6.3)
+  themselves: see §6.3)
 - **Limited workload-kind surface.** v1 supports long-running services
-  (Deployment) and scheduled jobs (CronJob via `kind: cron` — see §5.8a).
+  (Deployment) and scheduled jobs (CronJob via `kind: cron`: see §5.8a).
   One-off Jobs, StatefulSets, and DaemonSets are not supported. `perReplica`
   volumes and StatefulSet-per-App are post-v1 (§6.2).
 - **Not a GPU / specialized-scheduling platform.** App CRD has no
@@ -2225,7 +2225,7 @@ handling, read-only UI mode); for now, pick one tool or the other per App.
 - **Not a queue / async-job runner.** No background workers, no job queues,
   no scheduled tasks beyond what users run themselves inside their container.
 - **Not a hard-isolation multi-tenant platform.** v1 has team-scoped RBAC
-  (five roles plus env-scopable grants — see §5.10) but namespace
+  (five roles plus env-scopable grants: see §5.10) but namespace
   isolation is soft (no NetworkPolicy generation, no ResourceQuota per
   team). Shared-cluster-with-untrusted-users scenarios need additional
   hardening beyond what v1 provides.
