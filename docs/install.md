@@ -12,6 +12,10 @@ you get a web UI, REST API, and CLI for deploying apps.
 Don't have a cluster yet? See [Creating a cluster](./cluster-setup.md) for
 a quick guide to getting one running on your machine or server.
 
+**Just want it running?** `curl -fsSL https://mortise.me/install | bash` does
+k3s/k3d + Helm install + port-forward in one command. This doc covers the
+manual Helm flow for existing clusters.
+
 ## Two charts
 
 Mortise publishes two Helm charts:

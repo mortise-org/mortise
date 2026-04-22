@@ -7,8 +7,8 @@ Single-command installer that takes a bare machine to a running Mortise PaaS.
 ### Usage
 
 ```bash
-# Remote (once published)
-curl -fsSL https://mortise.dev/install | sh
+# Remote
+curl -fsSL https://mortise.me/install | bash
 
 # Local — Linux
 sudo bash scripts/install.sh

@@ -2,44 +2,38 @@
 
 Go from nothing to a deployed app in under 10 minutes.
 
-## 1. Get a cluster
+## 1. Install Mortise
 
-If you already have a Kubernetes cluster and `kubectl get nodes` shows it
-running, skip to step 2.
+One command — installs k3s (or k3d on macOS + Docker Desktop), Helm, and
+the full stack, then port-forwards the UI to `localhost:8090`:
 
-**Fastest path (local):**
 ```bash
-# Install k3d (requires Docker)
-curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | bash
-k3d cluster create mortise
+curl -fsSL https://mortise.me/install | bash
 ```
 
-See [Creating a cluster](./cluster-setup.md) for other options (k3s on a
-server, EKS, GKE, AKS).
-
-## 2. Install Mortise
+**Already have a cluster?** Skip the installer and helm install directly:
 
 ```bash
 helm repo add mortise https://mortise-org.github.io/mortise
 helm repo update
 helm install mortise mortise/mortise \
   --namespace mortise-system --create-namespace
-```
-
-## 3. Open the UI
-
-```bash
 kubectl port-forward -n mortise-system svc/mortise 8090:80
 ```
 
+See [Creating a cluster](./cluster-setup.md) if you need help getting a
+cluster (k3s on a server, EKS, GKE, AKS).
+
+## 2. Open the UI
+
 Open **http://localhost:8090**.
 
-## 4. Create your admin account
+## 3. Create your admin account
 
 Enter an email and password. You'll see a getting-started checklist —
 everything on it is optional. Click through to the dashboard.
 
-## 5. Deploy your first app
+## 4. Deploy your first app
 
 Click into the **default** project, then click **Add**.
 
@@ -53,7 +47,7 @@ database with auto-generated credentials.
 provider yet, you'll see a prompt to do so in Settings — takes about
 a minute with a personal access token.
 
-## 6. Access your app
+## 5. Access your app
 
 Click the app on the canvas to open the drawer. Click **Open** — Mortise
 proxies to your running app through the API. No domain configuration needed.

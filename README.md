@@ -8,7 +8,16 @@ service-to-service bindings. Kubernetes is fully abstracted away from the user.
 
 ## Quick Install
 
-Have a Kubernetes cluster? Install Mortise with Helm:
+Zero to running PaaS in one command (Linux or macOS, Docker Desktop required on macOS):
+
+```bash
+curl -fsSL https://mortise.me/install | bash
+```
+
+This installs k3s (or k3d on macOS), Helm, and the full Mortise stack from the
+published chart, then port-forwards the UI to `http://localhost:8090`.
+
+### Already have a cluster?
 
 ```bash
 helm repo add mortise https://mortise-org.github.io/mortise
@@ -17,8 +26,8 @@ helm install mortise mortise/mortise \
   --namespace mortise-system --create-namespace
 ```
 
-This installs everything: the operator, Traefik, cert-manager, BuildKit, and
-an OCI registry. If you already have an ingress controller and cert-manager,
+That pulls the batteries-included chart: operator, Traefik, cert-manager,
+BuildKit, OCI registry. If you already run your own ingress + cert-manager,
 use the operator-only chart instead:
 
 ```bash
@@ -26,17 +35,11 @@ helm install mortise mortise/mortise-core \
   --namespace mortise-system --create-namespace
 ```
 
-Access the UI:
-
-```bash
-kubectl port-forward -n mortise-system svc/mortise 8090:80
-```
-
-Open **http://localhost:8090**, create your admin account, and deploy your
+Access the UI with `kubectl port-forward -n mortise-system svc/mortise 8090:80`,
+open **http://localhost:8090**, create your admin account, and deploy your
 first app.
 
-No cluster yet? See the [Quickstart](docs/quickstart.md) for a full
-walkthrough from zero.
+More detail: [Quickstart](docs/quickstart.md) · [Install](docs/install.md).
 
 ## What's Included
 

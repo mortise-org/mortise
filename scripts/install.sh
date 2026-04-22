@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # quick-mortise: single-command installer for the Mortise PaaS
 # Usage:
-#   curl -fsSL https://mortise.dev/install | sh
-#   # or, until the mortise.dev DNS is wired:
+#   curl -fsSL https://mortise.me/install | bash
+#   # (or, bypassing the short URL, direct from the repo:)
 #   curl -fsSL https://raw.githubusercontent.com/mortise-org/mortise/main/scripts/install.sh | bash
 #
 # Installs k3s (or k3d on macOS), Helm, and runs `helm install mortise`.
