@@ -66,7 +66,7 @@ func (c *MetricsCollector) collect(ctx context.Context) {
 		}
 
 		for _, pm := range podMetrics.Items {
-			appName := pm.Labels["mortise.dev/app-name"]
+			appName := pm.Labels["app.kubernetes.io/name"]
 			envName := pm.Labels["mortise.dev/environment"]
 			if appName == "" {
 				continue

@@ -66,7 +66,7 @@ func (c *LogCollector) sync(ctx context.Context) {
 		}
 
 		pods, err := c.clientset.CoreV1().Pods(ns.Name).List(ctx, metav1.ListOptions{
-			LabelSelector: "mortise.dev/app-name",
+			LabelSelector: "app.kubernetes.io/name",
 		})
 		if err != nil {
 			c.log.Warn("failed to list pods", "namespace", ns.Name, "error", err)
@@ -109,7 +109,7 @@ func (c *LogCollector) startTailer(ctx context.Context, namespace string, pod *c
 	c.tailerCount++
 	c.mu.Unlock()
 
-	appName := pod.Labels["mortise.dev/app-name"]
+	appName := pod.Labels["app.kubernetes.io/name"]
 	envName := pod.Labels["mortise.dev/environment"]
 
 	go c.tailPod(tailCtx, namespace, pod.Name, appName, envName)
