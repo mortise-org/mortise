@@ -1,6 +1,6 @@
 image:
-  repository: mortise
-  tag: dev
+  repository: ghcr.io/mortise-org/mortise
+  tag: 0.1.0
   pullPolicy: IfNotPresent
 
 replicaCount: 1

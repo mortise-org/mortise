@@ -205,6 +205,10 @@ install_mortise() {
         storage_flags="--set registry.storage=emptyDir --set buildkit.storage=emptyDir"
     fi
 
+    # Dev flow (repo cloned): use the local chart and build a dev image locally
+    # so uncommitted source changes are picked up. The chart's default image
+    # (ghcr.io/mortise-org/mortise:VERSION) is overridden with mortise:dev below.
+    local dev_image_flags=""
     if [ -f "${local_chart}/Chart.yaml" ]; then
         info "Using local chart at ${local_chart}"
         chart_ref="$local_chart"
@@ -227,11 +231,13 @@ install_mortise() {
                     k3d image import mortise:dev -c "$k3d_cluster" 2>/dev/null || true
                 fi
             fi
+            dev_image_flags="--set mortise-core.image.repository=mortise --set mortise-core.image.tag=dev"
         fi
     else
+        # Remote flow (curl|bash): chart pulls a published image from ghcr.io.
         info "Adding Mortise Helm repository..."
-        helm repo add mortise "$MORTISE_CHART_REPO" 2>/dev/null || true
-        helm repo update mortise 2>/dev/null || true
+        helm repo add mortise "$MORTISE_CHART_REPO" --force-update >/dev/null
+        helm repo update mortise >/dev/null
     fi
 
     local chart_version_flag=""
@@ -243,10 +249,10 @@ install_mortise() {
     # shellcheck disable=SC2086
     helm upgrade --install mortise "$chart_ref" \
         --namespace "$MORTISE_NAMESPACE" --create-namespace \
-        --set mortise-core.image.pullPolicy=IfNotPresent \
         --set platformConfig.buildPlatform="${BUILD_PLATFORM}" \
         $traefik_flag \
         $storage_flags \
+        $dev_image_flags \
         --wait --timeout 300s \
         $chart_version_flag
 
