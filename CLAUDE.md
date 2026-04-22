@@ -45,7 +45,7 @@ CI owns them.
 - **UI:** SvelteKit + TypeScript (embedded in operator binary via embed.FS)
 - **CLI:** Go (cobra)
 - **Helm charts:** charts/mortise/ (batteries-included umbrella), charts/mortise-core/ (operator only)
-- **CRDs:** Project, App, PlatformConfig, GitProvider, PreviewEnvironment, Team (v2 forward-compat stub)
+- **CRDs:** Project, App, PlatformConfig, GitProvider, PreviewEnvironment, ProjectMember
 - **Bundled tools (in umbrella chart):** BuildKit (image builds), OCI registry, Traefik
   (ingress), cert-manager (TLS)
 
