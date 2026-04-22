@@ -3,12 +3,36 @@ entries:
   mortise:
   - apiVersion: v2
     appVersion: 0.1.0
-    created: "2026-04-21T08:24:38.254708-07:00"
-    description: Self-hosted Railway-style deploy platform for Kubernetes
-    digest: eb6ab1195c56e3ea3a0e3ad94e61d8bfd3074fa22c1b1dc67381ed5deb424858
+    created: "2026-04-21T22:00:39.136924-07:00"
+    dependencies:
+    - name: mortise-core
+      repository: file://../mortise-core
+      version: 0.1.0
+    - condition: traefik.enabled
+      name: traefik
+      repository: https://traefik.github.io/charts
+      version: 34.3.0
+    - condition: cert-manager.enabled
+      name: cert-manager
+      repository: https://charts.jetstack.io
+      version: v1.17.1
+    description: Self-hosted Railway-style deploy platform for Kubernetes (batteries
+      included)
+    digest: c3a0bdf3f2f8e99f2fe574975f95e8fd2da583a2587d3c3aba718d262485b408
     name: mortise
     type: application
     urls:
-    - https://mc-meesh.github.io/mortise/mortise-0.1.0.tgz
+    - https://mortise-org.github.io/mortise/mortise-0.1.0.tgz
     version: 0.1.0
-generated: "2026-04-21T08:24:38.253903-07:00"
+  mortise-core:
+  - apiVersion: v2
+    appVersion: 0.1.0
+    created: "2026-04-21T22:00:39.137259-07:00"
+    description: Mortise operator — the controller, API, CRDs, and RBAC
+    digest: 2c39d23af3d7391352412c34f503b653025eb4bbd2bb851c3af2af6d008b7a78
+    name: mortise-core
+    type: application
+    urls:
+    - https://mortise-org.github.io/mortise/mortise-core-0.1.0.tgz
+    version: 0.1.0
+generated: "2026-04-21T22:00:39.128326-07:00"
