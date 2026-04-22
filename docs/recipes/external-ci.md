@@ -21,7 +21,7 @@ tell Mortise to deploy them.
 ## Webhook endpoint
 
 ```
-POST https://<mortise-domain>/api/v1/projects/{project}/apps/{app}/deploy
+POST https://<mortise-domain>/api/projects/{project}/apps/{app}/deploy
 Authorization: Bearer <deploy-token>
 Content-Type: application/json
 
@@ -65,7 +65,7 @@ jobs:
             -H "Authorization: Bearer ${{ secrets.MORTISE_DEPLOY_TOKEN }}" \
             -H "Content-Type: application/json" \
             -d '{"image": "ghcr.io/${{ github.repository }}:sha-${{ github.sha }}"}' \
-            "${{ vars.MORTISE_URL }}/api/v1/projects/${{ vars.PROJECT }}/apps/${{ vars.APP }}/deploy"
+            "${{ vars.MORTISE_URL }}/api/projects/${{ vars.PROJECT }}/apps/${{ vars.APP }}/deploy"
 ```
 
 ## GitLab CI example
@@ -94,7 +94,7 @@ deploy:
         -H "Authorization: Bearer $MORTISE_DEPLOY_TOKEN" \
         -H "Content-Type: application/json" \
         -d "{\"image\": \"$CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA\"}" \
-        "$MORTISE_URL/api/v1/projects/$PROJECT/apps/$APP/deploy"
+        "$MORTISE_URL/api/projects/$PROJECT/apps/$APP/deploy"
 ```
 
 ## Any CI system
@@ -108,5 +108,5 @@ No Mortise-specific tooling required.
 
 ## Further reading
 
-- [Mortise deploy tokens](../api/deploy-tokens.md)
+- [API endpoints](../api-endpoints.md)
 - [App source types](../../SPEC.md) -- `source.type: image`

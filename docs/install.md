@@ -177,15 +177,15 @@ spec:
   domain: apps.example.com
   registry:
     url: https://ghcr.io/my-org
-    pullSecretRef:
-      name: ghcr-pull
+    pullSecretName: ghcr-pull
   build:
-    buildkitAddr: tcp://buildkit.mortise-build.svc:1234
+    buildkitAddr: tcp://buildkitd.mortise-deps.svc:1234
   tls:
     certManagerClusterIssuer: letsencrypt-prod
-  ingress:
-    className: nginx
 ```
+
+If you need a non-default IngressClass for App Ingresses, set it on the
+operator (`mortise-core.operator.ingressClassName`), not in PlatformConfig.
 
 A step-by-step BYO walkthrough is
 [tracked in #86](https://github.com/mortise-org/mortise/issues/86).

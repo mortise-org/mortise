@@ -36,8 +36,11 @@ helm install mortise mortise/mortise \
 ```
 
 `mortise` is the batteries-included chart: operator + Traefik + cert-manager
-+ BuildKit + OCI registry. For operator-only (BYO ingress / cert-manager /
-registry / buildkit), use `mortise/mortise-core` instead.
++ BuildKit + OCI registry. Traefik is a default dependency, not a runtime
+hard requirement: you can disable it and use any ingress controller by setting
+`traefik.enabled=false` and `mortise-core.operator.ingressClassName=<class>`.
+For operator-only (BYO ingress / cert-manager / registry / buildkit), use
+`mortise/mortise-core` instead.
 
 Full flow with prereqs, toggles, upgrade, and uninstall:
 **[docs/install.md](docs/install.md)**.
@@ -92,6 +95,10 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for system diagrams.
 | [Install](docs/install.md) | Helm install, values reference, uninstall |
 | [Cluster setup](docs/cluster-setup.md) | Getting a k8s cluster running (k3d, k3s, EKS, GKE, AKS) |
 | [Configuration](docs/configuration.md) | Domain, git providers, HTTPS, storage, environments |
+| [API quickstart](docs/api-quickstart.md) | End-to-end API workflow with curl |
+| [API endpoints](docs/api-endpoints.md) | Endpoint-by-endpoint implementation reference |
+| [OpenAPI spec](docs/openapi.yaml) | Machine-readable OpenAPI 3.0 spec |
+| [Systems overview](docs/systems-overview.md) | Runtime architecture, controllers, and reconciliation |
 
 **For contributors:**
 

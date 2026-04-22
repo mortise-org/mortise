@@ -653,7 +653,7 @@ Flows are ordered roughly by frequency, not by onboarding sequence.
 ### 3.1 Onboarding — first-run admin wizard
 
 **Goal.** Bring a freshly-installed Mortise to the point where an admin
-can log in and a `default` Project exists.
+can log in and create the first project.
 
 **Entry points.** Fresh install → GET `/` → redirect to `/setup`.
 
@@ -670,13 +670,12 @@ can log in and a `default` Project exists.
 
 ### 3.2 Login
 
-**Goal.** Authenticate an existing user (native or OIDC).
+**Goal.** Authenticate an existing user (native auth).
 
 **Entry points.** `/login`, or any authed route when the JWT is absent/expired.
 
 **Screens.**
 1. Native — email + password.
-2. OIDC (when `PlatformConfig.auth.mode = oidc`) — "Continue with {provider}" button redirects to IdP.
 
 ### 3.3 Project list (dashboard)
 
@@ -685,14 +684,14 @@ can log in and a `default` Project exists.
 **Entry points.** `/` (root, authed).
 
 **Screens.** Reference: `dashboard.png`.
-1. Header: "Projects" title + "+ New" button (admin only).
+1. Header: "Projects" title + "+ New" button (shown to users with project-create permission).
 2. Sort-by dropdown + grid/list toggle (icon pair right side).
 3. Project card: name (bold), service-icon preview chips (Postgres, GitHub
    linked-repo), status footer ("production · 2/2 services online").
 4. **No Trial / billing banner** (strip from Railway reference — self-hosted).
 
-**States.** Empty: should never happen (default project is seeded on
-first-run setup — §12.18).
+**States.** Empty: valid. On a fresh install, users may have zero projects
+until they create one.
 
 **Mortise divergence.** Railway's dashboard also shows recent activity
 across all projects; Mortise may defer that. §12.1. Strip workspace
@@ -701,14 +700,13 @@ Settings in the left rail.
 
 ### 3.4 Create project
 
-**Goal.** Admin creates a new project.
+**Goal.** A user with project-create permission creates a new project.
 
 **Entry points.** Dashboard "New Project" button. `/projects/new`.
 
 **Screens.**
-1. Name (DNS-1123, ≤55 chars) + description.
-2. Advanced (collapsed): `namespaceOverride`, `adoptExistingNamespace`.
-3. Submit → POST `/api/projects` → land on project workspace.
+1. Name (DNS-1123, ≤30 chars) + description.
+2. Submit → POST `/api/projects` → land on project workspace.
 
 **States.** Validation errors inline (name collision = 409, bad name = 400, non-admin = 403).
 
@@ -779,7 +777,7 @@ service, or a template.
    - **Empty App** (blank scaffold for advanced users)
 2. **Configure pane** (replaces the picker panel in the same modal
    on selection). Source-specific fields below. Common footer: app
-   **name** (auto-derived where possible, editable; DNS-1123, ≤55 chars),
+   **name** (auto-derived where possible, editable; DNS-1123, ≤53 chars),
    **kind** selector (Service / Cron — appears for Git and Image only;
    External is always Service), **environment** picker (default
    `production`). Cron kind replaces replicas/domain fields with a

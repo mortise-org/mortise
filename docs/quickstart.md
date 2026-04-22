@@ -22,9 +22,9 @@ Enter an email and password on the first-run screen. You'll land on a
 getting-started checklist. Skip it if you want; nothing on it is required
 to deploy an app.
 
-## 3. Deploy your first app
+## 3. Create a project, then deploy your first app
 
-Click into the **default** project, then click **Add**.
+Click **New Project**, enter a name, open that project, then click **Add**.
 
 **Image deploy (simplest path):** Pick "Docker Image", enter `nginx:1.27`,
 name it `web`, click Create. Your app is running in ~10 seconds.
@@ -75,4 +75,4 @@ that, set up backups:
 - [Configuration](./configuration.md): domain, git providers, HTTPS, storage
 - [External CI deploys](./recipes/external-ci.md): deploy from GitHub Actions or any CI
 - [Cloudflare Tunnel](./recipes/cloudflare-tunnel.md): expose without a public IP
-- [OIDC / SSO](./recipes/oidc.md): Authentik, Keycloak, Okta, Google
+- [Auth status](./recipes/oidc.md): current authentication support and roadmap note

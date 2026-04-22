@@ -40,12 +40,12 @@ device flow routes moved to `/api/auth/git/{provider}/...`; poll endpoint requir
 | 1: Core operator (image source) | §7.2        | **Done**         | Deployment / Service / Ingress / PVC / ServiceAccount reconciliation works for `source.type: image` and `source.type: git` (git builds asynchronously with a 30-min timeout). Ingress honours `environments[].annotations` passthrough (§5.2a), `environments[].tls.{secretName,clusterIssuer}` overrides (§5.6), `environments[].customDomains` (multi-host rules + TLS), and `IngressProvider`-driven annotations (`AnnotationProvider`: ExternalDNS hostname + cert-manager cluster-issuer). `ingressClassName` configurable via `MORTISE_INGRESS_CLASS` env var. ServiceAccount per App carries `imagePullSecrets` from `RegistryBackend.PullSecretRef()`. |
 | 2: API + UI skeleton            | §7.3        | **Done**         | Auth, project CRUD, app CRUD, secrets CRUD, deploy webhook, SSE logs, SvelteKit UI. |
 | 3: Bindings + secrets           | §7.4        | **Partial**      | Resolver writes env vars; `{app}-credentials` Secret materialised (Flavor A, §5.5a) with sha256 pod-template annotation. Deploy tokens landed: `mrt_` prefixed, per-app+env scoped, hashed k8s Secrets, deploy webhook accepts both JWT and deploy token. Env management surface landed (§5.9a): GET/PUT/PATCH/import + `mortise.dev/env-hash` + CLI. Missing: secret rotation endpoint. |
-| 3.5: Projects                   | §5 / §5.10  | **Done**         | `Project` CRD + controller + REST API + CLI + UI routes + default-project seeding all landed. `spec.namespaceOverride` and admin-only `spec.adoptExistingNamespace` (spec §5.0) are implemented: controller resolves the target namespace name, enforces cross-Project uniqueness (`NamespaceConflict`), surfaces refusals via the `NamespaceReady` condition (`NamespaceAlreadyExists` / `NamespaceOwnedByAnotherProject`), and takes the adoption path only when explicitly opted in. |
+| 3.5: Projects                   | §5 / §5.10  | **Done**         | `Project` CRD + controller + REST API + CLI + UI routes landed. Control namespace naming is fixed to `pj-{project}` with env namespaces `pj-{project}-{env}`. No default-project seeding. Project-level access control uses `ProjectMember` (owner/developer/viewer). |
 | 4: Build system (git source)    | §7.5        | **Done**         | All stacks wired end-to-end: webhook patches `mortise.dev/revision` annotation → App reconciler clones + builds + deploys. Operator entrypoint reads config from `PlatformConfig` (env-var fallback for first-boot). Builds run asynchronously in background goroutines; the reconciler returns `Building` immediately and polls on requeue. |
 | 5: Monorepo support             | §7.6        | **Done**         | `source.path` plumbs into BuildKit context; `source.watchPaths` gates webhook rebuilds (prefix match). UI build grouping deferred. |
 | 6: Preview environments        | §7.7        | **Done**         | `PreviewEnvironment` CRD with real types (PullRequestRef, PreviewPhase, TTL, domain). Controller reconciles Deployment + Service + Ingress with owner references; async build via buildTrackerStore (same pattern as App controller); TTL expiry auto-deletes. Webhook handler parses PR events (opened/synchronize/closed) for GitHub, GitLab, Gitea; creates/updates/deletes PreviewEnvironments with staging inheritance + preview overrides. Domain template resolution (`{number}`, `{app}`). Commit status posted on PR SHA. |
-| 7: Polish & v1                  | §7.8        | **Partial**      | Rollback + promote full-stack (API, CLI, UI). Deploy tokens + env management surface (§5.9a) full-stack. Custom domains API/CLI/UI. First-run wizard (4-step). PlatformConfig PATCH API. `spec.network.port`. Repos API (`ListRepos`/`ListBranches`). Railway-style new-app page. **Git auth consolidation** (Issue #29): GitProvider CRD simplified (`spec.oauth` → `spec.clientID` + optional `spec.clientSecretRef`), device flow as primary auth, per-user token storage, `providerRef` required on git-source Apps, PlatformConfig auto-creates default GitHub GitProvider, `ErrAuthFailed` sentinel. **GitHub App Manifest Flow** (`POST /api/github-app/manifest`, callback, `GitHubAppAPI` with JWT + installation tokens, CRD `spec.mode`/`spec.githubApp`). `sharedVars` (§5.8b). Cron apps `kind: cron` with CronJob reconciliation (§5.8a). `source.type: external` with ExternalName Service + Ingress + bindings resolver (§5.1). **Project-scoped RBAC** (Issue #85): 3 platform roles (admin/member/viewer), 3 project roles (owner/developer/viewer), ProjectMember CRD, restricted environments, project-scoped deploy tokens, git token fallback to project members, admin user management API+UI, project member management API+UI. Team CRD deleted. Missing: metrics-server UI. |
-| 8: Tenons & integration recipes | §7.9 / §13  | **Partial**      | Helm chart bundles Traefik/cert-manager/ExternalDNS/Zot as optional deps. 6 integration recipe docs in `docs/recipes/`. Extensions page in UI. Missing: actual reference tenon projects (cf-for-saas, backup-tenon) that spec §9 Phase 8 calls for. |
+| 7: Polish & v1                  | §7.8        | **Partial**      | Rollback + promote full-stack (API, CLI, UI). Deploy tokens + env management surface (§5.9a) full-stack. Custom domains API/CLI/UI. First-run wizard (4-step). PlatformConfig PATCH API. `spec.network.port`. Repos API (`ListRepos`/`ListBranches`/`GetRepoTree`). Git auth consolidation: device flow routes under `/api/auth/git/{provider}/...`, per-user token storage, `providerRef` on git-source Apps, default GitProvider bootstrap support. `sharedVars` (§5.8b). Cron apps `kind: cron` with CronJob reconciliation (§5.8a). `source.type: external` with ExternalName Service + Ingress + bindings resolver (§5.1). **Project-scoped RBAC** (Issue #85): 3 platform roles (admin/member/viewer), 3 project roles (owner/developer/viewer), ProjectMember CRD, restricted environments, project-scoped deploy tokens, git token fallback to project members, admin user management API+UI, project member management API+UI. Team CRD deleted. Missing: metrics-server UI. |
+| 8: Tenons & integration recipes | §7.9 / §13  | **Partial**      | Helm chart bundles Traefik/cert-manager/metrics-server as optional deps, plus in-chart registry/buildkit/observer templates. ExternalDNS is not bundled (annotation integration only). 6 integration recipe docs in `docs/recipes/`. Extensions page in UI. Missing: actual reference tenon projects (cf-for-saas, backup-tenon) that spec §9 Phase 8 calls for. |
 
 ### Interface implementation coverage
 
@@ -312,14 +312,14 @@ Missing:
   `mortise.dev/project-finalizer`; finalizer cascades namespace teardown so
   apps GC with the project.
 - REST: `internal/api/projects.go` with DNS-1123 validation,
-  `maxProjectNameLen = 55`, admin-only create/delete.
+  `maxProjectNameLen = 30`.
 - REST resolver: `resolveProject` at
   `internal/api/projects.go:179` is called by every nested app/secret/log/
   deploy handler.
 - CLI: `cmd/cli/project.go` + `current_project` tracked in CLI config.
 - UI: routes under `ui/src/routes/projects/`.
-- First-run seeds a `default` project (`internal/api/auth.go`
-  `ensureDefaultProject`).
+- First-run setup does not seed a default project; users create the first
+  project explicitly.
 
 ### Phase 4: Build system (git source): **Done**
 
@@ -832,11 +832,11 @@ Missing:
   PlatformConfig, and the mortise-deps namespace.
 - `charts/mortise/values.yaml` exposes toggles for all bundled components
   with sensible defaults (cert-manager CRDs auto-installed, BuildKit
-  privileged by default, registry uses emptyDir).
+  privileged by default, registry uses PVC by default).
 - `scripts/install.sh` is now thin: k3s/k3d + Helm + `helm install mortise`.
   The chart handles all infrastructure.
 - Vendored dependency charts gitignored (`charts/mortise/charts/`).
-- Integration recipe docs in `docs/recipes/`: external-ci, oidc,
+- Integration recipe docs in `docs/recipes/`: external-ci, authentication status,
   monitoring, external-secrets, backup, cloudflare-tunnel.
 - UI Extensions page (`ui/src/routes/extensions/+page.svelte`) with
   categorized cards (Infrastructure, Security, Tenons) and nav link in

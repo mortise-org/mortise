@@ -145,47 +145,25 @@ collisions with system namespaces (`default`, `kube-system`,
 `mortise-system`). Users do not see this prefix in day-to-day use; it is
 surfaced only in CLI/debug output.
 
-**Overriding the derived name.** Two optional spec fields let users opt out
-of `pj-{name}`:
-
-- `spec.namespaceOverride: my-namespace`: use this name as the control
-  namespace instead of `pj-{name}` (env namespaces still derive from it
-  as `{override}-{env}`). The controller validates DNS-1123 and enforces
-  cluster-wide uniqueness across Projects (two Projects cannot target the
-  same namespace). Use cases: match an existing corporate naming
-  convention (`corp-team-acme-prod`), migrate an existing namespace under
-  Mortise management, keep the short name.
-- `spec.adoptExistingNamespace: true`: **admin-only.** Permits the
-  controller to adopt a namespace that already exists (from a previous
-  install, Argo CD, `kubectl create ns`) instead of refusing to overwrite.
-  Without this flag, encountering an existing namespace sets the
-  `NamespaceReady` condition to `False` with reason
-  `NamespaceAlreadyExists` and halts. Adoption is opt-in because it
-  writes an owner reference that will cascade-delete the namespace
-  when the Project is deleted.
-
-Both fields are immutable after the Project is `Ready`: renaming a
-namespace mid-flight would orphan every resource in it. Change requires
-delete + recreate.
+Control namespace naming is currently fixed to `pj-{project}`.
+Environment namespaces are derived as `pj-{project}-{env}`. There is no
+`namespaceOverride` / `adoptExistingNamespace` surface in the current CRD.
 
 #### Default project
 
-On first-user setup (the `/api/auth/setup` flow), the backend automatically
-creates a `default` Project before redirecting the user to the dashboard.
-The workspace is never empty, the "Create your first project" anti-pattern
-is avoided, and users can rename or create additional projects at leisure.
+First-user setup (`/api/auth/setup`) creates the initial admin user and
+returns a JWT. It does **not** create a default project; users create their
+first project explicitly.
 
 #### Project CRD (v1 surface)
 
 ```yaml
-apiVersion: mortise.dev/v1alpha1
+apiVersion: mortise.mortise.dev/v1alpha1
 kind: Project
 metadata:
   name: my-saas
 spec:
   description: "Core customer-facing SaaS"
-  # namespaceOverride: corp-team-acme-prod  # optional; use this name instead of pj-my-saas
-  # adoptExistingNamespace: false           # optional; admin-only; adopt an existing namespace
 
   # PR Environments are a project-level toggle (not per-App). When
   # enabled, every git-source App in the project gets a preview per PR.
@@ -226,11 +204,8 @@ and generates host, port, URL, and credential env vars.
 - **Lifecycle**: one-click teardown of a whole stack
 - **Bindings scope**: default target for `bindings[].ref`
 - **URL scoping**: `/projects/{p}/apps/{a}` paths throughout API, UI, CLI
-- **Teams and per-project access control**: Team CRD groups users;
-  grants attach roles (`team-admin`, `team-deployer`, `team-viewer`) to a
-  (team, project) pair, optionally scoped to specific environments.
-  Platform admins bypass grants entirely. See §5.10 for the access
-  control model; it lands in the same phase as the Project foundation.
+- **Per-project access control**: `ProjectMember` resources bind users to
+  projects with `owner` / `developer` / `viewer` roles. See §5.10.
 
 Domain handling is unchanged by Projects: each App still owns its own
 domain (the environment-level `domain` and `customDomains` fields). Apps
@@ -360,7 +335,7 @@ Explicitly **deferred post-v1** (see §6): `helm`, `catalog` source types.
 ### 5.2 App CRD (v1 surface)
 
 ```yaml
-apiVersion: mortise.dev/v1alpha1
+apiVersion: mortise.mortise.dev/v1alpha1
 kind: App
 metadata:
   name: my-app
@@ -542,9 +517,10 @@ touching `services/api/` creates a preview for the `api` App only; PR touching
 First-class from v1. Any CI that can `curl` can deploy:
 
 ```bash
-curl -X POST https://mortise.yourdomain.com/api/deploy \
+curl -X POST https://mortise.yourdomain.com/api/projects/my-project/apps/my-app/deploy \
   -H "Authorization: Bearer $DEPLOY_TOKEN" \
-  -d '{"app":"my-app","environment":"production","image":"registry/org/my-app:abc123"}'
+  -H "Content-Type: application/json" \
+  -d '{"environment":"production","image":"registry/org/my-app:abc123"}'
 ```
 
 **Deploy tokens:**
@@ -617,7 +593,7 @@ or CRD. Mortise writes a new `Secret` it owns. Useful when the external
 service exists but has no corresponding Kubernetes resource yet.
 
 ```yaml
-apiVersion: mortise.dev/v1alpha1
+apiVersion: mortise.mortise.dev/v1alpha1
 kind: App
 metadata: { name: prod-db }
 spec:
@@ -897,17 +873,16 @@ dedicated editing path so users never need to `kubectl edit` YAML or do a
 full `PUT` on the App CRD to change a variable.
 
 **API:**
-- `GET /api/projects/{project}/apps/{app}/env`: returns all envs, references
-  unresolved (shows `@from:db.host`, not the resolved value).
-- `GET /api/projects/{project}/apps/{app}/env/{env}`: single environment.
-- `PUT /api/projects/{project}/apps/{app}/env/{env}`: full replace of one
-  environment's `env` array.
-- `PATCH /api/projects/{project}/apps/{app}/env`: op-list (`set`/`unset`)
-  with `scope: shared|env`, applied atomically. `fromBinding` validated at
-  PATCH time; `secretRef` is not (matches `secretMounts` semantics: Pod
-  blocks in `ContainerCreating` if the Secret doesn't exist).
-- `POST /api/projects/{project}/apps/{app}/env/import`: bulk import from
-  `.env` file body.
+- `GET /api/projects/{project}/apps/{app}/env?environment={env}`: returns
+  one environment's vars.
+- `PUT /api/projects/{project}/apps/{app}/env?environment={env}`: full
+  replace of one environment's vars.
+- `PATCH /api/projects/{project}/apps/{app}/env?environment={env}`:
+  set/unset patch for one environment.
+- `POST /api/projects/{project}/apps/{app}/env/import?environment={env}`:
+  bulk import from `.env` body.
+- `GET /api/projects/{project}/shared-vars`: project shared vars.
+- `PUT /api/projects/{project}/shared-vars`: replace shared vars.
 
 **CLI:**
 - `mortise env list [--env NAME] [--all] [--app NAME]`
@@ -941,44 +916,32 @@ Auth is scoped to **Mortise's own UI and API**: logging developers and
 admins into Mortise. User apps' authentication is the user's problem,
 out of scope (see note below).
 
-**Two in-tree implementations cover the realistic space:**
+**Current implementation:**
 
-- **Native** (default): username/password accounts stored as k8s Secrets in
-  `mortise-system` (hashed, never plaintext). One admin created during
-  first-run wizard; invites via generated link.
-- **Generic OIDC**: configured with `issuerURL + clientID + clientSecret`.
-  Covers every mainstream IdP via the OIDC standard: Authentik, Keycloak,
-  Okta, Auth0, Google, GitHub, GitLab, Microsoft Entra, Zitadel, etc.
-  One code path, one set of tests.
+- **Native auth only**: username/password accounts stored as k8s Secrets in
+  `mortise-system` (hashed, never plaintext). First-user setup creates the
+  initial admin account.
 
-Selection is per-deployment via `PlatformConfig.auth.mode: {native, oidc}`.
-Not pluggable at runtime: if you want OIDC, set the flag and restart the
-operator. That's enough flexibility for 90%+ of real users. SAML and LDAP
-are out of scope for v1 and can be added in-tree later as separate modes if
-demand appears.
+OIDC mode and `PlatformConfig.auth.*` are not implemented in the current
+codebase.
 
 **Roles and RBAC (v1):**
 
-Two roles, platform-wide:
+Platform roles:
 
 | Role | Can do |
 |---|---|
-| **admin** | Everything: users, providers, DNS, platform settings, all Projects and Apps. Create/delete Projects. |
-| **member** | Create/edit/delete Apps within any Project; view logs and metrics; edit env/secrets; deploy, rollback, promote. Cannot create/delete Projects, manage users, or edit platform settings. |
+| **admin** | Full platform access: users, providers, platform settings, all projects/apps. |
+| **member** | Can create projects; project-level permissions depend on `ProjectMember` role within each project. |
+| **viewer** | Read-only. |
 
-**Implicit default team (v1 forward-compat stub).** The operator creates
-a single `Team` CRD named `default-team` at first-run setup and binds
-every user to it. The UI renders no team chrome in v1: users never see
-or interact with the Team. The stub exists purely so v2's richer team
-model (see below) is additive: splitting the implicit team into N
-teams, adding per-team roles, and adding env-scoped grants all happen
-without a data migration.
+Project roles (`ProjectMember` CRD, per project):
 
-**Deferred to v2 (not in v1 scope):** multi-team installs, the
-5-role team model (`platform-admin` / `platform-viewer` / `team-admin` /
-`team-deployer` / `team-viewer`), per-grant environment scoping, OIDC
-group → team mapping, team-scoped invites. v2 introduces these as
-additive extensions on the `Team` CRD already present in v1.
+| Role | Can do |
+|---|---|
+| **owner** | Full project control (apps, members, tokens, project settings). |
+| **developer** | App lifecycle operations, but no member/token management; cannot delete app/project. Restricted envs are read-only. |
+| **viewer** | Read-only in project. |
 
 **SSO for user apps is not a Mortise concern.** Mortise-v1's job is what
 Railway's is: hand users env vars and a URL. A user who wants their Gitea
@@ -1344,16 +1307,15 @@ Things users want that Mortise supports by being well-behaved, not by
 shipping code. Each is a documentation page with copy-pasteable YAML; none
 is a Mortise-maintained artifact.
 
-- **OIDC login via any IdP.** Install Authentik / Keycloak / Zitadel /
-  Okta / Google / GitHub (the user's choice) and point `PlatformConfig.auth`
-  at its issuer URL. Recipe page per common IdP.
+- **OIDC login via any IdP.** Not implemented in the current codebase.
+  Native auth is the implemented mode.
 - **Prometheus monitoring.** Install kube-prometheus-stack; apply the
   ServiceMonitor example that targets Mortise's `/metrics` endpoint.
 - **Log aggregation.** Install Loki (or any log backend) the standard way;
   its shipper scrapes Mortise and user pods automatically from labels.
-- **External secret managers.** Install ExternalSecrets Operator, point it
-  at Vault / AWS SM / GCP SM / Azure KV / 1Password / etc., and set
-  `PlatformConfig.secrets.externalStore` on Mortise. See §5.9 for the flow.
+- **External secret managers.** Install ExternalSecrets Operator and
+  materialize values into normal Kubernetes Secrets consumed by Mortise
+  (no `PlatformConfig.secrets.externalStore` field in current CRD).
 - **Backup and disaster recovery.** Install Velero with a backup target;
   apply the Schedule example that includes Mortise's namespaces. Pair with
   `mortise export` for configuration portability.
@@ -1871,18 +1833,19 @@ community- or user-built.
 - **Promote**: staging → production without rebuild (re-tag the digest)
 - **Custom domains UI**: add CNAME-based custom domains per environment
 - **Metrics in UI**: CPU/memory per pod via `metrics-server`
-- **User/team management UI**: invite flow, role management (API already
-  supports)
-- **Infrastructure bundle**: cert-manager, ExternalDNS, Traefik as optional
-  Helm chart dependencies for "one-command install with working TLS/DNS"
+- **User/project-member management UI**: role management via platform users
+  and `ProjectMember` resources
+- **Infrastructure bundle**: Traefik, cert-manager, metrics-server as
+  optional Helm chart dependencies; registry/buildkit/observer via in-chart
+  templates; ExternalDNS remains user-installed (annotation integration)
 
 **Exit criteria for Phase 8 / full v1:**
 - Fresh cluster → `helm install mortise` → first-run wizard → deploy a git
   App with preview envs → working HTTPS URL, in under 15 minutes
 - At least one reference tenon (cf-for-saas or backup-tenon) published in
   its own repo, demonstrating API consumption
-- Integration recipe docs for: external CI, OIDC, monitoring, external
-  secret managers, Cloudflare Tunnel
+- Integration recipe docs for: external CI, auth status/roadmap, monitoring,
+  external secret managers, Cloudflare Tunnel
 
 ### Post-v1
 
@@ -1900,7 +1863,7 @@ new install surface. Order depends on user demand after v1 ships.
   who opt in
 
 **Integration recipes** (§6.3): documentation only, no code:
-- OIDC setup against Authentik / Keycloak / Okta / Google / etc.
+- Auth mode status / roadmap (OIDC not implemented in current codebase)
 - Monitoring via kube-prometheus-stack
 - Log aggregation via Loki
 - External secret managers via ExternalSecrets Operator
@@ -1921,7 +1884,7 @@ new install surface. Order depends on user demand after v1 ships.
 ## 10. Open Questions
 
 1. **Product name.** `[NAME]` / Mortise is a placeholder. The name gets baked
-   into CRD apiVersions (`mortise.dev/v1alpha1`), Helm chart, CLI binary,
+   into CRD apiVersions (`mortise.mortise.dev/v1alpha1`), Helm chart, CLI binary,
    config path, and the domain for any hosted assets (relay Worker later).
    Pick before tagging v1.
 2. ~~**Operator datastore.**~~ **Resolved: no external datastore in v1.**
@@ -1975,8 +1938,8 @@ third-party SDK directly. Every external dependency is wrapped behind an
 interface in `internal/<name>/`.
 
 ```
-Mortise controller  →  AuthProvider     →  native DB | generic OIDC
-Mortise controller  →  PolicyEngine     →  team-scoped RBAC (5 roles, env-scopable grants)
+Mortise controller  →  AuthProvider     →  native auth (k8s Secret-backed)
+Mortise controller  →  PolicyEngine     →  platform roles + project-scoped RBAC
 Mortise controller  →  GitAPI           →  GitHub | GitLab | Gitea
 Mortise controller  →  GitClient        →  go-git (single impl, all forges)
 Mortise controller  →  BuildClient      →  BuildKit (single impl)
@@ -2011,13 +1974,13 @@ type AuthProvider interface {
     InviteUser(ctx context.Context, email string, role Role) (InviteLink, error)
     RevokeUser(ctx context.Context, userID string) error
 }
-// two in-tree impls: native (k8s-Secret-backed) and genericOIDC
+// one in-tree impl today: native (k8s-Secret-backed)
 
 // internal/authz/policy.go
 type PolicyEngine interface {
     Authorize(ctx context.Context, p Principal, resource Resource, action Action) (bool, error)
 }
-// one in-tree impl: team-scoped RBAC (platform-admin / platform-viewer / team-admin / team-deployer / team-viewer), with grants optionally scoped to specific environments: see §5.10
+// one in-tree impl: platform roles (admin/member/viewer) plus per-project ProjectMember RBAC (owner/developer/viewer), with restricted-environment checks: see §5.10
 
 // internal/build/client.go
 type BuildClient interface {
@@ -2109,11 +2072,12 @@ These are the public surface: versioned with semver, documented, and not
 broken lightly.
 
 - **`App` CRD and related CRDs**: the YAML shape users write (directly or
-  via UI/CLI that writes it for them). Versioned as `mortise.dev/v1alpha1`
+  via UI/CLI that writes it for them). Versioned as `mortise.mortise.dev/v1alpha1`
   today, moving to `v1beta1` and `v1` over time.
-- **REST API**: `POST /api/deploy`, `POST /api/secrets`, etc. Used by the
-  UI, the CLI, and external CI systems via the deploy webhook. Full OpenAPI
-  spec published.
+- **REST API**: documented `/api/...` project/app-scoped endpoints (for
+  example `POST /api/projects/{project}/apps/{app}/deploy`,
+  `POST /api/projects/{project}/apps/{app}/secrets`). Used by the UI, CLI,
+  and external CI systems. Full OpenAPI spec published.
 
 **What external callers need to agree to, in practice:**
 
@@ -2224,8 +2188,8 @@ handling, read-only UI mode); for now, pick one tool or the other per App.
   service-mesh sidecars, and log-shipper sidecars are out of scope.
 - **Not a queue / async-job runner.** No background workers, no job queues,
   no scheduled tasks beyond what users run themselves inside their container.
-- **Not a hard-isolation multi-tenant platform.** v1 has team-scoped RBAC
-  (five roles plus env-scopable grants: see §5.10) but namespace
+- **Not a hard-isolation multi-tenant platform.** v1 has platform roles and
+  project-scoped RBAC (see §5.10), but namespace
   isolation is soft (no NetworkPolicy generation, no ResourceQuota per
-  team). Shared-cluster-with-untrusted-users scenarios need additional
+  project). Shared-cluster-with-untrusted-users scenarios need additional
   hardening beyond what v1 provides.

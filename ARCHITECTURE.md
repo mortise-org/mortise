@@ -28,14 +28,13 @@ flowchart TB
             direction TB
             Operator["Mortise Operator - controllers + API + UI"]
             MetaDB[["operator state - CRD status plus k8s Secrets - no PVC"]]
-            Traefik["Traefik ingress controller (optional BYO)"]
+            Traefik["Ingress controller (Traefik bundled by default, BYO optional)"]
             CertMgr["cert-manager (optional BYO)"]
-            ExtDNS["ExternalDNS (optional BYO)"]
-            Zot["Zot OCI Registry (optional external BYO)"]
+            Registry["Bundled OCI registry (Distribution) or external registry"]
         end
 
-        subgraph BuildNS["mortise-builds namespace"]
-            BuildKit["BuildKit - rootless Deployment + layer cache PVC"]
+        subgraph BuildNS["mortise-deps namespace"]
+            BuildKit["BuildKit Deployment + cache PVC"]
         end
 
         subgraph ProjectNS["project namespace - one per Project, contains all Apps in that Project"]
@@ -55,15 +54,14 @@ flowchart TB
 
     Operator -->|GitAPI iface| GitHub
     Operator -->|BuildClient iface| BuildKit
-    Operator -->|RegistryBackend iface| Zot
+    Operator -->|RegistryBackend iface| Registry
     Operator -->|IngressProvider iface| Traefik
-    Operator -.annotation-driven.-> ExtDNS
     Operator --- MetaDB
 
-    BuildKit -->|push image| Zot
-    AppPod -->|pull image| Zot
+    BuildKit -->|push image| Registry
+    AppPod -->|pull image| Registry
 
-    ExtDNS --> DNSProv
+    DNSProv -.optional ExternalDNS watches Ingress annotations.-> Ing
     CertMgr --> ACME
 
     Operator -.reconciles.-> AppPod
@@ -71,7 +69,7 @@ flowchart TB
     Operator -.reconciles.-> Ing
     Operator -.reconciles.-> Traefik
     Operator -.reconciles.-> BuildKit
-    Operator -.reconciles.-> Zot
+    Operator -.reconciles.-> Registry
 
     AppPod -.env bindings.-> BackingPod
 ```
@@ -85,7 +83,7 @@ flowchart TB
   the outward interface seams defined in SPEC §11. Everything the operator does
   *outside* the Kubernetes API goes through one of these contracts.
 - **Namespaces are organized around Projects.** `mortise-system` holds the
-  platform itself; `mortise-builds` is isolated so build pods can't
+  platform itself; dependencies run in `mortise-deps`;
   interfere with user workloads; each **Project** owns a *control*
   namespace `pj-{name}` (for App CRDs, PreviewEnvironment CRDs, and
   other project-scoped metadata) plus one *environment* namespace per
@@ -108,9 +106,9 @@ flowchart TB
   abstraction. External secret managers (Vault, AWS SM, etc.) integrate via
   the ExternalSecrets Operator, which produces k8s Secrets that Mortise
   reads like any other. See SPEC §5.9.
-- **"Optional" labels** on Traefik, cert-manager, ExternalDNS, Zot: each
-  corresponds to an outward interface (`IngressProvider`,
-  `RegistryBackend`) or an annotation-driven integration (ExternalDNS)
+- **"Optional" labels** on Traefik, cert-manager, metrics-server, and the
+  bundled registry/buildkit stack: each corresponds to an outward interface
+  (`IngressProvider`, `RegistryBackend`) or standard Kubernetes integration
   and can be turned off at install via chart values when the cluster
   already has the component. See SPEC §8.3.
 
@@ -123,9 +121,9 @@ flowchart TB
 | **Operator state** | `mortise-system` | Deploy history in App CRD status; users/sessions as k8s Secrets; audit/build logs to stdout. No PVC, no database: operator is stateless. | Never stores user app data. |
 | **Traefik** | `mortise-system` | Ingress controller. Routes external HTTPS traffic to user Apps and the Mortise API/UI. | Installed and managed by the Mortise chart; can be disabled when the cluster has an existing controller (SPEC §8.3). |
 | **cert-manager** | `mortise-system` | Issues TLS certs via ACME (or self-signed in dev/test). Triggered by annotations on Ingress resources. | Core chart dependency; not touched by user. |
-| **ExternalDNS** | `mortise-system` | Watches Ingress resources and creates matching DNS records at the configured provider. | Core chart dependency; configured once during install. |
-| **Zot** | `mortise-system` | OCI image registry. Default target for builds unless external registry configured. | Installed conditionally (omitted if user picks GHCR/Docker Hub/custom). |
-| **BuildKit** | `mortise-builds` | Builds container images from git sources. Consumes LLB or Dockerfile input; pushes to registry. | Installed lazily on first git App. Pooling / scale-out is post-v1 operator work if queue wait becomes a problem. |
+| **ExternalDNS** | user-managed | Optional DNS automation. Mortise emits Ingress hostname annotations that ExternalDNS can consume. | Not bundled by the chart. Install separately if desired. |
+| **Bundled registry** | `mortise-deps` | OCI image registry for built images. | Enabled by chart values; can be disabled for external registries. |
+| **BuildKit** | `mortise-deps` | Builds container images from git sources. | Enabled by chart values (default on in batteries-included chart). |
 | **User App pods** | `pj-{name}-{env}` | The actual workloads Mortise deploys. An App spawns one Deployment per declared environment; each env's pods live in the matching `pj-{name}-{env}` namespace. | Pure 12-factor; no Mortise SDK or sidecar required. |
 | **Backing service pods** | `pj-{name}-{env}` | Apps with `credentials:` declared: typically stateful (Postgres, Redis). Other Apps in the same project+env bind via Service DNS. | v1 = `image` source + PVC + manual credentials. Users who need HA/PITR install CNPG or redis-operator directly and point Apps at them (SPEC §6.3). |
 
@@ -142,7 +140,7 @@ sequenceDiagram
     participant Git as Git forge
     participant Op as Mortise Operator
     participant BK as BuildKit
-    participant Reg as Zot Registry
+    participant Reg as OCI Registry
     participant K8s as kube-apiserver
     participant Pod as App Pod
     participant TF as Traefik
@@ -264,28 +262,30 @@ flowchart TB
 
 ## 4. Install & Chart Layout
 
-What lands on a cluster during install. One chart, no addon subcharts, no
-umbrella. Adjacent capabilities (OIDC, monitoring, logs, backups, external
+What lands on a cluster during install. Two-chart layout (`mortise` umbrella
+plus `mortise-core` operator chart). Adjacent capabilities (OIDC, monitoring, logs, backups, external
 secret managers) are upstream projects the user installs themselves: they
 do not go through this chart.
 
 ```mermaid
 flowchart TB
-    Chart["mortise Helm chart - single chart"]
+    Chart["mortise Helm chart - umbrella"]
 
     OP["Operator binary - controllers plus REST plus embedded UI"]
-    CRDs["CRDs - App PreviewEnvironment PlatformConfig GitProvider"]
+    CRDs["CRDs - App PreviewEnvironment PlatformConfig GitProvider Project ProjectMember"]
     TFc["Traefik dep (disable-able)"]
     CMc["cert-manager dep (disable-able)"]
-    EDc["ExternalDNS dep (disable-able)"]
-    ZOc["Zot (conditional on registry.type=builtin)"]
+    MSc["metrics-server dep (disable-able)"]
+    REG["Bundled registry template (disable-able)"]
+    BK["BuildKit template (disable-able)"]
 
     Chart --> OP
     Chart --> CRDs
     Chart --> TFc
     Chart --> CMc
-    Chart --> EDc
-    Chart --> ZOc
+    Chart --> MSc
+    Chart --> REG
+    Chart --> BK
 
     Upstream["Upstream projects the user may install separately - Authentik Keycloak kube-prometheus-stack Loki Velero ExternalSecrets Operator CNPG redis-operator etc."]
     Chart -.coexists with.-> Upstream
@@ -295,7 +295,7 @@ flowchart TB
 
 - **Solid arrows** = always installed when the Mortise chart is installed.
   This is the whole product: §6.1 invariant #1.
-- **"disable-able" deps** = Traefik, cert-manager, ExternalDNS are bundled
+- **"disable-able" deps** = Traefik, cert-manager, metrics-server are bundled
   for a one-command install but can each be turned off when the cluster
   already has them (SPEC §8.3). Disabling swaps the implementation; the
   feature stays.
@@ -309,9 +309,9 @@ flowchart TB
   Cloudflare Tunnel automation are post-v1 operator features (SPEC §6.2).
   they add code to the same operator binary, not new subcharts. App preset
   repositories are data, not code (SPEC §6.5).
-- **BuildKit is intentionally absent.** It's installed on-demand by the
-  operator the first time a `git` App is created: not at chart install
-  time. Keeps the base install lean for image-only users.
+- **BuildKit is chart-managed.** In the batteries-included chart,
+  BuildKit is installed at chart install time when `buildkit.enabled=true`
+  (default).
 - **User app namespaces** are not in this diagram because they're not part
   of the chart. They're created dynamically by the operator when an App is
   deployed.
@@ -331,7 +331,7 @@ sequenceDiagram
     Helm->>K8s: apply mortise-system namespace resources
     K8s->>Op: Operator pod starts
     Op->>Op: apply default PlatformConfig from Helm values
-    Op->>K8s: reconcile Traefik and cert-manager and ExternalDNS
+    Op->>K8s: reconcile Project/App/PlatformConfig/GitProvider/PreviewEnvironment resources
     Admin->>Op: open mortise UI and begin first-run wizard
     Op-->>Admin: wizard steps - domain git admin
     Admin->>Op: complete wizard
@@ -358,9 +358,9 @@ when reading the code or debugging a specific interaction.
 | Operator | k8s Secret | native read/write | User-visible app secrets (stored as k8s Secrets in App namespace) |
 | ExternalSecrets Operator | k8s Secret | ESO reconciliation | External secret manager values (Vault / AWS SM / etc.) surface as k8s Secrets; Mortise reads them unchanged |
 | Operator | kube-apiserver | controller-runtime client | Reconcile Deployments, Services, Ingresses, PVCs |
-| BuildKit | Zot (or external registry) | OCI push | Store built images |
-| User App pod | Zot (or external) | OCI pull | Start with the built image |
-| ExternalDNS | DNS provider API | HTTPS | Create/delete DNS records from Ingress annotations |
+| BuildKit | Bundled or external registry | OCI push | Store built images |
+| User App pod | Bundled or external registry | OCI pull | Start with the built image |
+| ExternalDNS (optional, user-installed) | DNS provider API | HTTPS | Create/delete DNS records from Ingress annotations |
 | cert-manager | ACME server | HTTPS (ACME protocol) | Provision TLS certs for Ingress hostnames |
 | User App pod | Backing service pod | Cluster DNS (Service) + env vars | Runtime consumption of bindings (env resolved at reconcile time, baked into Deployment spec) |
 | Operator | User browser | SSE (text/event-stream) | Stream build logs, deploy status, and live app logs to UI |

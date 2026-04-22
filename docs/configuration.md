@@ -196,7 +196,12 @@ from localhost. See [Installing Mortise > Registry proxy](./install.md#registry-
 for per-distro instructions.
 
 **Changing the proxy port:** Set `registry.proxy.hostPort` in your Helm
-values if port 30500 conflicts with something else on your nodes.
+values (default is `30500`). The bundled chart value lives at
+`charts/mortise/values.yaml` under `registry.proxy.hostPort`.
+
+The same value is used to generate `PlatformConfig.spec.registry.pullURL`
+(`localhost:<hostPort>`), so kubelet pulls and deployed image refs stay in
+sync.
 
 **Using an external registry:** If you want builds pushed to an external
 registry (Docker Hub, GitHub Container Registry, Harbor, ECR, etc.),

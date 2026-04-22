@@ -1,0 +1,2229 @@
+openapi: 3.0.3
+info:
+  title: Mortise API
+  version: 0.1.0
+  description: |
+    Implementation-grounded API spec for the Mortise server in this repository.
+    This spec reflects handlers mounted in `internal/api/server.go`.
+
+    Notes:
+    - Most endpoints require JWT bearer auth.
+    - Deploy endpoint supports JWT or deploy token (`mrt_*`).
+    - SSE endpoints support `?token=` query param as an EventSource workaround.
+servers:
+  - url: http://localhost:8090
+security:
+  - bearerAuth: []
+tags:
+  - name: Auth
+  - name: Git Webhooks
+  - name: Users
+  - name: Git Providers
+  - name: Projects
+  - name: Members
+  - name: Project Environments
+  - name: Apps
+  - name: Deploy
+  - name: Runtime
+  - name: Secrets
+  - name: Env Vars
+  - name: Domains
+  - name: Tokens
+  - name: Repos
+  - name: Platform
+  - name: SSE
+paths:
+  /api/auth/status:
+    get:
+      tags: [Auth]
+      summary: Check whether first-user setup is required
+      security: []
+      responses:
+        '200':
+          description: Setup status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusResponse'
+        '500':
+          $ref: '#/components/responses/Error500'
+
+  /api/auth/setup:
+    post:
+      tags: [Auth]
+      summary: Create first admin user
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetupRequest'
+      responses:
+        '201':
+          description: Setup complete
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '409':
+          description: Setup already complete
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/auth/login:
+    post:
+      tags: [Auth]
+      summary: Login with email and password
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        '400':
+          $ref: '#/components/responses/Error400'
+        '401':
+          $ref: '#/components/responses/Error401'
+
+  /api/webhooks/{provider}:
+    post:
+      tags: [Git Webhooks]
+      summary: Receive git forge webhook event
+      description: Unauthenticated endpoint; signature verification is enforced using provider webhook secret.
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/providerPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        '202':
+          description: Accepted
+        '401':
+          description: Invalid signature
+        '403':
+          description: Webhook secret not configured
+        '404':
+          description: Provider not found
+
+  /api/auth/git/{provider}/device:
+    post:
+      tags: [Auth]
+      summary: Start git device flow
+      parameters:
+        - $ref: '#/components/parameters/providerPath'
+      responses:
+        '200':
+          description: Device code response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeviceCodeResponse'
+        '401':
+          $ref: '#/components/responses/Error401'
+
+  /api/auth/git/{provider}/device/poll:
+    post:
+      tags: [Auth]
+      summary: Poll git device flow completion
+      parameters:
+        - $ref: '#/components/parameters/providerPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [device_code]
+              properties:
+                device_code:
+                  type: string
+      responses:
+        '200':
+          description: Poll status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [pending, slow_down, expired, denied, complete, error]
+        '401':
+          $ref: '#/components/responses/Error401'
+
+  /api/auth/git/{provider}/status:
+    get:
+      tags: [Auth]
+      summary: Check whether current user connected the provider
+      parameters:
+        - $ref: '#/components/parameters/providerPath'
+      responses:
+        '200':
+          description: Connection status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  connected:
+                    type: boolean
+
+  /api/auth/git/{provider}/token:
+    post:
+      tags: [Auth]
+      summary: Store personal access token for provider
+      parameters:
+        - $ref: '#/components/parameters/providerPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token:
+                  type: string
+                host:
+                  type: string
+      responses:
+        '200':
+          description: Token stored
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+
+  /api/admin/users:
+    get:
+      tags: [Users]
+      summary: List platform users
+      responses:
+        '200':
+          description: User list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/UserResponse'
+    post:
+      tags: [Users]
+      summary: Create platform user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateUserRequest'
+      responses:
+        '201':
+          description: Created user
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserResponse'
+
+  /api/admin/users/{email}:
+    patch:
+      tags: [Users]
+      summary: Update user role
+      parameters:
+        - $ref: '#/components/parameters/emailPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [role]
+              properties:
+                role:
+                  type: string
+                  enum: [admin, member, viewer]
+      responses:
+        '200':
+          description: Updated user
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserResponse'
+    delete:
+      tags: [Users]
+      summary: Delete user
+      parameters:
+        - $ref: '#/components/parameters/emailPath'
+      responses:
+        '204':
+          description: Deleted
+
+  /api/gitproviders:
+    get:
+      tags: [Git Providers]
+      summary: List git providers
+      responses:
+        '200':
+          description: Provider list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/GitProviderSummary'
+    post:
+      tags: [Git Providers]
+      summary: Create git provider
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateGitProviderRequest'
+      responses:
+        '201':
+          description: Created provider
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GitProviderSummary'
+        '409':
+          description: Already exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/gitproviders/{name}:
+    delete:
+      tags: [Git Providers]
+      summary: Delete git provider
+      parameters:
+        - $ref: '#/components/parameters/namePath'
+      responses:
+        '204':
+          description: Deleted
+
+  /api/gitproviders/{name}/webhook-secret:
+    get:
+      tags: [Git Providers]
+      summary: Read provider webhook secret value
+      parameters:
+        - $ref: '#/components/parameters/namePath'
+      responses:
+        '200':
+          description: Secret value
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  webhookSecret:
+                    type: string
+
+  /api/projects:
+    get:
+      tags: [Projects]
+      summary: List projects visible to caller
+      responses:
+        '200':
+          description: Project list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ProjectResponse'
+    post:
+      tags: [Projects]
+      summary: Create project
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateProjectRequest'
+      responses:
+        '201':
+          description: Created project
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectResponse'
+
+  /api/projects/{project}:
+    get:
+      tags: [Projects]
+      summary: Get project
+      parameters:
+        - $ref: '#/components/parameters/projectPath'
+      responses:
+        '200':
+          description: Project
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectResponse'
+    delete:
+      tags: [Projects]
+      summary: Delete project
+      parameters:
+        - $ref: '#/components/parameters/projectPath'
+      responses:
+        '202':
+          description: Deletion accepted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  project:
+                    type: string
+
+  /api/projects/{project}/members:
+    get:
+      tags: [Members]
+      summary: List project members
+      parameters:
+        - $ref: '#/components/parameters/projectPath'
+      responses:
+        '200':
+          description: Members
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/MemberResponse'
+    post:
+      tags: [Members]
+      summary: Add project member
+      parameters:
+        - $ref: '#/components/parameters/projectPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, role]
+              properties:
+                email:
+                  type: string
+                  format: email
+                role:
+                  type: string
+                  enum: [owner, developer, viewer]
+      responses:
+        '201':
+          description: Added member
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemberResponse'
+
+  /api/projects/{project}/members/{email}:
+    patch:
+      tags: [Members]
+      summary: Update member role
+      parameters:
+        - $ref: '#/components/parameters/projectPath'
+        - $ref: '#/components/parameters/emailPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [role]
+              properties:
+                role:
+                  type: string
+                  enum: [owner, developer, viewer]
+      responses:
+        '200':
+          description: Updated member
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemberResponse'
+    delete:
+      tags: [Members]
+      summary: Remove member
+      parameters:
+        - $ref: '#/components/parameters/projectPath'
+        - $ref: '#/components/parameters/emailPath'
+      responses:
+        '204':
+          description: Removed
+
+  /api/projects/{project}/environments:
+    get:
+      tags: [Project Environments]
+      summary: List project environments with health
+      parameters:
+        - $ref: '#/components/parameters/projectPath'
+      responses:
+        '200':
+          description: Environments
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ProjectEnvironmentResponse'
+    post:
+      tags: [Project Environments]
+      summary: Create project environment
+      parameters:
+        - $ref: '#/components/parameters/projectPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+                displayOrder:
+                  type: integer
+      responses:
+        '201':
+          description: Created environment
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectEnvironmentResponse'
+
+  /api/projects/{project}/environments/{name}:
+    patch:
+      tags: [Project Environments]
+      summary: Update project environment
+      parameters:
+        - $ref: '#/components/parameters/projectPath'
+        - $ref: '#/components/parameters/namePath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                displayOrder:
+                  type: integer
+      responses:
+        '200':
+          description: Updated environment
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectEnvironmentResponse'
+    delete:
+      tags: [Project Environments]
+      summary: Delete project environment
+      parameters:
+        - $ref: '#/components/parameters/projectPath'
+        - $ref: '#/components/parameters/namePath'
+      responses:
+        '200':
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  name:
+                    type: string
+
+  /api/projects/{project}/bindings:
+    get:
+      tags: [Projects]
+      summary: List app binding edges for environment
+      parameters:
+        - $ref: '#/components/parameters/projectPath'
+        - name: environment
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Binding edges
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    from: { type: string }
+                    to: { type: string }
+                    environment: { type: string }
+
+  /api/projects/{project}/apps:
+    get:
+      tags: [Apps]
+      summary: List apps in project
+      parameters:
+        - $ref: '#/components/parameters/projectPath'
+      responses:
+        '200':
+          description: App list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/AppResource'
+    post:
+      tags: [Apps]
+      summary: Create app
+      parameters:
+        - $ref: '#/components/parameters/projectPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateAppRequest'
+      responses:
+        '201':
+          description: Created app
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AppResource'
+
+  /api/projects/{project}/apps/{app}:
+    get:
+      tags: [Apps]
+      summary: Get app
+      parameters:
+        - $ref: '#/components/parameters/projectPath'
+        - $ref: '#/components/parameters/appPath'
+      responses:
+        '200':
+          description: App
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AppResource'
+    put:
+      tags: [Apps]
+      summary: Replace app spec
+      parameters:
+        - $ref: '#/components/parameters/projectPath'
+        - $ref: '#/components/parameters/appPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AppSpec'
+      responses:
+        '200':
+          description: Updated app
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AppResource'
+    delete:
+      tags: [Apps]
+      summary: Delete app
+      parameters:
+        - $ref: '#/components/parameters/projectPath'
+        - $ref: '#/components/parameters/appPath'
+      responses:
+        '200':
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+
+  /api/projects/{project}/stacks:
+    post:
+      tags: [Apps]
+      summary: Create stack from compose or template
+      parameters:
+        - $ref: '#/components/parameters/projectPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateStackRequest'
+      responses:
+        '201':
+          description: Created apps
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  apps:
+                    type: array
+                    items: { type: string }
+
+  /api/templates:
+    get:
+      tags: [Apps]
+      summary: List built-in templates
+      responses:
+        '200':
+          description: Templates
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    name: { type: string }
+                    services:
+                      type: array
+                      items:
+                        type: object
+                        properties:
+                          name: { type: string }
+                          image: { type: string }
+
+  /api/projects/{project}/apps/{app}/deploy:
+    post:
+      tags: [Deploy]
+      summary: Deploy image to app (JWT or deploy token)
+      security:
+        - bearerAuth: []
+        - {}
+      parameters:
+        - $ref: '#/components/parameters/projectPath'
+        - $ref: '#/components/parameters/appPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeployRequest'
+      responses:
+        '200':
+          description: Deploy accepted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string }
+                  app: { type: string }
+                  image: { type: string }
+
+  /api/projects/{project}/apps/{app}/rollback:
+    post:
+      tags: [Deploy]
+      summary: Roll back app environment to deploy history index
+      parameters:
+        - $ref: '#/components/parameters/projectPath'
+        - $ref: '#/components/parameters/appPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [environment, index]
+              properties:
+                environment: { type: string }
+                index: { type: integer }
+      responses:
+        '200':
+          description: Deploy record selected
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeployRecord'
+
+  /api/projects/{project}/apps/{app}/promote:
+    post:
+      tags: [Deploy]
+      summary: Promote source environment image to target environment
+      parameters:
+        - $ref: '#/components/parameters/projectPath'
+        - $ref: '#/components/parameters/appPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [from, to]
+              properties:
+                from: { type: string }
+                to: { type: string }
+      responses:
+        '200':
+          description: Promoted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string }
+                  from: { type: string }
+                  to: { type: string }
+                  image: { type: string }
+
+  /api/projects/{project}/apps/{app}/rebuild:
+    post:
+      tags: [Deploy]
+      summary: Trigger rebuild for git-source app
+      parameters:
+        - $ref: '#/components/parameters/projectPath'
+        - $ref: '#/components/parameters/appPath'
+      responses:
+        '200':
+          description: Rebuilding
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string }
+
+  /api/projects/{project}/apps/{app}/redeploy:
+    post:
+      tags: [Deploy]
+      summary: Restart deployment pods for app
+      parameters:
+        - $ref: '#/components/parameters/projectPath'
+        - $ref: '#/components/parameters/appPath'
+        - $ref: '#/components/parameters/envQueryOptional'
+      responses:
+        '200':
+          description: Restarting
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string }
+
+  /api/projects/{project}/apps/{app}/build-logs:
+    get:
+      tags: [Runtime]
+      summary: Get current or latest build logs
+      parameters:
+        - $ref: '#/components/parameters/projectPath'
+        - $ref: '#/components/parameters/appPath'
+      responses:
+        '200':
+          description: Build log payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BuildLogsResponse'
+
+  /api/projects/{project}/apps/{app}/pods:
+    get:
+      tags: [Runtime]
+      summary: List app pods
+      parameters:
+        - $ref: '#/components/parameters/projectPath'
+        - $ref: '#/components/parameters/appPath'
+        - $ref: '#/components/parameters/envQueryOptional'
+      responses:
+        '200':
+          description: Pod summaries
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/PodSummary'
+
+  /api/projects/{project}/apps/{app}/metrics/current:
+    get:
+      tags: [Runtime]
+      summary: Get current pod metrics from metrics-server
+      parameters:
+        - $ref: '#/components/parameters/projectPath'
+        - $ref: '#/components/parameters/appPath'
+        - $ref: '#/components/parameters/envQueryOptional'
+      responses:
+        '200':
+          description: Current metrics or unavailable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CurrentMetricsResponse'
+
+  /api/projects/{project}/apps/{app}/metrics:
+    get:
+      tags: [Runtime]
+      summary: Query historical metrics via adapter
+      parameters:
+        - $ref: '#/components/parameters/projectPath'
+        - $ref: '#/components/parameters/appPath'
+        - $ref: '#/components/parameters/envQueryOptional'
+        - $ref: '#/components/parameters/startQuery'
+        - $ref: '#/components/parameters/endQuery'
+        - name: step
+          in: query
+          schema:
+            type: string
+            default: '60'
+      responses:
+        '200':
+          description: Adapter response or unavailable
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+
+  /api/projects/{project}/apps/{app}/logs/history:
+    get:
+      tags: [Runtime]
+      summary: Query historical logs via adapter
+      parameters:
+        - $ref: '#/components/parameters/projectPath'
+        - $ref: '#/components/parameters/appPath'
+        - $ref: '#/components/parameters/envQueryOptional'
+        - $ref: '#/components/parameters/startQuery'
+        - $ref: '#/components/parameters/endQuery'
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 500
+            maximum: 2000
+        - name: filter
+          in: query
+          schema:
+            type: string
+        - name: before
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Adapter response or unavailable
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+
+  /api/projects/{project}/apps/{app}/exec:
+    post:
+      tags: [Runtime]
+      summary: Execute command in app pod
+      parameters:
+        - $ref: '#/components/parameters/projectPath'
+        - $ref: '#/components/parameters/appPath'
+        - $ref: '#/components/parameters/envQueryOptional'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExecRequest'
+      responses:
+        '200':
+          description: Command output
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExecResponse'
+
+  /api/projects/{project}/apps/{app}/connect:
+    post:
+      tags: [Runtime]
+      summary: Start local reverse proxy to app service
+      parameters:
+        - $ref: '#/components/parameters/projectPath'
+        - $ref: '#/components/parameters/appPath'
+        - $ref: '#/components/parameters/envQueryOptional'
+      responses:
+        '200':
+          description: Proxy info
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConnectResponse'
+
+  /api/projects/{project}/apps/{app}/disconnect:
+    post:
+      tags: [Runtime]
+      summary: Stop local reverse proxy
+      parameters:
+        - $ref: '#/components/parameters/projectPath'
+        - $ref: '#/components/parameters/appPath'
+      responses:
+        '204':
+          description: Disconnected
+
+  /api/projects/{project}/apps/{app}/secrets:
+    get:
+      tags: [Secrets]
+      summary: List app secrets (names and keys only)
+      parameters:
+        - $ref: '#/components/parameters/projectPath'
+        - $ref: '#/components/parameters/appPath'
+        - $ref: '#/components/parameters/envQueryOptional'
+      responses:
+        '200':
+          description: Secret list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/SecretResponse'
+    post:
+      tags: [Secrets]
+      summary: Create app secret
+      parameters:
+        - $ref: '#/components/parameters/projectPath'
+        - $ref: '#/components/parameters/appPath'
+        - $ref: '#/components/parameters/envQueryOptional'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateSecretRequest'
+      responses:
+        '201':
+          description: Created secret
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SecretResponse'
+
+  /api/projects/{project}/apps/{app}/secrets/{secretName}:
+    delete:
+      tags: [Secrets]
+      summary: Delete app secret
+      parameters:
+        - $ref: '#/components/parameters/projectPath'
+        - $ref: '#/components/parameters/appPath'
+        - name: secretName
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: '#/components/parameters/envQueryOptional'
+      responses:
+        '200':
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string }
+
+  /api/projects/{project}/apps/{app}/env:
+    get:
+      tags: [Env Vars]
+      summary: Get environment variables for app environment
+      parameters:
+        - $ref: '#/components/parameters/projectPath'
+        - $ref: '#/components/parameters/appPath'
+        - $ref: '#/components/parameters/environmentQueryRequired'
+      responses:
+        '200':
+          description: Env vars
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/EnvVar'
+    put:
+      tags: [Env Vars]
+      summary: Replace environment variables for app environment
+      parameters:
+        - $ref: '#/components/parameters/projectPath'
+        - $ref: '#/components/parameters/appPath'
+        - $ref: '#/components/parameters/environmentQueryRequired'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: array
+              items:
+                $ref: '#/components/schemas/EnvVar'
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string }
+    patch:
+      tags: [Env Vars]
+      summary: Patch environment variables for app environment
+      parameters:
+        - $ref: '#/components/parameters/projectPath'
+        - $ref: '#/components/parameters/appPath'
+        - $ref: '#/components/parameters/environmentQueryRequired'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchEnvRequest'
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string }
+
+  /api/projects/{project}/apps/{app}/env/import:
+    post:
+      tags: [Env Vars]
+      summary: Import .env text into app environment
+      parameters:
+        - $ref: '#/components/parameters/projectPath'
+        - $ref: '#/components/parameters/appPath'
+        - $ref: '#/components/parameters/environmentQueryRequired'
+      requestBody:
+        required: true
+        content:
+          text/plain:
+            schema:
+              type: string
+      responses:
+        '200':
+          description: Imported
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string }
+                  count: { type: string }
+
+  /api/projects/{project}/shared-vars:
+    get:
+      tags: [Env Vars]
+      summary: Get project shared vars
+      parameters:
+        - $ref: '#/components/parameters/projectPath'
+      responses:
+        '200':
+          description: Shared vars
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/EnvVar'
+    put:
+      tags: [Env Vars]
+      summary: Replace project shared vars
+      parameters:
+        - $ref: '#/components/parameters/projectPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: array
+              items:
+                $ref: '#/components/schemas/EnvVar'
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string }
+
+  /api/projects/{project}/apps/{app}/domains:
+    get:
+      tags: [Domains]
+      summary: List primary and custom domains for app environment
+      parameters:
+        - $ref: '#/components/parameters/projectPath'
+        - $ref: '#/components/parameters/appPath'
+        - $ref: '#/components/parameters/environmentQueryRequired'
+      responses:
+        '200':
+          description: Domain info
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DomainsResponse'
+    post:
+      tags: [Domains]
+      summary: Add custom domain to app environment
+      parameters:
+        - $ref: '#/components/parameters/projectPath'
+        - $ref: '#/components/parameters/appPath'
+        - $ref: '#/components/parameters/environmentQueryRequired'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [domain]
+              properties:
+                domain: { type: string }
+      responses:
+        '200':
+          description: Updated domain list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DomainsResponse'
+
+  /api/projects/{project}/apps/{app}/domains/{domain}:
+    delete:
+      tags: [Domains]
+      summary: Remove custom domain from app environment
+      parameters:
+        - $ref: '#/components/parameters/projectPath'
+        - $ref: '#/components/parameters/appPath'
+        - name: domain
+          in: path
+          required: true
+          schema: { type: string }
+        - $ref: '#/components/parameters/environmentQueryRequired'
+      responses:
+        '200':
+          description: Updated domain list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DomainsResponse'
+
+  /api/projects/{project}/tokens:
+    get:
+      tags: [Tokens]
+      summary: List project deploy tokens
+      parameters:
+        - $ref: '#/components/parameters/projectPath'
+      responses:
+        '200':
+          description: Token metadata
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    name: { type: string }
+                    description: { type: string }
+                    createdAt: { type: string, format: date-time }
+    post:
+      tags: [Tokens]
+      summary: Create project deploy token
+      parameters:
+        - $ref: '#/components/parameters/projectPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                description: { type: string }
+      responses:
+        '201':
+          description: Token created (raw token returned once)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectTokenResponse'
+
+  /api/projects/{project}/tokens/{tokenName}:
+    delete:
+      tags: [Tokens]
+      summary: Delete project deploy token
+      parameters:
+        - $ref: '#/components/parameters/projectPath'
+        - name: tokenName
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '204':
+          description: Deleted
+
+  /api/projects/{project}/apps/{app}/tokens:
+    get:
+      tags: [Tokens]
+      summary: List app deploy tokens
+      parameters:
+        - $ref: '#/components/parameters/projectPath'
+        - $ref: '#/components/parameters/appPath'
+      responses:
+        '200':
+          description: Token metadata
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    name: { type: string }
+                    environment: { type: string }
+                    createdAt: { type: string, format: date-time }
+    post:
+      tags: [Tokens]
+      summary: Create app/environment deploy token
+      parameters:
+        - $ref: '#/components/parameters/projectPath'
+        - $ref: '#/components/parameters/appPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, environment]
+              properties:
+                name: { type: string }
+                environment: { type: string }
+      responses:
+        '201':
+          description: Token created (raw token returned once)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AppTokenResponse'
+
+  /api/projects/{project}/apps/{app}/tokens/{tokenName}:
+    delete:
+      tags: [Tokens]
+      summary: Delete app deploy token
+      parameters:
+        - $ref: '#/components/parameters/projectPath'
+        - $ref: '#/components/parameters/appPath'
+        - name: tokenName
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Revoked
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string }
+
+  /api/repos:
+    get:
+      tags: [Repos]
+      summary: List repositories for connected provider
+      parameters:
+        - name: provider
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Repo list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  additionalProperties: true
+
+  /api/repos/{owner}/{repo}/branches:
+    get:
+      tags: [Repos]
+      summary: List repository branches
+      parameters:
+        - $ref: '#/components/parameters/ownerPath'
+        - $ref: '#/components/parameters/repoPath'
+        - name: provider
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Branch list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: string
+
+  /api/repos/{owner}/{repo}/tree:
+    get:
+      tags: [Repos]
+      summary: List repository path children
+      parameters:
+        - $ref: '#/components/parameters/ownerPath'
+        - $ref: '#/components/parameters/repoPath'
+        - name: provider
+          in: query
+          required: true
+          schema: { type: string }
+        - name: branch
+          in: query
+          required: false
+          schema:
+            type: string
+            default: main
+        - name: path
+          in: query
+          required: false
+          schema: { type: string }
+      responses:
+        '200':
+          description: Tree entries
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  additionalProperties: true
+
+  /api/platform:
+    get:
+      tags: [Platform]
+      summary: Get platform config projection
+      responses:
+        '200':
+          description: Platform config
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlatformResponse'
+    patch:
+      tags: [Platform]
+      summary: Create or patch singleton platform config
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchPlatformRequest'
+      responses:
+        '200':
+          description: Updated config
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlatformResponse'
+        '201':
+          description: Created config
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlatformResponse'
+
+  /api/projects/{project}/apps/{app}/logs:
+    get:
+      tags: [SSE]
+      summary: Stream app logs (SSE)
+      parameters:
+        - $ref: '#/components/parameters/projectPath'
+        - $ref: '#/components/parameters/appPath'
+        - $ref: '#/components/parameters/envQueryOptional'
+        - name: follow
+          in: query
+          schema: { type: boolean }
+        - name: previous
+          in: query
+          schema: { type: boolean }
+        - name: pod
+          in: query
+          schema: { type: string }
+        - name: tail
+          in: query
+          schema: { type: integer, minimum: 0 }
+        - name: sinceSeconds
+          in: query
+          schema: { type: integer, minimum: 1 }
+        - name: sinceTime
+          in: query
+          schema: { type: string, format: date-time }
+        - name: token
+          in: query
+          description: JWT fallback for EventSource clients
+          schema: { type: string }
+      responses:
+        '200':
+          description: SSE stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+
+  /api/projects/{project}/events:
+    get:
+      tags: [SSE]
+      summary: Stream project-level events (SSE)
+      parameters:
+        - $ref: '#/components/parameters/projectPath'
+        - name: token
+          in: query
+          description: JWT fallback for EventSource clients
+          schema: { type: string }
+      responses:
+        '200':
+          description: SSE stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  responses:
+    Error400:
+      description: Bad request
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Error401:
+      description: Unauthorized
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Error500:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+  parameters:
+    projectPath:
+      name: project
+      in: path
+      required: true
+      schema:
+        type: string
+    appPath:
+      name: app
+      in: path
+      required: true
+      schema:
+        type: string
+    providerPath:
+      name: provider
+      in: path
+      required: true
+      schema:
+        type: string
+    namePath:
+      name: name
+      in: path
+      required: true
+      schema:
+        type: string
+    emailPath:
+      name: email
+      in: path
+      required: true
+      schema:
+        type: string
+    ownerPath:
+      name: owner
+      in: path
+      required: true
+      schema: { type: string }
+    repoPath:
+      name: repo
+      in: path
+      required: true
+      schema: { type: string }
+    envQueryOptional:
+      name: env
+      in: query
+      required: false
+      description: Environment name (`environment` alias is also accepted by handlers)
+      schema:
+        type: string
+    environmentQueryRequired:
+      name: environment
+      in: query
+      required: true
+      description: Environment name (`env` alias is also accepted by handlers)
+      schema:
+        type: string
+    startQuery:
+      name: start
+      in: query
+      required: true
+      schema:
+        type: string
+    endQuery:
+      name: end
+      in: query
+      required: true
+      schema:
+        type: string
+
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+
+    StatusResponse:
+      type: object
+      properties:
+        setupRequired:
+          type: boolean
+
+    SetupRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+
+    AuthUser:
+      type: object
+      properties:
+        id: { type: string }
+        email: { type: string }
+        role:
+          type: string
+          enum: [admin, member, viewer]
+
+    AuthResponse:
+      type: object
+      properties:
+        token:
+          type: string
+        user:
+          $ref: '#/components/schemas/AuthUser'
+
+    DeviceCodeResponse:
+      type: object
+      properties:
+        device_code: { type: string }
+        user_code: { type: string }
+        verification_uri: { type: string }
+        expires_in: { type: integer }
+        interval: { type: integer }
+
+    UserResponse:
+      type: object
+      properties:
+        id: { type: string }
+        email: { type: string }
+        role: { type: string }
+
+    CreateUserRequest:
+      type: object
+      required: [email, password, role]
+      properties:
+        email: { type: string, format: email }
+        password: { type: string }
+        role:
+          type: string
+          enum: [admin, member, viewer]
+
+    GitProviderSummary:
+      type: object
+      properties:
+        name: { type: string }
+        type:
+          type: string
+          enum: [github, gitlab, gitea]
+        host: { type: string }
+        phase:
+          type: string
+          enum: [Pending, Ready, Failed]
+
+    CreateGitProviderRequest:
+      type: object
+      required: [name, type, host, clientID]
+      properties:
+        name: { type: string }
+        type:
+          type: string
+          enum: [github, gitlab, gitea]
+        host: { type: string }
+        clientID: { type: string }
+
+    CreateProjectRequest:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string }
+        description: { type: string }
+
+    ProjectResponse:
+      type: object
+      properties:
+        name: { type: string }
+        description: { type: string }
+        namespace: { type: string }
+        phase:
+          type: string
+          enum: [Pending, Ready, Terminating, Failed]
+        appCount: { type: integer }
+        createdAt: { type: string, format: date-time }
+
+    MemberResponse:
+      type: object
+      properties:
+        email: { type: string }
+        role: { type: string, enum: [owner, developer, viewer] }
+        addedAt: { type: string, format: date-time }
+        addedBy: { type: string }
+
+    ProjectEnvironmentResponse:
+      type: object
+      properties:
+        name: { type: string }
+        displayOrder: { type: integer }
+        health:
+          type: string
+          enum: [healthy, warning, danger, unknown]
+
+    CreateAppRequest:
+      type: object
+      required: [name, spec]
+      properties:
+        name:
+          type: string
+        spec:
+          $ref: '#/components/schemas/AppSpec'
+
+    AppSourceBuild:
+      type: object
+      properties:
+        mode:
+          type: string
+          enum: [auto, dockerfile, railpack]
+        dockerfilePath: { type: string }
+        context:
+          type: string
+          enum: [root, subdir]
+        cache: { type: boolean }
+        args:
+          type: object
+          additionalProperties:
+            type: string
+
+    ExternalSource:
+      type: object
+      required: [host]
+      properties:
+        host: { type: string }
+        port: { type: integer, format: int32 }
+
+    AppSource:
+      type: object
+      required: [type]
+      properties:
+        type:
+          type: string
+          enum: [git, image, external]
+        repo: { type: string }
+        branch: { type: string }
+        path: { type: string }
+        watchPaths:
+          type: array
+          items: { type: string }
+        build:
+          $ref: '#/components/schemas/AppSourceBuild'
+        providerRef: { type: string }
+        image: { type: string }
+        pullSecretRef: { type: string }
+        external:
+          $ref: '#/components/schemas/ExternalSource'
+
+    NetworkConfig:
+      type: object
+      properties:
+        public: { type: boolean, default: true }
+        port: { type: integer, format: int32, default: 8080 }
+
+    VolumeSpec:
+      type: object
+      properties:
+        name: { type: string }
+        mountPath: { type: string }
+        size: { type: string, description: Kubernetes quantity }
+        storageClass: { type: string }
+        accessMode: { type: string }
+
+    ConfigFile:
+      type: object
+      properties:
+        path: { type: string }
+        content: { type: string }
+
+    SecretKeyRef:
+      type: object
+      properties:
+        name: { type: string }
+        key: { type: string }
+
+    CredentialSource:
+      type: object
+      properties:
+        secretRef:
+          $ref: '#/components/schemas/SecretKeyRef'
+
+    Credential:
+      type: object
+      properties:
+        name: { type: string }
+        value: { type: string }
+        valueFrom:
+          $ref: '#/components/schemas/CredentialSource'
+
+    Binding:
+      type: object
+      properties:
+        ref: { type: string }
+
+    ResourceRequirements:
+      type: object
+      properties:
+        cpu: { type: string }
+        memory: { type: string }
+
+    EnvVarSource:
+      type: object
+      properties:
+        secretRef:
+          type: string
+
+    EnvVar:
+      type: object
+      properties:
+        name: { type: string }
+        value: { type: string }
+        valueFrom:
+          $ref: '#/components/schemas/EnvVarSource'
+        source:
+          type: string
+          description: Added by env API responses (user/shared/generated/etc)
+
+    KeyToPath:
+      type: object
+      properties:
+        key: { type: string }
+        path: { type: string }
+        mode: { type: integer }
+
+    SecretMount:
+      type: object
+      properties:
+        name: { type: string }
+        secret: { type: string }
+        path: { type: string }
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/KeyToPath'
+        readOnly: { type: boolean }
+
+    EnvTLSConfig:
+      type: object
+      properties:
+        secretName: { type: string }
+        clusterIssuer: { type: string }
+
+    Environment:
+      type: object
+      properties:
+        name: { type: string }
+        enabled: { type: boolean }
+        replicas: { type: integer, format: int32 }
+        resources:
+          $ref: '#/components/schemas/ResourceRequirements'
+        env:
+          type: array
+          items:
+            $ref: '#/components/schemas/EnvVar'
+        bindings:
+          type: array
+          items:
+            $ref: '#/components/schemas/Binding'
+        domain: { type: string }
+        customDomains:
+          type: array
+          items: { type: string }
+        schedule: { type: string }
+        concurrencyPolicy:
+          type: string
+          enum: [Allow, Forbid, Replace]
+        secretMounts:
+          type: array
+          items:
+            $ref: '#/components/schemas/SecretMount'
+        annotations:
+          type: object
+          additionalProperties:
+            type: string
+        tls:
+          $ref: '#/components/schemas/EnvTLSConfig'
+
+    AppSpec:
+      type: object
+      required: [source]
+      properties:
+        kind:
+          type: string
+          enum: [service, cron]
+          default: service
+        source:
+          $ref: '#/components/schemas/AppSource'
+        network:
+          $ref: '#/components/schemas/NetworkConfig'
+        storage:
+          type: array
+          items:
+            $ref: '#/components/schemas/VolumeSpec'
+        configFiles:
+          type: array
+          items:
+            $ref: '#/components/schemas/ConfigFile'
+        credentials:
+          type: array
+          items:
+            $ref: '#/components/schemas/Credential'
+        sharedVars:
+          type: array
+          items:
+            $ref: '#/components/schemas/EnvVar'
+        environments:
+          type: array
+          items:
+            $ref: '#/components/schemas/Environment'
+
+    DeployRecord:
+      type: object
+      properties:
+        image: { type: string }
+        digest: { type: string }
+        gitSHA: { type: string }
+        timestamp: { type: string, format: date-time }
+
+    EnvironmentStatus:
+      type: object
+      properties:
+        name: { type: string }
+        phase:
+          type: string
+          enum: [Pending, Building, Deploying, Ready, CrashLooping, Failed]
+        message: { type: string }
+        readyReplicas: { type: integer, format: int32 }
+        currentImage: { type: string }
+        currentDigest: { type: string }
+        deployHistory:
+          type: array
+          items:
+            $ref: '#/components/schemas/DeployRecord'
+        domain: { type: string }
+
+    AppStatus:
+      type: object
+      properties:
+        phase:
+          type: string
+          enum: [Pending, Building, Deploying, Ready, CrashLooping, Failed]
+        environments:
+          type: array
+          items:
+            $ref: '#/components/schemas/EnvironmentStatus'
+        lastBuiltSHA: { type: string }
+        lastBuiltImage: { type: string }
+        conditions:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+
+    ObjectMeta:
+      type: object
+      properties:
+        name: { type: string }
+        namespace: { type: string }
+        labels:
+          type: object
+          additionalProperties: { type: string }
+        annotations:
+          type: object
+          additionalProperties: { type: string }
+        creationTimestamp:
+          type: string
+          format: date-time
+      additionalProperties: true
+
+    AppResource:
+      type: object
+      description: Kubernetes App CRD payload
+      properties:
+        apiVersion: { type: string, example: mortise.mortise.dev/v1alpha1 }
+        kind: { type: string, example: App }
+        metadata:
+          $ref: '#/components/schemas/ObjectMeta'
+        spec:
+          $ref: '#/components/schemas/AppSpec'
+        status:
+          $ref: '#/components/schemas/AppStatus'
+      additionalProperties: true
+
+    CreateStackRequest:
+      type: object
+      properties:
+        compose: { type: string }
+        template: { type: string }
+        name: { type: string }
+        vars:
+          type: object
+          additionalProperties:
+            type: string
+        services:
+          type: array
+          items: { type: string }
+
+    DeployRequest:
+      type: object
+      required: [image]
+      properties:
+        environment: { type: string }
+        image: { type: string }
+
+    BuildLogsResponse:
+      type: object
+      properties:
+        lines:
+          type: array
+          items: { type: string }
+        building: { type: boolean }
+        timestamp: { type: string }
+        commitSHA: { type: string }
+        status: { type: string }
+        error: { type: string }
+
+    PodSummary:
+      type: object
+      properties:
+        name: { type: string }
+        phase: { type: string }
+        restartCount: { type: integer }
+        ready: { type: boolean }
+        startedAt: { type: string, format: date-time }
+        createdAt: { type: string, format: date-time }
+
+    CurrentPodMetric:
+      type: object
+      properties:
+        name: { type: string }
+        cpu: { type: number }
+        memory: { type: integer }
+
+    CurrentMetricsResponse:
+      oneOf:
+        - type: object
+          properties:
+            available:
+              type: boolean
+              enum: [false]
+        - type: object
+          properties:
+            available:
+              type: boolean
+              enum: [true]
+            pods:
+              type: array
+              items:
+                $ref: '#/components/schemas/CurrentPodMetric'
+
+    ExecRequest:
+      type: object
+      required: [command]
+      properties:
+        command:
+          type: array
+          items: { type: string }
+
+    ExecResponse:
+      type: object
+      properties:
+        stdout: { type: string }
+        stderr: { type: string }
+
+    ConnectResponse:
+      type: object
+      properties:
+        port: { type: integer }
+        url: { type: string }
+
+    CreateSecretRequest:
+      type: object
+      required: [name, data]
+      properties:
+        name: { type: string }
+        data:
+          type: object
+          additionalProperties:
+            type: string
+
+    SecretResponse:
+      type: object
+      properties:
+        name: { type: string }
+        keys:
+          type: array
+          items: { type: string }
+
+    PatchEnvRequest:
+      type: object
+      properties:
+        set:
+          type: object
+          additionalProperties:
+            type: string
+        unset:
+          type: array
+          items: { type: string }
+
+    DomainsResponse:
+      type: object
+      properties:
+        primary: { type: string }
+        custom:
+          type: array
+          items: { type: string }
+
+    ProjectTokenResponse:
+      type: object
+      properties:
+        token: { type: string }
+        name: { type: string }
+        createdAt: { type: string, format: date-time }
+
+    AppTokenResponse:
+      type: object
+      properties:
+        token: { type: string }
+        name: { type: string }
+        environment: { type: string }
+        createdAt: { type: string, format: date-time }
+
+    PlatformResponse:
+      type: object
+      properties:
+        domain: { type: string }
+        tls:
+          type: object
+          properties:
+            certManagerClusterIssuer: { type: string }
+        storage:
+          type: object
+          properties:
+            defaultStorageClass: { type: string }
+        phase:
+          type: string
+          enum: [Pending, Ready, Failed]
+        observability:
+          type: object
+          properties:
+            logsAdapterEndpoint: { type: string }
+            metricsAdapterEndpoint: { type: string }
+
+    PatchPlatformRequest:
+      type: object
+      properties:
+        domain: { type: string }
+        tls:
+          type: object
+          properties:
+            certManagerClusterIssuer: { type: string }
+        storage:
+          type: object
+          properties:
+            defaultStorageClass: { type: string }
+        registry:
+          type: object
+          properties:
+            url: { type: string }
+            namespace: { type: string }
+        build:
+          type: object
+          properties:
+            buildkitAddr: { type: string }
+            defaultPlatform: { type: string }
+        observability:
+          type: object
+          properties:
+            logsAdapterEndpoint: { type: string }
+            metricsAdapterEndpoint: { type: string }
