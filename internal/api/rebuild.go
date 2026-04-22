@@ -22,11 +22,11 @@ import (
 //
 // POST /api/projects/{project}/apps/{app}/rebuild
 func (s *Server) Rebuild(w http.ResponseWriter, r *http.Request) {
-	ns, _, ok := s.resolveProject(w, r)
+	ns, projectName, ok := s.resolveProject(w, r)
 	if !ok {
 		return
 	}
-	if !s.authorize(w, r, authz.Resource{Kind: "app", Namespace: ns}, authz.ActionUpdate) {
+	if !s.authorize(w, r, authz.Resource{Kind: "app", Namespace: ns, Project: projectName}, authz.ActionUpdate) {
 		return
 	}
 	appName := chi.URLParam(r, "app")
@@ -64,7 +64,7 @@ func (s *Server) Redeploy(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if !s.authorize(w, r, authz.Resource{Kind: "app"}, authz.ActionUpdate) {
+	if !s.authorize(w, r, authz.Resource{Kind: "app", Project: projectName}, authz.ActionUpdate) {
 		return
 	}
 	appName := chi.URLParam(r, "app")

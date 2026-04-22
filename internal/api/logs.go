@@ -55,7 +55,8 @@ func parseLogLine(raw string) (ts, content string) {
 //
 // GET /api/projects/{project}/apps/{app}/build-logs
 func (s *Server) handleBuildLogs(w http.ResponseWriter, r *http.Request) {
-	if !s.authorize(w, r, authz.Resource{Kind: "app"}, authz.ActionRead) {
+	projectName := chi.URLParam(r, "project")
+	if !s.authorize(w, r, authz.Resource{Kind: "app", Project: projectName}, authz.ActionRead) {
 		return
 	}
 	ns, _, ok := s.resolveProject(w, r)
@@ -106,7 +107,8 @@ func (s *Server) handleBuildLogs(w http.ResponseWriter, r *http.Request) {
 // during the stream (e.g. rollouts) are picked up via a pod watcher and their
 // logs are joined into the stream.
 func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
-	if !s.authorize(w, r, authz.Resource{Kind: "app"}, authz.ActionRead) {
+	projectName := chi.URLParam(r, "project")
+	if !s.authorize(w, r, authz.Resource{Kind: "app", Project: projectName}, authz.ActionRead) {
 		return
 	}
 	ns, projectName, ok := s.resolveProject(w, r)

@@ -89,6 +89,11 @@ spec:
                       maxLength: 63
                       pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
                       type: string
+                    restricted:
+                      description: |-
+                        Restricted, when true, limits Developers to read-only in this
+                        environment. Owners are unaffected. Typical use: protect production.
+                      type: boolean
                   required:
                   - name
                   type: object

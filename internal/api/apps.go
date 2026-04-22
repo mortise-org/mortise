@@ -32,11 +32,11 @@ type createAppRequest struct {
 }
 
 func (s *Server) CreateApp(w http.ResponseWriter, r *http.Request) {
-	ns, _, ok := s.resolveProject(w, r)
+	ns, projectName, ok := s.resolveProject(w, r)
 	if !ok {
 		return
 	}
-	if !s.authorize(w, r, authz.Resource{Kind: "app", Namespace: ns}, authz.ActionCreate) {
+	if !s.authorize(w, r, authz.Resource{Kind: "app", Namespace: ns, Project: projectName}, authz.ActionCreate) {
 		return
 	}
 
@@ -81,11 +81,11 @@ func (s *Server) CreateApp(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) ListApps(w http.ResponseWriter, r *http.Request) {
-	ns, _, ok := s.resolveProject(w, r)
+	ns, projectName, ok := s.resolveProject(w, r)
 	if !ok {
 		return
 	}
-	if !s.authorize(w, r, authz.Resource{Kind: "app", Namespace: ns}, authz.ActionRead) {
+	if !s.authorize(w, r, authz.Resource{Kind: "app", Namespace: ns, Project: projectName}, authz.ActionRead) {
 		return
 	}
 
@@ -99,11 +99,11 @@ func (s *Server) ListApps(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) GetApp(w http.ResponseWriter, r *http.Request) {
-	ns, _, ok := s.resolveProject(w, r)
+	ns, projectName, ok := s.resolveProject(w, r)
 	if !ok {
 		return
 	}
-	if !s.authorize(w, r, authz.Resource{Kind: "app", Namespace: ns}, authz.ActionRead) {
+	if !s.authorize(w, r, authz.Resource{Kind: "app", Namespace: ns, Project: projectName}, authz.ActionRead) {
 		return
 	}
 	name := chi.URLParam(r, "app")
@@ -118,11 +118,11 @@ func (s *Server) GetApp(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) UpdateApp(w http.ResponseWriter, r *http.Request) {
-	ns, _, ok := s.resolveProject(w, r)
+	ns, projectName, ok := s.resolveProject(w, r)
 	if !ok {
 		return
 	}
-	if !s.authorize(w, r, authz.Resource{Kind: "app", Namespace: ns}, authz.ActionUpdate) {
+	if !s.authorize(w, r, authz.Resource{Kind: "app", Namespace: ns, Project: projectName}, authz.ActionUpdate) {
 		return
 	}
 	name := chi.URLParam(r, "app")
@@ -149,11 +149,11 @@ func (s *Server) UpdateApp(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) DeleteApp(w http.ResponseWriter, r *http.Request) {
-	ns, _, ok := s.resolveProject(w, r)
+	ns, projectName, ok := s.resolveProject(w, r)
 	if !ok {
 		return
 	}
-	if !s.authorize(w, r, authz.Resource{Kind: "app", Namespace: ns}, authz.ActionDelete) {
+	if !s.authorize(w, r, authz.Resource{Kind: "app", Namespace: ns, Project: projectName}, authz.ActionDelete) {
 		return
 	}
 	name := chi.URLParam(r, "app")

@@ -29,7 +29,7 @@ func (s *Server) Rollback(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if !s.authorize(w, r, authz.Resource{Kind: "app", Namespace: ns}, authz.ActionUpdate) {
+	if !s.authorize(w, r, authz.Resource{Kind: "app", Namespace: ns, Project: projectName}, authz.ActionUpdate) {
 		return
 	}
 	appName := chi.URLParam(r, "app")
@@ -108,7 +108,7 @@ func (s *Server) Promote(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if !s.authorize(w, r, authz.Resource{Kind: "app", Namespace: ns}, authz.ActionUpdate) {
+	if !s.authorize(w, r, authz.Resource{Kind: "app", Namespace: ns, Project: projectName}, authz.ActionUpdate) {
 		return
 	}
 	appName := chi.URLParam(r, "app")

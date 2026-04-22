@@ -4,8 +4,8 @@
   import { goto } from '$app/navigation';
   import { api } from '$lib/api';
   import { store } from '$lib/store.svelte';
-  import type { Project, ProjectMember, InviteResponse, ProjectEnvironment, App, EnvHealth } from '$lib/types';
-  import { Plus, Trash2, Copy, Check, ArrowUp, ArrowDown } from 'lucide-svelte';
+  import type { Project, ProjectMember, ProjectEnvironment, App, EnvHealth } from '$lib/types';
+  import { Plus, Trash2, Check, ArrowUp, ArrowDown } from 'lucide-svelte';
 
   const projectName = $derived(page.params.project ?? '');
   let project = $state<Project | null>(null);
@@ -91,6 +91,18 @@
     }
   }
 
+  async function toggleRestricted(env: ProjectEnvironment) {
+    const prev = envs;
+    const newVal = !env.restricted;
+    envs = envs.map(e => e.name === env.name ? { ...e, restricted: newVal } : e);
+    try {
+      await api.updateProjectEnvironment(projectName, env.name, { restricted: newVal });
+    } catch (e) {
+      envs = prev;
+      envError = e instanceof Error ? e.message : 'Failed to update environment';
+    }
+  }
+
   async function openEnvDelete(env: ProjectEnvironment) {
     envDeleteTarget = env;
     envDeleteAffected = [];
@@ -132,11 +144,9 @@
   // --- Members ---
   let members = $state<ProjectMember[]>([]);
   let loadingMembers = $state(false);
-  let inviteEmail = $state('');
-  let inviteRole = $state<'admin' | 'member'>('member');
-  let inviting = $state(false);
-  let inviteLink = $state('');
-  let copiedLink = $state(false);
+  let addMemberEmail = $state('');
+  let memberRole = $state<'owner' | 'developer' | 'viewer'>('developer');
+  let addingMember = $state(false);
   let membersError = $state('');
 
   // --- Danger ---
@@ -243,24 +253,30 @@
     }
   }
 
-  async function handleInvite() {
-    if (!inviteEmail.trim()) return;
-    inviting = true;
+  async function handleAddMember() {
+    if (!addMemberEmail.trim()) return;
+    addingMember = true;
     membersError = '';
-    inviteLink = '';
-    const email = inviteEmail.trim();
-    members = [...members, { email, role: inviteRole }];
-    inviteEmail = '';
+    const email = addMemberEmail.trim();
     try {
-      const resp: InviteResponse = await api.inviteMember(projectName, email, inviteRole);
-      inviteLink = resp.link;
-      await loadMembers();
+      const member = await api.addMember(projectName, email, memberRole);
+      members = [...members, member];
+      addMemberEmail = '';
     } catch (e) {
-      membersError = e instanceof Error ? e.message : 'Failed to invite';
-      members = members.filter(m => m.email !== email);
-      inviteEmail = email;
+      membersError = e instanceof Error ? e.message : 'Failed to add member';
     } finally {
-      inviting = false;
+      addingMember = false;
+    }
+  }
+
+  async function handleUpdateMemberRole(email: string, role: 'owner' | 'developer' | 'viewer') {
+    const prev = members;
+    members = members.map(m => m.email === email ? { ...m, role } : m);
+    try {
+      await api.updateMember(projectName, email, role);
+    } catch (e) {
+      members = prev;
+      membersError = e instanceof Error ? e.message : 'Failed to update role';
     }
   }
 
@@ -284,14 +300,6 @@
     } catch {
       deleting = false;
     }
-  }
-
-  async function copyLink(text: string) {
-    try {
-      await navigator.clipboard.writeText(text);
-      copiedLink = true;
-      setTimeout(() => (copiedLink = false), 1500);
-    } catch { /* ignore */ }
   }
 
   const tabCls = (t: string) =>
@@ -425,6 +433,15 @@
                 </div>
                 <span class="inline-block h-2 w-2 shrink-0 rounded-full {healthDot(env.health)}" title={env.health ?? 'unknown'}></span>
                 <p class="flex-1 text-sm font-medium text-white">{env.name}</p>
+                <div class="flex items-center gap-2">
+                  <span class="text-xs text-gray-500">Restricted</span>
+                  <button type="button" role="switch" aria-checked={env.restricted ?? false}
+                    onclick={() => toggleRestricted(env)}
+                    class="relative inline-flex h-5 w-9 items-center rounded-full transition-colors {env.restricted ? 'bg-accent' : 'bg-surface-600'}"
+                    title="When restricted, only project owners can deploy to this environment">
+                    <span class="inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform {env.restricted ? 'translate-x-4.5' : 'translate-x-0.5'}"></span>
+                  </button>
+                </div>
                 {#if envs.length > 1}
                   <button type="button"
                     onclick={() => openEnvDelete(env)}
@@ -517,40 +534,24 @@
 
     {:else if activeTab === 'members'}
       <div class="max-w-lg">
-        <div class="mb-5 rounded-md border border-info/30 bg-info/5 p-3 text-xs text-info">
-          All members of the <strong>default workspace</strong> can access this project.
-        </div>
-
-        <!-- Invite form -->
+        <!-- Add member form -->
         <div class="mb-5 rounded-md border border-surface-600 bg-surface-800 p-4 space-y-3">
-          <h2 class="text-sm font-medium text-white">Invite member</h2>
+          <h2 class="text-sm font-medium text-white">Add member</h2>
+          <p class="text-xs text-gray-500">Add an existing platform user to this project. Users must be created first in platform Settings.</p>
           <div class="flex gap-2">
-            <input type="email" bind:value={inviteEmail} placeholder="email@example.com"
+            <input type="email" bind:value={addMemberEmail} placeholder="email@example.com"
               class="flex-1 rounded-md border border-surface-600 bg-surface-900 px-3 py-2 text-sm text-white placeholder-gray-500 outline-none focus:border-accent" />
-            <select bind:value={inviteRole}
+            <select bind:value={memberRole}
               class="rounded-md border border-surface-600 bg-surface-900 px-3 py-2 text-sm text-white outline-none focus:border-accent">
-              <option value="member">Can Edit</option>
-              <option value="admin">Admin</option>
+              <option value="owner">Owner</option>
+              <option value="developer">Developer</option>
+              <option value="viewer">Viewer</option>
             </select>
           </div>
           {#if membersError}<p class="text-xs text-danger">{membersError}</p>{/if}
-          <div class="flex gap-2">
-            <button type="button" onclick={handleInvite} disabled={inviting || !inviteEmail.trim()} class={btnPrimary}>
-              {inviting ? 'Inviting…' : 'Invite'}
-            </button>
-          </div>
-          {#if inviteLink}
-            <div class="rounded-md border border-success/30 bg-success/10 p-3">
-              <p class="mb-1 text-xs font-medium text-success">Invite link created</p>
-              <div class="flex items-center gap-2">
-                <code class="flex-1 truncate rounded bg-surface-800 px-2 py-1 font-mono text-xs text-gray-300">{inviteLink}</code>
-                <button type="button" onclick={() => copyLink(inviteLink)}
-                  class="text-gray-400 hover:text-white" aria-label="Copy invite link">
-                  {#if copiedLink}<Check class="h-3.5 w-3.5 text-success" />{:else}<Copy class="h-3.5 w-3.5" />{/if}
-                </button>
-              </div>
-            </div>
-          {/if}
+          <button type="button" onclick={handleAddMember} disabled={addingMember || !addMemberEmail.trim()} class={btnPrimary}>
+            {addingMember ? 'Adding...' : 'Add member'}
+          </button>
         </div>
 
         <!-- Members list -->
@@ -564,14 +565,27 @@
           <div class="space-y-1.5">
             {#each members as member}
               <div class="flex items-center justify-between rounded-md border border-surface-600 bg-surface-800 px-4 py-3">
-                <div>
-                  <p class="text-sm text-white">{member.email}</p>
-                  <p class="text-xs text-gray-500 capitalize">{member.role}</p>
+                <div class="flex-1 min-w-0">
+                  <p class="text-sm text-white truncate">{member.email}</p>
+                  {#if member.addedBy}
+                    <p class="text-xs text-gray-500">Added by {member.addedBy}{member.addedAt ? ` on ${new Date(member.addedAt).toLocaleDateString()}` : ''}</p>
+                  {/if}
                 </div>
-                <button type="button" onclick={() => handleRemoveMember(member.email)}
-                  class="flex items-center gap-1 text-xs text-gray-500 hover:text-danger">
-                  <Trash2 class="h-3.5 w-3.5" /> Remove
-                </button>
+                <div class="flex items-center gap-3">
+                  <select
+                    value={member.role}
+                    onchange={(e) => handleUpdateMemberRole(member.email, (e.target as HTMLSelectElement).value as 'owner' | 'developer' | 'viewer')}
+                    class="rounded-md border border-surface-600 bg-surface-900 px-2 py-1 text-xs text-white outline-none focus:border-accent"
+                  >
+                    <option value="owner">Owner</option>
+                    <option value="developer">Developer</option>
+                    <option value="viewer">Viewer</option>
+                  </select>
+                  <button type="button" onclick={() => handleRemoveMember(member.email)}
+                    class="flex items-center gap-1 text-xs text-gray-500 hover:text-danger">
+                    <Trash2 class="h-3.5 w-3.5" /> Remove
+                  </button>
+                </div>
               </div>
             {/each}
           </div>

@@ -43,7 +43,7 @@ func (s *Server) CreateStack(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if !s.authorize(w, r, authz.Resource{Kind: "app", Namespace: ns}, authz.ActionCreate) {
+	if !s.authorize(w, r, authz.Resource{Kind: "app", Namespace: ns, Project: project}, authz.ActionCreate) {
 		return
 	}
 

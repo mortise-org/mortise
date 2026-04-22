@@ -5,7 +5,13 @@ whenever implementation status changes — see the **Keeping this file up to
 date** section at the bottom.
 
 Legend: **Done** / **Partial** / **Not started**
-Last reconciled against spec + code: 2026-04-20 (Per-env namespace refactor — Projects
+Last reconciled against spec + code: 2026-04-21 (Project-scoped RBAC — Issue #85.
+Team CRD deleted. ProjectMember CRD added. Three platform roles (admin/member/viewer),
+three project roles (owner/developer/viewer). Restricted environments. Project-scoped
+deploy tokens. Git token fallback to project members. Admin user CRUD API. Project
+member CRUD API. UI updated for all of the above. All authorize() calls pass project
++ environment context.)
+Prior reconciliation (2026-04-20): Per-env namespace refactor — Projects
 now own a control namespace `pj-{name}` plus one env namespace `pj-{name}-{env}` per
 declared environment. App CRDs and PreviewEnvironment CRDs live in the control ns;
 Deployments, Services, Ingresses, Pods, PVCs, env-scoped Secrets/ConfigMaps fan out
@@ -38,7 +44,7 @@ device flow routes moved to `/api/auth/git/{provider}/...`; poll endpoint requir
 | 4 — Build system (git source)    | §7.5        | **Done**         | All stacks wired end-to-end: webhook patches `mortise.dev/revision` annotation → App reconciler clones + builds + deploys. Operator entrypoint reads config from `PlatformConfig` (env-var fallback for first-boot). Builds run asynchronously in background goroutines; the reconciler returns `Building` immediately and polls on requeue. |
 | 5 — Monorepo support             | §7.6        | **Done**         | `source.path` plumbs into BuildKit context; `source.watchPaths` gates webhook rebuilds (prefix match). UI build grouping deferred. |
 | 6 — Preview environments        | §7.7        | **Done**         | `PreviewEnvironment` CRD with real types (PullRequestRef, PreviewPhase, TTL, domain). Controller reconciles Deployment + Service + Ingress with owner references; async build via buildTrackerStore (same pattern as App controller); TTL expiry auto-deletes. Webhook handler parses PR events (opened/synchronize/closed) for GitHub, GitLab, Gitea; creates/updates/deletes PreviewEnvironments with staging inheritance + preview overrides. Domain template resolution (`{number}`, `{app}`). Commit status posted on PR SHA. |
-| 7 — Polish & v1                  | §7.8        | **Partial**      | Rollback + promote full-stack (API, CLI, UI). Deploy tokens + env management surface (§5.9a) full-stack. Custom domains API/CLI/UI. First-run wizard (4-step). PlatformConfig PATCH API. `spec.network.port`. Repos API (`ListRepos`/`ListBranches`). Railway-style new-app page. **Git auth consolidation** (Issue #29): GitProvider CRD simplified (`spec.oauth` → `spec.clientID` + optional `spec.clientSecretRef`), device flow as primary auth, per-user token storage, `providerRef` required on git-source Apps, PlatformConfig auto-creates default GitHub GitProvider, `ErrAuthFailed` sentinel. **GitHub App Manifest Flow** (`POST /api/github-app/manifest`, callback, `GitHubAppAPI` with JWT + installation tokens, CRD `spec.mode`/`spec.githubApp`). `sharedVars` (§5.8b). Cron apps `kind: cron` with CronJob reconciliation (§5.8a). `source.type: external` with ExternalName Service + Ingress + bindings resolver (§5.1). Missing: 5-role RBAC (deferred to v2, Issue #9), metrics-server UI. |
+| 7 — Polish & v1                  | §7.8        | **Partial**      | Rollback + promote full-stack (API, CLI, UI). Deploy tokens + env management surface (§5.9a) full-stack. Custom domains API/CLI/UI. First-run wizard (4-step). PlatformConfig PATCH API. `spec.network.port`. Repos API (`ListRepos`/`ListBranches`). Railway-style new-app page. **Git auth consolidation** (Issue #29): GitProvider CRD simplified (`spec.oauth` → `spec.clientID` + optional `spec.clientSecretRef`), device flow as primary auth, per-user token storage, `providerRef` required on git-source Apps, PlatformConfig auto-creates default GitHub GitProvider, `ErrAuthFailed` sentinel. **GitHub App Manifest Flow** (`POST /api/github-app/manifest`, callback, `GitHubAppAPI` with JWT + installation tokens, CRD `spec.mode`/`spec.githubApp`). `sharedVars` (§5.8b). Cron apps `kind: cron` with CronJob reconciliation (§5.8a). `source.type: external` with ExternalName Service + Ingress + bindings resolver (§5.1). **Project-scoped RBAC** (Issue #85): 3 platform roles (admin/member/viewer), 3 project roles (owner/developer/viewer), ProjectMember CRD, restricted environments, project-scoped deploy tokens, git token fallback to project members, admin user management API+UI, project member management API+UI. Team CRD deleted. Missing: metrics-server UI. |
 | 8 — Tenons & integration recipes | §7.9 / §13  | **Partial**      | Helm chart bundles Traefik/cert-manager/ExternalDNS/Zot as optional deps. 6 integration recipe docs in `docs/recipes/`. Extensions page in UI. Missing: actual reference tenon projects (cf-for-saas, backup-tenon) that spec §9 Phase 8 calls for. |
 
 ### Interface implementation coverage
@@ -49,7 +55,7 @@ Spec rule: every outward interface must have at least one real v1 impl
 | Interface         | Impls                              | Status          |
 |-------------------|------------------------------------|-----------------|
 | `AuthProvider`    | `NativeAuthProvider` (k8s Secret + bcrypt + JWT) | **Done**    |
-| `PolicyEngine`    | `NativePolicyEngine` (roles: `admin` / `member`)   | **Done (v1)** — matches SPEC §5.10 v1 scope (admin / member). Wired into every API handler via `s.authorize()` (Issue #83). Implicit `default-team` stub lands as a forward-compat CRD; v2 will add team-scoped grants additively. |
+| `PolicyEngine`    | `NativePolicyEngine` (3 platform roles + project-scoped RBAC) | **Done** — platform roles: admin/member/viewer. Project roles: owner/developer/viewer via ProjectMember CRD. Environment-level restricted flag. Wired into every API handler via `s.authorize()` with project + environment context. |
 | `GitAPI`          | `GitHubAPI`, `GitHubAppAPI`, `GitLabAPI`, `GiteaAPI` (`internal/git/{github,github_app,gitlab,gitea}.go`); factory at `internal/git/factory.go` | **Done** |
 | `GitClient`       | `GoGitClient` (`internal/git/gogit_client.go`) — single impl per CLAUDE.md | **Done** |
 | `BuildClient`     | `BuildKitClient` (`internal/build/buildkit.go`) — mockable `solveClient` boundary for unit tests | **Done** |
@@ -65,7 +71,7 @@ Spec rule: every outward interface must have at least one real v1 impl
 | `GitProvider`        | real (`api/v1alpha1/gitprovider_types.go`) | real reconciler (`internal/controller/gitprovider_controller.go`) | **Done** |
 | `PlatformConfig`     | real (`api/v1alpha1/platformconfig_types.go`) | real reconciler (`internal/controller/platformconfig_controller.go`) | **Done** |
 | `PreviewEnvironment` | real (`api/v1alpha1/previewenvironment_types.go`) | real reconciler (`internal/controller/previewenvironment_controller.go`) | **Done** |
-| `Team`               | real (`api/v1alpha1/team_types.go`) | stub reconciler (`internal/controller/team_controller.go`) — singleton `default-team` enforcement only | **Done (v1 forward-compat stub)** — auto-created during first-run setup; every user's secret carries `team_ref: default-team`; UI renders zero team chrome. Exists so v2's multi-team model is additive (SPEC §5.10). |
+| `ProjectMember`      | real (`api/v1alpha1/projectmember_types.go`) | no controller (API-managed) | **Done** — binds users to projects with owner/developer/viewer role. Lives in project control namespace `pj-{name}`. Used by PolicyEngine for authorization. |
 
 ---
 
@@ -806,11 +812,6 @@ Present:
   props instead of polling internally.
 
 Missing:
-- **Authz role upgrade (Issue #9, deferred to v2):** current roles are
-  `admin` / `member`. Spec §5.10 expects five roles (`platform-admin`,
-  `platform-viewer`, `team-admin`, `team-deployer`, `team-viewer`) + a
-  `Team` abstraction + per-grant environment scoping. No `Team` CRD exists;
-  grants have no env field. Decision: v1 ships admin/member only.
 - **Metrics in UI:** spec Phase 7 calls for CPU/memory per pod via
   metrics-server. Not implemented.
 - **Log adapter contract (§5.11a, post-v1):** Minimal HTTP contract
@@ -918,13 +919,16 @@ from config and emits cert-manager + ExternalDNS annotations. Per-env
 `tls.clusterIssuer` / `tls.secretName` overrides honoured per spec §5.6.
 User annotations win on key conflict (spec §5.2a).
 
-### Issue #4 / #9 — Authz role model doesn't match spec — **Deferred to v2**
-`internal/authz/native.go` uses `admin` / `member`. Spec §5.10 calls for
-five roles: `platform-admin`, `platform-viewer`, `team-admin`,
-`team-deployer`, `team-viewer`, with a `Team` scope and per-grant
-environment scoping. No `Team` CRD exists; grants have no env field.
-**Decision: v1 ships admin/member only.** The 5-role team model is tracked
-as Issue #9 for v2.
+### Issue #4 / #9 / #85 — Project-scoped RBAC — **Resolved**
+Team-based RBAC model (Issue #9) replaced by project-scoped RBAC (Issue #85).
+Three platform roles: `admin` / `member` / `viewer`. Three project roles:
+`owner` / `developer` / `viewer` via `ProjectMember` CRD. Environments
+carry a `restricted` flag that limits developers to read-only. Team CRD
+deleted. PolicyEngine rewritten with project/env-aware authorization.
+All ~60 API handlers pass project+environment context to `s.authorize()`.
+Admin user management API (`/api/admin/users`), project member management
+API (`/api/projects/{p}/members`), project-scoped deploy tokens, git token
+fallback to project members, UI for all of the above.
 
 ### Issue #83 — Wire PolicyEngine into API middleware — **Resolved**
 `NativePolicyEngine` existed (`internal/authz/`) but was never called from

@@ -7,9 +7,11 @@ import (
 )
 
 type Resource struct {
-	Kind      string // "app", "secret", "platform", "user", "project", "gitprovider"
-	Namespace string
-	Name      string
+	Kind        string // "app", "secret", "platform", "user", "project", "gitprovider", "member", "token"
+	Namespace   string
+	Name        string
+	Project     string // project name for project-scoped checks
+	Environment string // environment name for restricted-env checks
 }
 
 type Action string

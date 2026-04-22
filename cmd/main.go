@@ -392,14 +392,7 @@ func main() {
 		setupLog.Error(err, "Failed to create controller", "controller", "PlatformConfig")
 		os.Exit(1)
 	}
-	if err := (&controller.TeamReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "Failed to create controller", "controller", "Team")
-		os.Exit(1)
-	}
-	if err := (&controller.GitProviderReconciler{
+if err := (&controller.GitProviderReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr); err != nil {
@@ -471,7 +464,7 @@ func main() {
 		setupLog.Info("UI files not available; API will still serve", "err", err)
 	}
 
-	apiServer := api.NewServer(mgr.GetClient(), clientset, dynamicClient, mgr.GetConfig(), authProvider, jwtHelper, uiSub, authz.NewNativePolicyEngine())
+	apiServer := api.NewServer(mgr.GetClient(), clientset, dynamicClient, mgr.GetConfig(), authProvider, jwtHelper, uiSub, authz.NewNativePolicyEngine(mgr.GetClient()))
 	apiServer.SetBuildLogProvider(&appReconciler.Builds)
 	httpServer := &http.Server{Addr: apiAddr, Handler: apiServer.Handler()}
 	go func() {

@@ -69,6 +69,11 @@ type ProjectEnvironment struct {
 	// creation order.
 	// +optional
 	DisplayOrder int `json:"displayOrder,omitempty"`
+
+	// Restricted, when true, limits Developers to read-only in this
+	// environment. Owners are unaffected. Typical use: protect production.
+	// +optional
+	Restricted bool `json:"restricted,omitempty"`
 }
 
 // ProjectSpec defines the desired state of a Project — the top-level grouping
@@ -94,7 +99,6 @@ type ProjectSpec struct {
 	Preview *PreviewConfig `json:"preview,omitempty"`
 
 	// Future fields (v2+):
-	// - Team      string  — per-project team/ownership
 	// - Quota     Quota   — CPU/memory/storage caps per project
 	// - DomainSuffix string — override platform default domain
 	// - Retention Retention — preview env / build cache retention policy

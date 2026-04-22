@@ -17,7 +17,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-const deployTokenPrefix = "mrt_"
+const (
+	deployTokenPrefix        = "mrt_"
+	projectDeployTokenPrefix = "mrt_pj_"
+)
 
 // createTokenRequest is the JSON body for POST /api/projects/{p}/apps/{a}/tokens.
 type createTokenRequest struct {
@@ -30,18 +33,23 @@ type createTokenRequest struct {
 type tokenResponse struct {
 	Token       string `json:"token,omitempty"`
 	Name        string `json:"name"`
-	Environment string `json:"environment"`
+	Environment string `json:"environment,omitempty"`
 	CreatedAt   string `json:"createdAt,omitempty"`
+}
+
+// createProjectTokenRequest is the JSON body for POST /api/projects/{p}/tokens.
+type createProjectTokenRequest struct {
+	Description string `json:"description"`
 }
 
 // CreateToken generates a deploy token, stores its hash as a k8s Secret, and
 // returns the raw token value once.
 func (s *Server) CreateToken(w http.ResponseWriter, r *http.Request) {
-	ns, _, ok := s.resolveProject(w, r)
+	ns, projectName, ok := s.resolveProject(w, r)
 	if !ok {
 		return
 	}
-	if !s.authorize(w, r, authz.Resource{Kind: "app", Namespace: ns}, authz.ActionUpdate) {
+	if !s.authorize(w, r, authz.Resource{Kind: "token", Namespace: ns, Project: projectName}, authz.ActionCreate) {
 		return
 	}
 	appName := chi.URLParam(r, "app")
@@ -103,11 +111,11 @@ func (s *Server) CreateToken(w http.ResponseWriter, r *http.Request) {
 
 // ListTokens returns metadata for all deploy tokens scoped to an app.
 func (s *Server) ListTokens(w http.ResponseWriter, r *http.Request) {
-	ns, _, ok := s.resolveProject(w, r)
+	ns, projectName, ok := s.resolveProject(w, r)
 	if !ok {
 		return
 	}
-	if !s.authorize(w, r, authz.Resource{Kind: "app", Namespace: ns}, authz.ActionRead) {
+	if !s.authorize(w, r, authz.Resource{Kind: "token", Namespace: ns, Project: projectName}, authz.ActionRead) {
 		return
 	}
 	appName := chi.URLParam(r, "app")
@@ -142,11 +150,11 @@ func (s *Server) ListTokens(w http.ResponseWriter, r *http.Request) {
 
 // DeleteToken revokes a deploy token by deleting its backing Secret.
 func (s *Server) DeleteToken(w http.ResponseWriter, r *http.Request) {
-	ns, _, ok := s.resolveProject(w, r)
+	ns, projectName, ok := s.resolveProject(w, r)
 	if !ok {
 		return
 	}
-	if !s.authorize(w, r, authz.Resource{Kind: "app", Namespace: ns}, authz.ActionDelete) {
+	if !s.authorize(w, r, authz.Resource{Kind: "token", Namespace: ns, Project: projectName}, authz.ActionDelete) {
 		return
 	}
 	appName := chi.URLParam(r, "app")
@@ -208,4 +216,192 @@ func (s *Server) validateDeployToken(r *http.Request, ns, appName, env string) b
 		}
 	}
 	return false
+}
+
+// validateProjectDeployToken checks whether an mrt_pj_ bearer token is valid
+// for the given project. Project tokens grant deploy access to any app in
+// the project, with no environment restriction.
+func (s *Server) validateProjectDeployToken(r *http.Request, ns, projectName string) bool {
+	header := r.Header.Get("Authorization")
+	if header == "" || !strings.HasPrefix(header, "Bearer ") {
+		return false
+	}
+	token := strings.TrimPrefix(header, "Bearer ")
+	if !strings.HasPrefix(token, projectDeployTokenPrefix) {
+		return false
+	}
+
+	// Verify the embedded project name matches the target project.
+	rest := strings.TrimPrefix(token, projectDeployTokenPrefix)
+	idx := strings.LastIndex(rest, "_")
+	if idx <= 0 {
+		return false
+	}
+	tokenProject := rest[:idx]
+	if tokenProject != projectName {
+		return false
+	}
+
+	hash := sha256.Sum256([]byte(token))
+	hashHex := hex.EncodeToString(hash[:])
+
+	var list corev1.SecretList
+	if err := s.client.List(r.Context(), &list,
+		client.InNamespace(ns),
+		client.MatchingLabels{
+			"mortise.dev/deploy-token":   "true",
+			"mortise.dev/project-token":  "true",
+		},
+	); err != nil {
+		return false
+	}
+
+	for i := range list.Items {
+		stored := string(list.Items[i].Data["token_hash"])
+		if stored == hashHex {
+			return true
+		}
+	}
+	return false
+}
+
+// CreateProjectToken generates a project-scoped deploy token that grants
+// deploy access to any app in the project.
+func (s *Server) CreateProjectToken(w http.ResponseWriter, r *http.Request) {
+	ns, projectName, ok := s.resolveProject(w, r)
+	if !ok {
+		return
+	}
+	if !s.authorize(w, r, authz.Resource{Kind: "token", Namespace: ns, Project: projectName}, authz.ActionCreate) {
+		return
+	}
+
+	var req createProjectTokenRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse{"invalid JSON: " + err.Error()})
+		return
+	}
+
+	// Generate token: mrt_pj_{project}_{32 random hex bytes}.
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorResponse{"failed to generate token"})
+		return
+	}
+	token := projectDeployTokenPrefix + projectName + "_" + hex.EncodeToString(raw)
+
+	hash := sha256.Sum256([]byte(token))
+	hashHex := hex.EncodeToString(hash[:])
+
+	// Short random suffix for the secret name.
+	suffix := make([]byte, 4)
+	if _, err := rand.Read(suffix); err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorResponse{"failed to generate token"})
+		return
+	}
+
+	secretName := fmt.Sprintf("deploy-token-pj-%s", hex.EncodeToString(suffix))
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      secretName,
+			Namespace: ns,
+			Labels: map[string]string{
+				"mortise.dev/deploy-token":  "true",
+				"mortise.dev/project":       projectName,
+				"mortise.dev/project-token": "true",
+			},
+		},
+		StringData: map[string]string{
+			"token_hash":  hashHex,
+			"description": req.Description,
+			"project":     projectName,
+		},
+	}
+
+	if err := s.client.Create(r.Context(), secret); err != nil {
+		writeError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, tokenResponse{
+		Token:     token,
+		Name:      secretName,
+		CreatedAt: secret.CreationTimestamp.UTC().Format("2006-01-02T15:04:05Z"),
+	})
+}
+
+// ListProjectTokens returns metadata for all project-scoped deploy tokens.
+func (s *Server) ListProjectTokens(w http.ResponseWriter, r *http.Request) {
+	ns, projectName, ok := s.resolveProject(w, r)
+	if !ok {
+		return
+	}
+	if !s.authorize(w, r, authz.Resource{Kind: "token", Namespace: ns, Project: projectName}, authz.ActionRead) {
+		return
+	}
+
+	var list corev1.SecretList
+	if err := s.client.List(r.Context(), &list,
+		client.InNamespace(ns),
+		client.MatchingLabels{
+			"mortise.dev/deploy-token":  "true",
+			"mortise.dev/project-token": "true",
+		},
+	); err != nil {
+		writeError(w, err)
+		return
+	}
+
+	type projectTokenResponse struct {
+		Name        string `json:"name"`
+		Description string `json:"description"`
+		CreatedAt   string `json:"createdAt,omitempty"`
+	}
+
+	resp := make([]projectTokenResponse, 0, len(list.Items))
+	for i := range list.Items {
+		sec := &list.Items[i]
+		tr := projectTokenResponse{
+			Name:        sec.Name,
+			Description: string(sec.Data["description"]),
+		}
+		if !sec.CreationTimestamp.IsZero() {
+			tr.CreatedAt = sec.CreationTimestamp.UTC().Format("2006-01-02T15:04:05Z")
+		}
+		resp = append(resp, tr)
+	}
+
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// DeleteProjectToken revokes a project-scoped deploy token by deleting its
+// backing Secret.
+func (s *Server) DeleteProjectToken(w http.ResponseWriter, r *http.Request) {
+	ns, projectName, ok := s.resolveProject(w, r)
+	if !ok {
+		return
+	}
+	if !s.authorize(w, r, authz.Resource{Kind: "token", Namespace: ns, Project: projectName}, authz.ActionDelete) {
+		return
+	}
+
+	tokenName := chi.URLParam(r, "tokenName")
+
+	var secret corev1.Secret
+	if err := s.client.Get(r.Context(), types.NamespacedName{Name: tokenName, Namespace: ns}, &secret); err != nil {
+		writeError(w, err)
+		return
+	}
+
+	if secret.Labels["mortise.dev/project-token"] != "true" {
+		writeJSON(w, http.StatusNotFound, errorResponse{"project token not found"})
+		return
+	}
+
+	if err := s.client.Delete(r.Context(), &secret); err != nil {
+		writeError(w, err)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }

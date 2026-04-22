@@ -161,6 +161,7 @@ export interface ProjectEnvironment {
 	name: string;
 	displayOrder: number;
 	health?: EnvHealth;
+	restricted?: boolean;
 }
 
 // Canvas edge for GET /api/projects/{p}/bindings?environment=X.
@@ -272,14 +273,16 @@ export interface SharedVarEntry {
 // Project member
 export interface ProjectMember {
 	email: string;
-	role: 'admin' | 'member';
-	createdAt?: string;
+	role: 'owner' | 'developer' | 'viewer';
+	addedAt?: string;
+	addedBy?: string;
 }
 
-// Invite response
-export interface InviteResponse {
-	token: string;
-	link: string;
+// Platform user (admin management)
+export interface PlatformUser {
+	id: string;
+	email: string;
+	role: 'admin' | 'member' | 'viewer';
 }
 
 // Preview environment list item

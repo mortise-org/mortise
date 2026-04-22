@@ -3,6 +3,7 @@ package api_test
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -100,7 +101,7 @@ func newTestServerAs(t *testing.T, k8sClient client.Client, role auth.Role) (*ap
 		t.Fatalf("generate token: %v", err)
 	}
 
-	srv := api.NewServer(k8sClient, fake.NewClientset(), nil, nil, authProvider, jwtHelper, nil, authz.NewNativePolicyEngine())
+	srv := api.NewServer(k8sClient, fake.NewClientset(), nil, nil, authProvider, jwtHelper, nil, authz.NewNativePolicyEngine(k8sClient))
 	testToken = token
 	return srv, token
 }
@@ -199,15 +200,15 @@ func cleanupTenantResources(t *testing.T, c client.Client) {
 		}
 	}
 
-	var teams mortisev1alpha1.TeamList
-	if err := c.List(ctx, &teams); err == nil {
-		for i := range teams.Items {
-			team := &teams.Items[i]
-			if len(team.Finalizers) > 0 {
-				team.Finalizers = nil
-				_ = c.Update(ctx, team)
+	var members mortisev1alpha1.ProjectMemberList
+	if err := c.List(ctx, &members); err == nil {
+		for i := range members.Items {
+			m := &members.Items[i]
+			if len(m.Finalizers) > 0 {
+				m.Finalizers = nil
+				_ = c.Update(ctx, m)
 			}
-			_ = c.Delete(ctx, team)
+			_ = c.Delete(ctx, m)
 		}
 	}
 
@@ -273,6 +274,29 @@ func seedProject(t *testing.T, c client.Client, name string, envs ...string) str
 	}
 
 	return nsName
+}
+
+func seedProjectMember(t *testing.T, c client.Client, projectName, email string, role mortisev1alpha1.ProjectRole) {
+	t.Helper()
+	ns := constants.ControlNamespace(projectName)
+	member := &mortisev1alpha1.ProjectMember{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "member-" + hex.EncodeToString([]byte(email)),
+			Namespace: ns,
+			Labels: map[string]string{
+				"mortise.dev/project": projectName,
+				"mortise.dev/member":  "true",
+			},
+		},
+		Spec: mortisev1alpha1.ProjectMemberSpec{
+			Email:   email,
+			Project: projectName,
+			Role:    role,
+		},
+	}
+	if err := c.Create(context.Background(), member); err != nil {
+		t.Fatalf("create project member %q in %q: %v", email, projectName, err)
+	}
 }
 
 // testToken is set by the first call to newTestServer. Tests that use
@@ -828,6 +852,8 @@ func TestMemberCanCRUDApps(t *testing.T) {
 	srv, _ := newTestServerAs(t, k8sClient, auth.RoleMember)
 	h := srv.Handler()
 
+	seedProjectMember(t, k8sClient, "default", "member@example.com", mortisev1alpha1.ProjectRoleDeveloper)
+
 	w := doRequest(h, http.MethodPost, "/api/projects/default/apps", map[string]any{
 		"name": "member-app",
 		"spec": map[string]any{
@@ -855,9 +881,10 @@ func TestMemberCanCRUDApps(t *testing.T) {
 		t.Fatalf("update: expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 
+	// Developers cannot delete apps — only owners can.
 	w = doRequest(h, http.MethodDelete, "/api/projects/default/apps/member-app", nil)
-	if w.Code != http.StatusOK {
-		t.Fatalf("delete: expected 200, got %d: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("delete: expected 403 for developer, got %d: %s", w.Code, w.Body.String())
 	}
 }
 
@@ -867,6 +894,8 @@ func TestMemberCanCRUDSecrets(t *testing.T) {
 	seedProject(t, k8sClient, "default")
 	srv, _ := newTestServerAs(t, k8sClient, auth.RoleMember)
 	h := srv.Handler()
+
+	seedProjectMember(t, k8sClient, "default", "member@example.com", mortisev1alpha1.ProjectRoleDeveloper)
 
 	doRequest(h, http.MethodPost, "/api/projects/default/apps", map[string]any{
 		"name": "sec-app",

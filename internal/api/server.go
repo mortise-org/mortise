@@ -145,6 +145,12 @@ func (s *Server) Handler() http.Handler {
 			r.Get("/auth/git/{provider}/status", s.deviceFlow.GitTokenStatus)
 			r.Post("/auth/git/{provider}/token", s.deviceFlow.StorePAT)
 
+			// Admin user management
+			r.Get("/admin/users", s.ListUsers)
+			r.Post("/admin/users", s.CreateUser)
+			r.Patch("/admin/users/{email}", s.UpdateUserRole)
+			r.Delete("/admin/users/{email}", s.DeleteUser)
+
 			r.Get("/gitproviders", s.ListGitProviders)
 			r.Post("/gitproviders", s.CreateGitProvider)
 			r.Delete("/gitproviders/{name}", s.DeleteGitProvider)
@@ -154,6 +160,12 @@ func (s *Server) Handler() http.Handler {
 			r.Get("/projects", s.ListProjects)
 			r.Get("/projects/{project}", s.GetProject)
 			r.Delete("/projects/{project}", s.DeleteProject)
+
+			// Project member management
+			r.Get("/projects/{project}/members", s.ListMembers)
+			r.Post("/projects/{project}/members", s.AddMember)
+			r.Patch("/projects/{project}/members/{email}", s.UpdateMember)
+			r.Delete("/projects/{project}/members/{email}", s.RemoveMember)
 
 			r.Get("/projects/{project}/bindings", s.ListBindings)
 
@@ -184,6 +196,10 @@ func (s *Server) Handler() http.Handler {
 			r.Post("/projects/{project}/apps/{app}/secrets", s.CreateSecret)
 			r.Get("/projects/{project}/apps/{app}/secrets", s.ListSecrets)
 			r.Delete("/projects/{project}/apps/{app}/secrets/{secretName}", s.DeleteSecret)
+
+			r.Post("/projects/{project}/tokens", s.CreateProjectToken)
+			r.Get("/projects/{project}/tokens", s.ListProjectTokens)
+			r.Delete("/projects/{project}/tokens/{tokenName}", s.DeleteProjectToken)
 
 			r.Post("/projects/{project}/apps/{app}/tokens", s.CreateToken)
 			r.Get("/projects/{project}/apps/{app}/tokens", s.ListTokens)

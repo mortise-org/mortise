@@ -10,8 +10,10 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
+	"github.com/MC-Meesh/mortise/internal/auth"
 	"github.com/MC-Meesh/mortise/internal/authz"
 	"github.com/MC-Meesh/mortise/internal/constants"
 )
@@ -92,9 +94,18 @@ func (s *Server) CreateProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Stamp the creator so the Project controller can auto-create an owner
+	// ProjectMember once the control namespace is ready.
+	annotations := map[string]string{}
+	principal := PrincipalFromContext(r.Context())
+	if principal != nil {
+		annotations["mortise.dev/created-by"] = principal.Email
+	}
+
 	project := &mortisev1alpha1.Project{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: req.Name,
+			Name:        req.Name,
+			Annotations: annotations,
 		},
 		Spec: mortisev1alpha1.ProjectSpec{
 			Description: req.Description,
@@ -109,7 +120,9 @@ func (s *Server) CreateProject(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, toProjectResponse(project))
 }
 
-// ListProjects returns every Project in the cluster.
+// ListProjects returns Projects the caller has access to. Admins and platform
+// viewers see all projects; regular members see only projects where they hold
+// a ProjectMember.
 func (s *Server) ListProjects(w http.ResponseWriter, r *http.Request) {
 	if !s.authorize(w, r, authz.Resource{Kind: "project"}, authz.ActionRead) {
 		return
@@ -119,19 +132,52 @@ func (s *Server) ListProjects(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+
+	principal := PrincipalFromContext(r.Context())
+
+	// Admins and platform viewers see everything.
+	if principal != nil && (principal.Role == auth.RoleAdmin || principal.Role == auth.RoleViewer) {
+		resp := make([]projectResponse, 0, len(list.Items))
+		for i := range list.Items {
+			resp = append(resp, toProjectResponse(&list.Items[i]))
+		}
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+
+	// For regular members, build a set of projects where this user has membership.
+	var allMembers mortisev1alpha1.ProjectMemberList
+	if err := s.client.List(r.Context(), &allMembers,
+		client.MatchingLabels{"mortise.dev/member": "true"},
+	); err != nil {
+		writeError(w, err)
+		return
+	}
+	memberProjects := make(map[string]bool, len(allMembers.Items))
+	if principal != nil {
+		for _, m := range allMembers.Items {
+			if m.Spec.Email == principal.Email {
+				memberProjects[m.Spec.Project] = true
+			}
+		}
+	}
+
 	resp := make([]projectResponse, 0, len(list.Items))
 	for i := range list.Items {
-		resp = append(resp, toProjectResponse(&list.Items[i]))
+		if memberProjects[list.Items[i].Name] {
+			resp = append(resp, toProjectResponse(&list.Items[i]))
+		}
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
 
 // GetProject returns a single Project.
 func (s *Server) GetProject(w http.ResponseWriter, r *http.Request) {
-	if !s.authorize(w, r, authz.Resource{Kind: "project"}, authz.ActionRead) {
+	projectName := chi.URLParam(r, "project")
+	if !s.authorize(w, r, authz.Resource{Kind: "project", Project: projectName}, authz.ActionRead) {
 		return
 	}
-	name := chi.URLParam(r, "project")
+	name := projectName
 
 	var project mortisev1alpha1.Project
 	if err := s.client.Get(r.Context(), types.NamespacedName{Name: name}, &project); err != nil {
@@ -145,11 +191,12 @@ func (s *Server) GetProject(w http.ResponseWriter, r *http.Request) {
 // tearing down the backing namespace, which cascades to every App inside.
 // Admin-only.
 func (s *Server) DeleteProject(w http.ResponseWriter, r *http.Request) {
-	if !s.authorize(w, r, authz.Resource{Kind: "project"}, authz.ActionDelete) {
+	projectName := chi.URLParam(r, "project")
+	if !s.authorize(w, r, authz.Resource{Kind: "project", Project: projectName}, authz.ActionDelete) {
 		return
 	}
 
-	name := chi.URLParam(r, "project")
+	name := projectName
 
 	var project mortisev1alpha1.Project
 	if err := s.client.Get(r.Context(), types.NamespacedName{Name: name}, &project); err != nil {

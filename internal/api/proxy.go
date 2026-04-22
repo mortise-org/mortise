@@ -41,7 +41,8 @@ func newAppProxyManager() *appProxyManager {
 //
 // POST /api/projects/{project}/apps/{app}/connect
 func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
-	if !s.authorize(w, r, authz.Resource{Kind: "app"}, authz.ActionRead) {
+	projectName := chi.URLParam(r, "project")
+	if !s.authorize(w, r, authz.Resource{Kind: "app", Project: projectName}, authz.ActionRead) {
 		return
 	}
 	log := logf.FromContext(r.Context())
@@ -125,10 +126,10 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 //
 // POST /api/projects/{project}/apps/{app}/disconnect
 func (s *Server) handleDisconnect(w http.ResponseWriter, r *http.Request) {
-	if !s.authorize(w, r, authz.Resource{Kind: "app"}, authz.ActionRead) {
+	projectName := chi.URLParam(r, "project")
+	if !s.authorize(w, r, authz.Resource{Kind: "app", Project: projectName}, authz.ActionRead) {
 		return
 	}
-	projectName := chi.URLParam(r, "project")
 	appName := chi.URLParam(r, "app")
 	key := projectName + "/" + appName
 

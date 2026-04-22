@@ -14,10 +14,6 @@ const (
 	// Deprecated: use ControlNamespacePrefix.
 	ProjectNamespacePrefix = ControlNamespacePrefix
 
-	// DefaultTeamName is the required metadata.name for the singleton Team in v1.
-	// Every v1 user is bound to this team.
-	DefaultTeamName = "default-team"
-
 	// MaxNamespaceLen is the Kubernetes DNS-label cap for namespace names.
 	MaxNamespaceLen = 63
 )

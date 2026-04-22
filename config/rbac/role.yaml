@@ -75,7 +75,6 @@ rules:
   - platformconfigs
   - previewenvironments
   - projects
-  - teams
   verbs:
   - create
   - delete
@@ -92,7 +91,6 @@ rules:
   - platformconfigs/finalizers
   - previewenvironments/finalizers
   - projects/finalizers
-  - teams/finalizers
   verbs:
   - update
 - apiGroups:
@@ -103,7 +101,6 @@ rules:
   - platformconfigs/status
   - previewenvironments/status
   - projects/status
-  - teams/status
   verbs:
   - get
   - patch

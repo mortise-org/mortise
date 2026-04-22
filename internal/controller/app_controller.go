@@ -352,15 +352,24 @@ func (r *AppReconciler) reconcileGitSource(ctx context.Context, app *mortisev1al
 	}
 
 	createdBy := app.Annotations["mortise.dev/created-by"]
-	if createdBy == "" {
-		return ctrl.Result{}, false, r.setFailedCondition(ctx, app, "MissingOwner",
-			"app has no mortise.dev/created-by annotation — cannot resolve git credentials")
-	}
+	cachedOwner := app.Annotations["mortise.dev/git-token-owner"]
 
-	token, err := git.ResolveGitToken(ctx, r.Client, gp.Name, createdBy)
+	tokenResult, err := git.ResolveGitTokenForApp(ctx, r.Client, gp.Name, app.Namespace, createdBy, cachedOwner)
 	if err != nil {
 		return ctrl.Result{}, false, r.setFailedCondition(ctx, app, "GitAuthFailed",
-			fmt.Sprintf("git token not available for user %s — reconnect from your profile: %v", createdBy, err))
+			fmt.Sprintf("no valid git token found for any project member: %v", err))
+	}
+	token := tokenResult.Token
+
+	// Cache the working token owner so next reconcile skips the member search.
+	if tokenResult.Email != cachedOwner {
+		if app.Annotations == nil {
+			app.Annotations = make(map[string]string)
+		}
+		app.Annotations["mortise.dev/git-token-owner"] = tokenResult.Email
+		if err := r.Update(ctx, app); err != nil {
+			log.Error(err, "failed to cache git-token-owner annotation")
+		}
 	}
 
 	// Register webhook on the repo if not already done. One webhook per repo

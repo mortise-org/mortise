@@ -70,15 +70,27 @@ func TestCreateProjectInvalidName(t *testing.T) {
 	}
 }
 
-// TestCreateProjectAsMemberForbidden verifies members cannot create projects.
-func TestCreateProjectAsMemberForbidden(t *testing.T) {
+// TestCreateProjectAsMember verifies members can create projects.
+func TestCreateProjectAsMember(t *testing.T) {
 	k8sClient := setupEnvtest(t)
 	srv, _ := newTestServerAs(t, k8sClient, auth.RoleMember)
 	h := srv.Handler()
 
+	w := doRequest(h, http.MethodPost, "/api/projects", map[string]any{"name": "member-proj"})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201 for member creating project, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestCreateProjectAsViewerForbidden verifies platform viewers cannot create projects.
+func TestCreateProjectAsViewerForbidden(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv, _ := newTestServerAs(t, k8sClient, auth.RoleViewer)
+	h := srv.Handler()
+
 	w := doRequest(h, http.MethodPost, "/api/projects", map[string]any{"name": "blocked"})
 	if w.Code != http.StatusForbidden {
-		t.Fatalf("expected 403 for member creating project, got %d: %s", w.Code, w.Body.String())
+		t.Fatalf("expected 403 for viewer creating project, got %d: %s", w.Code, w.Body.String())
 	}
 }
 
@@ -95,12 +107,15 @@ func TestDeleteProjectAsMemberForbidden(t *testing.T) {
 	}
 }
 
-// TestListProjectsAsMember verifies members can list projects (read-only access).
+// TestListProjectsAsMember verifies members only see projects they belong to.
 func TestListProjectsAsMember(t *testing.T) {
 	k8sClient := setupEnvtest(t)
 	seedProject(t, k8sClient, "visible")
+	seedProject(t, k8sClient, "hidden")
 	srv, _ := newTestServerAs(t, k8sClient, auth.RoleMember)
 	h := srv.Handler()
+
+	seedProjectMember(t, k8sClient, "visible", "member@example.com", mortisev1alpha1.ProjectRoleDeveloper)
 
 	w := doRequest(h, http.MethodGet, "/api/projects", nil)
 	if w.Code != http.StatusOK {
@@ -109,20 +124,35 @@ func TestListProjectsAsMember(t *testing.T) {
 	var projects []map[string]any
 	_ = json.NewDecoder(w.Body).Decode(&projects)
 	if len(projects) != 1 {
-		t.Fatalf("expected 1 project, got %d", len(projects))
+		t.Fatalf("expected 1 project (only the one with membership), got %d", len(projects))
 	}
 }
 
-// TestGetProjectAsMember verifies members can read a single project.
+// TestGetProjectAsMember verifies project members can read a single project.
 func TestGetProjectAsMember(t *testing.T) {
 	k8sClient := setupEnvtest(t)
 	seedProject(t, k8sClient, "readable")
 	srv, _ := newTestServerAs(t, k8sClient, auth.RoleMember)
 	h := srv.Handler()
 
+	seedProjectMember(t, k8sClient, "readable", "member@example.com", mortisev1alpha1.ProjectRoleViewer)
+
 	w := doRequest(h, http.MethodGet, "/api/projects/readable", nil)
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200 for member getting project, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestGetProjectNonMemberForbidden verifies non-members cannot read a project.
+func TestGetProjectNonMemberForbidden(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	seedProject(t, k8sClient, "private")
+	srv, _ := newTestServerAs(t, k8sClient, auth.RoleMember)
+	h := srv.Handler()
+
+	w := doRequest(h, http.MethodGet, "/api/projects/private", nil)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for non-member, got %d: %s", w.Code, w.Body.String())
 	}
 }
 

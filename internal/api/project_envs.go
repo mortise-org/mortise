@@ -58,7 +58,8 @@ type patchProjectEnvRequest struct {
 //
 // GET /api/projects/{project}/environments
 func (s *Server) ListProjectEnvironments(w http.ResponseWriter, r *http.Request) {
-	if !s.authorize(w, r, authz.Resource{Kind: "project"}, authz.ActionRead) {
+	projectName := chi.URLParam(r, "project")
+	if !s.authorize(w, r, authz.Resource{Kind: "project", Project: projectName}, authz.ActionRead) {
 		return
 	}
 	project, ok := s.getProject(w, r)
@@ -92,7 +93,8 @@ func (s *Server) ListProjectEnvironments(w http.ResponseWriter, r *http.Request)
 //
 // POST /api/projects/{project}/environments  { "name": "staging" }
 func (s *Server) CreateProjectEnvironment(w http.ResponseWriter, r *http.Request) {
-	if !s.authorize(w, r, authz.Resource{Kind: "project"}, authz.ActionCreate) {
+	projectName := chi.URLParam(r, "project")
+	if !s.authorize(w, r, authz.Resource{Kind: "project", Project: projectName}, authz.ActionCreate) {
 		return
 	}
 	project, ok := s.getProject(w, r)
@@ -139,7 +141,8 @@ func (s *Server) CreateProjectEnvironment(w http.ResponseWriter, r *http.Request
 //
 // PATCH /api/projects/{project}/environments/{name}  { "name": "stage", "displayOrder": 2 }
 func (s *Server) UpdateProjectEnvironment(w http.ResponseWriter, r *http.Request) {
-	if !s.authorize(w, r, authz.Resource{Kind: "project"}, authz.ActionUpdate) {
+	projectName := chi.URLParam(r, "project")
+	if !s.authorize(w, r, authz.Resource{Kind: "project", Project: projectName}, authz.ActionUpdate) {
 		return
 	}
 	project, ok := s.getProject(w, r)
@@ -201,7 +204,8 @@ func (s *Server) UpdateProjectEnvironment(w http.ResponseWriter, r *http.Request
 //
 // DELETE /api/projects/{project}/environments/{name}
 func (s *Server) DeleteProjectEnvironment(w http.ResponseWriter, r *http.Request) {
-	if !s.authorize(w, r, authz.Resource{Kind: "project"}, authz.ActionDelete) {
+	projectName := chi.URLParam(r, "project")
+	if !s.authorize(w, r, authz.Resource{Kind: "project", Project: projectName}, authz.ActionDelete) {
 		return
 	}
 	project, ok := s.getProject(w, r)

@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -35,7 +36,8 @@ var appGVR = schema.GroupVersionResource{
 //
 // GET /api/projects/{project}/events
 func (s *Server) handleProjectEvents(w http.ResponseWriter, r *http.Request) {
-	if !s.authorize(w, r, authz.Resource{Kind: "app"}, authz.ActionRead) {
+	projectName := chi.URLParam(r, "project")
+	if !s.authorize(w, r, authz.Resource{Kind: "app", Project: projectName}, authz.ActionRead) {
 		return
 	}
 	ns, projectName, ok := s.resolveProject(w, r)

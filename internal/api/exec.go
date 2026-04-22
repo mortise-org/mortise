@@ -36,7 +36,7 @@ func (s *Server) ExecInApp(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if !s.authorize(w, r, authz.Resource{Kind: "app"}, authz.ActionUpdate) {
+	if !s.authorize(w, r, authz.Resource{Kind: "app", Project: projectName}, authz.ActionUpdate) {
 		return
 	}
 	appName := chi.URLParam(r, "app")

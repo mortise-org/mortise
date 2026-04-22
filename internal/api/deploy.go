@@ -27,7 +27,7 @@ type deployRequest struct {
 // Deploy tokens are scoped to a specific app+environment; the handler rejects
 // mismatches.
 func (s *Server) Deploy(w http.ResponseWriter, r *http.Request) {
-	ns, _, ok := s.resolveProject(w, r)
+	ns, projectName, ok := s.resolveProject(w, r)
 	if !ok {
 		return
 	}
@@ -45,7 +45,7 @@ func (s *Server) Deploy(w http.ResponseWriter, r *http.Request) {
 
 	// Check auth: JWT principal (policy-checked) or deploy token (inline check).
 	if p := PrincipalFromContext(r.Context()); p != nil {
-		if !s.authorize(w, r, authz.Resource{Kind: "app", Namespace: ns}, authz.ActionUpdate) {
+		if !s.authorize(w, r, authz.Resource{Kind: "app", Namespace: ns, Project: projectName}, authz.ActionUpdate) {
 			return
 		}
 	} else {
@@ -56,13 +56,23 @@ func (s *Server) Deploy(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusUnauthorized, errorResponse{"missing or invalid authorization"})
 			return
 		}
-		if req.Environment == "" {
-			writeJSON(w, http.StatusBadRequest, errorResponse{"environment is required when using a deploy token"})
-			return
-		}
-		if !s.validateDeployToken(r, ns, appName, req.Environment) {
-			writeJSON(w, http.StatusUnauthorized, errorResponse{"invalid deploy token"})
-			return
+
+		if strings.HasPrefix(token, projectDeployTokenPrefix) {
+			// Project-scoped token: grants deploy to any app in the project.
+			if !s.validateProjectDeployToken(r, ns, projectName) {
+				writeJSON(w, http.StatusUnauthorized, errorResponse{"invalid deploy token"})
+				return
+			}
+		} else {
+			// Per-app+env token: requires environment and scoped to one app.
+			if req.Environment == "" {
+				writeJSON(w, http.StatusBadRequest, errorResponse{"environment is required when using a deploy token"})
+				return
+			}
+			if !s.validateDeployToken(r, ns, appName, req.Environment) {
+				writeJSON(w, http.StatusUnauthorized, errorResponse{"invalid deploy token"})
+				return
+			}
 		}
 	}
 

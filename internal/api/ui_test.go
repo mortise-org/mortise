@@ -25,7 +25,7 @@ func TestUIRootServesIndex(t *testing.T) {
 		"_app/immutable.css": &fstest.MapFile{Data: []byte("body {}")},
 	}
 
-	srv := api.NewServer(k8sClient, fake.NewClientset(), nil, nil, authProvider, jwtHelper, uiFS, authz.NewNativePolicyEngine())
+	srv := api.NewServer(k8sClient, fake.NewClientset(), nil, nil, authProvider, jwtHelper, uiFS, authz.NewNativePolicyEngine(k8sClient))
 	h := srv.Handler()
 
 	w := doRequestWithToken(h, http.MethodGet, "/", nil, "")
@@ -47,7 +47,7 @@ func TestUISPAFallback(t *testing.T) {
 		"index.html": &fstest.MapFile{Data: []byte(`<!DOCTYPE html><html><body>mortise spa</body></html>`)},
 	}
 
-	srv := api.NewServer(k8sClient, fake.NewClientset(), nil, nil, authProvider, jwtHelper, uiFS, authz.NewNativePolicyEngine())
+	srv := api.NewServer(k8sClient, fake.NewClientset(), nil, nil, authProvider, jwtHelper, uiFS, authz.NewNativePolicyEngine(k8sClient))
 	h := srv.Handler()
 
 	// Request a SPA route that doesn't exist as a file.
@@ -70,7 +70,7 @@ func TestUIDoesNotInterceptAPI(t *testing.T) {
 		"index.html": &fstest.MapFile{Data: []byte(`<html></html>`)},
 	}
 
-	srv := api.NewServer(k8sClient, fake.NewClientset(), nil, nil, authProvider, jwtHelper, uiFS, authz.NewNativePolicyEngine())
+	srv := api.NewServer(k8sClient, fake.NewClientset(), nil, nil, authProvider, jwtHelper, uiFS, authz.NewNativePolicyEngine(k8sClient))
 	h := srv.Handler()
 
 	// /api/projects should still require auth (not be caught by the UI handler).
@@ -86,7 +86,7 @@ func TestNoUIFS(t *testing.T) {
 	authProvider := auth.NewNativeAuthProvider(k8sClient)
 	jwtHelper := auth.NewJWTHelper(k8sClient)
 
-	srv := api.NewServer(k8sClient, fake.NewClientset(), nil, nil, authProvider, jwtHelper, nil, authz.NewNativePolicyEngine())
+	srv := api.NewServer(k8sClient, fake.NewClientset(), nil, nil, authProvider, jwtHelper, nil, authz.NewNativePolicyEngine(k8sClient))
 	h := srv.Handler()
 
 	// Root should 404 since no UI is mounted.

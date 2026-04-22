@@ -33,7 +33,8 @@ type podSummary struct {
 //
 // GET /api/projects/{project}/apps/{app}/pods?env={env}
 func (s *Server) handleListPods(w http.ResponseWriter, r *http.Request) {
-	if !s.authorize(w, r, authz.Resource{Kind: "app"}, authz.ActionRead) {
+	projectName := chi.URLParam(r, "project")
+	if !s.authorize(w, r, authz.Resource{Kind: "app", Project: projectName}, authz.ActionRead) {
 		return
 	}
 	ns, projectName, ok := s.resolveProject(w, r)

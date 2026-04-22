@@ -2,8 +2,8 @@
 	import { onMount } from 'svelte';
 	import { api } from '$lib/api';
 	import { store } from '$lib/store.svelte';
-	import type { GitProviderSummary, PlatformResponse } from '$lib/types';
-	import { GitBranch, Plus, Trash2, Check, Loader2, Lock } from 'lucide-svelte';
+	import type { GitProviderSummary, PlatformResponse, PlatformUser } from '$lib/types';
+	import { GitBranch, Plus, Trash2, Check, Loader2, Lock, Copy } from 'lucide-svelte';
 
 	let platform = $state<PlatformResponse | null>(null);
 	let providers = $state<GitProviderSummary[]>([]);
@@ -29,6 +29,93 @@
 	let buildkitAddress = $state('');
 	let buildkitPlatform = $state('linux/amd64');
 	let savingBuild = $state(false);
+
+	// Users (admin only)
+	let users = $state<PlatformUser[]>([]);
+	let loadingUsers = $state(false);
+	let showNewUserForm = $state(false);
+	let newUserEmail = $state('');
+	let newUserPassword = $state('');
+	let newUserRole = $state<'admin' | 'member' | 'viewer'>('member');
+	let creatingUser = $state(false);
+	let createdUserPassword = $state<string | null>(null);
+	let copiedPassword = $state(false);
+	let usersError = $state('');
+
+	function generatePassword(): string {
+		const bytes = new Uint8Array(16);
+		crypto.getRandomValues(bytes);
+		return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
+	}
+
+	async function loadUsers() {
+		loadingUsers = true;
+		usersError = '';
+		try {
+			users = await api.listUsers();
+		} catch (e) {
+			usersError = e instanceof Error ? e.message : 'Failed to load users';
+			users = [];
+		} finally {
+			loadingUsers = false;
+		}
+	}
+
+	function openNewUserForm() {
+		showNewUserForm = true;
+		newUserEmail = '';
+		newUserPassword = generatePassword();
+		newUserRole = 'member';
+		createdUserPassword = null;
+		usersError = '';
+	}
+
+	async function handleCreateUser() {
+		if (!newUserEmail.trim() || !newUserPassword) return;
+		creatingUser = true;
+		usersError = '';
+		try {
+			const user = await api.createUser(newUserEmail.trim(), newUserPassword, newUserRole);
+			createdUserPassword = newUserPassword;
+			users = [...users, user];
+			showNewUserForm = false;
+		} catch (e) {
+			usersError = e instanceof Error ? e.message : 'Failed to create user';
+		} finally {
+			creatingUser = false;
+		}
+	}
+
+	async function handleUpdateUserRole(email: string, role: 'admin' | 'member' | 'viewer') {
+		const prev = users;
+		users = users.map(u => u.email === email ? { ...u, role } : u);
+		try {
+			await api.updateUserRole(email, role);
+		} catch (e) {
+			users = prev;
+			usersError = e instanceof Error ? e.message : 'Failed to update role';
+		}
+	}
+
+	async function handleDeleteUser(email: string) {
+		if (!confirm(`Delete user "${email}"? This cannot be undone.`)) return;
+		const prev = users;
+		users = users.filter(u => u.email !== email);
+		try {
+			await api.deleteUser(email);
+		} catch (e) {
+			users = prev;
+			usersError = e instanceof Error ? e.message : 'Failed to delete user';
+		}
+	}
+
+	async function copyPassword(text: string) {
+		try {
+			await navigator.clipboard.writeText(text);
+			copiedPassword = true;
+			setTimeout(() => (copiedPassword = false), 1500);
+		} catch { /* ignore */ }
+	}
 
 	// --- Add Provider Modal ---
 	type ProviderType = 'github' | 'gitlab' | 'gitea';
@@ -240,12 +327,14 @@
 
 	onMount(async () => {
 		try {
-			const [plat, provs] = await Promise.all([
+			const [plat, provs, userList] = await Promise.all([
 				store.isAdmin ? api.getPlatform().catch(() => null) : Promise.resolve(null),
-				api.listGitProviders().catch(() => [])
+				api.listGitProviders().catch(() => []),
+				store.isAdmin ? api.listUsers().catch(() => []) : Promise.resolve([])
 			]);
 			platform = plat;
 			providers = provs;
+			users = userList ?? [];
 			if (platform) {
 				domain = platform.domain ?? '';
 				tlsClusterIssuer = platform.tls?.certManagerClusterIssuer ?? '';
@@ -491,10 +580,115 @@
 
 		<!-- Users -->
 		<section id="users" class="mb-8 space-y-4" style:display={sectionVisible('users') ? '' : 'none'}>
-			<h2 class="border-b border-surface-600 pb-2 text-sm font-medium text-gray-300">Users &amp; Invites</h2>
-			<div class="rounded-md border border-surface-600 bg-surface-800/50 p-4 text-sm text-gray-400">
-				<p>User management is handled per-project. To invite users to a project, go to <strong class="text-white">Project Settings &rarr; Members</strong>.</p>
+			<div class="flex items-center justify-between border-b border-surface-600 pb-2">
+				<h2 class="text-sm font-medium text-gray-300">Users</h2>
+				<button
+					type="button"
+					onclick={openNewUserForm}
+					class="flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-white hover:bg-accent-hover"
+				>
+					<Plus class="h-3.5 w-3.5" /> Add User
+				</button>
 			</div>
+
+			<p class="text-xs text-gray-500">Manage platform users. Assign roles to control access across the platform. Project-level access is managed per-project in Members settings.</p>
+
+			{#if usersError}
+				<div class="rounded-md bg-danger/10 px-3 py-2 text-sm text-danger">{usersError}</div>
+			{/if}
+
+			{#if createdUserPassword}
+				<div class="rounded-md border border-success/30 bg-success/10 p-3">
+					<p class="mb-1 text-xs font-medium text-success">User created. Copy the password now -- it will not be shown again.</p>
+					<div class="flex items-center gap-2">
+						<code class="flex-1 truncate rounded bg-surface-800 px-2 py-1 font-mono text-xs text-gray-300">{createdUserPassword}</code>
+						<button type="button" onclick={() => copyPassword(createdUserPassword!)}
+							class="text-gray-400 hover:text-white" aria-label="Copy password">
+							{#if copiedPassword}<Check class="h-3.5 w-3.5 text-success" />{:else}<Copy class="h-3.5 w-3.5" />{/if}
+						</button>
+					</div>
+				</div>
+			{/if}
+
+			{#if showNewUserForm}
+				<div class="rounded-md border border-surface-600 bg-surface-800 p-4 space-y-3">
+					<h3 class="text-sm font-medium text-white">New user</h3>
+					<div>
+						<label class="block text-xs text-gray-500 mb-1" for="new-user-email">Email</label>
+						<input id="new-user-email" type="email" bind:value={newUserEmail} placeholder="user@example.com"
+							class="w-full rounded-md border border-surface-600 bg-surface-900 px-3 py-2 text-sm text-white placeholder-gray-500 outline-none focus:border-accent" />
+					</div>
+					<div>
+						<label class="block text-xs text-gray-500 mb-1" for="new-user-password">Password (auto-generated)</label>
+						<div class="flex gap-2">
+							<input id="new-user-password" type="text" bind:value={newUserPassword} readonly
+								class="flex-1 rounded-md border border-surface-600 bg-surface-900 px-3 py-2 text-sm text-white font-mono outline-none" />
+							<button type="button" onclick={() => { newUserPassword = generatePassword(); }}
+								class="rounded-md border border-surface-600 px-2.5 py-1.5 text-xs text-gray-400 hover:bg-surface-600 hover:text-white">
+								Regenerate
+							</button>
+						</div>
+					</div>
+					<div>
+						<label class="block text-xs text-gray-500 mb-1" for="new-user-role">Role</label>
+						<select id="new-user-role" bind:value={newUserRole}
+							class="w-full rounded-md border border-surface-600 bg-surface-900 px-3 py-2 text-sm text-white outline-none focus:border-accent">
+							<option value="admin">Admin</option>
+							<option value="member">Member</option>
+							<option value="viewer">Viewer</option>
+						</select>
+					</div>
+					<div class="flex gap-2">
+						<button type="button" onclick={handleCreateUser} disabled={creatingUser || !newUserEmail.trim()}
+							class="rounded-md bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent-hover disabled:opacity-50">
+							{creatingUser ? 'Creating...' : 'Create user'}
+						</button>
+						<button type="button" onclick={() => { showNewUserForm = false; }}
+							class="rounded-md border border-surface-600 px-4 py-2 text-sm text-gray-400 hover:bg-surface-700 hover:text-white">
+							Cancel
+						</button>
+					</div>
+				</div>
+			{/if}
+
+			{#if loadingUsers}
+				<div class="h-20 animate-pulse rounded bg-surface-700"></div>
+			{:else if users.length === 0}
+				<div class="rounded-md border border-dashed border-surface-600 p-6 text-center">
+					<p class="text-sm text-gray-500">No users yet. Click "Add User" to create one.</p>
+				</div>
+			{:else}
+				<div class="space-y-1.5">
+					{#each users as u}
+						<div class="flex items-center justify-between rounded-md border border-surface-600 bg-surface-800 px-4 py-3">
+							<div class="flex-1 min-w-0">
+								<p class="text-sm text-white truncate">{u.email}</p>
+							</div>
+							<div class="flex items-center gap-3">
+								<select
+									value={u.role}
+									onchange={(e) => handleUpdateUserRole(u.email, (e.target as HTMLSelectElement).value as 'admin' | 'member' | 'viewer')}
+									disabled={u.email === store.user?.email}
+									class="rounded-md border border-surface-600 bg-surface-900 px-2 py-1 text-xs text-white outline-none focus:border-accent disabled:opacity-50"
+								>
+									<option value="admin">Admin</option>
+									<option value="member">Member</option>
+									<option value="viewer">Viewer</option>
+								</select>
+								<button
+									type="button"
+									onclick={() => handleDeleteUser(u.email)}
+									disabled={u.email === store.user?.email}
+									class="rounded-md p-1.5 text-gray-500 hover:bg-surface-600 hover:text-danger disabled:opacity-30 disabled:cursor-not-allowed"
+									title={u.email === store.user?.email ? 'Cannot delete yourself' : 'Delete user'}
+								>
+									<Trash2 class="h-4 w-4" />
+								</button>
+							</div>
+						</div>
+					{/each}
+				</div>
+			{/if}
 		</section>
 	{/if}
 </div>

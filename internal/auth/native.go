@@ -14,7 +14,6 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/MC-Meesh/mortise/internal/constants"
 )
 
 const (
@@ -163,7 +162,6 @@ func (n *NativeAuthProvider) CreateUser(ctx context.Context, email, password str
 			"email":         []byte(email),
 			"password_hash": hash,
 			"role":          []byte(role),
-			"team_ref":      []byte(constants.DefaultTeamName),
 		},
 	}
 

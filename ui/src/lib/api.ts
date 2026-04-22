@@ -14,9 +14,9 @@ import type {
 	DomainsResponse,
 	GitHubStatusResponse,
 	GitProviderSummary,
-	InviteResponse,
 	Notification,
 	PlatformResponse,
+	PlatformUser,
 	PreviewSummary,
 	Pod,
 	Project,
@@ -92,7 +92,7 @@ export const api = {
 	updateProjectEnvironment: (
 		project: string,
 		currentName: string,
-		patch: { name?: string; displayOrder?: number }
+		patch: { name?: string; displayOrder?: number; restricted?: boolean }
 	) =>
 		request<ProjectEnvironment>(`/projects/${enc(project)}/environments/${enc(currentName)}`, {
 			method: 'PATCH',
@@ -386,13 +386,49 @@ export const api = {
 	// --- project members ---
 	listMembers: (project: string) =>
 		request<ProjectMember[]>(`/projects/${enc(project)}/members`),
-	inviteMember: (project: string, email: string, role: 'admin' | 'member') =>
-		request<InviteResponse>(`/projects/${enc(project)}/members`, {
+	addMember: (project: string, email: string, role: 'owner' | 'developer' | 'viewer') =>
+		request<ProjectMember>(`/projects/${enc(project)}/members`, {
 			method: 'POST',
 			body: JSON.stringify({ email, role })
 		}),
+	updateMember: (project: string, email: string, role: 'owner' | 'developer' | 'viewer') =>
+		request<ProjectMember>(`/projects/${enc(project)}/members/${enc(email)}`, {
+			method: 'PATCH',
+			body: JSON.stringify({ role })
+		}),
 	removeMember: (project: string, email: string) =>
 		request<void>(`/projects/${enc(project)}/members/${enc(email)}`, {
+			method: 'DELETE'
+		}),
+
+	// --- admin user management ---
+	listUsers: () =>
+		request<PlatformUser[]>('/admin/users'),
+	createUser: (email: string, password: string, role: 'admin' | 'member' | 'viewer') =>
+		request<PlatformUser>('/admin/users', {
+			method: 'POST',
+			body: JSON.stringify({ email, password, role })
+		}),
+	updateUserRole: (email: string, role: 'admin' | 'member' | 'viewer') =>
+		request<PlatformUser>(`/admin/users/${enc(email)}`, {
+			method: 'PATCH',
+			body: JSON.stringify({ role })
+		}),
+	deleteUser: (email: string) =>
+		request<void>(`/admin/users/${enc(email)}`, {
+			method: 'DELETE'
+		}),
+
+	// --- project deploy tokens ---
+	listProjectTokens: (project: string) =>
+		request<any[]>(`/projects/${enc(project)}/tokens`),
+	createProjectToken: (project: string, description: string) =>
+		request<any>(`/projects/${enc(project)}/tokens`, {
+			method: 'POST',
+			body: JSON.stringify({ description })
+		}),
+	deleteProjectToken: (project: string, tokenName: string) =>
+		request<void>(`/projects/${enc(project)}/tokens/${enc(tokenName)}`, {
 			method: 'DELETE'
 		}),
 

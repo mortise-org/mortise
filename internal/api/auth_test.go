@@ -24,7 +24,7 @@ func TestAuthStatusSetupRequired(t *testing.T) {
 
 	authProvider := auth.NewNativeAuthProvider(k8sClient)
 	jwtHelper := auth.NewJWTHelper(k8sClient)
-	srv := api.NewServer(k8sClient, fake.NewClientset(), nil, nil, authProvider, jwtHelper, nil, authz.NewNativePolicyEngine())
+	srv := api.NewServer(k8sClient, fake.NewClientset(), nil, nil, authProvider, jwtHelper, nil, authz.NewNativePolicyEngine(k8sClient))
 	h := srv.Handler()
 
 	w := doRequestWithToken(h, http.MethodGet, "/api/auth/status", nil, "")
@@ -59,7 +59,7 @@ func TestSetupCreatesAdmin(t *testing.T) {
 
 	authProvider := auth.NewNativeAuthProvider(k8sClient)
 	jwtHelper := auth.NewJWTHelper(k8sClient)
-	srv := api.NewServer(k8sClient, fake.NewClientset(), nil, nil, authProvider, jwtHelper, nil, authz.NewNativePolicyEngine())
+	srv := api.NewServer(k8sClient, fake.NewClientset(), nil, nil, authProvider, jwtHelper, nil, authz.NewNativePolicyEngine(k8sClient))
 	h := srv.Handler()
 
 	body := map[string]any{"email": "admin@example.com", "password": "initialpass"}
@@ -93,7 +93,7 @@ func TestLoginValid(t *testing.T) {
 		t.Fatalf("create user: %v", err)
 	}
 
-	srv := api.NewServer(k8sClient, fake.NewClientset(), nil, nil, authProvider, jwtHelper, nil, authz.NewNativePolicyEngine())
+	srv := api.NewServer(k8sClient, fake.NewClientset(), nil, nil, authProvider, jwtHelper, nil, authz.NewNativePolicyEngine(k8sClient))
 	h := srv.Handler()
 
 	body := map[string]any{"email": "user@example.com", "password": "secret123"}
@@ -122,7 +122,7 @@ func TestLoginInvalidCredentials(t *testing.T) {
 		t.Fatalf("create user: %v", err)
 	}
 
-	srv := api.NewServer(k8sClient, fake.NewClientset(), nil, nil, authProvider, jwtHelper, nil, authz.NewNativePolicyEngine())
+	srv := api.NewServer(k8sClient, fake.NewClientset(), nil, nil, authProvider, jwtHelper, nil, authz.NewNativePolicyEngine(k8sClient))
 	h := srv.Handler()
 
 	body := map[string]any{"email": "user@example.com", "password": "wrongpass"}
@@ -140,7 +140,7 @@ func TestProtectedRouteRequiresToken(t *testing.T) {
 
 	authProvider := auth.NewNativeAuthProvider(k8sClient)
 	jwtHelper := auth.NewJWTHelper(k8sClient)
-	srv := api.NewServer(k8sClient, fake.NewClientset(), nil, nil, authProvider, jwtHelper, nil, authz.NewNativePolicyEngine())
+	srv := api.NewServer(k8sClient, fake.NewClientset(), nil, nil, authProvider, jwtHelper, nil, authz.NewNativePolicyEngine(k8sClient))
 	h := srv.Handler()
 
 	w := doRequestWithToken(h, http.MethodGet, "/api/projects", nil, "")
@@ -168,7 +168,7 @@ func TestProtectedRouteAcceptsValidToken(t *testing.T) {
 	principal, _ := authProvider.Authenticate(ctx, auth.Credentials{Email: "user@example.com", Password: "pass123"})
 	token, _ := jwtHelper.GenerateToken(ctx, principal)
 
-	srv := api.NewServer(k8sClient, fake.NewClientset(), nil, nil, authProvider, jwtHelper, nil, authz.NewNativePolicyEngine())
+	srv := api.NewServer(k8sClient, fake.NewClientset(), nil, nil, authProvider, jwtHelper, nil, authz.NewNativePolicyEngine(k8sClient))
 	h := srv.Handler()
 
 	w := doRequestWithToken(h, http.MethodGet, "/api/projects", nil, token)

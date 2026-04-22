@@ -36,7 +36,8 @@ type patchEnvRequest struct {
 // GetEnv returns env vars for a specific environment on an app.
 // Reads from the {app}-env Secret in the env namespace.
 func (s *Server) GetEnv(w http.ResponseWriter, r *http.Request) {
-	if !s.authorize(w, r, authz.Resource{Kind: "app"}, authz.ActionRead) {
+	projectName := chi.URLParam(r, "project")
+	if !s.authorize(w, r, authz.Resource{Kind: "app", Project: projectName}, authz.ActionRead) {
 		return
 	}
 	app, envName, ok := s.resolveAppEnv(w, r)
@@ -66,7 +67,8 @@ func (s *Server) GetEnv(w http.ResponseWriter, r *http.Request) {
 // PutEnv replaces all env vars for a specific environment on an app.
 // Writes to the {app}-env Secret in the env namespace.
 func (s *Server) PutEnv(w http.ResponseWriter, r *http.Request) {
-	if !s.authorize(w, r, authz.Resource{Kind: "app"}, authz.ActionUpdate) {
+	projectName := chi.URLParam(r, "project")
+	if !s.authorize(w, r, authz.Resource{Kind: "app", Project: projectName}, authz.ActionUpdate) {
 		return
 	}
 	app, envName, ok := s.resolveAppEnv(w, r)
@@ -132,7 +134,8 @@ func (s *Server) PutEnv(w http.ResponseWriter, r *http.Request) {
 // PatchEnv does a partial update of env vars for a specific environment.
 // Reads existing vars from the Secret, applies changes, writes back.
 func (s *Server) PatchEnv(w http.ResponseWriter, r *http.Request) {
-	if !s.authorize(w, r, authz.Resource{Kind: "app"}, authz.ActionUpdate) {
+	projectName := chi.URLParam(r, "project")
+	if !s.authorize(w, r, authz.Resource{Kind: "app", Project: projectName}, authz.ActionUpdate) {
 		return
 	}
 	app, envName, ok := s.resolveAppEnv(w, r)
@@ -213,7 +216,8 @@ func (s *Server) PatchEnv(w http.ResponseWriter, r *http.Request) {
 
 // ImportEnv parses a .env file body and merges into the environment's env vars.
 func (s *Server) ImportEnv(w http.ResponseWriter, r *http.Request) {
-	if !s.authorize(w, r, authz.Resource{Kind: "app"}, authz.ActionUpdate) {
+	projectName := chi.URLParam(r, "project")
+	if !s.authorize(w, r, authz.Resource{Kind: "app", Project: projectName}, authz.ActionUpdate) {
 		return
 	}
 	app, envName, ok := s.resolveAppEnv(w, r)
@@ -268,7 +272,8 @@ func (s *Server) ImportEnv(w http.ResponseWriter, r *http.Request) {
 // Reads from the shared-vars Secret in the control namespace (source of truth).
 // The controller materializes these into shared-env in each env namespace.
 func (s *Server) GetSharedVars(w http.ResponseWriter, r *http.Request) {
-	if !s.authorize(w, r, authz.Resource{Kind: "app"}, authz.ActionRead) {
+	projectName := chi.URLParam(r, "project")
+	if !s.authorize(w, r, authz.Resource{Kind: "app", Project: projectName}, authz.ActionRead) {
 		return
 	}
 	project, ok := s.getProject(w, r)
@@ -296,7 +301,8 @@ func (s *Server) GetSharedVars(w http.ResponseWriter, r *http.Request) {
 // The controller materializes these into shared-env in each env namespace
 // on the next reconcile of any app in the project.
 func (s *Server) PutSharedVars(w http.ResponseWriter, r *http.Request) {
-	if !s.authorize(w, r, authz.Resource{Kind: "app"}, authz.ActionUpdate) {
+	projectName := chi.URLParam(r, "project")
+	if !s.authorize(w, r, authz.Resource{Kind: "app", Project: projectName}, authz.ActionUpdate) {
 		return
 	}
 	project, ok := s.getProject(w, r)
