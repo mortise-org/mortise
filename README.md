@@ -97,6 +97,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for system diagrams.
 | [ARCHITECTURE.md](ARCHITECTURE.md) | System diagrams and interface contracts |
 | [CLAUDE.md](CLAUDE.md) | Project conventions and architecture rules |
 | [DEVELOPMENT.md](DEVELOPMENT.md) | Local dev loop, tests, troubleshooting |
+| [RELEASING.md](RELEASING.md) | How to cut a release; image/chart conventions |
 | [PROGRESS.md](PROGRESS.md) | What's implemented vs what's left |
 
 ## Integration Recipes

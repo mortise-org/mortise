@@ -29,6 +29,16 @@ old state, your task isn't done.
 Do not write progress info into this file (`CLAUDE.md`) or into
 `README.md` — they drift. Put it in `PROGRESS.md`.
 
+## Releases
+
+See `RELEASING.md` for the full convention. Short version: one semver
+git tag (`v0.1.1`) triggers the `release.yml` workflow, which builds a
+multi-arch image (`ghcr.io/mortise-org/mortise:0.1.1`), stamps and
+packages both charts, publishes to `gh-pages`, and creates a GitHub
+Release. Chart version, `appVersion`, and image tag are always the same
+number. Never edit `Chart.yaml` `version:` or `appVersion:` by hand —
+CI owns them.
+
 ## Tech stack
 
 - **Operator + API:** Go, kubebuilder, controller-runtime
