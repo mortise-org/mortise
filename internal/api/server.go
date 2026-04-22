@@ -11,6 +11,7 @@ import (
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+	metricsv1beta1 "k8s.io/metrics/pkg/client/clientset/versioned/typed/metrics/v1beta1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/mortise-org/mortise/internal/auth"
@@ -37,6 +38,7 @@ type Server struct {
 	deviceFlow    *DeviceFlowHandler
 	authz         authz.PolicyEngine
 	buildLogs     BuildLogProvider
+	metricsClient metricsv1beta1.MetricsV1beta1Interface
 	proxies       *appProxyManager
 }
 
@@ -49,6 +51,12 @@ func (s *Server) RESTConfig() *rest.Config {
 // SetBuildLogProvider sets the build log provider (called after reconciler setup).
 func (s *Server) SetBuildLogProvider(p BuildLogProvider) {
 	s.buildLogs = p
+}
+
+// SetMetricsClient sets the metrics-server client for real-time pod metrics.
+// Pass nil if metrics-server is not installed — the handler degrades gracefully.
+func (s *Server) SetMetricsClient(mc metricsv1beta1.MetricsV1beta1Interface) {
+	s.metricsClient = mc
 }
 
 // NewServer creates a new API server.
@@ -111,7 +119,10 @@ func (s *Server) authorize(w http.ResponseWriter, r *http.Request, resource auth
 //	/api/projects/{project}/apps/{app}/promote                    promote image between envs
 //	/api/projects/{project}/events                                 SSE project event stream
 //	/api/projects/{project}/apps/{app}/logs                        SSE log stream
+//	/api/projects/{project}/apps/{app}/logs/history                historical log query (adapter proxy)
 //	/api/projects/{project}/apps/{app}/pods                        list pod summaries
+//	/api/projects/{project}/apps/{app}/metrics/current             real-time pod metrics
+//	/api/projects/{project}/apps/{app}/metrics                     historical metrics (adapter proxy)
 //	/api/projects/{project}/apps/{app}/secrets                     list/create
 //	/api/projects/{project}/apps/{app}/secrets/{secretName}        delete
 //	/api/projects/{project}/apps/{app}/tokens                     list/create deploy tokens
@@ -190,6 +201,9 @@ func (s *Server) Handler() http.Handler {
 			r.Post("/projects/{project}/apps/{app}/promote", s.Promote)
 			r.Get("/projects/{project}/apps/{app}/build-logs", s.handleBuildLogs)
 			r.Get("/projects/{project}/apps/{app}/pods", s.handleListPods)
+			r.Get("/projects/{project}/apps/{app}/metrics/current", s.handleMetricsCurrent)
+			r.Get("/projects/{project}/apps/{app}/metrics", s.handleMetricsHistory)
+			r.Get("/projects/{project}/apps/{app}/logs/history", s.handleLogHistory)
 			r.Post("/projects/{project}/apps/{app}/connect", s.handleConnect)
 			r.Post("/projects/{project}/apps/{app}/disconnect", s.handleDisconnect)
 

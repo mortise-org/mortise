@@ -24,7 +24,10 @@ import type {
 	ProjectMember,
 	Repository,
 	SecretResponse,
-	SharedVarEntry
+	SharedVarEntry,
+	MetricsCurrentResponse,
+	MetricsHistoryResponse,
+	LogHistoryResponse
 } from './types';
 
 const BASE = '/api';
@@ -310,7 +313,7 @@ export const api = {
 
 	// --- platform config ---
 	getPlatform: () => request<PlatformResponse>('/platform'),
-	patchPlatform: (body: Partial<{ domain: string; tls: { certManagerClusterIssuer: string }; storage: { defaultStorageClass: string }; registry: { url: string; namespace: string }; build: { buildkitAddr: string; defaultPlatform: string } }>) =>
+	patchPlatform: (body: Partial<{ domain: string; tls: { certManagerClusterIssuer: string }; storage: { defaultStorageClass: string }; registry: { url: string; namespace: string }; build: { buildkitAddr: string; defaultPlatform: string }; observability: { logsAdapterEndpoint: string; metricsAdapterEndpoint: string } }>) =>
 		request<PlatformResponse>('/platform', {
 			method: 'PATCH',
 			body: JSON.stringify(body)
@@ -443,4 +446,23 @@ export const api = {
 			method: 'PATCH',
 			body: JSON.stringify({ [key]: null })
 		}),
+
+	// --- observability ---
+	getMetricsCurrent: (project: string, app: string, env: string) =>
+		request<MetricsCurrentResponse>(
+			`/projects/${enc(project)}/apps/${enc(app)}/metrics/current?env=${enc(env)}`
+		),
+	getMetricsHistory: (project: string, app: string, env: string, start: number, end: number, step = 60) =>
+		request<MetricsHistoryResponse>(
+			`/projects/${enc(project)}/apps/${enc(app)}/metrics?env=${enc(env)}&start=${start}&end=${end}&step=${step}`
+		),
+	getLogHistory: (project: string, app: string, env: string, start: number, end: number, opts?: { limit?: number; filter?: string; before?: string }) => {
+		const params = new URLSearchParams({ env, start: String(start), end: String(end) });
+		if (opts?.limit) params.set('limit', String(opts.limit));
+		if (opts?.filter) params.set('filter', opts.filter);
+		if (opts?.before) params.set('before', opts.before);
+		return request<LogHistoryResponse>(
+			`/projects/${enc(project)}/apps/${enc(app)}/logs/history?${params}`
+		);
+	},
 };

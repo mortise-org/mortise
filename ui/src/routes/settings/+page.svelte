@@ -30,6 +30,11 @@
 	let buildkitPlatform = $state('linux/amd64');
 	let savingBuild = $state(false);
 
+	// Observability (admin only)
+	let logsAdapterEndpoint = $state('');
+	let metricsAdapterEndpoint = $state('');
+	let savingObservability = $state(false);
+
 	// Users (admin only)
 	let users = $state<PlatformUser[]>([]);
 	let loadingUsers = $state(false);
@@ -339,6 +344,8 @@
 				domain = platform.domain ?? '';
 				tlsClusterIssuer = platform.tls?.certManagerClusterIssuer ?? '';
 				defaultStorageClass = platform.storage?.defaultStorageClass ?? '';
+				logsAdapterEndpoint = platform.observability?.logsAdapterEndpoint ?? '';
+				metricsAdapterEndpoint = platform.observability?.metricsAdapterEndpoint ?? '';
 			}
 			// Check connection status for all providers
 			for (const p of providers) {
@@ -395,6 +402,13 @@
 		finally { savingTls = false; }
 	}
 
+	async function saveObservability() {
+		savingObservability = true;
+		try { await api.patchPlatform({ observability: { logsAdapterEndpoint: logsAdapterEndpoint, metricsAdapterEndpoint: metricsAdapterEndpoint } }); }
+		catch (e) { error = e instanceof Error ? e.message : 'Failed to save observability config'; }
+		finally { savingObservability = false; }
+	}
+
 	const sectionKeywords: Record<string, string[]> = {
 		'git-providers': ['git', 'provider', 'github', 'gitlab', 'gitea', 'oauth', 'connect'],
 		general: ['general', 'domain', 'platform'],
@@ -402,6 +416,7 @@
 		build: ['build', 'buildkit', 'container'],
 		storage: ['storage', 'storageclass', 'pvc', 'volume'],
 		tls: ['tls', 'cert', 'issuer', 'ssl'],
+		observability: ['observability', 'metrics', 'logs', 'adapter', 'observer', 'monitoring'],
 		users: ['users', 'invite', 'admin']
 	};
 	function sectionVisible(id: string): boolean {
@@ -574,6 +589,28 @@
 				<button type="button" onclick={saveTls} disabled={savingTls}
 					class="rounded-md bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent-hover disabled:opacity-50">
 					{savingTls ? 'Saving...' : 'Save TLS config'}
+				</button>
+			</div>
+		</section>
+
+		<!-- Observability -->
+		<section id="observability" class="mb-8 space-y-4" style:display={sectionVisible('observability') ? '' : 'none'}>
+			<h2 class="border-b border-surface-600 pb-2 text-sm font-medium text-gray-300">Observability</h2>
+			<p class="text-xs text-gray-500">Configure adapter endpoints for log and metrics history. The bundled observer is auto-configured via Helm values. Override here to use an external adapter (e.g. Loki, Prometheus).</p>
+			<div class="space-y-3 rounded-md border border-surface-600 bg-surface-800/50 p-4">
+				<div>
+					<label class="block text-xs text-gray-500 mb-1" for="obs-logs">Logs adapter endpoint</label>
+					<input id="obs-logs" type="text" bind:value={logsAdapterEndpoint} placeholder="http://mortise-observer.mortise-system.svc:9091"
+						class="w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-white placeholder-gray-500 outline-none font-mono focus:border-accent" />
+				</div>
+				<div>
+					<label class="block text-xs text-gray-500 mb-1" for="obs-metrics">Metrics adapter endpoint</label>
+					<input id="obs-metrics" type="text" bind:value={metricsAdapterEndpoint} placeholder="http://mortise-observer.mortise-system.svc:9091"
+						class="w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-white placeholder-gray-500 outline-none font-mono focus:border-accent" />
+				</div>
+				<button type="button" onclick={saveObservability} disabled={savingObservability}
+					class="rounded-md bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent-hover disabled:opacity-50">
+					{savingObservability ? 'Saving...' : 'Save observability config'}
 				</button>
 			</div>
 		</section>

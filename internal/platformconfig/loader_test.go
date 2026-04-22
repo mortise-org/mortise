@@ -140,6 +140,89 @@ func TestLoad_BadRegistrySecretRef(t *testing.T) {
 	}
 }
 
+func TestLoad_ObservabilityEndpointsOnly(t *testing.T) {
+	ctx := context.Background()
+	s := scheme(t)
+
+	pc := minimalPC()
+	pc.Spec.Observability = mortisev1alpha1.ObservabilitySpec{
+		LogsAdapterEndpoint:    "http://observer:9091",
+		MetricsAdapterEndpoint: "http://observer:9091",
+	}
+
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(pc).Build()
+
+	cfg, err := platformconfig.Load(ctx, c)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if cfg.Observability.LogsAdapterEndpoint != "http://observer:9091" {
+		t.Errorf("LogsAdapterEndpoint = %q", cfg.Observability.LogsAdapterEndpoint)
+	}
+	if cfg.Observability.MetricsAdapterEndpoint != "http://observer:9091" {
+		t.Errorf("MetricsAdapterEndpoint = %q", cfg.Observability.MetricsAdapterEndpoint)
+	}
+	if cfg.Observability.LogsAdapterToken != "" {
+		t.Errorf("LogsAdapterToken = %q, want empty", cfg.Observability.LogsAdapterToken)
+	}
+	if cfg.Observability.MetricsAdapterToken != "" {
+		t.Errorf("MetricsAdapterToken = %q, want empty", cfg.Observability.MetricsAdapterToken)
+	}
+}
+
+func TestLoad_ObservabilityWithTokens(t *testing.T) {
+	ctx := context.Background()
+	s := scheme(t)
+
+	pc := minimalPC()
+	pc.Spec.Observability = mortisev1alpha1.ObservabilitySpec{
+		LogsAdapterEndpoint: "http://loki-adapter:8080",
+		LogsAdapterTokenSecretRef: &mortisev1alpha1.SecretRef{
+			Namespace: "ns", Name: "logs-token", Key: "token",
+		},
+		MetricsAdapterEndpoint: "http://prom-adapter:8080",
+		MetricsAdapterTokenSecretRef: &mortisev1alpha1.SecretRef{
+			Namespace: "ns", Name: "metrics-token", Key: "token",
+		},
+	}
+
+	logsSecret := secret("ns", "logs-token", map[string][]byte{"token": []byte("logs-bearer")})
+	metricsSecret := secret("ns", "metrics-token", map[string][]byte{"token": []byte("metrics-bearer")})
+
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(pc, logsSecret, metricsSecret).Build()
+
+	cfg, err := platformconfig.Load(ctx, c)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if cfg.Observability.LogsAdapterToken != "logs-bearer" {
+		t.Errorf("LogsAdapterToken = %q, want logs-bearer", cfg.Observability.LogsAdapterToken)
+	}
+	if cfg.Observability.MetricsAdapterToken != "metrics-bearer" {
+		t.Errorf("MetricsAdapterToken = %q, want metrics-bearer", cfg.Observability.MetricsAdapterToken)
+	}
+}
+
+func TestLoad_ObservabilityBadTokenSecret(t *testing.T) {
+	ctx := context.Background()
+	s := scheme(t)
+
+	pc := minimalPC()
+	pc.Spec.Observability = mortisev1alpha1.ObservabilitySpec{
+		LogsAdapterEndpoint: "http://adapter:8080",
+		LogsAdapterTokenSecretRef: &mortisev1alpha1.SecretRef{
+			Namespace: "ns", Name: "missing", Key: "token",
+		},
+	}
+
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(pc).Build()
+
+	_, err := platformconfig.Load(ctx, c)
+	if err == nil {
+		t.Fatal("expected error for missing logs adapter token secret, got nil")
+	}
+}
+
 func TestLoad_BuildTLS(t *testing.T) {
 	ctx := context.Background()
 	s := scheme(t)

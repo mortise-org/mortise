@@ -44,6 +44,11 @@ type Config struct {
 	// InsecureSkipTLSVerify disables TLS certificate verification. Use only for
 	// local k3d dev clusters where the registry has a self-signed cert.
 	InsecureSkipTLSVerify bool
+
+	// PullURL is the registry URL that kubelet uses to pull images. When the
+	// bundled registry runs behind a node-local proxy, this differs from URL.
+	// If empty, URL is used for both push and pull.
+	PullURL string
 }
 
 // OCIBackend implements RegistryBackend against any OCI Distribution Spec v1.1
@@ -94,6 +99,36 @@ func (b *OCIBackend) PushTarget(app, tag string) (ImageRef, error) {
 	base, err := registryHost(b.cfg.URL)
 	if err != nil {
 		return ImageRef{}, fmt.Errorf("invalid registry URL %q: %w", b.cfg.URL, err)
+	}
+
+	path := b.imagePath(app)
+	return ImageRef{
+		Registry: base,
+		Path:     path,
+		Tag:      tag,
+		Full:     base + "/" + path + ":" + tag,
+	}, nil
+}
+
+// PullTarget returns the ImageRef that kubelet should pull from. When PullURL
+// is configured (e.g. a node-local DaemonSet proxy at localhost:30500), the
+// returned ref uses that host instead of the push registry. Falls back to
+// PushTarget when PullURL is empty.
+func (b *OCIBackend) PullTarget(app, tag string) (ImageRef, error) {
+	if b.cfg.PullURL == "" {
+		return b.PushTarget(app, tag)
+	}
+
+	if app == "" {
+		return ImageRef{}, fmt.Errorf("app name must not be empty")
+	}
+	if tag == "" {
+		return ImageRef{}, fmt.Errorf("tag must not be empty")
+	}
+
+	base, err := registryHost(b.cfg.PullURL)
+	if err != nil {
+		return ImageRef{}, fmt.Errorf("invalid pull URL %q: %w", b.cfg.PullURL, err)
 	}
 
 	path := b.imagePath(app)

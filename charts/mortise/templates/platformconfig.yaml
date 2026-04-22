@@ -10,6 +10,7 @@ spec:
   {{- if .Values.registry.enabled }}
   registry:
     url: http://{{ include "mortise.registryAddr" . }}
+    pullURL: http://{{ include "mortise.registryPullAddr" . }}
     namespace: mortise
     insecureSkipTLSVerify: true
   {{- end }}
@@ -19,5 +20,10 @@ spec:
     {{- if .Values.platformConfig.buildPlatform }}
     defaultPlatform: {{ .Values.platformConfig.buildPlatform }}
     {{- end }}
+  {{- end }}
+  {{- if .Values.observer.enabled }}
+  observability:
+    logsAdapterEndpoint: http://mortise-observer.{{ include "mortise.depsNamespace" . }}.svc:9091
+    metricsAdapterEndpoint: http://mortise-observer.{{ include "mortise.depsNamespace" . }}.svc:9091
   {{- end }}
 {{- end }}

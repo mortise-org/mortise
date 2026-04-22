@@ -171,6 +171,44 @@ var _ = Describe("PlatformConfig Controller", func() {
 		})
 	})
 
+	Context("missing observability logs adapter token secret", func() {
+		const pcName = "platform"
+
+		BeforeEach(func() {
+			pc := makePlatformConfig(pcName)
+			pc.Spec.Observability = mortisev1alpha1.ObservabilitySpec{
+				LogsAdapterEndpoint: "http://observer:9091",
+				LogsAdapterTokenSecretRef: &mortisev1alpha1.SecretRef{
+					Namespace: secretNS,
+					Name:      "missing-obs-secret",
+					Key:       "token",
+				},
+			}
+			Expect(k8sClient.Create(ctx, pc)).To(Succeed())
+		})
+
+		AfterEach(func() { deletePC(pcName) })
+
+		It("marks the PlatformConfig as Failed with SecretNotFound", func() {
+			Expect(doReconcile(pcName)).To(Succeed())
+
+			var updated mortisev1alpha1.PlatformConfig
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: pcName}, &updated)).To(Succeed())
+			Expect(updated.Status.Phase).To(Equal(mortisev1alpha1.PlatformConfigPhaseFailed))
+
+			var availableCond *metav1.Condition
+			for i := range updated.Status.Conditions {
+				if updated.Status.Conditions[i].Type == "Available" {
+					availableCond = &updated.Status.Conditions[i]
+					break
+				}
+			}
+			Expect(availableCond).NotTo(BeNil())
+			Expect(availableCond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(availableCond.Reason).To(Equal("SecretNotFound"))
+		})
+	})
+
 	Context("resource does not exist", func() {
 		It("returns nil without error", func() {
 			Expect(doReconcile("does-not-exist")).To(Succeed())

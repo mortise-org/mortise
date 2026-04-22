@@ -6,6 +6,10 @@
 registry.{{ include "mortise.depsNamespace" . }}.svc:5000
 {{- end -}}
 
+{{- define "mortise.registryPullAddr" -}}
+localhost:{{ .Values.registry.proxy.hostPort | default 30500 }}
+{{- end -}}
+
 {{- define "mortise.buildkitAddr" -}}
 tcp://buildkitd.{{ include "mortise.depsNamespace" . }}.svc:1234
 {{- end -}}

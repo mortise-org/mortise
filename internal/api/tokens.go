@@ -9,8 +9,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/mortise-org/mortise/internal/authz"
 	"github.com/go-chi/chi/v5"
+	"github.com/mortise-org/mortise/internal/authz"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -249,8 +249,8 @@ func (s *Server) validateProjectDeployToken(r *http.Request, ns, projectName str
 	if err := s.client.List(r.Context(), &list,
 		client.InNamespace(ns),
 		client.MatchingLabels{
-			"mortise.dev/deploy-token":   "true",
-			"mortise.dev/project-token":  "true",
+			"mortise.dev/deploy-token":  "true",
+			"mortise.dev/project-token": "true",
 		},
 	); err != nil {
 		return false

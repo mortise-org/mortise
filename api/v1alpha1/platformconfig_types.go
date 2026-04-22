@@ -64,6 +64,13 @@ type RegistryConfig struct {
 	// Intended for local k3d clusters only.
 	// +optional
 	InsecureSkipTLSVerify bool `json:"insecureSkipTLSVerify,omitempty"`
+
+	// PullURL is the registry URL that kubelet uses to pull images. When the
+	// bundled registry runs behind a node-local DaemonSet proxy, this differs
+	// from URL (which is used for BuildKit pushes via cluster DNS). If empty,
+	// URL is used for both push and pull.
+	// +optional
+	PullURL string `json:"pullURL,omitempty"`
 }
 
 // BuildConfig holds the BuildKit configuration.
@@ -123,6 +130,11 @@ type PlatformConfigSpec struct {
 	// ID here; otherwise the device flow uses the built-in default.
 	// +optional
 	GitHub *GitHubConfig `json:"github,omitempty"`
+
+	// Observability configures external adapter endpoints for historical logs
+	// and metrics queries.
+	// +optional
+	Observability ObservabilitySpec `json:"observability,omitempty"`
 }
 
 // GitHubConfig holds optional GitHub OAuth App overrides.
@@ -131,6 +143,31 @@ type GitHubConfig struct {
 	// When set, the device flow uses this instead of the project-maintained default.
 	// +optional
 	ClientID string `json:"clientID,omitempty"`
+}
+
+// ObservabilitySpec configures external adapter endpoints for historical log
+// queries and metrics. When set, the API proxies requests to the adapter;
+// when absent, the corresponding UI features degrade gracefully.
+type ObservabilitySpec struct {
+	// LogsAdapterEndpoint is the base URL of a service implementing the
+	// Mortise log adapter contract (GET /v1/logs).
+	// +optional
+	LogsAdapterEndpoint string `json:"logsAdapterEndpoint,omitempty"`
+
+	// LogsAdapterTokenSecretRef references a Secret containing a bearer token
+	// for authenticating with the logs adapter.
+	// +optional
+	LogsAdapterTokenSecretRef *SecretRef `json:"logsAdapterTokenSecretRef,omitempty"`
+
+	// MetricsAdapterEndpoint is the base URL of a service implementing the
+	// Mortise metrics adapter contract (GET /v1/metrics).
+	// +optional
+	MetricsAdapterEndpoint string `json:"metricsAdapterEndpoint,omitempty"`
+
+	// MetricsAdapterTokenSecretRef references a Secret containing a bearer token
+	// for authenticating with the metrics adapter.
+	// +optional
+	MetricsAdapterTokenSecretRef *SecretRef `json:"metricsAdapterTokenSecretRef,omitempty"`
 }
 
 // PlatformConfigStatus defines the observed state of PlatformConfig.

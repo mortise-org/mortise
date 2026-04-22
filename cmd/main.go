@@ -36,6 +36,7 @@ import (
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	metricsv "k8s.io/metrics/pkg/client/clientset/versioned"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
@@ -152,6 +153,7 @@ func stacksFromPlatformConfig(cfg *platformconfig.Config, log logr.Logger) stack
 			Password:              cfg.Registry.Password,
 			PullSecretName:        cfg.Registry.PullSecretName,
 			InsecureSkipTLSVerify: cfg.Registry.InsecureSkipTLSVerify,
+			PullURL:               cfg.Registry.PullURL,
 		}),
 		git: git.NewGoGitClient(),
 		TLS: cfg.TLS,
@@ -392,7 +394,7 @@ func main() {
 		setupLog.Error(err, "Failed to create controller", "controller", "PlatformConfig")
 		os.Exit(1)
 	}
-if err := (&controller.GitProviderReconciler{
+	if err := (&controller.GitProviderReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr); err != nil {
@@ -466,6 +468,11 @@ if err := (&controller.GitProviderReconciler{
 
 	apiServer := api.NewServer(mgr.GetClient(), clientset, dynamicClient, mgr.GetConfig(), authProvider, jwtHelper, uiSub, authz.NewNativePolicyEngine(mgr.GetClient()))
 	apiServer.SetBuildLogProvider(&appReconciler.Builds)
+	if mc, err := metricsv.NewForConfig(mgr.GetConfig()); err == nil {
+		apiServer.SetMetricsClient(mc.MetricsV1beta1())
+	} else {
+		setupLog.Info("metrics-server client unavailable, real-time metrics disabled", "error", err)
+	}
 	httpServer := &http.Server{Addr: apiAddr, Handler: apiServer.Handler()}
 	go func() {
 		setupLog.Info("Starting API server", "addr", apiAddr)

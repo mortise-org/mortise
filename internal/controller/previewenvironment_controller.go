@@ -295,9 +295,14 @@ func (r *PreviewEnvironmentReconciler) reconcilePreviewBuild(ctx context.Context
 			fmt.Sprintf("git token not available for user %s: %v", createdBy, err))
 	}
 
-	imageRef, err := r.RegistryBackend.PushTarget(pe.Spec.AppRef, fmt.Sprintf("pr-%d-%s", pe.Spec.PullRequest.Number, shortTag(revision)))
+	previewTag := fmt.Sprintf("pr-%d-%s", pe.Spec.PullRequest.Number, shortTag(revision))
+	imageRef, err := r.RegistryBackend.PushTarget(pe.Spec.AppRef, previewTag)
 	if err != nil {
 		return ctrl.Result{}, false, r.setPreviewFailed(ctx, pe, "PushTargetFailed", err.Error())
+	}
+	pullRef, err := r.RegistryBackend.PullTarget(pe.Spec.AppRef, previewTag)
+	if err != nil {
+		return ctrl.Result{}, false, r.setPreviewFailed(ctx, pe, "PullTargetFailed", err.Error())
 	}
 
 	// Mark as Building.
@@ -326,6 +331,7 @@ func (r *PreviewEnvironmentReconciler) reconcilePreviewBuild(ctx context.Context
 		buildArgs:    previewBuildArgs(app),
 		buildContext: buildContextOf(app),
 		imageRef:     imageRef,
+		pullImageRef: pullRef,
 	}, r.GitClient, r.BuildClient, buildRunnerOptions{
 		logName:      "preview-build",
 		tmpDirPrefix: "mortise-preview-build-*",

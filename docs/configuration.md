@@ -187,11 +187,22 @@ The one marked `(default)` is what Mortise will use unless you override it.
 
 ## Image registry
 
-Mortise includes a built-in Zot registry for storing images built from git
-source. It works out of the box with no configuration.
+Mortise includes a bundled OCI registry for storing images built from git
+source. A DaemonSet proxy runs on every node so kubelet can pull images
+via `localhost:30500` without needing cluster-internal DNS resolution.
 
-Change this only if you want builds pushed to an external registry (Docker
-Hub, GitHub Container Registry, Harbor, ECR, etc.).
+Most container runtimes need a small config snippet to allow HTTP pulls
+from localhost. See [Installing Mortise > Registry proxy](./install.md#registry-proxy-git-source-builds)
+for per-distro instructions.
+
+**Changing the proxy port:** Set `registry.proxy.hostPort` in your Helm
+values if port 30500 conflicts with something else on your nodes.
+
+**Using an external registry:** If you want builds pushed to an external
+registry (Docker Hub, GitHub Container Registry, Harbor, ECR, etc.),
+set `registry.enabled: false` in your Helm values and configure
+`PlatformConfig.spec.registry` to point at your registry. The DaemonSet
+proxy is not deployed when the bundled registry is disabled.
 
 ## Environments
 

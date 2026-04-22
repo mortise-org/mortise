@@ -106,6 +106,60 @@ spec:
                       When set, the device flow uses this instead of the project-maintained default.
                     type: string
                 type: object
+              observability:
+                description: |-
+                  Observability configures external adapter endpoints for historical logs
+                  and metrics queries.
+                properties:
+                  logsAdapterEndpoint:
+                    description: |-
+                      LogsAdapterEndpoint is the base URL of a service implementing the
+                      Mortise log adapter contract (GET /v1/logs).
+                    type: string
+                  logsAdapterTokenSecretRef:
+                    description: |-
+                      LogsAdapterTokenSecretRef references a Secret containing a bearer token
+                      for authenticating with the logs adapter.
+                    properties:
+                      key:
+                        description: Key within the secret.
+                        type: string
+                      name:
+                        description: Name of the secret.
+                        type: string
+                      namespace:
+                        description: Namespace of the secret.
+                        type: string
+                    required:
+                    - key
+                    - name
+                    - namespace
+                    type: object
+                  metricsAdapterEndpoint:
+                    description: |-
+                      MetricsAdapterEndpoint is the base URL of a service implementing the
+                      Mortise metrics adapter contract (GET /v1/metrics).
+                    type: string
+                  metricsAdapterTokenSecretRef:
+                    description: |-
+                      MetricsAdapterTokenSecretRef references a Secret containing a bearer token
+                      for authenticating with the metrics adapter.
+                    properties:
+                      key:
+                        description: Key within the secret.
+                        type: string
+                      name:
+                        description: Name of the secret.
+                        type: string
+                      namespace:
+                        description: Namespace of the secret.
+                        type: string
+                    required:
+                    - key
+                    - name
+                    - namespace
+                    type: object
+                type: object
               registry:
                 description: Registry configures the OCI registry used to store built
                   App images.
@@ -144,6 +198,13 @@ spec:
                     description: |-
                       PullSecretName is the name of the k8s image-pull Secret that carries the
                       registry credentials and is projected into App pods.
+                    type: string
+                  pullURL:
+                    description: |-
+                      PullURL is the registry URL that kubelet uses to pull images. When the
+                      bundled registry runs behind a node-local DaemonSet proxy, this differs
+                      from URL (which is used for BuildKit pushes via cluster DNS). If empty,
+                      URL is used for both push and pull.
                     type: string
                   url:
                     description: URL is the OCI registry endpoint (e.g. registry.example.com).

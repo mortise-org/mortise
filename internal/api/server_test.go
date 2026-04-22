@@ -43,7 +43,8 @@ func TestMain(m *testing.M) {
 	}
 
 	testEnv := &envtest.Environment{
-		CRDDirectoryPaths: []string{filepath.Join("..", "..", "config", "crd", "bases")},
+		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "config", "crd", "bases")},
+		BinaryAssetsDirectory: getFirstFoundEnvTestBinaryDir(),
 	}
 	cfg, err := testEnv.Start()
 	if err != nil {
@@ -64,6 +65,20 @@ func TestMain(m *testing.M) {
 	code := m.Run()
 	_ = testEnv.Stop()
 	os.Exit(code)
+}
+
+func getFirstFoundEnvTestBinaryDir() string {
+	basePath := filepath.Join("..", "..", "bin", "k8s")
+	entries, err := os.ReadDir(basePath)
+	if err != nil {
+		return ""
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			return filepath.Join(basePath, entry.Name())
+		}
+	}
+	return ""
 }
 
 // newTestServer builds an API server wired against the given k8s client with

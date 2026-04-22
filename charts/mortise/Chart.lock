@@ -8,5 +8,8 @@ dependencies:
 - name: cert-manager
   repository: https://charts.jetstack.io
   version: v1.17.1
-digest: sha256:92703a3f3ffad0c1b134465c4f23d7f6ca6f2081dfea0e74905174dd34b4ddd3
-generated: "2026-04-21T14:00:35.196130755-06:00"
+- name: metrics-server
+  repository: https://kubernetes-sigs.github.io/metrics-server/
+  version: 3.12.2
+digest: sha256:c4ae529ed55920b73d4a47685fd5e21c84e20925855b3f7cbbbf28c58e7c6495
+generated: "2026-04-22T11:57:25.399243441-06:00"

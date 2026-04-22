@@ -11,6 +11,7 @@ type ImageRef struct {
 
 type RegistryBackend interface {
 	PushTarget(app, tag string) (ImageRef, error)
+	PullTarget(app, tag string) (ImageRef, error)
 	PullSecretRef() string
 	Tags(ctx context.Context, app string) ([]string, error)
 	DeleteTag(ctx context.Context, app, tag string) error

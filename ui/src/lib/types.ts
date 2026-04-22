@@ -38,6 +38,7 @@ export interface PlatformResponse {
 	tls: { certManagerClusterIssuer?: string };
 	storage?: { defaultStorageClass?: string };
 	phase?: string;
+	observability?: { logsAdapterEndpoint?: string; metricsAdapterEndpoint?: string };
 }
 
 
@@ -332,4 +333,43 @@ export interface LogLineEvent {
 	ts: string;       // RFC3339; may be empty for synthetic (e.g. build) events
 	line: string;
 	stream?: string;  // "stdout" | "stderr"
+}
+
+export interface MetricsCurrentResponse {
+	available: boolean;
+	pods?: PodMetricsCurrent[];
+}
+
+export interface PodMetricsCurrent {
+	name: string;
+	cpu: number;
+	memory: number;
+}
+
+export interface MetricsHistoryResponse {
+	available: boolean;
+	pods?: PodMetricsSeries[];
+	error?: string;
+	detail?: string;
+}
+
+export interface PodMetricsSeries {
+	name: string;
+	cpu: [number, number][];
+	memory: [number, number][];
+}
+
+export interface LogHistoryResponse {
+	available: boolean;
+	lines?: LogHistoryLine[];
+	hasMore?: boolean;
+	error?: string;
+	detail?: string;
+}
+
+export interface LogHistoryLine {
+	ts: string;
+	pod: string;
+	text: string;
+	stream?: string;
 }

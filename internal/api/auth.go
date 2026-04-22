@@ -111,4 +111,3 @@ func (s *Server) Login(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, authResponse{Token: token, User: principal})
 }
-

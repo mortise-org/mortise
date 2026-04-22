@@ -382,6 +382,10 @@ func (r *AppReconciler) reconcileGitSource(ctx context.Context, app *mortisev1al
 	if err != nil {
 		return ctrl.Result{}, false, r.setFailedCondition(ctx, app, "PushTargetFailed", err.Error())
 	}
+	pullRef, err := r.RegistryBackend.PullTarget(app.Name, shortTag(revision))
+	if err != nil {
+		return ctrl.Result{}, false, r.setFailedCondition(ctx, app, "PullTargetFailed", err.Error())
+	}
 
 	// Mark building phase and record the start time so the UI can display
 	// an accurate elapsed timer.
@@ -420,6 +424,7 @@ func (r *AppReconciler) reconcileGitSource(ctx context.Context, app *mortisev1al
 		buildArgs:    buildArgsOf(app),
 		buildContext: buildContextOf(app),
 		imageRef:     imageRef,
+		pullImageRef: pullRef,
 	}
 	go runBuild(buildCtx, cancel, tracker, bp, r.GitClient, r.BuildClient, buildRunnerOptions{
 		logName:      "build",
@@ -445,6 +450,7 @@ type buildParams struct {
 	buildArgs    map[string]string
 	buildContext mortisev1alpha1.BuildContext
 	imageRef     registry.ImageRef
+	pullImageRef registry.ImageRef // kubelet-facing image ref (may differ from imageRef when a node-local proxy is used)
 }
 
 // buildLogsConfigMapName returns the name of the ConfigMap that stores the

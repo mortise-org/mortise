@@ -1,0 +1,86 @@
+{{- if .Values.observer.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mortise-observer
+  namespace: {{ include "mortise.depsNamespace" . }}
+  labels:
+    app.kubernetes.io/name: mortise-observer
+    {{- include "mortise.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mortise-observer
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: mortise-observer
+    spec:
+      serviceAccountName: mortise-observer
+      containers:
+        - name: observer
+          image: {{ .Values.observer.image }}
+          imagePullPolicy: IfNotPresent
+          args:
+            - --listen=:9091
+            - --metrics-poll-interval={{ .Values.observer.metricsPollInterval | default "60s" }}
+            - --metrics-retention={{ .Values.observer.retention.metrics | default "72h" }}
+            - --log-retention={{ .Values.observer.retention.logs | default "48h" }}
+            - --max-log-pods={{ .Values.observer.maxLogPods | default "100" }}
+            - --storage-path=/data
+          ports:
+            - name: http
+              containerPort: 9091
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 9091
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          {{- if eq (.Values.observer.storage | default "emptyDir") "emptyDir" }}
+          emptyDir: {}
+          {{- else }}
+          persistentVolumeClaim:
+            claimName: mortise-observer-data
+          {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mortise-observer
+  namespace: {{ include "mortise.depsNamespace" . }}
+  labels:
+    app.kubernetes.io/name: mortise-observer
+    {{- include "mortise.labels" . | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/name: mortise-observer
+  ports:
+    - name: http
+      port: 9091
+      targetPort: 9091
+{{- if ne (.Values.observer.storage | default "emptyDir") "emptyDir" }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mortise-observer-data
+  namespace: {{ include "mortise.depsNamespace" . }}
+  labels:
+    app.kubernetes.io/name: mortise-observer
+    {{- include "mortise.labels" . | nindent 4 }}
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: {{ .Values.observer.storageSize | default "2Gi" }}
+{{- end }}
+{{- end }}

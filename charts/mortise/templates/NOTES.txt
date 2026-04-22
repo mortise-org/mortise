@@ -1,0 +1,39 @@
+Mortise is installed!
+
+Access the UI:
+  kubectl port-forward -n mortise-system svc/mortise 8090:80
+  Then open http://localhost:8090
+
+{{- if .Values.registry.enabled }}
+
+== Registry: node-local proxy ==
+
+Mortise deploys a DaemonSet registry proxy on every node so kubelet can pull
+built images from localhost:{{ .Values.registry.proxy.hostPort | default 30500 }} (HTTP).
+
+Most container runtimes require a small config snippet to allow HTTP pulls
+from localhost. Add the appropriate snippet for your distribution:
+
+  k3s / RKE2 — /etc/rancher/k3s/registries.yaml (then restart k3s):
+    mirrors:
+      "localhost:{{ .Values.registry.proxy.hostPort | default 30500 }}":
+        endpoint:
+          - "http://localhost:{{ .Values.registry.proxy.hostPort | default 30500 }}"
+
+  Talos — machine config patch:
+    machine:
+      registries:
+        mirrors:
+          localhost:{{ .Values.registry.proxy.hostPort | default 30500 }}:
+            endpoints:
+              - http://localhost:{{ .Values.registry.proxy.hostPort | default 30500 }}
+
+  kubeadm / vanilla containerd — /etc/containerd/certs.d/localhost:{{ .Values.registry.proxy.hostPort | default 30500 }}/hosts.toml:
+    server = "http://localhost:{{ .Values.registry.proxy.hostPort | default 30500 }}"
+    [host."http://localhost:{{ .Values.registry.proxy.hostPort | default 30500 }}"]
+      capabilities = ["pull", "resolve"]
+      plain-http = true
+
+Note: some containerd installations treat localhost as HTTP by default. If
+image pulls work without the snippet above, no action is needed.
+{{- end }}

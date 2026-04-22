@@ -79,6 +79,20 @@ func (r *PlatformConfigReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		}
 	}
 
+	// Validate optional observability adapter token secrets.
+	if pc.Spec.Observability.LogsAdapterTokenSecretRef != nil {
+		if err := validateSecretRef(ctx, r.Client, *pc.Spec.Observability.LogsAdapterTokenSecretRef, "spec.observability.logsAdapterTokenSecretRef"); err != nil {
+			log.Info("logs adapter token secret ref invalid", "error", err)
+			return ctrl.Result{}, r.markFailed(ctx, &pc, "SecretNotFound", err.Error())
+		}
+	}
+	if pc.Spec.Observability.MetricsAdapterTokenSecretRef != nil {
+		if err := validateSecretRef(ctx, r.Client, *pc.Spec.Observability.MetricsAdapterTokenSecretRef, "spec.observability.metricsAdapterTokenSecretRef"); err != nil {
+			log.Info("metrics adapter token secret ref invalid", "error", err)
+			return ctrl.Result{}, r.markFailed(ctx, &pc, "SecretNotFound", err.Error())
+		}
+	}
+
 	return ctrl.Result{}, r.markReady(ctx, &pc)
 }
 

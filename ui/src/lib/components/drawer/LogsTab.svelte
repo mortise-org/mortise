@@ -3,7 +3,7 @@
 	import { api } from '$lib/api';
 	import { store } from '$lib/store.svelte';
 	import { Loader2 } from 'lucide-svelte';
-	import type { App, BuildLogsResponse, LogLineEvent, Pod } from '$lib/types';
+	import type { App, BuildLogsResponse, LogLineEvent, LogHistoryLine, Pod } from '$lib/types';
 	import LogLine from '$lib/components/LogLine.svelte';
 
 	let {
@@ -19,7 +19,7 @@
 	} = $props();
 
 	// --- Sub-tabs ---
-	type SubTab = 'live' | 'build';
+	type SubTab = 'live' | 'build' | 'history';
 	let subTab = $state<SubTab>('live');
 
 	// --- Derived app-level flags ---
@@ -51,7 +51,48 @@
 	let fetchedBuildLogs = $state<BuildLogsResponse | null>(null);
 	const buildResp = $derived(sseBuildLogs ?? fetchedBuildLogs);
 
+	// --- History sub-tab state ---
+	let historyAvailable = $state<boolean | null>(null);
+	let historyLines = $state<LogHistoryLine[]>([]);
+	let historyHasMore = $state(false);
+	let historyLoading = $state(false);
+	let historyFilter = $state('');
+	let historyHours = $state(1);
+
 	const MAX_EVENTS = 2000;
+
+	async function probeHistory() {
+		const now = Math.floor(Date.now() / 1000);
+		try {
+			const res = await api.getLogHistory(project, app.metadata.name, selectedEnv, now - 3600, now, { limit: 1 });
+			historyAvailable = res.available;
+		} catch {
+			historyAvailable = false;
+		}
+	}
+
+	async function fetchHistory(append = false) {
+		historyLoading = true;
+		const end = Math.floor(Date.now() / 1000);
+		const start = end - historyHours * 3600;
+		const before = append && historyLines.length > 0 ? historyLines[historyLines.length - 1].ts : undefined;
+		try {
+			const res = await api.getLogHistory(project, app.metadata.name, selectedEnv, start, end, {
+				limit: 500,
+				filter: historyFilter || undefined,
+				before
+			});
+			historyAvailable = res.available;
+			if (res.lines) {
+				historyLines = append ? [...historyLines, ...res.lines] : res.lines;
+			}
+			historyHasMore = res.hasMore ?? false;
+		} catch {
+			if (!append) historyLines = [];
+			historyHasMore = false;
+		}
+		historyLoading = false;
+	}
 
 	function scrollToBottom() {
 		if (logContainer) {
@@ -209,6 +250,14 @@
 		if (!selectedPod && previous) previous = false;
 	});
 
+	// History sub-tab: probe on first load, fetch when entering tab.
+	$effect(() => {
+		if (historyAvailable === null) void probeHistory();
+	});
+	$effect(() => {
+		if (subTab === 'history') void fetchHistory();
+	});
+
 	onMount(() => {
 		return () => {
 			closeStream();
@@ -291,6 +340,18 @@
 		>
 			Build
 		</button>
+		{#if historyAvailable}
+			<button
+				type="button"
+				onclick={() => (subTab = 'history')}
+				class="-mb-px border-b-2 px-3 py-1.5 text-xs font-medium transition-colors {subTab ===
+				'history'
+					? 'border-accent text-white'
+					: 'border-transparent text-gray-500 hover:text-white'}"
+			>
+				History
+			</button>
+		{/if}
 		{#if subTab === 'live' && podsLoaded && pods.length > 1}
 			<select
 				bind:value={selectedPod}
@@ -386,6 +447,63 @@
 				{#each events as evt, i (i)}
 					<LogLine event={evt} {showPodBadge} />
 				{/each}
+			{/if}
+		</div>
+	{:else if subTab === 'history'}
+		<!-- History sub-tab -->
+		<div class="flex flex-wrap items-center gap-2">
+			<select
+				bind:value={historyHours}
+				onchange={() => fetchHistory()}
+				class="rounded-md border border-surface-600 bg-surface-800 px-2 py-1 text-xs text-white outline-none focus:border-accent"
+			>
+				<option value={1}>Last 1 hour</option>
+				<option value={6}>Last 6 hours</option>
+				<option value={24}>Last 24 hours</option>
+				<option value={168}>Last 7 days</option>
+			</select>
+			<input
+				type="text"
+				bind:value={historyFilter}
+				placeholder="Filter..."
+				onkeydown={(e) => { if (e.key === 'Enter') fetchHistory(); }}
+				class="flex-1 rounded-md border border-surface-600 bg-surface-800 px-2 py-1 text-xs text-white placeholder-gray-500 outline-none focus:border-accent"
+			/>
+			<button
+				type="button"
+				onclick={() => fetchHistory()}
+				class="rounded-md bg-accent px-2.5 py-1 text-xs font-medium text-white hover:bg-accent-hover"
+			>
+				Search
+			</button>
+		</div>
+		<div
+			class="flex-1 overflow-y-auto rounded-md bg-surface-900 p-3"
+			style="min-height: 300px; max-height: calc(100vh - 320px)"
+		>
+			{#if historyLoading && historyLines.length === 0}
+				<div class="flex items-center justify-center gap-2 py-8 text-xs text-gray-500">
+					<Loader2 class="h-3.5 w-3.5 animate-spin" />
+					<span>Loading…</span>
+				</div>
+			{:else if historyLines.length === 0}
+				<p class="py-8 text-center text-xs italic text-gray-600">No logs for this range.</p>
+			{:else}
+				{#each historyLines as line, i (i)}
+					<LogLine event={{ pod: line.pod, ts: line.ts, line: line.text, stream: line.stream }} showPodBadge={true} />
+				{/each}
+				{#if historyHasMore}
+					<div class="mt-2 text-center">
+						<button
+							type="button"
+							onclick={() => fetchHistory(true)}
+							disabled={historyLoading}
+							class="rounded-md border border-surface-600 px-3 py-1.5 text-xs text-gray-400 hover:bg-surface-700 hover:text-white disabled:opacity-50"
+						>
+							{historyLoading ? 'Loading…' : 'Load more'}
+						</button>
+					</div>
+				{/if}
 			{/if}
 		</div>
 	{:else}

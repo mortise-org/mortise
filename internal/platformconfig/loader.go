@@ -54,6 +54,9 @@ type Config struct {
 
 	// TLS holds TLS/cert-manager configuration.
 	TLS TLSConfig
+
+	// Observability holds the resolved adapter configuration for logs and metrics.
+	Observability ObservabilityConfig
 }
 
 // StorageConfig is the resolved storage configuration.
@@ -76,6 +79,8 @@ type RegistryConfig struct {
 	PullSecretName string
 	// InsecureSkipTLSVerify disables TLS verification for the registry.
 	InsecureSkipTLSVerify bool
+	// PullURL is the registry URL that kubelet uses to pull images.
+	PullURL string
 }
 
 // BuildConfig is the resolved BuildKit configuration.
@@ -96,6 +101,18 @@ type BuildConfig struct {
 type TLSConfig struct {
 	// CertManagerClusterIssuer is the cert-manager ClusterIssuer name.
 	CertManagerClusterIssuer string
+}
+
+// ObservabilityConfig is the resolved observability adapter configuration.
+type ObservabilityConfig struct {
+	// LogsAdapterEndpoint is the base URL of the logs adapter.
+	LogsAdapterEndpoint string
+	// LogsAdapterToken is the resolved bearer token for the logs adapter.
+	LogsAdapterToken string
+	// MetricsAdapterEndpoint is the base URL of the metrics adapter.
+	MetricsAdapterEndpoint string
+	// MetricsAdapterToken is the resolved bearer token for the metrics adapter.
+	MetricsAdapterToken string
 }
 
 // Load fetches the singleton PlatformConfig (name "platform"), resolves all
@@ -122,6 +139,7 @@ func Load(ctx context.Context, c client.Reader) (*Config, error) {
 			Namespace:             pc.Spec.Registry.Namespace,
 			PullSecretName:        pc.Spec.Registry.PullSecretName,
 			InsecureSkipTLSVerify: pc.Spec.Registry.InsecureSkipTLSVerify,
+			PullURL:               pc.Spec.Registry.PullURL,
 		},
 		Build: BuildConfig{
 			BuildkitAddr:    pc.Spec.Build.BuildkitAddr,
@@ -151,6 +169,25 @@ func Load(ctx context.Context, c client.Reader) (*Config, error) {
 		cfg.Build.TLSCA = string(secret.Data["ca.crt"])
 		cfg.Build.TLSCert = string(secret.Data["tls.crt"])
 		cfg.Build.TLSKey = string(secret.Data["tls.key"])
+	}
+
+	// Resolve observability adapter config.
+	cfg.Observability.LogsAdapterEndpoint = pc.Spec.Observability.LogsAdapterEndpoint
+	cfg.Observability.MetricsAdapterEndpoint = pc.Spec.Observability.MetricsAdapterEndpoint
+
+	if ref := pc.Spec.Observability.LogsAdapterTokenSecretRef; ref != nil {
+		secret, err := resolveSecret(ctx, c, *ref)
+		if err != nil {
+			return nil, fmt.Errorf("spec.observability.logsAdapterTokenSecretRef: %w", err)
+		}
+		cfg.Observability.LogsAdapterToken = string(secret.Data[ref.Key])
+	}
+	if ref := pc.Spec.Observability.MetricsAdapterTokenSecretRef; ref != nil {
+		secret, err := resolveSecret(ctx, c, *ref)
+		if err != nil {
+			return nil, fmt.Errorf("spec.observability.metricsAdapterTokenSecretRef: %w", err)
+		}
+		cfg.Observability.MetricsAdapterToken = string(secret.Data[ref.Key])
 	}
 
 	return cfg, nil

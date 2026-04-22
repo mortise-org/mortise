@@ -1,0 +1,55 @@
+{{- if .Values.registry.enabled }}
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: registry-proxy
+  namespace: {{ include "mortise.depsNamespace" . }}
+  labels:
+    app.kubernetes.io/name: registry-proxy
+    {{- include "mortise.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: registry-proxy
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: registry-proxy
+    spec:
+      containers:
+        - name: registry
+          image: {{ .Values.registry.image }}
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: REGISTRY_HTTP_ADDR
+              value: "0.0.0.0:5000"
+            - name: REGISTRY_PROXY_REMOTEURL
+              value: http://{{ include "mortise.registryAddr" . }}
+            - name: REGISTRY_STORAGE_FILESYSTEM_ROOTDIRECTORY
+              value: /var/lib/registry
+            - name: REGISTRY_STORAGE_DELETE_ENABLED
+              value: "true"
+          ports:
+            - name: http
+              containerPort: 5000
+              hostPort: {{ .Values.registry.proxy.hostPort | default 30500 }}
+          readinessProbe:
+            httpGet:
+              path: /v2/
+              port: 5000
+            initialDelaySeconds: 2
+            periodSeconds: 5
+            failureThreshold: 10
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 128Mi
+          volumeMounts:
+            - name: cache
+              mountPath: /var/lib/registry
+      volumes:
+        - name: cache
+          emptyDir: {}
+{{- end }}

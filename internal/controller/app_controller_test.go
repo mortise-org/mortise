@@ -1691,6 +1691,10 @@ func (f *fakeRegistryBackend) PushTarget(app, tag string) (registry.ImageRef, er
 	}, nil
 }
 
+func (f *fakeRegistryBackend) PullTarget(app, tag string) (registry.ImageRef, error) {
+	return f.PushTarget(app, tag)
+}
+
 func (f *fakeRegistryBackend) PullSecretRef() string { return f.pullSecretName }
 
 func (f *fakeRegistryBackend) Tags(_ context.Context, _ string) ([]string, error) {

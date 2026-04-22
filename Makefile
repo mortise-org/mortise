@@ -95,6 +95,10 @@ build-ui: ## Build the SvelteKit UI and copy into internal/ui/build for embeddin
 build: manifests generate fmt vet ## Build manager binary.
 	go build -o bin/manager cmd/main.go
 
+.PHONY: build-observer
+build-observer: fmt vet ## Build observer binary.
+	go build -o bin/observer ./cmd/observer
+
 .PHONY: build-cli
 build-cli: fmt vet ## Build CLI binary.
 	go build -o bin/mortise ./cmd/cli

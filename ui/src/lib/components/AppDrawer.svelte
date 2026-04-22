@@ -285,7 +285,7 @@
 			{:else if store.drawerTab === 'variables'}
 				<VariablesTab {project} app={liveApp} />
 			{:else if store.drawerTab === 'metrics'}
-				<MetricsTab app={liveApp} />
+				<MetricsTab app={liveApp} {project} env={selectedEnv} />
 			{:else if store.drawerTab === 'settings'}
 				<SettingsTab
 					{project}

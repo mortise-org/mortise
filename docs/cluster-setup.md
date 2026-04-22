@@ -43,6 +43,20 @@ kubectl get nodes
 Takes about 60 seconds. k3s includes Traefik as its default ingress
 controller, which Mortise can use out of the box.
 
+**Registry config for git-source builds:** k3s needs a one-time registry
+mirror entry so kubelet can pull images built by Mortise. Add to
+`/etc/rancher/k3s/registries.yaml` (create if missing) and restart k3s:
+
+```yaml
+mirrors:
+  "localhost:30500":
+    endpoint:
+      - "http://localhost:30500"
+```
+
+See [Installing Mortise > Registry proxy](./install.md#registry-proxy-git-source-builds)
+for details.
+
 ## Cloud Kubernetes (EKS, GKE, AKS)
 
 If you have a cloud account, create a managed cluster using your provider's

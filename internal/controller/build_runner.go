@@ -136,9 +136,9 @@ func runBuild(
 		}
 	}
 
-	pushedImage := p.imageRef.Full
+	pullImage := p.pullImageRef.Full
 	if digest != "" {
-		pushedImage = p.imageRef.Registry + "/" + p.imageRef.Path + "@" + digest
+		pullImage = p.pullImageRef.Registry + "/" + p.pullImageRef.Path + "@" + digest
 	}
-	t.setSucceeded(pushedImage, digest)
+	t.setSucceeded(pullImage, digest)
 }

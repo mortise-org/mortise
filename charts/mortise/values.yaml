@@ -83,6 +83,10 @@ registry:
   image: distribution/distribution:2.8.3
   storage: pvc
   storageSize: 10Gi
+  # Node-local pull-through proxy — a DaemonSet that runs on every node so
+  # kubelet can pull images from localhost instead of cluster-internal DNS.
+  proxy:
+    hostPort: 30500
 
 # ---------------------------------------------------------------------------
 # BuildKit — builds container images from git source
@@ -95,6 +99,32 @@ buildkit:
   privileged: true
   storage: pvc
   storageSize: 10Gi
+
+# ---------------------------------------------------------------------------
+# metrics-server — provides the PodMetrics API for real-time CPU/memory
+# ---------------------------------------------------------------------------
+# Disable if metrics-server is already installed in your cluster.
+metricsServer:
+  enabled: true
+  args:
+    - --kubelet-insecure-tls
+
+# ---------------------------------------------------------------------------
+# Observer — built-in short-term metrics + log history (adapter contract)
+# ---------------------------------------------------------------------------
+# Provides zero-config observability. Implements the same adapter contract
+# that external adapters (Loki, Prometheus) implement, so you can swap it
+# out by pointing PlatformConfig.spec.observability at your own adapter.
+observer:
+  enabled: true
+  image: ghcr.io/mortise-org/mortise-observer:0.1.0
+  storage: emptyDir
+  storageSize: 2Gi
+  retention:
+    metrics: 72h
+    logs: 48h
+  metricsPollInterval: 60s
+  maxLogPods: 100
 
 # ---------------------------------------------------------------------------
 # PlatformConfig — auto-created default configuration

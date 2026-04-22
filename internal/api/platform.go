@@ -18,11 +18,12 @@ const platformConfigName = "platform"
 // patchPlatformRequest is the JSON body accepted by PATCH /api/platform.
 // All fields are optional; only non-zero fields overwrite the existing value.
 type patchPlatformRequest struct {
-	Domain   string                 `json:"domain,omitempty"`
-	TLS      *patchPlatformTLS      `json:"tls,omitempty"`
-	Storage  *patchPlatformStorage  `json:"storage,omitempty"`
-	Registry *patchPlatformRegistry `json:"registry,omitempty"`
-	Build    *patchPlatformBuild    `json:"build,omitempty"`
+	Domain        string                      `json:"domain,omitempty"`
+	TLS           *patchPlatformTLS           `json:"tls,omitempty"`
+	Storage       *patchPlatformStorage       `json:"storage,omitempty"`
+	Registry      *patchPlatformRegistry      `json:"registry,omitempty"`
+	Build         *patchPlatformBuild         `json:"build,omitempty"`
+	Observability *patchPlatformObservability `json:"observability,omitempty"`
 }
 
 type patchPlatformTLS struct {
@@ -43,12 +44,24 @@ type patchPlatformBuild struct {
 	DefaultPlatform string `json:"defaultPlatform,omitempty"`
 }
 
+type patchPlatformObservability struct {
+	LogsAdapterEndpoint    string `json:"logsAdapterEndpoint,omitempty"`
+	MetricsAdapterEndpoint string `json:"metricsAdapterEndpoint,omitempty"`
+}
+
+// platformObservabilityResponse is the observability portion of the platform response.
+type platformObservabilityResponse struct {
+	LogsAdapterEndpoint    string `json:"logsAdapterEndpoint,omitempty"`
+	MetricsAdapterEndpoint string `json:"metricsAdapterEndpoint,omitempty"`
+}
+
 // platformResponse is the JSON shape returned from GET and PATCH.
 type platformResponse struct {
-	Domain  string                              `json:"domain"`
-	TLS     mortisev1alpha1.TLSConfig           `json:"tls"`
-	Storage mortisev1alpha1.StorageConfig       `json:"storage,omitempty"`
-	Phase   mortisev1alpha1.PlatformConfigPhase `json:"phase,omitempty"`
+	Domain        string                              `json:"domain"`
+	TLS           mortisev1alpha1.TLSConfig           `json:"tls"`
+	Storage       mortisev1alpha1.StorageConfig       `json:"storage,omitempty"`
+	Phase         mortisev1alpha1.PlatformConfigPhase `json:"phase,omitempty"`
+	Observability *platformObservabilityResponse      `json:"observability,omitempty"`
 }
 
 // GetPlatform returns the current PlatformConfig.
@@ -69,12 +82,7 @@ func (s *Server) GetPlatform(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, platformResponse{
-		Domain:  pc.Spec.Domain,
-		TLS:     pc.Spec.TLS,
-		Storage: pc.Spec.Storage,
-		Phase:   pc.Status.Phase,
-	})
+	writeJSON(w, http.StatusOK, newPlatformResponse(&pc))
 }
 
 // PatchPlatform creates or updates the singleton PlatformConfig. Admin-only.
@@ -105,12 +113,7 @@ func (s *Server) PatchPlatform(w http.ResponseWriter, r *http.Request) {
 			writeError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusCreated, platformResponse{
-			Domain:  pc.Spec.Domain,
-			TLS:     pc.Spec.TLS,
-			Storage: pc.Spec.Storage,
-			Phase:   pc.Status.Phase,
-		})
+		writeJSON(w, http.StatusCreated, newPlatformResponse(&pc))
 		return
 	}
 	if err != nil {
@@ -124,12 +127,24 @@ func (s *Server) PatchPlatform(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, platformResponse{
+	writeJSON(w, http.StatusOK, newPlatformResponse(&pc))
+}
+
+func newPlatformResponse(pc *mortisev1alpha1.PlatformConfig) platformResponse {
+	resp := platformResponse{
 		Domain:  pc.Spec.Domain,
 		TLS:     pc.Spec.TLS,
 		Storage: pc.Spec.Storage,
 		Phase:   pc.Status.Phase,
-	})
+	}
+	obs := pc.Spec.Observability
+	if obs.LogsAdapterEndpoint != "" || obs.MetricsAdapterEndpoint != "" {
+		resp.Observability = &platformObservabilityResponse{
+			LogsAdapterEndpoint:    obs.LogsAdapterEndpoint,
+			MetricsAdapterEndpoint: obs.MetricsAdapterEndpoint,
+		}
+	}
+	return resp
 }
 
 // buildPlatformSpec applies non-zero patch fields onto an existing spec.
@@ -157,6 +172,14 @@ func buildPlatformSpec(base mortisev1alpha1.PlatformConfigSpec, req *patchPlatfo
 		}
 		if req.Build.DefaultPlatform != "" {
 			base.Build.DefaultPlatform = req.Build.DefaultPlatform
+		}
+	}
+	if req.Observability != nil {
+		if req.Observability.LogsAdapterEndpoint != "" {
+			base.Observability.LogsAdapterEndpoint = req.Observability.LogsAdapterEndpoint
+		}
+		if req.Observability.MetricsAdapterEndpoint != "" {
+			base.Observability.MetricsAdapterEndpoint = req.Observability.MetricsAdapterEndpoint
 		}
 	}
 	return base
