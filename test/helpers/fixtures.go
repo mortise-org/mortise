@@ -7,7 +7,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
 
-	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
+	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
 )
 
 // LoadFixture reads a YAML fixture file and decodes it into an App.

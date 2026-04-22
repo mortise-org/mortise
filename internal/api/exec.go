@@ -14,8 +14,8 @@ import (
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/remotecommand"
 
-	"github.com/MC-Meesh/mortise/internal/authz"
-	"github.com/MC-Meesh/mortise/internal/constants"
+	"github.com/mortise-org/mortise/internal/authz"
+	"github.com/mortise-org/mortise/internal/constants"
 )
 
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch

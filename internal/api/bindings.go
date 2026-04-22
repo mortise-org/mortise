@@ -6,8 +6,8 @@ import (
 	"github.com/go-chi/chi/v5"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
-	"github.com/MC-Meesh/mortise/internal/authz"
+	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
+	"github.com/mortise-org/mortise/internal/authz"
 )
 
 // bindingEdge represents a single from-app→to-app binding resolved for a

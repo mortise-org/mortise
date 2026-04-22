@@ -12,11 +12,11 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
-	"github.com/MC-Meesh/mortise/internal/authz"
-	"github.com/MC-Meesh/mortise/internal/constants"
-	"github.com/MC-Meesh/mortise/internal/envstore"
-	"github.com/MC-Meesh/mortise/internal/templates"
+	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
+	"github.com/mortise-org/mortise/internal/authz"
+	"github.com/mortise-org/mortise/internal/constants"
+	"github.com/mortise-org/mortise/internal/envstore"
+	"github.com/mortise-org/mortise/internal/templates"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 )
 

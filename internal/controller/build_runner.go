@@ -23,9 +23,9 @@ import (
 
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
-	"github.com/MC-Meesh/mortise/internal/build"
-	"github.com/MC-Meesh/mortise/internal/git"
+	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
+	"github.com/mortise-org/mortise/internal/build"
+	"github.com/mortise-org/mortise/internal/git"
 )
 
 // toContextMode maps the CRD-level BuildContext to the build package's

@@ -11,8 +11,8 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/MC-Meesh/mortise/internal/authz"
-	"github.com/MC-Meesh/mortise/internal/constants"
+	"github.com/mortise-org/mortise/internal/authz"
+	"github.com/mortise-org/mortise/internal/constants"
 )
 
 // createSecretRequest is the JSON body for upserting a secret.

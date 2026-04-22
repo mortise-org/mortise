@@ -26,7 +26,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
-	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
+	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
 )
 
 // appGVK is used when constructing typed admission errors.

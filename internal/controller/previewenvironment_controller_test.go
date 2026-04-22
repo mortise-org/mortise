@@ -33,8 +33,8 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
-	"github.com/MC-Meesh/mortise/internal/constants"
+	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
+	"github.com/mortise-org/mortise/internal/constants"
 )
 
 // helper: create a test Project and its control namespace (`pj-{name}`). The

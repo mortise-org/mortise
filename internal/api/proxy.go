@@ -12,9 +12,9 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
-	"github.com/MC-Meesh/mortise/internal/authz"
-	"github.com/MC-Meesh/mortise/internal/constants"
+	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
+	"github.com/mortise-org/mortise/internal/authz"
+	"github.com/mortise-org/mortise/internal/constants"
 )
 
 // appProxyEntry tracks a running per-app proxy listener.

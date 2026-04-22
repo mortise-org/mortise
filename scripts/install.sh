@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # quick-mortise: single-command installer for the Mortise PaaS
-# Usage: curl -fsSL https://mortise.dev/install | sh
+# Usage:
+#   curl -fsSL https://mortise.dev/install | sh
+#   # or, until the mortise.dev DNS is wired:
+#   curl -fsSL https://raw.githubusercontent.com/mortise-org/mortise/main/scripts/install.sh | bash
 #
 # Installs k3s (or k3d on macOS), Helm, and runs `helm install mortise`.
 # The Helm chart handles everything else: operator, Traefik, cert-manager,
@@ -14,7 +17,7 @@ set -euo pipefail
 # Configuration
 # ---------------------------------------------------------------------------
 HELM_VERSION="${HELM_VERSION:-v3.17.3}"
-MORTISE_CHART_REPO="${MORTISE_CHART_REPO:-https://mc-meesh.github.io/mortise}"
+MORTISE_CHART_REPO="${MORTISE_CHART_REPO:-https://mortise-org.github.io/mortise}"
 MORTISE_CHART_VERSION="${MORTISE_CHART_VERSION:-}"
 MORTISE_NAMESPACE="mortise-system"
 
@@ -206,8 +209,13 @@ install_mortise() {
         info "Using local chart at ${local_chart}"
         chart_ref="$local_chart"
 
-        # Build dependencies for local chart.
-        helm dependency build "$local_chart" 2>/dev/null || true
+        # Umbrella chart depends on upstream repos — add them so `helm dependency
+        # build` can fetch. `helm repo add` is idempotent with --force-update.
+        helm repo add jetstack https://charts.jetstack.io --force-update >/dev/null
+        helm repo add traefik https://traefik.github.io/charts --force-update >/dev/null
+
+        info "Building chart dependencies..."
+        helm dependency build "$local_chart"
 
         if command -v docker >/dev/null 2>&1 && [ -f "${script_dir}/../Dockerfile" ]; then
             info "Building Mortise Docker image..."
@@ -266,8 +274,7 @@ install_cli() {
             install_dir="${HOME}/.local/bin"
             mkdir -p "$install_dir"
         fi
-        GOBIN="$install_dir" go install "${repo_root}/cmd/cli@latest" 2>/dev/null || \
-            (cd "$repo_root" && go build -o "${install_dir}/mortise" ./cmd/cli/)
+        (cd "$repo_root" && go build -o "${install_dir}/mortise" ./cmd/cli/)
         if [ -f "${install_dir}/mortise" ]; then
             info "Mortise CLI installed to ${install_dir}/mortise"
             if ! echo "$PATH" | grep -q "$install_dir"; then
@@ -276,7 +283,7 @@ install_cli() {
         fi
     else
         info "Skipping CLI install (Go not available or not running from repo)"
-        info "Install later: go install github.com/MC-Meesh/mortise/cmd/cli@latest"
+        info "Install later: go install github.com/mortise-org/mortise/cmd/cli@latest"
     fi
 }
 

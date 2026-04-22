@@ -7,7 +7,7 @@ domain: mortise.dev
 layout:
 - go.kubebuilder.io/v4
 projectName: capybara
-repo: github.com/MC-Meesh/mortise
+repo: github.com/mortise-org/mortise
 resources:
 - api:
     crdVersion: v1
@@ -16,7 +16,7 @@ resources:
   domain: mortise.dev
   group: mortise
   kind: App
-  path: github.com/MC-Meesh/mortise/api/v1alpha1
+  path: github.com/mortise-org/mortise/api/v1alpha1
   version: v1alpha1
 - api:
     crdVersion: v1
@@ -24,7 +24,7 @@ resources:
   domain: mortise.dev
   group: mortise
   kind: PlatformConfig
-  path: github.com/MC-Meesh/mortise/api/v1alpha1
+  path: github.com/mortise-org/mortise/api/v1alpha1
   version: v1alpha1
 - api:
     crdVersion: v1
@@ -32,7 +32,7 @@ resources:
   domain: mortise.dev
   group: mortise
   kind: GitProvider
-  path: github.com/MC-Meesh/mortise/api/v1alpha1
+  path: github.com/mortise-org/mortise/api/v1alpha1
   version: v1alpha1
 - api:
     crdVersion: v1
@@ -41,7 +41,7 @@ resources:
   domain: mortise.dev
   group: mortise
   kind: PreviewEnvironment
-  path: github.com/MC-Meesh/mortise/api/v1alpha1
+  path: github.com/mortise-org/mortise/api/v1alpha1
   version: v1alpha1
 - api:
     crdVersion: v1
@@ -49,6 +49,6 @@ resources:
   domain: mortise.dev
   group: mortise
   kind: Project
-  path: github.com/MC-Meesh/mortise/api/v1alpha1
+  path: github.com/mortise-org/mortise/api/v1alpha1
   version: v1alpha1
 version: "3"

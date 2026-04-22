@@ -13,7 +13,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 
-	"github.com/MC-Meesh/mortise/test/helpers"
+	"github.com/mortise-org/mortise/test/helpers"
 )
 
 func TestConfigFilesCreateAndGarbageCollect(t *testing.T) {

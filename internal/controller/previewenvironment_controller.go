@@ -39,13 +39,13 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
-	"github.com/MC-Meesh/mortise/internal/bindings"
-	"github.com/MC-Meesh/mortise/internal/build"
-	"github.com/MC-Meesh/mortise/internal/constants"
-	"github.com/MC-Meesh/mortise/internal/git"
-	"github.com/MC-Meesh/mortise/internal/ingress"
-	"github.com/MC-Meesh/mortise/internal/registry"
+	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
+	"github.com/mortise-org/mortise/internal/bindings"
+	"github.com/mortise-org/mortise/internal/build"
+	"github.com/mortise-org/mortise/internal/constants"
+	"github.com/mortise-org/mortise/internal/git"
+	"github.com/mortise-org/mortise/internal/ingress"
+	"github.com/mortise-org/mortise/internal/registry"
 )
 
 const previewBuildTimeout = 30 * time.Minute

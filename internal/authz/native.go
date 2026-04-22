@@ -5,9 +5,9 @@ import (
 	"encoding/hex"
 	"fmt"
 
-	v1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
-	"github.com/MC-Meesh/mortise/internal/auth"
-	"github.com/MC-Meesh/mortise/internal/constants"
+	v1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
+	"github.com/mortise-org/mortise/internal/auth"
+	"github.com/mortise-org/mortise/internal/constants"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"

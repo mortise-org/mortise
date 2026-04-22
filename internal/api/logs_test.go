@@ -14,11 +14,11 @@ import (
 	clienttesting "k8s.io/client-go/testing"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
-	"github.com/MC-Meesh/mortise/internal/api"
-	"github.com/MC-Meesh/mortise/internal/auth"
-	"github.com/MC-Meesh/mortise/internal/authz"
-	"github.com/MC-Meesh/mortise/internal/constants"
+	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
+	"github.com/mortise-org/mortise/internal/api"
+	"github.com/mortise-org/mortise/internal/auth"
+	"github.com/mortise-org/mortise/internal/authz"
+	"github.com/mortise-org/mortise/internal/constants"
 )
 
 // newLogsServer returns a Server wired with the supplied fake clientset and a

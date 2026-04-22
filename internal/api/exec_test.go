@@ -8,9 +8,9 @@ import (
 	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/rest"
 
-	"github.com/MC-Meesh/mortise/internal/api"
-	"github.com/MC-Meesh/mortise/internal/auth"
-	"github.com/MC-Meesh/mortise/internal/authz"
+	"github.com/mortise-org/mortise/internal/api"
+	"github.com/mortise-org/mortise/internal/auth"
+	"github.com/mortise-org/mortise/internal/authz"
 )
 
 // TestServerCarriesInjectedRESTConfig verifies the constructor plumbs the

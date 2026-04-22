@@ -20,7 +20,7 @@ server, EKS, GKE, AKS).
 ## 2. Install Mortise
 
 ```bash
-helm repo add mortise https://mc-meesh.github.io/mortise
+helm repo add mortise https://mortise-org.github.io/mortise
 helm repo update
 helm install mortise mortise/mortise \
   --namespace mortise-system --create-namespace

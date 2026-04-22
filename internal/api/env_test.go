@@ -3,7 +3,7 @@ package api
 import (
 	"testing"
 
-	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
+	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
 )
 
 func TestParseDotEnv(t *testing.T) {

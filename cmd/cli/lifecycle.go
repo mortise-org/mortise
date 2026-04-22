@@ -154,7 +154,7 @@ func newInstallCmd() *cobra.Command {
 				}
 			}
 
-			return fmt.Errorf("install.sh not found. Run from the mortise repo or download from https://github.com/MC-Meesh/mortise")
+			return fmt.Errorf("install.sh not found. Run from the mortise repo or download from https://github.com/mortise-org/mortise")
 		},
 	}
 }

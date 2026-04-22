@@ -15,7 +15,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/types"
 
-	"github.com/MC-Meesh/mortise/test/helpers"
+	"github.com/mortise-org/mortise/test/helpers"
 )
 
 // TestStorageProvisionsPVCAndMount verifies that an App with spec.storage

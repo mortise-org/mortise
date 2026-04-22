@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/MC-Meesh/mortise/internal/auth"
+	"github.com/mortise-org/mortise/internal/auth"
 )
 
 func TestAdminCanDoEverything(t *testing.T) {

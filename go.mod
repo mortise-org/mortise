@@ -1,4 +1,4 @@
-module github.com/MC-Meesh/mortise
+module github.com/mortise-org/mortise
 
 go 1.26
 

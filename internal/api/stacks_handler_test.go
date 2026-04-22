@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/MC-Meesh/mortise/internal/api"
+	"github.com/mortise-org/mortise/internal/api"
 )
 
 // TestCreateStackMissingSource verifies that omitting both compose and template

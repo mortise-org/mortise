@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/MC-Meesh/mortise/internal/authz"
+	"github.com/mortise-org/mortise/internal/authz"
 	"github.com/go-chi/chi/v5"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"

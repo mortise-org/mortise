@@ -11,7 +11,7 @@ $ErrorActionPreference = "Stop"
 # ---------------------------------------------------------------------------
 $CERT_MANAGER_VERSION = if ($env:CERT_MANAGER_VERSION) { $env:CERT_MANAGER_VERSION } else { "v1.17.1" }
 $HELM_VERSION = if ($env:HELM_VERSION) { $env:HELM_VERSION } else { "v3.17.3" }
-$MORTISE_CHART_REPO = if ($env:MORTISE_CHART_REPO) { $env:MORTISE_CHART_REPO } else { "https://mc-meesh.github.io/mortise" }
+$MORTISE_CHART_REPO = if ($env:MORTISE_CHART_REPO) { $env:MORTISE_CHART_REPO } else { "https://mortise-org.github.io/mortise" }
 $MORTISE_CHART_VERSION = if ($env:MORTISE_CHART_VERSION) { $env:MORTISE_CHART_VERSION } else { "" }
 $MORTISE_NAMESPACE = "mortise-system"
 $DEPS_NAMESPACE = "mortise-deps"

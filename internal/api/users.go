@@ -9,8 +9,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 
-	"github.com/MC-Meesh/mortise/internal/auth"
-	"github.com/MC-Meesh/mortise/internal/authz"
+	"github.com/mortise-org/mortise/internal/auth"
+	"github.com/mortise-org/mortise/internal/authz"
 )
 
 // userResponse is the JSON shape returned for admin user endpoints.

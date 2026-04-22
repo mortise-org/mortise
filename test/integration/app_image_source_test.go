@@ -13,7 +13,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 
-	"github.com/MC-Meesh/mortise/test/helpers"
+	"github.com/mortise-org/mortise/test/helpers"
 )
 
 func TestImageSourceAppGoesReady(t *testing.T) {

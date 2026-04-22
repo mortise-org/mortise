@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/MC-Meesh/mortise/internal/auth"
+	"github.com/mortise-org/mortise/internal/auth"
 )
 
 type contextKey string

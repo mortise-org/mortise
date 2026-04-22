@@ -24,7 +24,7 @@ Mortise publishes two Helm charts:
 ## Install (batteries included)
 
 ```bash
-helm repo add mortise https://mc-meesh.github.io/mortise
+helm repo add mortise https://mortise-org.github.io/mortise
 helm repo update
 
 helm install mortise mortise/mortise \
@@ -47,7 +47,7 @@ helm install mortise mortise/mortise \
 ## Install (operator only)
 
 ```bash
-helm repo add mortise https://mc-meesh.github.io/mortise
+helm repo add mortise https://mortise-org.github.io/mortise
 helm repo update
 
 helm install mortise mortise/mortise-core \

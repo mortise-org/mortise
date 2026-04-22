@@ -10,9 +10,9 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
 
-	"github.com/MC-Meesh/mortise/internal/api"
-	"github.com/MC-Meesh/mortise/internal/auth"
-	"github.com/MC-Meesh/mortise/internal/authz"
+	"github.com/mortise-org/mortise/internal/api"
+	"github.com/mortise-org/mortise/internal/auth"
+	"github.com/mortise-org/mortise/internal/authz"
 )
 
 // TestAuthStatusSetupRequired verifies /api/auth/status flips from setupRequired=true

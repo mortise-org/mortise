@@ -13,7 +13,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	"github.com/MC-Meesh/mortise/internal/activity"
+	"github.com/mortise-org/mortise/internal/activity"
 )
 
 func newFakeClient(t *testing.T) client.Client {

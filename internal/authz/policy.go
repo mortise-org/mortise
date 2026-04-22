@@ -3,7 +3,7 @@ package authz
 import (
 	"context"
 
-	"github.com/MC-Meesh/mortise/internal/auth"
+	"github.com/mortise-org/mortise/internal/auth"
 )
 
 type Resource struct {

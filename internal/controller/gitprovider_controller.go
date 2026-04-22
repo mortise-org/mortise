@@ -29,7 +29,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
+	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
 )
 
 // GitProviderReconciler reconciles a GitProvider object

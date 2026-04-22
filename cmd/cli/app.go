@@ -7,7 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	mortisev1alpha1 "github.com/MC-Meesh/mortise/api/v1alpha1"
+	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
 )
 
 func newAppCmd() *cobra.Command {

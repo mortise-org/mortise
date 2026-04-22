@@ -11,7 +11,7 @@ service-to-service bindings. Kubernetes is fully abstracted away from the user.
 Have a Kubernetes cluster? Install Mortise with Helm:
 
 ```bash
-helm repo add mortise https://mc-meesh.github.io/mortise
+helm repo add mortise https://mortise-org.github.io/mortise
 helm repo update
 helm install mortise mortise/mortise \
   --namespace mortise-system --create-namespace
@@ -46,7 +46,7 @@ walkthrough from zero.
 | **REST API** | Project, app, env var, deploy, rollback, domain management |
 | **SvelteKit UI** | Canvas-based dashboard, app drawer, env var editor, settings |
 | **CLI** | `mortise login`, `mortise app create`, `mortise deploy`, `mortise env` |
-| **Helm Charts** | `mortise` (batteries-included) and `mortise-core` (operator only), published at `https://mc-meesh.github.io/mortise` |
+| **Helm Charts** | `mortise` (batteries-included) and `mortise-core` (operator only), published at `https://mortise-org.github.io/mortise` |
 
 ## Features
 

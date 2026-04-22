@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/MC-Meesh/mortise/internal/auth"
+	"github.com/mortise-org/mortise/internal/auth"
 )
 
 type setupRequest struct {
