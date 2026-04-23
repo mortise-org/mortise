@@ -44,11 +44,6 @@
 	let reloading = $state(false);
 	let errorMsg = $state('');
 
-	const envImage = $derived(
-		liveApp?.status?.environments?.find((e) => e.name === selectedEnv)?.currentImage ??
-		liveApp?.status?.environments?.[0]?.currentImage ?? null
-	);
-
 	$effect(() => {
 		if (liveApp?.status?.phase === 'Building' || liveApp?.status?.phase === 'Failed') {
 			if (liveApp.spec.source.type !== 'image' && store.drawerTab !== 'buildLogs') {
@@ -107,7 +102,7 @@
 	}
 
 	async function doRedeploy() {
-		if (!liveApp || !envImage) return;
+		if (!liveApp) return;
 		const envName = selectedEnv || liveApp.spec.environments?.[0]?.name;
 		if (!envName) return;
 		errorMsg = '';
@@ -115,7 +110,7 @@
 		applyOptimisticPhase('Deploying');
 		reloading = true;
 		try {
-			await api.deploy(project, liveApp.metadata.name, envName, envImage);
+			await api.redeploy(project, liveApp.metadata.name, envName);
 		} catch (e) {
 			errorMsg = e instanceof Error ? e.message : 'Redeploy failed';
 			if (prevPhase) applyOptimisticPhase(prevPhase);
@@ -225,7 +220,7 @@
 					{reloading ? 'Rebuilding…' : 'Rebuild'}
 				</button>
 			{/if}
-			{#if liveApp && envImage}
+			{#if liveApp && effectivePhase !== 'Pending'}
 				<button
 					type="button"
 					onclick={doRedeploy}

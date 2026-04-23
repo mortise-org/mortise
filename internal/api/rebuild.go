@@ -8,6 +8,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	appsv1 "k8s.io/api/apps/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -62,7 +63,7 @@ func (s *Server) Rebuild(w http.ResponseWriter, r *http.Request) {
 //
 // POST /api/projects/{project}/apps/{app}/redeploy
 func (s *Server) Redeploy(w http.ResponseWriter, r *http.Request) {
-	_, projectName, ok := s.resolveProject(w, r)
+	ns, projectName, ok := s.resolveProject(w, r)
 	if !ok {
 		return
 	}
@@ -76,6 +77,32 @@ func (s *Server) Redeploy(w http.ResponseWriter, r *http.Request) {
 	if err := restartDeployment(r.Context(), s.client, envNs, appName); err != nil {
 		writeError(w, err)
 		return
+	}
+
+	var app mortisev1alpha1.App
+	if err := s.client.Get(r.Context(), types.NamespacedName{Name: appName, Namespace: ns}, &app); err != nil {
+		writeError(w, err)
+		return
+	}
+
+	var envStatus *mortisev1alpha1.EnvironmentStatus
+	for i := range app.Status.Environments {
+		if app.Status.Environments[i].Name == env {
+			envStatus = &app.Status.Environments[i]
+			break
+		}
+	}
+	if envStatus != nil && envStatus.CurrentImage != "" {
+		record := mortisev1alpha1.DeployRecord{
+			Image:     envStatus.CurrentImage,
+			Digest:    envStatus.CurrentDigest,
+			Timestamp: metav1.Now(),
+		}
+		envStatus.DeployHistory = append([]mortisev1alpha1.DeployRecord{record}, envStatus.DeployHistory...)
+		if len(envStatus.DeployHistory) > 20 {
+			envStatus.DeployHistory = envStatus.DeployHistory[:20]
+		}
+		_ = s.client.Status().Update(r.Context(), &app)
 	}
 
 	s.recordActivity(r, projectName, "deploy", "app", appName, "Triggered redeploy for "+appName+" in "+env, "")

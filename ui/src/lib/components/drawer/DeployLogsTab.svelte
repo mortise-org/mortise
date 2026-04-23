@@ -35,6 +35,8 @@
 	let streamKey = '';
 	let disconnected = $state(false);
 	let intentionalClose = false;
+	let lastMessageTime = 0;
+	let reconnectDelay = 2000;
 	let logContainer: HTMLElement | null = $state(null);
 
 	const MAX_EVENTS = 2000;
@@ -87,6 +89,9 @@
 		closeStream(true);
 		streamKey = key;
 		disconnected = false;
+		intentionalClose = false;
+		lastMessageTime = 0;
+		reconnectDelay = 2000;
 		if (fresh) {
 			events = [];
 		}
@@ -99,14 +104,16 @@
 			previous: selectedPod && previous ? true : undefined,
 		});
 
+		const openTime = Date.now();
 		es = new EventSource(url);
 		es.onopen = () => {
-			intentionalClose = false;
 			disconnected = false;
+			reconnectDelay = 2000;
 		};
 		es.onmessage = (e: MessageEvent) => {
 			const evt = parseEvent(e.data as string);
 			if (!evt) return;
+			lastMessageTime = Date.now();
 			const next = events.length >= MAX_EVENTS ? events.slice(-(MAX_EVENTS - 1)) : events.slice();
 			next.push(evt);
 			events = next;
@@ -114,14 +121,18 @@
 		};
 		es.onerror = () => {
 			if (intentionalClose || streamKey !== key) return;
-			disconnected = true;
+			const receivedData = lastMessageTime > openTime;
 			closeStream(false);
-			if (selectedPod) void loadPods();
+			if (!receivedData) {
+				disconnected = true;
+				if (selectedPod) void loadPods();
+			}
 			if (!isBuilding && pods.length > 0) {
 				reconnectTimer = setTimeout(() => {
 					reconnectTimer = null;
 					connectLive(false);
-				}, 2000);
+				}, reconnectDelay);
+				reconnectDelay = Math.min(reconnectDelay * 2, 30000);
 			}
 		};
 	}

@@ -7,17 +7,19 @@
 		pods,
 		metric,
 		formatValue,
-		height = 180
+		limitValue,
+		height = 240
 	}: {
 		title: string;
 		pods: PodMetricsSeries[];
 		metric: 'cpu' | 'memory';
 		formatValue: (v: number) => string;
+		limitValue?: number;
 		height?: number;
 	} = $props();
 
 	const width = 640;
-	const padding = { top: 12, right: 12, bottom: 24, left: 44 };
+	const padding = { top: 16, right: 16, bottom: 32, left: 56 };
 
 	const allPoints = $derived.by(() => {
 		const out: Array<{ ts: number; value: number }> = [];
@@ -31,7 +33,7 @@
 	const domain = $derived.by(() => {
 		if (allPoints.length === 0) {
 			const now = Date.now() / 1000;
-			return { minX: now - 60, maxX: now, minY: 0, maxY: 1 };
+			return { minX: now - 60, maxX: now, minY: 0, maxY: limitValue ?? 1 };
 		}
 		let minX = allPoints[0].ts;
 		let maxX = allPoints[0].ts;
@@ -43,7 +45,11 @@
 			if (p.value > maxY) maxY = p.value;
 		}
 		if (minX === maxX) maxX = minX + 1;
-		if (maxY <= minY) maxY = minY + 1;
+		if (limitValue !== undefined && limitValue > 0) {
+			maxY = limitValue;
+		} else if (maxY <= minY) {
+			maxY = minY + 1;
+		}
 		return { minX, maxX, minY, maxY };
 	});
 
@@ -82,19 +88,16 @@
 
 	const yTicks = $derived.by(() => {
 		const ticks: number[] = [];
-		for (let i = 0; i < 4; i++) {
-			ticks.push(domain.minY + ((domain.maxY - domain.minY) * i) / 3);
+		for (let i = 0; i < 5; i++) {
+			ticks.push(domain.minY + ((domain.maxY - domain.minY) * i) / 4);
 		}
 		return ticks.reverse();
 	});
 </script>
 
 <div class="rounded-lg border border-surface-600 bg-surface-800/60 p-3">
-	<div class="mb-2 flex items-center justify-between">
-		<p class="text-xs font-medium text-gray-200">{title}</p>
-		<p class="text-[10px] text-gray-500">{pods.length} pod{pods.length === 1 ? '' : 's'}</p>
-	</div>
-	<svg viewBox={`0 0 ${width} ${height}`} class="h-[180px] w-full">
+	<p class="mb-2 text-sm font-medium text-gray-200">{title}</p>
+	<svg viewBox={`0 0 ${width} ${height}`} class="h-[240px] w-full">
 		{#each yTicks as t}
 			<line
 				x1={padding.left}
@@ -104,13 +107,13 @@
 				stroke="rgba(148,163,184,0.18)"
 				stroke-width="1"
 			/>
-			<text x={padding.left - 6} y={yScale(t) + 3} text-anchor="end" class="fill-gray-500 text-[10px]">
+			<text x={padding.left - 8} y={yScale(t) + 4} text-anchor="end" class="fill-gray-400" style="font-size:13px">
 				{formatValue(t)}
 			</text>
 		{/each}
 
 		{#each xTicks as t}
-			<text x={xScale(t)} y={height - 6} text-anchor="middle" class="fill-gray-500 text-[10px]">
+			<text x={xScale(t)} y={height - 8} text-anchor="middle" class="fill-gray-400" style="font-size:13px">
 				{tickTime(t)}
 			</text>
 		{/each}

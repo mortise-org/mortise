@@ -793,6 +793,14 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 		return err
 	}
 
+	// Preserve the API-set restart annotation so the controller doesn't strip it.
+	if v, ok := existing.Spec.Template.Annotations["mortise.dev/restartedAt"]; ok {
+		if desired.Spec.Template.Annotations == nil {
+			desired.Spec.Template.Annotations = make(map[string]string)
+		}
+		desired.Spec.Template.Annotations["mortise.dev/restartedAt"] = v
+	}
+
 	desiredContainer := desired.Spec.Template.Spec.Containers[0]
 
 	// Retry loop handles optimistic-locking conflicts: another writer (e.g.
