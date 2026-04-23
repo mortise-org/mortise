@@ -18,14 +18,12 @@
   async function load() {
     loading = true;
     try {
-      const all = await api.listPlatformActivity(100);
-      // Show latest deploy/build and member-change events as notifications.
+      const all = await api.listPlatformActivity(10);
       events = all
         .filter((e: ActivityEvent) =>
           ['deploy', 'build', 'rollback', 'promote', 'invite', 'remove'].includes(e.action) ||
           (e.action === 'update' && e.kind === 'member')
-        )
-        .slice(0, 10);
+        );
     } catch {
       events = [];
     } finally {

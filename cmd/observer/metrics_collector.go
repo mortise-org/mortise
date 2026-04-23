@@ -57,7 +57,7 @@ func (c *MetricsCollector) collect(ctx context.Context) {
 	var entries []MetricEntry
 
 	for _, ns := range nsList.Items {
-		if !strings.HasPrefix(ns.Name, "pj-") || !isEnvNamespace(ns.Name) {
+		if !strings.HasPrefix(ns.Name, "pj-") {
 			continue
 		}
 
@@ -101,11 +101,5 @@ func (c *MetricsCollector) collect(ctx context.Context) {
 			c.log.Debug("collected metrics", "count", len(entries))
 		}
 	}
-}
-
-// isEnvNamespace checks if a namespace follows the pj-{project}-{env} pattern
-// (has at least two hyphens after "pj-").
-func isEnvNamespace(name string) bool {
-	rest := strings.TrimPrefix(name, "pj-")
-	return strings.Contains(rest, "-")
+	c.liveCache.Sweep()
 }

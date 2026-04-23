@@ -32,7 +32,7 @@
 	let events = $state<LogLineEvent[]>([]);
 	let es: EventSource | null = null;
 	let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-	let streamKey = $state('');
+	let streamKey = '';
 	let disconnected = $state(false);
 	let intentionalClose = false;
 	let logContainer: HTMLElement | null = $state(null);

@@ -26,31 +26,6 @@ type nopWriter struct{}
 
 func (nopWriter) Write(p []byte) (int, error) { return len(p), nil }
 
-// --- isEnvNamespace ---
-
-func TestIsEnvNamespace(t *testing.T) {
-	// isEnvNamespace is only called after a HasPrefix("pj-") guard, so
-	// non-pj names are out of contract. We test the cases that matter.
-	tests := []struct {
-		name string
-		want bool
-	}{
-		{"pj-myproj-prod", true},
-		{"pj-myproj-staging", true},
-		{"pj-a-b", true},
-		{"pj-foo-bar-baz", true},
-		{"pj-myproj", false},
-		{"pj-", false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := isEnvNamespace(tt.name); got != tt.want {
-				t.Errorf("isEnvNamespace(%q) = %v, want %v", tt.name, got, tt.want)
-			}
-		})
-	}
-}
-
 // --- parseLogTimestamp ---
 
 func TestParseLogTimestamp(t *testing.T) {
@@ -180,9 +155,8 @@ func TestMetricsCollectorCollect(t *testing.T) {
 	}
 }
 
-func TestMetricsCollectorSkipsNonEnvNamespaces(t *testing.T) {
+func TestMetricsCollectorSkipsNonMortiseNamespaces(t *testing.T) {
 	cs := fake.NewClientset(
-		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "pj-demo"}},
 		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "default"}},
 		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "kube-system"}},
 	)
@@ -198,12 +172,12 @@ func TestMetricsCollectorSkipsNonEnvNamespaces(t *testing.T) {
 	collector := NewMetricsCollector(cs, mc, store, NewLiveMetricsCache(time.Hour), time.Minute, discardLogger())
 	collector.collect(context.Background())
 
-	results, err := store.QueryMetrics("pj-demo", "web", "prod", 0, time.Now().Unix()+60, 60)
+	results, err := store.QueryMetrics("default", "web", "prod", 0, time.Now().Unix()+60, 60)
 	if err != nil {
 		t.Fatalf("QueryMetrics: %v", err)
 	}
 	if len(results) != 0 {
-		t.Errorf("expected 0 results for control namespace, got %d", len(results))
+		t.Errorf("expected 0 results for non-mortise namespace, got %d", len(results))
 	}
 }
 
@@ -439,14 +413,14 @@ func TestLogCollectorSyncCleansUpRemovedPods(t *testing.T) {
 	}
 }
 
-func TestLogCollectorSyncSkipsNonEnvNamespaces(t *testing.T) {
+func TestLogCollectorSyncSkipsNonMortiseNamespaces(t *testing.T) {
 	cs := fake.NewClientset(
-		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "pj-demo"}},
 		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "default"}},
+		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "kube-system"}},
 		&corev1.Pod{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:      "control-pod",
-				Namespace: "pj-demo",
+				Name:      "some-pod",
+				Namespace: "default",
 				Labels:    map[string]string{"app.kubernetes.io/name": "web"},
 			},
 			Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "app", Image: "nginx"}}},
@@ -468,7 +442,7 @@ func TestLogCollectorSyncSkipsNonEnvNamespaces(t *testing.T) {
 	collector.mu.Unlock()
 
 	if count != 0 {
-		t.Errorf("tailerCount = %d, want 0 (control ns should be skipped)", count)
+		t.Errorf("tailerCount = %d, want 0 (non-mortise ns should be skipped)", count)
 	}
 }
 
@@ -545,8 +519,11 @@ func TestLogCollectorStopAll(t *testing.T) {
 	collector.stopAll()
 
 	collector.mu.Lock()
-	for _, cancel := range collector.tailers {
-		cancel()
+	if collector.tailerCount != 0 {
+		t.Errorf("expected tailerCount=0 after stopAll, got %d", collector.tailerCount)
+	}
+	if len(collector.tailers) != 0 {
+		t.Errorf("expected tailers map to be empty after stopAll, got %d entries", len(collector.tailers))
 	}
 	collector.mu.Unlock()
 }

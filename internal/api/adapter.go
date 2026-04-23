@@ -9,7 +9,7 @@ import (
 
 var adapterClient = &http.Client{Timeout: 5 * time.Second}
 
-func (s *Server) proxyToAdapter(w http.ResponseWriter, adapterURL, token string, query url.Values) {
+func (s *Server) proxyToAdapter(w http.ResponseWriter, r *http.Request, adapterURL, token string, query url.Values) {
 	u, err := url.Parse(adapterURL)
 	if err != nil {
 		writeJSON(w, http.StatusOK, map[string]any{
@@ -21,7 +21,7 @@ func (s *Server) proxyToAdapter(w http.ResponseWriter, adapterURL, token string,
 	}
 	u.RawQuery = query.Encode()
 
-	req, err := http.NewRequest("GET", u.String(), nil)
+	req, err := http.NewRequestWithContext(r.Context(), "GET", u.String(), nil)
 	if err != nil {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"available": true,

@@ -124,6 +124,24 @@ func (c *LiveMetricsCache) Query(namespace, app, env string, start, end, step in
 	return out
 }
 
+// Sweep removes series with no remaining data points.
+func (c *LiveMetricsCache) Sweep() {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	cutoff := time.Now().Add(-c.retention).Unix()
+	for key, points := range c.series {
+		points = trimPoints(points, cutoff)
+		if len(points) == 0 {
+			delete(c.series, key)
+		} else {
+			c.series[key] = points
+		}
+	}
+}
+
 func trimPoints(points []metricPoint, cutoff int64) []metricPoint {
 	idx := 0
 	for idx < len(points) && points[idx].ts < cutoff {

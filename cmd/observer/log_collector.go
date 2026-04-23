@@ -61,7 +61,7 @@ func (c *LogCollector) sync(ctx context.Context) {
 	activePods := map[string]bool{}
 
 	for _, ns := range nsList.Items {
-		if !strings.HasPrefix(ns.Name, "pj-") || !isEnvNamespace(ns.Name) {
+		if !strings.HasPrefix(ns.Name, "pj-") {
 			continue
 		}
 
@@ -166,6 +166,8 @@ func (c *LogCollector) stopAll() {
 	for _, cancel := range c.tailers {
 		cancel()
 	}
+	clear(c.tailers)
+	c.tailerCount = 0
 }
 
 func parseLogTimestamp(line string) (ts, content string) {

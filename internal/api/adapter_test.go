@@ -20,7 +20,7 @@ func TestProxyToAdapter_Success(t *testing.T) {
 
 	s := &Server{}
 	w := httptest.NewRecorder()
-	s.proxyToAdapter(w, adapter.URL+"/v1/metrics", "", url.Values{"app": {"myapp"}})
+	s.proxyToAdapter(w, httptest.NewRequest("GET", "/", nil), adapter.URL+"/v1/metrics", "", url.Values{"app": {"myapp"}})
 
 	if w.Code != 200 {
 		t.Fatalf("status = %d, want 200", w.Code)
@@ -42,7 +42,7 @@ func TestProxyToAdapter_WithToken(t *testing.T) {
 
 	s := &Server{}
 	w := httptest.NewRecorder()
-	s.proxyToAdapter(w, adapter.URL+"/v1/logs", "my-token", url.Values{})
+	s.proxyToAdapter(w, httptest.NewRequest("GET", "/", nil), adapter.URL+"/v1/logs", "my-token", url.Values{})
 
 	if gotAuth != "Bearer my-token" {
 		t.Errorf("Authorization = %q, want Bearer my-token", gotAuth)
@@ -58,7 +58,7 @@ func TestProxyToAdapter_AdapterError(t *testing.T) {
 
 	s := &Server{}
 	w := httptest.NewRecorder()
-	s.proxyToAdapter(w, adapter.URL+"/v1/metrics", "", url.Values{})
+	s.proxyToAdapter(w, httptest.NewRequest("GET", "/", nil), adapter.URL+"/v1/metrics", "", url.Values{})
 
 	if w.Code != 200 {
 		t.Fatalf("status = %d, want 200 (error wrapped in JSON)", w.Code)
@@ -73,7 +73,7 @@ func TestProxyToAdapter_AdapterError(t *testing.T) {
 func TestProxyToAdapter_Unreachable(t *testing.T) {
 	s := &Server{}
 	w := httptest.NewRecorder()
-	s.proxyToAdapter(w, "http://127.0.0.1:1/v1/metrics", "", url.Values{})
+	s.proxyToAdapter(w, httptest.NewRequest("GET", "/", nil), "http://127.0.0.1:1/v1/metrics", "", url.Values{})
 
 	if w.Code != 200 {
 		t.Fatalf("status = %d, want 200", w.Code)

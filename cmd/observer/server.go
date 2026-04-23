@@ -79,20 +79,20 @@ func (s *ObserverServer) handleMetricsLive(w http.ResponseWriter, r *http.Reques
 	}
 
 	windowSec := int64(600)
-	if s := q.Get("window"); s != "" {
-		if n, err := strconv.ParseInt(s, 10, 64); err == nil && n > 0 {
-			windowSec = n
+	if v := q.Get("window"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n >= 10 {
+			windowSec = min(n, 86400)
 		}
 	}
 	step := int64(15)
-	if s := q.Get("step"); s != "" {
-		if n, err := strconv.ParseInt(s, 10, 64); err == nil && n > 0 {
+	if v := q.Get("step"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n >= 1 {
 			step = n
 		}
 	}
 	interval := 5 * time.Second
-	if s := q.Get("interval"); s != "" {
-		if n, err := strconv.ParseInt(s, 10, 64); err == nil && n > 0 {
+	if v := q.Get("interval"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n >= 2 {
 			interval = time.Duration(n) * time.Second
 		}
 	}
@@ -107,7 +107,7 @@ func (s *ObserverServer) handleMetricsLive(w http.ResponseWriter, r *http.Reques
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 
-	writeSnapshot := func() {
+	writeSnapshot := func() error {
 		now := time.Now().Unix()
 		start := now - windowSec
 		pods := s.liveCache.Query(namespace, app, env, start, now, step)
@@ -119,12 +119,16 @@ func (s *ObserverServer) handleMetricsLive(w http.ResponseWriter, r *http.Reques
 			"pods":      pods,
 		}
 		b, _ := json.Marshal(payload)
-		fmt.Fprintf(w, "event: metrics\n")
-		fmt.Fprintf(w, "data: %s\n\n", b)
+		if _, err := fmt.Fprintf(w, "event: metrics\ndata: %s\n\n", b); err != nil {
+			return err
+		}
 		flusher.Flush()
+		return nil
 	}
 
-	writeSnapshot()
+	if writeSnapshot() != nil {
+		return
+	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
@@ -133,7 +137,9 @@ func (s *ObserverServer) handleMetricsLive(w http.ResponseWriter, r *http.Reques
 		case <-r.Context().Done():
 			return
 		case <-ticker.C:
-			writeSnapshot()
+			if writeSnapshot() != nil {
+				return
+			}
 		}
 	}
 }

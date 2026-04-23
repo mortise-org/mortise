@@ -26,8 +26,7 @@ const (
 //
 // GET /api/projects/{project}/activity?limit=100
 func (s *Server) ListActivity(w http.ResponseWriter, r *http.Request) {
-	projectName := chi.URLParam(r, "project")
-	if !s.authorize(w, r, authz.Resource{Kind: "project", Project: projectName}, authz.ActionRead) {
+	if !s.authorize(w, r, authz.Resource{Kind: "project", Project: chi.URLParam(r, "project")}, authz.ActionRead) {
 		return
 	}
 	_, projectName, ok := s.resolveProject(w, r)
@@ -84,9 +83,13 @@ func (s *Server) ListPlatformActivity(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	perProject := limit
+	if len(projects) > 1 {
+		perProject = max(limit/len(projects), 1)
+	}
 	var merged []activity.Event
 	for _, project := range projects {
-		events, err := s.activityStore.List(r.Context(), project, limit)
+		events, err := s.activityStore.List(r.Context(), project, perProject)
 		if err != nil {
 			writeError(w, err)
 			return

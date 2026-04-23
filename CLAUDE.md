@@ -272,17 +272,18 @@ cd ui && MORTISE_BASE_URL=http://127.0.0.1:8080 \
 
 ```
 cmd/
-  operator/                  # operator + API + embedded UI entrypoint
+  main.go                    # operator + API + embedded UI entrypoint
   cli/                       # CLI entrypoint
+  observer/                  # bundled metrics/logs adapter binary
 api/v1alpha1/                # CRD type definitions
-controllers/                 # reconcile logic
-  project_controller.go
-  app_controller.go
-  app_controller_test.go     # envtest beside controllers
-  platformconfig_controller.go
-  gitprovider_controller.go
-  previewenvironment_controller.go
 internal/
+  controller/                # reconcile logic
+    project_controller.go
+    app_controller.go
+    app_controller_test.go   # envtest beside controllers
+    platformconfig_controller.go
+    gitprovider_controller.go
+    previewenvironment_controller.go
   auth/                      # AuthProvider interface + impls
   authz/                     # PolicyEngine interface + impl
   build/                     # BuildClient interface + BuildKit impl

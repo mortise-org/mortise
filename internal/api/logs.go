@@ -235,13 +235,20 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 		if pod == nil {
 			return
 		}
-		if !started.add(pod.Name, podRestartGeneration(pod)) {
+		podCtx, podCancel := context.WithCancel(ctx)
+		ok, oldCancel := started.add(pod.Name, podRestartGeneration(pod), podCancel)
+		if !ok {
+			podCancel()
 			return
+		}
+		if oldCancel != nil {
+			oldCancel()
+			writer.writeEvent(logLine{Pod: pod.Name, Line: "[pod restarted — reconnecting]", Stream: "stderr"})
 		}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			s.streamPodLogs(ctx, writer, envNs, pod.Name, opts)
+			s.streamPodLogs(podCtx, writer, envNs, pod.Name, opts)
 		}()
 	}
 
@@ -388,24 +395,34 @@ func (s *sseWriter) writeNamedEvent(eventType string, data any) {
 
 // podTracker records which pod names have already had a streaming goroutine
 // started so a pod watcher re-reporting an existing pod doesn't spawn
-// duplicate log streams.
+// duplicate log streams. On restart, the old goroutine's cancel func is
+// returned so the caller can stop it before starting the replacement.
 type podTracker struct {
 	mu   sync.Mutex
-	seen map[string]int32
+	seen map[string]podEntry
+}
+
+type podEntry struct {
+	restartGen int32
+	cancel     context.CancelFunc
 }
 
 func newPodTracker() *podTracker {
-	return &podTracker{seen: map[string]int32{}}
+	return &podTracker{seen: map[string]podEntry{}}
 }
 
-func (p *podTracker) add(name string, restartGen int32) bool {
+// add registers a pod. Returns (true, oldCancel) if a new stream should start.
+// oldCancel is non-nil when the pod restarted and the previous stream should
+// be cancelled.
+func (p *podTracker) add(name string, restartGen int32, cancel context.CancelFunc) (bool, context.CancelFunc) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if prev, ok := p.seen[name]; ok && restartGen <= prev {
-		return false
+	if prev, ok := p.seen[name]; ok && restartGen <= prev.restartGen {
+		return false, nil
 	}
-	p.seen[name] = restartGen
-	return true
+	old := p.seen[name]
+	p.seen[name] = podEntry{restartGen: restartGen, cancel: cancel}
+	return true, old.cancel
 }
 
 func podRestartGeneration(pod *corev1.Pod) int32 {

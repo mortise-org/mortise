@@ -13,10 +13,10 @@ Base path: `/api`
 
 Unauthenticated endpoints:
 
-- `GET /api/auth/status`
-- `POST /api/auth/setup`
-- `POST /api/auth/login`
-- `POST /api/webhooks/{provider}`
+- `GET /auth/status`
+- `POST /auth/setup`
+- `POST /auth/login`
+- `POST /webhooks/{provider}`
 
 ## Common error shape
 
@@ -25,8 +25,6 @@ Most error responses use:
 ```json
 { "error": "message" }
 ```
-
-## Endpoint groups
 
 ## Auth and git connection
 
@@ -83,13 +81,17 @@ Most error responses use:
 ## Project bindings graph
 
 - `GET /projects/{project}/bindings?environment={env}`
-- `GET /projects/{project}/activity?limit={n}` (newest first; default 100, max 500)
 
 Returns edge list:
 
 ```json
 [{ "from": "api", "to": "db", "environment": "production" }]
 ```
+
+## Activity
+
+- `GET /projects/{project}/activity?limit={n}` (newest first; default 100, max 500)
+- `GET /activity?limit={n}` (platform-wide, all readable projects)
 
 ## Apps
 

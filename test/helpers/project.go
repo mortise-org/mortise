@@ -11,6 +11,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
+	"github.com/mortise-org/mortise/internal/constants"
 )
 
 const testProjectDescription = "integration test"
@@ -30,7 +31,7 @@ func CreateTestProject(t *testing.T, k8sClient client.Client, name string) strin
 		_ = k8sClient.Delete(context.Background(), project)
 		RequireEventually(t, 60*time.Second, func() bool {
 			var ns corev1.Namespace
-			return k8sClient.Get(context.Background(), types.NamespacedName{Name: "pj-" + name}, &ns) != nil
+			return k8sClient.Get(context.Background(), types.NamespacedName{Name: constants.ControlNamespace(name)}, &ns) != nil
 		})
 	})
 
@@ -39,5 +40,5 @@ func CreateTestProject(t *testing.T, k8sClient client.Client, name string) strin
 		return k8sClient.Get(context.Background(), types.NamespacedName{Name: name}, &p) == nil &&
 			p.Status.Phase == mortisev1alpha1.ProjectPhaseReady
 	})
-	return "pj-" + name
+	return constants.ControlNamespace(name)
 }

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -115,7 +116,7 @@ func (s *Server) currentMetricsFromAdapter(r *http.Request, projectName, appName
 		"step":      {"15"},
 	}
 
-	resp, err := s.fetchAdapterMetrics(cfg.Observability.MetricsAdapterEndpoint+"/v1/metrics", cfg.Observability.MetricsAdapterToken, q)
+	resp, err := s.fetchAdapterMetrics(r.Context(), cfg.Observability.MetricsAdapterEndpoint+"/v1/metrics", cfg.Observability.MetricsAdapterToken, q)
 	if err != nil {
 		return nil, true, err
 	}
@@ -134,14 +135,14 @@ func (s *Server) currentMetricsFromAdapter(r *http.Request, projectName, appName
 	return out, true, nil
 }
 
-func (s *Server) fetchAdapterMetrics(adapterURL, token string, query url.Values) (*adapterMetricsResponse, error) {
+func (s *Server) fetchAdapterMetrics(ctx context.Context, adapterURL, token string, query url.Values) (*adapterMetricsResponse, error) {
 	u, err := url.Parse(adapterURL)
 	if err != nil {
 		return nil, fmt.Errorf("invalid adapter endpoint: %w", err)
 	}
 	u.RawQuery = query.Encode()
 
-	req, err := http.NewRequest(http.MethodGet, u.String(), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 	if err != nil {
 		return nil, fmt.Errorf("build adapter request: %w", err)
 	}
@@ -218,7 +219,7 @@ func (s *Server) handleMetricsHistory(w http.ResponseWriter, r *http.Request) {
 		"step":      {step},
 	}
 
-	s.proxyToAdapter(w, cfg.Observability.MetricsAdapterEndpoint+"/v1/metrics", cfg.Observability.MetricsAdapterToken, q)
+	s.proxyToAdapter(w, r, cfg.Observability.MetricsAdapterEndpoint+"/v1/metrics", cfg.Observability.MetricsAdapterToken, q)
 }
 
 // handleLogHistory proxies to the configured logs adapter.
@@ -285,5 +286,5 @@ func (s *Server) handleLogHistory(w http.ResponseWriter, r *http.Request) {
 		q.Set("before", b)
 	}
 
-	s.proxyToAdapter(w, cfg.Observability.LogsAdapterEndpoint+"/v1/logs", cfg.Observability.LogsAdapterToken, q)
+	s.proxyToAdapter(w, r, cfg.Observability.LogsAdapterEndpoint+"/v1/logs", cfg.Observability.LogsAdapterToken, q)
 }
