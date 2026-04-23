@@ -159,6 +159,30 @@ spec:
                     - name
                     - namespace
                     type: object
+                  trafficAdapterEndpoint:
+                    description: |-
+                      TrafficAdapterEndpoint is the base URL of a service implementing the
+                      Mortise traffic adapter contract (GET /v1/traffic).
+                    type: string
+                  trafficAdapterTokenSecretRef:
+                    description: |-
+                      TrafficAdapterTokenSecretRef references a Secret containing a bearer token
+                      for authenticating with the traffic adapter.
+                    properties:
+                      key:
+                        description: Key within the secret.
+                        type: string
+                      name:
+                        description: Name of the secret.
+                        type: string
+                      namespace:
+                        description: Namespace of the secret.
+                        type: string
+                    required:
+                    - key
+                    - name
+                    - namespace
+                    type: object
                 type: object
               registry:
                 description: Registry configures the OCI registry used to store built

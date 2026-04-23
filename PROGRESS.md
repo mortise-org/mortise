@@ -44,7 +44,7 @@ device flow routes moved to `/api/auth/git/{provider}/...`; poll endpoint requir
 | 4: Build system (git source)    | §7.5        | **Done**         | All stacks wired end-to-end: webhook patches `mortise.dev/revision` annotation → App reconciler clones + builds + deploys. Operator entrypoint reads config from `PlatformConfig` (env-var fallback for first-boot). Builds run asynchronously in background goroutines; the reconciler returns `Building` immediately and polls on requeue. |
 | 5: Monorepo support             | §7.6        | **Done**         | `source.path` plumbs into BuildKit context; `source.watchPaths` gates webhook rebuilds (prefix match). UI build grouping deferred. |
 | 6: Preview environments        | §7.7        | **Done**         | `PreviewEnvironment` CRD with real types (PullRequestRef, PreviewPhase, TTL, domain). Controller reconciles Deployment + Service + Ingress with owner references; async build via buildTrackerStore (same pattern as App controller); TTL expiry auto-deletes. Webhook handler parses PR events (opened/synchronize/closed) for GitHub, GitLab, Gitea; creates/updates/deletes PreviewEnvironments with staging inheritance + preview overrides. Domain template resolution (`{number}`, `{app}`). Commit status posted on PR SHA. |
-| 7: Polish & v1                  | §7.8        | **Partial**      | Rollback + promote full-stack (API, CLI, UI). Deploy tokens + env management surface (§5.9a) full-stack. Custom domains API/CLI/UI. First-run wizard (4-step). PlatformConfig PATCH API. `spec.network.port`. Repos API (`ListRepos`/`ListBranches`/`GetRepoTree`). Git auth consolidation: device flow routes under `/api/auth/git/{provider}/...`, per-user token storage, `providerRef` on git-source Apps, default GitProvider bootstrap support. `sharedVars` (§5.8b). Cron apps `kind: cron` with CronJob reconciliation (§5.8a). `source.type: external` with ExternalName Service + Ingress + bindings resolver (§5.1). **Project-scoped RBAC** (Issue #85): 3 platform roles (admin/member/viewer), 3 project roles (owner/developer/viewer), ProjectMember CRD, restricted environments, project-scoped deploy tokens, git token fallback to project members, admin user management API+UI, project member management API+UI. Team CRD deleted. Missing: metrics-server UI. |
+| 7: Polish & v1                  | §7.8        | **Partial**      | Rollback + promote full-stack (API, CLI, UI). Deploy tokens + env management surface (§5.9a) full-stack. Custom domains API/CLI/UI. First-run wizard (4-step). PlatformConfig PATCH API. `spec.network.port`. Repos API (`ListRepos`/`ListBranches`/`GetRepoTree`). Git auth consolidation: device flow routes under `/api/auth/git/{provider}/...`, per-user token storage, `providerRef` on git-source Apps, default GitProvider bootstrap support. `sharedVars` (§5.8b). Cron apps `kind: cron` with CronJob reconciliation (§5.8a). `source.type: external` with ExternalName Service + Ingress + bindings resolver (§5.1). **Project-scoped RBAC** (Issue #85): 3 platform roles (admin/member/viewer), 3 project roles (owner/developer/viewer), ProjectMember CRD, restricted environments, project-scoped deploy tokens, git token fallback to project members, admin user management API+UI, project member management API+UI. Team CRD deleted. Observability: bundled observer provides metrics (CPU/memory), logs, and traffic (Traefik access logs) with full MetricsTab UI. Settings UI exposes all adapter endpoints + token SecretRefs. |
 | 8: Tenons & integration recipes | §7.9 / §13  | **Partial**      | Helm chart bundles Traefik/cert-manager/metrics-server as optional deps, plus in-chart registry/buildkit/observer templates. ExternalDNS is not bundled (annotation integration only). 6 integration recipe docs in `docs/recipes/`. Extensions page in UI. Missing: actual reference tenon projects (cf-for-saas, backup-tenon) that spec §9 Phase 8 calls for. |
 
 ### Interface implementation coverage
@@ -812,12 +812,19 @@ Present:
   props instead of polling internally.
 
 Missing:
-- **Metrics in UI:** spec Phase 7 calls for CPU/memory per pod via
-  metrics-server. Not implemented.
-- **Log adapter contract (§5.11a, post-v1):** Minimal HTTP contract
-  for historical log queries via user-deployed adapter. PlatformConfig
-  `spec.observability.logsAdapterEndpoint`. Reference adapters for
-  Loki and CloudWatch as separate tenon repos. Not started.
+- **~~Metrics in UI:~~** Implemented. Bundled observer collects CPU/memory
+  via metrics-server and exposes them via adapter HTTP API. MetricsTab shows
+  per-pod CPU and memory charts with live polling and historical ranges.
+- **~~Traffic in UI:~~** Implemented. Bundled observer tails Traefik JSON
+  access logs, aggregates into configurable-size buckets (default 5s),
+  stores in SQLite. MetricsTab shows request rate (stacked by status code),
+  response time (p50/p95/p99), error rate %, and throughput charts.
+  PlatformConfig `spec.observability.trafficAdapterEndpoint` + token SecretRef.
+  Settings UI exposes all three adapter endpoints + token SecretRefs.
+- **~~Log adapter contract (§5.11a, post-v1):~~** Implemented. Bundled
+  observer collects pod logs via k8s API. PlatformConfig
+  `spec.observability.logsAdapterEndpoint` + token SecretRef. Reference
+  adapters for Loki and CloudWatch as separate tenon repos not started.
 - **~~`source.type: external`:~~** Implemented. ExternalName Service + Ingress for public external apps; bindings resolver returns external host/port for well-known keys.
 
 ### Phase 8: Tenons & integration recipes: **Partial**
@@ -886,7 +893,7 @@ Per UI_SPEC.md §14 flow tracker: updated after the full rebuild:
 
 ### Medium
 - Notifications unread badge count
-- Metrics tab: real CPU/memory data (requires metrics-server; placeholder links to Extensions)
+- ~~Metrics tab: real CPU/memory data~~ — implemented via bundled observer + MetricsTab charts
 - Command palette (⌘K): deferred to v2 per spec §12.20
 - Canvas node positions sync to API annotations (currently localStorage only)
 - `patchEnvVar`/`deleteEnvVar` API endpoints unused (VariablesTab uses full replace: functional)

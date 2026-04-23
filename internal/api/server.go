@@ -210,6 +210,8 @@ func (s *Server) Handler() http.Handler {
 			r.Get("/projects/{project}/apps/{app}/metrics/current", s.handleMetricsCurrent)
 			r.Get("/projects/{project}/apps/{app}/metrics", s.handleMetricsHistory)
 			r.Get("/projects/{project}/apps/{app}/logs/history", s.handleLogHistory)
+			r.Get("/projects/{project}/apps/{app}/traffic", s.handleTrafficHistory)
+			r.Get("/projects/{project}/apps/{app}/traffic/current", s.handleTrafficCurrent)
 			r.Post("/projects/{project}/apps/{app}/connect", s.handleConnect)
 			r.Post("/projects/{project}/apps/{app}/disconnect", s.handleDisconnect)
 

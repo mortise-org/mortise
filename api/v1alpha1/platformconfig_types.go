@@ -168,6 +168,16 @@ type ObservabilitySpec struct {
 	// for authenticating with the metrics adapter.
 	// +optional
 	MetricsAdapterTokenSecretRef *SecretRef `json:"metricsAdapterTokenSecretRef,omitempty"`
+
+	// TrafficAdapterEndpoint is the base URL of a service implementing the
+	// Mortise traffic adapter contract (GET /v1/traffic).
+	// +optional
+	TrafficAdapterEndpoint string `json:"trafficAdapterEndpoint,omitempty"`
+
+	// TrafficAdapterTokenSecretRef references a Secret containing a bearer token
+	// for authenticating with the traffic adapter.
+	// +optional
+	TrafficAdapterTokenSecretRef *SecretRef `json:"trafficAdapterTokenSecretRef,omitempty"`
 }
 
 // PlatformConfigStatus defines the observed state of PlatformConfig.

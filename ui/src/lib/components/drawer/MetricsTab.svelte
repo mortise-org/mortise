@@ -1,10 +1,11 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { BarChart3 } from 'lucide-svelte';
+	import { BarChart3, Activity } from 'lucide-svelte';
 	import { api } from '$lib/api';
 	import { hashPodColor } from '$lib/pod-colors';
 	import MetricsLineChart from '$lib/components/drawer/MetricsLineChart.svelte';
-	import type { App, PodMetricsCurrent, PodMetricsSeries } from '$lib/types';
+	import TrafficChart from '$lib/components/drawer/TrafficChart.svelte';
+	import type { App, PodMetricsCurrent, PodMetricsSeries, TrafficSeries } from '$lib/types';
 
 	let { app, project, env }: { app: App; project: string; env: string } = $props();
 
@@ -39,6 +40,8 @@
 	let metricsAvailable = $state(false);
 	let currentPods = $state<PodMetricsCurrent[]>([]);
 	let historyPods = $state<PodMetricsSeries[]>([]);
+	let trafficAvailable = $state(false);
+	let trafficSeries = $state<TrafficSeries | null>(null);
 	let loading = $state(true);
 	let pollTimer: ReturnType<typeof setInterval> | undefined;
 
@@ -53,17 +56,69 @@
 		return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 	}
 
+	function formatRPS(v: number): string {
+		if (v < 1) return v.toFixed(2);
+		if (v < 100) return v.toFixed(1);
+		return v.toFixed(0);
+	}
+
+	function formatLatency(ms: number): string {
+		if (ms < 1) return `${(ms * 1000).toFixed(0)}µs`;
+		if (ms < 1000) return `${ms.toFixed(0)}ms`;
+		return `${(ms / 1000).toFixed(1)}s`;
+	}
+
+	function formatPercent(v: number): string {
+		return `${v.toFixed(1)}%`;
+	}
+
+	function formatBytes(bytes: number): string {
+		if (bytes < 1024) return `${bytes.toFixed(0)} B`;
+		if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+		if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+		return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+	}
+
+	const errorRateSeries = $derived.by(() => {
+		if (!trafficSeries) return [];
+		const result: [number, number][] = [];
+		for (let i = 0; i < trafficSeries.requests.length; i++) {
+			const ts = trafficSeries.requests[i][0];
+			const total = trafficSeries.requests[i][1];
+			const errors = (trafficSeries.status4xx[i]?.[1] ?? 0) + (trafficSeries.status5xx[i]?.[1] ?? 0);
+			result.push([ts, total > 0 ? (errors / total) * 100 : 0]);
+		}
+		return result;
+	});
+
+	const hasTrafficData = $derived(trafficSeries != null && (trafficSeries.requests?.length ?? 0) > 0);
+
 	async function fetchSeries(hours: number, step: number) {
 		loading = true;
 		const end = Math.floor(Date.now() / 1000);
 		const start = end - hours * 3600;
-		try {
-			const res = await api.getMetricsHistory(project, app.metadata.name, env, start, end, step);
-			metricsAvailable = res.available !== false;
-			const pods = res.pods ?? [];
+		const trafficStep = Math.max(step, 5);
+
+		const [metricsRes, trafficRes] = await Promise.allSettled([
+			api.getMetricsHistory(project, app.metadata.name, env, start, end, step),
+			api.getTrafficHistory(project, app.metadata.name, env, start, end, trafficStep)
+		]);
+
+		if (metricsRes.status === 'fulfilled') {
+			metricsAvailable = metricsRes.value.available !== false;
+			const pods = metricsRes.value.pods ?? [];
 			historyPods = pods;
 			currentPods = historyPodsToCurrent(pods);
-		} catch { /* ignore */ }
+		}
+
+		if (trafficRes.status === 'fulfilled') {
+			trafficAvailable = trafficRes.value.available !== false;
+			trafficSeries = trafficRes.value.series ?? null;
+		} else {
+			trafficAvailable = false;
+			trafficSeries = null;
+		}
+
 		loading = false;
 	}
 
@@ -139,23 +194,73 @@
 		{/if}
 	</div>
 
-
 	{#if loading}
 		<div class="flex items-center justify-center py-12">
 			<div class="h-5 w-5 animate-spin rounded-full border-2 border-gray-600 border-t-accent"></div>
 		</div>
 	{:else}
+		<!-- Resources Section -->
+		<p class="mt-1 text-xs font-semibold uppercase tracking-wider text-gray-500">Resources</p>
 		{#if !metricsAvailable}
-			<div class="flex flex-col items-center justify-center py-12 text-center">
-				<BarChart3 class="mb-4 h-10 w-10 text-gray-600" />
-				<p class="text-sm text-gray-400">Metrics adapter unavailable. Check Platform observability adapter settings.</p>
+			<div class="flex flex-col items-center justify-center py-8 text-center">
+				<BarChart3 class="mb-3 h-8 w-8 text-gray-600" />
+				<p class="text-sm text-gray-400">Resources unavailable</p>
 			</div>
 		{:else if historyPods.length === 0}
-			<p class="py-8 text-center text-sm text-gray-500">No metrics data for this range.</p>
+			<p class="py-6 text-center text-sm text-gray-500">No resource data for this range.</p>
 		{:else}
 			<div class="grid grid-cols-1 gap-3">
 				<MetricsLineChart title="CPU" pods={historyPods} metric="cpu" formatValue={formatCPU} limitValue={cpuLimit || undefined} />
 				<MetricsLineChart title="Memory" pods={historyPods} metric="memory" formatValue={formatMemory} limitValue={memoryLimit || undefined} />
+			</div>
+		{/if}
+
+		<!-- Traffic Section -->
+		<p class="mt-3 text-xs font-semibold uppercase tracking-wider text-gray-500">Traffic</p>
+		{#if !trafficAvailable}
+			<div class="flex flex-col items-center justify-center py-8 text-center">
+				<Activity class="mb-3 h-8 w-8 text-gray-600" />
+				<p class="text-sm text-gray-400">Traffic unavailable</p>
+			</div>
+		{:else if !hasTrafficData}
+			<p class="py-6 text-center text-sm text-gray-500">No traffic data for this range.</p>
+		{:else}
+			<div class="grid grid-cols-1 gap-3">
+				<TrafficChart
+					title="Request Rate"
+					stacked
+					series={[
+						{ name: '2xx', data: trafficSeries!.status2xx, color: '#22c55e' },
+						{ name: '3xx', data: trafficSeries!.status3xx, color: '#3b82f6' },
+						{ name: '4xx', data: trafficSeries!.status4xx, color: '#f59e0b' },
+						{ name: '5xx', data: trafficSeries!.status5xx, color: '#ef4444' }
+					]}
+					formatValue={formatRPS}
+				/>
+				<TrafficChart
+					title="Response Time"
+					series={[
+						{ name: 'p50', data: trafficSeries!.latencyP50, color: '#22c55e' },
+						{ name: 'p95', data: trafficSeries!.latencyP95, color: '#f59e0b' },
+						{ name: 'p99', data: trafficSeries!.latencyP99, color: '#ef4444' }
+					]}
+					formatValue={formatLatency}
+				/>
+				<TrafficChart
+					title="Error Rate"
+					series={[
+						{ name: 'errors', data: errorRateSeries, color: '#ef4444' }
+					]}
+					formatValue={formatPercent}
+				/>
+				<TrafficChart
+					title="Throughput"
+					series={[
+						{ name: 'in', data: trafficSeries!.bytesIn, color: '#3b82f6' },
+						{ name: 'out', data: trafficSeries!.bytesOut, color: '#a855f7' }
+					]}
+					formatValue={formatBytes}
+				/>
 			</div>
 		{/if}
 	{/if}

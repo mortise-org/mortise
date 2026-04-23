@@ -32,7 +32,14 @@
 
 	// Observability (admin only)
 	let logsAdapterEndpoint = $state('');
+	let logsAdapterToken = $state('');
+	let hasLogsToken = $state(false);
 	let metricsAdapterEndpoint = $state('');
+	let metricsAdapterToken = $state('');
+	let hasMetricsToken = $state(false);
+	let trafficAdapterEndpoint = $state('');
+	let trafficAdapterToken = $state('');
+	let hasTrafficToken = $state(false);
 	let savingObservability = $state(false);
 
 	// Users (admin only)
@@ -345,7 +352,11 @@
 				tlsClusterIssuer = platform.tls?.certManagerClusterIssuer ?? '';
 				defaultStorageClass = platform.storage?.defaultStorageClass ?? '';
 				logsAdapterEndpoint = platform.observability?.logsAdapterEndpoint ?? '';
+				hasLogsToken = platform.observability?.hasLogsToken ?? false;
 				metricsAdapterEndpoint = platform.observability?.metricsAdapterEndpoint ?? '';
+				hasMetricsToken = platform.observability?.hasMetricsToken ?? false;
+				trafficAdapterEndpoint = platform.observability?.trafficAdapterEndpoint ?? '';
+				hasTrafficToken = platform.observability?.hasTrafficToken ?? false;
 			}
 			// Check connection status for all providers
 			for (const p of providers) {
@@ -404,8 +415,21 @@
 
 	async function saveObservability() {
 		savingObservability = true;
-		try { await api.patchPlatform({ observability: { logsAdapterEndpoint: logsAdapterEndpoint, metricsAdapterEndpoint: metricsAdapterEndpoint } }); }
-		catch (e) { error = e instanceof Error ? e.message : 'Failed to save observability config'; }
+		try {
+			await api.patchPlatform({
+				observability: {
+					logsAdapterEndpoint,
+					logsAdapterToken: logsAdapterToken || undefined,
+					metricsAdapterEndpoint,
+					metricsAdapterToken: metricsAdapterToken || undefined,
+					trafficAdapterEndpoint,
+					trafficAdapterToken: trafficAdapterToken || undefined,
+				}
+			});
+			if (logsAdapterToken) { hasLogsToken = true; logsAdapterToken = ''; }
+			if (metricsAdapterToken) { hasMetricsToken = true; metricsAdapterToken = ''; }
+			if (trafficAdapterToken) { hasTrafficToken = true; trafficAdapterToken = ''; }
+		} catch (e) { error = e instanceof Error ? e.message : 'Failed to save observability config'; }
 		finally { savingObservability = false; }
 	}
 
@@ -416,7 +440,7 @@
 		build: ['build', 'buildkit', 'container'],
 		storage: ['storage', 'storageclass', 'pvc', 'volume'],
 		tls: ['tls', 'cert', 'issuer', 'ssl'],
-		observability: ['observability', 'metrics', 'logs', 'adapter', 'observer', 'monitoring'],
+		observability: ['observability', 'metrics', 'logs', 'traffic', 'adapter', 'observer', 'monitoring'],
 		users: ['users', 'invite', 'admin']
 	};
 	function sectionVisible(id: string): boolean {
@@ -596,18 +620,38 @@
 		<!-- Observability -->
 		<section id="observability" class="mb-8 space-y-4" style:display={sectionVisible('observability') ? '' : 'none'}>
 			<h2 class="border-b border-surface-600 pb-2 text-sm font-medium text-gray-300">Observability</h2>
-			<p class="text-xs text-gray-500">Configure adapter endpoints for log and metrics history. The bundled observer is auto-configured via Helm values. Override here to use an external adapter (e.g. Loki, Prometheus).</p>
-			<div class="space-y-3 rounded-md border border-surface-600 bg-surface-800/50 p-4">
-				<div>
+			<p class="text-xs text-gray-500">Configure adapter endpoints for logs, metrics, and traffic history. The bundled observer is auto-configured via Helm values. Override here to use an external adapter.</p>
+			<div class="space-y-4 rounded-md border border-surface-600 bg-surface-800/50 p-4">
+				<!-- Logs adapter -->
+				<div class="space-y-2">
 					<label class="block text-xs text-gray-500 mb-1" for="obs-logs">Logs adapter endpoint</label>
 					<input id="obs-logs" type="text" bind:value={logsAdapterEndpoint} placeholder="http://mortise-observer.mortise-system.svc:9091"
 						class="w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-white placeholder-gray-500 outline-none font-mono focus:border-accent" />
+					<label class="block text-xs text-gray-500 mb-1" for="obs-logs-token">Token {hasLogsToken ? '(configured)' : ''}</label>
+					<input id="obs-logs-token" type="password" bind:value={logsAdapterToken} placeholder={hasLogsToken ? '••••••••' : 'optional'}
+						class="w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-white placeholder-gray-500 outline-none font-mono focus:border-accent" />
 				</div>
-				<div>
+
+				<!-- Metrics adapter -->
+				<div class="space-y-2">
 					<label class="block text-xs text-gray-500 mb-1" for="obs-metrics">Metrics adapter endpoint</label>
 					<input id="obs-metrics" type="text" bind:value={metricsAdapterEndpoint} placeholder="http://mortise-observer.mortise-system.svc:9091"
 						class="w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-white placeholder-gray-500 outline-none font-mono focus:border-accent" />
+					<label class="block text-xs text-gray-500 mb-1" for="obs-metrics-token">Token {hasMetricsToken ? '(configured)' : ''}</label>
+					<input id="obs-metrics-token" type="password" bind:value={metricsAdapterToken} placeholder={hasMetricsToken ? '••••••••' : 'optional'}
+						class="w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-white placeholder-gray-500 outline-none font-mono focus:border-accent" />
 				</div>
+
+				<!-- Traffic adapter -->
+				<div class="space-y-2">
+					<label class="block text-xs text-gray-500 mb-1" for="obs-traffic">Traffic adapter endpoint</label>
+					<input id="obs-traffic" type="text" bind:value={trafficAdapterEndpoint} placeholder="http://mortise-observer.mortise-system.svc:9091"
+						class="w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-white placeholder-gray-500 outline-none font-mono focus:border-accent" />
+					<label class="block text-xs text-gray-500 mb-1" for="obs-traffic-token">Token {hasTrafficToken ? '(configured)' : ''}</label>
+					<input id="obs-traffic-token" type="password" bind:value={trafficAdapterToken} placeholder={hasTrafficToken ? '••••••••' : 'optional'}
+						class="w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-white placeholder-gray-500 outline-none font-mono focus:border-accent" />
+				</div>
+
 				<button type="button" onclick={saveObservability} disabled={savingObservability}
 					class="rounded-md bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent-hover disabled:opacity-50">
 					{savingObservability ? 'Saving...' : 'Save observability config'}

@@ -28,8 +28,14 @@ spec:
             - --metrics-poll-interval={{ .Values.observer.metricsPollInterval | default "60s" }}
             - --metrics-retention={{ .Values.observer.retention.metrics | default "72h" }}
             - --log-retention={{ .Values.observer.retention.logs | default "48h" }}
+            - --traffic-retention={{ .Values.observer.retention.traffic | default "48h" }}
             - --max-log-pods={{ .Values.observer.maxLogPods | default "100" }}
             - --storage-path=/data
+            - --ingress-namespace={{ include "mortise.depsNamespace" . }}
+            - --traffic-bucket-size={{ .Values.observer.trafficBucketSize | default "5s" }}
+            {{- if not .Values.traefik.enabled }}
+            - --enable-traffic=false
+            {{- end }}
           ports:
             - name: http
               containerPort: 9091

@@ -18,12 +18,16 @@ import (
 
 func main() {
 	var (
-		listen       = flag.String("listen", ":9091", "HTTP listen address")
-		pollInterval = flag.Duration("metrics-poll-interval", 60*time.Second, "Metrics collection interval")
-		metricsRet   = flag.Duration("metrics-retention", 72*time.Hour, "Metrics retention duration")
-		logRet       = flag.Duration("log-retention", 48*time.Hour, "Log retention duration")
-		maxLogPods   = flag.Int("max-log-pods", 100, "Maximum number of pods to tail logs from")
-		storagePath  = flag.String("storage-path", "/data", "Path for SQLite database")
+		listen        = flag.String("listen", ":9091", "HTTP listen address")
+		pollInterval  = flag.Duration("metrics-poll-interval", 60*time.Second, "Metrics collection interval")
+		metricsRet    = flag.Duration("metrics-retention", 72*time.Hour, "Metrics retention duration")
+		logRet        = flag.Duration("log-retention", 48*time.Hour, "Log retention duration")
+		trafficRet    = flag.Duration("traffic-retention", 48*time.Hour, "Traffic retention duration")
+		maxLogPods    = flag.Int("max-log-pods", 100, "Maximum number of pods to tail logs from")
+		storagePath   = flag.String("storage-path", "/data", "Path for SQLite database")
+		enableTraffic = flag.Bool("enable-traffic", true, "Enable traffic collection from ingress access logs")
+		ingressNs     = flag.String("ingress-namespace", "mortise-deps", "Namespace where ingress controller pods run")
+		trafficBucket = flag.Duration("traffic-bucket-size", 5*time.Second, "Traffic aggregation bucket size")
 	)
 	flag.Parse()
 
@@ -53,6 +57,7 @@ func main() {
 	}
 	defer store.Close()
 	liveCache := NewLiveMetricsCache(2 * time.Hour)
+	liveTrafficCache := NewLiveTrafficCache(2 * time.Hour)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()
@@ -65,6 +70,11 @@ func main() {
 	logCollector := NewLogCollector(cs, store, *pollInterval, *maxLogPods, log)
 	go logCollector.Run(ctx)
 
+	if *enableTraffic {
+		trafficCollector := NewTrafficCollector(cs, store, liveTrafficCache, *pollInterval, *trafficBucket, *ingressNs, log)
+		go trafficCollector.Run(ctx)
+	}
+
 	go func() {
 		ticker := time.NewTicker(10 * time.Minute)
 		defer ticker.Stop()
@@ -73,7 +83,7 @@ func main() {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				md, ld, err := store.Trim(*metricsRet, *logRet)
+				md, ld, err := store.Trim(*metricsRet, *logRet, *trafficRet)
 				if err != nil {
 					log.Error("trim failed", "error", err)
 				} else if md > 0 || ld > 0 {
@@ -85,7 +95,7 @@ func main() {
 
 	srv := &http.Server{
 		Addr:    *listen,
-		Handler: NewObserverServer(store, liveCache),
+		Handler: NewObserverServer(store, liveCache, liveTrafficCache),
 	}
 
 	go func() {

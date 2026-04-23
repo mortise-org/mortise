@@ -55,6 +55,13 @@ traefik:
   enabled: true
   # Values passed to the Traefik subchart. See:
   # https://github.com/traefik/traefik-helm-chart/blob/master/traefik/values.yaml
+  logs:
+    access:
+      enabled: true
+      format: json
+      fields:
+        headers:
+          defaultMode: drop
 
 # ---------------------------------------------------------------------------
 # cert-manager — automatic TLS certificates
@@ -123,8 +130,10 @@ observer:
   retention:
     metrics: 72h
     logs: 48h
+    traffic: 48h
   metricsPollInterval: 60s
   maxLogPods: 100
+  trafficBucketSize: 5s
 
 # ---------------------------------------------------------------------------
 # PlatformConfig — auto-created default configuration

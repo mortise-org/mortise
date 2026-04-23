@@ -27,7 +27,8 @@ import type {
 	SharedVarEntry,
 	MetricsCurrentResponse,
 	MetricsHistoryResponse,
-	LogHistoryResponse
+	LogHistoryResponse,
+	TrafficHistoryResponse
 } from './types';
 
 const BASE = '/api';
@@ -313,7 +314,7 @@ export const api = {
 
 	// --- platform config ---
 	getPlatform: () => request<PlatformResponse>('/platform'),
-	patchPlatform: (body: Partial<{ domain: string; tls: { certManagerClusterIssuer: string }; storage: { defaultStorageClass: string }; registry: { url: string; namespace: string }; build: { buildkitAddr: string; defaultPlatform: string }; observability: { logsAdapterEndpoint: string; metricsAdapterEndpoint: string } }>) =>
+	patchPlatform: (body: Partial<{ domain: string; tls: { certManagerClusterIssuer: string }; storage: { defaultStorageClass: string }; registry: { url: string; namespace: string }; build: { buildkitAddr: string; defaultPlatform: string }; observability: { logsAdapterEndpoint: string; logsAdapterToken?: string; metricsAdapterEndpoint: string; metricsAdapterToken?: string; trafficAdapterEndpoint: string; trafficAdapterToken?: string } }>) =>
 		request<PlatformResponse>('/platform', {
 			method: 'PATCH',
 			body: JSON.stringify(body)
@@ -467,4 +468,8 @@ export const api = {
 			`/projects/${enc(project)}/apps/${enc(app)}/logs/history?${params}`
 		);
 	},
+	getTrafficHistory: (project: string, app: string, env: string, start: number, end: number, step = 5) =>
+		request<TrafficHistoryResponse>(
+			`/projects/${enc(project)}/apps/${enc(app)}/traffic?env=${enc(env)}&start=${start}&end=${end}&step=${step}`
+		),
 };

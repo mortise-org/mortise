@@ -191,7 +191,7 @@ func TestTrim(t *testing.T) {
 		}
 	}
 
-	md, ld, err := s.Trim(72*time.Hour, 48*time.Hour)
+	md, ld, err := s.Trim(72*time.Hour, 48*time.Hour, 48*time.Hour)
 	if err != nil {
 		t.Fatalf("Trim: %v", err)
 	}

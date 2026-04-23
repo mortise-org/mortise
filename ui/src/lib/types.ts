@@ -38,7 +38,14 @@ export interface PlatformResponse {
 	tls: { certManagerClusterIssuer?: string };
 	storage?: { defaultStorageClass?: string };
 	phase?: string;
-	observability?: { logsAdapterEndpoint?: string; metricsAdapterEndpoint?: string };
+	observability?: {
+		logsAdapterEndpoint?: string;
+		hasLogsToken?: boolean;
+		metricsAdapterEndpoint?: string;
+		hasMetricsToken?: boolean;
+		trafficAdapterEndpoint?: string;
+		hasTrafficToken?: boolean;
+	};
 }
 
 
@@ -357,6 +364,26 @@ export interface PodMetricsSeries {
 	name: string;
 	cpu: [number, number][];
 	memory: [number, number][];
+}
+
+export interface TrafficSeries {
+	requests: [number, number][];
+	status2xx: [number, number][];
+	status3xx: [number, number][];
+	status4xx: [number, number][];
+	status5xx: [number, number][];
+	latencyP50: [number, number][];
+	latencyP95: [number, number][];
+	latencyP99: [number, number][];
+	bytesIn: [number, number][];
+	bytesOut: [number, number][];
+}
+
+export interface TrafficHistoryResponse {
+	available: boolean;
+	series?: TrafficSeries;
+	error?: string;
+	detail?: string;
 }
 
 export interface LogHistoryResponse {

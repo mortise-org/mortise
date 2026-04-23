@@ -113,6 +113,10 @@ type ObservabilityConfig struct {
 	MetricsAdapterEndpoint string
 	// MetricsAdapterToken is the resolved bearer token for the metrics adapter.
 	MetricsAdapterToken string
+	// TrafficAdapterEndpoint is the base URL of the traffic adapter.
+	TrafficAdapterEndpoint string
+	// TrafficAdapterToken is the resolved bearer token for the traffic adapter.
+	TrafficAdapterToken string
 }
 
 // Load fetches the singleton PlatformConfig (name "platform"), resolves all
@@ -174,6 +178,7 @@ func Load(ctx context.Context, c client.Reader) (*Config, error) {
 	// Resolve observability adapter config.
 	cfg.Observability.LogsAdapterEndpoint = pc.Spec.Observability.LogsAdapterEndpoint
 	cfg.Observability.MetricsAdapterEndpoint = pc.Spec.Observability.MetricsAdapterEndpoint
+	cfg.Observability.TrafficAdapterEndpoint = pc.Spec.Observability.TrafficAdapterEndpoint
 
 	if ref := pc.Spec.Observability.LogsAdapterTokenSecretRef; ref != nil {
 		secret, err := resolveSecret(ctx, c, *ref)
@@ -188,6 +193,13 @@ func Load(ctx context.Context, c client.Reader) (*Config, error) {
 			return nil, fmt.Errorf("spec.observability.metricsAdapterTokenSecretRef: %w", err)
 		}
 		cfg.Observability.MetricsAdapterToken = string(secret.Data[ref.Key])
+	}
+	if ref := pc.Spec.Observability.TrafficAdapterTokenSecretRef; ref != nil {
+		secret, err := resolveSecret(ctx, c, *ref)
+		if err != nil {
+			return nil, fmt.Errorf("spec.observability.trafficAdapterTokenSecretRef: %w", err)
+		}
+		cfg.Observability.TrafficAdapterToken = string(secret.Data[ref.Key])
 	}
 
 	return cfg, nil

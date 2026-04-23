@@ -1,9 +1,11 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -46,14 +48,26 @@ type patchPlatformBuild struct {
 
 type patchPlatformObservability struct {
 	LogsAdapterEndpoint    string `json:"logsAdapterEndpoint,omitempty"`
+	LogsAdapterToken       string `json:"logsAdapterToken,omitempty"`
 	MetricsAdapterEndpoint string `json:"metricsAdapterEndpoint,omitempty"`
+	MetricsAdapterToken    string `json:"metricsAdapterToken,omitempty"`
+	TrafficAdapterEndpoint string `json:"trafficAdapterEndpoint,omitempty"`
+	TrafficAdapterToken    string `json:"trafficAdapterToken,omitempty"`
 }
 
-// platformObservabilityResponse is the observability portion of the platform response.
 type platformObservabilityResponse struct {
 	LogsAdapterEndpoint    string `json:"logsAdapterEndpoint,omitempty"`
+	HasLogsToken           bool   `json:"hasLogsToken,omitempty"`
 	MetricsAdapterEndpoint string `json:"metricsAdapterEndpoint,omitempty"`
+	HasMetricsToken        bool   `json:"hasMetricsToken,omitempty"`
+	TrafficAdapterEndpoint string `json:"trafficAdapterEndpoint,omitempty"`
+	HasTrafficToken        bool   `json:"hasTrafficToken,omitempty"`
 }
+
+const (
+	adapterTokensSecretName = "observer-adapter-tokens"
+	adapterTokensNamespace  = "mortise-system"
+)
 
 // platformResponse is the JSON shape returned from GET and PATCH.
 type platformResponse struct {
@@ -99,6 +113,13 @@ func (s *Server) PatchPlatform(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if req.Observability != nil {
+		if err := s.upsertAdapterTokens(r.Context(), req.Observability); err != nil {
+			writeError(w, err)
+			return
+		}
+	}
+
 	var pc mortisev1alpha1.PlatformConfig
 	err := s.client.Get(r.Context(), types.NamespacedName{Name: platformConfigName}, &pc)
 
@@ -130,6 +151,65 @@ func (s *Server) PatchPlatform(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, newPlatformResponse(&pc))
 }
 
+// upsertAdapterTokens creates or updates the managed Secret for adapter tokens
+// and sets the corresponding SecretRefs on the observability request so that
+// buildPlatformSpec writes them into PlatformConfig.
+func (s *Server) upsertAdapterTokens(ctx context.Context, obs *patchPlatformObservability) error {
+	if obs.LogsAdapterToken == "" && obs.MetricsAdapterToken == "" && obs.TrafficAdapterToken == "" {
+		return nil
+	}
+
+	key := types.NamespacedName{Namespace: adapterTokensNamespace, Name: adapterTokensSecretName}
+	var secret corev1.Secret
+	err := s.client.Get(ctx, key, &secret)
+
+	if errors.IsNotFound(err) {
+		secret = corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      adapterTokensSecretName,
+				Namespace: adapterTokensNamespace,
+				Labels:    map[string]string{"app.kubernetes.io/managed-by": "mortise"},
+			},
+			Data: map[string][]byte{},
+		}
+		if obs.LogsAdapterToken != "" {
+			secret.Data["logs"] = []byte(obs.LogsAdapterToken)
+		}
+		if obs.MetricsAdapterToken != "" {
+			secret.Data["metrics"] = []byte(obs.MetricsAdapterToken)
+		}
+		if obs.TrafficAdapterToken != "" {
+			secret.Data["traffic"] = []byte(obs.TrafficAdapterToken)
+		}
+		return s.client.Create(ctx, &secret)
+	}
+	if err != nil {
+		return err
+	}
+
+	if secret.Data == nil {
+		secret.Data = map[string][]byte{}
+	}
+	if obs.LogsAdapterToken != "" {
+		secret.Data["logs"] = []byte(obs.LogsAdapterToken)
+	}
+	if obs.MetricsAdapterToken != "" {
+		secret.Data["metrics"] = []byte(obs.MetricsAdapterToken)
+	}
+	if obs.TrafficAdapterToken != "" {
+		secret.Data["traffic"] = []byte(obs.TrafficAdapterToken)
+	}
+	return s.client.Update(ctx, &secret)
+}
+
+func adapterTokenSecretRef(key string) *mortisev1alpha1.SecretRef {
+	return &mortisev1alpha1.SecretRef{
+		Namespace: adapterTokensNamespace,
+		Name:      adapterTokensSecretName,
+		Key:       key,
+	}
+}
+
 func newPlatformResponse(pc *mortisev1alpha1.PlatformConfig) platformResponse {
 	resp := platformResponse{
 		Domain:  pc.Spec.Domain,
@@ -138,10 +218,15 @@ func newPlatformResponse(pc *mortisev1alpha1.PlatformConfig) platformResponse {
 		Phase:   pc.Status.Phase,
 	}
 	obs := pc.Spec.Observability
-	if obs.LogsAdapterEndpoint != "" || obs.MetricsAdapterEndpoint != "" {
+	if obs.LogsAdapterEndpoint != "" || obs.MetricsAdapterEndpoint != "" || obs.TrafficAdapterEndpoint != "" ||
+		obs.LogsAdapterTokenSecretRef != nil || obs.MetricsAdapterTokenSecretRef != nil || obs.TrafficAdapterTokenSecretRef != nil {
 		resp.Observability = &platformObservabilityResponse{
 			LogsAdapterEndpoint:    obs.LogsAdapterEndpoint,
+			HasLogsToken:           obs.LogsAdapterTokenSecretRef != nil,
 			MetricsAdapterEndpoint: obs.MetricsAdapterEndpoint,
+			HasMetricsToken:        obs.MetricsAdapterTokenSecretRef != nil,
+			TrafficAdapterEndpoint: obs.TrafficAdapterEndpoint,
+			HasTrafficToken:        obs.TrafficAdapterTokenSecretRef != nil,
 		}
 	}
 	return resp
@@ -178,8 +263,20 @@ func buildPlatformSpec(base mortisev1alpha1.PlatformConfigSpec, req *patchPlatfo
 		if req.Observability.LogsAdapterEndpoint != "" {
 			base.Observability.LogsAdapterEndpoint = req.Observability.LogsAdapterEndpoint
 		}
+		if req.Observability.LogsAdapterToken != "" {
+			base.Observability.LogsAdapterTokenSecretRef = adapterTokenSecretRef("logs")
+		}
 		if req.Observability.MetricsAdapterEndpoint != "" {
 			base.Observability.MetricsAdapterEndpoint = req.Observability.MetricsAdapterEndpoint
+		}
+		if req.Observability.MetricsAdapterToken != "" {
+			base.Observability.MetricsAdapterTokenSecretRef = adapterTokenSecretRef("metrics")
+		}
+		if req.Observability.TrafficAdapterEndpoint != "" {
+			base.Observability.TrafficAdapterEndpoint = req.Observability.TrafficAdapterEndpoint
+		}
+		if req.Observability.TrafficAdapterToken != "" {
+			base.Observability.TrafficAdapterTokenSecretRef = adapterTokenSecretRef("traffic")
 		}
 	}
 	return base

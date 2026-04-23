@@ -25,5 +25,6 @@ spec:
   observability:
     logsAdapterEndpoint: http://mortise-observer.{{ include "mortise.depsNamespace" . }}.svc:9091
     metricsAdapterEndpoint: http://mortise-observer.{{ include "mortise.depsNamespace" . }}.svc:9091
+    trafficAdapterEndpoint: http://mortise-observer.{{ include "mortise.depsNamespace" . }}.svc:9091
   {{- end }}
 {{- end }}
