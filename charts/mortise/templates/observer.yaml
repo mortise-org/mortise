@@ -23,9 +23,8 @@ spec:
       containers:
         - name: observer
           image: {{ .Values.observer.image }}
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: {{ .Values.observer.imagePullPolicy | default "IfNotPresent" }}
           args:
-            - --listen=:9091
             - --metrics-poll-interval={{ .Values.observer.metricsPollInterval | default "60s" }}
             - --metrics-retention={{ .Values.observer.retention.metrics | default "72h" }}
             - --log-retention={{ .Values.observer.retention.logs | default "48h" }}

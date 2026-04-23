@@ -163,6 +163,8 @@ func (s *Server) AddMember(w http.ResponseWriter, r *http.Request) {
 		_ = err
 	}
 
+	s.recordActivity(r, projectName, "invite", "member", req.Email, "Added member "+req.Email+" as "+req.Role, "")
+
 	writeJSON(w, http.StatusCreated, memberResponse{
 		Email: req.Email,
 		Role:  req.Role,
@@ -208,6 +210,8 @@ func (s *Server) UpdateMember(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+
+	s.recordActivity(r, projectName, "update", "member", member.Spec.Email, "Updated member "+member.Spec.Email+" role to "+req.Role, "")
 
 	writeJSON(w, http.StatusOK, memberResponse{
 		Email:   member.Spec.Email,
@@ -268,6 +272,8 @@ func (s *Server) RemoveMember(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+
+	s.recordActivity(r, projectName, "remove", "member", email, "Removed member "+email, "")
 
 	w.WriteHeader(http.StatusNoContent)
 }

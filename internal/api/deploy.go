@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -32,6 +33,7 @@ func (s *Server) Deploy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	appName := chi.URLParam(r, "app")
+	actorOverride := ""
 
 	var req deployRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -59,20 +61,24 @@ func (s *Server) Deploy(w http.ResponseWriter, r *http.Request) {
 
 		if strings.HasPrefix(token, projectDeployTokenPrefix) {
 			// Project-scoped token: grants deploy to any app in the project.
-			if !s.validateProjectDeployToken(r, ns, projectName) {
+			ok, tokenName := s.validateProjectDeployToken(r, ns, projectName)
+			if !ok {
 				writeJSON(w, http.StatusUnauthorized, errorResponse{"invalid deploy token"})
 				return
 			}
+			actorOverride = "token:" + tokenName
 		} else {
 			// Per-app+env token: requires environment and scoped to one app.
 			if req.Environment == "" {
 				writeJSON(w, http.StatusBadRequest, errorResponse{"environment is required when using a deploy token"})
 				return
 			}
-			if !s.validateDeployToken(r, ns, appName, req.Environment) {
+			ok, tokenName := s.validateDeployToken(r, ns, appName, req.Environment)
+			if !ok {
 				writeJSON(w, http.StatusUnauthorized, errorResponse{"invalid deploy token"})
 				return
 			}
+			actorOverride = "token:" + tokenName
 		}
 	}
 
@@ -87,6 +93,12 @@ func (s *Server) Deploy(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+
+	msg := fmt.Sprintf("Deployed %s", appName)
+	if req.Environment != "" {
+		msg = fmt.Sprintf("Deployed %s to %s", appName, req.Environment)
+	}
+	s.recordActivity(r, projectName, "deploy", "app", appName, msg, actorOverride)
 
 	writeJSON(w, http.StatusOK, map[string]string{
 		"status": "deployed",

@@ -15,15 +15,17 @@ type MetricsCollector struct {
 	clientset     kubernetes.Interface
 	metricsClient metricsv.Interface
 	store         *Store
+	liveCache     *LiveMetricsCache
 	interval      time.Duration
 	log           *slog.Logger
 }
 
-func NewMetricsCollector(cs kubernetes.Interface, mc metricsv.Interface, store *Store, interval time.Duration, log *slog.Logger) *MetricsCollector {
+func NewMetricsCollector(cs kubernetes.Interface, mc metricsv.Interface, store *Store, liveCache *LiveMetricsCache, interval time.Duration, log *slog.Logger) *MetricsCollector {
 	return &MetricsCollector{
 		clientset:     cs,
 		metricsClient: mc,
 		store:         store,
+		liveCache:     liveCache,
 		interval:      interval,
 		log:           log,
 	}
@@ -92,6 +94,7 @@ func (c *MetricsCollector) collect(ctx context.Context) {
 	}
 
 	if len(entries) > 0 {
+		c.liveCache.Add(entries)
 		if err := c.store.InsertMetrics(entries); err != nil {
 			c.log.Error("failed to insert metrics", "count", len(entries), "error", err)
 		} else {

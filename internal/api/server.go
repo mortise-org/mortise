@@ -14,6 +14,7 @@ import (
 	metricsv1beta1 "k8s.io/metrics/pkg/client/clientset/versioned/typed/metrics/v1beta1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/mortise-org/mortise/internal/activity"
 	"github.com/mortise-org/mortise/internal/auth"
 	"github.com/mortise-org/mortise/internal/authz"
 	"github.com/mortise-org/mortise/internal/webhook"
@@ -40,6 +41,7 @@ type Server struct {
 	buildLogs     BuildLogProvider
 	metricsClient metricsv1beta1.MetricsV1beta1Interface
 	proxies       *appProxyManager
+	activityStore activity.Store
 }
 
 // RESTConfig returns the rest.Config the server was built with. Exposed for
@@ -78,6 +80,7 @@ func NewServer(c client.Client, cs kubernetes.Interface, dc dynamic.Interface, r
 		webhook:       wh,
 		deviceFlow:    df,
 		proxies:       newAppProxyManager(),
+		activityStore: activity.NewConfigMapStore(c),
 	}
 }
 
@@ -117,6 +120,7 @@ func (s *Server) authorize(w http.ResponseWriter, r *http.Request, resource auth
 //	/api/projects/{project}/apps/{app}/deploy                      deploy webhook
 //	/api/projects/{project}/apps/{app}/rollback                   rollback to previous deploy
 //	/api/projects/{project}/apps/{app}/promote                    promote image between envs
+//	/api/activity                                                list activity across readable projects
 //	/api/projects/{project}/events                                 SSE project event stream
 //	/api/projects/{project}/apps/{app}/logs                        SSE log stream
 //	/api/projects/{project}/apps/{app}/logs/history                historical log query (adapter proxy)
@@ -179,6 +183,8 @@ func (s *Server) Handler() http.Handler {
 			r.Delete("/projects/{project}/members/{email}", s.RemoveMember)
 
 			r.Get("/projects/{project}/bindings", s.ListBindings)
+			r.Get("/projects/{project}/activity", s.ListActivity)
+			r.Get("/activity", s.ListPlatformActivity)
 
 			r.Get("/projects/{project}/environments", s.ListProjectEnvironments)
 			r.Post("/projects/{project}/environments", s.CreateProjectEnvironment)

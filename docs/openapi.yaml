@@ -588,6 +588,31 @@ paths:
                     to: { type: string }
                     environment: { type: string }
 
+  /api/projects/{project}/activity:
+    get:
+      tags: [Projects]
+      summary: List project activity events
+      parameters:
+        - $ref: '#/components/parameters/projectPath'
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+      responses:
+        '200':
+          description: Project activity, newest first
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ActivityEvent'
+        '400':
+          $ref: '#/components/responses/Error400'
+
   /api/projects/{project}/apps:
     get:
       tags: [Apps]
@@ -1751,6 +1776,21 @@ components:
         health:
           type: string
           enum: [healthy, warning, danger, unknown]
+
+    ActivityEvent:
+      type: object
+      properties:
+        ts: { type: string, format: date-time }
+        actor: { type: string }
+        action: { type: string }
+        kind: { type: string }
+        resource: { type: string }
+        project: { type: string }
+        msg: { type: string }
+        meta:
+          type: object
+          additionalProperties:
+            type: string
 
     CreateAppRequest:
       type: object

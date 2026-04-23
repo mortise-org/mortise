@@ -102,6 +102,8 @@ func (s *Server) CreateToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.recordActivity(r, projectName, "create", "token", req.Name, "Created deploy token "+req.Name+" for "+appName+" in "+req.Environment, "")
+
 	writeJSON(w, http.StatusCreated, tokenResponse{
 		Token:       token,
 		Name:        req.Name,
@@ -178,19 +180,21 @@ func (s *Server) DeleteToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.recordActivity(r, projectName, "delete", "token", tokenName, "Revoked deploy token "+tokenName+" for "+appName, "")
+
 	writeJSON(w, http.StatusOK, map[string]string{"status": "revoked"})
 }
 
 // validateDeployToken checks whether an mrt_ bearer token is valid for the
 // given app and environment. Returns true if the token is valid.
-func (s *Server) validateDeployToken(r *http.Request, ns, appName, env string) bool {
+func (s *Server) validateDeployToken(r *http.Request, ns, appName, env string) (bool, string) {
 	header := r.Header.Get("Authorization")
 	if header == "" || !strings.HasPrefix(header, "Bearer ") {
-		return false
+		return false, ""
 	}
 	token := strings.TrimPrefix(header, "Bearer ")
 	if !strings.HasPrefix(token, deployTokenPrefix) {
-		return false
+		return false, ""
 	}
 
 	hash := sha256.Sum256([]byte(token))
@@ -206,40 +210,45 @@ func (s *Server) validateDeployToken(r *http.Request, ns, appName, env string) b
 			"mortise.dev/environment":  env,
 		},
 	); err != nil {
-		return false
+		return false, ""
 	}
 
 	for i := range list.Items {
-		stored := string(list.Items[i].Data["token-hash"])
+		sec := &list.Items[i]
+		stored := string(sec.Data["token-hash"])
 		if stored == hashHex {
-			return true
+			name := sec.Labels["mortise.dev/token-name"]
+			if name == "" {
+				name = sec.Name
+			}
+			return true, name
 		}
 	}
-	return false
+	return false, ""
 }
 
 // validateProjectDeployToken checks whether an mrt_pj_ bearer token is valid
 // for the given project. Project tokens grant deploy access to any app in
 // the project, with no environment restriction.
-func (s *Server) validateProjectDeployToken(r *http.Request, ns, projectName string) bool {
+func (s *Server) validateProjectDeployToken(r *http.Request, ns, projectName string) (bool, string) {
 	header := r.Header.Get("Authorization")
 	if header == "" || !strings.HasPrefix(header, "Bearer ") {
-		return false
+		return false, ""
 	}
 	token := strings.TrimPrefix(header, "Bearer ")
 	if !strings.HasPrefix(token, projectDeployTokenPrefix) {
-		return false
+		return false, ""
 	}
 
 	// Verify the embedded project name matches the target project.
 	rest := strings.TrimPrefix(token, projectDeployTokenPrefix)
 	idx := strings.LastIndex(rest, "_")
 	if idx <= 0 {
-		return false
+		return false, ""
 	}
 	tokenProject := rest[:idx]
 	if tokenProject != projectName {
-		return false
+		return false, ""
 	}
 
 	hash := sha256.Sum256([]byte(token))
@@ -253,16 +262,17 @@ func (s *Server) validateProjectDeployToken(r *http.Request, ns, projectName str
 			"mortise.dev/project-token": "true",
 		},
 	); err != nil {
-		return false
+		return false, ""
 	}
 
 	for i := range list.Items {
-		stored := string(list.Items[i].Data["token_hash"])
+		sec := &list.Items[i]
+		stored := string(sec.Data["token_hash"])
 		if stored == hashHex {
-			return true
+			return true, sec.Name
 		}
 	}
-	return false
+	return false, ""
 }
 
 // CreateProjectToken generates a project-scoped deploy token that grants
@@ -322,6 +332,8 @@ func (s *Server) CreateProjectToken(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+
+	s.recordActivity(r, projectName, "create", "token", secretName, "Created project deploy token "+secretName, "")
 
 	writeJSON(w, http.StatusCreated, tokenResponse{
 		Token:     token,
@@ -402,6 +414,8 @@ func (s *Server) DeleteProjectToken(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+
+	s.recordActivity(r, projectName, "delete", "token", tokenName, "Revoked project deploy token "+tokenName, "")
 
 	w.WriteHeader(http.StatusNoContent)
 }

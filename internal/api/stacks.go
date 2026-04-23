@@ -180,6 +180,12 @@ func (s *Server) CreateStack(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	stackName := stackPrefix
+	if stackName == "" {
+		stackName = "stack"
+	}
+	s.recordActivity(r, project, "create", "stack", stackName, fmt.Sprintf("Created stack %s with %d apps", stackName, len(created)), "")
+
 	writeJSON(w, http.StatusCreated, createStackResponse{Apps: created})
 }
 

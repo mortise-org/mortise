@@ -1,11 +1,12 @@
 <script lang="ts">
 	import { api } from '$lib/api';
 	import { store } from '$lib/store.svelte';
-	import type { App, BuildLogsResponse, Pod } from '$lib/types';
+	import type { App, BuildLogsResponse } from '$lib/types';
 	import { X, GitBranch, Container, Cloud, ExternalLink, Rocket } from 'lucide-svelte';
 	import DeploymentsTab from './drawer/DeploymentsTab.svelte';
 	import VariablesTab from './drawer/VariablesTab.svelte';
-	import LogsTab from './drawer/LogsTab.svelte';
+	import DeployLogsTab from './drawer/DeployLogsTab.svelte';
+	import BuildLogsTab from './drawer/BuildLogsTab.svelte';
 	import MetricsTab from './drawer/MetricsTab.svelte';
 	import SettingsTab from './drawer/SettingsTab.svelte';
 
@@ -14,14 +15,12 @@
 		appName,
 		liveApp = null,
 		liveBuildLogs = null,
-		livePods = new Map(),
 		onClose
 	}: {
 		project: string;
 		appName: string;
 		liveApp?: App | null;
 		liveBuildLogs?: BuildLogsResponse | null;
-		livePods?: Map<string, Pod[]>;
 		onClose: () => void;
 	} = $props();
 
@@ -44,7 +43,6 @@
 	let connecting = $state(false);
 	let reloading = $state(false);
 	let errorMsg = $state('');
-	let logsEverViewed = $state(false);
 
 	const envImage = $derived(
 		liveApp?.status?.environments?.find((e) => e.name === selectedEnv)?.currentImage ??
@@ -53,7 +51,9 @@
 
 	$effect(() => {
 		if (liveApp?.status?.phase === 'Building' || liveApp?.status?.phase === 'Failed') {
-			if (store.drawerTab !== 'logs') store.setDrawerTab('logs');
+			if (liveApp.spec.source.type !== 'image' && store.drawerTab !== 'buildLogs') {
+				store.setDrawerTab('buildLogs');
+			}
 		}
 	});
 
@@ -85,8 +85,6 @@
 			optimisticPhase = null;
 		}
 	});
-
-	$effect(() => { if (store.drawerTab === 'logs') logsEverViewed = true; });
 
 	function applyOptimisticPhase(phase: string) {
 		optimisticPhase = phase;
@@ -150,7 +148,31 @@
 		}
 	});
 
-	const tabs = ['deployments', 'variables', 'logs', 'metrics', 'settings'] as const;
+	const tabs = $derived.by(() => {
+		const base: Array<'deployments' | 'variables' | 'deployLogs' | 'buildLogs' | 'metrics' | 'settings'> =
+			['deployments', 'variables', 'deployLogs', 'metrics', 'settings'];
+		if (liveApp?.spec.source.type !== 'image') {
+			base.splice(3, 0, 'buildLogs');
+		}
+		return base;
+	});
+
+	$effect(() => {
+		if (liveApp?.spec.source.type === 'image' && store.drawerTab === 'buildLogs') {
+			store.setDrawerTab('deployLogs');
+		}
+	});
+
+	function tabLabel(tab: (typeof tabs)[number]): string {
+		switch (tab) {
+			case 'deployLogs':
+				return 'Deploy Logs';
+			case 'buildLogs':
+				return 'Build Logs';
+			default:
+				return tab.charAt(0).toUpperCase() + tab.slice(1);
+		}
+	}
 
 	const phaseChip: Record<string, string> = {
 		Ready: 'bg-success/10 text-success',
@@ -257,13 +279,13 @@
 					? 'border-accent text-white'
 					: 'border-transparent text-gray-500 hover:text-white'}"
 			>
-				{tab.charAt(0).toUpperCase() + tab.slice(1)}
+				{tabLabel(tab)}
 			</button>
 		{/each}
 	</div>
 
 	<!-- Tab content -->
-	<div class="flex-1 overflow-y-auto px-4 pb-4 {store.drawerTab === 'logs' ? 'pt-0' : 'pt-4'}">
+	<div class="flex-1 overflow-y-auto px-4 pb-4 {(store.drawerTab === 'deployLogs' || store.drawerTab === 'metrics') ? 'pt-0' : 'pt-4'}">
 		{#if errorMsg}
 			<div class="rounded-md bg-danger/10 px-3 py-2 text-sm text-danger mb-2">{errorMsg}</div>
 		{/if}
@@ -284,6 +306,10 @@
 				/>
 			{:else if store.drawerTab === 'variables'}
 				<VariablesTab {project} app={liveApp} />
+			{:else if store.drawerTab === 'deployLogs'}
+				<DeployLogsTab {project} app={liveApp} />
+			{:else if store.drawerTab === 'buildLogs'}
+				<BuildLogsTab {project} app={liveApp} sseBuildLogs={liveBuildLogs} />
 			{:else if store.drawerTab === 'metrics'}
 				<MetricsTab app={liveApp} {project} env={selectedEnv} />
 			{:else if store.drawerTab === 'settings'}
@@ -292,11 +318,6 @@
 					app={liveApp}
 					onAppDeleted={() => onClose()}
 				/>
-			{/if}
-			{#if logsEverViewed || store.drawerTab === 'logs'}
-				<div class="{store.drawerTab !== 'logs' ? 'hidden' : ''}">
-					<LogsTab {project} app={liveApp} sseBuildLogs={liveBuildLogs} ssePods={livePods} />
-				</div>
 			{/if}
 		{/if}
 	</div>

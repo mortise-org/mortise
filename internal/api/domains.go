@@ -89,6 +89,8 @@ func (s *Server) AddDomain(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.recordActivity(r, projectName, "update", "domain", req.Domain, "Added custom domain "+req.Domain+" to "+app.Name+" in "+envName, "")
+
 	writeJSON(w, http.StatusOK, domainsResponse{
 		Primary: env.Domain,
 		Custom:  env.CustomDomains,
@@ -126,6 +128,8 @@ func (s *Server) RemoveDomain(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+
+	s.recordActivity(r, projectName, "update", "domain", domain, "Removed custom domain "+domain+" from "+app.Name+" in "+envName, "")
 
 	writeJSON(w, http.StatusOK, domainsResponse{
 		Primary: env.Domain,

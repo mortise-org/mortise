@@ -152,7 +152,7 @@ func TestMetricsCollectorCollect(t *testing.T) {
 	}
 	defer store.Close()
 
-	collector := NewMetricsCollector(cs, mc, store, time.Minute, discardLogger())
+	collector := NewMetricsCollector(cs, mc, store, NewLiveMetricsCache(time.Hour), time.Minute, discardLogger())
 
 	collector.collect(context.Background())
 
@@ -195,7 +195,7 @@ func TestMetricsCollectorSkipsNonEnvNamespaces(t *testing.T) {
 	}
 	defer store.Close()
 
-	collector := NewMetricsCollector(cs, mc, store, time.Minute, discardLogger())
+	collector := NewMetricsCollector(cs, mc, store, NewLiveMetricsCache(time.Hour), time.Minute, discardLogger())
 	collector.collect(context.Background())
 
 	results, err := store.QueryMetrics("pj-demo", "web", "prod", 0, time.Now().Unix()+60, 60)
@@ -234,7 +234,7 @@ func TestMetricsCollectorSkipsUnlabeledPods(t *testing.T) {
 	}
 	defer store.Close()
 
-	collector := NewMetricsCollector(cs, mc, store, time.Minute, discardLogger())
+	collector := NewMetricsCollector(cs, mc, store, NewLiveMetricsCache(time.Hour), time.Minute, discardLogger())
 	collector.collect(context.Background())
 
 	results, err := store.QueryMetrics("pj-demo-prod", "", "", 0, time.Now().Unix()+60, 60)
@@ -284,7 +284,7 @@ func TestMetricsCollectorMultiContainer(t *testing.T) {
 	}
 	defer store.Close()
 
-	collector := NewMetricsCollector(cs, mc, store, time.Minute, discardLogger())
+	collector := NewMetricsCollector(cs, mc, store, NewLiveMetricsCache(time.Hour), time.Minute, discardLogger())
 	collector.collect(context.Background())
 
 	results, err := store.QueryMetrics("pj-demo-prod", "web", "prod", 0, time.Now().Unix()+60, 60)
@@ -564,7 +564,7 @@ func TestMetricsCollectorRunStopsOnCancel(t *testing.T) {
 	}
 	defer store.Close()
 
-	collector := NewMetricsCollector(cs, mc, store, time.Hour, discardLogger())
+	collector := NewMetricsCollector(cs, mc, store, NewLiveMetricsCache(time.Hour), time.Hour, discardLogger())
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})

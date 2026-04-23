@@ -51,6 +51,8 @@ func (s *Server) Rebuild(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.recordActivity(r, projectName, "build", "app", appName, "Triggered rebuild for "+appName, "")
+
 	writeJSON(w, http.StatusOK, map[string]string{"status": "rebuilding"})
 }
 
@@ -75,6 +77,8 @@ func (s *Server) Redeploy(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+
+	s.recordActivity(r, projectName, "deploy", "app", appName, "Triggered redeploy for "+appName+" in "+env, "")
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "restarting"})
 }

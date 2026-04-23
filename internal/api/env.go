@@ -128,6 +128,8 @@ func (s *Server) PutEnv(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.recordActivity(r, projectName, "update", "app", app.Name, "Updated env vars for "+app.Name+" in "+envName, "")
+
 	writeJSON(w, http.StatusOK, map[string]string{"status": "updated"})
 }
 
@@ -211,6 +213,8 @@ func (s *Server) PatchEnv(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.recordActivity(r, projectName, "update", "app", app.Name, "Patched env vars for "+app.Name+" in "+envName, "")
+
 	writeJSON(w, http.StatusOK, map[string]string{"status": "updated"})
 }
 
@@ -264,6 +268,8 @@ func (s *Server) ImportEnv(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+
+	s.recordActivity(r, projectName, "update", "app", app.Name, "Imported env vars for "+app.Name+" in "+envName, "")
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "imported", "count": fmt.Sprintf("%d", len(parsed))})
 }
@@ -345,6 +351,8 @@ func (s *Server) PutSharedVars(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+
+	s.recordActivity(r, project.Name, "update", "project", project.Name, "Updated shared variables", "")
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "updated"})
 }

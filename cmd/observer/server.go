@@ -2,19 +2,23 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
+	"time"
 )
 
 type ObserverServer struct {
-	store *Store
-	mux   *http.ServeMux
+	store     *Store
+	liveCache *LiveMetricsCache
+	mux       *http.ServeMux
 }
 
-func NewObserverServer(store *Store) *ObserverServer {
-	s := &ObserverServer{store: store}
+func NewObserverServer(store *Store, liveCache *LiveMetricsCache) *ObserverServer {
+	s := &ObserverServer{store: store, liveCache: liveCache}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/metrics", s.handleMetrics)
+	mux.HandleFunc("GET /v1/metrics/live", s.handleMetricsLive)
 	mux.HandleFunc("GET /v1/logs", s.handleLogs)
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 	s.mux = mux
@@ -62,6 +66,76 @@ func (s *ObserverServer) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSONResp(w, 200, map[string]any{"pods": pods})
+}
+
+func (s *ObserverServer) handleMetricsLive(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	namespace := q.Get("namespace")
+	app := q.Get("app")
+	env := q.Get("env")
+	if namespace == "" || app == "" || env == "" {
+		writeJSONResp(w, 400, map[string]string{"error": "namespace, app, env are required"})
+		return
+	}
+
+	windowSec := int64(600)
+	if s := q.Get("window"); s != "" {
+		if n, err := strconv.ParseInt(s, 10, 64); err == nil && n > 0 {
+			windowSec = n
+		}
+	}
+	step := int64(15)
+	if s := q.Get("step"); s != "" {
+		if n, err := strconv.ParseInt(s, 10, 64); err == nil && n > 0 {
+			step = n
+		}
+	}
+	interval := 5 * time.Second
+	if s := q.Get("interval"); s != "" {
+		if n, err := strconv.ParseInt(s, 10, 64); err == nil && n > 0 {
+			interval = time.Duration(n) * time.Second
+		}
+	}
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeJSONResp(w, 500, map[string]string{"error": "streaming unsupported"})
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	writeSnapshot := func() {
+		now := time.Now().Unix()
+		start := now - windowSec
+		pods := s.liveCache.Query(namespace, app, env, start, now, step)
+		payload := map[string]any{
+			"available": true,
+			"window":    windowSec,
+			"step":      step,
+			"ts":        now,
+			"pods":      pods,
+		}
+		b, _ := json.Marshal(payload)
+		fmt.Fprintf(w, "event: metrics\n")
+		fmt.Fprintf(w, "data: %s\n\n", b)
+		flusher.Flush()
+	}
+
+	writeSnapshot()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-ticker.C:
+			writeSnapshot()
+		}
+	}
 }
 
 func (s *ObserverServer) handleLogs(w http.ResponseWriter, r *http.Request) {

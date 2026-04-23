@@ -1,9 +1,12 @@
 package api
 
 import (
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -21,7 +24,21 @@ type podMetricsCurrent struct {
 	Memory int64   `json:"memory"`
 }
 
-// handleMetricsCurrent returns real-time CPU/memory from the k8s PodMetrics API.
+type adapterPodMetricsSeries struct {
+	Name   string       `json:"name"`
+	CPU    [][2]float64 `json:"cpu"`
+	Memory [][2]float64 `json:"memory"`
+}
+
+type adapterMetricsResponse struct {
+	Pods []adapterPodMetricsSeries `json:"pods"`
+}
+
+// handleMetricsCurrent returns real-time CPU/memory.
+//
+// If a metrics adapter is configured in PlatformConfig, the handler pulls a
+// short recent window from the adapter and returns each pod's latest point.
+// Otherwise it falls back to direct PodMetrics API reads.
 //
 // GET /api/projects/{project}/apps/{app}/metrics/current?env=production
 func (s *Server) handleMetricsCurrent(w http.ResponseWriter, r *http.Request) {
@@ -39,6 +56,14 @@ func (s *Server) handleMetricsCurrent(w http.ResponseWriter, r *http.Request) {
 	var app mortisev1alpha1.App
 	if err := s.client.Get(r.Context(), types.NamespacedName{Name: name, Namespace: ns}, &app); err != nil {
 		writeError(w, err)
+		return
+	}
+
+	if current, ok, err := s.currentMetricsFromAdapter(r, projectName, name, env); err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"available": false, "error": err.Error()})
+		return
+	} else if ok {
+		writeJSON(w, http.StatusOK, map[string]any{"available": true, "pods": current})
 		return
 	}
 
@@ -70,6 +95,74 @@ func (s *Server) handleMetricsCurrent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"available": true, "pods": pods})
+}
+
+func (s *Server) currentMetricsFromAdapter(r *http.Request, projectName, appName, env string) ([]podMetricsCurrent, bool, error) {
+	cfg, err := platformconfig.Load(r.Context(), s.client)
+	if err != nil || cfg.Observability.MetricsAdapterEndpoint == "" {
+		return nil, false, nil
+	}
+
+	now := time.Now().Unix()
+	start := now - 10*60
+	envNs := constants.EnvNamespace(projectName, env)
+	q := url.Values{
+		"namespace": {envNs},
+		"app":       {appName},
+		"env":       {env},
+		"start":     {strconv.FormatInt(start, 10)},
+		"end":       {strconv.FormatInt(now, 10)},
+		"step":      {"15"},
+	}
+
+	resp, err := s.fetchAdapterMetrics(cfg.Observability.MetricsAdapterEndpoint+"/v1/metrics", cfg.Observability.MetricsAdapterToken, q)
+	if err != nil {
+		return nil, true, err
+	}
+
+	out := make([]podMetricsCurrent, 0, len(resp.Pods))
+	for _, pod := range resp.Pods {
+		curr := podMetricsCurrent{Name: pod.Name}
+		if len(pod.CPU) > 0 {
+			curr.CPU = pod.CPU[len(pod.CPU)-1][1]
+		}
+		if len(pod.Memory) > 0 {
+			curr.Memory = int64(pod.Memory[len(pod.Memory)-1][1])
+		}
+		out = append(out, curr)
+	}
+	return out, true, nil
+}
+
+func (s *Server) fetchAdapterMetrics(adapterURL, token string, query url.Values) (*adapterMetricsResponse, error) {
+	u, err := url.Parse(adapterURL)
+	if err != nil {
+		return nil, fmt.Errorf("invalid adapter endpoint: %w", err)
+	}
+	u.RawQuery = query.Encode()
+
+	req, err := http.NewRequest(http.MethodGet, u.String(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("build adapter request: %w", err)
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+
+	res, err := adapterClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("adapter unreachable: %w", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		return nil, fmt.Errorf("adapter returned %s", res.Status)
+	}
+
+	var out adapterMetricsResponse
+	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("decode adapter metrics response: %w", err)
+	}
+	return &out, nil
 }
 
 // handleMetricsHistory proxies to the configured metrics adapter.

@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
   import { api } from '$lib/api';
   import { store } from '$lib/store.svelte';
   import type { ActivityEvent } from '$lib/types';
@@ -11,12 +10,10 @@
   let loading = $state(false);
   let filter = $state<'all' | 'deploys' | 'changes' | 'members'>('all');
 
-  onMount(() => {
-    void load();
-  });
-
   $effect(() => {
     void project;
+    void store.activityRailOpen;
+    if (!store.activityRailOpen) return;
     void load();
   });
 

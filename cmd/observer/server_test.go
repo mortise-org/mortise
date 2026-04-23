@@ -17,7 +17,7 @@ func testServer(t *testing.T) *ObserverServer {
 		t.Fatalf("NewStore: %v", err)
 	}
 	t.Cleanup(func() { store.Close() })
-	return NewObserverServer(store)
+	return NewObserverServer(store, NewLiveMetricsCache(2*time.Hour))
 }
 
 func TestHandleMetrics_MissingParams(t *testing.T) {

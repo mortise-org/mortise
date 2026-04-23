@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { goto } from '$app/navigation';
   import { api } from '$lib/api';
   import { store } from '$lib/store.svelte';
   import type { ActivityEvent } from '$lib/types';
@@ -10,26 +11,33 @@
   let events = $state<ActivityEvent[]>([]);
   let loading = $state(false);
 
-  const project = $derived(store.currentProject);
-
   onMount(() => {
-    if (project) void load();
+    void load();
   });
 
   async function load() {
-    if (!project) return;
     loading = true;
     try {
-      const all = await api.listActivity(project);
-      // Show last 10 deploy/build events as notifications
+      const all = await api.listPlatformActivity(100);
+      // Show latest deploy/build and member-change events as notifications.
       events = all
-        .filter(e => ['deploy', 'build', 'rollback', 'promote'].includes(e.action))
+        .filter((e: ActivityEvent) =>
+          ['deploy', 'build', 'rollback', 'promote', 'invite', 'remove'].includes(e.action) ||
+          (e.action === 'update' && e.kind === 'member')
+        )
         .slice(0, 10);
     } catch {
       events = [];
     } finally {
       loading = false;
     }
+  }
+
+  async function openNotification(event: ActivityEvent) {
+    store.setProject(event.project);
+    store.setActivityRailOpen(true);
+    onClose();
+    await goto(`/projects/${encodeURIComponent(event.project)}`);
   }
 
   function relativeTime(ts: string): string {
@@ -56,12 +64,7 @@
     </button>
   </div>
 
-  {#if !project}
-    <div class="px-4 py-6 text-center">
-      <Bell class="mx-auto mb-2 h-8 w-8 text-gray-600" />
-      <p class="text-xs text-gray-500">Open a project to see notifications.</p>
-    </div>
-  {:else if loading}
+  {#if loading}
     <div class="space-y-2 p-4">
       {#each Array(3) as _}
         <div class="h-10 animate-pulse rounded bg-surface-700"></div>
@@ -76,7 +79,11 @@
   {:else}
     <div class="max-h-80 divide-y divide-surface-700 overflow-y-auto">
       {#each events as event}
-        <div class="flex items-start gap-3 px-4 py-3 hover:bg-surface-700/50">
+        <button
+          type="button"
+          onclick={() => void openNotification(event)}
+          class="flex w-full items-start gap-3 px-4 py-3 text-left hover:bg-surface-700/50"
+        >
           {#if event.action === 'deploy'}
             <CheckCircle class="mt-0.5 h-4 w-4 shrink-0 text-success" />
           {:else}
@@ -84,19 +91,10 @@
           {/if}
           <div class="min-w-0 flex-1">
             <p class="text-xs text-gray-300 leading-relaxed">{event.msg}</p>
-            <p class="mt-0.5 text-xs text-gray-500">{relativeTime(event.ts)}</p>
+            <p class="mt-0.5 text-xs text-gray-500">{event.project} · {relativeTime(event.ts)}</p>
           </div>
-        </div>
+        </button>
       {/each}
-    </div>
-    <div class="border-t border-surface-600 px-4 py-2">
-      <button
-        type="button"
-        onclick={() => { store.toggleActivityRail(); onClose(); }}
-        class="w-full text-center text-xs text-accent hover:text-accent-hover"
-      >
-        View all activity →
-      </button>
     </div>
   {/if}
 </div>

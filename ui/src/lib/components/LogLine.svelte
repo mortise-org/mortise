@@ -1,27 +1,8 @@
 <script lang="ts">
 	import type { LogLineEvent } from '$lib/types';
+	import { hashPodColor } from '$lib/pod-colors';
 
 	let { event, showPodBadge }: { event: LogLineEvent; showPodBadge: boolean } = $props();
-
-	// WCAG-AA palette on surface-900 background (8 colors).
-	const POD_COLORS = [
-		'#a78bfa', // violet-400
-		'#22d3ee', // cyan-400
-		'#4ade80', // green-400
-		'#fbbf24', // amber-400
-		'#fb7185', // rose-400
-		'#c08050', // warm brown
-		'#f472b6', // pink-400
-		'#34d399'  // emerald-400
-	];
-
-	function hashPodColor(pod: string): string {
-		let h = 0;
-		for (let i = 0; i < pod.length; i++) {
-			h = (h * 31 + pod.charCodeAt(i)) | 0;
-		}
-		return POD_COLORS[Math.abs(h) % POD_COLORS.length];
-	}
 
 	function formatClock(ts: string): string {
 		if (!ts) return '';

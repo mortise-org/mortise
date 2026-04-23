@@ -52,12 +52,13 @@ func main() {
 		os.Exit(1)
 	}
 	defer store.Close()
+	liveCache := NewLiveMetricsCache(2 * time.Hour)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()
 
 	if mc != nil {
-		metricsCollector := NewMetricsCollector(cs, mc, store, *pollInterval, log)
+		metricsCollector := NewMetricsCollector(cs, mc, store, liveCache, *pollInterval, log)
 		go metricsCollector.Run(ctx)
 	}
 
@@ -84,7 +85,7 @@ func main() {
 
 	srv := &http.Server{
 		Addr:    *listen,
-		Handler: NewObserverServer(store),
+		Handler: NewObserverServer(store, liveCache),
 	}
 
 	go func() {

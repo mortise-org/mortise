@@ -36,7 +36,7 @@ class MortiseStore {
 	get hasUnsavedChanges(): boolean { return this.stagedChanges.size > 0; }
 
 	// UI preferences (session-scoped)
-	drawerTab = $state<'deployments' | 'variables' | 'logs' | 'metrics' | 'settings'>('deployments');
+	drawerTab = $state<'deployments' | 'variables' | 'deployLogs' | 'buildLogs' | 'metrics' | 'settings'>('deployments');
 	activityRailOpen = $state(false);
 	viewMode = $state<'canvas' | 'list'>('canvas');
 	newAppModalOpen = $state(false);
@@ -47,8 +47,12 @@ class MortiseStore {
 			this.currentProject = localStorage.getItem('mortise_project');
 			this.viewMode =
 				(sessionStorage.getItem('mortise_view') as 'canvas' | 'list') ?? 'canvas';
-			this.drawerTab =
-				(sessionStorage.getItem('mortise_tab') as typeof this.drawerTab) ?? 'deployments';
+			const savedTab = sessionStorage.getItem('mortise_tab');
+			if (savedTab === 'logs') {
+				this.drawerTab = 'deployLogs';
+			} else {
+				this.drawerTab = (savedTab as typeof this.drawerTab) ?? 'deployments';
+			}
 			this.activityRailOpen =
 				sessionStorage.getItem('mortise_activity') === 'true';
 			const savedEnvs = localStorage.getItem('mortise_envs');
@@ -155,6 +159,11 @@ class MortiseStore {
 	toggleActivityRail() {
 		this.activityRailOpen = !this.activityRailOpen;
 		if (browser) sessionStorage.setItem('mortise_activity', String(this.activityRailOpen));
+	}
+
+	setActivityRailOpen(open: boolean) {
+		this.activityRailOpen = open;
+		if (browser) sessionStorage.setItem('mortise_activity', String(open));
 	}
 
 	setViewMode(mode: typeof this.viewMode) {

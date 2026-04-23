@@ -166,6 +166,81 @@ func TestMetricsCurrentReturnsPodsWithMetrics(t *testing.T) {
 	}
 }
 
+func TestMetricsCurrentPrefersAdapterWhenConfigured(t *testing.T) {
+	adapter := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"pods":[{"name":"pod-a","cpu":[[1700000000,0.2],[1700000015,0.35]],"memory":[[1700000000,12345],[1700000015,45678]]}]}`))
+	}))
+	defer adapter.Close()
+
+	k8sClient := setupEnvtest(t)
+	mc := fakeMetricsClient(metricsv1beta1.PodMetrics{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "mc-app-pod-1",
+			Namespace: constants.EnvNamespace("default", "production"),
+			Labels: map[string]string{
+				"app.kubernetes.io/name":       "mc-app",
+				"app.kubernetes.io/managed-by": "mortise",
+				"mortise.dev/environment":      "production",
+			},
+		},
+		Containers: []metricsv1beta1.ContainerMetrics{{
+			Name: "app",
+			Usage: corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("900m"),
+				corev1.ResourceMemory: resource.MustParse("512Mi"),
+			},
+		}},
+	})
+	srv := newMetricsServer(t, k8sClient, mc)
+	h := srv.Handler()
+	ns := seedProject(t, k8sClient, "default")
+
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "mc-app", Namespace: ns},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: "nginx:1.25.0"},
+		},
+	}
+	if err := k8sClient.Create(context.Background(), app); err != nil {
+		t.Fatalf("create app: %v", err)
+	}
+	pc := &mortisev1alpha1.PlatformConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "platform"},
+		Spec: mortisev1alpha1.PlatformConfigSpec{
+			Observability: mortisev1alpha1.ObservabilitySpec{MetricsAdapterEndpoint: adapter.URL},
+		},
+	}
+	if err := k8sClient.Create(context.Background(), pc); err != nil {
+		t.Fatalf("create PlatformConfig: %v", err)
+	}
+
+	w := doRequest(h, http.MethodGet, "/api/projects/default/apps/mc-app/metrics/current?env=production", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]any
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp["available"] != true {
+		t.Fatalf("expected available=true, got %v", resp["available"])
+	}
+	pods, ok := resp["pods"].([]any)
+	if !ok || len(pods) != 1 {
+		t.Fatalf("expected one pod from adapter response, got %#v", resp["pods"])
+	}
+	pod := pods[0].(map[string]any)
+	if pod["name"] != "pod-a" {
+		t.Errorf("pod name = %v, want pod-a", pod["name"])
+	}
+	if pod["cpu"] != 0.35 {
+		t.Errorf("cpu = %v, want 0.35", pod["cpu"])
+	}
+	if pod["memory"] != float64(45678) {
+		t.Errorf("memory = %v, want 45678", pod["memory"])
+	}
+}
+
 func TestMetricsCurrentNonexistentApp(t *testing.T) {
 	k8sClient := setupEnvtest(t)
 	srv := newAdminServer(t, k8sClient)

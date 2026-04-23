@@ -83,6 +83,7 @@ Most error responses use:
 ## Project bindings graph
 
 - `GET /projects/{project}/bindings?environment={env}`
+- `GET /projects/{project}/activity?limit={n}` (newest first; default 100, max 500)
 
 Returns edge list:
 

@@ -91,6 +91,8 @@ func (s *Server) Rollback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.recordActivity(r, projectName, "rollback", "app", appName, fmt.Sprintf("Rolled back %s in %s", appName, req.Environment), "")
+
 	writeJSON(w, http.StatusOK, target)
 }
 
@@ -216,6 +218,8 @@ func (s *Server) Promote(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+
+	s.recordActivity(r, projectName, "promote", "app", appName, fmt.Sprintf("Promoted %s from %s to %s", appName, req.From, req.To), "")
 
 	writeJSON(w, http.StatusOK, map[string]string{
 		"status": "promoted",

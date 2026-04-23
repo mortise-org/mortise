@@ -4,7 +4,7 @@
 	import { goto } from '$app/navigation';
 	import { api } from '$lib/api';
 	import { store } from '$lib/store.svelte';
-	import type { App, AppPhase, Project, BuildLogsResponse, Pod } from '$lib/types';
+	import type { App, AppPhase, Project, BuildLogsResponse } from '$lib/types';
 	import { connectProjectEvents } from '$lib/projectEvents';
 	import ProjectCanvas from '$lib/components/ProjectCanvas.svelte';
 	import NewAppModal from '$lib/components/NewAppModal.svelte';
@@ -26,9 +26,8 @@
 	let deployError = $state('');
 	let showDetailsModal = $state(false);
 
-	// SSE-fed state for build logs and pods (passed to drawer/LogsTab)
+	// SSE-fed state for build logs
 	let buildLogs = $state<Map<string, BuildLogsResponse>>(new Map());
-	let podsByAppEnv = $state<Map<string, Pod[]>>(new Map());
 
 	let eventStream: ReturnType<typeof connectProjectEvents> | null = null;
 
@@ -90,9 +89,7 @@
 			onAppDeleted: (name) => {
 				apps = apps.filter(a => a.metadata.name !== name);
 			},
-			onPods: (appName, env, pods) => {
-				podsByAppEnv = new Map(podsByAppEnv).set(`${appName}/${env}`, pods);
-			},
+			onPods: () => {},
 			onBuildLog: (appName, resp) => {
 				buildLogs = new Map(buildLogs).set(appName, resp);
 			}
@@ -354,7 +351,6 @@
 			appName={selectedApp}
 			liveApp={apps.find(a => a.metadata.name === selectedApp) ?? null}
 			liveBuildLogs={buildLogs.get(selectedApp ?? '') ?? null}
-			livePods={podsByAppEnv}
 			onClose={() => selectedApp = null}
 		/>
 	{/key}

@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount, onDestroy, tick } from 'svelte';
 	import { api } from '$lib/api';
+	import { hashPodColor } from '$lib/pod-colors';
 
 	interface Props {
 		project: string;
@@ -16,27 +17,6 @@
 		line: string;
 		stream?: string;
 		receivedAt: number;
-	}
-
-	// Accessible palette for per-pod coloring (WCAG-AA on #0a0a0f bg).
-	const POD_COLORS = [
-		'#a78bfa', // violet-400
-		'#22d3ee', // cyan-400
-		'#4ade80', // green-400
-		'#fbbf24', // amber-400
-		'#fb7185', // rose-400
-		'#C08050', // warm brown
-		'#f472b6', // pink-400
-		'#34d399' // emerald-400
-	];
-
-	function hashPodColor(pod: string): string {
-		let h = 0;
-		for (let i = 0; i < pod.length; i++) {
-			h = (h * 31 + pod.charCodeAt(i)) | 0;
-		}
-		const idx = Math.abs(h) % POD_COLORS.length;
-		return POD_COLORS[idx];
 	}
 
 	let entries = $state<LogEntry[]>([]);

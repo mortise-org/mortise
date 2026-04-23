@@ -117,6 +117,8 @@ func (s *Server) CreateProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.recordActivity(r, project.Name, "create", "project", project.Name, "Created project "+project.Name, "")
+
 	writeJSON(w, http.StatusCreated, toProjectResponse(project))
 }
 
@@ -208,6 +210,8 @@ func (s *Server) DeleteProject(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+
+	s.recordActivity(r, name, "delete", "project", name, "Deleted project "+name, "")
 
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "terminating", "project": name})
 }

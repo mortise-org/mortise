@@ -57,7 +57,8 @@ func (s *Server) CreateSecret(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	appName := chi.URLParam(r, "app")
-	envNs := constants.EnvNamespace(projectName, envFromQuery(r))
+	envName := envFromQuery(r)
+	envNs := constants.EnvNamespace(projectName, envName)
 
 	var req createSecretRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -85,6 +86,8 @@ func (s *Server) CreateSecret(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+
+	s.recordActivity(r, projectName, "create", "secret", req.Name, "Created secret "+req.Name+" for "+appName+" in "+envName, "")
 
 	writeJSON(w, http.StatusCreated, toSecretResponse(secret))
 }
@@ -130,7 +133,8 @@ func (s *Server) DeleteSecret(w http.ResponseWriter, r *http.Request) {
 	}
 	appName := chi.URLParam(r, "app")
 	secretName := chi.URLParam(r, "secretName")
-	envNs := constants.EnvNamespace(projectName, envFromQuery(r))
+	envName := envFromQuery(r)
+	envNs := constants.EnvNamespace(projectName, envName)
 
 	var secret corev1.Secret
 	if err := s.client.Get(r.Context(), types.NamespacedName{Name: secretName, Namespace: envNs}, &secret); err != nil {
@@ -158,6 +162,8 @@ func (s *Server) DeleteSecret(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+
+	s.recordActivity(r, projectName, "delete", "secret", secretName, "Deleted secret "+secretName+" for "+appName+" in "+envName, "")
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }

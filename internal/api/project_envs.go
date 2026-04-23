@@ -127,6 +127,8 @@ func (s *Server) CreateProjectEnvironment(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	s.recordActivity(r, projectName, "create", "environment", req.Name, "Created project environment "+req.Name, "")
+
 	writeJSON(w, http.StatusCreated, projectEnvResponse{
 		Name:         req.Name,
 		DisplayOrder: req.DisplayOrder,
@@ -191,6 +193,11 @@ func (s *Server) UpdateProjectEnvironment(w http.ResponseWriter, r *http.Request
 	}
 
 	updated := project.Spec.Environments[idx]
+	msg := "Updated project environment " + updated.Name
+	if req.Name != nil && *req.Name != envName {
+		msg = "Renamed project environment " + envName + " to " + updated.Name
+	}
+	s.recordActivity(r, projectName, "update", "environment", updated.Name, msg, "")
 	writeJSON(w, http.StatusOK, projectEnvResponse{
 		Name:         updated.Name,
 		DisplayOrder: updated.DisplayOrder,
@@ -233,6 +240,8 @@ func (s *Server) DeleteProjectEnvironment(w http.ResponseWriter, r *http.Request
 		writeError(w, err)
 		return
 	}
+
+	s.recordActivity(r, projectName, "delete", "environment", envName, "Deleted project environment "+envName, "")
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted", "name": envName})
 }

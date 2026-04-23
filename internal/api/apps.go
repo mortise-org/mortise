@@ -77,6 +77,8 @@ func (s *Server) CreateApp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.recordActivity(r, projectName, "create", "app", app.Name, "Created app "+app.Name, "")
+
 	writeJSON(w, http.StatusCreated, app)
 }
 
@@ -145,6 +147,8 @@ func (s *Server) UpdateApp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.recordActivity(r, projectName, "update", "app", app.Name, "Updated app "+app.Name, "")
+
 	writeJSON(w, http.StatusOK, &app)
 }
 
@@ -168,6 +172,8 @@ func (s *Server) DeleteApp(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+
+	s.recordActivity(r, projectName, "delete", "app", app.Name, "Deleted app "+app.Name, "")
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }

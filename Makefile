@@ -130,6 +130,8 @@ dev-up: build-ui ## Create k3d dev cluster with build infra, install Mortise, po
 		--set image.tag=dev \
 		--set image.pullPolicy=Never \
 		--set observer.enabled=true \
+		--set observer.image=mortise:dev \
+		--set observer.imagePullPolicy=Never \
 		--wait --timeout 90s
 	@echo "==> Deploying build infrastructure (BuildKit + registry)..."
 	kubectl apply -f test/integration/manifests/00-namespace.yaml \

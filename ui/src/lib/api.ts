@@ -363,6 +363,8 @@ export const api = {
 	// --- activity ---
 	listActivity: (project: string) =>
 		request<ActivityEvent[]>(`/projects/${enc(project)}/activity`),
+	listPlatformActivity: (limit = 100) =>
+		request<ActivityEvent[]>(`/activity?limit=${limit}`),
 
 	// --- shared variables (project-level, controller fans out to all envs) ---
 	getSharedVars: (project: string) =>
