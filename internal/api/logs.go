@@ -231,19 +231,23 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 	var wg sync.WaitGroup
 	started := newPodTracker()
 
-	streamPod := func(podName string) {
-		if !started.add(podName) {
+	streamPod := func(pod *corev1.Pod) {
+		if pod == nil {
+			return
+		}
+		if !started.add(pod.Name, podRestartGeneration(pod)) {
 			return
 		}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			s.streamPodLogs(ctx, writer, envNs, podName, opts)
+			s.streamPodLogs(ctx, writer, envNs, pod.Name, opts)
 		}()
 	}
 
 	for _, p := range podList.Items {
-		streamPod(p.Name)
+		pod := p
+		streamPod(&pod)
 	}
 
 	// If follow=true, watch for new pods that match the selector (e.g. rollouts)
@@ -321,7 +325,7 @@ func (s *Server) streamPodLogs(ctx context.Context, w *sseWriter, ns, podName st
 // watchPods uses the clientset to watch for new pods matching the label
 // selector and invokes onAdd whenever a pod is added or modified into a
 // state worth streaming. Returns when ctx is cancelled.
-func (s *Server) watchPods(ctx context.Context, ns, labelSelector string, onAdd func(string)) {
+func (s *Server) watchPods(ctx context.Context, ns, labelSelector string, onAdd func(*corev1.Pod)) {
 	watcher, err := s.clientset.CoreV1().Pods(ns).Watch(ctx, metav1.ListOptions{
 		LabelSelector: labelSelector,
 	})
@@ -345,7 +349,7 @@ func (s *Server) watchPods(ctx context.Context, ns, labelSelector string, onAdd 
 			if !ok {
 				continue
 			}
-			onAdd(pod.Name)
+			onAdd(pod)
 		}
 	}
 }
@@ -387,19 +391,33 @@ func (s *sseWriter) writeNamedEvent(eventType string, data any) {
 // duplicate log streams.
 type podTracker struct {
 	mu   sync.Mutex
-	seen map[string]struct{}
+	seen map[string]int32
 }
 
 func newPodTracker() *podTracker {
-	return &podTracker{seen: map[string]struct{}{}}
+	return &podTracker{seen: map[string]int32{}}
 }
 
-func (p *podTracker) add(name string) bool {
+func (p *podTracker) add(name string, restartGen int32) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if _, ok := p.seen[name]; ok {
+	if prev, ok := p.seen[name]; ok && restartGen <= prev {
 		return false
 	}
-	p.seen[name] = struct{}{}
+	p.seen[name] = restartGen
 	return true
+}
+
+func podRestartGeneration(pod *corev1.Pod) int32 {
+	if pod == nil {
+		return 0
+	}
+	var gen int32
+	for _, cs := range pod.Status.InitContainerStatuses {
+		gen += cs.RestartCount
+	}
+	for _, cs := range pod.Status.ContainerStatuses {
+		gen += cs.RestartCount
+	}
+	return gen
 }

@@ -15,16 +15,14 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/types"
 
+	"github.com/mortise-org/mortise/internal/constants"
 	"github.com/mortise-org/mortise/test/helpers"
 )
 
-// TestStorageProvisionsPVCAndMount verifies that an App with spec.storage
-// creates the expected PVC and that the Deployment's pod template wires the
-// PVC in as a volume with the declared mountPath.
 func TestStorageProvisionsPVCAndMount(t *testing.T) {
-	ns := createTestNamespace(t)
+	projectName := "stor-" + randSuffix()
+	ns := createProjectForTest(t, projectName)
 
-	// Locate the fixtures directory relative to this file.
 	_, thisFile, _, _ := runtime.Caller(0)
 	fixturesDir := filepath.Join(filepath.Dir(thisFile), "..", "fixtures")
 
@@ -36,26 +34,25 @@ func TestStorageProvisionsPVCAndMount(t *testing.T) {
 	}
 
 	appName := app.Name
-	envName := app.Spec.Environments[0].Name // "production"
-	resourceName := appName + "-" + envName  // e.g. "test-db-production"
-	pvcName := appName + "-" + app.Spec.Storage[0].Name // e.g. "test-db-pgdata"
+	envName := app.Spec.Environments[0].Name
+	envNs := constants.EnvNamespace(projectName, envName)
+	resourceName := appName
+	pvcName := appName + "-" + app.Spec.Storage[0].Name
 	mountPath := app.Spec.Storage[0].MountPath
 	wantSize := app.Spec.Storage[0].Size
 
-	// Wait for the PVC to exist.
 	helpers.RequireEventually(t, 30*time.Second, func() bool {
 		var pvc corev1.PersistentVolumeClaim
 		return k8sClient.Get(context.Background(), types.NamespacedName{
 			Name:      pvcName,
-			Namespace: ns,
+			Namespace: envNs,
 		}, &pvc) == nil
 	})
 
-	// Assert PVC spec matches the fixture: size 1Gi.
 	var pvc corev1.PersistentVolumeClaim
 	if err := k8sClient.Get(context.Background(), types.NamespacedName{
 		Name:      pvcName,
-		Namespace: ns,
+		Namespace: envNs,
 	}, &pvc); err != nil {
 		t.Fatalf("get PVC %s: %v", pvcName, err)
 	}
@@ -68,18 +65,16 @@ func TestStorageProvisionsPVCAndMount(t *testing.T) {
 		t.Errorf("fixture sanity: expected 1Gi, got %s", wantSize.String())
 	}
 
-	// Wait for the Deployment to exist, then assert volume + volumeMount wiring.
-	helpers.AssertDeploymentExists(t, k8sClient, ns, resourceName)
+	helpers.AssertDeploymentExists(t, k8sClient, envNs, resourceName)
 
 	var dep appsv1.Deployment
 	if err := k8sClient.Get(context.Background(), types.NamespacedName{
 		Name:      resourceName,
-		Namespace: ns,
+		Namespace: envNs,
 	}, &dep); err != nil {
 		t.Fatalf("get Deployment %s: %v", resourceName, err)
 	}
 
-	// Pod template must include a volume referencing the PVC.
 	var foundPVCVol bool
 	for _, v := range dep.Spec.Template.Spec.Volumes {
 		if v.PersistentVolumeClaim != nil && v.PersistentVolumeClaim.ClaimName == pvcName {
@@ -92,7 +87,6 @@ func TestStorageProvisionsPVCAndMount(t *testing.T) {
 			resourceName, pvcName, dep.Spec.Template.Spec.Volumes)
 	}
 
-	// Container must have a volumeMount at the declared mountPath.
 	if len(dep.Spec.Template.Spec.Containers) == 0 {
 		t.Fatal("Deployment has no containers")
 	}
@@ -108,7 +102,6 @@ func TestStorageProvisionsPVCAndMount(t *testing.T) {
 			mountPath, dep.Spec.Template.Spec.Containers[0].VolumeMounts)
 	}
 
-	// --- Subtest: deleting the App should cascade-delete the PVC via owner ref.
 	t.Run("PVC garbage-collected when App is deleted", func(t *testing.T) {
 		if err := k8sClient.Delete(context.Background(), app); err != nil {
 			t.Fatalf("delete App: %v", err)
@@ -118,7 +111,7 @@ func TestStorageProvisionsPVCAndMount(t *testing.T) {
 			var p corev1.PersistentVolumeClaim
 			err := k8sClient.Get(context.Background(), types.NamespacedName{
 				Name:      pvcName,
-				Namespace: ns,
+				Namespace: envNs,
 			}, &p)
 			return apierrors.IsNotFound(err)
 		})

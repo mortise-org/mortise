@@ -124,11 +124,12 @@ dev-up: build-ui ## Create k3d dev cluster with build infra, install Mortise, po
 	@echo "==> Installing CRDs..."
 	kubectl apply -f charts/mortise-core/crds/
 	@echo "==> Installing Mortise via Helm..."
-	helm upgrade --install mortise charts/mortise-core \
+	helm upgrade --install mortise charts/mortise \
 		--namespace mortise-system --create-namespace \
 		--set image.repository=mortise \
 		--set image.tag=dev \
 		--set image.pullPolicy=Never \
+		--set observer.enabled=true \
 		--wait --timeout 90s
 	@echo "==> Deploying build infrastructure (BuildKit + registry)..."
 	kubectl apply -f test/integration/manifests/00-namespace.yaml \
@@ -175,7 +176,7 @@ test-integration: ## Create k3d cluster, install chart + test deps, run integrat
 	# registry.mortise-test-deps.svc:5000 pulls reachable from the node.
 	k3d cluster create --config test/integration/k3d-config.yaml --wait
 	@echo "==> Building Docker image..."
-	$(CONTAINER_TOOL) build -t $(INT_IMG) .
+	$(CONTAINER_TOOL) build --target operator -t $(INT_IMG) .
 	@echo "==> Loading image into k3d..."
 	k3d image import $(INT_IMG) -c $(INT_CLUSTER)
 	@echo "==> Installing CRDs..."
@@ -301,7 +302,11 @@ dev-reload: build-ui ## Rebuild image, re-apply CRDs + chart, restart Mortise in
 # More info: https://docs.docker.com/develop/develop-images/build_enhancements/
 .PHONY: docker-build
 docker-build: ## Build docker image with the manager.
-	$(CONTAINER_TOOL) build -t ${IMG} .
+	$(CONTAINER_TOOL) build --target operator -t ${IMG} .
+
+.PHONY: docker-build-observer
+docker-build-observer: ## Build docker image with the observer.
+	$(CONTAINER_TOOL) build --target observer -t ${IMG}-observer .
 
 .PHONY: docker-push
 docker-push: ## Push docker image with the manager.

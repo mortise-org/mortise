@@ -242,7 +242,14 @@ func (s *Store) EnsureExists(ctx context.Context, namespace, appName string, lab
 	if !k8serrors.IsNotFound(err) {
 		return err
 	}
-	return s.Client.Create(ctx, buildSecret(namespace, name, nil, labels))
+	// Handle race: another controller might have created it while we were checking.
+	if err := s.Client.Create(ctx, buildSecret(namespace, name, nil, labels)); err != nil {
+		if k8serrors.IsAlreadyExists(err) {
+			return nil // another controller created it - that's fine
+		}
+		return err
+	}
+	return nil
 }
 
 // GetSharedSource reads shared vars from the control-namespace source of truth.
@@ -300,7 +307,14 @@ func (s *Store) EnsureSharedExists(ctx context.Context, namespace string, labels
 	if !k8serrors.IsNotFound(err) {
 		return err
 	}
-	return s.Client.Create(ctx, buildSecret(namespace, SharedEnvName, nil, labels))
+	// Handle race: another controller might have created it while we were checking.
+	if err := s.Client.Create(ctx, buildSecret(namespace, SharedEnvName, nil, labels)); err != nil {
+		if k8serrors.IsAlreadyExists(err) {
+			return nil
+		}
+		return err
+	}
+	return nil
 }
 
 // --- internal helpers ---
@@ -320,10 +334,22 @@ func (s *Store) upsertSecret(ctx context.Context, namespace, name string, vars [
 	var existing corev1.Secret
 	err := s.Client.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, &existing)
 	if k8serrors.IsNotFound(err) {
-		return s.Client.Create(ctx, desired)
+		if err := s.Client.Create(ctx, desired); err != nil {
+			if k8serrors.IsAlreadyExists(err) {
+				goto update
+			}
+			return fmt.Errorf("create env secret %s/%s: %w", namespace, name, err)
+		}
+		return nil
 	}
 	if err != nil {
 		return fmt.Errorf("get env secret %s/%s: %w", namespace, name, err)
+	}
+
+update:
+	// Re-fetch to ensure we have the latest version before updating.
+	if err := s.Client.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, &existing); err != nil {
+		return fmt.Errorf("re-get env secret %s/%s: %w", namespace, name, err)
 	}
 
 	existing.Data = desired.Data

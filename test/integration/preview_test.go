@@ -111,6 +111,7 @@ func TestPreviewEnvironmentLifecycle(t *testing.T) {
 	// --- Step 2: Create a PreviewEnvironment CRD directly.
 	previewDomain := fmt.Sprintf("pr-42-%s.test.local", app.Name)
 	pe := createPreviewEnvironment(t, ns, app.Name, 42, headSHA, previewDomain)
+	previewNs := constants.PreviewNamespace(projectName, 42)
 	if err := k8sClient.Create(context.Background(), pe); err != nil {
 		t.Fatalf("create PreviewEnvironment: %v", err)
 	}
@@ -123,12 +124,12 @@ func TestPreviewEnvironmentLifecycle(t *testing.T) {
 	waitForPreviewReady(t, ns, pe.Name, 5*time.Minute)
 
 	// --- Step 4: Verify preview resources exist.
-	previewResourceName := fmt.Sprintf("%s-preview-pr-42", app.Name)
+	previewResourceName := app.Name
 
 	// Deployment
 	var dep appsv1.Deployment
 	if err := k8sClient.Get(context.Background(), types.NamespacedName{
-		Name: previewResourceName, Namespace: ns,
+		Name: previewResourceName, Namespace: previewNs,
 	}, &dep); err != nil {
 		t.Fatalf("preview Deployment %s not found: %v", previewResourceName, err)
 	}
@@ -137,7 +138,7 @@ func TestPreviewEnvironmentLifecycle(t *testing.T) {
 	// Service
 	var svc corev1.Service
 	if err := k8sClient.Get(context.Background(), types.NamespacedName{
-		Name: previewResourceName, Namespace: ns,
+		Name: previewResourceName, Namespace: previewNs,
 	}, &svc); err != nil {
 		t.Fatalf("preview Service %s not found: %v", previewResourceName, err)
 	}
@@ -145,7 +146,7 @@ func TestPreviewEnvironmentLifecycle(t *testing.T) {
 	// Ingress with correct host
 	var ing networkingv1.Ingress
 	if err := k8sClient.Get(context.Background(), types.NamespacedName{
-		Name: previewResourceName, Namespace: ns,
+		Name: previewResourceName, Namespace: previewNs,
 	}, &ing); err != nil {
 		t.Fatalf("preview Ingress %s not found: %v", previewResourceName, err)
 	}
@@ -197,19 +198,19 @@ func TestPreviewEnvironmentLifecycle(t *testing.T) {
 	// Wait for preview resources to be garbage-collected.
 	helpers.RequireEventually(t, 2*time.Minute, func() bool {
 		err := k8sClient.Get(context.Background(), types.NamespacedName{
-			Name: previewResourceName, Namespace: ns,
+			Name: previewResourceName, Namespace: previewNs,
 		}, &appsv1.Deployment{})
 		return errors.IsNotFound(err)
 	})
 	helpers.RequireEventually(t, 30*time.Second, func() bool {
 		err := k8sClient.Get(context.Background(), types.NamespacedName{
-			Name: previewResourceName, Namespace: ns,
+			Name: previewResourceName, Namespace: previewNs,
 		}, &corev1.Service{})
 		return errors.IsNotFound(err)
 	})
 	helpers.RequireEventually(t, 30*time.Second, func() bool {
 		err := k8sClient.Get(context.Background(), types.NamespacedName{
-			Name: previewResourceName, Namespace: ns,
+			Name: previewResourceName, Namespace: previewNs,
 		}, &networkingv1.Ingress{})
 		return errors.IsNotFound(err)
 	})
@@ -365,10 +366,10 @@ func TestPreviewInheritsStagingBindings(t *testing.T) {
 	waitForPreviewReady(t, ns, pe.Name, 5*time.Minute)
 
 	// --- Verify the preview Deployment has binding env vars injected.
-	previewResourceName := fmt.Sprintf("%s-preview-pr-10", apiApp.Name)
+	previewResourceName := apiApp.Name
 	var dep appsv1.Deployment
 	if err := k8sClient.Get(context.Background(), types.NamespacedName{
-		Name: previewResourceName, Namespace: ns,
+		Name: previewResourceName, Namespace: constants.PreviewNamespace(projectName, 10),
 	}, &dep); err != nil {
 		t.Fatalf("get preview Deployment: %v", err)
 	}
@@ -388,8 +389,8 @@ func TestPreviewInheritsStagingBindings(t *testing.T) {
 
 	// host should resolve to the postgres service DNS name.
 	pgEnvName := pgApp.Spec.Environments[0].Name
-	pgResourceName := pgApp.Name + "-" + pgEnvName
-	wantHost := fmt.Sprintf("%s.%s.svc.cluster.local", pgResourceName, ns)
+	pgEnvNs := constants.EnvNamespace(projectName, pgEnvName)
+	wantHost := fmt.Sprintf("%s.%s.svc.cluster.local", pgApp.Name, pgEnvNs)
 	if got := envMap["TEST_DB_HOST"]; got != wantHost {
 		t.Errorf("TEST_DB_HOST: got %q, want %q", got, wantHost)
 	}
@@ -434,7 +435,7 @@ func createPreviewEnvironment(t *testing.T, namespace, appName string, prNumber 
 			AppRef: appName,
 			PullRequest: mortisev1alpha1.PullRequestRef{
 				Number: prNumber,
-				Branch: "feature/test",
+				Branch: "main",
 				SHA:    sha,
 			},
 			Domain: domain,

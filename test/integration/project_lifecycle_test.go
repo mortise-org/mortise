@@ -8,12 +8,13 @@ import (
 	"testing"
 	"time"
 
-	corev1 "k8s.io/api/core/v1"
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
+	"github.com/mortise-org/mortise/internal/constants"
 	"github.com/mortise-org/mortise/test/helpers"
 )
 
@@ -89,8 +90,9 @@ func TestProjectDeleteCascades(t *testing.T) {
 
 	// Wait for the App's Deployment to exist.
 	envName := app.Spec.Environments[0].Name
-	resourceName := app.Name + "-" + envName
-	helpers.AssertDeploymentExists(t, k8sClient, nsName, resourceName)
+	envNs := constants.EnvNamespace(name, envName)
+	resourceName := app.Name
+	helpers.AssertDeploymentExists(t, k8sClient, envNs, resourceName)
 
 	// Delete the Project.
 	if err := k8sClient.Delete(context.Background(), project); err != nil {
@@ -103,7 +105,7 @@ func TestProjectDeleteCascades(t *testing.T) {
 	// Verify app resources are gone.
 	var dep appsv1.Deployment
 	err := k8sClient.Get(context.Background(), types.NamespacedName{
-		Name: resourceName, Namespace: nsName,
+		Name: resourceName, Namespace: envNs,
 	}, &dep)
 	if err == nil {
 		t.Error("expected deployment to be gone after project deletion")

@@ -5,7 +5,6 @@ package integration
 import (
 	"context"
 	"path/filepath"
-	"runtime"
 	"testing"
 	"time"
 
@@ -13,7 +12,6 @@ import (
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/rand"
 
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
 	"github.com/mortise-org/mortise/internal/constants"
@@ -33,47 +31,6 @@ func skipIfNoIngressClass(t *testing.T) {
 	}
 }
 
-// fixturesDir returns the absolute path to test/fixtures.
-func fixturesDir() string {
-	_, thisFile, _, _ := runtime.Caller(0)
-	return filepath.Join(filepath.Dir(thisFile), "..", "fixtures")
-}
-
-// createProjectForTest creates a Project and waits for it to reach Ready,
-// returning the backing namespace name.
-func createProjectForTest(t *testing.T, name string) string {
-	t.Helper()
-	project := &mortisev1alpha1.Project{
-		ObjectMeta: metav1.ObjectMeta{Name: name},
-		Spec:       mortisev1alpha1.ProjectSpec{Description: "integration test"},
-	}
-	// Set TypeMeta so the server can route the request.
-	project.SetGroupVersionKind(mortisev1alpha1.GroupVersion.WithKind("Project"))
-
-	if err := k8sClient.Create(context.Background(), project); err != nil {
-		t.Fatalf("create project %s: %v", name, err)
-	}
-	t.Cleanup(func() {
-		_ = k8sClient.Delete(context.Background(), project)
-		// Wait for namespace cleanup so tests don't leak.
-		helpers.RequireEventually(t, 60*time.Second, func() bool {
-			var ns corev1.Namespace
-			err := k8sClient.Get(context.Background(), types.NamespacedName{Name: "pj-" + name}, &ns)
-			return err != nil // gone
-		})
-	})
-
-	// Wait for Ready.
-	helpers.RequireEventually(t, 30*time.Second, func() bool {
-		var p mortisev1alpha1.Project
-		if err := k8sClient.Get(context.Background(), types.NamespacedName{Name: name}, &p); err != nil {
-			return false
-		}
-		return p.Status.Phase == mortisev1alpha1.ProjectPhaseReady
-	})
-	return "pj-" + name
-}
-
 func TestIngressCreatedForPublicApp(t *testing.T) {
 	skipIfNoIngressClass(t)
 	ns := createProjectForTest(t, "ing-public-"+randSuffix())
@@ -89,7 +46,7 @@ func TestIngressCreatedForPublicApp(t *testing.T) {
 	}
 	helpers.WaitForAppReady(t, k8sClient, ns, app.Name, 2*time.Minute)
 
-	ingressName := app.Name + "-" + app.Spec.Environments[0].Name
+	ingressName := app.Name
 	projectName, _ := constants.ProjectFromControlNs(ns)
 	envNs := constants.EnvNamespace(projectName, app.Spec.Environments[0].Name)
 	helpers.AssertIngressExists(t, k8sClient, envNs, ingressName)
@@ -134,7 +91,7 @@ func TestNoIngressForPrivateApp(t *testing.T) {
 	}
 	helpers.WaitForAppReady(t, k8sClient, ns, app.Name, 2*time.Minute)
 
-	ingressName := app.Name + "-" + app.Spec.Environments[0].Name
+	ingressName := app.Name
 	projectName, _ := constants.ProjectFromControlNs(ns)
 	envNs := constants.EnvNamespace(projectName, app.Spec.Environments[0].Name)
 	var ing networkingv1.Ingress
@@ -162,7 +119,7 @@ func TestCustomDomainsCreateAdditionalRules(t *testing.T) {
 	}
 	helpers.WaitForAppReady(t, k8sClient, ns, app.Name, 2*time.Minute)
 
-	ingressName := app.Name + "-" + app.Spec.Environments[0].Name
+	ingressName := app.Name
 	projectName, _ := constants.ProjectFromControlNs(ns)
 	envNs := constants.EnvNamespace(projectName, app.Spec.Environments[0].Name)
 	helpers.AssertIngressExists(t, k8sClient, envNs, ingressName)
@@ -224,7 +181,7 @@ func TestAnnotationPassthrough(t *testing.T) {
 	}
 	helpers.WaitForAppReady(t, k8sClient, ns, app.Name, 2*time.Minute)
 
-	ingressName := app.Name + "-" + app.Spec.Environments[0].Name
+	ingressName := app.Name
 	projectName, _ := constants.ProjectFromControlNs(ns)
 	envNs := constants.EnvNamespace(projectName, app.Spec.Environments[0].Name)
 	helpers.AssertIngressExists(t, k8sClient, envNs, ingressName)
@@ -284,7 +241,7 @@ func TestTLSSecretOverride(t *testing.T) {
 	}
 	helpers.WaitForAppReady(t, k8sClient, ns, app.Name, 2*time.Minute)
 
-	ingressName := app.Name + "-" + app.Spec.Environments[0].Name
+	ingressName := app.Name
 	helpers.AssertIngressExists(t, k8sClient, envNs, ingressName)
 
 	var ing networkingv1.Ingress
@@ -305,9 +262,4 @@ func TestTLSSecretOverride(t *testing.T) {
 	if _, ok := ing.Annotations["cert-manager.io/cluster-issuer"]; ok {
 		t.Error("cert-manager annotation should not be set when using BYO TLS secret")
 	}
-}
-
-// randSuffix returns a short random string for unique naming.
-func randSuffix() string {
-	return rand.String(6)
 }

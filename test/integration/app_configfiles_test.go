@@ -13,11 +13,13 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 
+	"github.com/mortise-org/mortise/internal/constants"
 	"github.com/mortise-org/mortise/test/helpers"
 )
 
 func TestConfigFilesCreateAndGarbageCollect(t *testing.T) {
-	ns := createTestNamespace(t)
+	projectName := "cfg-" + randSuffix()
+	ns := createProjectForTest(t, projectName)
 
 	_, thisFile, _, _ := runtime.Caller(0)
 	fixturesDir := filepath.Join(filepath.Dir(thisFile), "..", "fixtures")
@@ -31,47 +33,44 @@ func TestConfigFilesCreateAndGarbageCollect(t *testing.T) {
 
 	appName := app.Name
 	envName := app.Spec.Environments[0].Name
-	resourceName := appName + "-" + envName
+	envNs := constants.EnvNamespace(projectName, envName)
+	resourceName := appName
 	cmName := appName + "-config-0"
 
-	// Wait for the Deployment to be up — proves the reconciler ran through.
-	helpers.AssertPodsRunning(t, k8sClient, ns, resourceName, 1)
+	helpers.AssertPodsRunning(t, k8sClient, envNs, resourceName, 1)
 
-	// The ConfigMap should exist, be Mortise-managed, and be owned by the App.
 	helpers.RequireEventually(t, 30*time.Second, func() bool {
 		var cm corev1.ConfigMap
 		return k8sClient.Get(context.Background(), types.NamespacedName{
-			Name: cmName, Namespace: ns,
+			Name: cmName, Namespace: envNs,
 		}, &cm) == nil
 	})
 
 	var cm corev1.ConfigMap
 	if err := k8sClient.Get(context.Background(), types.NamespacedName{
-		Name: cmName, Namespace: ns,
+		Name: cmName, Namespace: envNs,
 	}, &cm); err != nil {
 		t.Fatalf("ConfigMap not found: %v", err)
 	}
-	if got := cm.Labels["mortise.dev/managed-by"]; got != "controller" {
-		t.Fatalf("expected mortise.dev/managed-by=controller, got %q", got)
+	if got := cm.Labels["app.kubernetes.io/managed-by"]; got != "mortise" {
+		t.Fatalf("expected app.kubernetes.io/managed-by=mortise, got %q", got)
 	}
 	if _, ok := cm.Data["app.conf"]; !ok {
 		t.Fatalf("expected ConfigMap data key app.conf, got keys %v", cm.Data)
 	}
-	if len(cm.OwnerReferences) == 0 || cm.OwnerReferences[0].Name != appName {
-		t.Fatalf("expected ConfigMap owner ref to App %q, got %+v", appName, cm.OwnerReferences)
+	if got := cm.Labels[constants.AppNameLabel]; got != appName {
+		t.Fatalf("expected %s=%q, got %q", constants.AppNameLabel, appName, got)
 	}
 
 	helpers.WaitForAppReady(t, k8sClient, ns, appName, 2*time.Minute)
 
-	// Delete the App; Kubernetes garbage collection should remove the
-	// owned ConfigMap.
 	if err := k8sClient.Delete(context.Background(), app); err != nil {
 		t.Fatalf("failed to delete App: %v", err)
 	}
 	helpers.RequireEventually(t, 60*time.Second, func() bool {
 		var gone corev1.ConfigMap
 		err := k8sClient.Get(context.Background(), types.NamespacedName{
-			Name: cmName, Namespace: ns,
+			Name: cmName, Namespace: envNs,
 		}, &gone)
 		return apierrors.IsNotFound(err)
 	})

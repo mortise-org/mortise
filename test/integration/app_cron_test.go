@@ -9,19 +9,21 @@ import (
 	"testing"
 	"time"
 
-	batchv1 "k8s.io/api/batch/v1"
 	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
+	"github.com/mortise-org/mortise/internal/constants"
 	"github.com/mortise-org/mortise/test/helpers"
 )
 
 func TestCronAppCreatesCronJob(t *testing.T) {
-	ns := createTestNamespace(t)
+	projectName := "cron-" + randSuffix()
+	ns := createProjectForTest(t, projectName)
 
 	_, thisFile, _, _ := runtime.Caller(0)
 	fixturesDir := filepath.Join(filepath.Dir(thisFile), "..", "fixtures")
@@ -35,20 +37,21 @@ func TestCronAppCreatesCronJob(t *testing.T) {
 
 	appName := app.Name
 	envName := app.Spec.Environments[0].Name
-	resourceName := appName + "-" + envName
+	envNs := constants.EnvNamespace(projectName, envName)
+	resourceName := appName
 
 	helpers.RequireEventually(t, 2*time.Minute, func() bool {
 		var cj batchv1.CronJob
 		return k8sClient.Get(context.Background(), types.NamespacedName{
 			Name:      resourceName,
-			Namespace: ns,
+			Namespace: envNs,
 		}, &cj) == nil
 	})
 
 	var cj batchv1.CronJob
 	if err := k8sClient.Get(context.Background(), types.NamespacedName{
 		Name:      resourceName,
-		Namespace: ns,
+		Namespace: envNs,
 	}, &cj); err != nil {
 		t.Fatalf("get CronJob: %v", err)
 	}
@@ -64,7 +67,7 @@ func TestCronAppCreatesCronJob(t *testing.T) {
 	var dep appsv1.Deployment
 	if err := k8sClient.Get(context.Background(), types.NamespacedName{
 		Name:      resourceName,
-		Namespace: ns,
+		Namespace: envNs,
 	}, &dep); err == nil {
 		t.Errorf("expected no Deployment for cron App, but one exists")
 	}
@@ -72,7 +75,7 @@ func TestCronAppCreatesCronJob(t *testing.T) {
 	var svc corev1.Service
 	if err := k8sClient.Get(context.Background(), types.NamespacedName{
 		Name:      resourceName,
-		Namespace: ns,
+		Namespace: envNs,
 	}, &svc); err == nil {
 		t.Errorf("expected no Service for cron App, but one exists")
 	}
@@ -80,14 +83,15 @@ func TestCronAppCreatesCronJob(t *testing.T) {
 	var ing networkingv1.Ingress
 	if err := k8sClient.Get(context.Background(), types.NamespacedName{
 		Name:      resourceName,
-		Namespace: ns,
+		Namespace: envNs,
 	}, &ing); err == nil {
 		t.Errorf("expected no Ingress for cron App, but one exists")
 	}
 }
 
 func TestCronAppScheduleUpdate(t *testing.T) {
-	ns := createTestNamespace(t)
+	projectName := "cron-" + randSuffix()
+	ns := createProjectForTest(t, projectName)
 
 	_, thisFile, _, _ := runtime.Caller(0)
 	fixturesDir := filepath.Join(filepath.Dir(thisFile), "..", "fixtures")
@@ -101,13 +105,14 @@ func TestCronAppScheduleUpdate(t *testing.T) {
 
 	appName := app.Name
 	envName := app.Spec.Environments[0].Name
-	resourceName := appName + "-" + envName
+	envNs := constants.EnvNamespace(projectName, envName)
+	resourceName := appName
 
 	helpers.RequireEventually(t, 2*time.Minute, func() bool {
 		var cj batchv1.CronJob
 		return k8sClient.Get(context.Background(), types.NamespacedName{
 			Name:      resourceName,
-			Namespace: ns,
+			Namespace: envNs,
 		}, &cj) == nil
 	})
 
@@ -129,7 +134,7 @@ func TestCronAppScheduleUpdate(t *testing.T) {
 		var cj batchv1.CronJob
 		if err := k8sClient.Get(context.Background(), types.NamespacedName{
 			Name:      resourceName,
-			Namespace: ns,
+			Namespace: envNs,
 		}, &cj); err != nil {
 			return false
 		}

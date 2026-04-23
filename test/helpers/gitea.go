@@ -395,7 +395,11 @@ func PushNewCommit(t *testing.T, baseURL, token, owner, repo string) string {
 
 	body, _ := json.Marshal(payload)
 	putURL := fmt.Sprintf("%s/api/v1/repos/%s/%s/contents/%s", baseURL, owner, repo, path)
-	req, _ = http.NewRequest(http.MethodPut, putURL, bytes.NewReader(body))
+	method := http.MethodPut
+	if fileMeta.SHA == "" {
+		method = http.MethodPost
+	}
+	req, _ = http.NewRequest(method, putURL, bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "token "+token)
 

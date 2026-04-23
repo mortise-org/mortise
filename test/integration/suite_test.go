@@ -86,7 +86,6 @@ func loadKubeconfig() *rest.Config {
 }
 
 func assertMortiseReady() {
-	// Use a plain t-less poll so we can call it from TestMain.
 	deadline := time.Now().Add(60 * time.Second)
 	for time.Now().Before(deadline) {
 		var dep appsv1.Deployment
@@ -103,9 +102,20 @@ func assertMortiseReady() {
 		"Run `make dev-up` or `make test-integration` to install the chart first.")
 }
 
-// createTestNamespace creates a uniquely-named namespace for one test and
-// registers cleanup with t.Cleanup. Returns the namespace name.
+func createProjectForTest(t *testing.T, name string) string {
+	t.Helper()
+	return helpers.CreateTestProject(t, k8sClient, name)
+}
+
 func createTestNamespace(t *testing.T) string {
 	t.Helper()
 	return helpers.CreateTestNamespace(t, k8sClient)
+}
+
+func randSuffix() string {
+	return helpers.RandSuffix()
+}
+
+func fixturesDir() string {
+	return helpers.FixturesDir()
 }

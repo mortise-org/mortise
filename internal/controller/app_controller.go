@@ -994,10 +994,22 @@ func (r *AppReconciler) reconcileService(ctx context.Context, app *mortisev1alph
 	var existing corev1.Service
 	err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: envNs}, &existing)
 	if errors.IsNotFound(err) {
-		return r.Create(ctx, desired)
+		if err := r.Create(ctx, desired); err != nil {
+			if errors.IsAlreadyExists(err) {
+				goto update
+			}
+			return fmt.Errorf("create service: %w", err)
+		}
+		return nil
 	}
 	if err != nil {
 		return err
+	}
+
+update:
+	// Re-fetch to ensure we have the latest version before updating.
+	if err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: envNs}, &existing); err != nil {
+		return fmt.Errorf("re-get service: %w", err)
 	}
 
 	existing.Annotations = desired.Annotations
@@ -1209,12 +1221,21 @@ func (r *AppReconciler) reconcilePVCs(ctx context.Context, app *mortisev1alpha1.
 		err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: envNs}, &existing)
 		if errors.IsNotFound(err) {
 			if err := r.Create(ctx, desired); err != nil {
+				if errors.IsAlreadyExists(err) {
+					goto updatePVC
+				}
 				return err
 			}
 			continue
 		}
 		if err != nil {
 			return err
+		}
+
+	updatePVC:
+		// Re-fetch to ensure we have the latest version before updating.
+		if err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: envNs}, &existing); err != nil {
+			return fmt.Errorf("re-get PVC: %w", err)
 		}
 
 		// PVC spec is largely immutable; only storage size can be expanded (requires bound claim + expandable SC)

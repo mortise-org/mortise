@@ -13,11 +13,13 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 
+	"github.com/mortise-org/mortise/internal/constants"
 	"github.com/mortise-org/mortise/test/helpers"
 )
 
 func TestImageSourceAppGoesReady(t *testing.T) {
-	ns := createTestNamespace(t)
+	projectName := "img-src-" + randSuffix()
+	ns := createProjectForTest(t, projectName)
 
 	// Locate the fixtures directory relative to this file.
 	_, thisFile, _, _ := runtime.Caller(0)
@@ -32,17 +34,18 @@ func TestImageSourceAppGoesReady(t *testing.T) {
 
 	appName := app.Name
 	envName := app.Spec.Environments[0].Name // "production"
-	resourceName := appName + "-" + envName  // e.g. "test-nginx-production"
+	envNs := constants.EnvNamespace(projectName, envName)
+	resourceName := appName // e.g. "test-nginx"
 
 	// Wait for the Deployment to exist and have at least one ready replica.
-	helpers.AssertPodsRunning(t, k8sClient, ns, resourceName, 1)
+	helpers.AssertPodsRunning(t, k8sClient, envNs, resourceName, 1)
 
 	// Wait for the Service to exist.
 	helpers.RequireEventually(t, 30*time.Second, func() bool {
 		var svc corev1.Service
 		return k8sClient.Get(context.Background(), types.NamespacedName{
 			Name:      resourceName,
-			Namespace: ns,
+			Namespace: envNs,
 		}, &svc) == nil
 	})
 
@@ -51,7 +54,7 @@ func TestImageSourceAppGoesReady(t *testing.T) {
 		var dep appsv1.Deployment
 		if err := k8sClient.Get(context.Background(), types.NamespacedName{
 			Name:      resourceName,
-			Namespace: ns,
+			Namespace: envNs,
 		}, &dep); err != nil {
 			return false
 		}

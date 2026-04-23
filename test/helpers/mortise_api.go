@@ -52,32 +52,61 @@ func LoginAsAdmin(t *testing.T, baseURL, email, password string) string {
 			setupResp.StatusCode, string(b))
 	}()
 
-	loginBody, _ := json.Marshal(map[string]string{
-		"email":    email,
-		"password": password,
-	})
-	loginReq, _ := http.NewRequest(http.MethodPost, base+"/api/auth/login",
-		bytes.NewReader(loginBody))
-	loginReq.Header.Set("Content-Type", "application/json")
-	loginResp, err := client.Do(loginReq)
-	if err != nil {
-		t.Fatalf("mortise: POST /api/auth/login: %v", err)
+	type creds struct {
+		email    string
+		password string
 	}
-	defer loginResp.Body.Close()
-	if loginResp.StatusCode != http.StatusOK {
-		b, _ := io.ReadAll(loginResp.Body)
-		t.Fatalf("mortise: POST /api/auth/login status %d: %s",
-			loginResp.StatusCode, string(b))
+	loginOrder := []creds{{email: email, password: password}}
+	if email != "admin@local" || password != "admin123" {
+		// Reused clusters are often bootstrapped with these default credentials.
+		loginOrder = append(loginOrder, creds{email: "admin@local", password: "admin123"})
 	}
 
-	var out struct {
-		Token string `json:"token"`
+	tryLogin := func(c creds) (token string, status int, body string, err error) {
+		loginBody, _ := json.Marshal(map[string]string{
+			"email":    c.email,
+			"password": c.password,
+		})
+		loginReq, _ := http.NewRequest(http.MethodPost, base+"/api/auth/login", bytes.NewReader(loginBody))
+		loginReq.Header.Set("Content-Type", "application/json")
+		loginResp, err := client.Do(loginReq)
+		if err != nil {
+			return "", 0, "", err
+		}
+		defer loginResp.Body.Close()
+
+		status = loginResp.StatusCode
+		if status != http.StatusOK {
+			b, _ := io.ReadAll(loginResp.Body)
+			return "", status, string(b), nil
+		}
+
+		var out struct {
+			Token string `json:"token"`
+		}
+		if err := json.NewDecoder(loginResp.Body).Decode(&out); err != nil {
+			return "", status, "", err
+		}
+		return out.Token, status, "", nil
 	}
-	if err := json.NewDecoder(loginResp.Body).Decode(&out); err != nil {
-		t.Fatalf("mortise: decode login response: %v", err)
+
+	for i, c := range loginOrder {
+		token, status, body, err := tryLogin(c)
+		if err != nil {
+			t.Fatalf("mortise: POST /api/auth/login: %v", err)
+		}
+		if status == http.StatusOK {
+			if token == "" {
+				t.Fatal("mortise: empty token in login response")
+			}
+			return token
+		}
+		if status == http.StatusUnauthorized && i < len(loginOrder)-1 {
+			continue
+		}
+		t.Fatalf("mortise: POST /api/auth/login status %d: %s", status, body)
 	}
-	if out.Token == "" {
-		t.Fatal("mortise: empty token in login response")
-	}
-	return out.Token
+
+	t.Fatal("mortise: unable to login with available admin credentials")
+	return ""
 }

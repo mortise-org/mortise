@@ -16,6 +16,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
+	"github.com/mortise-org/mortise/internal/constants"
 	"github.com/mortise-org/mortise/test/helpers"
 )
 
@@ -33,16 +34,18 @@ CMD ["sh", "-c", "cat /hello.txt && sleep 3600"]
 // end-to-end against the in-cluster Gitea, Zot, and BuildKit installed by
 // test/integration/manifests/. On success:
 //
-//  1. A repo is provisioned in Gitea with a minimal Dockerfile.
-//  2. A GitProvider CRD is created pointing at Gitea, with the admin token
+//  1. A Project is created (provisioning the pj-* control namespace).
+//  2. A repo is provisioned in Gitea with a minimal Dockerfile.
+//  3. A GitProvider CRD is created pointing at Gitea, with the admin token
 //     pre-populated in gitprovider-token-{name} (bypassing the OAuth flow —
 //     integration tests don't own the user's browser).
-//  3. An App is created with source.type=git referencing the test repo.
-//  4. The App's status.phase progresses through Building → Deploying → Ready.
-//  5. Zot's /v2/mortise/{app}/tags/list reports the built tag.
-//  6. The Deployment is running with the pushed image.
+//  4. An App is created with source.type=git referencing the test repo.
+//  5. The App's status.phase progresses through Building → Deploying → Ready.
+//  6. Zot's /v2/mortise/{app}/tags/list reports the built tag.
+//  7. The Deployment is running with the pushed image.
 func TestGitSourceAppBuildsAndDeploys(t *testing.T) {
-	ns := createTestNamespace(t)
+	projectName := "git-src-" + randSuffix()
+	ns := createProjectForTest(t, projectName)
 
 	// --- Port-forward to in-cluster Gitea + registry from the test host.
 	giteaLocalPort := helpers.PortForward(t, "mortise-test-deps", "gitea", 3000)
@@ -53,9 +56,8 @@ func TestGitSourceAppBuildsAndDeploys(t *testing.T) {
 	giteaInClusterURL := "http://gitea.mortise-test-deps.svc:3000"
 
 	// --- Bootstrap a repo in Gitea with a tiny Dockerfile. We derive the
-	// repo name from the per-test namespace so concurrent tests don't collide
-	// without pulling in time.Now (the namespace itself carries a random suffix).
-	repoName := "repo-" + ns
+	// repo name from the project name so concurrent tests don't collide.
+	repoName := "repo-" + projectName
 
 	boot := (&helpers.GiteaBootstrap{
 		BaseURL:  giteaLocalURL,
@@ -136,10 +138,12 @@ func TestGitSourceAppBuildsAndDeploys(t *testing.T) {
 	t.Logf("registry tags for %s: %v", app.Name, tags)
 
 	// --- Assert the Deployment is running the built image (registry host in image ref).
+	// The Deployment lives in the env namespace, not the control namespace.
 	envName := app.Spec.Environments[0].Name
+	envNs := constants.EnvNamespace(projectName, envName)
 	var dep appsv1.Deployment
 	if err := k8sClient.Get(context.Background(), types.NamespacedName{
-		Namespace: ns, Name: app.Name + "-" + envName,
+		Namespace: envNs, Name: app.Name,
 	}, &dep); err != nil {
 		t.Fatalf("get Deployment: %v", err)
 	}
@@ -174,4 +178,3 @@ func stubSecret(t *testing.T, ns, name string, data map[string]string) {
 		})
 	})
 }
-

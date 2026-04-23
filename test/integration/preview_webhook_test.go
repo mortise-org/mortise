@@ -23,6 +23,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
+	"github.com/mortise-org/mortise/internal/constants"
 	"github.com/mortise-org/mortise/test/helpers"
 )
 
@@ -176,12 +177,13 @@ func TestPreviewEnvironmentViaWebhook(t *testing.T) {
 	// --- Wait for the preview to build + deploy. Generous timeout: the first
 	// run may pull base layers into BuildKit's cache.
 	waitForPreviewReady(t, ns, peName, 10*time.Minute)
+	previewNs := constants.PreviewNamespace(projectName, prNumber)
 
 	// --- Verify the preview Deployment exists and has a built image.
-	previewResourceName := peName
+	previewResourceName := app.Name
 	var dep appsv1.Deployment
 	if err := k8sClient.Get(context.Background(), types.NamespacedName{
-		Name: previewResourceName, Namespace: ns,
+		Name: previewResourceName, Namespace: previewNs,
 	}, &dep); err != nil {
 		t.Fatalf("preview Deployment %s not found: %v", previewResourceName, err)
 	}
@@ -228,7 +230,7 @@ func TestPreviewEnvironmentViaWebhook(t *testing.T) {
 	helpers.RequireEventually(t, 2*time.Minute, func() bool {
 		var d appsv1.Deployment
 		err := k8sClient.Get(context.Background(), types.NamespacedName{
-			Name: previewResourceName, Namespace: ns,
+			Name: previewResourceName, Namespace: previewNs,
 		}, &d)
 		return errors.IsNotFound(err)
 	})
@@ -412,4 +414,3 @@ func computeGiteaSignature(body []byte, secret string) string {
 	mac.Write(body)
 	return hex.EncodeToString(mac.Sum(nil))
 }
-

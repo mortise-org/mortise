@@ -25,12 +25,14 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
 	"github.com/go-logr/logr"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/dynamic"
@@ -217,6 +219,21 @@ func writeBuildKitTLS(buildCfg *build.Config, src platformconfig.BuildConfig) er
 		buildCfg.TLSKey = p
 	}
 	return nil
+}
+
+func isCRDDiscoveryNotReady(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	var noKindMatchErr *meta.NoKindMatchError
+	if errors.As(err, &noKindMatchErr) {
+		return true
+	}
+
+	errText := strings.ToLower(err.Error())
+	return strings.Contains(errText, "no matches for kind") ||
+		strings.Contains(errText, "failed to get restmapping")
 }
 
 // nolint:gocyclo
@@ -421,12 +438,22 @@ func main() {
 	// --webhook-cert-path and the webhooks engage automatically.
 	if webhookCertPath != "" {
 		if err := (&admission.AppValidator{Client: mgr.GetClient()}).SetupWithManager(mgr); err != nil {
-			setupLog.Error(err, "Failed to register admission webhook", "webhook", "App")
-			os.Exit(1)
+			if isCRDDiscoveryNotReady(err) {
+				setupLog.Info("Skipped admission webhook registration because CRDs are not yet discoverable",
+					"webhook", "App", "error", err)
+			} else {
+				setupLog.Error(err, "Failed to register admission webhook", "webhook", "App")
+				os.Exit(1)
+			}
 		}
 		if err := (&admission.ProjectValidator{Client: mgr.GetClient()}).SetupWithManager(mgr); err != nil {
-			setupLog.Error(err, "Failed to register admission webhook", "webhook", "Project")
-			os.Exit(1)
+			if isCRDDiscoveryNotReady(err) {
+				setupLog.Info("Skipped admission webhook registration because CRDs are not yet discoverable",
+					"webhook", "Project", "error", err)
+			} else {
+				setupLog.Error(err, "Failed to register admission webhook", "webhook", "Project")
+				os.Exit(1)
+			}
 		}
 	} else {
 		setupLog.Info("Webhook TLS not configured — admission validators disabled; same checks still run in the REST API layer",

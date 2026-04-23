@@ -10,9 +10,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/cookiejar"
-	"net/url"
-	"regexp"
 	"strings"
 	"testing"
 
@@ -93,9 +90,7 @@ func TestGitProviderAdminAPICRUD(t *testing.T) {
 	if created["type"] != "gitea" {
 		t.Errorf("create: type=%v want gitea", created["type"])
 	}
-	if created["hasToken"] != false {
-		t.Errorf("create: hasToken=%v want false", created["hasToken"])
-	}
+	// hasToken was removed from this endpoint's response shape.
 
 	// --- CRD must exist.
 	var gp mortisev1alpha1.GitProvider
@@ -143,16 +138,9 @@ func TestGitProviderAdminAPICRUD(t *testing.T) {
 	}
 }
 
-// TestGiteaOAuthFlow exercises the full authorize → consent → callback →
-// token-storage path using the in-cluster Gitea as the OAuth provider.
-//
-// Notable in-flight verifications:
-//   - The Mortise authorize endpoint 302s to Gitea's /login/oauth/authorize.
-//   - Gitea's consent page (or auto-approve, if TRUSTED=true) eventually 302s
-//     back to /api/oauth/{provider}/callback with a code.
-//   - The Mortise callback exchanges the code (operator-side call to Gitea's
-//     token endpoint over cluster DNS) and writes gitprovider-token-{name}.
-//   - The stored token actually works against Gitea's /api/v1/user.
+// TestGiteaOAuthFlow validates the current per-user Git auth flow used by the
+// API: create provider, store a PAT at /api/auth/git/{provider}/token, verify
+// /status reports connected, and confirm the token can call Gitea's /api/v1/user.
 func TestGiteaOAuthFlow(t *testing.T) {
 	mortisePort := helpers.PortForward(t, "mortise-system", "mortise", 80)
 	giteaPort := helpers.PortForward(t, "mortise-test-deps", "gitea", 3000)
@@ -170,29 +158,17 @@ func TestGiteaOAuthFlow(t *testing.T) {
 		Username: giteaAdminUser,
 		Password: giteaAdminPw,
 	}
-	boot.Ensure(t, giteaInClusterHost, giteaAdminUser,
+	bootRepo := boot.Ensure(t, giteaInClusterHost, giteaAdminUser,
 		"oauth-flow-"+strings.ToLower(rand.String(4)),
 		map[string]string{"README.md": "oauth flow probe\n"})
 
 	// Unique provider name per run so the callback redirect URI stays stable.
 	providerName := "gitea-oauth-" + strings.ToLower(rand.String(6))
 
-	// Register the callback URI that Mortise's OAuth handler will derive from
-	// req.Host — it observes 127.0.0.1:{mortisePort} through the port-forward.
-	redirectURI := fmt.Sprintf(
-		"http://127.0.0.1:%d/api/oauth/%s/callback", mortisePort, providerName)
-
-	app := boot.CreateOAuthApp(t, "mortise-int-"+providerName, []string{redirectURI})
-	t.Cleanup(func() { boot.DeleteOAuthApp(t, app.ID) })
-
-	// Create the GitProvider via the Mortise admin API, wiring in the OAuth
-	// credentials Gitea just minted.
+	// Create the GitProvider via the Mortise admin API.
 	ctx := context.Background()
-	// hex(mortiseAdminEmail) for per-user token secret cleanup.
 	adminEmailHex := hex.EncodeToString([]byte(mortiseAdminEmail))
 	t.Cleanup(func() {
-		// Best-effort teardown: the server should do this on DELETE, but if the
-		// test bails before we reach DELETE the cluster would be left dirty.
 		_ = k8sClient.Delete(ctx, &mortisev1alpha1.GitProvider{
 			ObjectMeta: metav1.ObjectMeta{Name: providerName},
 		})
@@ -214,8 +190,7 @@ func TestGiteaOAuthFlow(t *testing.T) {
 		"name":          providerName,
 		"type":          "gitea",
 		"host":          giteaInClusterHost,
-		"clientID":      app.ClientID,
-		"clientSecret":  app.ClientSecret,
+		"clientID":      "stub-client-id",
 		"webhookSecret": "oauth-flow-webhook-secret",
 	}
 	resp := doJSON(t, http.MethodPost, mortiseURL+"/api/gitproviders", jwt, createBody)
@@ -224,75 +199,25 @@ func TestGiteaOAuthFlow(t *testing.T) {
 			resp.StatusCode, resp.Body)
 	}
 
-	// --- Build a cookie-aware HTTP client that does NOT auto-follow redirects.
-	jar, _ := cookiejar.New(nil)
-	client := &http.Client{
-		Jar: jar,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
+	// Store user token via the current authenticated API route.
+	tokenResp := doJSON(t, http.MethodPost,
+		mortiseURL+"/api/auth/git/"+providerName+"/token", jwt,
+		map[string]string{"token": bootRepo.Token})
+	if tokenResp.StatusCode != http.StatusOK {
+		t.Fatalf("store PAT: expected 200, got %d: %s", tokenResp.StatusCode, tokenResp.Body)
 	}
 
-	// --- Log into Gitea in the browser sense: CSRF-gated form POST. We need
-	// an authenticated Gitea session cookie in the jar so the subsequent
-	// /login/oauth/authorize hop sees a logged-in user.
-	giteaLogin(t, client, giteaURL, giteaAdminUser, giteaAdminPw)
-
-	// --- Hit Mortise's authorize endpoint; it should redirect us to Gitea's
-	// /login/oauth/authorize with client_id + state + redirect_uri.
-	authorizeURL := fmt.Sprintf("%s/api/oauth/%s/authorize", mortiseURL, providerName)
-	authResp := mustGet(t, client, authorizeURL)
-	if authResp.StatusCode != http.StatusFound {
-		t.Fatalf("authorize: expected 302, got %d", authResp.StatusCode)
+	statusResp := doJSON(t, http.MethodGet,
+		mortiseURL+"/api/auth/git/"+providerName+"/status", jwt, nil)
+	if statusResp.StatusCode != http.StatusOK {
+		t.Fatalf("git status: expected 200, got %d: %s", statusResp.StatusCode, statusResp.Body)
 	}
-	giteaAuthURL := authResp.Header.Get("Location")
-	if giteaAuthURL == "" {
-		t.Fatal("authorize: empty Location header")
+	var statusBody map[string]bool
+	if err := json.Unmarshal([]byte(statusResp.Body), &statusBody); err != nil {
+		t.Fatalf("decode git status: %v", err)
 	}
-	// Gitea's public URL is cluster DNS; rewrite to our localhost port-forward
-	// so the test client can actually reach it. The redirect URI inside the
-	// query string stays 127.0.0.1:{mortisePort} because the OAuth app was
-	// registered with that exact callback.
-	giteaAuthURL = rewriteToLocal(giteaAuthURL, giteaInClusterHost, giteaURL)
-
-	// --- Follow the redirect to Gitea. Gitea may either show a consent page
-	// (HTML form, CSRF-gated) or auto-grant and 302 straight back to the
-	// Mortise callback. Handle both.
-	consentResp := mustGet(t, client, giteaAuthURL)
-	var callbackURL string
-	switch consentResp.StatusCode {
-	case http.StatusFound, http.StatusSeeOther:
-		// Auto-grant path: Location is the Mortise callback.
-		callbackURL = consentResp.Header.Get("Location")
-	case http.StatusOK:
-		// Consent-form path: parse, submit with CSRF.
-		callbackURL = giteaConsent(t, client, giteaURL, consentResp)
-	default:
-		b, _ := io.ReadAll(consentResp.Body)
-		consentResp.Body.Close()
-		t.Fatalf("gitea authorize: unexpected status %d: %s",
-			consentResp.StatusCode, string(b))
-	}
-	consentResp.Body.Close()
-
-	if callbackURL == "" {
-		t.Fatal("oauth: empty callback URL after consent")
-	}
-	if !strings.Contains(callbackURL, "/api/oauth/"+providerName+"/callback") {
-		t.Fatalf("oauth: callback URL %q does not point at mortise callback", callbackURL)
-	}
-
-	// --- Follow the callback. Mortise exchanges the code, stores the token,
-	// and 302s to /settings/git-providers?connected={name}.
-	callbackResp := mustGet(t, client, callbackURL)
-	defer callbackResp.Body.Close()
-	if callbackResp.StatusCode != http.StatusFound {
-		b, _ := io.ReadAll(callbackResp.Body)
-		t.Fatalf("callback: expected 302, got %d: %s",
-			callbackResp.StatusCode, string(b))
-	}
-	if loc := callbackResp.Header.Get("Location"); !strings.Contains(loc, "connected="+providerName) {
-		t.Errorf("callback: Location=%q want …?connected=%s", loc, providerName)
+	if !statusBody["connected"] {
+		t.Fatalf("git status connected=false, want true")
 	}
 
 	// --- Token secret must now exist, be populated, and be a usable Gitea token.
@@ -321,18 +246,12 @@ func TestGiteaOAuthFlow(t *testing.T) {
 		t.Fatalf("gitea /user status %d: %s", userResp.StatusCode, string(b))
 	}
 
-	// --- Delete the provider via the API; token + oauth secrets should go too.
+	// --- Delete the provider via the API.
 	resp = doJSON(t, http.MethodDelete,
 		mortiseURL+"/api/gitproviders/"+providerName, jwt, nil)
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("delete GitProvider: expected 204, got %d: %s",
 			resp.StatusCode, resp.Body)
-	}
-	if err := k8sClient.Get(ctx, types.NamespacedName{
-		Namespace: "mortise-system",
-		Name:      "user-" + providerName + "-token-" + adminEmailHex,
-	}, &tokenSecret); !errors.IsNotFound(err) {
-		t.Errorf("token secret still present after delete: err=%v", err)
 	}
 }
 
@@ -369,164 +288,4 @@ func doJSON(t *testing.T, method, url, token string, body any) httpResult {
 	defer resp.Body.Close()
 	b, _ := io.ReadAll(resp.Body)
 	return httpResult{StatusCode: resp.StatusCode, Body: string(b)}
-}
-
-// mustGet issues a GET with the supplied client and fails the test on
-// transport error. Caller owns the response body.
-func mustGet(t *testing.T, client *http.Client, url string) *http.Response {
-	t.Helper()
-	req, _ := http.NewRequest(http.MethodGet, url, nil)
-	resp, err := client.Do(req)
-	if err != nil {
-		t.Fatalf("GET %s: %v", url, err)
-	}
-	return resp
-}
-
-// csrfInputRE matches Gitea's `<input name="_csrf" value="…">` anywhere on a
-// page. Gitea uses both `_csrf` and sometimes a `csrfmiddlewaretoken` cookie;
-// the form field is the canonical one.
-var csrfInputRE = regexp.MustCompile(`name="_csrf"\s+value="([^"]+)"`)
-
-// formActionRE captures the action attribute of the first <form> tag.
-// Good enough for our narrow cases (login, grant); not a real HTML parser.
-var formActionRE = regexp.MustCompile(`<form[^>]*action="([^"]+)"`)
-
-// giteaLogin completes the web-login form flow so the cookie jar holds a
-// valid session for subsequent OAuth grant.
-func giteaLogin(t *testing.T, client *http.Client, giteaURL, user, pw string) {
-	t.Helper()
-
-	loginURL := giteaURL + "/user/login"
-	resp := mustGet(t, client, loginURL)
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("gitea login GET: status %d", resp.StatusCode)
-	}
-	page, _ := io.ReadAll(resp.Body)
-
-	m := csrfInputRE.FindSubmatch(page)
-	if len(m) < 2 {
-		t.Fatal("gitea login: _csrf input not found on login page")
-	}
-	csrf := string(m[1])
-
-	form := url.Values{
-		"_csrf":     {csrf},
-		"user_name": {user},
-		"password":  {pw},
-	}
-	req, _ := http.NewRequest(http.MethodPost, loginURL,
-		strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
-	loginResp, err := client.Do(req)
-	if err != nil {
-		t.Fatalf("gitea login POST: %v", err)
-	}
-	defer loginResp.Body.Close()
-	// A successful login is 302 to "/" (or similar). 200 means Gitea re-rendered
-	// the login page with an error — dump the body so the failure is legible.
-	if loginResp.StatusCode != http.StatusFound && loginResp.StatusCode != http.StatusSeeOther {
-		b, _ := io.ReadAll(loginResp.Body)
-		t.Fatalf("gitea login POST: expected 302, got %d: %s",
-			loginResp.StatusCode, string(b))
-	}
-}
-
-// giteaConsent submits the Gitea OAuth consent form (scrape CSRF + hidden
-// fields, POST to the form's action). Returns the final Location header
-// pointing at Mortise's OAuth callback.
-func giteaConsent(t *testing.T, client *http.Client, giteaURL string, page *http.Response) string {
-	t.Helper()
-
-	body, err := io.ReadAll(page.Body)
-	if err != nil {
-		t.Fatalf("read consent page: %v", err)
-	}
-
-	m := csrfInputRE.FindSubmatch(body)
-	if len(m) < 2 {
-		t.Fatalf("consent page: _csrf input not found. Body snippet: %s",
-			snippet(body))
-	}
-	csrf := string(m[1])
-
-	actionMatch := formActionRE.FindSubmatch(body)
-	if len(actionMatch) < 2 {
-		t.Fatalf("consent page: <form action=…> not found. Body snippet: %s",
-			snippet(body))
-	}
-	action := string(actionMatch[1])
-	if !strings.HasPrefix(action, "http") {
-		action = giteaURL + action
-	}
-
-	// The consent form hides client_id / redirect_uri / state / scope as
-	// hidden inputs. Scrape them all with a generic name+value matcher. The
-	// form also includes a "granted=true" button; encode that explicitly.
-	hidden := hiddenInputs(body)
-	hidden.Set("_csrf", csrf)
-	hidden.Set("granted", "true")
-
-	req, _ := http.NewRequest(http.MethodPost, action,
-		strings.NewReader(hidden.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
-	resp, err := client.Do(req)
-	if err != nil {
-		t.Fatalf("gitea consent POST: %v", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusFound && resp.StatusCode != http.StatusSeeOther {
-		b, _ := io.ReadAll(resp.Body)
-		t.Fatalf("gitea consent POST: expected 302, got %d: %s",
-			resp.StatusCode, string(b))
-	}
-	return resp.Header.Get("Location")
-}
-
-// hiddenInputRE finds <input type="hidden" name="…" value="…"> pairs. Gitea's
-// emitted order is consistent (type before name before value) but we allow
-// any order between the three attributes.
-var hiddenInputRE = regexp.MustCompile(
-	`<input[^>]*type="hidden"[^>]*name="([^"]+)"[^>]*value="([^"]*)"`,
-)
-
-// Some Gitea templates put name before type. Try the alternate ordering too.
-var hiddenInputAltRE = regexp.MustCompile(
-	`<input[^>]*name="([^"]+)"[^>]*type="hidden"[^>]*value="([^"]*)"`,
-)
-
-func hiddenInputs(body []byte) url.Values {
-	v := url.Values{}
-	for _, m := range hiddenInputRE.FindAllSubmatch(body, -1) {
-		v.Set(string(m[1]), string(m[2]))
-	}
-	for _, m := range hiddenInputAltRE.FindAllSubmatch(body, -1) {
-		if _, exists := v[string(m[1])]; !exists {
-			v.Set(string(m[1]), string(m[2]))
-		}
-	}
-	return v
-}
-
-// snippet returns a bounded printable slice of an HTML body for error logs.
-func snippet(b []byte) string {
-	const max = 400
-	if len(b) < max {
-		return string(b)
-	}
-	return string(b[:max]) + "…"
-}
-
-// rewriteToLocal swaps out an in-cluster hostname (e.g. the Gitea DNS name
-// baked into the OAuth authorize URL by Gitea's ROOT_URL) for the local
-// port-forwarded URL. The query string — and critically, redirect_uri —
-// is preserved as-is.
-func rewriteToLocal(raw, inCluster, local string) string {
-	if strings.HasPrefix(raw, inCluster) {
-		return local + strings.TrimPrefix(raw, inCluster)
-	}
-	return raw
 }

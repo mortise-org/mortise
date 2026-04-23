@@ -133,10 +133,8 @@ func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		if err := r.deleteOwnedNamespaces(ctx, &project); err != nil {
 			return ctrl.Result{}, err
 		}
-		if controllerutil.RemoveFinalizer(&project, projectFinalizer) {
-			if err := r.Update(ctx, &project); err != nil {
-				return ctrl.Result{}, fmt.Errorf("remove finalizer: %w", err)
-			}
+		if err := r.removeFinalizerWithRetry(ctx, project.Name); err != nil {
+			return ctrl.Result{}, fmt.Errorf("remove finalizer: %w", err)
 		}
 		return ctrl.Result{}, nil
 	}
@@ -438,25 +436,27 @@ func (r *ProjectReconciler) markTerminating(ctx context.Context, project *mortis
 	if project.Status.Phase == mortisev1alpha1.ProjectPhaseTerminating {
 		return nil
 	}
-	project.Status.Phase = mortisev1alpha1.ProjectPhaseTerminating
-	project.Status.Namespace = controlNs
-	return r.Status().Update(ctx, project)
+	return r.updateProjectStatus(ctx, project.Name, func(p *mortisev1alpha1.Project) {
+		p.Status.Phase = mortisev1alpha1.ProjectPhaseTerminating
+		p.Status.Namespace = controlNs
+	})
 }
 
 func (r *ProjectReconciler) markReady(ctx context.Context, project *mortisev1alpha1.Project, controlNs string, appCount int32, envNsMap map[string]string) error {
-	meta.SetStatusCondition(&project.Status.Conditions, metav1.Condition{
-		Type:               ProjectConditionNamespaceReady,
-		Status:             metav1.ConditionTrue,
-		Reason:             ReasonReconciled,
-		Message:            fmt.Sprintf("control %q + %d env namespaces ready", controlNs, len(envNsMap)),
-		ObservedGeneration: project.Generation,
+	return r.updateProjectStatus(ctx, project.Name, func(p *mortisev1alpha1.Project) {
+		meta.SetStatusCondition(&p.Status.Conditions, metav1.Condition{
+			Type:               ProjectConditionNamespaceReady,
+			Status:             metav1.ConditionTrue,
+			Reason:             ReasonReconciled,
+			Message:            fmt.Sprintf("control %q + %d env namespaces ready", controlNs, len(envNsMap)),
+			ObservedGeneration: p.Generation,
+		})
+		p.Status.Phase = mortisev1alpha1.ProjectPhaseReady
+		p.Status.Namespace = controlNs
+		p.Status.AppCount = appCount
+		p.Status.Environments = specEnvNames(p)
+		p.Status.EnvNamespaces = envNsMap
 	})
-	project.Status.Phase = mortisev1alpha1.ProjectPhaseReady
-	project.Status.Namespace = controlNs
-	project.Status.AppCount = appCount
-	project.Status.Environments = specEnvNames(project)
-	project.Status.EnvNamespaces = envNsMap
-	return r.Status().Update(ctx, project)
 }
 
 func specEnvNames(project *mortisev1alpha1.Project) []string {
@@ -468,16 +468,72 @@ func specEnvNames(project *mortisev1alpha1.Project) []string {
 }
 
 func (r *ProjectReconciler) markFailed(ctx context.Context, project *mortisev1alpha1.Project, controlNs, reason, message string) error {
-	meta.SetStatusCondition(&project.Status.Conditions, metav1.Condition{
-		Type:               ProjectConditionNamespaceReady,
-		Status:             metav1.ConditionFalse,
-		Reason:             reason,
-		Message:            message,
-		ObservedGeneration: project.Generation,
+	return r.updateProjectStatus(ctx, project.Name, func(p *mortisev1alpha1.Project) {
+		meta.SetStatusCondition(&p.Status.Conditions, metav1.Condition{
+			Type:               ProjectConditionNamespaceReady,
+			Status:             metav1.ConditionFalse,
+			Reason:             reason,
+			Message:            message,
+			ObservedGeneration: p.Generation,
+		})
+		p.Status.Phase = mortisev1alpha1.ProjectPhaseFailed
+		p.Status.Namespace = controlNs
 	})
-	project.Status.Phase = mortisev1alpha1.ProjectPhaseFailed
-	project.Status.Namespace = controlNs
-	return r.Status().Update(ctx, project)
+}
+
+func (r *ProjectReconciler) updateProjectStatus(
+	ctx context.Context,
+	name string,
+	mutate func(*mortisev1alpha1.Project),
+) error {
+	const maxConflictRetries = 5
+	for attempt := 0; attempt < maxConflictRetries; attempt++ {
+		var fresh mortisev1alpha1.Project
+		if err := r.Get(ctx, types.NamespacedName{Name: name}, &fresh); err != nil {
+			if errors.IsNotFound(err) {
+				return nil
+			}
+			return err
+		}
+
+		mutate(&fresh)
+		if err := r.Status().Update(ctx, &fresh); err != nil {
+			if errors.IsConflict(err) && attempt < maxConflictRetries-1 {
+				continue
+			}
+			return err
+		}
+		return nil
+	}
+
+	return fmt.Errorf("could not update status for Project %q after retries", name)
+}
+
+func (r *ProjectReconciler) removeFinalizerWithRetry(ctx context.Context, name string) error {
+	const maxConflictRetries = 5
+	for attempt := 0; attempt < maxConflictRetries; attempt++ {
+		var fresh mortisev1alpha1.Project
+		if err := r.Get(ctx, types.NamespacedName{Name: name}, &fresh); err != nil {
+			if errors.IsNotFound(err) {
+				return nil
+			}
+			return err
+		}
+
+		if !controllerutil.ContainsFinalizer(&fresh, projectFinalizer) {
+			return nil
+		}
+		controllerutil.RemoveFinalizer(&fresh, projectFinalizer)
+		if err := r.Update(ctx, &fresh); err != nil {
+			if errors.IsConflict(err) && attempt < maxConflictRetries-1 {
+				continue
+			}
+			return err
+		}
+		return nil
+	}
+
+	return fmt.Errorf("could not remove finalizer for Project %q after retries", name)
 }
 
 // SetupWithManager wires the controller. Watches Apps (to keep appCount fresh)
