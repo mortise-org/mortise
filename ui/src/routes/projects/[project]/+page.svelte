@@ -216,7 +216,7 @@
 
 		{#if store.viewMode === 'canvas'}
 			<!-- Canvas view -->
-			<div class="relative flex-1 overflow-hidden" style="height: calc(100vh - 57px)">
+			<div class="relative min-h-0 flex-1 overflow-hidden">
 				<!-- Floating controls overlay -->
 				<div class="absolute top-3 right-3 z-10 flex items-center gap-2">
 					<ViewModeToggle />

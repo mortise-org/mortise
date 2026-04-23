@@ -120,6 +120,56 @@ async function setupCommonMocks(page: Page) {
 }
 
 // ---------------------------------------------------------------------------
+// Layout shell
+// ---------------------------------------------------------------------------
+
+test.describe('layout shell', () => {
+	test('top navbar and sidebar stay fixed while main content scrolls', async ({ page }) => {
+		await page.setViewportSize({ width: 1024, height: 700 });
+		await setupCommonMocks(page);
+		await injectAuth(page);
+		await page.goto('/settings');
+
+		const header = page.locator('header');
+		const sidebar = page.locator('nav').first();
+		const main = page.locator('main');
+
+		await expect(header).toBeVisible({ timeout: 10_000 });
+		await expect(sidebar).toBeVisible({ timeout: 10_000 });
+
+		const noHorizontalOverflow = await page.evaluate(() =>
+			document.documentElement.scrollWidth <= window.innerWidth
+		);
+		expect(noHorizontalOverflow).toBeTruthy();
+
+		const headerBefore = await header.boundingBox();
+		const sidebarBefore = await sidebar.boundingBox();
+
+		const metrics = await main.evaluate((el) => {
+			el.scrollTop = 0;
+			const canScroll = el.scrollHeight > el.clientHeight;
+			if (canScroll) el.scrollTop = 500;
+			return { canScroll, scrollTop: el.scrollTop };
+		});
+
+		if (metrics.canScroll) {
+			expect(metrics.scrollTop).toBeGreaterThan(0);
+		}
+
+		const headerAfter = await header.boundingBox();
+		const sidebarAfter = await sidebar.boundingBox();
+
+		expect(headerBefore).not.toBeNull();
+		expect(sidebarBefore).not.toBeNull();
+		expect(headerAfter).not.toBeNull();
+		expect(sidebarAfter).not.toBeNull();
+
+		expect(Math.abs((headerAfter?.y ?? 0) - (headerBefore?.y ?? 0))).toBeLessThanOrEqual(1);
+		expect(Math.abs((sidebarAfter?.y ?? 0) - (sidebarBefore?.y ?? 0))).toBeLessThanOrEqual(1);
+	});
+});
+
+// ---------------------------------------------------------------------------
 // Project switcher
 // ---------------------------------------------------------------------------
 

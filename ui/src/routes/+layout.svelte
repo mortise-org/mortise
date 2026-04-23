@@ -211,9 +211,9 @@
 {:else if bareLayout}
 	{@render children()}
 {:else}
-	<div class="flex min-h-screen flex-col bg-surface-900 text-gray-300" style="min-width:1280px">
+	<div class="flex h-screen w-full min-w-0 flex-col overflow-hidden bg-surface-900 text-gray-300">
 		<!-- Top header -->
-		<header class="flex h-14 shrink-0 items-center justify-between border-b border-surface-600 bg-surface-800 px-4 z-30">
+		<header class="z-30 flex h-14 shrink-0 items-center justify-between border-b border-surface-600 bg-surface-800 px-4">
 			<div class="flex items-center gap-3">
 				<!-- Logo -->
 				<a href="/" class="text-base font-semibold tracking-tight text-white hover:text-accent transition-colors">
@@ -360,9 +360,9 @@
 		</header>
 
 		<!-- Body: left rail + main content -->
-		<div class="flex flex-1 overflow-hidden">
+		<div class="flex min-h-0 min-w-0 flex-1 overflow-hidden">
 			<!-- Left rail (w-14, icons only) -->
-			<nav class="flex w-14 shrink-0 flex-col items-center gap-2 border-r border-surface-600 bg-surface-800 py-3 z-20">
+			<nav class="z-20 flex h-full w-14 shrink-0 flex-col items-center gap-2 border-r border-surface-600 bg-surface-800 py-3">
 				{#if inProject && activeProject}
 					<!-- Project scope: Canvas + Settings -->
 					<a
@@ -413,7 +413,7 @@
 			</nav>
 
 			<!-- Main content area -->
-			<main class="flex-1 overflow-y-auto">
+			<main class="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto">
 				{@render children()}
 			</main>
 		</div>
