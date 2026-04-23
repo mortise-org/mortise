@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { onMount, untrack } from 'svelte';
 	import { api } from '$lib/api';
 	import { store } from '$lib/store.svelte';
 	import { Loader2 } from 'lucide-svelte';
@@ -34,8 +34,7 @@
 	const selectedEnv = $derived(
 		store.currentEnv(project) || app.spec.environments?.[0]?.name || 'production'
 	);
-	// Pods fed from SSE via parent; fall back to REST fetch on first load.
-	const ssePodKey = $derived(`${app.metadata.name}/${selectedEnv}`);
+	// Pods are loaded via REST in this tab.
 	let pods = $state<Pod[]>([]);
 	let podsLoaded = $state(false);
 	let selectedPod = $state(''); // '' = all pods
@@ -44,6 +43,7 @@
 	let events = $state<LogLineEvent[]>([]);
 	let es: EventSource | null = null;
 	let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+	let streamKey = $state('');
 	let disconnected = $state(false);
 	let logContainer: HTMLElement | null = $state(null);
 
@@ -105,6 +105,7 @@
 			es.close();
 			es = null;
 		}
+		streamKey = '';
 		if (reconnectTimer) {
 			clearTimeout(reconnectTimer);
 			reconnectTimer = null;
@@ -132,13 +133,20 @@
 	}
 
 	function connectLive(fresh: boolean = true) {
+		if (isBuilding || pods.length === 0) {
+			closeStream();
+			return;
+		}
+
+		const key = `${selectedEnv}|${selectedPod}|${previous ? '1' : '0'}`;
+		if (es && streamKey === key) return;
+
 		closeStream();
+		streamKey = key;
 		if (fresh) {
 			events = [];
 			disconnected = false;
 		}
-		if (isBuilding) return; // no pods to stream from yet
-		if (pods.length === 0) return; // nothing to stream from - avoid reconnect flicker
 
 		const url = api.logsURL(project, app.metadata.name, {
 			env: selectedEnv,
@@ -158,8 +166,10 @@
 			if (liveFollow) setTimeout(scrollToBottom, 0);
 		};
 		es.onerror = () => {
+			if (streamKey !== key) return;
 			disconnected = true;
 			closeStream();
+			if (selectedPod) void loadPods();
 			if (!isBuilding && pods.length > 0) {
 				reconnectTimer = setTimeout(() => {
 					reconnectTimer = null;
@@ -182,9 +192,6 @@
 	}
 
 	function reconcilePodSelection() {
-		if (pods.length === 1 && !selectedPod) {
-			selectedPod = pods[0].name;
-		}
 		if (selectedPod && !pods.some((p) => p.name === selectedPod)) {
 			selectedPod = '';
 			previous = false;
@@ -193,23 +200,17 @@
 
 	// --- Reactive wiring ---
 
-	// SSE pod updates: when SSE delivers pods for this app/env, apply them.
-	$effect(() => {
-		const ssePodList = ssePods.get(ssePodKey);
-		if (ssePodList) {
-			pods = ssePodList;
-			podsLoaded = true;
-			reconcilePodSelection();
-		}
-	});
+	// NOTE: Pod list is sourced from the REST loader here. The SSE pod map is
+	// still accepted via props for future use, but direct state writes from this
+	// effect caused reactive self-loops in Svelte runes mode.
 
 	// Sub-tab lifecycle.
 	$effect(() => {
 		if (subTab === 'live') {
 			if (!podsLoaded) void loadPods();
-			connectLive();
+			untrack(() => connectLive());
 		} else {
-			closeStream();
+			untrack(() => closeStream());
 		}
 	});
 
@@ -242,7 +243,7 @@
 		void selectedPod;
 		void previous;
 		void pods.length;
-		if (subTab === 'live') connectLive();
+		if (subTab === 'live') untrack(() => connectLive());
 	});
 
 	// If a pod is deselected, always clear "previous".
