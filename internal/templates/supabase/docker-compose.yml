@@ -95,12 +95,22 @@ services:
     depends_on: [postgres, meta]
     ports: ["3001:3000"]
     environment:
+      HOSTNAME: "0.0.0.0"
       STUDIO_PG_META_URL: http://supabase-meta:8080
       POSTGRES_PASSWORD: ${PG_PASSWORD}
+      POSTGRES_HOST: supabase-postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: supabase
+      AUTH_JWT_SECRET: ${JWT_SECRET}
       SUPABASE_URL: http://supabase-rest:3000
       SUPABASE_REST_URL: http://supabase-rest:3000/rest/v1
       SUPABASE_ANON_KEY: ${ANON_KEY}
+      SUPABASE_SERVICE_KEY: ${SERVICE_ROLE_KEY}
       SUPABASE_SERVICE_ROLE_KEY: ${SERVICE_ROLE_KEY}
       DEFAULT_ORGANIZATION_NAME: Default Organization
       DEFAULT_PROJECT_NAME: Default Project
+      NEXT_PUBLIC_ENABLE_LOGS: "false"
+      NEXT_ANALYTICS_BACKEND_PROVIDER: postgres
+      EDGE_FUNCTIONS_MANAGEMENT_FOLDER: /tmp/edge-functions
+      SNIPPETS_MANAGEMENT_FOLDER: /tmp/snippets
       PORT: "3000"
