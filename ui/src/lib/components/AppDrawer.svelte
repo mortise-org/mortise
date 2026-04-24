@@ -44,11 +44,17 @@
 	let reloading = $state(false);
 	let errorMsg = $state('');
 
+	let lastAutoSwitchPhase = $state<string | null>(null);
 	$effect(() => {
-		if (liveApp?.status?.phase === 'Building' || liveApp?.status?.phase === 'Failed') {
-			if (liveApp.spec.source.type !== 'image' && store.drawerTab !== 'buildLogs') {
+		const phase = liveApp?.status?.phase ?? null;
+		if ((phase === 'Building' || phase === 'Failed') && phase !== lastAutoSwitchPhase) {
+			if (liveApp!.spec.source.type !== 'image') {
+				lastAutoSwitchPhase = phase;
 				store.setDrawerTab('buildLogs');
 			}
+		}
+		if (phase !== 'Building' && phase !== 'Failed') {
+			lastAutoSwitchPhase = null;
 		}
 	});
 
