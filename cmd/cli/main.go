@@ -41,6 +41,7 @@ Quickstart:
 	cmd.AddCommand(newPlatformCmd())
 	cmd.AddCommand(newRepoCmd())
 	cmd.AddCommand(newProxyCmd())
+	cmd.AddCommand(newOpenCmd())
 
 	// Lifecycle commands (cluster management)
 	cmd.AddCommand(newInstallCmd())

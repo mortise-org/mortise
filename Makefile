@@ -108,6 +108,16 @@ build-observer: fmt vet ## Build observer binary.
 build-cli: fmt vet ## Build CLI binary.
 	go build -o bin/mortise ./cmd/cli
 
+CLI_PLATFORMS ?= linux/amd64 linux/arm64 darwin/amd64 darwin/arm64
+
+.PHONY: build-cli-all
+build-cli-all: fmt vet ## Cross-compile CLI binary for all release platforms.
+	@for platform in $(CLI_PLATFORMS); do \
+		os=$${platform%/*}; arch=$${platform#*/}; \
+		echo "Building mortise-$${os}-$${arch}..."; \
+		GOOS=$${os} GOARCH=$${arch} go build -o bin/mortise-$${os}-$${arch} ./cmd/cli; \
+	done
+
 .PHONY: run
 run: manifests generate fmt vet ## Run a controller from your host.
 	go run ./cmd/main.go
