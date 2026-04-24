@@ -6,9 +6,13 @@ import (
 	"strconv"
 	"strings"
 
+	"k8s.io/apimachinery/pkg/api/resource"
+
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
 	"gopkg.in/yaml.v3"
 )
+
+const defaultVolumeSize = "1Gi"
 
 // ComposeFile is the top-level docker-compose.yml structure.
 type ComposeFile struct {
@@ -84,8 +88,9 @@ func composeToAppSpecs(compose *ComposeFile, stackPrefix string, bundledFiles ma
 		envVars := parseEnvironment(svc.Environment)
 
 		// Parse volume mounts. If the host path is in bundledFiles, create
-		// a ConfigFile mount (ConfigMap). Otherwise treat as a PVC or skip.
+		// a ConfigFile mount (ConfigMap). Named volumes become PVC storage specs.
 		var configFiles []mortisev1alpha1.ConfigFile
+		var storage []mortisev1alpha1.VolumeSpec
 		for _, vol := range svc.Volumes {
 			parts := strings.SplitN(vol, ":", 2)
 			if len(parts) != 2 {
@@ -100,9 +105,16 @@ func composeToAppSpecs(compose *ComposeFile, stackPrefix string, bundledFiles ma
 					Path:    containerPath,
 					Content: content,
 				})
+				continue
 			}
-			// Named volumes or unresolved file paths are skipped for now.
-			// Future: PVC for named volumes, git repo lookup for file paths.
+
+			if isNamedVolume(hostPath) {
+				storage = append(storage, mortisev1alpha1.VolumeSpec{
+					Name:      hostPath,
+					MountPath: containerPath,
+					Size:      resource.MustParse(defaultVolumeSize),
+				})
+			}
 		}
 
 		as.Spec = mortisev1alpha1.AppSpec{
@@ -114,6 +126,7 @@ func composeToAppSpecs(compose *ComposeFile, stackPrefix string, bundledFiles ma
 				Public: false,
 				Port:   port,
 			},
+			Storage:     storage,
 			ConfigFiles: configFiles,
 			Environments: []mortisev1alpha1.Environment{{
 				Name: "production",
@@ -249,4 +262,14 @@ func topoSort(specs map[string]*appSpec) ([]appSpec, error) {
 		}
 	}
 	return result, nil
+}
+
+// isNamedVolume returns true if the host part of a compose volume mount
+// is a named volume rather than a bind-mount path. Named volumes are bare
+// identifiers (e.g. "db_data"), while bind mounts start with "/", "./", or "../".
+func isNamedVolume(hostPath string) bool {
+	return hostPath != "" &&
+		!strings.HasPrefix(hostPath, "/") &&
+		!strings.HasPrefix(hostPath, "./") &&
+		!strings.HasPrefix(hostPath, "../")
 }
