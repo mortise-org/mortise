@@ -265,16 +265,31 @@ func (s *Server) watchPodsInNamespace(ctx context.Context, projectName, ns strin
 	}
 }
 
-// drainPodWatch processes pod watch events and emits a full pod list for the
-// affected app/env on each change. We debounce by re-listing pods rather than
-// trying to maintain an incremental cache.
 func (s *Server) drainPodWatch(ctx context.Context, watcher watch.Interface, projectName, ns string, w *sseWriter) {
+	type podKey struct{ app, env string }
+	dirty := map[podKey]bool{}
+	var debounce *time.Timer
+
+	flush := func() {
+		for k := range dirty {
+			s.emitPodList(ctx, w, projectName, k.app, k.env, ns)
+		}
+		dirty = map[podKey]bool{}
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
+			if debounce != nil {
+				debounce.Stop()
+			}
 			return
 		case ev, ok := <-watcher.ResultChan():
 			if !ok {
+				if debounce != nil {
+					debounce.Stop()
+					flush()
+				}
 				return
 			}
 			if ev.Type != watch.Added && ev.Type != watch.Modified && ev.Type != watch.Deleted {
@@ -289,8 +304,15 @@ func (s *Server) drainPodWatch(ctx context.Context, watcher watch.Interface, pro
 			if appName == "" || envName == "" {
 				continue
 			}
-			// Re-list all pods for this app/env to get the full picture.
-			s.emitPodList(ctx, w, projectName, appName, envName, ns)
+			dirty[podKey{appName, envName}] = true
+			if debounce == nil {
+				debounce = time.AfterFunc(500*time.Millisecond, func() {
+					flush()
+					debounce = nil
+				})
+			} else {
+				debounce.Reset(500 * time.Millisecond)
+			}
 		}
 	}
 }

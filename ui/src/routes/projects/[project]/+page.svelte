@@ -93,11 +93,14 @@
 			onBuildLog: (appName, resp) => {
 				const existing = buildLogs.get(appName);
 				if (existing && resp.offset > 0) {
-					const merged: BuildLogsResponse = {
-						...resp,
-						lines: [...existing.lines.slice(0, resp.offset), ...resp.lines]
-					};
-					buildLogs = new Map(buildLogs).set(appName, merged);
+					existing.lines.length = resp.offset;
+					existing.lines.push(...resp.lines);
+					existing.building = resp.building;
+					existing.timestamp = resp.timestamp;
+					existing.commitSHA = resp.commitSHA;
+					existing.status = resp.status;
+					existing.error = resp.error;
+					buildLogs = new Map(buildLogs);
 				} else {
 					buildLogs = new Map(buildLogs).set(appName, resp);
 				}

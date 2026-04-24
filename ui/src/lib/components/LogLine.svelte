@@ -20,22 +20,36 @@
 	);
 	const podColor = $derived(event.pod ? hashPodColor(event.pod) : '');
 
-	// Try to parse structured JSON once.
 	type Parsed = { obj: Record<string, unknown>; level?: string; message: string };
+	const parseCache = new Map<string, Parsed | null>();
 	function parseStructured(line: string): Parsed | null {
+		if (parseCache.has(line)) return parseCache.get(line)!;
 		const trimmed = line.trim();
-		if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) return null;
+		if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) {
+			parseCache.set(line, null);
+			return null;
+		}
 		try {
 			const obj = JSON.parse(trimmed);
-			if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return null;
+			if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
+				parseCache.set(line, null);
+				return null;
+			}
 			const rec = obj as Record<string, unknown>;
 			const level = typeof rec.level === 'string' ? (rec.level as string).toLowerCase() : undefined;
 			let message: string;
 			if (typeof rec.message === 'string') message = rec.message;
 			else if (typeof rec.msg === 'string') message = rec.msg;
 			else message = JSON.stringify(rec);
-			return { obj: rec, level, message };
+			const result: Parsed = { obj: rec, level, message };
+			parseCache.set(line, result);
+			if (parseCache.size > 2000) {
+				const first = parseCache.keys().next().value;
+				if (first !== undefined) parseCache.delete(first);
+			}
+			return result;
 		} catch {
+			parseCache.set(line, null);
 			return null;
 		}
 	}

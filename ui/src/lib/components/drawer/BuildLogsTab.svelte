@@ -19,9 +19,19 @@
 	let fetchedBuildLogs = $state<BuildLogsResponse | null>(null);
 	const buildResp = $derived(sseBuildLogs ?? fetchedBuildLogs);
 
-	const buildEvents = $derived<LogLineEvent[]>(
-		(buildResp?.lines ?? []).map((l) => ({ pod: '', ts: '', line: l, stream: 'stdout' }))
-	);
+	let buildEvents = $state<LogLineEvent[]>([]);
+	let lastLineCount = 0;
+	$effect(() => {
+		const lines = buildResp?.lines ?? [];
+		if (lines.length > lastLineCount) {
+			const newItems = lines.slice(lastLineCount).map((l) => ({ pod: '', ts: '', line: l, stream: 'stdout' as const }));
+			buildEvents = [...buildEvents, ...newItems];
+			lastLineCount = lines.length;
+		} else if (lines.length < lastLineCount) {
+			buildEvents = lines.map((l) => ({ pod: '', ts: '', line: l, stream: 'stdout' as const }));
+			lastLineCount = lines.length;
+		}
+	});
 
 	function buildStatusColor(status?: string): string {
 		switch (status) {
