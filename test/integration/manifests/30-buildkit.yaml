@@ -3,8 +3,8 @@
 # needs for userns unshare. `privileged: true` is fine for an integration-test
 # scaffold — production deployments bring their own BuildKit.
 # Exposes gRPC on tcp://:1234 (no TLS for tests — the operator dials via
-# ClusterIP). An "insecure registry" entry points at in-cluster Zot so
-# BuildKit's pusher treats Zot's HTTP endpoint as valid.
+# ClusterIP). An "insecure registry" entry points at the in-cluster Distribution
+# registry so BuildKit's pusher treats its HTTP endpoint as valid.
 apiVersion: v1
 kind: ConfigMap
 metadata:

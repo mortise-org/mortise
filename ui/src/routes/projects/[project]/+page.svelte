@@ -91,7 +91,16 @@
 			},
 			onPods: () => {},
 			onBuildLog: (appName, resp) => {
-				buildLogs = new Map(buildLogs).set(appName, resp);
+				const existing = buildLogs.get(appName);
+				if (existing && resp.offset > 0) {
+					const merged: BuildLogsResponse = {
+						...resp,
+						lines: [...existing.lines.slice(0, resp.offset), ...resp.lines]
+					};
+					buildLogs = new Map(buildLogs).set(appName, merged);
+				} else {
+					buildLogs = new Map(buildLogs).set(appName, resp);
+				}
 			}
 		});
 	}

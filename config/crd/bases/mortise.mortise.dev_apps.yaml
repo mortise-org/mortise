@@ -575,6 +575,13 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              detectedPort:
+                description: |-
+                  DetectedPort is the container port auto-detected from EXPOSE directives
+                  (Dockerfile) or Railpack image config during the most recent build.
+                  Zero means no port was detected.
+                format: int32
+                type: integer
               environments:
                 items:
                   description: EnvironmentStatus tracks the observed state of a single

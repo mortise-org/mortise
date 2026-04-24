@@ -81,7 +81,7 @@ func (s *Server) handleBuildLogs(w http.ResponseWriter, r *http.Request) {
 	// In-flight build: serve from the in-memory tracker.
 	if s.buildLogs != nil {
 		if lines := s.buildLogs.GetBuildLogs(key); lines != nil {
-			writeJSON(w, http.StatusOK, map[string]any{"lines": lines, "building": true})
+			writeJSON(w, http.StatusOK, map[string]any{"lines": lines, "offset": 0, "building": true})
 			return
 		}
 	}
@@ -90,7 +90,7 @@ func (s *Server) handleBuildLogs(w http.ResponseWriter, r *http.Request) {
 	var cm corev1.ConfigMap
 	cmKey := types.NamespacedName{Namespace: ns, Name: "buildlogs-" + name}
 	if err := s.client.Get(r.Context(), cmKey, &cm); err != nil {
-		writeJSON(w, http.StatusOK, map[string]any{"lines": []string{}, "building": false})
+		writeJSON(w, http.StatusOK, map[string]any{"lines": []string{}, "offset": 0, "building": false})
 		return
 	}
 
@@ -101,6 +101,7 @@ func (s *Server) handleBuildLogs(w http.ResponseWriter, r *http.Request) {
 
 	resp := map[string]any{
 		"lines":     lines,
+		"offset":    0,
 		"building":  false,
 		"timestamp": cm.Annotations["mortise.dev/build-timestamp"],
 		"commitSHA": cm.Annotations["mortise.dev/build-commit"],

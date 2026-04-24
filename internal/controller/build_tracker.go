@@ -50,21 +50,22 @@ const truncatedSuffix = "… [truncated]"
 // goroutine that owns the tracker mutates its fields; callers read them under
 // the mutex. Cancel aborts the build.
 type buildTracker struct {
-	mu       sync.Mutex
-	revision string
-	phase    buildPhase
-	image    string   // set on success
-	digest   string   // set on success
-	errMsg   string   // set on failure
-	logs     []string // rolling buffer of build log lines
-	cancel   func()
+	mu           sync.Mutex
+	revision     string
+	phase        buildPhase
+	image        string   // set on success
+	digest       string   // set on success
+	detectedPort int32    // set on success when build detects EXPOSE / Railpack port
+	errMsg       string   // set on failure
+	logs         []string // rolling buffer of build log lines
+	cancel       func()
 }
 
 // snapshot returns a value-copy of the tracker's mutable state.
-func (t *buildTracker) snapshot() (phase buildPhase, revision, image, digest, errMsg string) {
+func (t *buildTracker) snapshot() (phase buildPhase, revision, image, digest, errMsg string, detectedPort int32) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	return t.phase, t.revision, t.image, t.digest, t.errMsg
+	return t.phase, t.revision, t.image, t.digest, t.errMsg, t.detectedPort
 }
 
 // appendLog adds a line to the build log buffer, truncating lines longer
@@ -90,13 +91,32 @@ func (t *buildTracker) snapshotLogs() []string {
 	return out
 }
 
-// setSucceeded marks the build as succeeded with the resulting image and digest.
-func (t *buildTracker) setSucceeded(image, digest string) {
+// snapshotLogsSince returns log lines from offset onward and the total count.
+// If offset >= len(logs), the returned slice is empty.
+func (t *buildTracker) snapshotLogsSince(offset int) ([]string, int) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	total := len(t.logs)
+	if offset >= total {
+		return []string{}, total
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	out := make([]string, total-offset)
+	copy(out, t.logs[offset:])
+	return out, total
+}
+
+// setSucceeded marks the build as succeeded with the resulting image, digest,
+// and any auto-detected container port.
+func (t *buildTracker) setSucceeded(image, digest string, detectedPort int32) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.phase = buildPhaseSucceeded
 	t.image = image
 	t.digest = digest
+	t.detectedPort = detectedPort
 }
 
 // setFailed marks the build as failed with the given error message.
@@ -142,4 +162,14 @@ func (s *buildTrackerStore) GetBuildLogs(key types.NamespacedName) []string {
 		return nil
 	}
 	return t.snapshotLogs()
+}
+
+// GetBuildLogsSince returns build log lines from offset onward, plus the total
+// line count. Returns (nil, 0) if no build exists for the key.
+func (s *buildTrackerStore) GetBuildLogsSince(key types.NamespacedName, offset int) ([]string, int) {
+	t := s.get(key)
+	if t == nil {
+		return nil, 0
+	}
+	return t.snapshotLogsSince(offset)
 }

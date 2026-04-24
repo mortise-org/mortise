@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	bkclient "github.com/moby/buildkit/client"
@@ -121,7 +122,7 @@ func (b *BuildKitClient) run(ctx context.Context, req BuildRequest, ch chan<- Bu
 	}()
 
 	// Decide build strategy: Dockerfile if present, Railpack otherwise.
-	def, opt, err := b.buildSolveOpt(ctx, req, ch)
+	def, opt, detectedPort, err := b.buildSolveOpt(ctx, req, ch)
 	if err != nil {
 		ch <- BuildEvent{Type: EventFailure, Error: err.Error()}
 		<-logDone
@@ -140,12 +141,13 @@ func (b *BuildKitClient) run(ctx context.Context, req BuildRequest, ch chan<- Bu
 	if resp != nil {
 		digest = resp.ExporterResponse[exptypes.ExporterImageDigestKey]
 	}
-	ch <- BuildEvent{Type: EventSuccess, Digest: digest}
+	ch <- BuildEvent{Type: EventSuccess, Digest: digest, DetectedPort: detectedPort}
 }
 
 // buildSolveOpt decides between Dockerfile and Railpack, returning the
-// appropriate Definition (nil for Dockerfile frontend) and SolveOpt.
-func (b *BuildKitClient) buildSolveOpt(ctx context.Context, req BuildRequest, ch chan<- BuildEvent) (*llb.Definition, bkclient.SolveOpt, error) {
+// appropriate Definition (nil for Dockerfile frontend), SolveOpt, and any
+// detected container port from EXPOSE directives or Railpack image config.
+func (b *BuildKitClient) buildSolveOpt(ctx context.Context, req BuildRequest, ch chan<- BuildEvent) (*llb.Definition, bkclient.SolveOpt, int32, error) {
 	dockerfileName := req.Dockerfile
 	if dockerfileName == "" {
 		dockerfileName = "Dockerfile"
@@ -161,7 +163,8 @@ func (b *BuildKitClient) buildSolveOpt(ctx context.Context, req BuildRequest, ch
 	}
 
 	if useDockerfile {
-		return nil, b.dockerfileSolveOpt(req), nil
+		port := parseDockerfileExpose(filepath.Join(req.dockerfileDir(), dockerfileName))
+		return nil, b.dockerfileSolveOpt(req), port, nil
 	}
 
 	return b.railpackSolveOpt(ctx, req, ch)
@@ -353,14 +356,15 @@ func (b *BuildKitClient) dockerfileSolveOpt(req BuildRequest) bkclient.SolveOpt 
 }
 
 // railpackSolveOpt detects the framework via Railpack, generates an LLB build
-// plan, converts it to a Definition, and returns the Definition + SolveOpt.
-func (b *BuildKitClient) railpackSolveOpt(ctx context.Context, req BuildRequest, ch chan<- BuildEvent) (*llb.Definition, bkclient.SolveOpt, error) {
+// plan, converts it to a Definition, and returns the Definition, SolveOpt, and
+// any detected container port from the image config.
+func (b *BuildKitClient) railpackSolveOpt(ctx context.Context, req BuildRequest, ch chan<- BuildEvent) (*llb.Definition, bkclient.SolveOpt, int32, error) {
 	// Point Railpack at the source directory (the subdirectory, not repo root,
 	// so it detects the right framework).
 	appDir := req.dockerfileDir()
 	rpApp, err := rpapp.NewApp(appDir)
 	if err != nil {
-		return nil, bkclient.SolveOpt{}, fmt.Errorf("railpack: init app: %w", err)
+		return nil, bkclient.SolveOpt{}, 0, fmt.Errorf("railpack: init app: %w", err)
 	}
 
 	env := &rpapp.Environment{}
@@ -370,7 +374,7 @@ func (b *BuildKitClient) railpackSolveOpt(ctx context.Context, req BuildRequest,
 		if len(result.Logs) > 0 {
 			msg += ": " + result.Logs[len(result.Logs)-1].Msg
 		}
-		return nil, bkclient.SolveOpt{}, fmt.Errorf("%s", msg)
+		return nil, bkclient.SolveOpt{}, 0, fmt.Errorf("%s", msg)
 	}
 
 	// Log detected providers.
@@ -382,28 +386,30 @@ func (b *BuildKitClient) railpackSolveOpt(ctx context.Context, req BuildRequest,
 		BuildPlatform: platform,
 	})
 	if err != nil {
-		return nil, bkclient.SolveOpt{}, fmt.Errorf("railpack: convert to LLB: %w", err)
+		return nil, bkclient.SolveOpt{}, 0, fmt.Errorf("railpack: convert to LLB: %w", err)
 	}
 
 	// Marshal the LLB state to a Definition for Solve.
 	def, err := llbState.Marshal(ctx)
 	if err != nil {
-		return nil, bkclient.SolveOpt{}, fmt.Errorf("railpack: marshal LLB: %w", err)
+		return nil, bkclient.SolveOpt{}, 0, fmt.Errorf("railpack: marshal LLB: %w", err)
 	}
 
 	// Serialize image config (CMD, ENV, EXPOSE, etc.) so BuildKit
 	// embeds it in the exported image.
 	imageBytes, err := json.Marshal(image)
 	if err != nil {
-		return nil, bkclient.SolveOpt{}, fmt.Errorf("railpack: marshal image config: %w", err)
+		return nil, bkclient.SolveOpt{}, 0, fmt.Errorf("railpack: marshal image config: %w", err)
 	}
 
 	// Use LocalMounts (fsutil.FS) instead of LocalDirs — matches how
 	// Railpack's own BuildWithBuildkitClient works.
 	appFS, err := fsutil.NewFS(appDir)
 	if err != nil {
-		return nil, bkclient.SolveOpt{}, fmt.Errorf("railpack: create FS: %w", err)
+		return nil, bkclient.SolveOpt{}, 0, fmt.Errorf("railpack: create FS: %w", err)
 	}
+
+	detectedPort := firstExposedPort(image.Config.ExposedPorts)
 
 	return def, bkclient.SolveOpt{
 		LocalMounts: map[string]fsutil.FS{
@@ -422,5 +428,51 @@ func (b *BuildKitClient) railpackSolveOpt(ctx context.Context, req BuildRequest,
 		Session: []session.Attachable{
 			authprovider.NewDockerAuthProvider(authprovider.DockerAuthProviderConfig{}),
 		},
-	}, nil
+	}, detectedPort, nil
+}
+
+// firstExposedPort extracts the lowest numeric port from an OCI ExposedPorts
+// map (keys like "3000/tcp"). Returns 0 when no valid port is found.
+func firstExposedPort(ports map[string]struct{}) int32 {
+	var best int32
+	for k := range ports {
+		raw := strings.SplitN(k, "/", 2)[0]
+		n, err := strconv.ParseInt(raw, 10, 32)
+		if err != nil || n <= 0 || n > 65535 {
+			continue
+		}
+		p := int32(n)
+		if best == 0 || p < best {
+			best = p
+		}
+	}
+	return best
+}
+
+// parseDockerfileExpose reads a Dockerfile and returns the first EXPOSE port.
+// Returns 0 if the file can't be read or has no EXPOSE directives.
+func parseDockerfileExpose(path string) int32 {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0
+	}
+	for _, raw := range strings.Split(string(data), "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		upper := strings.ToUpper(line)
+		if !strings.HasPrefix(upper, "EXPOSE ") {
+			continue
+		}
+		for _, tok := range strings.Fields(line)[1:] {
+			raw := strings.SplitN(tok, "/", 2)[0]
+			n, err := strconv.ParseInt(raw, 10, 32)
+			if err != nil || n <= 0 || n > 65535 {
+				continue
+			}
+			return int32(n)
+		}
+	}
+	return 0
 }

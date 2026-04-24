@@ -1,5 +1,5 @@
 # PlatformConfig wiring for integration tests: points the operator at the
-# in-cluster Zot + BuildKit installed by the other manifests in this directory.
+# in-cluster Distribution registry + BuildKit installed by the other manifests in this directory.
 # Must be named "platform" (singleton enforced by PlatformConfigReconciler).
 apiVersion: mortise.mortise.dev/v1alpha1
 kind: PlatformConfig

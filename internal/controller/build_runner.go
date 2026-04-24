@@ -120,6 +120,7 @@ func runBuild(
 	}
 
 	digest := ""
+	var detectedPort int32
 	for ev := range events {
 		switch ev.Type {
 		case build.EventLog:
@@ -129,7 +130,8 @@ func runBuild(
 			}
 		case build.EventSuccess:
 			digest = ev.Digest
-			log.Info("build succeeded", "image", p.imageRef.Full, "digest", digest)
+			detectedPort = ev.DetectedPort
+			log.Info("build succeeded", "image", p.imageRef.Full, "digest", digest, "detectedPort", detectedPort)
 		case build.EventFailure:
 			t.setFailed(ev.Error)
 			return
@@ -140,5 +142,5 @@ func runBuild(
 	if digest != "" {
 		pullImage = p.pullImageRef.Registry + "/" + p.pullImageRef.Path + "@" + digest
 	}
-	t.setSucceeded(pullImage, digest)
+	t.setSucceeded(pullImage, digest, detectedPort)
 }

@@ -457,6 +457,12 @@ type AppStatus struct {
 	// +optional
 	LastBuiltImage string `json:"lastBuiltImage,omitempty"`
 
+	// DetectedPort is the container port auto-detected from EXPOSE directives
+	// (Dockerfile) or Railpack image config during the most recent build.
+	// Zero means no port was detected.
+	// +optional
+	DetectedPort int32 `json:"detectedPort,omitempty"`
+
 	// +listType=map
 	// +listMapKey=type
 	// +optional

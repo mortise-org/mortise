@@ -1,6 +1,6 @@
 # In-cluster OCI registry — destination for BuildKit pushes and source for
-# kubelet image pulls. We use distribution/distribution v2 (not Zot) because
-# Zot's htpasswd watcher exhausts fs.inotify.max_user_instances on Linux hosts
+# kubelet image pulls. Uses distribution/distribution v2 — Zot was replaced
+# because its htpasswd watcher exhausts fs.inotify.max_user_instances on Linux hosts
 # with the default 128 limit. HTTP only — tests never leave the cluster.
 #
 # Two access paths matter here:

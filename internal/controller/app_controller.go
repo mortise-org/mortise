@@ -311,7 +311,7 @@ func (r *AppReconciler) reconcileGitSource(ctx context.Context, app *mortisev1al
 	// Check for an existing tracker. If it matches the current revision, inspect
 	// its state; if it's for a stale revision, discard and fall through to launch.
 	if t := r.Builds.get(key); t != nil {
-		phase, trackedRev, image, digest, errMsg := t.snapshot()
+		phase, trackedRev, image, digest, errMsg, detectedPort := t.snapshot()
 		if trackedRev != revision {
 			// Stale tracker from a previous revision — cancel and drop.
 			t.mu.Lock()
@@ -327,7 +327,7 @@ func (r *AppReconciler) reconcileGitSource(ctx context.Context, app *mortisev1al
 				return ctrl.Result{RequeueAfter: buildPollInterval}, false, nil
 			case buildPhaseSucceeded:
 				r.Builds.delete(key)
-				if err := r.applyBuildSuccess(ctx, app, revision, image, digest); err != nil {
+				if err := r.applyBuildSuccess(ctx, app, revision, image, digest, detectedPort); err != nil {
 					return ctrl.Result{}, false, err
 				}
 				app.Spec.Source.Image = image
@@ -488,7 +488,7 @@ const maxBuildErrorAnnotationBytes = 1024
 func (r *AppReconciler) persistBuildLog(t *buildTracker, p buildParams) {
 	log := logf.Log.WithName("build-log-persist").WithValues("app", p.appName, "namespace", p.namespace)
 
-	phase, _, _, _, errMsg := t.snapshot()
+	phase, _, _, _, errMsg, _ := t.snapshot()
 	lines := t.snapshotLogs()
 
 	// Drop head lines until the joined payload fits under the size cap. The
@@ -570,10 +570,11 @@ func (r *AppReconciler) persistBuildLog(t *buildTracker, p buildParams) {
 }
 
 // applyBuildSuccess writes the successful build result onto the App status.
-func (r *AppReconciler) applyBuildSuccess(ctx context.Context, app *mortisev1alpha1.App, revision, image, digest string) error {
+func (r *AppReconciler) applyBuildSuccess(ctx context.Context, app *mortisev1alpha1.App, revision, image, digest string, detectedPort int32) error {
 	log := logf.FromContext(ctx)
 	app.Status.LastBuiltSHA = revision
 	app.Status.LastBuiltImage = image
+	app.Status.DetectedPort = detectedPort
 	app.Status.Phase = mortisev1alpha1.AppPhaseDeploying
 	meta.SetStatusCondition(&app.Status.Conditions, metav1.Condition{
 		Type:               "BuildSucceeded",
@@ -2064,12 +2065,21 @@ func buildProbe(pc *mortisev1alpha1.ProbeConfig, defaultPort int32) *corev1.Prob
 	return probe
 }
 
-// appPort returns the container port for the app, defaulting to 8080.
+// appPort returns the container port for the app. When the user has set an
+// explicit port (anything other than the kubebuilder default of 8080), that
+// wins. Otherwise, a build-detected port takes precedence over the default.
 func appPort(app *mortisev1alpha1.App) int32 {
+	const defaultPort int32 = 8080
+	if app.Spec.Network.Port > 0 && app.Spec.Network.Port != defaultPort {
+		return app.Spec.Network.Port
+	}
+	if app.Status.DetectedPort > 0 {
+		return app.Status.DetectedPort
+	}
 	if app.Spec.Network.Port > 0 {
 		return app.Spec.Network.Port
 	}
-	return 8080
+	return defaultPort
 }
 
 // Resource names drop the env suffix — each env lives in its own namespace

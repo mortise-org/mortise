@@ -24,6 +24,7 @@ import (
 // the build tracker store on the AppReconciler.
 type BuildLogProvider interface {
 	GetBuildLogs(key types.NamespacedName) []string
+	GetBuildLogsSince(key types.NamespacedName, offset int) ([]string, int)
 }
 
 // Server is the REST API server that translates HTTP requests into CRD operations.

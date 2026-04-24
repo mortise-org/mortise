@@ -316,7 +316,7 @@ func (s *Server) emitPodList(ctx context.Context, w *sseWriter, projectName, app
 }
 
 // streamBuildLogs polls the in-memory build tracker for any building apps and
-// emits build.log SSE events. Stops when ctx is cancelled.
+// emits build.log SSE events with only new lines since the last tick.
 func (s *Server) streamBuildLogs(ctx context.Context, ns string, w *sseWriter) {
 	if s.buildLogs == nil {
 		<-ctx.Done()
@@ -326,8 +326,8 @@ func (s *Server) streamBuildLogs(ctx context.Context, ns string, w *sseWriter) {
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
-	// Track which apps are building so we can detect when a build finishes.
 	wasBuilding := map[string]bool{}
+	offsets := map[string]int{}
 
 	for {
 		select {
@@ -343,32 +343,32 @@ func (s *Server) streamBuildLogs(ctx context.Context, ns string, w *sseWriter) {
 			for i := range appList.Items {
 				app := &appList.Items[i]
 				if app.Status.Phase != mortisev1alpha1.AppPhaseBuilding {
-					// If it was building before, send a final non-building event.
 					if wasBuilding[app.Name] {
-						s.emitBuildLog(w, ns, app.Name, false)
+						s.emitBuildLogDelta(w, ns, app.Name, false, offsets)
+						delete(offsets, app.Name)
 					}
 					continue
 				}
 				nowBuilding[app.Name] = true
-				s.emitBuildLog(w, ns, app.Name, true)
+				s.emitBuildLogDelta(w, ns, app.Name, true, offsets)
 			}
 			wasBuilding = nowBuilding
 		}
 	}
 }
 
-func (s *Server) emitBuildLog(w *sseWriter, ns, appName string, building bool) {
+func (s *Server) emitBuildLogDelta(w *sseWriter, ns, appName string, building bool, offsets map[string]int) {
 	key := types.NamespacedName{Namespace: ns, Name: appName}
-	lines := s.buildLogs.GetBuildLogs(key)
-	if lines == nil {
-		lines = []string{}
-	}
 
-	// Read persisted metadata from ConfigMap for completed builds.
-	var timestamp, commitSHA, status, buildErr string
+	var lines []string
+	var offset int
+
 	if !building {
+		// Final event: send full log from ConfigMap so the client has everything.
+		offset = 0
 		var cm corev1.ConfigMap
 		cmKey := types.NamespacedName{Namespace: ns, Name: "buildlogs-" + appName}
+		var timestamp, commitSHA, status, buildErr string
 		if err := s.client.Get(context.Background(), cmKey, &cm); err == nil {
 			timestamp = cm.Annotations["mortise.dev/build-timestamp"]
 			commitSHA = cm.Annotations["mortise.dev/build-commit"]
@@ -380,17 +380,39 @@ func (s *Server) emitBuildLog(w *sseWriter, ns, appName string, building bool) {
 				lines = strings.Split(raw, "\n")
 			}
 		}
+		if lines == nil {
+			lines = []string{}
+		}
+		w.writeNamedEvent("build.log", map[string]any{
+			"app":       appName,
+			"lines":     lines,
+			"offset":    offset,
+			"building":  building,
+			"timestamp": timestamp,
+			"commitSHA": commitSHA,
+			"status":    status,
+			"error":     buildErr,
+		})
+		return
+	}
+
+	offset = offsets[appName]
+	newLines, total := s.buildLogs.GetBuildLogsSince(key, offset)
+	if newLines == nil {
+		newLines = []string{}
+	}
+
+	if len(newLines) == 0 && offset > 0 {
+		return
 	}
 
 	w.writeNamedEvent("build.log", map[string]any{
-		"app":       appName,
-		"lines":     lines,
-		"building":  building,
-		"timestamp": timestamp,
-		"commitSHA": commitSHA,
-		"status":    status,
-		"error":     buildErr,
+		"app":      appName,
+		"lines":    newLines,
+		"offset":   offset,
+		"building": building,
 	})
+	offsets[appName] = total
 }
 
 func heartbeat(ctx context.Context, w *sseWriter) {

@@ -1117,6 +1117,13 @@ definitions:
         items:
           $ref: '#/definitions/v1.Condition'
         type: array
+      detectedPort:
+        description: |-
+          DetectedPort is the container port auto-detected from EXPOSE directives
+          (Dockerfile) or Railpack image config during the most recent build.
+          Zero means no port was detected.
+          +optional
+        type: integer
       environments:
         items:
           $ref: '#/definitions/v1alpha1.EnvironmentStatus'

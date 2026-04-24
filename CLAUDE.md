@@ -38,12 +38,12 @@ These are non-negotiable. Violating any of them is a bug.
 
 Mortise couples to standards, not specific tools:
 - k8s Ingress API: not Traefik-specific annotations
-- OCI Distribution Spec: not Zot-specific APIs
+- OCI Distribution Spec: not implementation-specific APIs
 - OIDC: not Authentik-specific APIs
 - ACME (via cert-manager): not Let's Encrypt-specific
 
 If you're about to write code that only works with one specific tool (Traefik,
-Zot, GitHub), it must be behind an interface in internal/<name>/.
+GitHub), it must be behind an interface in internal/<name>/.
 
 ### Controllers never import third-party SDKs
 
@@ -188,7 +188,7 @@ make test-integration-fast # run integration suite against existing dev cluster
 - **ACME:** Pebble (local ACME server) in integration tests. Never hit real
   Let's Encrypt.
 - **DNS:** ExternalDNS in-memory provider in integration tests.
-- **Registry:** real Zot in the k3d cluster for integration tests.
+- **Registry:** real Distribution registry in the k3d cluster for integration tests.
 - **Time:** any TTL/timeout logic takes `clock.Clock` (k8s.io/utils/clock).
   Tests inject fake clock. Never call `time.Now()` directly in controllers.
 

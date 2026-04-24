@@ -327,6 +327,7 @@ export interface Pod {
 // Build logs response for the Build sub-tab in the Logs drawer.
 export interface BuildLogsResponse {
 	lines: string[];
+	offset: number;
 	building: boolean;
 	timestamp?: string;  // RFC3339
 	commitSHA?: string;

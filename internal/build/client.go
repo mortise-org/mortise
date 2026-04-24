@@ -52,10 +52,11 @@ const (
 )
 
 type BuildEvent struct {
-	Type   EventType
-	Line   string
-	Digest string // populated on success
-	Error  string // populated on failure
+	Type         EventType
+	Line         string
+	Digest       string // populated on success
+	DetectedPort int32  // populated on success when EXPOSE or Railpack port found
+	Error        string // populated on failure
 }
 
 type BuildClient interface {

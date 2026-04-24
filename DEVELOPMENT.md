@@ -109,7 +109,7 @@ make test-integration-fast  # run suite against existing dev cluster (requires m
 
 - `make test-integration` creates a dedicated k3d cluster (`mortise-int`),
   builds and loads the operator image, installs CRDs and test dependencies
-  (Zot, Gitea, BuildKit), installs the Helm chart, runs the suite, and
+  (Distribution registry, Gitea, BuildKit), installs the Helm chart, runs the suite, and
   tears down.
 - `make test-integration-fast` runs the same Go tests against whatever
   cluster your kubeconfig points at (typically the `make dev-up` cluster).

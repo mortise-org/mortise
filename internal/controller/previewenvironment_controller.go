@@ -247,7 +247,7 @@ func (r *PreviewEnvironmentReconciler) reconcilePreviewBuild(ctx context.Context
 
 	// Check for an existing tracker.
 	if t := r.builds.get(key); t != nil {
-		phase, trackedRev, image, _, errMsg := t.snapshot()
+		phase, trackedRev, image, _, errMsg, _ := t.snapshot()
 		if trackedRev != revision {
 			t.mu.Lock()
 			cancel := t.cancel

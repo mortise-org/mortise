@@ -358,6 +358,69 @@ func TestDockerfileNeedsRootContext(t *testing.T) {
 	}
 }
 
+func TestFirstExposedPort(t *testing.T) {
+	cases := []struct {
+		name  string
+		ports map[string]struct{}
+		want  int32
+	}{
+		{"nil map", nil, 0},
+		{"empty map", map[string]struct{}{}, 0},
+		{"single tcp", map[string]struct{}{"3000/tcp": {}}, 3000},
+		{"single udp", map[string]struct{}{"5000/udp": {}}, 5000},
+		{"bare port", map[string]struct{}{"8080": {}}, 8080},
+		{"multiple picks lowest", map[string]struct{}{"8080/tcp": {}, "3000/tcp": {}}, 3000},
+		{"invalid skipped", map[string]struct{}{"abc/tcp": {}, "4000/tcp": {}}, 4000},
+		{"zero skipped", map[string]struct{}{"0/tcp": {}, "5000/tcp": {}}, 5000},
+		{"out of range skipped", map[string]struct{}{"99999/tcp": {}, "443/tcp": {}}, 443},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := firstExposedPort(tc.ports)
+			if got != tc.want {
+				t.Fatalf("got %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestParseDockerfileExpose(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want int32
+	}{
+		{"no expose", "FROM alpine\nRUN echo hi\n", 0},
+		{"simple expose", "FROM alpine\nEXPOSE 3000\n", 3000},
+		{"expose with protocol", "FROM alpine\nEXPOSE 3000/tcp\n", 3000},
+		{"multiple expose first wins", "FROM alpine\nEXPOSE 3000\nEXPOSE 8080\n", 3000},
+		{"expose in comment ignored", "FROM alpine\n# EXPOSE 3000\nEXPOSE 5000\n", 5000},
+		{"lowercase expose", "FROM alpine\nexpose 3000\n", 3000},
+		{"expose multiple ports on one line", "FROM alpine\nEXPOSE 3000 8080\n", 3000},
+		{"empty file", "", 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			p := filepath.Join(dir, "Dockerfile")
+			if err := os.WriteFile(p, []byte(tc.body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			got := parseDockerfileExpose(p)
+			if got != tc.want {
+				t.Fatalf("got %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestParseDockerfileExpose_MissingFile(t *testing.T) {
+	got := parseDockerfileExpose("/nonexistent/Dockerfile")
+	if got != 0 {
+		t.Fatalf("got %d, want 0 for missing file", got)
+	}
+}
+
 // fakeSolverImpl is the concrete fake used in most tests. It feeds log data
 // into the statusChan before returning.
 type fakeSolverImpl struct {

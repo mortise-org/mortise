@@ -494,7 +494,7 @@ branch.
 **Image naming:** built images are path-namespaced by App, e.g.
 `<registry>/mortise/<app-name>:<tag>`. This is a convention the operator
 enforces, not a user-facing setting. Keeps Apps' images cleanly organized
-regardless of registry backend (Zot, GHCR, Harbor, etc.) and prevents
+regardless of registry backend (Distribution, GHCR, Harbor, etc.) and prevents
 accidental cross-App references. Admin has full read/write across all paths
 by default.
 
@@ -1368,7 +1368,7 @@ won't happen, and regressions will bury us.
 |---|---|---|---|
 | **Unit** | `go test` + controller-runtime fake client | Pure logic, no cluster | <10s |
 | **Controller (envtest)** | `sigs.k8s.io/controller-runtime/pkg/envtest` | Reconcile loops against real apiserver + etcd binaries; no kubelet | ~2s/test |
-| **Integration** | `k3d` cluster + Helm install + `go test -tags=integration` | Real mini-cluster, real pods, real Traefik/cert-manager/Zot | <3min total |
+| **Integration** | `k3d` cluster + Helm install + `go test -tags=integration` | Real mini-cluster, real pods, real Traefik/cert-manager/Distribution | <3min total |
 | **E2E** | Dogfooding k3s cluster | Real GitHub webhooks, real Cloudflare DNS, real LE staging | Nightly |
 | **UI E2E** | Playwright against k3d integration stack | Critical user flows | Per PR |
 
@@ -1492,7 +1492,7 @@ test-all: test test-integration
 - **ACME (cert-manager):** use Pebble (cert-manager's local ACME server) in
   integration.
 - **DNS:** ExternalDNS in-memory provider in integration.
-- **Registry:** real Zot running in the k3d cluster, backed by the k3d
+- **Registry:** real Distribution registry running in the k3d cluster, backed by the k3d
   registry volume.
 
 ### 7.8 CI (for Mortise itself)
@@ -1513,13 +1513,13 @@ Self-hosting the Mortise project's own CI is out of scope.
 ```
 charts/
 └── mortise/               # single chart: not an umbrella
-    ├── Chart.yaml          # depends on traefik, cert-manager, external-dns (bundled), zot (conditional)
+    ├── Chart.yaml          # depends on traefik, cert-manager, external-dns (bundled), registry (conditional)
     ├── values.yaml
     └── templates/          # operator Deployment, RBAC, CRDs, Service, etc.
 ```
 
 Mortise is one chart. It declares a handful of well-known upstream charts as
-dependencies (Traefik, cert-manager, ExternalDNS, Zot) so a single
+dependencies (Traefik, cert-manager, ExternalDNS, Distribution registry) so a single
 `helm install` gives a working cluster out of the box. Those dependencies
 can be turned off (§8.3) when the cluster already has equivalents.
 
@@ -1552,7 +1552,7 @@ Each is on by default but switchable at install:
 | `traefik.enabled` | `true` | Operator annotates Ingress for the existing controller; user picks `ingress.className` |
 | `certManager.enabled` | `true` | Operator expects an existing `ClusterIssuer`; user sets `tls.clusterIssuer` |
 | `externalDNS.enabled` | `true` | Operator still annotates Ingress; user's existing ExternalDNS picks it up, or DNS is managed manually |
-| `zot.enabled` | `true` | Operator pushes to external registry; user sets `registry.url` + `registry.pullSecret` |
+| `registry.enabled` | `true` | Operator pushes to external registry; user sets `registry.url` + `registry.pullSecret` |
 
 Each toggle corresponds to an outward interface (§11.1): `IngressProvider`,
 `RegistryBackend`: or an annotation-driven integration (ExternalDNS).
@@ -1569,7 +1569,7 @@ internal registry, internal ACME: but still has *some* outbound path
 |---|---|
 | `global.caBundle` | PEM-encoded CA chain mounted into the operator pod: for internal ACME, internal registries, internal git forges signed by a private CA |
 | `global.httpProxy` / `httpsProxy` / `noProxy` | Propagated as env to the operator |
-| `global.imageRegistry` | Prefix for all Mortise-internal images (operator, Traefik, cert-manager, Zot): for mirrored registries |
+| `global.imageRegistry` | Prefix for all Mortise-internal images (operator, Traefik, cert-manager, Distribution registry): for mirrored registries |
 | `global.pullSecret` | Pull secret for `global.imageRegistry` |
 | `tls.clusterIssuer` | Point cert-manager at an internal ACME (Smallstep, step-ca, Venafi) instead of Let's Encrypt |
 
@@ -1727,7 +1727,7 @@ project `staging` → moves (recreates) the app stack there → deletes
 - Railpack mode: library integration (`GenerateBuildPlan` →
   `ConvertPlanToLLB` → submit)
 - BuildKit as a single rootless Deployment + PVC (installed on first git App)
-- Registry: Zot (default, bundled in `mortise-core`) or external (GHCR,
+- Registry: Distribution (default, bundled in `mortise`) or external (GHCR,
   Docker Hub, custom); Helm values-driven
 - Build cache: OCI artifacts, keyed per app/branch
 - Operator submission queue serializes builds
@@ -1995,7 +1995,7 @@ type RegistryBackend interface {
     Tags(ctx context.Context, app string) ([]string, error)
     DeleteTag(ctx context.Context, app, tag string) error
 }
-// one in-tree impl: generic OCI (config-driven for Zot/GHCR/Harbor/ECR/etc.)
+// one in-tree impl: generic OCI (config-driven for Distribution/GHCR/Harbor/ECR/etc.)
 
 // internal/ingress/provider.go
 type IngressProvider interface {
