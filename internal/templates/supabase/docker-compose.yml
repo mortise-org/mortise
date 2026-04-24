@@ -78,12 +78,24 @@ services:
       FLY_APP_NAME: realtime
       DNS_NODES: "''"
 
+  meta:
+    image: supabase/postgres-meta:v0.84.2
+    depends_on: [postgres]
+    ports: ["8080:8080"]
+    environment:
+      PG_META_PORT: "8080"
+      PG_META_DB_HOST: supabase-postgres
+      PG_META_DB_PORT: "5432"
+      PG_META_DB_NAME: supabase
+      PG_META_DB_USER: supabase_admin
+      PG_META_DB_PASSWORD: ${PG_PASSWORD}
+
   studio:
     image: supabase/studio:2026.04.13-sha-e95f1cc
-    depends_on: [postgres]
+    depends_on: [postgres, meta]
     ports: ["3001:3000"]
     environment:
-      STUDIO_PG_META_URL: http://supabase-rest:3000
+      STUDIO_PG_META_URL: http://supabase-meta:8080
       POSTGRES_PASSWORD: ${PG_PASSWORD}
       SUPABASE_URL: http://supabase-rest:3000
       SUPABASE_REST_URL: http://supabase-rest:3000/rest/v1
