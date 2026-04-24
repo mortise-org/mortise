@@ -125,7 +125,10 @@ func (s *Server) Redeploy(w http.ResponseWriter, r *http.Request) {
 		if len(envStatus.DeployHistory) > 20 {
 			envStatus.DeployHistory = envStatus.DeployHistory[:20]
 		}
-		_ = s.client.Status().Update(r.Context(), &app)
+		if err := s.client.Status().Update(r.Context(), &app); err != nil {
+			writeError(w, err)
+			return
+		}
 	}
 
 	s.recordActivity(r, projectName, "deploy", "app", appName, "Triggered redeploy for "+appName+" in "+env, "")

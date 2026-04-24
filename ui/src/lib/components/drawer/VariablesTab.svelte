@@ -88,6 +88,16 @@
 		if (env === lastLoadedEnv && appName === lastLoadedApp) return;
 		lastLoadedEnv = env;
 		lastLoadedApp = appName;
+		// Reset transient UI state when switching apps/envs.
+		showAddBinding = false;
+		newBindingRef = '';
+		bindingError = '';
+		showAddCredential = false;
+		newCredName = '';
+		newCredValue = '';
+		credentialError = '';
+		pendingBindings = null;
+		pendingCredentials = null;
 		void loadEnv(env);
 		void loadShared();
 	});
@@ -302,12 +312,29 @@
 	let bindingsOpen = $state(true);
 	let credentialsOpen = $state(true);
 
+	let pendingBindings = $state<Array<{ref: string}> | null>(null);
+	let pendingCredentials = $state<Array<{name: string; value?: string; valueFrom?: unknown}> | null>(null);
+	let pendingClearTimer = $state<ReturnType<typeof setTimeout> | null>(null);
+
+	function setPendingBindings(bindings: Array<{ref: string}>) {
+		pendingBindings = bindings;
+		if (pendingClearTimer) clearTimeout(pendingClearTimer);
+		pendingClearTimer = setTimeout(() => { pendingBindings = null; }, 3000);
+	}
+
+	function setPendingCredentials(creds: Array<{name: string; value?: string; valueFrom?: unknown}>) {
+		pendingCredentials = creds;
+		if (pendingClearTimer) clearTimeout(pendingClearTimer);
+		pendingClearTimer = setTimeout(() => { pendingCredentials = null; }, 3000);
+	}
+
 	$effect(() => {
+		void app.metadata.name;
 		api.listApps(project).then(a => allApps = a).catch(() => {});
 	});
 
 	const currentBindings = $derived(
-		app.spec.environments?.find(e => e.name === activeEnv)?.bindings ?? []
+		pendingBindings ?? (app.spec.environments?.find(e => e.name === activeEnv)?.bindings ?? [])
 	);
 	const bindableApps = $derived(allApps.filter(a =>
 		a.metadata.name !== app.metadata.name &&
@@ -361,7 +388,9 @@
 		newBindingRef = '';
 		try {
 			await api.updateApp(project, app.metadata.name, spec);
+			setPendingBindings(spec.environments[envIdx].bindings);
 			markStale();
+			setTimeout(() => void loadEnv(activeEnv), 1500);
 		} catch (e) {
 			bindingError = e instanceof Error ? e.message : 'Failed to add binding';
 			showAddBinding = true;
@@ -382,7 +411,10 @@
 		);
 		try {
 			await api.updateApp(project, app.metadata.name, spec);
+			const updatedEnv = spec.environments.find((e: { name: string }) => e.name === activeEnv);
+			setPendingBindings(updatedEnv?.bindings ?? []);
 			markStale();
+			setTimeout(() => void loadEnv(activeEnv), 1500);
 		} catch (e) {
 			bindingError = e instanceof Error ? e.message : 'Failed to remove binding';
 		}
@@ -394,7 +426,7 @@
 	let newCredValue = $state('');
 	let savingCredentials = $state(false);
 	let credentialError = $state('');
-	const currentCredentials = $derived(app.spec.credentials ?? []);
+	const currentCredentials = $derived(pendingCredentials ?? (app.spec.credentials ?? []));
 
 	async function addCredential() {
 		if (!newCredName.trim()) return;
@@ -412,6 +444,7 @@
 		newCredValue = '';
 		try {
 			await api.updateApp(project, app.metadata.name, spec);
+			setPendingCredentials(spec.credentials);
 		} catch (e) {
 			credentialError = e instanceof Error ? e.message : 'Failed to add credential';
 			showAddCredential = true;
@@ -430,6 +463,7 @@
 		);
 		try {
 			await api.updateApp(project, app.metadata.name, spec);
+			setPendingCredentials(spec.credentials);
 		} catch (e) {
 			credentialError = e instanceof Error ? e.message : 'Failed to remove credential';
 		}

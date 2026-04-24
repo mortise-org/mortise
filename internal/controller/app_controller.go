@@ -1454,13 +1454,13 @@ func (r *AppReconciler) reconcileEnvSecret(ctx context.Context, app *mortisev1al
 		}
 	}
 
+	var bindingEnvs []envstore.Env
 	if len(env.Bindings) > 0 {
 		resolver := &bindings.Resolver{Client: r.Client}
 		boundVars, err := resolver.Resolve(ctx, projectName, env.Name, env.Bindings)
 		if err != nil {
 			return fmt.Errorf("resolve bindings: %w", err)
 		}
-		var bindingEnvs []envstore.Env
 		for _, bv := range boundVars {
 			bindingEnvs = append(bindingEnvs, envstore.Env{
 				Name:   bv.Name,
@@ -1468,9 +1468,9 @@ func (r *AppReconciler) reconcileEnvSecret(ctx context.Context, app *mortisev1al
 				Source: "binding",
 			})
 		}
-		if err := store.Merge(ctx, envNs, app.Name, bindingEnvs, labels); err != nil {
-			return fmt.Errorf("merge binding vars: %w", err)
-		}
+	}
+	if err := store.ReplaceSource(ctx, envNs, app.Name, "binding", bindingEnvs, labels); err != nil {
+		return fmt.Errorf("replace binding vars: %w", err)
 	}
 
 	// Ensure the Secret exists even if there are no vars.

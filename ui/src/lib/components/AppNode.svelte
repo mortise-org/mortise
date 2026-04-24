@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import type { NodeProps } from '@xyflow/svelte';
+	import { Handle, Position } from '@xyflow/svelte';
 	import { GitBranch, Container, Cloud, Clock, HardDrive } from 'lucide-svelte';
 	import type { App, AppPhase } from '$lib/types';
 
@@ -155,4 +156,7 @@
 			{/each}
 		</div>
 	{/if}
+
+	<Handle type="target" position={Position.Left} class="!opacity-0 !w-1 !h-1 !min-w-0 !min-h-0 !border-0" />
+	<Handle type="source" position={Position.Right} class="!opacity-0 !w-1 !h-1 !min-w-0 !min-h-0 !border-0" />
 </div>

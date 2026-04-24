@@ -28,12 +28,19 @@
 
 	let { projectName, apps, selectedApp = null, onAppOpen, onAddApp, onDeleteApp, onPaneClick }: Props = $props();
 
-	const currentEnv = $derived(store.currentEnv(projectName) ?? '');
+	const currentEnv = $derived(
+		store.currentEnv(projectName) || apps[0]?.spec.environments?.[0]?.name || 'production'
+	);
 
 	let serverEdges = $state<BindingEdge[]>([]);
 	let bindingGeneration = 0;
 
+	const bindingKey = $derived(
+		apps.map(a => a.spec.environments?.flatMap(e => e.bindings?.map(b => b.ref) ?? []).join(',') ?? '').join('|')
+	);
+
 	$effect(() => {
+		void bindingKey;
 		if (!projectName || !currentEnv) {
 			serverEdges = [];
 			return;
@@ -85,8 +92,8 @@
 			seen.add(id);
 			out.push({
 				id,
-				source: edge.from,
-				target: edge.to,
+				source: edge.to,
+				target: edge.from,
 				type: 'smoothstep',
 				animated: true,
 				style: 'stroke: var(--color-surface-500); stroke-width: 1.5;'

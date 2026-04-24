@@ -200,6 +200,31 @@ func (s *Store) MergeShared(ctx context.Context, namespace string, vars []Env, l
 	return s.upsertSecret(ctx, namespace, SharedEnvName, flat, labels)
 }
 
+// ReplaceSource replaces all vars with the given source in an app's env Secret.
+// Existing vars with a different source are preserved. If vars is empty, all
+// vars with the given source are removed.
+func (s *Store) ReplaceSource(ctx context.Context, namespace, appName, source string, vars []Env, labels map[string]string) error {
+	if err := validateEnvVars(vars); err != nil {
+		return err
+	}
+	name := AppEnvSecretName(appName)
+	existing, err := s.getSecret(ctx, namespace, name)
+	if err != nil && !k8serrors.IsNotFound(err) {
+		return err
+	}
+
+	var kept []Env
+	if existing != nil {
+		for _, e := range secretToEnvs(existing) {
+			if e.Source != source {
+				kept = append(kept, e)
+			}
+		}
+	}
+	kept = append(kept, vars...)
+	return s.upsertSecret(ctx, namespace, name, kept, labels)
+}
+
 // Delete removes a key from an app's env Secret.
 func (s *Store) Delete(ctx context.Context, namespace, appName, key string) error {
 	name := AppEnvSecretName(appName)
