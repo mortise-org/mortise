@@ -10,7 +10,7 @@
   const projectName = $derived(page.params.project ?? '');
   let project = $state<Project | null>(null);
   let loading = $state(true);
-  let activeTab = $state<'general' | 'environments' | 'shared-vars' | 'members' | 'tokens' | 'webhooks' | 'integrations' | 'danger'>('general');
+  let activeTab = $state<'general' | 'environments' | 'members' | 'tokens' | 'webhooks' | 'integrations' | 'danger'>('general');
   let filterText = $state('');
 
   // --- General ---
@@ -168,19 +168,6 @@
     }
   });
 
-  // --- Shared vars (lazy load) ---
-  let sharedVars = $state<Record<string, string>>({});
-  let loadingShared = $state(false);
-  async function loadSharedVars() {
-    loadingShared = true;
-    try {
-      // shared vars are per-app; nothing to load at project level
-      sharedVars = {};
-    } finally {
-      loadingShared = false;
-    }
-  }
-
   async function loadAppsForDanger() {
     loadingApps = true;
     try {
@@ -211,8 +198,7 @@
     activeTab = tab;
     if (tab === 'environments' && envs.length === 0 && !loadingEnvs) await loadEnvs();
     if (tab === 'members' && members.length === 0 && !loadingMembers) await loadMembers();
-    if (tab === 'shared-vars' && Object.keys(sharedVars).length === 0 && !loadingShared) await loadSharedVars();
-    if (tab === 'danger' && projectApps.length === 0 && !loadingApps) await loadAppsForDanger();
+if (tab === 'danger' && projectApps.length === 0 && !loadingApps) await loadAppsForDanger();
   }
 
   async function saveGeneral() {
@@ -315,7 +301,6 @@
   <nav class="flex w-44 shrink-0 flex-col border-r border-surface-600 bg-surface-800">
     <button type="button" class={tabCls('general')} onclick={() => switchTab('general')}>General</button>
     <button type="button" class={tabCls('environments')} onclick={() => switchTab('environments')}>Environments</button>
-    <button type="button" class={tabCls('shared-vars')} onclick={() => switchTab('shared-vars')}>Project Variables</button>
     <button type="button" class={tabCls('members')} onclick={() => switchTab('members')}>Members</button>
     <button type="button" class={tabCls('tokens')} onclick={() => switchTab('tokens')}>Tokens</button>
     <button type="button" class={tabCls('webhooks')} onclick={() => switchTab('webhooks')}>Webhooks</button>
@@ -508,20 +493,6 @@
           </div>
         </div>
       {/if}
-
-    {:else if activeTab === 'shared-vars'}
-      <div class="max-w-lg">
-        <div class="mb-4">
-          <h2 class="text-sm font-medium text-white">Project Variables</h2>
-          <p class="text-xs text-gray-500">Project variables are injected into every app and every environment in this project. Manage them from any app's Variables tab.</p>
-        </div>
-
-        <div class="rounded-md border border-surface-600 bg-surface-800/50 p-5">
-          <p class="text-sm text-gray-400">Project variables apply to all apps in this project across all environments.</p>
-          <p class="mt-2 text-xs text-gray-500">To manage: open any app → Variables tab → "Project" section. App-specific variables override project variables when they share the same key.</p>
-          <a href="/projects/{projectName}" class="mt-3 inline-block text-xs text-accent hover:underline">Go to project canvas →</a>
-        </div>
-      </div>
 
     {:else if activeTab === 'members'}
       <div class="max-w-lg">
