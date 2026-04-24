@@ -28,6 +28,15 @@
 
 	// SSE-fed state for build logs
 	let buildLogs = $state<Map<string, BuildLogsResponse>>(new Map());
+	let drawerApp = $state<App | null>(null);
+	$effect(() => {
+		if (selectedApp) {
+			const found = apps.find(a => a.metadata.name === selectedApp) ?? null;
+			if (found && !drawerApp) drawerApp = found;
+		} else {
+			drawerApp = null;
+		}
+	});
 
 	let eventStream: ReturnType<typeof connectProjectEvents> | null = null;
 
@@ -81,9 +90,13 @@
 			onAppUpdated: (app) => {
 				const idx = apps.findIndex(a => a.metadata.name === app.metadata.name);
 				if (idx >= 0) {
-					apps = [...apps.slice(0, idx), app, ...apps.slice(idx + 1)];
+					apps[idx] = app;
+					apps = apps;
 				} else {
 					apps = [...apps, app];
+				}
+				if (app.metadata.name === selectedApp) {
+					drawerApp = app;
 				}
 			},
 			onAppDeleted: (name) => {
@@ -361,7 +374,7 @@
 		<AppDrawer
 			project={projectName}
 			appName={selectedApp}
-			liveApp={apps.find(a => a.metadata.name === selectedApp) ?? null}
+			liveApp={drawerApp}
 			liveBuildLogs={buildLogs.get(selectedApp ?? '') ?? null}
 			onClose={() => selectedApp = null}
 		/>
