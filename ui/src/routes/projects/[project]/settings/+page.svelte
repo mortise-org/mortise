@@ -315,7 +315,7 @@
   <nav class="flex w-44 shrink-0 flex-col border-r border-surface-600 bg-surface-800">
     <button type="button" class={tabCls('general')} onclick={() => switchTab('general')}>General</button>
     <button type="button" class={tabCls('environments')} onclick={() => switchTab('environments')}>Environments</button>
-    <button type="button" class={tabCls('shared-vars')} onclick={() => switchTab('shared-vars')}>Shared Variables</button>
+    <button type="button" class={tabCls('shared-vars')} onclick={() => switchTab('shared-vars')}>Project Variables</button>
     <button type="button" class={tabCls('members')} onclick={() => switchTab('members')}>Members</button>
     <button type="button" class={tabCls('tokens')} onclick={() => switchTab('tokens')}>Tokens</button>
     <button type="button" class={tabCls('webhooks')} onclick={() => switchTab('webhooks')}>Webhooks</button>
@@ -512,23 +512,14 @@
     {:else if activeTab === 'shared-vars'}
       <div class="max-w-lg">
         <div class="mb-4">
-          <h2 class="text-sm font-medium text-white">Shared Variables</h2>
-          <p class="text-xs text-gray-500">In Mortise, shared variables are configured per-app and can be referenced by multiple environments within that app. Navigate to an app's Variables tab to manage its shared variables.</p>
+          <h2 class="text-sm font-medium text-white">Project Variables</h2>
+          <p class="text-xs text-gray-500">Project variables are injected into every app and every environment in this project. Manage them from any app's Variables tab.</p>
         </div>
 
         <div class="rounded-md border border-surface-600 bg-surface-800/50 p-5">
-          <p class="text-sm text-gray-400">Shared variables are scoped to individual apps, not the project.</p>
-          <p class="mt-2 text-xs text-gray-500">To add shared variables: open an app → Variables tab → "Shared" pseudo-tab → add key/value pairs that apply across all environments of that app.</p>
+          <p class="text-sm text-gray-400">Project variables apply to all apps in this project across all environments.</p>
+          <p class="mt-2 text-xs text-gray-500">To manage: open any app → Variables tab → "Project" section. App-specific variables override project variables when they share the same key.</p>
           <a href="/projects/{projectName}" class="mt-3 inline-block text-xs text-accent hover:underline">Go to project canvas →</a>
-        </div>
-
-        <div class="mt-6">
-          <h3 class="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-400">Reference syntax</h3>
-          <div class="rounded-md bg-surface-900 p-3 font-mono text-xs text-gray-300 space-y-1">
-            <div><span class="text-accent">$&#123;shared.KEY&#125;</span> - shared var from this app</div>
-            <div><span class="text-accent">$&#123;bindings.APP.KEY&#125;</span> - credential from bound app</div>
-            <div><span class="text-accent">$&#123;secrets.SECRET_NAME&#125;</span> - k8s Secret key</div>
-          </div>
         </div>
       </div>
 

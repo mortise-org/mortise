@@ -4,12 +4,11 @@ import { test, expect, type Page } from '@playwright/test';
 // VariablesTab E2E tests (mocked backend — no live cluster required)
 //
 // All API calls are intercepted with page.route(). Auth is injected directly
-// into localStorage. Tests cover the full VariablesTab surface: stacked env
-// sections, shared vars section, add/edit/delete, raw/import mode per section.
+// into localStorage. Tests cover the full VariablesTab surface: per-env
+// section, project variables section, add/edit/delete, raw/import mode.
 //
-// Layout: stacked collapsible sections per env (first expanded), then an
-// always-visible "Shared variables" section. No sub-tab row. Shared vars are
-// read from app.spec.sharedVars and written via PUT /apps/:a (updateApp).
+// Layout: per-env section (active env), then a "Project" variables section
+// (project-scoped, shared across all apps and environments).
 // ---------------------------------------------------------------------------
 
 const mockProject = {
@@ -87,9 +86,9 @@ async function goToVariablesTab(page: Page, appOverride = mockApp) {
 }
 
 // ---------------------------------------------------------------------------
-// Test 1: Variables tab shows stacked env sections and shared variables section
+// Test 1: Variables tab shows env section and project variables section
 // ---------------------------------------------------------------------------
-test('variables tab shows stacked env sections and shared variables section', async ({ page }) => {
+test('variables tab shows env section and project variables section', async ({ page }) => {
   await injectAuth(page);
   await setupCommonMocks(page);
 
@@ -101,16 +100,9 @@ test('variables tab shows stacked env sections and shared variables section', as
   await expect(page.getByRole('button', { name: 'Deployments', exact: true })).toBeVisible({ timeout: 8_000 });
   await page.getByRole('button', { name: 'Variables', exact: true }).click();
 
-  // Env section headers should be visible (as buttons for collapse toggle).
-  await expect(page.getByRole('button', { name: 'production', exact: true })).toBeVisible({ timeout: 8_000 });
-  await expect(page.getByRole('button', { name: 'staging', exact: true })).toBeVisible();
-
-  // "Shared variables" section header is always shown (as text, not a tab button).
-  await expect(page.getByText('Shared variables')).toBeVisible();
-
-  // No sub-tab row: there should be no "Shared" button in the old tab-row style.
-  // The shared section label is a span not a button with name "Shared".
-  await expect(page.getByRole('button', { name: 'Shared', exact: true })).not.toBeVisible();
+  // "Project" section header with scope label.
+  await expect(page.getByText('Project')).toBeVisible({ timeout: 8_000 });
+  await expect(page.getByText('all apps & environments')).toBeVisible();
 });
 
 // ---------------------------------------------------------------------------

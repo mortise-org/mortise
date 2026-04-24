@@ -294,7 +294,7 @@
 		switch (source) {
 			case 'binding': return { label: 'binding', classes: 'bg-info/10 text-info' };
 			case 'generated': return { label: 'generated', classes: 'bg-warning/10 text-warning' };
-			case 'shared': return { label: 'shared', classes: 'bg-accent/10 text-accent' };
+			case 'shared': return { label: 'project', classes: 'bg-accent/10 text-accent' };
 			default: return null;
 		}
 	}
@@ -627,12 +627,12 @@
 		</div>
 	{/if}
 
-	<!-- Shared variables section -->
+	<!-- Project variables section -->
 	<div class="rounded-lg border border-surface-600 bg-surface-900">
 		<div class="flex items-center justify-between px-3 py-2.5">
 			<div class="flex items-center gap-2">
-				<span class="text-sm font-medium text-white">Shared</span>
-				<span class="text-xs text-gray-500">all environments</span>
+				<span class="text-sm font-medium text-white">Project</span>
+				<span class="text-xs text-gray-500">all apps &amp; environments</span>
 			</div>
 			<div class="flex items-center gap-2">
 				{#if sharedSection.editedKeys.size > 0 && !sharedSection.rawMode}
@@ -667,7 +667,7 @@
 
 			{#if sharedSection.rawMode}
 				<div class="p-3 space-y-3">
-					<p class="text-xs text-gray-500">Edit as .env format. Save replaces all shared variables.</p>
+					<p class="text-xs text-gray-500">Edit as .env format. Save replaces all project variables.</p>
 					<textarea bind:value={sharedSection.rawText} rows={6}
 						placeholder="JWT_SECRET=...&#10;DB_PASSWORD=..."
 						class="w-full resize-y rounded-md border border-surface-600 bg-surface-700 px-3 py-2 font-mono text-xs text-white placeholder-gray-500 outline-none focus:border-accent">
@@ -702,7 +702,7 @@
 
 				{#if sharedSection.entries.length === 0 && !sharedSection.showNewRow}
 					<div class="py-6 text-center text-xs text-gray-500">
-						No shared variables. These are available to all environments.
+						No project variables. These are injected into every app in this project.
 					</div>
 				{:else}
 					{#each sharedSection.entries as entry, idx}

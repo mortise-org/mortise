@@ -512,7 +512,7 @@ test.describe('variables tab has no project-level section', () => {
     await deleteProjectViaAPI(request, token, project);
   });
 
-  test('only per-env + app-shared sections exist, no project-scoped section', async ({ page }) => {
+  test('variables tab shows project-scoped variables section', async ({ page }) => {
     await injectToken(page, token);
     await page.goto(`/projects/${project}/apps/${appName}`);
     await expect(page.getByRole('button', { name: 'Close drawer' })).toBeVisible({
@@ -521,21 +521,9 @@ test.describe('variables tab has no project-level section', () => {
 
     await page.getByRole('button', { name: 'Variables', exact: true }).click();
 
-    // The app's "Shared variables" section is expected (scoped to the app).
-    await expect(page.getByText('Shared variables', { exact: true })).toBeVisible({
-      timeout: 10_000
-    });
-    // Description clarifies the app-scoping of shared vars.
-    await expect(
-      page.getByText('available to all environments of this app', { exact: false })
-    ).toBeVisible();
-
-    // Guard rail: there must be NO "Project variables" / "Project-level" /
-    // "Project-scoped variables" section. These would indicate a regression
-    // re-introducing a design we deliberately removed.
-    await expect(page.getByText(/Project[- ]level variables/i)).toHaveCount(0);
-    await expect(page.getByText(/Project[- ]scoped variables/i)).toHaveCount(0);
-    await expect(page.getByText(/Project variables/i)).toHaveCount(0);
+    // Project variables section is visible with correct scope label.
+    await expect(page.getByText('Project')).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByText('all apps & environments')).toBeVisible();
   });
 });
 
