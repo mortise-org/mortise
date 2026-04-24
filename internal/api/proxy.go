@@ -90,8 +90,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		port = 8080
 	}
 
-	svcName := appName + "-" + env
-	target := fmt.Sprintf("http://%s.%s.svc:%d", svcName, envNs, port)
+	target := fmt.Sprintf("http://%s.%s.svc:%d", appName, envNs, port)
 	targetURL, err := url.Parse(target)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, errorResponse{"invalid proxy target"})
@@ -99,7 +98,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Allocate a random port and start listening.
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := net.Listen("tcp", "0.0.0.0:0")
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, errorResponse{"failed to allocate port: " + err.Error()})
 		return

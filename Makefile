@@ -153,6 +153,7 @@ dev-up: build-ui ## Create k3d dev cluster with build infra, install Mortise, po
 		--set traefik.enabled=false \
 		--set cert-manager.enabled=false \
 		--set metricsServer.enabled=false \
+		--set mortise-core.github.clientID=$(GITHUB_CLIENT_ID) \
 		--wait --timeout 120s
 	@echo "==> Applying dev PlatformConfig..."
 	kubectl apply -f test/dev/platform-config.yaml

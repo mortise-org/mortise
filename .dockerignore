@@ -15,6 +15,9 @@
 !internal/templates/**/*.yaml
 !internal/templates/**/*.sql
 
+# Re-include embedded OpenAPI spec
+!internal/api/openapi.yaml
+
 # Re-include UI source for the build stage
 !ui/package.json
 !ui/package-lock.json
