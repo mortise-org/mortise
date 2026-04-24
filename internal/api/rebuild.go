@@ -22,6 +22,17 @@ import (
 // and resets the phase from Failed/CrashLooping so the build guard doesn't skip it.
 //
 // POST /api/projects/{project}/apps/{app}/rebuild
+//
+// @Summary Rebuild an app from source
+// @Description Clear the last-built SHA and reset the phase so the reconciler triggers a fresh build. Only supported for git-source apps.
+// @Tags deploy
+// @Produce json
+// @Security BearerAuth
+// @Param project path string true "Project name"
+// @Param app path string true "App name"
+// @Success 200 {object} map[string]string
+// @Failure 400 {object} errorResponse
+// @Router /projects/{project}/apps/{app}/rebuild [post]
 func (s *Server) Rebuild(w http.ResponseWriter, r *http.Request) {
 	ns, projectName, ok := s.resolveProject(w, r)
 	if !ok {
@@ -62,6 +73,18 @@ func (s *Server) Rebuild(w http.ResponseWriter, r *http.Request) {
 // This is the correct way to pick up Secret changes mounted via envFrom.
 //
 // POST /api/projects/{project}/apps/{app}/redeploy
+//
+// @Summary Redeploy an app (rolling restart)
+// @Description Trigger a rolling restart by annotating the pod template. Works for any source type. Use this to pick up Secret changes.
+// @Tags deploy
+// @Produce json
+// @Security BearerAuth
+// @Param project path string true "Project name"
+// @Param app path string true "App name"
+// @Param environment query string false "Environment name (defaults to first env)"
+// @Success 200 {object} map[string]string
+// @Failure 404 {object} errorResponse
+// @Router /projects/{project}/apps/{app}/redeploy [post]
 func (s *Server) Redeploy(w http.ResponseWriter, r *http.Request) {
 	ns, projectName, ok := s.resolveProject(w, r)
 	if !ok {

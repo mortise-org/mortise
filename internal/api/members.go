@@ -52,6 +52,17 @@ func validProjectRole(role string) bool {
 }
 
 // ListMembers returns all members of a project.
+//
+// @Summary List project members
+// @Description Returns all members of a project with their roles
+// @Tags members
+// @Produce json
+// @Security BearerAuth
+// @Param project path string true "Project name"
+// @Success 200 {array} memberResponse
+// @Failure 403 {object} errorResponse
+// @Failure 404 {object} errorResponse
+// @Router /projects/{project}/members [get]
 func (s *Server) ListMembers(w http.ResponseWriter, r *http.Request) {
 	_, projectName, ok := s.resolveProject(w, r)
 	if !ok {
@@ -84,6 +95,21 @@ func (s *Server) ListMembers(w http.ResponseWriter, r *http.Request) {
 }
 
 // AddMember adds a user as a member of a project.
+//
+// @Summary Add a project member
+// @Description Adds a user as a member of a project with the specified role
+// @Tags members
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param project path string true "Project name"
+// @Param body body addMemberRequest true "Member email and role"
+// @Success 201 {object} memberResponse
+// @Failure 400 {object} errorResponse
+// @Failure 403 {object} errorResponse
+// @Failure 404 {object} errorResponse
+// @Failure 409 {object} errorResponse
+// @Router /projects/{project}/members [post]
 func (s *Server) AddMember(w http.ResponseWriter, r *http.Request) {
 	_, projectName, ok := s.resolveProject(w, r)
 	if !ok {
@@ -172,6 +198,21 @@ func (s *Server) AddMember(w http.ResponseWriter, r *http.Request) {
 }
 
 // UpdateMember changes the role of an existing project member.
+//
+// @Summary Update a project member's role
+// @Description Changes the role of an existing project member
+// @Tags members
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param project path string true "Project name"
+// @Param email path string true "Member email"
+// @Param body body updateMemberRequest true "New role"
+// @Success 200 {object} memberResponse
+// @Failure 400 {object} errorResponse
+// @Failure 403 {object} errorResponse
+// @Failure 404 {object} errorResponse
+// @Router /projects/{project}/members/{email} [patch]
 func (s *Server) UpdateMember(w http.ResponseWriter, r *http.Request) {
 	_, projectName, ok := s.resolveProject(w, r)
 	if !ok {
@@ -222,6 +263,18 @@ func (s *Server) UpdateMember(w http.ResponseWriter, r *http.Request) {
 }
 
 // RemoveMember removes a member from a project.
+//
+// @Summary Remove a project member
+// @Description Removes a member from a project. Cannot remove the last owner.
+// @Tags members
+// @Security BearerAuth
+// @Param project path string true "Project name"
+// @Param email path string true "Member email"
+// @Success 204 "No content"
+// @Failure 400 {object} errorResponse
+// @Failure 403 {object} errorResponse
+// @Failure 404 {object} errorResponse
+// @Router /projects/{project}/members/{email} [delete]
 func (s *Server) RemoveMember(w http.ResponseWriter, r *http.Request) {
 	_, projectName, ok := s.resolveProject(w, r)
 	if !ok {

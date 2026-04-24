@@ -26,6 +26,14 @@ type statusResponse struct {
 	SetupRequired bool `json:"setupRequired"`
 }
 
+// @Summary Check setup status
+// @Description Reports whether first-user setup is required (no users exist yet)
+// @Tags auth
+// @Produce json
+// @Success 200 {object} statusResponse
+// @Failure 500 {object} errorResponse
+// @Router /auth/status [get]
+//
 // Status reports whether first-user setup is required (no users exist yet).
 // Unauthenticated so the UI can check before the user signs in.
 func (s *Server) Status(w http.ResponseWriter, r *http.Request) {
@@ -37,6 +45,19 @@ func (s *Server) Status(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, statusResponse{SetupRequired: len(users) == 0})
 }
 
+// @Summary First-time setup
+// @Description Creates the first admin user. Returns 409 if any user already exists.
+// @Tags auth
+// @Accept json
+// @Produce json
+// @Param body body setupRequest true "Admin credentials"
+// @Success 201 {object} authResponse
+// @Failure 400 {object} errorResponse
+// @Failure 409 {object} errorResponse
+// @Failure 500 {object} errorResponse
+// @Failure 501 {object} errorResponse
+// @Router /auth/setup [post]
+//
 // Setup creates the first admin user and the `default` Project. Returns 409 if
 // any user already exists.
 func (s *Server) Setup(w http.ResponseWriter, r *http.Request) {
@@ -89,6 +110,18 @@ func (s *Server) Setup(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, authResponse{Token: token, User: principal})
 }
 
+// @Summary Log in
+// @Description Authenticates a user and returns a JWT
+// @Tags auth
+// @Accept json
+// @Produce json
+// @Param body body loginRequest true "User credentials"
+// @Success 200 {object} authResponse
+// @Failure 400 {object} errorResponse
+// @Failure 401 {object} errorResponse
+// @Failure 500 {object} errorResponse
+// @Router /auth/login [post]
+//
 // Login authenticates a user and returns a JWT.
 func (s *Server) Login(w http.ResponseWriter, r *http.Request) {
 	var req loginRequest

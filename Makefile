@@ -49,8 +49,13 @@ manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and Cust
 	cp config/crd/bases/*.yaml charts/mortise-core/crds/
 
 .PHONY: generate
-generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
+generate: controller-gen generate-api ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
 	"$(CONTROLLER_GEN)" object:headerFile="hack/boilerplate.go.txt" paths="./..."
+
+.PHONY: generate-api
+generate-api: ## Regenerate OpenAPI spec from swag annotations.
+	swag init --generalInfo main.go --dir ./cmd,./internal/api --output ./docs --outputTypes yaml --parseDependency --parseInternal
+	cp docs/swagger.yaml internal/api/openapi.yaml
 
 .PHONY: fmt
 fmt: ## Run go fmt against code.
@@ -112,6 +117,7 @@ run: manifests generate fmt vet ## Run a controller from your host.
 DEV_CLUSTER ?= mortise-dev
 DEV_IMG ?= mortise:dev
 DEV_OBSERVER_IMG ?= mortise-observer:dev
+GITHUB_CLIENT_ID ?= Ov23lizLTd25E32VrWwl
 
 .PHONY: dev-up
 dev-up: build-ui ## Create k3d dev cluster with build infra, install Mortise, port-forward

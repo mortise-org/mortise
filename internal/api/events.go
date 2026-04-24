@@ -35,6 +35,17 @@ var appGVR = schema.GroupVersionResource{
 // The client loads initial state via REST, then connects here for live deltas.
 //
 // GET /api/projects/{project}/events
+//
+// @Summary Stream project events
+// @Description Streams app updates, pod changes, and build logs via SSE for real-time UI updates
+// @Tags events
+// @Produce text/event-stream
+// @Security BearerAuth
+// @Param project path string true "Project name"
+// @Success 200 {string} string "SSE stream of project events"
+// @Failure 403 {object} errorResponse
+// @Failure 404 {object} errorResponse
+// @Router /projects/{project}/events [get]
 func (s *Server) handleProjectEvents(w http.ResponseWriter, r *http.Request) {
 	projectName := chi.URLParam(r, "project")
 	if !s.authorize(w, r, authz.Resource{Kind: "app", Project: projectName}, authz.ActionRead) {

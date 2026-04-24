@@ -44,7 +44,7 @@ mortise-core:
     name: mortise-controller
 
   github:
-    clientID: ""
+    clientID: "Ov23lizLTd25E32VrWwl"
 
 # ---------------------------------------------------------------------------
 # Traefik — ingress controller

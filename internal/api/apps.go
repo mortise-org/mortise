@@ -31,6 +31,20 @@ type createAppRequest struct {
 	Spec mortisev1alpha1.AppSpec `json:"spec"`
 }
 
+// @Summary Create an app
+// @Description Creates a new App within a project
+// @Tags apps
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param project path string true "Project name"
+// @Param body body createAppRequest true "App details"
+// @Success 201 {object} v1alpha1.App
+// @Failure 400 {object} errorResponse
+// @Failure 401 {object} errorResponse
+// @Failure 403 {object} errorResponse
+// @Failure 404 {object} errorResponse
+// @Router /projects/{project}/apps [post]
 func (s *Server) CreateApp(w http.ResponseWriter, r *http.Request) {
 	ns, projectName, ok := s.resolveProject(w, r)
 	if !ok {
@@ -82,6 +96,17 @@ func (s *Server) CreateApp(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, app)
 }
 
+// @Summary List apps
+// @Description Returns all Apps within a project
+// @Tags apps
+// @Produce json
+// @Security BearerAuth
+// @Param project path string true "Project name"
+// @Success 200 {array} v1alpha1.App
+// @Failure 401 {object} errorResponse
+// @Failure 403 {object} errorResponse
+// @Failure 404 {object} errorResponse
+// @Router /projects/{project}/apps [get]
 func (s *Server) ListApps(w http.ResponseWriter, r *http.Request) {
 	ns, projectName, ok := s.resolveProject(w, r)
 	if !ok {
@@ -100,6 +125,18 @@ func (s *Server) ListApps(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, list.Items)
 }
 
+// @Summary Get an app
+// @Description Returns a single App by name within a project
+// @Tags apps
+// @Produce json
+// @Security BearerAuth
+// @Param project path string true "Project name"
+// @Param app path string true "App name"
+// @Success 200 {object} v1alpha1.App
+// @Failure 401 {object} errorResponse
+// @Failure 403 {object} errorResponse
+// @Failure 404 {object} errorResponse
+// @Router /projects/{project}/apps/{app} [get]
 func (s *Server) GetApp(w http.ResponseWriter, r *http.Request) {
 	ns, projectName, ok := s.resolveProject(w, r)
 	if !ok {
@@ -119,6 +156,21 @@ func (s *Server) GetApp(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, &app)
 }
 
+// @Summary Update an app
+// @Description Updates an existing App's spec
+// @Tags apps
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param project path string true "Project name"
+// @Param app path string true "App name"
+// @Param body body v1alpha1.AppSpec true "Updated app spec"
+// @Success 200 {object} v1alpha1.App
+// @Failure 400 {object} errorResponse
+// @Failure 401 {object} errorResponse
+// @Failure 403 {object} errorResponse
+// @Failure 404 {object} errorResponse
+// @Router /projects/{project}/apps/{app} [put]
 func (s *Server) UpdateApp(w http.ResponseWriter, r *http.Request) {
 	ns, projectName, ok := s.resolveProject(w, r)
 	if !ok {
@@ -152,6 +204,18 @@ func (s *Server) UpdateApp(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, &app)
 }
 
+// @Summary Delete an app
+// @Description Deletes an App from a project
+// @Tags apps
+// @Produce json
+// @Security BearerAuth
+// @Param project path string true "Project name"
+// @Param app path string true "App name"
+// @Success 200 {object} map[string]string
+// @Failure 401 {object} errorResponse
+// @Failure 403 {object} errorResponse
+// @Failure 404 {object} errorResponse
+// @Router /projects/{project}/apps/{app} [delete]
 func (s *Server) DeleteApp(w http.ResponseWriter, r *http.Request) {
 	ns, projectName, ok := s.resolveProject(w, r)
 	if !ok {

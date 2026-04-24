@@ -41,6 +41,17 @@ func validPlatformRole(role string) bool {
 	return false
 }
 
+// @Summary List users
+// @Description Returns all platform users. Admin-only.
+// @Tags users
+// @Produce json
+// @Security BearerAuth
+// @Success 200 {array} userResponse
+// @Failure 401 {object} errorResponse
+// @Failure 403 {object} errorResponse
+// @Failure 500 {object} errorResponse
+// @Router /admin/users [get]
+//
 // ListUsers returns all platform users. Admin-only.
 func (s *Server) ListUsers(w http.ResponseWriter, r *http.Request) {
 	if !s.authorize(w, r, authz.Resource{Kind: "user"}, authz.ActionRead) {
@@ -64,6 +75,21 @@ func (s *Server) ListUsers(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// @Summary Create a user
+// @Description Creates a new platform user. Admin-only.
+// @Tags users
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param body body createUserRequest true "User details"
+// @Success 201 {object} userResponse
+// @Failure 400 {object} errorResponse
+// @Failure 401 {object} errorResponse
+// @Failure 403 {object} errorResponse
+// @Failure 500 {object} errorResponse
+// @Failure 501 {object} errorResponse
+// @Router /admin/users [post]
+//
 // CreateUser creates a new platform user. Admin-only.
 func (s *Server) CreateUser(w http.ResponseWriter, r *http.Request) {
 	if !s.authorize(w, r, authz.Resource{Kind: "user"}, authz.ActionCreate) {
@@ -102,6 +128,21 @@ func (s *Server) CreateUser(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// @Summary Update a user's role
+// @Description Changes a platform user's role. Admin-only.
+// @Tags users
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param email path string true "User email"
+// @Param body body updateUserRoleRequest true "New role"
+// @Success 200 {object} userResponse
+// @Failure 400 {object} errorResponse
+// @Failure 401 {object} errorResponse
+// @Failure 403 {object} errorResponse
+// @Failure 404 {object} errorResponse
+// @Router /admin/users/{email} [patch]
+//
 // UpdateUserRole changes a platform user's role. Admin-only.
 func (s *Server) UpdateUserRole(w http.ResponseWriter, r *http.Request) {
 	if !s.authorize(w, r, authz.Resource{Kind: "user"}, authz.ActionUpdate) {
@@ -148,6 +189,18 @@ func (s *Server) UpdateUserRole(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// @Summary Delete a user
+// @Description Removes a platform user. Admin-only.
+// @Tags users
+// @Security BearerAuth
+// @Param email path string true "User email"
+// @Success 204
+// @Failure 400 {object} errorResponse
+// @Failure 401 {object} errorResponse
+// @Failure 403 {object} errorResponse
+// @Failure 500 {object} errorResponse
+// @Router /admin/users/{email} [delete]
+//
 // DeleteUser removes a platform user. Admin-only.
 func (s *Server) DeleteUser(w http.ResponseWriter, r *http.Request) {
 	if !s.authorize(w, r, authz.Resource{Kind: "user"}, authz.ActionDelete) {

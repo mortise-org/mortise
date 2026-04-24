@@ -26,10 +26,21 @@ type addDomainRequest struct {
 
 // ListDomains returns the primary and custom domains for an app's environment.
 // Returns an empty payload (not 404) when the App has no override for this
-// env — every App auto-participates in every project env, and overrides only
+// env -- every App auto-participates in every project env, and overrides only
 // exist when the user has customized something.
 //
 // GET /api/projects/{project}/apps/{app}/domains?environment=production
+//
+// @Summary List domains for an app
+// @Description Return the primary and custom domains for an app's environment. Returns an empty payload when no override exists.
+// @Tags domains
+// @Produce json
+// @Security BearerAuth
+// @Param project path string true "Project name"
+// @Param app path string true "App name"
+// @Param environment query string false "Environment name"
+// @Success 200 {object} domainsResponse
+// @Router /projects/{project}/apps/{app}/domains [get]
 func (s *Server) ListDomains(w http.ResponseWriter, r *http.Request) {
 	projectName := chi.URLParam(r, "project")
 	if !s.authorize(w, r, authz.Resource{Kind: "app", Project: projectName}, authz.ActionRead) {
@@ -56,6 +67,21 @@ func (s *Server) ListDomains(w http.ResponseWriter, r *http.Request) {
 // the App's override entry for this env when it doesn't already exist.
 //
 // POST /api/projects/{project}/apps/{app}/domains?environment=production
+//
+// @Summary Add a custom domain
+// @Description Append a custom domain to an app's environment. Auto-creates the environment override entry if it does not exist.
+// @Tags domains
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param project path string true "Project name"
+// @Param app path string true "App name"
+// @Param environment query string false "Environment name"
+// @Param body body addDomainRequest true "Domain to add"
+// @Success 200 {object} domainsResponse
+// @Failure 400 {object} errorResponse
+// @Failure 409 {object} errorResponse
+// @Router /projects/{project}/apps/{app}/domains [post]
 func (s *Server) AddDomain(w http.ResponseWriter, r *http.Request) {
 	projectName := chi.URLParam(r, "project")
 	if !s.authorize(w, r, authz.Resource{Kind: "app", Project: projectName}, authz.ActionUpdate) {
@@ -100,6 +126,19 @@ func (s *Server) AddDomain(w http.ResponseWriter, r *http.Request) {
 // RemoveDomain removes a custom domain from an app's environment.
 //
 // DELETE /api/projects/{project}/apps/{app}/domains/{domain}?environment=production
+//
+// @Summary Remove a custom domain
+// @Description Remove a custom domain from an app's environment.
+// @Tags domains
+// @Produce json
+// @Security BearerAuth
+// @Param project path string true "Project name"
+// @Param app path string true "App name"
+// @Param domain path string true "Domain to remove"
+// @Param environment query string false "Environment name"
+// @Success 200 {object} domainsResponse
+// @Failure 404 {object} errorResponse
+// @Router /projects/{project}/apps/{app}/domains/{domain} [delete]
 func (s *Server) RemoveDomain(w http.ResponseWriter, r *http.Request) {
 	projectName := chi.URLParam(r, "project")
 	if !s.authorize(w, r, authz.Resource{Kind: "app", Project: projectName}, authz.ActionUpdate) {

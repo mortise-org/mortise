@@ -14,6 +14,16 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+// @title Mortise API
+// @version 0.1.0
+// @description Self-hosted Railway-style deploy platform for Kubernetes. Manages projects, apps, deployments, env vars, secrets, domains, and git providers.
+// @host localhost:8090
+// @BasePath /api
+// @securityDefinitions.apikey BearerAuth
+// @in header
+// @name Authorization
+// @description JWT bearer token from POST /api/auth/login
+
 package main
 
 import (

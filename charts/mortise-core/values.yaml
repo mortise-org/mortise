@@ -34,9 +34,5 @@ serviceAccount:
   create: true
   name: mortise-controller
 
-# GitHub OAuth App client ID for device flow (optional).
-# Only needed if you want to deploy from GitHub using the one-click device flow.
-# Not required for image deploys, or if you connect GitHub via personal access token instead.
-# To create one: https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/creating-an-oauth-app
 github:
-  clientID: ""
+  clientID: "Ov23lizLTd25E32VrWwl"

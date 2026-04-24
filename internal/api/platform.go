@@ -81,6 +81,15 @@ type platformResponse struct {
 // GetPlatform returns the current PlatformConfig.
 //
 // GET /api/platform
+//
+// @Summary Get platform configuration
+// @Description Returns the current PlatformConfig singleton
+// @Tags platform
+// @Produce json
+// @Security BearerAuth
+// @Success 200 {object} platformResponse
+// @Failure 403 {object} errorResponse
+// @Router /platform [get]
 func (s *Server) GetPlatform(w http.ResponseWriter, r *http.Request) {
 	if !s.authorize(w, r, authz.Resource{Kind: "platform", Name: "platform"}, authz.ActionRead) {
 		return
@@ -102,6 +111,19 @@ func (s *Server) GetPlatform(w http.ResponseWriter, r *http.Request) {
 // PatchPlatform creates or updates the singleton PlatformConfig. Admin-only.
 //
 // PATCH /api/platform
+//
+// @Summary Update platform configuration
+// @Description Creates or updates the singleton PlatformConfig. Admin-only.
+// @Tags platform
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param body body patchPlatformRequest true "Platform config fields to update"
+// @Success 200 {object} platformResponse
+// @Success 201 {object} platformResponse
+// @Failure 400 {object} errorResponse
+// @Failure 403 {object} errorResponse
+// @Router /platform [patch]
 func (s *Server) PatchPlatform(w http.ResponseWriter, r *http.Request) {
 	if !s.authorize(w, r, authz.Resource{Kind: "platform", Name: "platform"}, authz.ActionUpdate) {
 		return

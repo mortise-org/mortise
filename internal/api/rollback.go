@@ -24,6 +24,20 @@ type rollbackRequest struct {
 // It reads the deploy history for the given environment, patches the
 // Deployment back to the image at the specified history index, and returns
 // the DeployRecord that was rolled back to.
+//
+// @Summary Rollback an app to a previous deploy
+// @Description Roll back an app's environment to a previous image from its deploy history by index.
+// @Tags rollback
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param project path string true "Project name"
+// @Param app path string true "App name"
+// @Param body body rollbackRequest true "Rollback details"
+// @Success 200 {object} mortisev1alpha1.DeployRecord
+// @Failure 400 {object} errorResponse
+// @Failure 404 {object} errorResponse
+// @Router /projects/{project}/apps/{app}/rollback [post]
 func (s *Server) Rollback(w http.ResponseWriter, r *http.Request) {
 	ns, projectName, ok := s.resolveProject(w, r)
 	if !ok {
@@ -105,6 +119,20 @@ type promoteRequest struct {
 // It reads the current image digest from the source environment's status and
 // patches the target environment's Deployment with that image. A new
 // DeployRecord is appended to the target environment's deploy history.
+//
+// @Summary Promote an app between environments
+// @Description Copy the current image from one environment to another, patching the target Deployment and appending a deploy record.
+// @Tags rollback
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param project path string true "Project name"
+// @Param app path string true "App name"
+// @Param body body promoteRequest true "Promote details"
+// @Success 200 {object} map[string]string
+// @Failure 400 {object} errorResponse
+// @Failure 404 {object} errorResponse
+// @Router /projects/{project}/apps/{app}/promote [post]
 func (s *Server) Promote(w http.ResponseWriter, r *http.Request) {
 	ns, projectName, ok := s.resolveProject(w, r)
 	if !ok {

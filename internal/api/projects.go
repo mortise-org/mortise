@@ -78,6 +78,19 @@ func toProjectResponse(p *mortisev1alpha1.Project) projectResponse {
 	return resp
 }
 
+// @Summary Create a project
+// @Description Creates a new Project. Admin-only.
+// @Tags projects
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param body body createProjectRequest true "Project details"
+// @Success 201 {object} projectResponse
+// @Failure 400 {object} errorResponse
+// @Failure 401 {object} errorResponse
+// @Failure 403 {object} errorResponse
+// @Router /projects [post]
+//
 // CreateProject creates a new Project. Admin-only.
 func (s *Server) CreateProject(w http.ResponseWriter, r *http.Request) {
 	if !s.authorize(w, r, authz.Resource{Kind: "project"}, authz.ActionCreate) {
@@ -122,6 +135,16 @@ func (s *Server) CreateProject(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, toProjectResponse(project))
 }
 
+// @Summary List projects
+// @Description Returns projects the caller has access to. Admins see all; members see only their projects.
+// @Tags projects
+// @Produce json
+// @Security BearerAuth
+// @Success 200 {array} projectResponse
+// @Failure 401 {object} errorResponse
+// @Failure 403 {object} errorResponse
+// @Router /projects [get]
+//
 // ListProjects returns Projects the caller has access to. Admins and platform
 // viewers see all projects; regular members see only projects where they hold
 // a ProjectMember.
@@ -173,6 +196,18 @@ func (s *Server) ListProjects(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// @Summary Get a project
+// @Description Returns a single Project by name
+// @Tags projects
+// @Produce json
+// @Security BearerAuth
+// @Param project path string true "Project name"
+// @Success 200 {object} projectResponse
+// @Failure 401 {object} errorResponse
+// @Failure 403 {object} errorResponse
+// @Failure 404 {object} errorResponse
+// @Router /projects/{project} [get]
+//
 // GetProject returns a single Project.
 func (s *Server) GetProject(w http.ResponseWriter, r *http.Request) {
 	projectName := chi.URLParam(r, "project")
@@ -189,6 +224,18 @@ func (s *Server) GetProject(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, toProjectResponse(&project))
 }
 
+// @Summary Delete a project
+// @Description Deletes a Project. The controller tears down the backing namespace. Admin-only.
+// @Tags projects
+// @Produce json
+// @Security BearerAuth
+// @Param project path string true "Project name"
+// @Success 202 {object} map[string]string
+// @Failure 401 {object} errorResponse
+// @Failure 403 {object} errorResponse
+// @Failure 404 {object} errorResponse
+// @Router /projects/{project} [delete]
+//
 // DeleteProject deletes a Project. The controller's finalizer handles
 // tearing down the backing namespace, which cascades to every App inside.
 // Admin-only.

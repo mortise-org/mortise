@@ -16,6 +16,17 @@ import (
 // for the given git provider.
 //
 // GET /api/repos?provider=github
+//
+// @Summary List repositories
+// @Description Return repositories visible to the authenticated user for the given git provider.
+// @Tags repos
+// @Produce json
+// @Security BearerAuth
+// @Param provider query string true "Git provider name (e.g. github)"
+// @Success 200 {array} git.Repository
+// @Failure 400 {object} errorResponse
+// @Failure 502 {object} errorResponse
+// @Router /repos [get]
 func (s *Server) ListRepos(w http.ResponseWriter, r *http.Request) {
 	if !s.authorize(w, r, authz.Resource{Kind: "gitprovider"}, authz.ActionRead) {
 		return
@@ -38,6 +49,19 @@ func (s *Server) ListRepos(w http.ResponseWriter, r *http.Request) {
 // ListBranches returns the branches for a repository.
 //
 // GET /api/repos/{owner}/{repo}/branches?provider=github
+//
+// @Summary List branches for a repository
+// @Description Return branches for a repository from the given git provider.
+// @Tags repos
+// @Produce json
+// @Security BearerAuth
+// @Param owner path string true "Repository owner"
+// @Param repo path string true "Repository name"
+// @Param provider query string true "Git provider name (e.g. github)"
+// @Success 200 {array} git.Branch
+// @Failure 400 {object} errorResponse
+// @Failure 502 {object} errorResponse
+// @Router /repos/{owner}/{repo}/branches [get]
 func (s *Server) ListBranches(w http.ResponseWriter, r *http.Request) {
 	if !s.authorize(w, r, authz.Resource{Kind: "gitprovider"}, authz.ActionRead) {
 		return
@@ -64,6 +88,21 @@ func (s *Server) ListBranches(w http.ResponseWriter, r *http.Request) {
 // GetRepoTree returns the immediate children of a path in a repository.
 //
 // GET /api/repos/{owner}/{repo}/tree?provider=github&branch=Y&path=Z
+//
+// @Summary Get repository file tree
+// @Description Return the immediate children of a path in a repository tree.
+// @Tags repos
+// @Produce json
+// @Security BearerAuth
+// @Param owner path string true "Repository owner"
+// @Param repo path string true "Repository name"
+// @Param provider query string true "Git provider name (e.g. github)"
+// @Param branch query string false "Branch name (defaults to main)"
+// @Param path query string false "Directory path within the repo"
+// @Success 200 {array} git.TreeEntry
+// @Failure 400 {object} errorResponse
+// @Failure 502 {object} errorResponse
+// @Router /repos/{owner}/{repo}/tree [get]
 func (s *Server) GetRepoTree(w http.ResponseWriter, r *http.Request) {
 	if !s.authorize(w, r, authz.Resource{Kind: "gitprovider"}, authz.ActionRead) {
 		return

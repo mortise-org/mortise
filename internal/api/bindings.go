@@ -23,6 +23,18 @@ type bindingEdge struct {
 // environment. Apps with `enabled: false` for the env are skipped.
 //
 // GET /api/projects/{project}/bindings?environment=staging
+//
+// @Summary List bindings for a project environment
+// @Description Returns all binding edges (from-app to to-app) for the specified environment
+// @Tags bindings
+// @Produce json
+// @Security BearerAuth
+// @Param project path string true "Project name"
+// @Param environment query string true "Environment name"
+// @Success 200 {array} bindingEdge
+// @Failure 400 {object} errorResponse
+// @Failure 403 {object} errorResponse
+// @Router /projects/{project}/bindings [get]
 func (s *Server) ListBindings(w http.ResponseWriter, r *http.Request) {
 	projectName := chi.URLParam(r, "project")
 	if !s.authorize(w, r, authz.Resource{Kind: "app", Project: projectName}, authz.ActionRead) {

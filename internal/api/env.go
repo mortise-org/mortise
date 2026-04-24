@@ -35,6 +35,19 @@ type patchEnvRequest struct {
 
 // GetEnv returns env vars for a specific environment on an app.
 // Reads from the {app}-env Secret in the env namespace.
+//
+// @Summary Get env vars for an app
+// @Description Returns all environment variables for a specific environment on an app
+// @Tags env
+// @Produce json
+// @Security BearerAuth
+// @Param project path string true "Project name"
+// @Param app path string true "App name"
+// @Param environment query string false "Environment name"
+// @Success 200 {array} envVarResponse
+// @Failure 400 {object} errorResponse
+// @Failure 404 {object} errorResponse
+// @Router /projects/{project}/apps/{app}/env [get]
 func (s *Server) GetEnv(w http.ResponseWriter, r *http.Request) {
 	projectName := chi.URLParam(r, "project")
 	if !s.authorize(w, r, authz.Resource{Kind: "app", Project: projectName}, authz.ActionRead) {
@@ -66,6 +79,21 @@ func (s *Server) GetEnv(w http.ResponseWriter, r *http.Request) {
 
 // PutEnv replaces all env vars for a specific environment on an app.
 // Writes to the {app}-env Secret in the env namespace.
+//
+// @Summary Replace env vars for an app
+// @Description Replaces all user-set environment variables for a specific environment on an app
+// @Tags env
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param project path string true "Project name"
+// @Param app path string true "App name"
+// @Param environment query string false "Environment name"
+// @Param body body []envVarResponse true "Environment variables"
+// @Success 200 {object} map[string]string
+// @Failure 400 {object} errorResponse
+// @Failure 404 {object} errorResponse
+// @Router /projects/{project}/apps/{app}/env [put]
 func (s *Server) PutEnv(w http.ResponseWriter, r *http.Request) {
 	projectName := chi.URLParam(r, "project")
 	if !s.authorize(w, r, authz.Resource{Kind: "app", Project: projectName}, authz.ActionUpdate) {
@@ -135,6 +163,21 @@ func (s *Server) PutEnv(w http.ResponseWriter, r *http.Request) {
 
 // PatchEnv does a partial update of env vars for a specific environment.
 // Reads existing vars from the Secret, applies changes, writes back.
+//
+// @Summary Patch env vars for an app
+// @Description Partially updates environment variables by setting and/or unsetting specific keys
+// @Tags env
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param project path string true "Project name"
+// @Param app path string true "App name"
+// @Param environment query string false "Environment name"
+// @Param body body patchEnvRequest true "Set and unset operations"
+// @Success 200 {object} map[string]string
+// @Failure 400 {object} errorResponse
+// @Failure 404 {object} errorResponse
+// @Router /projects/{project}/apps/{app}/env [patch]
 func (s *Server) PatchEnv(w http.ResponseWriter, r *http.Request) {
 	projectName := chi.URLParam(r, "project")
 	if !s.authorize(w, r, authz.Resource{Kind: "app", Project: projectName}, authz.ActionUpdate) {
@@ -219,6 +262,21 @@ func (s *Server) PatchEnv(w http.ResponseWriter, r *http.Request) {
 }
 
 // ImportEnv parses a .env file body and merges into the environment's env vars.
+//
+// @Summary Import env vars from a .env file
+// @Description Parses a .env file body (KEY=value lines) and merges into the environment's env vars
+// @Tags env
+// @Accept text/plain
+// @Produce json
+// @Security BearerAuth
+// @Param project path string true "Project name"
+// @Param app path string true "App name"
+// @Param environment query string false "Environment name"
+// @Param body body string true ".env file content"
+// @Success 200 {object} map[string]string
+// @Failure 400 {object} errorResponse
+// @Failure 404 {object} errorResponse
+// @Router /projects/{project}/apps/{app}/env/import [post]
 func (s *Server) ImportEnv(w http.ResponseWriter, r *http.Request) {
 	projectName := chi.URLParam(r, "project")
 	if !s.authorize(w, r, authz.Resource{Kind: "app", Project: projectName}, authz.ActionUpdate) {
@@ -277,6 +335,16 @@ func (s *Server) ImportEnv(w http.ResponseWriter, r *http.Request) {
 // GetSharedVars returns shared env vars for a project.
 // Reads from the shared-vars Secret in the control namespace (source of truth).
 // The controller materializes these into shared-env in each env namespace.
+//
+// @Summary Get shared env vars for a project
+// @Description Returns all shared environment variables for a project
+// @Tags env
+// @Produce json
+// @Security BearerAuth
+// @Param project path string true "Project name"
+// @Success 200 {array} envVarResponse
+// @Failure 404 {object} errorResponse
+// @Router /projects/{project}/shared-vars [get]
 func (s *Server) GetSharedVars(w http.ResponseWriter, r *http.Request) {
 	projectName := chi.URLParam(r, "project")
 	if !s.authorize(w, r, authz.Resource{Kind: "app", Project: projectName}, authz.ActionRead) {
@@ -306,6 +374,19 @@ func (s *Server) GetSharedVars(w http.ResponseWriter, r *http.Request) {
 // Writes to the shared-vars Secret in the control namespace.
 // The controller materializes these into shared-env in each env namespace
 // on the next reconcile of any app in the project.
+//
+// @Summary Replace shared env vars for a project
+// @Description Replaces all shared environment variables for a project
+// @Tags env
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param project path string true "Project name"
+// @Param body body []envVarResponse true "Shared environment variables"
+// @Success 200 {object} map[string]string
+// @Failure 400 {object} errorResponse
+// @Failure 404 {object} errorResponse
+// @Router /projects/{project}/shared-vars [put]
 func (s *Server) PutSharedVars(w http.ResponseWriter, r *http.Request) {
 	projectName := chi.URLParam(r, "project")
 	if !s.authorize(w, r, authz.Resource{Kind: "app", Project: projectName}, authz.ActionUpdate) {

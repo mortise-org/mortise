@@ -57,6 +57,17 @@ type patchProjectEnvRequest struct {
 // aggregated health dot for each one.
 //
 // GET /api/projects/{project}/environments
+//
+// @Summary List project environments
+// @Description Returns the project's ordered environment list with aggregated health status
+// @Tags environments
+// @Produce json
+// @Security BearerAuth
+// @Param project path string true "Project name"
+// @Success 200 {array} projectEnvResponse
+// @Failure 403 {object} errorResponse
+// @Failure 404 {object} errorResponse
+// @Router /projects/{project}/environments [get]
 func (s *Server) ListProjectEnvironments(w http.ResponseWriter, r *http.Request) {
 	projectName := chi.URLParam(r, "project")
 	if !s.authorize(w, r, authz.Resource{Kind: "project", Project: projectName}, authz.ActionRead) {
@@ -92,6 +103,21 @@ func (s *Server) ListProjectEnvironments(w http.ResponseWriter, r *http.Request)
 // CreateProjectEnvironment appends a new env to spec.environments. Admin-only.
 //
 // POST /api/projects/{project}/environments  { "name": "staging" }
+//
+// @Summary Create a project environment
+// @Description Appends a new environment to the project. Admin-only.
+// @Tags environments
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param project path string true "Project name"
+// @Param body body createProjectEnvRequest true "Environment name and display order"
+// @Success 201 {object} projectEnvResponse
+// @Failure 400 {object} errorResponse
+// @Failure 403 {object} errorResponse
+// @Failure 404 {object} errorResponse
+// @Failure 409 {object} errorResponse
+// @Router /projects/{project}/environments [post]
 func (s *Server) CreateProjectEnvironment(w http.ResponseWriter, r *http.Request) {
 	projectName := chi.URLParam(r, "project")
 	if !s.authorize(w, r, authz.Resource{Kind: "project", Project: projectName}, authz.ActionCreate) {
@@ -142,6 +168,22 @@ func (s *Server) CreateProjectEnvironment(w http.ResponseWriter, r *http.Request
 // satisfied after the update lands.
 //
 // PATCH /api/projects/{project}/environments/{name}  { "name": "stage", "displayOrder": 2 }
+//
+// @Summary Update a project environment
+// @Description Edits the display order and/or renames an environment, cascading to App overrides
+// @Tags environments
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param project path string true "Project name"
+// @Param name path string true "Environment name"
+// @Param body body patchProjectEnvRequest true "Fields to update"
+// @Success 200 {object} projectEnvResponse
+// @Failure 400 {object} errorResponse
+// @Failure 403 {object} errorResponse
+// @Failure 404 {object} errorResponse
+// @Failure 409 {object} errorResponse
+// @Router /projects/{project}/environments/{name} [patch]
 func (s *Server) UpdateProjectEnvironment(w http.ResponseWriter, r *http.Request) {
 	projectName := chi.URLParam(r, "project")
 	if !s.authorize(w, r, authz.Resource{Kind: "project", Project: projectName}, authz.ActionUpdate) {
@@ -210,6 +252,20 @@ func (s *Server) UpdateProjectEnvironment(w http.ResponseWriter, r *http.Request
 // the env; the API surfaces that 403 verbatim.
 //
 // DELETE /api/projects/{project}/environments/{name}
+//
+// @Summary Delete a project environment
+// @Description Removes an environment from the project. Fails if apps still have overrides for it.
+// @Tags environments
+// @Produce json
+// @Security BearerAuth
+// @Param project path string true "Project name"
+// @Param name path string true "Environment name"
+// @Success 200 {object} map[string]string "Deletion confirmation"
+// @Failure 400 {object} errorResponse
+// @Failure 403 {object} errorResponse
+// @Failure 404 {object} errorResponse
+// @Failure 409 {object} errorResponse
+// @Router /projects/{project}/environments/{name} [delete]
 func (s *Server) DeleteProjectEnvironment(w http.ResponseWriter, r *http.Request) {
 	projectName := chi.URLParam(r, "project")
 	if !s.authorize(w, r, authz.Resource{Kind: "project", Project: projectName}, authz.ActionDelete) {

@@ -31,6 +31,22 @@ type execResponse struct {
 	Stderr string `json:"stderr"`
 }
 
+// @Summary Execute a command in an app pod
+// @Description Runs a command in the first running pod of the specified app and returns stdout/stderr
+// @Tags exec
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param project path string true "Project name"
+// @Param app path string true "App name"
+// @Param env query string false "Environment name (default: production)"
+// @Param body body execRequest true "Command to execute"
+// @Success 200 {object} execResponse
+// @Failure 400 {object} errorResponse
+// @Failure 403 {object} errorResponse
+// @Failure 404 {object} errorResponse
+// @Failure 500 {object} errorResponse
+// @Router /projects/{project}/apps/{app}/exec [post]
 func (s *Server) ExecInApp(w http.ResponseWriter, r *http.Request) {
 	_, projectName, ok := s.resolveProject(w, r)
 	if !ok {

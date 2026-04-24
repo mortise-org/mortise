@@ -54,6 +54,18 @@ func parseLogLine(raw string) (ts, content string) {
 // requests so operator restarts don't drop the most recent log.
 //
 // GET /api/projects/{project}/apps/{app}/build-logs
+//
+// @Summary Get build logs for an app
+// @Description Returns build log lines from the in-memory tracker (if building) or from the persisted ConfigMap
+// @Tags logs
+// @Produce json
+// @Security BearerAuth
+// @Param project path string true "Project name"
+// @Param app path string true "App name"
+// @Success 200 {object} map[string]any "Build log lines with metadata"
+// @Failure 403 {object} errorResponse
+// @Failure 404 {object} errorResponse
+// @Router /projects/{project}/apps/{app}/build-logs [get]
 func (s *Server) handleBuildLogs(w http.ResponseWriter, r *http.Request) {
 	projectName := chi.URLParam(r, "project")
 	if !s.authorize(w, r, authz.Resource{Kind: "app", Project: projectName}, authz.ActionRead) {
@@ -106,6 +118,25 @@ func (s *Server) handleBuildLogs(w http.ResponseWriter, r *http.Request) {
 // single response; each line is tagged with its pod name. New pods created
 // during the stream (e.g. rollouts) are picked up via a pod watcher and their
 // logs are joined into the stream.
+//
+// @Summary Stream app logs
+// @Description Streams pod logs via SSE, aggregating all pods for the app environment
+// @Tags logs
+// @Produce text/event-stream
+// @Security BearerAuth
+// @Param project path string true "Project name"
+// @Param app path string true "App name"
+// @Param env query string false "Environment name (default: production)"
+// @Param follow query boolean false "Follow log stream"
+// @Param previous query boolean false "Return logs from previous container instance"
+// @Param pod query string false "Pin to a specific pod name"
+// @Param tail query integer false "Number of tail lines (default: 100)"
+// @Param sinceSeconds query integer false "Seconds ago to start from"
+// @Param sinceTime query string false "RFC3339 timestamp to start from"
+// @Success 200 {string} string "SSE stream of logLine objects"
+// @Failure 403 {object} errorResponse
+// @Failure 404 {object} errorResponse
+// @Router /projects/{project}/apps/{app}/logs [get]
 func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 	projectName := chi.URLParam(r, "project")
 	if !s.authorize(w, r, authz.Resource{Kind: "app", Project: projectName}, authz.ActionRead) {

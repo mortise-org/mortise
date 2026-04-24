@@ -44,6 +44,20 @@ type createProjectTokenRequest struct {
 
 // CreateToken generates a deploy token, stores its hash as a k8s Secret, and
 // returns the raw token value once.
+//
+// @Summary Create a deploy token for an app
+// @Description Generates a deploy token scoped to an app and environment, stores its hash, and returns the raw token once
+// @Tags tokens
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param project path string true "Project name"
+// @Param app path string true "App name"
+// @Param body body createTokenRequest true "Token name and environment"
+// @Success 201 {object} tokenResponse
+// @Failure 400 {object} errorResponse
+// @Failure 409 {object} errorResponse
+// @Router /projects/{project}/apps/{app}/tokens [post]
 func (s *Server) CreateToken(w http.ResponseWriter, r *http.Request) {
 	ns, projectName, ok := s.resolveProject(w, r)
 	if !ok {
@@ -112,6 +126,17 @@ func (s *Server) CreateToken(w http.ResponseWriter, r *http.Request) {
 }
 
 // ListTokens returns metadata for all deploy tokens scoped to an app.
+//
+// @Summary List deploy tokens for an app
+// @Description Returns metadata (name, environment, creation time) for all deploy tokens scoped to an app
+// @Tags tokens
+// @Produce json
+// @Security BearerAuth
+// @Param project path string true "Project name"
+// @Param app path string true "App name"
+// @Success 200 {array} tokenResponse
+// @Failure 404 {object} errorResponse
+// @Router /projects/{project}/apps/{app}/tokens [get]
 func (s *Server) ListTokens(w http.ResponseWriter, r *http.Request) {
 	ns, projectName, ok := s.resolveProject(w, r)
 	if !ok {
@@ -151,6 +176,18 @@ func (s *Server) ListTokens(w http.ResponseWriter, r *http.Request) {
 }
 
 // DeleteToken revokes a deploy token by deleting its backing Secret.
+//
+// @Summary Delete a deploy token
+// @Description Revokes a deploy token by deleting its backing Secret
+// @Tags tokens
+// @Produce json
+// @Security BearerAuth
+// @Param project path string true "Project name"
+// @Param app path string true "App name"
+// @Param tokenName path string true "Token name"
+// @Success 200 {object} map[string]string
+// @Failure 404 {object} errorResponse
+// @Router /projects/{project}/apps/{app}/tokens/{tokenName} [delete]
 func (s *Server) DeleteToken(w http.ResponseWriter, r *http.Request) {
 	ns, projectName, ok := s.resolveProject(w, r)
 	if !ok {
@@ -277,6 +314,18 @@ func (s *Server) validateProjectDeployToken(r *http.Request, ns, projectName str
 
 // CreateProjectToken generates a project-scoped deploy token that grants
 // deploy access to any app in the project.
+//
+// @Summary Create a project-scoped deploy token
+// @Description Generates a deploy token scoped to an entire project, granting deploy access to any app
+// @Tags tokens
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param project path string true "Project name"
+// @Param body body createProjectTokenRequest true "Token description"
+// @Success 201 {object} tokenResponse
+// @Failure 400 {object} errorResponse
+// @Router /projects/{project}/tokens [post]
 func (s *Server) CreateProjectToken(w http.ResponseWriter, r *http.Request) {
 	ns, projectName, ok := s.resolveProject(w, r)
 	if !ok {
@@ -343,6 +392,16 @@ func (s *Server) CreateProjectToken(w http.ResponseWriter, r *http.Request) {
 }
 
 // ListProjectTokens returns metadata for all project-scoped deploy tokens.
+//
+// @Summary List project-scoped deploy tokens
+// @Description Returns metadata for all project-scoped deploy tokens
+// @Tags tokens
+// @Produce json
+// @Security BearerAuth
+// @Param project path string true "Project name"
+// @Success 200 {array} tokenResponse
+// @Failure 404 {object} errorResponse
+// @Router /projects/{project}/tokens [get]
 func (s *Server) ListProjectTokens(w http.ResponseWriter, r *http.Request) {
 	ns, projectName, ok := s.resolveProject(w, r)
 	if !ok {
@@ -388,6 +447,17 @@ func (s *Server) ListProjectTokens(w http.ResponseWriter, r *http.Request) {
 
 // DeleteProjectToken revokes a project-scoped deploy token by deleting its
 // backing Secret.
+//
+// @Summary Delete a project-scoped deploy token
+// @Description Revokes a project-scoped deploy token by deleting its backing Secret
+// @Tags tokens
+// @Produce json
+// @Security BearerAuth
+// @Param project path string true "Project name"
+// @Param tokenName path string true "Token name"
+// @Success 204
+// @Failure 404 {object} errorResponse
+// @Router /projects/{project}/tokens/{tokenName} [delete]
 func (s *Server) DeleteProjectToken(w http.ResponseWriter, r *http.Request) {
 	ns, projectName, ok := s.resolveProject(w, r)
 	if !ok {

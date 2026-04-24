@@ -138,6 +138,9 @@ func (s *Server) authorize(w http.ResponseWriter, r *http.Request, resource auth
 func (s *Server) Handler() http.Handler {
 	r := chi.NewRouter()
 
+	// OpenAPI spec (unauthenticated).
+	r.Get("/api/openapi.yaml", s.serveOpenAPISpec)
+
 	// Unauthenticated auth endpoints.
 	r.Get("/api/auth/status", s.Status)
 	r.Post("/api/auth/setup", s.Setup)

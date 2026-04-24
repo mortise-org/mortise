@@ -40,6 +40,7 @@ Quickstart:
 	cmd.AddCommand(newGitProviderCmd())
 	cmd.AddCommand(newPlatformCmd())
 	cmd.AddCommand(newRepoCmd())
+	cmd.AddCommand(newProxyCmd())
 
 	// Lifecycle commands (cluster management)
 	cmd.AddCommand(newInstallCmd())

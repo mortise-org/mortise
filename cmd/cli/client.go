@@ -508,6 +508,30 @@ func (c *Client) ListBranches(owner, repo, provider string) ([]Branch, error) {
 	return resp, nil
 }
 
+// ---------- App Proxy ----------
+
+type ConnectResponse struct {
+	Port int    `json:"port"`
+	URL  string `json:"url"`
+}
+
+func (c *Client) Connect(project, app, env string) (*ConnectResponse, error) {
+	var resp ConnectResponse
+	u := c.appBase(project, app) + "/connect"
+	if env != "" {
+		u += "?environment=" + url.QueryEscape(env)
+	}
+	if err := c.doJSON(http.MethodPost, u, nil, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+func (c *Client) Disconnect(project, app string) error {
+	u := c.appBase(project, app) + "/disconnect"
+	return c.doJSON(http.MethodPost, u, nil, nil)
+}
+
 // ---------- App Update ----------
 
 func (c *Client) UpdateApp(project, name string, spec any) (*mortisev1alpha1.App, error) {

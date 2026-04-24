@@ -48,6 +48,20 @@ func envFromQuery(r *http.Request) string {
 	return "production"
 }
 
+// @Summary Create a secret for an app
+// @Description Creates a new Kubernetes Secret scoped to an app and environment
+// @Tags secrets
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param project path string true "Project name"
+// @Param app path string true "App name"
+// @Param environment query string false "Environment name (defaults to production)"
+// @Param body body createSecretRequest true "Secret name and data"
+// @Success 201 {object} secretResponse
+// @Failure 400 {object} errorResponse
+// @Failure 409 {object} errorResponse
+// @Router /projects/{project}/apps/{app}/secrets [post]
 func (s *Server) CreateSecret(w http.ResponseWriter, r *http.Request) {
 	_, projectName, ok := s.resolveProject(w, r)
 	if !ok {
@@ -92,6 +106,17 @@ func (s *Server) CreateSecret(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, toSecretResponse(secret))
 }
 
+// @Summary List secrets for an app
+// @Description Returns metadata (name and keys, no values) for all Mortise-managed secrets scoped to an app
+// @Tags secrets
+// @Produce json
+// @Security BearerAuth
+// @Param project path string true "Project name"
+// @Param app path string true "App name"
+// @Param environment query string false "Environment name (defaults to production)"
+// @Success 200 {array} secretResponse
+// @Failure 404 {object} errorResponse
+// @Router /projects/{project}/apps/{app}/secrets [get]
 func (s *Server) ListSecrets(w http.ResponseWriter, r *http.Request) {
 	_, projectName, ok := s.resolveProject(w, r)
 	if !ok {
@@ -123,6 +148,19 @@ func (s *Server) ListSecrets(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// @Summary Delete a secret
+// @Description Deletes a Mortise-managed secret by name for a given app and environment
+// @Tags secrets
+// @Produce json
+// @Security BearerAuth
+// @Param project path string true "Project name"
+// @Param app path string true "App name"
+// @Param secretName path string true "Secret name"
+// @Param environment query string false "Environment name (defaults to production)"
+// @Success 200 {object} map[string]string
+// @Failure 403 {object} errorResponse
+// @Failure 404 {object} errorResponse
+// @Router /projects/{project}/apps/{app}/secrets/{secretName} [delete]
 func (s *Server) DeleteSecret(w http.ResponseWriter, r *http.Request) {
 	_, projectName, ok := s.resolveProject(w, r)
 	if !ok {

@@ -77,9 +77,21 @@ func tokenEndpoint(host string) string {
 }
 
 // RequestCode initiates the device flow by requesting a device code from the
-// git forge. Requires JWT auth — the user must be logged in.
+// git forge. Requires JWT auth -- the user must be logged in.
 //
 // POST /api/auth/git/{provider}/device
+//
+// @Summary Initiate device flow
+// @Description Requests a device code from the git forge to start OAuth device authorization
+// @Tags device-flow
+// @Produce json
+// @Security BearerAuth
+// @Param provider path string true "Git provider name"
+// @Success 200 {object} deviceCodeResponse
+// @Failure 404 {object} errorResponse
+// @Failure 502 {string} string "Failed to contact git provider"
+// @Failure 503 {object} errorResponse
+// @Router /auth/git/{provider}/device [post]
 func (d *DeviceFlowHandler) RequestCode(w http.ResponseWriter, r *http.Request) {
 	log := logf.FromContext(r.Context())
 	providerName := chi.URLParam(r, "provider")
@@ -140,9 +152,24 @@ func (d *DeviceFlowHandler) RequestCode(w http.ResponseWriter, r *http.Request) 
 
 // Poll checks whether the user has completed the device flow authorization.
 // On success, stores the token keyed to the authenticated user and provider.
-// Requires JWT auth — user identity comes from the JWT, not an in-memory map.
+// Requires JWT auth -- user identity comes from the JWT, not an in-memory map.
 //
 // POST /api/auth/git/{provider}/device/poll
+//
+// @Summary Poll device flow status
+// @Description Checks whether the user has completed device flow authorization and stores the token on success
+// @Tags device-flow
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param provider path string true "Git provider name"
+// @Param body body devicePollRequest true "Device code to poll"
+// @Success 200 {object} devicePollResponse
+// @Failure 400 {object} errorResponse
+// @Failure 401 {object} errorResponse
+// @Failure 404 {object} errorResponse
+// @Failure 502 {string} string "Failed to contact git provider"
+// @Router /auth/git/{provider}/device/poll [post]
 func (d *DeviceFlowHandler) Poll(w http.ResponseWriter, r *http.Request) {
 	log := logf.FromContext(r.Context())
 	providerName := chi.URLParam(r, "provider")
@@ -246,6 +273,16 @@ func (d *DeviceFlowHandler) Poll(w http.ResponseWriter, r *http.Request) {
 // given git provider.
 //
 // GET /api/auth/git/{provider}/status
+//
+// @Summary Check git token status
+// @Description Returns whether the calling user has a stored token for the given git provider
+// @Tags device-flow
+// @Produce json
+// @Security BearerAuth
+// @Param provider path string true "Git provider name"
+// @Success 200 {object} map[string]bool "connected status"
+// @Failure 401 {object} errorResponse
+// @Router /auth/git/{provider}/status [get]
 func (d *DeviceFlowHandler) GitTokenStatus(w http.ResponseWriter, r *http.Request) {
 	providerName := chi.URLParam(r, "provider")
 
@@ -276,6 +313,21 @@ type storePATRequest struct {
 // authenticated user. Creates the GitProvider CRD if it doesn't exist yet.
 //
 // POST /api/auth/git/{provider}/token
+//
+// @Summary Store a personal access token
+// @Description Stores a PAT for the given provider, keyed to the authenticated user
+// @Tags device-flow
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param provider path string true "Git provider name"
+// @Param body body storePATRequest true "Token to store"
+// @Success 200 {object} map[string]bool "ok status"
+// @Failure 400 {object} errorResponse
+// @Failure 401 {object} errorResponse
+// @Failure 404 {object} errorResponse
+// @Failure 500 {object} errorResponse
+// @Router /auth/git/{provider}/token [post]
 func (d *DeviceFlowHandler) StorePAT(w http.ResponseWriter, r *http.Request) {
 	providerName := chi.URLParam(r, "provider")
 

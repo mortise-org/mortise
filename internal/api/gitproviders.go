@@ -36,9 +36,18 @@ type createGitProviderRequest struct {
 }
 
 // ListGitProviders returns all GitProvider CRDs.
-// Admin-only — git providers are platform-scoped.
+// Admin-only -- git providers are platform-scoped.
 //
 // GET /api/gitproviders
+//
+// @Summary List git providers
+// @Description Returns all GitProvider CRDs. Admin-only.
+// @Tags gitproviders
+// @Produce json
+// @Security BearerAuth
+// @Success 200 {array} gitProviderSummary
+// @Failure 403 {object} errorResponse
+// @Router /gitproviders [get]
 func (s *Server) ListGitProviders(w http.ResponseWriter, r *http.Request) {
 	if !s.authorize(w, r, authz.Resource{Kind: "gitprovider"}, authz.ActionRead) {
 		return
@@ -64,9 +73,22 @@ func (s *Server) ListGitProviders(w http.ResponseWriter, r *http.Request) {
 }
 
 // CreateGitProvider creates a new GitProvider CRD with an auto-generated
-// webhook secret. Admin-only — git providers are platform-scoped.
+// webhook secret. Admin-only -- git providers are platform-scoped.
 //
 // POST /api/gitproviders
+//
+// @Summary Create a git provider
+// @Description Creates a new GitProvider CRD with an auto-generated webhook secret. Admin-only.
+// @Tags gitproviders
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param body body createGitProviderRequest true "Git provider details"
+// @Success 201 {object} gitProviderSummary
+// @Failure 400 {object} errorResponse
+// @Failure 403 {object} errorResponse
+// @Failure 409 {object} errorResponse
+// @Router /gitproviders [post]
 func (s *Server) CreateGitProvider(w http.ResponseWriter, r *http.Request) {
 	if !s.authorize(w, r, authz.Resource{Kind: "gitprovider"}, authz.ActionCreate) {
 		return
@@ -156,6 +178,16 @@ func (s *Server) CreateGitProvider(w http.ResponseWriter, r *http.Request) {
 // Admin-only.
 //
 // DELETE /api/gitproviders/{name}
+//
+// @Summary Delete a git provider
+// @Description Deletes a GitProvider CRD and its managed webhook secret. Admin-only.
+// @Tags gitproviders
+// @Security BearerAuth
+// @Param name path string true "Git provider name"
+// @Success 204 "No content"
+// @Failure 403 {object} errorResponse
+// @Failure 404 {object} errorResponse
+// @Router /gitproviders/{name} [delete]
 func (s *Server) DeleteGitProvider(w http.ResponseWriter, r *http.Request) {
 	if !s.authorize(w, r, authz.Resource{Kind: "gitprovider"}, authz.ActionDelete) {
 		return
@@ -193,6 +225,17 @@ func (s *Server) DeleteGitProvider(w http.ResponseWriter, r *http.Request) {
 // Admin-only.
 //
 // GET /api/gitproviders/{name}/webhook-secret
+//
+// @Summary Get webhook secret for a git provider
+// @Description Returns the webhook secret value so admins can configure it in their forge. Admin-only.
+// @Tags gitproviders
+// @Produce json
+// @Security BearerAuth
+// @Param name path string true "Git provider name"
+// @Success 200 {object} map[string]string "webhookSecret value"
+// @Failure 403 {object} errorResponse
+// @Failure 404 {object} errorResponse
+// @Router /gitproviders/{name}/webhook-secret [get]
 func (s *Server) GetWebhookSecret(w http.ResponseWriter, r *http.Request) {
 	if !s.authorize(w, r, authz.Resource{Kind: "gitprovider"}, authz.ActionUpdate) {
 		return

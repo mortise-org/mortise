@@ -42,6 +42,19 @@ type adapterMetricsResponse struct {
 // Otherwise it falls back to direct PodMetrics API reads.
 //
 // GET /api/projects/{project}/apps/{app}/metrics/current?env=production
+//
+// @Summary Get current metrics for an app
+// @Description Returns real-time CPU and memory metrics per pod, from the adapter or PodMetrics API
+// @Tags metrics
+// @Produce json
+// @Security BearerAuth
+// @Param project path string true "Project name"
+// @Param app path string true "App name"
+// @Param env query string false "Environment name (default: production)"
+// @Success 200 {object} map[string]any "Metrics availability and per-pod data"
+// @Failure 403 {object} errorResponse
+// @Failure 404 {object} errorResponse
+// @Router /projects/{project}/apps/{app}/metrics/current [get]
 func (s *Server) handleMetricsCurrent(w http.ResponseWriter, r *http.Request) {
 	projectName := chi.URLParam(r, "project")
 	if !s.authorize(w, r, authz.Resource{Kind: "app", Project: projectName}, authz.ActionRead) {
@@ -169,6 +182,23 @@ func (s *Server) fetchAdapterMetrics(ctx context.Context, adapterURL, token stri
 // handleMetricsHistory proxies to the configured metrics adapter.
 //
 // GET /api/projects/{project}/apps/{app}/metrics?env=production&start=...&end=...&step=60
+//
+// @Summary Get metrics history for an app
+// @Description Proxies to the configured metrics adapter to return time-series CPU and memory data
+// @Tags metrics
+// @Produce json
+// @Security BearerAuth
+// @Param project path string true "Project name"
+// @Param app path string true "App name"
+// @Param env query string false "Environment name (default: production)"
+// @Param start query string true "Start timestamp (unix seconds)"
+// @Param end query string true "End timestamp (unix seconds)"
+// @Param step query string false "Step interval in seconds (default: 60)"
+// @Success 200 {object} adapterMetricsResponse
+// @Failure 400 {object} errorResponse
+// @Failure 403 {object} errorResponse
+// @Failure 404 {object} errorResponse
+// @Router /projects/{project}/apps/{app}/metrics [get]
 func (s *Server) handleMetricsHistory(w http.ResponseWriter, r *http.Request) {
 	projectName := chi.URLParam(r, "project")
 	if !s.authorize(w, r, authz.Resource{Kind: "app", Project: projectName}, authz.ActionRead) {
@@ -225,6 +255,25 @@ func (s *Server) handleMetricsHistory(w http.ResponseWriter, r *http.Request) {
 // handleLogHistory proxies to the configured logs adapter.
 //
 // GET /api/projects/{project}/apps/{app}/logs/history?env=production&start=...&end=...&limit=500&filter=error&before=...
+//
+// @Summary Get log history for an app
+// @Description Proxies to the configured logs adapter to return historical log entries
+// @Tags logs
+// @Produce json
+// @Security BearerAuth
+// @Param project path string true "Project name"
+// @Param app path string true "App name"
+// @Param env query string false "Environment name (default: production)"
+// @Param start query string true "Start timestamp"
+// @Param end query string true "End timestamp"
+// @Param limit query integer false "Max number of log lines (default: 500, max: 2000)"
+// @Param filter query string false "Filter string to match log lines"
+// @Param before query string false "Cursor for pagination"
+// @Success 200 {object} map[string]any "Log entries or availability status"
+// @Failure 400 {object} errorResponse
+// @Failure 403 {object} errorResponse
+// @Failure 404 {object} errorResponse
+// @Router /projects/{project}/apps/{app}/logs/history [get]
 func (s *Server) handleLogHistory(w http.ResponseWriter, r *http.Request) {
 	projectName := chi.URLParam(r, "project")
 	if !s.authorize(w, r, authz.Resource{Kind: "app", Project: projectName}, authz.ActionRead) {

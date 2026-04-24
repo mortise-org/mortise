@@ -25,6 +25,19 @@ const (
 // ListActivity returns recent project activity, newest first.
 //
 // GET /api/projects/{project}/activity?limit=100
+//
+// @Summary List project activity
+// @Description Returns recent activity events for a project, newest first
+// @Tags activity
+// @Produce json
+// @Security BearerAuth
+// @Param project path string true "Project name"
+// @Param limit query integer false "Max number of events (default: 100)"
+// @Success 200 {array} activity.Event
+// @Failure 400 {object} errorResponse
+// @Failure 403 {object} errorResponse
+// @Failure 404 {object} errorResponse
+// @Router /projects/{project}/activity [get]
 func (s *Server) ListActivity(w http.ResponseWriter, r *http.Request) {
 	if !s.authorize(w, r, authz.Resource{Kind: "project", Project: chi.URLParam(r, "project")}, authz.ActionRead) {
 		return
@@ -59,6 +72,17 @@ func (s *Server) ListActivity(w http.ResponseWriter, r *http.Request) {
 // can read, newest first.
 //
 // GET /api/activity?limit=100
+//
+// @Summary List platform-wide activity
+// @Description Returns recent activity across all projects the caller can read, newest first
+// @Tags activity
+// @Produce json
+// @Security BearerAuth
+// @Param limit query integer false "Max number of events (default: 100)"
+// @Success 200 {array} activity.Event
+// @Failure 400 {object} errorResponse
+// @Failure 403 {object} errorResponse
+// @Router /activity [get]
 func (s *Server) ListPlatformActivity(w http.ResponseWriter, r *http.Request) {
 	if !s.authorize(w, r, authz.Resource{Kind: "project"}, authz.ActionRead) {
 		return

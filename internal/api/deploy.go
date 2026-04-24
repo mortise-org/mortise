@@ -27,6 +27,20 @@ type deployRequest struct {
 // Auth: accepts either a valid JWT (user session) or a deploy token (CI).
 // Deploy tokens are scoped to a specific app+environment; the handler rejects
 // mismatches.
+//
+// @Summary Deploy an app
+// @Description Trigger a deploy by patching the App's source image. Accepts either a JWT (user session) or a deploy token (CI) for authentication.
+// @Tags deploy
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param project path string true "Project name"
+// @Param app path string true "App name"
+// @Param body body deployRequest true "Deploy details"
+// @Success 200 {object} map[string]string
+// @Failure 400 {object} errorResponse
+// @Failure 401 {object} errorResponse
+// @Router /projects/{project}/apps/{app}/deploy [post]
 func (s *Server) Deploy(w http.ResponseWriter, r *http.Request) {
 	ns, projectName, ok := s.resolveProject(w, r)
 	if !ok {

@@ -137,11 +137,12 @@
 		label: string;
 		description: string;
 		available: boolean;
+		recommended?: boolean;
 	}
 
 	const authOptions: Record<ProviderType, AuthOption[]> = {
 		github: [
-			{ method: 'device_flow', label: 'Device Flow', description: 'Authorize via one-time code on github.com', available: true },
+			{ method: 'device_flow', label: 'Device Flow', description: 'Authorize via one-time code on github.com', available: true, recommended: true },
 			{ method: 'pat', label: 'Personal Access Token', description: 'Paste a token with repo, admin:repo_hook, read:org scopes', available: true },
 			{ method: 'oauth_app', label: 'OAuth App', description: 'Redirect-based OAuth with callback URL', available: false },
 		],
@@ -836,6 +837,9 @@
 								<div class="flex-1">
 									<div class="flex items-center gap-2">
 										<p class="text-sm font-medium {opt.available ? 'text-white' : 'text-gray-500'}">{opt.label}</p>
+										{#if opt.recommended}
+											<span class="text-[10px] px-1.5 py-0.5 rounded bg-accent/20 text-accent">recommended</span>
+										{/if}
 										{#if !opt.available}
 											<span class="text-[10px] px-1.5 py-0.5 rounded bg-surface-600 text-gray-500">coming soon</span>
 										{/if}

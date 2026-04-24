@@ -38,6 +38,19 @@ type createStackResponse struct {
 	Apps []string `json:"apps"`
 }
 
+// @Summary Create a stack from compose or template
+// @Description Creates multiple apps from a docker-compose YAML or a built-in template
+// @Tags stacks
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param project path string true "Project name"
+// @Param body body createStackRequest true "Compose YAML or template selection"
+// @Success 201 {object} createStackResponse
+// @Failure 400 {object} errorResponse
+// @Failure 403 {object} errorResponse
+// @Failure 404 {object} errorResponse
+// @Router /projects/{project}/stacks [post]
 func (s *Server) CreateStack(w http.ResponseWriter, r *http.Request) {
 	ns, project, ok := s.resolveProject(w, r)
 	if !ok {
@@ -231,6 +244,15 @@ type serviceInfo struct {
 	Image string `json:"image"`
 }
 
+// @Summary List available stack templates
+// @Description Returns all built-in compose templates with their service details
+// @Tags stacks
+// @Produce json
+// @Security BearerAuth
+// @Success 200 {array} templateInfo
+// @Failure 403 {object} errorResponse
+// @Failure 500 {object} errorResponse
+// @Router /templates [get]
 func (s *Server) ListTemplates(w http.ResponseWriter, r *http.Request) {
 	if !s.authorize(w, r, authz.Resource{Kind: "app"}, authz.ActionRead) {
 		return

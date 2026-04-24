@@ -40,6 +40,19 @@ func newAppProxyManager() *appProxyManager {
 // Both the CLI and UI call this same endpoint.
 //
 // POST /api/projects/{project}/apps/{app}/connect
+//
+// @Summary Connect to an app via local proxy
+// @Description Start a reverse proxy listener on an auto-allocated local port for the app. Returns the existing proxy URL if already running.
+// @Tags proxy
+// @Produce json
+// @Security BearerAuth
+// @Param project path string true "Project name"
+// @Param app path string true "App name"
+// @Param environment query string false "Environment name (defaults to first env)"
+// @Success 200 {object} appProxyEntry
+// @Failure 404 {object} errorResponse
+// @Failure 500 {object} errorResponse
+// @Router /projects/{project}/apps/{app}/connect [post]
 func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	projectName := chi.URLParam(r, "project")
 	if !s.authorize(w, r, authz.Resource{Kind: "app", Project: projectName}, authz.ActionRead) {
@@ -125,6 +138,16 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 // handleDisconnect stops the proxy for an app.
 //
 // POST /api/projects/{project}/apps/{app}/disconnect
+//
+// @Summary Disconnect an app's local proxy
+// @Description Stop the reverse proxy listener for an app and free the allocated port.
+// @Tags proxy
+// @Security BearerAuth
+// @Param project path string true "Project name"
+// @Param app path string true "App name"
+// @Success 204
+// @Failure 404 {object} errorResponse
+// @Router /projects/{project}/apps/{app}/disconnect [post]
 func (s *Server) handleDisconnect(w http.ResponseWriter, r *http.Request) {
 	projectName := chi.URLParam(r, "project")
 	if !s.authorize(w, r, authz.Resource{Kind: "app", Project: projectName}, authz.ActionRead) {

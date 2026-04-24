@@ -32,6 +32,20 @@ type podSummary struct {
 // rollouts. 404 is reserved for missing Project / App.
 //
 // GET /api/projects/{project}/apps/{app}/pods?env={env}
+//
+// @Summary List pods for an app
+// @Description Returns pod summaries (name, phase, restarts, ready state, timestamps) for the app environment
+// @Tags pods
+// @Produce json
+// @Security BearerAuth
+// @Param project path string true "Project name"
+// @Param app path string true "App name"
+// @Param env query string false "Environment name (default: production)"
+// @Success 200 {array} podSummary
+// @Failure 403 {object} errorResponse
+// @Failure 404 {object} errorResponse
+// @Failure 500 {object} errorResponse
+// @Router /projects/{project}/apps/{app}/pods [get]
 func (s *Server) handleListPods(w http.ResponseWriter, r *http.Request) {
 	projectName := chi.URLParam(r, "project")
 	if !s.authorize(w, r, authz.Resource{Kind: "app", Project: projectName}, authz.ActionRead) {
