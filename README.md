@@ -109,7 +109,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for system diagrams.
 | [CLAUDE.md](CLAUDE.md) | Project conventions and architecture rules |
 | [DEVELOPMENT.md](DEVELOPMENT.md) | Local dev loop, tests, troubleshooting |
 | [RELEASING.md](RELEASING.md) | How to cut a release; image/chart conventions |
-| [PROGRESS.md](PROGRESS.md) | What's implemented vs what's left |
+
 
 ## Integration Recipes
 
@@ -137,5 +137,4 @@ See [DEVELOPMENT.md](DEVELOPMENT.md) for the full guide.
 ## Status
 
 Pre-v1. Core platform is functional: apps deploy, routes work, env vars are
-managed, bindings auto-inject, templates work. See [PROGRESS.md](PROGRESS.md)
-for detailed per-feature status.
+managed, bindings auto-inject, templates work.
