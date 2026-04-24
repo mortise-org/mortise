@@ -511,4 +511,77 @@ test.describe('app drawer settings tab sections', () => {
 
 		await expect.poll(() => deleteWasCalled).toBe(true);
 	});
+
+	test('Test 14: Credentials section — add and remove a credential', async ({ page }) => {
+		let capturedBody: Record<string, unknown> | null = null;
+
+		await setupMocks(page);
+		await page.route('/api/projects/my-project/apps/web-app', async (route) => {
+			if (route.request().method() === 'PUT') {
+				capturedBody = JSON.parse(route.request().postData() ?? '{}');
+				return route.fulfill({ status: 200, json: {
+					...mockApp,
+					spec: { ...mockApp.spec, credentials: [{ name: 'password', value: 'secret123' }] }
+				} });
+			}
+			return route.fulfill({ json: mockApp });
+		});
+
+		await injectAuth(page);
+		await navigateToSettingsTab(page);
+
+		await page.getByPlaceholder('Filter settings…').fill('credentials');
+		await expect(page.getByRole('heading', { name: 'Credentials' })).toBeVisible({ timeout: 5_000 });
+
+		await expect(page.getByText('No credentials declared')).toBeVisible();
+
+		await page.getByRole('button', { name: 'Add', exact: true }).click();
+		await page.locator('#cred-name').fill('password');
+		await page.locator('#cred-value').fill('secret123');
+		await page.getByRole('button', { name: 'Add', exact: true }).click();
+
+		await expect.poll(() => capturedBody).toBeTruthy();
+		const body = capturedBody as { credentials: Array<{ name: string; value: string }> };
+		expect(body.credentials).toEqual(
+			expect.arrayContaining([expect.objectContaining({ name: 'password', value: 'secret123' })])
+		);
+	});
+
+	test('Test 15: Bindings dropdown shows all apps (not just ones with credentials)', async ({ page }) => {
+		const pgApp = {
+			metadata: { name: 'postgres-db', namespace: 'project-my-project' },
+			spec: {
+				source: { type: 'image' as const, image: 'postgres:16' },
+				network: { public: false, port: 5432 },
+				environments: [{ name: 'production', replicas: 1 }],
+				storage: [],
+				credentials: []
+			},
+			status: { phase: 'Ready' as const }
+		};
+
+		await setupMocks(page);
+		await page.route('/api/projects/my-project/apps', (r) =>
+			r.fulfill({ json: [mockApp, pgApp] })
+		);
+
+		await injectAuth(page);
+		await navigateToSettingsTab(page);
+
+		await page.getByPlaceholder('Filter settings…').fill('bindings');
+		await expect(page.getByRole('heading', { name: 'Bindings' })).toBeVisible({ timeout: 5_000 });
+
+		await page.getByRole('button', { name: 'Add binding' }).click();
+		const bindingSelect = page.locator('#binding-ref');
+		await expect(bindingSelect).toBeVisible({ timeout: 5_000 });
+
+		const options = bindingSelect.locator('option');
+		const texts = await options.allTextContents();
+		expect(texts).toContain('postgres-db');
+
+		await bindingSelect.selectOption('postgres-db');
+		await expect(page.getByText('POSTGRES_DB_HOST')).toBeVisible({ timeout: 3_000 });
+		await expect(page.getByText('POSTGRES_DB_PORT')).toBeVisible({ timeout: 3_000 });
+		await expect(page.getByText('POSTGRES_DB_URL')).toBeVisible({ timeout: 3_000 });
+	});
 });

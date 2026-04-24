@@ -115,6 +115,7 @@
 		description: string;
 		port: number;
 		env: Array<{ name: string; value: string }>;
+		credentials: Array<{ name: string; value?: string; envKey?: string }>;
 	};
 
 	function generatePassword(length = 24): string {
@@ -132,12 +133,18 @@
 				env: [
 					{ name: 'POSTGRES_PASSWORD', value: generatePassword() },
 					{ name: 'POSTGRES_DB', value: 'app' }
+				],
+				credentials: [
+					{ name: 'password', envKey: 'POSTGRES_PASSWORD' },
+					{ name: 'user', value: 'postgres' },
+					{ name: 'database', envKey: 'POSTGRES_DB' }
 				]
 			},
 			{
 				name: 'Redis', image: 'redis:7', icon: Database, description: 'Redis 7 in-memory store',
 				port: 6379,
-				env: []
+				env: [],
+				credentials: []
 			},
 			{
 				name: 'MinIO', image: 'minio/minio:RELEASE.2024-11-07T00-52-20Z', icon: Package, description: 'S3-compatible object storage',
@@ -145,6 +152,10 @@
 				env: [
 					{ name: 'MINIO_ROOT_USER', value: 'admin' },
 					{ name: 'MINIO_ROOT_PASSWORD', value: generatePassword() }
+				],
+				credentials: [
+					{ name: 'access_key', envKey: 'MINIO_ROOT_USER' },
+					{ name: 'secret_key', envKey: 'MINIO_ROOT_PASSWORD' }
 				]
 			},
 			{
@@ -153,6 +164,10 @@
 				env: [
 					{ name: 'MYSQL_ROOT_PASSWORD', value: generatePassword() },
 					{ name: 'MYSQL_DATABASE', value: 'app' }
+				],
+				credentials: [
+					{ name: 'password', envKey: 'MYSQL_ROOT_PASSWORD' },
+					{ name: 'database', envKey: 'MYSQL_DATABASE' }
 				]
 			}
 		];
@@ -383,6 +398,19 @@
 						...(combinedEnv.length ? { env: combinedEnv } : {})
 					}]
 					: undefined;
+
+			let credentials: Array<{ name: string; value?: string }> | undefined;
+			if (isDb && selectedDbTemplate!.credentials.length > 0) {
+				credentials = selectedDbTemplate!.credentials.map(c => {
+					if (c.value) return { name: c.name, value: c.value };
+					if (c.envKey) {
+						const envVar = selectedDbTemplate!.env.find(e => e.name === c.envKey);
+						return { name: c.name, value: envVar?.value ?? '' };
+					}
+					return { name: c.name };
+				});
+			}
+
 			return {
 				source: {
 					type: 'image' as const,
@@ -394,6 +422,7 @@
 					...(isDb ? { port: selectedDbTemplate!.port } : {})
 				},
 				...(envs ? { environments: envs } : {}),
+				...(credentials ? { credentials } : {}),
 				...(appKind === 'cron' ? { kind: 'cron' as const } : {})
 			} as AppSpec;
 		}

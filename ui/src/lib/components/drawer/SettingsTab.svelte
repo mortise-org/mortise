@@ -122,7 +122,7 @@
 	);
 	const bindableApps = $derived(allApps.filter(a =>
 		a.metadata.name !== app.metadata.name &&
-		a.spec.credentials && a.spec.credentials.length > 0
+		!currentBindings.some(b => b.ref === a.metadata.name)
 	));
 
 	// --- Advanced (for active env) ---
@@ -425,6 +425,83 @@
 		}
 	}
 
+	// --- Credentials (binding contract this app exposes) ---
+	let showAddCredential = $state(false);
+	let newCredName = $state('');
+	let newCredValue = $state('');
+	let savingCredentials = $state(false);
+	const currentCredentials = $derived(app.spec.credentials ?? []);
+
+	function imageBaseName(image: string): string {
+		let img = image.toLowerCase();
+		const slash = img.lastIndexOf('/');
+		if (slash >= 0) img = img.slice(slash + 1);
+		const colon = img.indexOf(':');
+		if (colon >= 0) img = img.slice(0, colon);
+		return img;
+	}
+
+	function autoUrlScheme(image: string): string | null {
+		switch (imageBaseName(image)) {
+			case 'postgres': return 'postgres';
+			case 'redis': return 'redis';
+			case 'mysql': case 'mariadb': return 'mysql';
+			case 'mongo': return 'mongodb';
+			default: return null;
+		}
+	}
+
+	function bindingPreviewVars(boundApp: App): string[] {
+		const prefix = boundApp.metadata.name.toUpperCase().replace(/[^A-Z0-9_]/g, '_');
+		const vars = [`${prefix}_HOST`, `${prefix}_PORT`];
+		if (autoUrlScheme(boundApp.spec.source.image ?? '')) {
+			vars.push(`${prefix}_URL`);
+		}
+		for (const cred of boundApp.spec.credentials ?? []) {
+			if (cred.name !== 'host' && cred.name !== 'port') {
+				vars.push(`${prefix}_${cred.name.toUpperCase()}`);
+			}
+		}
+		return vars;
+	}
+
+	async function addCredential() {
+		if (!newCredName.trim()) return;
+		savingCredentials = true;
+		const optimisticSpec = JSON.parse(JSON.stringify(app.spec));
+		optimisticSpec.credentials = [
+			...(optimisticSpec.credentials ?? []),
+			{ name: newCredName.trim(), ...(newCredValue ? { value: newCredValue } : {}) }
+		];
+		const savedName = newCredName;
+		const savedValue = newCredValue;
+		showAddCredential = false;
+		newCredName = '';
+		newCredValue = '';
+		try {
+			await api.updateApp(project, app.metadata.name, optimisticSpec);
+		} catch (e) {
+			errorMsg = e instanceof Error ? e.message : 'Failed to add credential';
+			showAddCredential = true;
+			newCredName = savedName;
+			newCredValue = savedValue;
+		} finally {
+			savingCredentials = false;
+		}
+	}
+
+	async function removeCredential(name: string) {
+		const optimisticSpec = JSON.parse(JSON.stringify(app.spec));
+		optimisticSpec.credentials = (optimisticSpec.credentials ?? []).filter(
+			(c: { name: string }) => c.name !== name
+		);
+		try {
+			await api.updateApp(project, app.metadata.name, optimisticSpec);
+		} catch (e) {
+			errorMsg = e instanceof Error ? e.message : 'Failed to remove credential';
+		}
+	}
+
 	function addAnnotation() {
 		annotations = { ...annotations, '': '' };
 	}
@@ -706,7 +783,7 @@
 			{/each}
 
 			{#if currentBindings.length === 0 && !showAddBinding}
-				<p class="text-xs text-gray-500">No bindings. Add a binding to inject credentials from another app.</p>
+				<p class="text-xs text-gray-500">No bindings. Bind to another app to inject its HOST, PORT, URL, and credentials as env vars.</p>
 			{/if}
 
 			{#if showAddBinding}
@@ -723,12 +800,17 @@
 						</select>
 					</div>
 					{#if newBindingRef}
-						<div class="rounded-md bg-surface-800 p-2 text-xs text-gray-400">
-							<p class="font-medium text-gray-300 mb-1">Will inject:</p>
-							{#each (allApps.find(a => a.metadata.name === newBindingRef)?.spec.credentials ?? []) as cred}
-								<span class="mr-2 font-mono text-gray-300">{cred.name}</span>
-							{/each}
-						</div>
+						{@const boundApp = allApps.find(a => a.metadata.name === newBindingRef)}
+						{#if boundApp}
+							<div class="rounded-md bg-surface-800 p-2 text-xs text-gray-400">
+								<p class="font-medium text-gray-300 mb-1">Will inject:</p>
+								<div class="flex flex-wrap gap-1.5">
+									{#each bindingPreviewVars(boundApp) as v}
+										<span class="rounded bg-surface-700 px-1.5 py-0.5 font-mono text-gray-300">{v}</span>
+									{/each}
+								</div>
+							</div>
+						{/if}
 					{/if}
 					<div class="flex gap-2">
 						<button type="button" onclick={addBinding} disabled={!newBindingRef || savingBinding}
@@ -736,6 +818,70 @@
 							{savingBinding ? 'Adding...' : 'Add'}
 						</button>
 						<button type="button" onclick={() => { showAddBinding = false; newBindingRef = ''; }}
+							class={btnSecondary}>
+							Cancel
+						</button>
+					</div>
+				</div>
+			{/if}
+		</div>
+	{/if}
+
+	<!-- Credentials (what this app exposes for binding) -->
+	{#if sectionVisible('credentials')}
+		<div class={sectionCls}>
+			<div class="flex items-center justify-between">
+				<div>
+					<h3 class={headingCls} style="margin-bottom:0">Credentials</h3>
+					<p class="text-xs text-gray-500 mt-1">Declare what this app exposes. Other apps that bind here will receive these as env vars.</p>
+				</div>
+				<button type="button" onclick={() => showAddCredential = true}
+					class="flex items-center gap-1 rounded-md border border-surface-600 px-2 py-1 text-xs text-gray-400 hover:bg-surface-700 hover:text-white">
+					<Plus class="h-3.5 w-3.5" /> Add
+				</button>
+			</div>
+
+			{#each currentCredentials as cred}
+				<div class="flex items-center justify-between rounded-md border border-surface-600 px-3 py-2">
+					<div class="flex items-center gap-2">
+						<span class="font-mono text-sm text-white">{cred.name}</span>
+						{#if cred.value}
+							<span class="text-xs text-gray-500">= ••••••</span>
+						{:else if cred.valueFrom}
+							<span class="text-xs text-gray-500">from secret</span>
+						{/if}
+					</div>
+					<button type="button" onclick={() => removeCredential(cred.name)}
+						class="rounded p-1 text-gray-500 hover:bg-surface-600 hover:text-danger">
+						<Trash2 class="h-3.5 w-3.5" />
+					</button>
+				</div>
+			{/each}
+
+			{#if currentCredentials.length === 0 && !showAddCredential}
+				<p class="text-xs text-gray-500">No credentials declared. Apps like databases should expose credentials so bound apps can connect.</p>
+			{/if}
+
+			{#if showAddCredential}
+				<div class="rounded-md border border-surface-600 bg-surface-700 p-3 space-y-2">
+					<div class="grid grid-cols-2 gap-2">
+						<div>
+							<label class={labelCls} for="cred-name">Key</label>
+							<input id="cred-name" type="text" bind:value={newCredName} placeholder="password"
+								class={inputCls} />
+						</div>
+						<div>
+							<label class={labelCls} for="cred-value">Value (optional)</label>
+							<input id="cred-value" type="text" bind:value={newCredValue} placeholder="auto from env"
+								class={inputCls} />
+						</div>
+					</div>
+					<div class="flex gap-2">
+						<button type="button" onclick={addCredential} disabled={!newCredName.trim() || savingCredentials}
+							class={btnPrimary}>
+							{savingCredentials ? 'Adding...' : 'Add'}
+						</button>
+						<button type="button" onclick={() => { showAddCredential = false; newCredName = ''; newCredValue = ''; }}
 							class={btnSecondary}>
 							Cancel
 						</button>

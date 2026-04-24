@@ -321,10 +321,23 @@ test.describe('NewAppModal — all source types', () => {
 			expect(postBody).toBeTruthy();
 		}).toPass({ timeout: 5000 });
 
-		const body = postBody as { name: string; spec: { source: { type: string; image: string } } };
+		const body = postBody as {
+			name: string;
+			spec: {
+				source: { type: string; image: string };
+				credentials?: Array<{ name: string; value?: string }>;
+			};
+		};
 		expect(body.name).toBe('postgres');
 		expect(body.spec.source.type).toBe('image');
 		expect(body.spec.source.image).toBe('postgres:16');
+		expect(body.spec.credentials).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ name: 'password' }),
+				expect.objectContaining({ name: 'user', value: 'postgres' }),
+				expect.objectContaining({ name: 'database' })
+			])
+		);
 	});
 
 	// 10. External service: fill host + port + credential → POST with external source spec

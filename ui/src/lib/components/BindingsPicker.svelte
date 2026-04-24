@@ -29,20 +29,42 @@
 		}
 	});
 
-	// Apps with credentials (binding sources)
+	function imageBaseName(image: string): string {
+		let img = image.toLowerCase();
+		const slash = img.lastIndexOf('/');
+		if (slash >= 0) img = img.slice(slash + 1);
+		const colon = img.indexOf(':');
+		if (colon >= 0) img = img.slice(0, colon);
+		return img;
+	}
+
+	function hasAutoUrl(image: string): boolean {
+		return ['postgres', 'redis', 'mysql', 'mariadb', 'mongo'].includes(imageBaseName(image));
+	}
+
+	// All other apps in the project are bindable
 	const bindingApps = $derived(
-		allApps.filter(a => a.spec.credentials && a.spec.credentials.length > 0)
+		allApps.filter(a => a.metadata.name !== app.metadata.name)
 	);
 
-	// Flatten bindings: { appName, key, ref }
+	// Build binding rows: auto-generated HOST/PORT/URL + declared credentials
 	const bindingRows = $derived(
-		bindingApps.flatMap(a =>
-			(a.spec.credentials ?? []).map(c => ({
-				appName: a.metadata.name,
-				key: c.name,
-				ref: `\${{bindings.${a.metadata.name}.${c.name}}}`
-			}))
-		).filter(r => !filterText || r.key.toLowerCase().includes(filterText.toLowerCase()) || r.appName.toLowerCase().includes(filterText.toLowerCase()))
+		bindingApps.flatMap(a => {
+			const prefix = a.metadata.name.toUpperCase().replace(/[^A-Z0-9_]/g, '_');
+			const rows = [
+				{ appName: a.metadata.name, key: 'HOST', ref: `\${{bindings.${a.metadata.name}.host}}` },
+				{ appName: a.metadata.name, key: 'PORT', ref: `\${{bindings.${a.metadata.name}.port}}` }
+			];
+			if (hasAutoUrl(a.spec.source.image ?? '')) {
+				rows.push({ appName: a.metadata.name, key: 'URL', ref: `\${{bindings.${a.metadata.name}.url}}` });
+			}
+			for (const c of a.spec.credentials ?? []) {
+				if (c.name !== 'host' && c.name !== 'port') {
+					rows.push({ appName: a.metadata.name, key: c.name.toUpperCase(), ref: `\${{bindings.${a.metadata.name}.${c.name}}}` });
+				}
+			}
+			return rows;
+		}).filter(r => !filterText || `${r.appName} ${r.key}`.toLowerCase().includes(filterText.toLowerCase()))
 	);
 
 	const secretRows = $derived(
