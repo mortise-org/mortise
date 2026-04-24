@@ -722,8 +722,13 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 		},
 	}
 
-	if env.Resources.CPU != "" || env.Resources.Memory != "" {
-		containers[0].Resources = toResourceRequirements(env.Resources)
+	containers[0].Resources = toResourceRequirements(r.effectiveResources(ctx, env))
+
+	port := appPort(app)
+	containers[0].LivenessProbe = buildProbe(env.LivenessProbe, port)
+	containers[0].ReadinessProbe = buildProbe(env.ReadinessProbe, port)
+	if env.StartupProbe != nil {
+		containers[0].StartupProbe = buildProbe(env.StartupProbe, port)
 	}
 
 	volumes, mounts := toVolumesAndMounts(app)
@@ -841,6 +846,15 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 		if !equality.Semantic.DeepEqual(existingContainer.Resources, desiredContainer.Resources) {
 			needsUpdate = true
 		}
+		if !equality.Semantic.DeepEqual(existingContainer.LivenessProbe, desiredContainer.LivenessProbe) {
+			needsUpdate = true
+		}
+		if !equality.Semantic.DeepEqual(existingContainer.ReadinessProbe, desiredContainer.ReadinessProbe) {
+			needsUpdate = true
+		}
+		if !equality.Semantic.DeepEqual(existingContainer.StartupProbe, desiredContainer.StartupProbe) {
+			needsUpdate = true
+		}
 		if existing.Spec.Replicas == nil || *existing.Spec.Replicas != *desired.Spec.Replicas {
 			needsUpdate = true
 		}
@@ -864,6 +878,9 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 		existing.Spec.Template.Spec.Containers[0].Ports = desiredContainer.Ports
 		existing.Spec.Template.Spec.Containers[0].VolumeMounts = desiredContainer.VolumeMounts
 		existing.Spec.Template.Spec.Containers[0].Resources = desiredContainer.Resources
+		existing.Spec.Template.Spec.Containers[0].LivenessProbe = desiredContainer.LivenessProbe
+		existing.Spec.Template.Spec.Containers[0].ReadinessProbe = desiredContainer.ReadinessProbe
+		existing.Spec.Template.Spec.Containers[0].StartupProbe = desiredContainer.StartupProbe
 		existing.Spec.Template.ObjectMeta.Annotations = desired.Spec.Template.ObjectMeta.Annotations
 		existing.Spec.Template.ObjectMeta.Labels = desired.Spec.Template.ObjectMeta.Labels
 		existing.Annotations = desired.Annotations
@@ -901,9 +918,7 @@ func (r *AppReconciler) reconcileCronJob(ctx context.Context, app *mortisev1alph
 		},
 	}
 
-	if env.Resources.CPU != "" || env.Resources.Memory != "" {
-		containers[0].Resources = toResourceRequirements(env.Resources)
-	}
+	containers[0].Resources = toResourceRequirements(r.effectiveResources(ctx, env))
 
 	volumes, mounts := toVolumesAndMounts(app)
 
@@ -2000,6 +2015,55 @@ func (r *AppReconciler) RollbackDeployment(ctx context.Context, app *mortisev1al
 	return r.Update(ctx, &dep)
 }
 
+func buildProbe(pc *mortisev1alpha1.ProbeConfig, defaultPort int32) *corev1.Probe {
+	probe := &corev1.Probe{
+		InitialDelaySeconds: 5,
+		PeriodSeconds:       10,
+		TimeoutSeconds:      3,
+	}
+
+	if pc == nil {
+		probe.ProbeHandler = corev1.ProbeHandler{
+			TCPSocket: &corev1.TCPSocketAction{
+				Port: intstr.FromInt32(defaultPort),
+			},
+		}
+		return probe
+	}
+
+	if pc.InitialDelaySeconds > 0 {
+		probe.InitialDelaySeconds = pc.InitialDelaySeconds
+	}
+	if pc.PeriodSeconds > 0 {
+		probe.PeriodSeconds = pc.PeriodSeconds
+	}
+	if pc.TimeoutSeconds > 0 {
+		probe.TimeoutSeconds = pc.TimeoutSeconds
+	}
+
+	port := defaultPort
+	if pc.Port > 0 {
+		port = pc.Port
+	}
+
+	if pc.Path != "" {
+		probe.ProbeHandler = corev1.ProbeHandler{
+			HTTPGet: &corev1.HTTPGetAction{
+				Path: pc.Path,
+				Port: intstr.FromInt32(port),
+			},
+		}
+	} else {
+		probe.ProbeHandler = corev1.ProbeHandler{
+			TCPSocket: &corev1.TCPSocketAction{
+				Port: intstr.FromInt32(port),
+			},
+		}
+	}
+
+	return probe
+}
+
 // appPort returns the container port for the app, defaulting to 8080.
 func appPort(app *mortisev1alpha1.App) int32 {
 	if app.Spec.Network.Port > 0 {
@@ -2197,6 +2261,24 @@ func mergeEnvVars(layers ...[]corev1.EnvVar) []corev1.EnvVar {
 		}
 	}
 	return result
+}
+
+func (r *AppReconciler) effectiveResources(ctx context.Context, env *mortisev1alpha1.Environment) mortisev1alpha1.ResourceRequirements {
+	res := env.Resources
+	if res.CPU == "" && res.Memory == "" {
+		var pc mortisev1alpha1.PlatformConfig
+		if err := r.Get(ctx, types.NamespacedName{Name: "platform"}, &pc); err == nil {
+			res.CPU = pc.Spec.Defaults.Resources.CPU
+			res.Memory = pc.Spec.Defaults.Resources.Memory
+		}
+	}
+	if res.CPU == "" {
+		res.CPU = "500m"
+	}
+	if res.Memory == "" {
+		res.Memory = "512Mi"
+	}
+	return res
 }
 
 func toResourceRequirements(r mortisev1alpha1.ResourceRequirements) corev1.ResourceRequirements {

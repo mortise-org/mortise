@@ -1318,12 +1318,16 @@ definitions:
         items:
           $ref: '#/definitions/v1alpha1.EnvVar'
         type: array
+      livenessProbe:
+        $ref: '#/definitions/v1alpha1.ProbeConfig'
       name:
         description: |-
           Name references a `ProjectEnvironment.Name` on the parent Project. The
           admission webhook rejects names not present on the parent Project.
           +kubebuilder:validation:Required
         type: string
+      readinessProbe:
+        $ref: '#/definitions/v1alpha1.ProbeConfig'
       replicas:
         type: integer
       resources:
@@ -1345,6 +1349,8 @@ definitions:
         items:
           $ref: '#/definitions/v1alpha1.SecretMount'
         type: array
+      startupProbe:
+        $ref: '#/definitions/v1alpha1.ProbeConfig'
       tls:
         allOf:
         - $ref: '#/definitions/v1alpha1.EnvTLSConfig'
@@ -1465,6 +1471,19 @@ definitions:
     - PlatformConfigPhasePending
     - PlatformConfigPhaseReady
     - PlatformConfigPhaseFailed
+  v1alpha1.ProbeConfig:
+    properties:
+      initialDelaySeconds:
+        type: integer
+      path:
+        type: string
+      periodSeconds:
+        type: integer
+      port:
+        type: integer
+      timeoutSeconds:
+        type: integer
+    type: object
   v1alpha1.ProjectPhase:
     enum:
     - Pending

@@ -101,6 +101,14 @@ type TLSConfig struct {
 	CertManagerClusterIssuer string `json:"certManagerClusterIssuer,omitempty"`
 }
 
+// DefaultsConfig holds platform-wide defaults applied to Apps that do not
+// specify their own values.
+type DefaultsConfig struct {
+	// Resources are the default CPU and memory limits for App containers.
+	// +optional
+	Resources ResourceRequirements `json:"resources,omitempty"`
+}
+
 // PlatformConfigSpec defines the desired state of PlatformConfig.
 type PlatformConfigSpec struct {
 	// Domain is the base domain for the platform. Apps receive subdomains under
@@ -135,6 +143,10 @@ type PlatformConfigSpec struct {
 	// and metrics queries.
 	// +optional
 	Observability ObservabilitySpec `json:"observability,omitempty"`
+
+	// Defaults holds platform-wide defaults for Apps.
+	// +optional
+	Defaults DefaultsConfig `json:"defaults,omitempty"`
 }
 
 // GitHubConfig holds optional GitHub OAuth App overrides.

@@ -22,13 +22,36 @@ type ComposeFile struct {
 // ComposeService captures the subset of docker-compose service fields that
 // Mortise maps to App specs.
 type ComposeService struct {
-	Image       string      `yaml:"image"`
-	Ports       []string    `yaml:"ports"`
-	Environment interface{} `yaml:"environment"` // map[string]string or []string ("KEY=VAL")
-	DependsOn   interface{} `yaml:"depends_on"`  // []string or map[string]{condition}
-	Restart     string      `yaml:"restart"`
-	Command     interface{} `yaml:"command"` // string or []string
-	Volumes     []string    `yaml:"volumes"` // "host:container" or "host:container:ro"
+	Image       string              `yaml:"image"`
+	Ports       []string            `yaml:"ports"`
+	Environment interface{}         `yaml:"environment"` // map[string]string or []string ("KEY=VAL")
+	DependsOn   interface{}         `yaml:"depends_on"`  // []string or map[string]{condition}
+	Restart     string              `yaml:"restart"`
+	Command     interface{}         `yaml:"command"` // string or []string
+	Volumes     []string            `yaml:"volumes"` // "host:container" or "host:container:ro"
+	Deploy      *ComposeDeploy      `yaml:"deploy"`
+	HealthCheck *ComposeHealthCheck `yaml:"healthcheck"`
+}
+
+type ComposeHealthCheck struct {
+	Test     interface{} `yaml:"test"`
+	Interval string      `yaml:"interval"`
+	Timeout  string      `yaml:"timeout"`
+	Retries  int         `yaml:"retries"`
+}
+
+type ComposeDeploy struct {
+	Resources *ComposeResources `yaml:"resources"`
+}
+
+type ComposeResources struct {
+	Limits       *ComposeResourceSpec `yaml:"limits"`
+	Reservations *ComposeResourceSpec `yaml:"reservations"`
+}
+
+type ComposeResourceSpec struct {
+	Memory string `yaml:"memory"`
+	CPUs   string `yaml:"cpus"`
 }
 
 // parseCompose parses a docker-compose YAML string.
@@ -117,6 +140,20 @@ func composeToAppSpecs(compose *ComposeFile, stackPrefix string, bundledFiles ma
 			}
 		}
 
+		var resources mortisev1alpha1.ResourceRequirements
+		if svc.Deploy != nil && svc.Deploy.Resources != nil {
+			if lim := svc.Deploy.Resources.Limits; lim != nil {
+				resources.CPU = convertComposeCPU(lim.CPUs)
+				resources.Memory = convertComposeMemory(lim.Memory)
+			}
+			if resources.CPU == "" && resources.Memory == "" {
+				if res := svc.Deploy.Resources.Reservations; res != nil {
+					resources.CPU = convertComposeCPU(res.CPUs)
+					resources.Memory = convertComposeMemory(res.Memory)
+				}
+			}
+		}
+
 		as.Spec = mortisev1alpha1.AppSpec{
 			Source: mortisev1alpha1.AppSource{
 				Type:  mortisev1alpha1.SourceTypeImage,
@@ -129,9 +166,14 @@ func composeToAppSpecs(compose *ComposeFile, stackPrefix string, bundledFiles ma
 			Storage:     storage,
 			ConfigFiles: configFiles,
 			Environments: []mortisev1alpha1.Environment{{
-				Name: "production",
-				Env:  envVars,
+				Name:      "production",
+				Env:       envVars,
+				Resources: resources,
 			}},
+		}
+
+		if probe := composeHealthToProbe(svc.HealthCheck); probe != nil {
+			as.Spec.Environments[0].ReadinessProbe = probe
 		}
 
 		specs[svcName] = as
@@ -272,4 +314,91 @@ func isNamedVolume(hostPath string) bool {
 		!strings.HasPrefix(hostPath, "/") &&
 		!strings.HasPrefix(hostPath, "./") &&
 		!strings.HasPrefix(hostPath, "../")
+}
+
+func convertComposeCPU(cpus string) string {
+	if cpus == "" {
+		return ""
+	}
+	v, err := strconv.ParseFloat(cpus, 64)
+	if err != nil {
+		return ""
+	}
+	return fmt.Sprintf("%dm", int(v*1000))
+}
+
+func convertComposeMemory(mem string) string {
+	if mem == "" {
+		return ""
+	}
+	for _, suffix := range []struct{ from, to string }{
+		{"Gi", "Gi"}, {"Mi", "Mi"}, {"Ki", "Ki"},
+		{"G", "Gi"}, {"M", "Mi"}, {"K", "Ki"},
+		{"g", "Gi"}, {"m", "Mi"}, {"k", "Ki"},
+	} {
+		if strings.HasSuffix(mem, suffix.from) {
+			return strings.TrimSuffix(mem, suffix.from) + suffix.to
+		}
+	}
+	return mem
+}
+
+func composeHealthToProbe(hc *ComposeHealthCheck) *mortisev1alpha1.ProbeConfig {
+	if hc == nil {
+		return nil
+	}
+	test := composeTestString(hc.Test)
+	if test == "" {
+		return nil
+	}
+	if !strings.Contains(test, "curl") && !strings.Contains(test, "wget") {
+		return nil
+	}
+	path := extractHTTPPath(test)
+	if path == "" {
+		return nil
+	}
+	return &mortisev1alpha1.ProbeConfig{Path: path}
+}
+
+func composeTestString(v interface{}) string {
+	switch val := v.(type) {
+	case string:
+		return val
+	case []interface{}:
+		parts := make([]string, 0, len(val))
+		for _, item := range val {
+			if s, ok := item.(string); ok && s != "CMD" && s != "CMD-SHELL" {
+				parts = append(parts, s)
+			}
+		}
+		return strings.Join(parts, " ")
+	}
+	return ""
+}
+
+func extractHTTPPath(cmd string) string {
+	for _, prefix := range []string{"http://localhost", "http://127.0.0.1"} {
+		idx := strings.Index(cmd, prefix)
+		if idx < 0 {
+			continue
+		}
+		url := cmd[idx+len(prefix):]
+		// Skip optional :port
+		if len(url) > 0 && url[0] == ':' {
+			url = url[1:]
+			for len(url) > 0 && url[0] >= '0' && url[0] <= '9' {
+				url = url[1:]
+			}
+		}
+		if len(url) == 0 || url[0] != '/' {
+			return "/"
+		}
+		end := strings.IndexAny(url, " \t\"'")
+		if end > 0 {
+			return url[:end]
+		}
+		return url
+	}
+	return ""
 }

@@ -88,6 +88,19 @@ spec:
                 required:
                 - buildkitAddr
                 type: object
+              defaults:
+                description: Defaults holds platform-wide defaults for Apps.
+                properties:
+                  resources:
+                    description: Resources are the default CPU and memory limits for
+                      App containers.
+                    properties:
+                      cpu:
+                        type: string
+                      memory:
+                        type: string
+                    type: object
+                type: object
               domain:
                 description: |-
                   Domain is the base domain for the platform. Apps receive subdomains under

@@ -57,6 +57,11 @@ type Config struct {
 
 	// Observability holds the resolved adapter configuration for logs and metrics.
 	Observability ObservabilityConfig
+
+	// DefaultCPU is the platform-wide default CPU limit for App containers.
+	DefaultCPU string
+	// DefaultMemory is the platform-wide default memory limit for App containers.
+	DefaultMemory string
 }
 
 // StorageConfig is the resolved storage configuration.
@@ -153,6 +158,9 @@ func Load(ctx context.Context, c client.Reader) (*Config, error) {
 			CertManagerClusterIssuer: pc.Spec.TLS.CertManagerClusterIssuer,
 		},
 	}
+
+	cfg.DefaultCPU = pc.Spec.Defaults.Resources.CPU
+	cfg.DefaultMemory = pc.Spec.Defaults.Resources.Memory
 
 	// Resolve optional registry credentials.
 	if ref := pc.Spec.Registry.CredentialsSecretRef; ref != nil {

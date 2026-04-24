@@ -227,6 +227,14 @@ type ResourceRequirements struct {
 	Memory string `json:"memory,omitempty"`
 }
 
+type ProbeConfig struct {
+	Path                string `json:"path,omitempty"`
+	Port                int32  `json:"port,omitempty"`
+	InitialDelaySeconds int32  `json:"initialDelaySeconds,omitempty"`
+	PeriodSeconds       int32  `json:"periodSeconds,omitempty"`
+	TimeoutSeconds      int32  `json:"timeoutSeconds,omitempty"`
+}
+
 type Environment struct {
 	// Name references a `ProjectEnvironment.Name` on the parent Project. The
 	// admission webhook rejects names not present on the parent Project.
@@ -240,12 +248,15 @@ type Environment struct {
 	// +optional
 	Enabled *bool `json:"enabled,omitempty"`
 
-	Replicas      *int32               `json:"replicas,omitempty"`
-	Resources     ResourceRequirements `json:"resources,omitempty"`
-	Env           []EnvVar             `json:"env,omitempty"`
-	Bindings      []Binding            `json:"bindings,omitempty"`
-	Domain        string               `json:"domain,omitempty"`
-	CustomDomains []string             `json:"customDomains,omitempty"`
+	Replicas       *int32               `json:"replicas,omitempty"`
+	Resources      ResourceRequirements `json:"resources,omitempty"`
+	LivenessProbe  *ProbeConfig         `json:"livenessProbe,omitempty"`
+	ReadinessProbe *ProbeConfig         `json:"readinessProbe,omitempty"`
+	StartupProbe   *ProbeConfig         `json:"startupProbe,omitempty"`
+	Env            []EnvVar             `json:"env,omitempty"`
+	Bindings       []Binding            `json:"bindings,omitempty"`
+	Domain         string               `json:"domain,omitempty"`
+	CustomDomains  []string             `json:"customDomains,omitempty"`
 
 	// Schedule is a cron expression (e.g. "*/5 * * * *") that controls when
 	// the CronJob fires. Required when spec.kind is "cron"; ignored otherwise.

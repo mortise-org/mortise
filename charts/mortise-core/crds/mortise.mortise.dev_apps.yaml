@@ -190,11 +190,45 @@ spec:
                         - name
                         type: object
                       type: array
+                    livenessProbe:
+                      properties:
+                        initialDelaySeconds:
+                          format: int32
+                          type: integer
+                        path:
+                          type: string
+                        periodSeconds:
+                          format: int32
+                          type: integer
+                        port:
+                          format: int32
+                          type: integer
+                        timeoutSeconds:
+                          format: int32
+                          type: integer
+                      type: object
                     name:
                       description: |-
                         Name references a `ProjectEnvironment.Name` on the parent Project. The
                         admission webhook rejects names not present on the parent Project.
                       type: string
+                    readinessProbe:
+                      properties:
+                        initialDelaySeconds:
+                          format: int32
+                          type: integer
+                        path:
+                          type: string
+                        periodSeconds:
+                          format: int32
+                          type: integer
+                        port:
+                          format: int32
+                          type: integer
+                        timeoutSeconds:
+                          format: int32
+                          type: integer
+                      type: object
                     replicas:
                       format: int32
                       type: integer
@@ -281,6 +315,23 @@ spec:
                         - secret
                         type: object
                       type: array
+                    startupProbe:
+                      properties:
+                        initialDelaySeconds:
+                          format: int32
+                          type: integer
+                        path:
+                          type: string
+                        periodSeconds:
+                          format: int32
+                          type: integer
+                        port:
+                          format: int32
+                          type: integer
+                        timeoutSeconds:
+                          format: int32
+                          type: integer
+                      type: object
                     tls:
                       description: |-
                         TLS overrides the default cert-manager-driven TLS path for this

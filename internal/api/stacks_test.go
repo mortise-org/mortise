@@ -186,3 +186,104 @@ func TestComposeBindMountPathsSkipped(t *testing.T) {
 		t.Errorf("expected no storage for bind mounts, got %d", len(specs[0].Spec.Storage))
 	}
 }
+
+func TestConvertComposeCPU(t *testing.T) {
+	cases := []struct {
+		input string
+		want  string
+	}{
+		{"1.0", "1000m"},
+		{"0.5", "500m"},
+		{"2", "2000m"},
+		{"0.25", "250m"},
+		{"", ""},
+		{"bogus", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.input, func(t *testing.T) {
+			if got := convertComposeCPU(tc.input); got != tc.want {
+				t.Errorf("convertComposeCPU(%q) = %q, want %q", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestConvertComposeMemory(t *testing.T) {
+	cases := []struct {
+		input string
+		want  string
+	}{
+		{"512M", "512Mi"},
+		{"2G", "2Gi"},
+		{"1024K", "1024Ki"},
+		{"512Mi", "512Mi"},
+		{"2Gi", "2Gi"},
+		{"256m", "256Mi"},
+		{"1g", "1Gi"},
+		{"1024", "1024"},
+		{"", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.input, func(t *testing.T) {
+			if got := convertComposeMemory(tc.input); got != tc.want {
+				t.Errorf("convertComposeMemory(%q) = %q, want %q", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestComposeDeployResources(t *testing.T) {
+	yml := `services:
+  web:
+    image: nginx:1.25
+    ports: ["80:80"]
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: "512M"
+`
+	cf, err := parseCompose(yml)
+	if err != nil {
+		t.Fatalf("parseCompose: %v", err)
+	}
+	specs, err := composeToAppSpecs(cf, "stack", nil)
+	if err != nil {
+		t.Fatalf("composeToAppSpecs: %v", err)
+	}
+	res := specs[0].Spec.Environments[0].Resources
+	if res.CPU != "500m" {
+		t.Errorf("CPU = %q, want %q", res.CPU, "500m")
+	}
+	if res.Memory != "512Mi" {
+		t.Errorf("Memory = %q, want %q", res.Memory, "512Mi")
+	}
+}
+
+func TestComposeDeployReservationsFallback(t *testing.T) {
+	yml := `services:
+  web:
+    image: nginx:1.25
+    ports: ["80:80"]
+    deploy:
+      resources:
+        reservations:
+          cpus: "1.0"
+          memory: "1G"
+`
+	cf, err := parseCompose(yml)
+	if err != nil {
+		t.Fatalf("parseCompose: %v", err)
+	}
+	specs, err := composeToAppSpecs(cf, "stack", nil)
+	if err != nil {
+		t.Fatalf("composeToAppSpecs: %v", err)
+	}
+	res := specs[0].Spec.Environments[0].Resources
+	if res.CPU != "1000m" {
+		t.Errorf("CPU = %q, want %q", res.CPU, "1000m")
+	}
+	if res.Memory != "1Gi" {
+		t.Errorf("Memory = %q, want %q", res.Memory, "1Gi")
+	}
+}
