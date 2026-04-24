@@ -55,13 +55,13 @@
 			{/if}
 			<form onsubmit={(e) => { e.preventDefault(); handleLogin(); }} class="space-y-4">
 				<div>
-					<label for="email" class="block text-sm text-gray-400">Email</label>
+					<label for="email" class="block text-sm text-gray-400">Username</label>
 					<input
 						id="email"
-						type="email"
+						type="text"
 						bind:value={email}
-						placeholder="admin@example.com"
-						autocomplete="email"
+						placeholder="admin"
+						autocomplete="username"
 						required
 						class="mt-1 w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-white placeholder-gray-500 outline-none focus:border-accent"
 					/>

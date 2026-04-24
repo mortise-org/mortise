@@ -59,7 +59,7 @@ export async function loginViaAPI(request: APIRequestContext): Promise<string> {
 /** Full browser-driven login flow. Ends at /. */
 export async function loginViaUI(page: Page): Promise<void> {
 	await page.goto('/login');
-	await page.getByLabel('Email').fill(ADMIN_EMAIL);
+	await page.getByLabel('Username').fill(ADMIN_EMAIL);
 	await page.getByLabel('Password').fill(ADMIN_PASSWORD);
 	await Promise.all([
 		page.waitForURL((url) => url.pathname === '/'),

@@ -45,8 +45,8 @@
 		<div class="rounded-lg border border-surface-600 bg-surface-800 p-6">
 			<form onsubmit={(e) => { e.preventDefault(); handleSetup(); }} class="space-y-4">
 				<div>
-					<label for="email" class="block text-sm text-gray-400">Admin Email</label>
-					<input id="email" type="email" bind:value={email} placeholder="admin@example.com"
+					<label for="email" class="block text-sm text-gray-400">Admin Username</label>
+					<input id="email" type="text" bind:value={email} placeholder="admin"
 						required class="mt-1 w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-white placeholder-gray-500 outline-none focus:border-accent" />
 				</div>
 				<div>

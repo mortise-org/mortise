@@ -35,7 +35,7 @@ test.describe('setup page', () => {
 		// Actual subtitle text in setup page
 		await expect(page.getByText(/Create your admin account/)).toBeVisible();
 
-		await expect(page.getByLabel('Admin Email')).toBeVisible();
+		await expect(page.getByLabel('Admin Username')).toBeVisible();
 		await expect(page.getByLabel('Password')).toBeVisible();
 		await expect(page.getByRole('button', { name: /Create account/ })).toBeVisible();
 	});
@@ -52,7 +52,7 @@ test.describe('setup page', () => {
 		// Let the actual /api/auth/setup endpoint return a real 409.
 		await page.goto('/setup');
 
-		await page.getByLabel('Admin Email').fill('admin@example.com');
+		await page.getByLabel('Admin Username').fill('admin@example.com');
 		await page.getByLabel('Password').fill('password12345');
 		await page.getByRole('button', { name: /Create account/ }).click();
 
@@ -77,7 +77,7 @@ test.describe('login page', () => {
 
 		await expect(page.getByRole('heading', { name: 'Mortise' })).toBeVisible();
 		await expect(page.getByText('Sign in to your platform')).toBeVisible();
-		await expect(page.getByLabel('Email')).toBeVisible();
+		await expect(page.getByLabel('Username')).toBeVisible();
 		await expect(page.getByLabel('Password')).toBeVisible();
 		await expect(page.getByRole('button', { name: 'Sign in' })).toBeVisible();
 	});
@@ -85,7 +85,7 @@ test.describe('login page', () => {
 	test('successful login redirects to / and stores mortise_token', async ({ page }) => {
 		await page.goto('/login');
 
-		await page.getByLabel('Email').fill(ADMIN_EMAIL);
+		await page.getByLabel('Username').fill(ADMIN_EMAIL);
 		await page.getByLabel('Password').fill(ADMIN_PASSWORD);
 
 		await Promise.all([
@@ -100,7 +100,7 @@ test.describe('login page', () => {
 	test('successful login stores admin role and shows admin nav', async ({ page }) => {
 		await page.goto('/login');
 
-		await page.getByLabel('Email').fill(ADMIN_EMAIL);
+		await page.getByLabel('Username').fill(ADMIN_EMAIL);
 		await page.getByLabel('Password').fill(ADMIN_PASSWORD);
 
 		await Promise.all([
@@ -115,7 +115,7 @@ test.describe('login page', () => {
 	test('invalid credentials show error message', async ({ page }) => {
 		await page.goto('/login');
 
-		await page.getByLabel('Email').fill('wrong@example.com');
+		await page.getByLabel('Username').fill('wrong@example.com');
 		await page.getByLabel('Password').fill('wrongpassword');
 		await page.getByRole('button', { name: 'Sign in' }).click();
 

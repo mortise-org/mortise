@@ -696,8 +696,8 @@
 				<div class="rounded-md border border-surface-600 bg-surface-800 p-4 space-y-3">
 					<h3 class="text-sm font-medium text-white">New user</h3>
 					<div>
-						<label class="block text-xs text-gray-500 mb-1" for="new-user-email">Email</label>
-						<input id="new-user-email" type="email" bind:value={newUserEmail} placeholder="user@example.com"
+						<label class="block text-xs text-gray-500 mb-1" for="new-user-email">Username</label>
+						<input id="new-user-email" type="text" bind:value={newUserEmail} placeholder="username"
 							class="w-full rounded-md border border-surface-600 bg-surface-900 px-3 py-2 text-sm text-white placeholder-gray-500 outline-none focus:border-accent" />
 					</div>
 					<div>

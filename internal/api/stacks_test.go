@@ -260,6 +260,107 @@ func TestComposeDeployResources(t *testing.T) {
 	}
 }
 
+func TestComposeDependsOnCreatesBindings(t *testing.T) {
+	yml := `services:
+  db:
+    image: postgres:16
+    ports: ["5432:5432"]
+  cache:
+    image: redis:7
+    ports: ["6379:6379"]
+  web:
+    image: myapp:latest
+    ports: ["8080:8080"]
+    depends_on:
+      - db
+      - cache
+`
+	cf, err := parseCompose(yml)
+	if err != nil {
+		t.Fatalf("parseCompose: %v", err)
+	}
+	specs, err := composeToAppSpecs(cf, "mystack", nil)
+	if err != nil {
+		t.Fatalf("composeToAppSpecs: %v", err)
+	}
+
+	var webSpec *appSpec
+	for i := range specs {
+		if specs[i].Service == "web" {
+			webSpec = &specs[i]
+			break
+		}
+	}
+	if webSpec == nil {
+		t.Fatal("web spec not found")
+	}
+
+	bindings := webSpec.Spec.Environments[0].Bindings
+	if len(bindings) != 2 {
+		t.Fatalf("expected 2 bindings, got %d", len(bindings))
+	}
+
+	refs := map[string]bool{}
+	for _, b := range bindings {
+		refs[b.Ref] = true
+	}
+	if !refs["mystack-db"] {
+		t.Error("expected binding ref mystack-db")
+	}
+	if !refs["mystack-cache"] {
+		t.Error("expected binding ref mystack-cache")
+	}
+
+	// Services without depends_on should have no bindings.
+	for i := range specs {
+		if specs[i].Service == "db" || specs[i].Service == "cache" {
+			if len(specs[i].Spec.Environments[0].Bindings) != 0 {
+				t.Errorf("service %q should have no bindings", specs[i].Service)
+			}
+		}
+	}
+}
+
+func TestComposeDependsOnNoPrefix(t *testing.T) {
+	yml := `services:
+  db:
+    image: postgres:16
+    ports: ["5432:5432"]
+  web:
+    image: myapp:latest
+    ports: ["8080:8080"]
+    depends_on:
+      - db
+`
+	cf, err := parseCompose(yml)
+	if err != nil {
+		t.Fatalf("parseCompose: %v", err)
+	}
+	specs, err := composeToAppSpecs(cf, "", nil)
+	if err != nil {
+		t.Fatalf("composeToAppSpecs: %v", err)
+	}
+
+	var webSpec *appSpec
+	for i := range specs {
+		if specs[i].Service == "web" {
+			webSpec = &specs[i]
+			break
+		}
+	}
+	if webSpec == nil {
+		t.Fatal("web spec not found")
+	}
+
+	bindings := webSpec.Spec.Environments[0].Bindings
+	if len(bindings) != 1 {
+		t.Fatalf("expected 1 binding, got %d", len(bindings))
+	}
+	if bindings[0].Ref != "db" {
+		t.Errorf("binding ref = %q, want %q", bindings[0].Ref, "db")
+	}
+}
+
 func TestComposeDeployReservationsFallback(t *testing.T) {
 	yml := `services:
   web:

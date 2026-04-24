@@ -539,7 +539,7 @@
           <h2 class="text-sm font-medium text-white">Add member</h2>
           <p class="text-xs text-gray-500">Add an existing platform user to this project. Users must be created first in platform Settings.</p>
           <div class="flex gap-2">
-            <input type="email" bind:value={addMemberEmail} placeholder="email@example.com"
+            <input type="text" bind:value={addMemberEmail} placeholder="username"
               class="flex-1 rounded-md border border-surface-600 bg-surface-900 px-3 py-2 text-sm text-white placeholder-gray-500 outline-none focus:border-accent" />
             <select bind:value={memberRole}
               class="rounded-md border border-surface-600 bg-surface-900 px-3 py-2 text-sm text-white outline-none focus:border-accent">

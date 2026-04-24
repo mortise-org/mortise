@@ -176,6 +176,18 @@ func composeToAppSpecs(compose *ComposeFile, stackPrefix string, bundledFiles ma
 			as.Spec.Environments[0].ReadinessProbe = probe
 		}
 
+		if len(as.DepsOn) > 0 {
+			bindings := make([]mortisev1alpha1.Binding, 0, len(as.DepsOn))
+			for _, dep := range as.DepsOn {
+				ref := dep
+				if stackPrefix != "" {
+					ref = stackPrefix + "-" + dep
+				}
+				bindings = append(bindings, mortisev1alpha1.Binding{Ref: ref})
+			}
+			as.Spec.Environments[0].Bindings = bindings
+		}
+
 		specs[svcName] = as
 	}
 

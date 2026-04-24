@@ -84,7 +84,7 @@ test('members tab shows empty state and invite form when there are no members', 
   await expect(page.getByText('No project members yet.')).toBeVisible({ timeout: 5_000 });
 
   // Invite form elements.
-  await expect(page.getByPlaceholder('email@example.com')).toBeVisible();
+  await expect(page.getByPlaceholder('username')).toBeVisible();
   await expect(page.getByRole('button', { name: 'Invite' })).toBeVisible();
 });
 
@@ -119,7 +119,7 @@ test('inviting a member posts to /members and shows the invite link', async ({ p
   await page.getByRole('button', { name: 'Members' }).click();
 
   // Fill in the email input and submit.
-  await page.getByPlaceholder('email@example.com').fill('newuser@example.com');
+  await page.getByPlaceholder('username').fill('newuser@example.com');
   await page.getByRole('button', { name: 'Invite' }).click();
 
   // The invite link box should appear with the returned URL.
@@ -177,7 +177,7 @@ test('copy invite link button is visible after invite and triggers clipboard wri
   });
   await page.getByRole('button', { name: 'Members' }).click();
 
-  await page.getByPlaceholder('email@example.com').fill('copy@example.com');
+  await page.getByPlaceholder('username').fill('copy@example.com');
   await page.getByRole('button', { name: 'Invite' }).click();
 
   // Wait for invite link box.
