@@ -1,12 +1,16 @@
 package api
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
 	"sync"
+	"syscall"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"k8s.io/apimachinery/pkg/types"
@@ -16,6 +20,55 @@ import (
 	"github.com/mortise-org/mortise/internal/authz"
 	"github.com/mortise-org/mortise/internal/constants"
 )
+
+type retryTransport struct {
+	base     http.RoundTripper
+	retries  int
+	backoffs []time.Duration
+}
+
+func newRetryTransport(base http.RoundTripper) *retryTransport {
+	return &retryTransport{
+		base:     base,
+		retries:  3,
+		backoffs: []time.Duration{200 * time.Millisecond, 500 * time.Millisecond, 1 * time.Second},
+	}
+}
+
+func (t *retryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	canRetry := req.Body == nil || req.GetBody != nil
+
+	resp, err := t.base.RoundTrip(req)
+	if err == nil || !canRetry || !isTransientConnError(err) {
+		return resp, err
+	}
+
+	for i := 0; i < t.retries; i++ {
+		time.Sleep(t.backoffs[i])
+
+		if req.GetBody != nil {
+			body, bodyErr := req.GetBody()
+			if bodyErr != nil {
+				return nil, err
+			}
+			req.Body = body
+		}
+
+		resp, err = t.base.RoundTrip(req)
+		if err == nil || !isTransientConnError(err) {
+			return resp, err
+		}
+	}
+	return nil, err
+}
+
+func isTransientConnError(err error) bool {
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.ECONNRESET) {
+		return true
+	}
+	var opErr *net.OpError
+	return errors.As(err, &opErr)
+}
 
 // appProxyEntry tracks a running per-app proxy listener.
 type appProxyEntry struct {
@@ -111,6 +164,10 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 			req.URL.Host = targetURL.Host
 			req.Host = targetURL.Host
 		},
+		Transport: newRetryTransport(&http.Transport{
+			DialContext:           (&net.Dialer{Timeout: 5 * time.Second}).DialContext,
+			ResponseHeaderTimeout: 30 * time.Second,
+		}),
 	}
 
 	// Start serving in the background.

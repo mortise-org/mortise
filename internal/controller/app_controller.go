@@ -697,6 +697,7 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 	if err := r.reconcileEnvSecret(ctx, app, env, envNs); err != nil {
 		return fmt.Errorf("reconcile env secret: %w", err)
 	}
+	envHash := r.hashEnvSecretData(ctx, app.Name, envNs)
 
 	// PORT is injected directly (not via Secret) because it's a Mortise
 	// convention that must always be present and match the container port.
@@ -749,6 +750,11 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 	if credentialsHash != "" {
 		podAnno = mergeAnnotations(podAnno, map[string]string{
 			"mortise.dev/credentials-hash": credentialsHash,
+		})
+	}
+	if envHash != "" {
+		podAnno = mergeAnnotations(podAnno, map[string]string{
+			"mortise.dev/env-hash": envHash,
 		})
 	}
 
@@ -885,6 +891,7 @@ func (r *AppReconciler) reconcileCronJob(ctx context.Context, app *mortisev1alph
 	if err := r.reconcileEnvSecret(ctx, app, env, envNs); err != nil {
 		return fmt.Errorf("reconcile env secret: %w", err)
 	}
+	envHash := r.hashEnvSecretData(ctx, app.Name, envNs)
 
 	containers := []corev1.Container{
 		{
@@ -914,6 +921,11 @@ func (r *AppReconciler) reconcileCronJob(ctx context.Context, app *mortisev1alph
 	if credentialsHash != "" {
 		podAnno = mergeAnnotations(podAnno, map[string]string{
 			"mortise.dev/credentials-hash": credentialsHash,
+		})
+	}
+	if envHash != "" {
+		podAnno = mergeAnnotations(podAnno, map[string]string{
+			"mortise.dev/env-hash": envHash,
 		})
 	}
 
@@ -1611,6 +1623,26 @@ func hashCredentialData(data map[string][]byte) string {
 		h.Write([]byte{0})
 	}
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+func (r *AppReconciler) hashEnvSecretData(ctx context.Context, appName, envNs string) string {
+	combined := make(map[string][]byte)
+
+	var appSecret corev1.Secret
+	if err := r.Get(ctx, types.NamespacedName{Name: envstore.AppEnvSecretName(appName), Namespace: envNs}, &appSecret); err == nil {
+		for k, v := range appSecret.Data {
+			combined[k] = v
+		}
+	}
+
+	var sharedSecret corev1.Secret
+	if err := r.Get(ctx, types.NamespacedName{Name: envstore.SharedEnvName, Namespace: envNs}, &sharedSecret); err == nil {
+		for k, v := range sharedSecret.Data {
+			combined[k] = v
+		}
+	}
+
+	return hashCredentialData(combined)
 }
 
 // isMortiseManaged returns true iff the object carries the standard

@@ -3,7 +3,7 @@
 	import { store } from '$lib/store.svelte';
 	import type { App } from '$lib/types';
 	import BindingsPicker from '$lib/components/BindingsPicker.svelte';
-	import { Plus, Trash2, Link, Upload, FileText, X, Eye, EyeOff } from 'lucide-svelte';
+	import { Plus, Trash2, Link, Upload, FileText, X, Eye, EyeOff, Loader2 } from 'lucide-svelte';
 
 	let {
 		project,
@@ -36,9 +36,22 @@
 	};
 
 	let needsRedeploy = $state(false);
+	let redeploying = $state(false);
 
 	function markStale() {
 		needsRedeploy = true;
+	}
+
+	async function handleRedeploy() {
+		redeploying = true;
+		try {
+			await api.redeploy(project, app.metadata.name, activeEnv);
+			needsRedeploy = false;
+		} catch {
+			redeploying = false;
+		} finally {
+			redeploying = false;
+		}
 	}
 
 	const activeEnv = $derived(
@@ -284,11 +297,21 @@
 <div class="flex h-full flex-col gap-3 overflow-y-auto p-1">
 {#if needsRedeploy}
 	<div class="flex items-center justify-between rounded-md border border-info/30 bg-info/10 px-3 py-2 text-xs text-info">
-		<span>Changes saved — redeploying automatically</span>
-		<button type="button" onclick={() => { needsRedeploy = false; }}
-			class="ml-2 text-info/60 hover:text-info">
-			<X class="h-3.5 w-3.5" />
-		</button>
+		<span>Changes saved — redeploy to apply</span>
+		<div class="flex items-center gap-1.5">
+			<button type="button" onclick={handleRedeploy} disabled={redeploying}
+				class="rounded bg-info/20 px-2 py-0.5 font-medium text-info hover:bg-info/30 disabled:opacity-50">
+				{#if redeploying}
+					<Loader2 class="inline h-3 w-3 animate-spin" />
+				{:else}
+					Redeploy
+				{/if}
+			</button>
+			<button type="button" onclick={() => { needsRedeploy = false; }}
+				class="text-info/60 hover:text-info">
+				<X class="h-3.5 w-3.5" />
+			</button>
+		</div>
 	</div>
 {/if}
 
