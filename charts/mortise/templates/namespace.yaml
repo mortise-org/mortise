@@ -1,4 +1,4 @@
-{{- if or .Values.registry.enabled .Values.buildkit.enabled }}
+{{- if or .Values.registry.enabled .Values.buildkit.enabled .Values.observer.enabled }}
 apiVersion: v1
 kind: Namespace
 metadata:

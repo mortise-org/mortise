@@ -111,39 +111,50 @@ run: manifests generate fmt vet ## Run a controller from your host.
 
 DEV_CLUSTER ?= mortise-dev
 DEV_IMG ?= mortise:dev
+DEV_OBSERVER_IMG ?= mortise-observer:dev
 
 .PHONY: dev-up
 dev-up: build-ui ## Create k3d dev cluster with build infra, install Mortise, port-forward
 	@echo "==> Creating k3d cluster $(DEV_CLUSTER) (with registry mirror)..."
 	@k3d cluster list | grep -q $(DEV_CLUSTER) || k3d cluster create \
 		--config test/dev/k3d-config.yaml --wait
-	@echo "==> Building Docker image..."
-	$(CONTAINER_TOOL) build -t $(DEV_IMG) .
-	@echo "==> Loading image into k3d..."
-	k3d image import $(DEV_IMG) -c $(DEV_CLUSTER)
+	@echo "==> Building Docker images..."
+	$(CONTAINER_TOOL) build --target operator -t $(DEV_IMG) .
+	$(CONTAINER_TOOL) build --target observer -t $(DEV_OBSERVER_IMG) .
+	@echo "==> Loading images into k3d..."
+	k3d image import $(DEV_IMG) $(DEV_OBSERVER_IMG) -c $(DEV_CLUSTER)
 	@echo "==> Installing CRDs..."
 	kubectl apply -f charts/mortise-core/crds/
-	@echo "==> Installing Mortise via Helm..."
-	helm upgrade --install mortise charts/mortise \
-		--namespace mortise-system --create-namespace \
-		--set image.repository=mortise \
-		--set image.tag=dev \
-		--set image.pullPolicy=Never \
-		--set observer.enabled=true \
-		--set observer.image=mortise:dev \
-		--set observer.imagePullPolicy=Never \
-		--wait --timeout 90s
 	@echo "==> Deploying build infrastructure (BuildKit + registry)..."
 	kubectl apply -f test/integration/manifests/00-namespace.yaml \
 		-f test/integration/manifests/10-registry.yaml \
 		-f test/integration/manifests/30-buildkit.yaml
+	@echo "==> Waiting for build infrastructure to become ready..."
+	kubectl -n mortise-test-deps rollout status deployment/registry  --timeout=120s
+	kubectl -n mortise-test-deps rollout status deployment/buildkitd --timeout=180s
+	@echo "==> Installing Mortise via Helm..."
+	helm upgrade --install mortise charts/mortise \
+		--namespace mortise-system --create-namespace \
+		--set mortise-core.image.repository=mortise \
+		--set mortise-core.image.tag=dev \
+		--set mortise-core.image.pullPolicy=Never \
+		--set observer.enabled=true \
+		--set observer.image=$(DEV_OBSERVER_IMG) \
+		--set observer.imagePullPolicy=Never \
+		--set registry.enabled=false \
+		--set buildkit.enabled=false \
+		--set platformConfig.enabled=false \
+		--set traefik.enabled=false \
+		--set cert-manager.enabled=false \
+		--set metricsServer.enabled=false \
+		--wait --timeout 120s
 	@echo "==> Applying dev PlatformConfig..."
 	kubectl apply -f test/dev/platform-config.yaml
 	@echo "==> Restarting operator to pick up config..."
 	kubectl -n mortise-system rollout restart deployment/mortise
 	kubectl -n mortise-system rollout status deployment/mortise --timeout=60s
 	@echo "==> Starting port-forward..."
-	@pkill -f "port-forward.*mortise" >/dev/null 2>&1 || true
+	@-pkill -f "[k]ubectl port-forward.*8090" >/dev/null 2>&1
 	@kubectl port-forward -n mortise-system svc/mortise 8090:80 >/dev/null 2>&1 &
 	@sleep 2
 	@echo ""
@@ -154,20 +165,21 @@ dev-up: build-ui ## Create k3d dev cluster with build infra, install Mortise, po
 
 .PHONY: dev-down
 dev-down: ## Delete k3d dev cluster and stop port-forward
-	@pkill -f "port-forward.*mortise" >/dev/null 2>&1 || true
+	@-pkill -f "[k]ubectl port-forward.*8090" >/dev/null 2>&1
 	k3d cluster delete $(DEV_CLUSTER)
 
 
 .PHONY: dev-reset
 dev-reset: ## Tear down dev cluster completely, rebuild, and start fresh
 	-k3d cluster delete $(DEV_CLUSTER) >/dev/null 2>&1
-	-pkill -f "port-forward.*mortise" >/dev/null 2>&1
+	-pkill -f "[k]ubectl port-forward.*8090" >/dev/null 2>&1
 	$(MAKE) dev-up
 
 ##@ Integration Tests
 
 INT_CLUSTER ?= mortise-int
 INT_IMG ?= mortise:int
+INT_OBSERVER_IMG ?= mortise-observer:int
 
 .PHONY: test-integration
 test-integration: ## Create k3d cluster, install chart + test deps, run integration tests, tear down
@@ -177,10 +189,11 @@ test-integration: ## Create k3d cluster, install chart + test deps, run integrat
 	# --config wires the containerd mirror rule that makes
 	# registry.mortise-test-deps.svc:5000 pulls reachable from the node.
 	k3d cluster create --config test/integration/k3d-config.yaml --wait
-	@echo "==> Building Docker image..."
+	@echo "==> Building Docker images..."
 	$(CONTAINER_TOOL) build --target operator -t $(INT_IMG) .
-	@echo "==> Loading image into k3d..."
-	k3d image import $(INT_IMG) -c $(INT_CLUSTER)
+	$(CONTAINER_TOOL) build --target observer -t $(INT_OBSERVER_IMG) .
+	@echo "==> Loading images into k3d..."
+	k3d image import $(INT_IMG) $(INT_OBSERVER_IMG) -c $(INT_CLUSTER)
 	@echo "==> Installing CRDs..."
 	kubectl apply -f charts/mortise-core/crds/
 	@echo "==> Installing test-only dependencies (Zot, Gitea, BuildKit)..."
@@ -191,11 +204,20 @@ test-integration: ## Create k3d cluster, install chart + test deps, run integrat
 	kubectl -n mortise-test-deps rollout status deployment/gitea     --timeout=180s
 	kubectl -n mortise-test-deps rollout status deployment/buildkitd --timeout=180s
 	@echo "==> Installing Mortise via Helm..."
-	helm upgrade --install mortise charts/mortise-core \
+	helm upgrade --install mortise charts/mortise \
 		--namespace mortise-system --create-namespace \
-		--set image.repository=mortise \
-		--set image.tag=int \
-		--set image.pullPolicy=Never \
+		--set mortise-core.image.repository=mortise \
+		--set mortise-core.image.tag=int \
+		--set mortise-core.image.pullPolicy=Never \
+		--set observer.enabled=true \
+		--set observer.image=$(INT_OBSERVER_IMG) \
+		--set observer.imagePullPolicy=Never \
+		--set registry.enabled=false \
+		--set buildkit.enabled=false \
+		--set platformConfig.enabled=false \
+		--set traefik.enabled=false \
+		--set cert-manager.enabled=false \
+		--set metricsServer.enabled=false \
 		--wait --timeout 120s
 	@echo "==> Running integration tests..."
 	go test -tags integration -count=1 -timeout 15m ./test/integration/... || { \
@@ -284,17 +306,27 @@ test-e2e: ## Run Playwright E2E suite against the dev cluster (requires make dev
 
 .PHONY: dev-reload
 dev-reload: build-ui ## Rebuild image, re-apply CRDs + chart, restart Mortise in existing cluster
-	$(CONTAINER_TOOL) build -t $(DEV_IMG) .
-	k3d image import $(DEV_IMG) -c $(DEV_CLUSTER)
+	$(CONTAINER_TOOL) build --target operator -t $(DEV_IMG) .
+	$(CONTAINER_TOOL) build --target observer -t $(DEV_OBSERVER_IMG) .
+	k3d image import $(DEV_IMG) $(DEV_OBSERVER_IMG) -c $(DEV_CLUSTER)
 	kubectl apply -f charts/mortise-core/crds/
-	helm upgrade mortise charts/mortise-core \
+	helm upgrade mortise charts/mortise \
 		--namespace mortise-system \
-		--set image.repository=mortise \
-		--set image.tag=dev \
-		--set image.pullPolicy=Never
+		--set mortise-core.image.repository=mortise \
+		--set mortise-core.image.tag=dev \
+		--set mortise-core.image.pullPolicy=Never \
+		--set observer.enabled=true \
+		--set observer.image=$(DEV_OBSERVER_IMG) \
+		--set observer.imagePullPolicy=Never \
+		--set registry.enabled=false \
+		--set buildkit.enabled=false \
+		--set platformConfig.enabled=false \
+		--set traefik.enabled=false \
+		--set cert-manager.enabled=false \
+		--set metricsServer.enabled=false
 	kubectl rollout restart deployment/mortise -n mortise-system
 	kubectl rollout status deployment/mortise -n mortise-system --timeout 60s
-	@pkill -f "port-forward.*mortise" >/dev/null 2>&1 || true
+	@-pkill -f "[k]ubectl port-forward.*8090" >/dev/null 2>&1
 	@kubectl port-forward -n mortise-system svc/mortise 8090:80 >/dev/null 2>&1 &
 	@sleep 2
 	@echo "Reloaded — http://localhost:8090"

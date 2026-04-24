@@ -472,13 +472,14 @@
 			<!-- Type picker -->
 			<div class="space-y-1">
 				{#each typeOptions as opt}
+					{@const Icon = opt.icon}
 					<button
 						type="button"
 						onclick={() => selectType(opt.type)}
 						class="group flex w-full items-center gap-3 rounded-md px-3 py-2.5 text-left transition-colors hover:bg-surface-700"
 					>
 						<span class="flex h-8 w-8 items-center justify-center rounded-md bg-surface-800 transition-colors group-hover:bg-surface-700 text-white"
-							><svelte:component this={opt.icon} class="h-4 w-4" /></span
+							><Icon class="h-4 w-4" /></span
 						>
 						<div>
 							<p class="text-sm font-medium text-white">{opt.label}</p>
@@ -504,8 +505,9 @@
 						<!-- Provider selector (optional - GitHub uses per-user token) -->
 						{#if providers.length > 0}
 						<div>
-							<label class="text-sm text-gray-400">Git Provider</label>
+							<label class="text-sm text-gray-400" for="new-app-git-provider">Git Provider</label>
 							<select
+								id="new-app-git-provider"
 								bind:value={gitProvider}
 								onchange={loadRepos}
 								class="mt-1 w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-white outline-none focus:border-accent"
@@ -532,7 +534,7 @@
 							<div class="flex items-center justify-center h-[14rem] text-sm text-gray-500">Loading repositories...</div>
 						{:else if repos.length > 0}
 							<div>
-								<label class="text-sm text-gray-400">Repository</label>
+								<label class="text-sm text-gray-400" for="new-app-repo-search">Repository</label>
 								{#if selectedRepo && !repoListOpen}
 									<button
 										type="button"
@@ -544,6 +546,7 @@
 									</button>
 								{:else}
 									<input
+										id="new-app-repo-search"
 										type="text"
 										bind:value={repoSearch}
 										placeholder="Search repos..."
@@ -568,8 +571,9 @@
 
 						<!-- Branch -->
 						<div>
-							<label class="text-sm text-gray-400">Branch</label>
+							<label class="text-sm text-gray-400" for="new-app-branch">Branch</label>
 							<select
+								id="new-app-branch"
 								bind:value={gitBranch}
 								class="mt-1 w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-white outline-none focus:border-accent"
 							>
@@ -584,8 +588,9 @@
 
 						<!-- Root Directory (autocomplete) -->
 						<div class="relative">
-							<label class="text-sm text-gray-400">Root Directory</label>
+							<label class="text-sm text-gray-400" for="new-app-root-dir">Root Directory</label>
 							<input
+								id="new-app-root-dir"
 								type="text"
 								bind:value={gitPath}
 								placeholder="/"
@@ -618,8 +623,8 @@
 
 						<!-- Build mode -->
 						<div>
-							<label class="text-sm text-gray-400">Build mode</label>
-							<select bind:value={buildMode}
+							<label class="text-sm text-gray-400" for="new-app-build-mode">Build mode</label>
+							<select id="new-app-build-mode" bind:value={buildMode}
 								class="mt-1 w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-white outline-none focus:border-accent">
 								<option value="auto">Auto-detect</option>
 								<option value="dockerfile">Dockerfile</option>
@@ -628,15 +633,15 @@
 						</div>
 						{#if buildMode === 'dockerfile'}
 							<div>
-								<label class="text-sm text-gray-400">Dockerfile path</label>
-								<input type="text" bind:value={dockerfilePath} placeholder="Dockerfile"
+								<label class="text-sm text-gray-400" for="new-app-dockerfile">Dockerfile path</label>
+								<input id="new-app-dockerfile" type="text" bind:value={dockerfilePath} placeholder="Dockerfile"
 									class="mt-1 w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 font-mono text-sm text-white placeholder-gray-500 outline-none focus:border-accent" />
 							</div>
 						{/if}
 						{#if buildMode !== 'railpack' && gitPath}
 							<div>
-								<label class="text-sm text-gray-400">Build context</label>
-								<select bind:value={buildContext}
+								<label class="text-sm text-gray-400" for="new-app-build-context">Build context</label>
+								<select id="new-app-build-context" bind:value={buildContext}
 									class="mt-1 w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-white outline-none focus:border-accent">
 									<option value="">Auto-detect</option>
 									<option value="subdir">Subdirectory (self-contained)</option>
@@ -740,8 +745,9 @@
 				{:else if selectedType === 'image'}
 					<div class="space-y-4">
 						<div>
-							<label class="text-sm text-gray-400">Image Reference</label>
+							<label class="text-sm text-gray-400" for="new-app-image-ref">Image Reference</label>
 							<input
+								id="new-app-image-ref"
 								type="text"
 								bind:value={imageRef}
 								placeholder="nginx:1.27 or ghcr.io/org/app:latest"
@@ -749,8 +755,8 @@
 							/>
 						</div>
 						<div>
-							<label class="text-sm text-gray-400">Pull secret name <span class="text-gray-600">(optional)</span></label>
-							<input type="text" bind:value={pullSecret} placeholder="my-registry-secret"
+							<label class="text-sm text-gray-400" for="new-app-pull-secret">Pull secret name <span class="text-gray-600">(optional)</span></label>
+							<input id="new-app-pull-secret" type="text" bind:value={pullSecret} placeholder="my-registry-secret"
 								class="mt-1 w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-white placeholder-gray-500 outline-none focus:border-accent" />
 							<p class="mt-0.5 text-xs text-gray-500">Name of a k8s Secret in the project namespace for private registries.</p>
 						</div>
@@ -758,6 +764,7 @@
 				{:else if selectedType === 'database'}
 					<div class="grid grid-cols-2 gap-2">
 						{#each DB_TEMPLATES as tpl}
+							{@const Icon = tpl.icon}
 							<button
 								type="button"
 								onclick={() => {
@@ -767,7 +774,7 @@
 								}}
 								class="rounded-lg border p-3 text-left {selectedDbTemplate?.name === tpl.name ? 'border-accent bg-accent/5' : 'border-surface-600 bg-surface-700 hover:border-surface-500'}"
 							>
-								<div class="mb-1 text-accent"><svelte:component this={tpl.icon} class="h-5 w-5" /></div>
+								<div class="mb-1 text-accent"><Icon class="h-5 w-5" /></div>
 								<div class="text-sm font-medium text-white">{tpl.name}</div>
 								<div class="text-xs text-gray-500">{tpl.description}</div>
 							</button>
@@ -809,8 +816,9 @@
 				{:else if selectedType === 'compose'}
 					<div class="space-y-3">
 						<div>
-							<label class="text-sm text-gray-400">docker-compose.yml</label>
+							<label class="text-sm text-gray-400" for="new-app-compose">docker-compose.yml</label>
 							<textarea
+								id="new-app-compose"
 								bind:value={composeContent}
 								placeholder="Paste your docker-compose.yml content here..."
 								rows="10"
@@ -825,8 +833,9 @@
 				{:else if selectedType === 'external'}
 					<div class="space-y-4">
 						<div>
-							<label class="text-sm text-gray-400">Host</label>
+							<label class="text-sm text-gray-400" for="new-app-ext-host">Host</label>
 							<input
+								id="new-app-ext-host"
 								type="text"
 								bind:value={externalHost}
 								placeholder="db.internal.example.com"
@@ -834,8 +843,9 @@
 							/>
 						</div>
 						<div>
-							<label class="text-sm text-gray-400">Port</label>
+							<label class="text-sm text-gray-400" for="new-app-ext-port">Port</label>
 							<input
+								id="new-app-ext-port"
 								type="number"
 								bind:value={externalPort}
 								min="1"
@@ -844,7 +854,7 @@
 							/>
 						</div>
 						<div>
-							<label class="text-sm text-gray-400">Credentials (binding contract)</label>
+							<p class="text-sm text-gray-400">Credentials (binding contract)</p>
 							<p class="mt-0.5 text-xs text-gray-500 mb-2">Declare which credential keys this external service exposes for other apps to bind.</p>
 							{#each externalCredentials as cred, i}
 								<div class="flex gap-2 mb-1.5">
@@ -867,8 +877,9 @@
 					<!-- App name (not shown for supabase/compose — names are auto-generated) -->
 					{#if selectedType !== 'supabase' && selectedType !== 'compose'}
 					<div>
-						<label class="text-sm text-gray-400">App name</label>
+						<label class="text-sm text-gray-400" for="new-app-name">App name</label>
 						<input
+							id="new-app-name"
 							type="text"
 							bind:value={appName}
 							oninput={() => { appNameManuallyEdited = true; }}
@@ -881,8 +892,9 @@
 					<!-- Domain (optional, not shown for external service or supabase) -->
 					{#if selectedType !== 'external' && selectedType !== 'supabase' && selectedType !== 'compose'}
 						<div>
-							<label class="text-sm text-gray-400">Domain <span class="text-gray-600">(optional)</span></label>
+							<label class="text-sm text-gray-400" for="new-app-domain">Domain <span class="text-gray-600">(optional)</span></label>
 							<input
+								id="new-app-domain"
 								type="text"
 								bind:value={domain}
 								placeholder="app.yourdomain.com"
@@ -944,7 +956,7 @@
 					<!-- Kind selector (git + image only) -->
 					{#if (selectedType === 'git' || selectedType === 'image')}
 						<div>
-							<label class="text-sm text-gray-400">Kind</label>
+							<p class="text-sm text-gray-400">Kind</p>
 							<div class="mt-1 flex gap-2">
 								<button
 									type="button"
@@ -964,8 +976,9 @@
 						</div>
 						{#if appKind === 'cron'}
 							<div>
-								<label class="text-sm text-gray-400">Schedule</label>
+								<label class="text-sm text-gray-400" for="new-app-schedule">Schedule</label>
 								<input
+									id="new-app-schedule"
 									type="text"
 									bind:value={schedule}
 									placeholder="0 * * * *"

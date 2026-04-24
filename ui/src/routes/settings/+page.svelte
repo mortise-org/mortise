@@ -777,7 +777,7 @@
 <!-- Add Git Connection Modal -->
 {#if showAddModal}
 	<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-	<div class="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm" tabindex="-1" onkeydown={(e) => { if (e.key === 'Escape') closeAddModal(); }}>
+	<div class="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm" role="dialog" tabindex="-1" onkeydown={(e) => { if (e.key === 'Escape') closeAddModal(); }}>
 		<div class="w-full max-w-md rounded-lg border border-surface-600 bg-surface-800 shadow-2xl">
 			<!-- Header -->
 			<div class="flex items-center justify-between border-b border-surface-600 px-6 py-4">

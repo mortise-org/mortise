@@ -46,20 +46,32 @@
 	let saving = $state(false);
 
 	// --- Source ---
-	let srcRepo = $state(app.spec.source.repo ?? '');
-	let srcBranch = $state(app.spec.source.branch ?? '');
-	let srcPath = $state(app.spec.source.path ?? '');
-	let srcImage = $state(app.spec.source.image ?? '');
+	let srcRepo = $state('');
+	let srcBranch = $state('');
+	let srcPath = $state('');
+	let srcImage = $state('');
 
 	// --- Build ---
-	let buildMode = $state<'auto' | 'dockerfile' | 'railpack'>(app.spec.source.build?.mode ?? 'auto');
-	let dockerfilePath = $state(app.spec.source.build?.dockerfilePath ?? '');
-	let buildContext = $state<'' | 'root' | 'subdir'>(app.spec.source.build?.context ?? '');
+	let buildMode = $state<'auto' | 'dockerfile' | 'railpack'>('auto');
+	let dockerfilePath = $state('');
+	let buildContext = $state<'' | 'root' | 'subdir'>('');
 	let savingBuild = $state(false);
 
 	// --- Networking ---
-	let netPublic = $state(app.spec.network?.public ?? true);
-	let netPort = $state(String(app.spec.network?.port ?? ''));
+	let netPublic = $state(true);
+	let netPort = $state('');
+
+	$effect(() => {
+		srcRepo = app.spec.source.repo ?? '';
+		srcBranch = app.spec.source.branch ?? '';
+		srcPath = app.spec.source.path ?? '';
+		srcImage = app.spec.source.image ?? '';
+		buildMode = app.spec.source.build?.mode ?? 'auto';
+		dockerfilePath = app.spec.source.build?.dockerfilePath ?? '';
+		buildContext = app.spec.source.build?.context ?? '';
+		netPublic = app.spec.network?.public ?? true;
+		netPort = String(app.spec.network?.port ?? '');
+	});
 
 	// --- Scale (for active env) ---
 	let scaleReplicas = $state('1');
@@ -626,6 +638,7 @@
 						type="button"
 						role="switch"
 						aria-checked={netPublic}
+						aria-label="Toggle public access"
 						onclick={() => (netPublic = !netPublic)}
 						class="relative inline-flex h-5 w-9 items-center rounded-full transition-colors {netPublic ? 'bg-accent' : 'bg-surface-600'}"
 					>
@@ -640,7 +653,7 @@
 				</div>
 				{#if envEntry?.domain}
 					<div>
-						<label class={labelCls}>Primary domain</label>
+						<p class={labelCls}>Primary domain</p>
 						<div class="flex items-center gap-2">
 							<p class="flex-1 rounded-md bg-surface-700 px-3 py-1.5 font-mono text-xs text-gray-300">
 								{envEntry.domain}
@@ -745,6 +758,7 @@
 					type="button"
 					role="switch"
 					aria-checked={envEnabled}
+					aria-label="Toggle environment enabled"
 					disabled={togglingEnabled}
 					onclick={toggleEnvEnabled}
 					class="relative inline-flex h-5 w-9 items-center rounded-full transition-colors {envEnabled ? 'bg-accent' : 'bg-surface-600'} disabled:opacity-50"

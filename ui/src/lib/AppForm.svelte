@@ -16,7 +16,7 @@
 	// component when the template changes, so reading the initial value once
 	// is intentional. Structured clone keeps the template data immutable.
 	const initial = untrack(() => structuredClone(template.defaults));
-	const IconComp = templateIcons[template.icon];
+	const IconComp = untrack(() => templateIcons[template.icon]);
 
 	let name = $state(initial.name);
 	let sourceType = $state<SourceType>(initial.spec.source.type);

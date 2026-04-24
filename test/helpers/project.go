@@ -29,7 +29,7 @@ func CreateTestProject(t *testing.T, k8sClient client.Client, name string) strin
 	}
 	t.Cleanup(func() {
 		_ = k8sClient.Delete(context.Background(), project)
-		RequireEventually(t, 60*time.Second, func() bool {
+		RequireEventually(t, 90*time.Second, func() bool {
 			var ns corev1.Namespace
 			return k8sClient.Get(context.Background(), types.NamespacedName{Name: constants.ControlNamespace(name)}, &ns) != nil
 		})

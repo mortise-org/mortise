@@ -103,7 +103,7 @@ func TestPreviewEnvironmentLifecycle(t *testing.T) {
 	}
 
 	// Wait for the base App to be ready before creating previews.
-	helpers.WaitForAppReady(t, k8sClient, ns, app.Name, 10*time.Minute)
+	helpers.WaitForAppReady(t, k8sClient, ns, app.Name, 3*time.Minute)
 
 	// --- Get the current HEAD SHA from the Gitea repo for the PreviewEnvironment.
 	headSHA := getGiteaBranchSHA(t, giteaLocalURL, boot.Token, boot.Owner, boot.Name, "main")

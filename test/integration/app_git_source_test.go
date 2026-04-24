@@ -128,7 +128,7 @@ func TestGitSourceAppBuildsAndDeploys(t *testing.T) {
 
 	// --- Wait for build → deploy → ready. Generous timeout: first run pulls
 	// alpine + go-git clone + BuildKit layer push all on a cold cluster.
-	helpers.WaitForAppReady(t, k8sClient, ns, app.Name, 10*time.Minute)
+	helpers.WaitForAppReady(t, k8sClient, ns, app.Name, 3*time.Minute)
 
 	// --- Assert the registry has a tag under mortise/<appName>.
 	tags := helpers.AssertRegistryHasTags(t, registryLocalURL, "mortise", app.Name, 30*time.Second)

@@ -123,7 +123,7 @@ func TestPreviewEnvironmentViaWebhook(t *testing.T) {
 	if err := k8sClient.Create(context.Background(), app); err != nil {
 		t.Fatalf("create App: %v", err)
 	}
-	helpers.WaitForAppReady(t, k8sClient, ns, app.Name, 10*time.Minute)
+	helpers.WaitForAppReady(t, k8sClient, ns, app.Name, 3*time.Minute)
 
 	// --- Open a real PR in Gitea so we have an owner-recognised SHA + branch.
 	prBranch := "feature/preview-via-webhook"
@@ -176,7 +176,7 @@ func TestPreviewEnvironmentViaWebhook(t *testing.T) {
 
 	// --- Wait for the preview to build + deploy. Generous timeout: the first
 	// run may pull base layers into BuildKit's cache.
-	waitForPreviewReady(t, ns, peName, 10*time.Minute)
+	waitForPreviewReady(t, ns, peName, 3*time.Minute)
 	previewNs := constants.PreviewNamespace(projectName, prNumber)
 
 	// --- Verify the preview Deployment exists and has a built image.
@@ -212,7 +212,7 @@ func TestPreviewEnvironmentViaWebhook(t *testing.T) {
 	})
 
 	// Wait for rebuild: status should cycle back to Ready under the new SHA.
-	waitForPreviewReady(t, ns, peName, 10*time.Minute)
+	waitForPreviewReady(t, ns, peName, 3*time.Minute)
 
 	// --- Step 3: closed — fire the close webhook. The handler should delete
 	// the PE, and the controller should garbage-collect owned resources.

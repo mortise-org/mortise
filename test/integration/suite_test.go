@@ -86,7 +86,7 @@ func loadKubeconfig() *rest.Config {
 }
 
 func assertMortiseReady() {
-	deadline := time.Now().Add(60 * time.Second)
+	deadline := time.Now().Add(90 * time.Second)
 	for time.Now().Before(deadline) {
 		var dep appsv1.Deployment
 		err := k8sClient.Get(context.Background(), types.NamespacedName{

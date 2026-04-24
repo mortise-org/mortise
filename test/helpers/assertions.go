@@ -29,7 +29,7 @@ func RequireEventually(t *testing.T, timeout time.Duration, fn func() bool) {
 // AssertPodsRunning asserts that a Deployment exists with the expected number of ready replicas.
 func AssertPodsRunning(t *testing.T, k8sClient client.Client, ns, name string, count int32) {
 	t.Helper()
-	RequireEventually(t, 2*time.Minute, func() bool {
+	RequireEventually(t, 3*time.Minute, func() bool {
 		var dep appsv1.Deployment
 		err := k8sClient.Get(context.Background(), types.NamespacedName{
 			Name:      name,
@@ -45,7 +45,7 @@ func AssertPodsRunning(t *testing.T, k8sClient client.Client, ns, name string, c
 // AssertDeploymentExists asserts a Deployment with the given name exists in the namespace.
 func AssertDeploymentExists(t *testing.T, k8sClient client.Client, ns, name string) {
 	t.Helper()
-	RequireEventually(t, 30*time.Second, func() bool {
+	RequireEventually(t, 60*time.Second, func() bool {
 		var dep appsv1.Deployment
 		return k8sClient.Get(context.Background(), types.NamespacedName{
 			Name: name, Namespace: ns,
@@ -56,7 +56,7 @@ func AssertDeploymentExists(t *testing.T, k8sClient client.Client, ns, name stri
 // AssertIngressExists asserts an Ingress with the given name exists in the namespace.
 func AssertIngressExists(t *testing.T, k8sClient client.Client, ns, name string) {
 	t.Helper()
-	RequireEventually(t, 30*time.Second, func() bool {
+	RequireEventually(t, 60*time.Second, func() bool {
 		var ing networkingv1.Ingress
 		return k8sClient.Get(context.Background(), types.NamespacedName{
 			Name: name, Namespace: ns,

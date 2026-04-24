@@ -358,7 +358,7 @@
               <p class="text-sm font-medium text-white">Enable PR Environments</p>
               <p class="mt-1 text-xs text-gray-500">Automatically create preview deployments for pull requests.</p>
             </div>
-            <button type="button" role="switch" aria-checked={prEnabled}
+            <button type="button" role="switch" aria-checked={prEnabled} aria-label="Toggle PR environments"
               onclick={async () => { prEnabled = !prEnabled; await savePR(); }}
               class="relative inline-flex h-5 w-9 items-center rounded-full transition-colors {prEnabled ? 'bg-accent' : 'bg-surface-600'}">
               <span class="inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform {prEnabled ? 'translate-x-4.5' : 'translate-x-0.5'}"></span>
