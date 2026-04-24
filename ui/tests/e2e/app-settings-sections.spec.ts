@@ -512,7 +512,7 @@ test.describe('app drawer settings tab sections', () => {
 		await expect.poll(() => deleteWasCalled).toBe(true);
 	});
 
-	test('Test 14: Credentials section — add and remove a credential', async ({ page }) => {
+	test('Test 14: Credentials section in Variables tab — add a credential', async ({ page }) => {
 		let capturedBody: Record<string, unknown> | null = null;
 
 		await setupMocks(page);
@@ -526,16 +526,20 @@ test.describe('app drawer settings tab sections', () => {
 			}
 			return route.fulfill({ json: mockApp });
 		});
+		await page.route('/api/projects/my-project/apps/web-app/env*', (r) => r.fulfill({ json: [] }));
+		await page.route('/api/projects/my-project/shared-vars', (r) => r.fulfill({ json: [] }));
 
 		await injectAuth(page);
-		await navigateToSettingsTab(page);
+		await page.goto('/projects/my-project/apps/web-app');
+		await expect(page.getByRole('button', { name: 'Variables' })).toBeVisible({ timeout: 5_000 });
+		await page.getByRole('button', { name: 'Variables' }).click();
 
-		await page.getByPlaceholder('Filter settings…').fill('credentials');
-		await expect(page.getByRole('heading', { name: 'Credentials' })).toBeVisible({ timeout: 5_000 });
+		await expect(page.getByText('Exposed Credentials')).toBeVisible({ timeout: 5_000 });
+		await expect(page.getByText('No credentials')).toBeVisible();
 
-		await expect(page.getByText('No credentials declared')).toBeVisible();
+		const credHeader = page.locator('div[role="button"]').filter({ hasText: 'Exposed Credentials' });
+		await credHeader.locator('button').click();
 
-		await page.getByRole('button', { name: 'Add', exact: true }).click();
 		await page.locator('#cred-name').fill('password');
 		await page.locator('#cred-value').fill('secret123');
 		await page.getByRole('button', { name: 'Add', exact: true }).click();
@@ -547,7 +551,7 @@ test.describe('app drawer settings tab sections', () => {
 		);
 	});
 
-	test('Test 15: Bindings dropdown shows all apps (not just ones with credentials)', async ({ page }) => {
+	test('Test 15: Bindings in Variables tab shows all apps with injected var preview', async ({ page }) => {
 		const pgApp = {
 			metadata: { name: 'postgres-db', namespace: 'project-my-project' },
 			spec: {
@@ -564,14 +568,19 @@ test.describe('app drawer settings tab sections', () => {
 		await page.route('/api/projects/my-project/apps', (r) =>
 			r.fulfill({ json: [mockApp, pgApp] })
 		);
+		await page.route('/api/projects/my-project/apps/web-app/env*', (r) => r.fulfill({ json: [] }));
+		await page.route('/api/projects/my-project/shared-vars', (r) => r.fulfill({ json: [] }));
 
 		await injectAuth(page);
-		await navigateToSettingsTab(page);
+		await page.goto('/projects/my-project/apps/web-app');
+		await expect(page.getByRole('button', { name: 'Variables' })).toBeVisible({ timeout: 5_000 });
+		await page.getByRole('button', { name: 'Variables' }).click();
 
-		await page.getByPlaceholder('Filter settings…').fill('bindings');
-		await expect(page.getByRole('heading', { name: 'Bindings' })).toBeVisible({ timeout: 5_000 });
+		await expect(page.getByText('Bindings')).toBeVisible({ timeout: 5_000 });
 
-		await page.getByRole('button', { name: 'Add binding' }).click();
+		const bindingsHeader = page.locator('div[role="button"]').filter({ hasText: 'Bindings' });
+		await bindingsHeader.locator('button').click();
+
 		const bindingSelect = page.locator('#binding-ref');
 		await expect(bindingSelect).toBeVisible({ timeout: 5_000 });
 

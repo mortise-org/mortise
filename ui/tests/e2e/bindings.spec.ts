@@ -111,16 +111,16 @@ test.describe('bindings', () => {
 		await page.goto(`/projects/${projectName}/apps/${webAppName}`);
 		await expect(page.getByRole('heading', { name: webAppName })).toBeVisible({ timeout: 10_000 });
 
-		// Open Settings tab → Bindings section.
-		await page.getByRole('button', { name: 'Settings' }).click();
-		await page.getByPlaceholder('Filter settings…').fill('bindings');
-		await expect(page.getByRole('heading', { name: 'Bindings' })).toBeVisible({ timeout: 5_000 });
+		// Open Variables tab → Bindings section.
+		await page.getByRole('button', { name: 'Variables' }).click();
+		await expect(page.getByText('Bindings')).toBeVisible({ timeout: 5_000 });
 
 		// No bindings yet.
 		await expect(page.getByText('No bindings')).toBeVisible();
 
-		// Click "Add binding".
-		await page.getByRole('button', { name: 'Add binding' }).click();
+		// Click the + button in the Bindings section header.
+		const bindingsHeader = page.locator('div[role="button"]').filter({ hasText: 'Bindings' });
+		await bindingsHeader.locator('button').click();
 
 		// Select the postgres app from the dropdown.
 		const bindingSelect = page.locator('#binding-ref');
@@ -228,19 +228,19 @@ test.describe('bindings', () => {
 		await page.goto(`/projects/${projectName}/apps/${webAppName}`);
 		await expect(page.getByRole('heading', { name: webAppName })).toBeVisible({ timeout: 10_000 });
 
-		await page.getByRole('button', { name: 'Settings' }).click();
-		await page.getByPlaceholder('Filter settings…').fill('bindings');
-		await expect(page.getByRole('heading', { name: 'Bindings' })).toBeVisible({ timeout: 5_000 });
+		await page.getByRole('button', { name: 'Variables' }).click();
+		await expect(page.getByText('Bindings')).toBeVisible({ timeout: 5_000 });
 
 		// The existing binding should be visible.
 		await expect(page.getByText(pgAppName).first()).toBeVisible({ timeout: 5_000 });
 
-		// Click the trash icon on the binding row.
-		const bindingRow = page.locator('.rounded-md.border').filter({ hasText: pgAppName });
+		// Hover and click the trash icon on the binding row.
+		const bindingRow = page.locator('.group').filter({ hasText: pgAppName });
+		await bindingRow.hover();
 		await bindingRow.locator('button').click();
 
 		// After removal the binding row should be gone.
-		await expect(page.locator('.rounded-md.border').filter({ hasText: pgAppName })).not.toBeVisible({ timeout: 5_000 });
+		await expect(page.getByText(pgAppName)).not.toBeVisible({ timeout: 5_000 });
 		await expect(page.getByText('No bindings')).toBeVisible();
 
 		await deleteAppViaAPI(request, adminToken, projectName, webAppName);

@@ -3,7 +3,7 @@
 	import { store } from '$lib/store.svelte';
 	import type { App } from '$lib/types';
 	import BindingsPicker from '$lib/components/BindingsPicker.svelte';
-	import { Plus, Trash2, Link, Upload, FileText, X, Eye, EyeOff, Loader2 } from 'lucide-svelte';
+	import { Plus, Trash2, Link, Upload, FileText, X, Eye, EyeOff, Loader2, ChevronDown } from 'lucide-svelte';
 
 	let {
 		project,
@@ -292,6 +292,148 @@
 	function entriesToRaw(entries: EnvEntry[]): string {
 		return entries.map(e => `${e.name}=${e.value}`).join('\n');
 	}
+
+	// --- Bindings ---
+	let showAddBinding = $state(false);
+	let newBindingRef = $state('');
+	let savingBinding = $state(false);
+	let bindingError = $state('');
+	let allApps = $state<App[]>([]);
+	let bindingsOpen = $state(true);
+	let credentialsOpen = $state(true);
+
+	$effect(() => {
+		api.listApps(project).then(a => allApps = a).catch(() => {});
+	});
+
+	const currentBindings = $derived(
+		app.spec.environments?.find(e => e.name === activeEnv)?.bindings ?? []
+	);
+	const bindableApps = $derived(allApps.filter(a =>
+		a.metadata.name !== app.metadata.name &&
+		!currentBindings.some(b => b.ref === a.metadata.name)
+	));
+
+	function imageBaseName(image: string): string {
+		let img = image.toLowerCase();
+		const slash = img.lastIndexOf('/');
+		if (slash >= 0) img = img.slice(slash + 1);
+		const colon = img.indexOf(':');
+		if (colon >= 0) img = img.slice(0, colon);
+		return img;
+	}
+
+	function hasAutoUrl(image: string): boolean {
+		return ['postgres', 'redis', 'mysql', 'mariadb', 'mongo'].includes(imageBaseName(image));
+	}
+
+	function bindingPreviewVars(boundApp: App): string[] {
+		const prefix = boundApp.metadata.name.toUpperCase().replace(/[^A-Z0-9_]/g, '_');
+		const vars = [`${prefix}_HOST`, `${prefix}_PORT`];
+		if (hasAutoUrl(boundApp.spec.source.image ?? '')) {
+			vars.push(`${prefix}_URL`);
+		}
+		for (const cred of boundApp.spec.credentials ?? []) {
+			if (cred.name !== 'host' && cred.name !== 'port') {
+				vars.push(`${prefix}_${cred.name.toUpperCase()}`);
+			}
+		}
+		return vars;
+	}
+
+	async function addBinding() {
+		if (!newBindingRef || !activeEnv) return;
+		savingBinding = true;
+		bindingError = '';
+		const savedRef = newBindingRef;
+		const spec = JSON.parse(JSON.stringify(app.spec));
+		spec.environments = spec.environments ?? [];
+		let envIdx = spec.environments.findIndex((e: { name: string }) => e.name === activeEnv);
+		if (envIdx < 0) {
+			spec.environments.push({ name: activeEnv });
+			envIdx = spec.environments.length - 1;
+		}
+		spec.environments[envIdx].bindings = [
+			...(spec.environments[envIdx].bindings ?? []),
+			{ ref: savedRef }
+		];
+		showAddBinding = false;
+		newBindingRef = '';
+		try {
+			await api.updateApp(project, app.metadata.name, spec);
+			markStale();
+		} catch (e) {
+			bindingError = e instanceof Error ? e.message : 'Failed to add binding';
+			showAddBinding = true;
+			newBindingRef = savedRef;
+		} finally {
+			savingBinding = false;
+		}
+	}
+
+	async function removeBinding(ref: string) {
+		if (!activeEnv) return;
+		bindingError = '';
+		const spec = JSON.parse(JSON.stringify(app.spec));
+		spec.environments = (spec.environments ?? []).map((e: { name: string; bindings?: Array<{ ref: string }> }) =>
+			e.name === activeEnv
+				? { ...e, bindings: (e.bindings ?? []).filter(b => b.ref !== ref) }
+				: e
+		);
+		try {
+			await api.updateApp(project, app.metadata.name, spec);
+			markStale();
+		} catch (e) {
+			bindingError = e instanceof Error ? e.message : 'Failed to remove binding';
+		}
+	}
+
+	// --- Credentials ---
+	let showAddCredential = $state(false);
+	let newCredName = $state('');
+	let newCredValue = $state('');
+	let savingCredentials = $state(false);
+	let credentialError = $state('');
+	const currentCredentials = $derived(app.spec.credentials ?? []);
+
+	async function addCredential() {
+		if (!newCredName.trim()) return;
+		savingCredentials = true;
+		credentialError = '';
+		const spec = JSON.parse(JSON.stringify(app.spec));
+		spec.credentials = [
+			...(spec.credentials ?? []),
+			{ name: newCredName.trim(), ...(newCredValue ? { value: newCredValue } : {}) }
+		];
+		const savedName = newCredName;
+		const savedValue = newCredValue;
+		showAddCredential = false;
+		newCredName = '';
+		newCredValue = '';
+		try {
+			await api.updateApp(project, app.metadata.name, spec);
+		} catch (e) {
+			credentialError = e instanceof Error ? e.message : 'Failed to add credential';
+			showAddCredential = true;
+			newCredName = savedName;
+			newCredValue = savedValue;
+		} finally {
+			savingCredentials = false;
+		}
+	}
+
+	async function removeCredential(name: string) {
+		credentialError = '';
+		const spec = JSON.parse(JSON.stringify(app.spec));
+		spec.credentials = (spec.credentials ?? []).filter(
+			(c: { name: string }) => c.name !== name
+		);
+		try {
+			await api.updateApp(project, app.metadata.name, spec);
+		} catch (e) {
+			credentialError = e instanceof Error ? e.message : 'Failed to remove credential';
+		}
+	}
 </script>
 
 <div class="flex h-full flex-col gap-3 overflow-y-auto p-1">
@@ -566,5 +708,168 @@
 				{/if}
 			{/if}
 		</div>
+	</div>
+
+	<!-- Bindings section -->
+	<div class="rounded-lg border border-surface-600 bg-surface-900">
+		<div
+			role="button"
+			tabindex="0"
+			onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') bindingsOpen = !bindingsOpen; }}
+			onclick={() => bindingsOpen = !bindingsOpen}
+			class="flex w-full cursor-pointer items-center justify-between px-3 py-2.5">
+			<div class="flex items-center gap-2">
+				<span class="text-sm font-medium text-white">Bindings</span>
+				{#if currentBindings.length > 0}
+					<span class="rounded-full bg-surface-700 px-1.5 py-0.5 text-[10px] font-medium text-gray-400">{currentBindings.length}</span>
+				{/if}
+			</div>
+			<div class="flex items-center gap-2">
+				{#if bindingsOpen}
+					<button type="button" onclick={(e) => { e.stopPropagation(); showAddBinding = true; }}
+						class="flex items-center gap-1 rounded-md border border-surface-600 px-2 py-1 text-xs text-gray-400 hover:bg-surface-700 hover:text-white">
+						<Plus class="h-3 w-3" />
+					</button>
+				{/if}
+				<ChevronDown class="h-4 w-4 text-gray-500 transition-transform {bindingsOpen ? 'rotate-180' : ''}" />
+			</div>
+		</div>
+
+		{#if bindingsOpen}
+			<div class="border-t border-surface-600">
+				{#if bindingError}
+					<div class="px-3 py-2 text-xs text-danger">{bindingError}</div>
+				{/if}
+
+				{#if showAddBinding}
+					<div class="border-b border-surface-600 bg-surface-700/30 px-3 py-2.5 space-y-2">
+						<div class="flex items-center gap-2">
+							<select id="binding-ref" bind:value={newBindingRef}
+								class="flex-1 rounded-md border border-surface-600 bg-surface-800 px-2.5 py-1.5 text-sm text-white outline-none focus:border-accent">
+								<option value="">Select an app…</option>
+								{#each bindableApps as a}
+									<option value={a.metadata.name}>{a.metadata.name}</option>
+								{/each}
+							</select>
+							<button type="button" onclick={addBinding} disabled={!newBindingRef || savingBinding}
+								class="rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-white hover:bg-accent-hover disabled:opacity-50">
+								{savingBinding ? 'Adding…' : 'Add'}
+							</button>
+							<button type="button" onclick={() => { showAddBinding = false; newBindingRef = ''; }}
+								class="rounded p-1.5 text-gray-500 hover:text-white"><X class="h-3.5 w-3.5" /></button>
+						</div>
+						{#if newBindingRef}
+							{@const boundApp = allApps.find(a => a.metadata.name === newBindingRef)}
+							{#if boundApp}
+								<div class="flex flex-wrap gap-1 text-[11px]">
+									<span class="text-gray-500">Injects:</span>
+									{#each bindingPreviewVars(boundApp) as v}
+										<span class="rounded bg-surface-800 px-1.5 py-0.5 font-mono text-gray-400">{v}</span>
+									{/each}
+								</div>
+							{/if}
+						{/if}
+					</div>
+				{/if}
+
+				{#if currentBindings.length === 0 && !showAddBinding}
+					<div class="py-6 text-center text-xs text-gray-500">
+						No bindings. Connect to another app to inject its HOST, PORT, and URL.
+					</div>
+				{:else}
+					{#each currentBindings as binding}
+						{@const bound = allApps.find(a => a.metadata.name === binding.ref)}
+						<div class="group flex items-center justify-between border-b border-surface-600 px-3 py-2 hover:bg-surface-700/30">
+							<div class="flex items-center gap-2">
+								<Link class="h-3.5 w-3.5 text-gray-500" />
+								<span class="text-sm text-gray-200">{binding.ref}</span>
+								{#if bound && hasAutoUrl(bound.spec.source.image ?? '')}
+									<span class="rounded-full bg-info/10 px-1.5 py-0.5 text-[10px] font-medium text-info">{imageBaseName(bound.spec.source.image ?? '')}</span>
+								{/if}
+							</div>
+							<button type="button" onclick={() => removeBinding(binding.ref)}
+								class="shrink-0 rounded p-1 text-gray-600 opacity-0 group-hover:opacity-100 hover:text-danger transition-all">
+								<Trash2 class="h-3.5 w-3.5" />
+							</button>
+						</div>
+					{/each}
+				{/if}
+			</div>
+		{/if}
+	</div>
+
+	<!-- Credentials section (what this app exposes) -->
+	<div class="rounded-lg border border-surface-600 bg-surface-900">
+		<div
+			role="button"
+			tabindex="0"
+			onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') credentialsOpen = !credentialsOpen; }}
+			onclick={() => credentialsOpen = !credentialsOpen}
+			class="flex w-full cursor-pointer items-center justify-between px-3 py-2.5">
+			<div class="flex items-center gap-2">
+				<span class="text-sm font-medium text-white">Exposed Credentials</span>
+				{#if currentCredentials.length > 0}
+					<span class="rounded-full bg-surface-700 px-1.5 py-0.5 text-[10px] font-medium text-gray-400">{currentCredentials.length}</span>
+				{/if}
+			</div>
+			<div class="flex items-center gap-2">
+				{#if credentialsOpen}
+					<button type="button" onclick={(e) => { e.stopPropagation(); showAddCredential = true; }}
+						class="flex items-center gap-1 rounded-md border border-surface-600 px-2 py-1 text-xs text-gray-400 hover:bg-surface-700 hover:text-white">
+						<Plus class="h-3 w-3" />
+					</button>
+				{/if}
+				<ChevronDown class="h-4 w-4 text-gray-500 transition-transform {credentialsOpen ? 'rotate-180' : ''}" />
+			</div>
+		</div>
+
+		{#if credentialsOpen}
+			<div class="border-t border-surface-600">
+				{#if credentialError}
+					<div class="px-3 py-2 text-xs text-danger">{credentialError}</div>
+				{/if}
+
+				{#if showAddCredential}
+					<div class="border-b border-surface-600 bg-surface-700/30 px-3 py-2.5">
+						<div class="flex items-center gap-2">
+							<input id="cred-name" type="text" bind:value={newCredName} placeholder="key"
+								class="w-[40%] rounded-md border border-surface-600 bg-surface-800 px-2.5 py-1.5 font-mono text-sm text-white placeholder-gray-500 outline-none focus:border-accent" />
+							<input id="cred-value" type="text" bind:value={newCredValue} placeholder="value (optional)"
+								onkeydown={(e) => { if (e.key === 'Enter' && newCredName.trim()) addCredential(); }}
+								class="flex-1 rounded-md border border-surface-600 bg-surface-800 px-2.5 py-1.5 text-sm text-white placeholder-gray-500 outline-none focus:border-accent" />
+							<button type="button" onclick={addCredential} disabled={!newCredName.trim() || savingCredentials}
+								class="rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-white hover:bg-accent-hover disabled:opacity-50">
+								{savingCredentials ? 'Adding…' : 'Add'}
+							</button>
+							<button type="button" onclick={() => { showAddCredential = false; newCredName = ''; newCredValue = ''; }}
+								class="rounded p-1.5 text-gray-500 hover:text-white"><X class="h-3.5 w-3.5" /></button>
+						</div>
+					</div>
+				{/if}
+
+				{#if currentCredentials.length === 0 && !showAddCredential}
+					<div class="py-6 text-center text-xs text-gray-500">
+						No credentials. Declare what this app exposes so other apps can bind to it.
+					</div>
+				{:else}
+					{#each currentCredentials as cred}
+						<div class="group flex items-center justify-between border-b border-surface-600 px-3 py-2 hover:bg-surface-700/30">
+							<div class="flex items-center gap-2">
+								<span class="font-mono text-sm text-gray-200">{cred.name}</span>
+								{#if cred.value}
+									<span class="text-[10px] text-gray-500">= ••••••</span>
+								{:else if cred.valueFrom}
+									<span class="inline-flex items-center rounded-full bg-accent/10 px-1.5 py-0.5 text-[10px] font-medium text-accent">from secret</span>
+								{/if}
+							</div>
+							<button type="button" onclick={() => removeCredential(cred.name)}
+								class="shrink-0 rounded p-1 text-gray-600 opacity-0 group-hover:opacity-100 hover:text-danger transition-all">
+								<Trash2 class="h-3.5 w-3.5" />
+							</button>
+						</div>
+					{/each}
+				{/if}
+			</div>
+		{/if}
 	</div>
 </div>
