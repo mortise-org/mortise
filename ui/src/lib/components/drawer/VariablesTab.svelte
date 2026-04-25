@@ -41,6 +41,9 @@
 		app.status.pendingEnvHash !== app.status.deployedEnvHash
 	);
 	let localStale = $state(false);
+	$effect(() => {
+		if (!serverNeedsRedeploy) localStale = false;
+	});
 	const needsRedeploy = $derived(localStale || serverNeedsRedeploy);
 	let redeploying = $state(false);
 
