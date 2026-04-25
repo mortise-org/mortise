@@ -1,3 +1,17 @@
+x-mortise:
+  variables:
+    JWT_SECRET:
+      generate: hex
+      length: 64
+    ANON_KEY:
+      generate: jwt
+      claims: { role: anon, iss: supabase }
+      sign_with: JWT_SECRET
+    SERVICE_ROLE_KEY:
+      generate: jwt
+      claims: { role: service_role, iss: supabase }
+      sign_with: JWT_SECRET
+
 services:
   postgres:
     image: supabase/postgres:15.6.1.143
@@ -47,9 +61,6 @@ services:
     environment:
       DATABASE_URL: postgres://supabase_admin:${PG_PASSWORD}@supabase-postgres:5432/supabase
       PGRST_JWT_SECRET: ${JWT_SECRET}
-      # ANON_KEY and SERVICE_KEY must be JWTs signed with JWT_SECRET.
-      # substituteVars auto-generates placeholder values; replace them with
-      # real Supabase JWTs for a working setup (see https://supabase.com/docs/guides/self-hosting#api-keys).
       ANON_KEY: ${ANON_KEY}
       SERVICE_KEY: ${SERVICE_ROLE_KEY}
       STORAGE_BACKEND: file

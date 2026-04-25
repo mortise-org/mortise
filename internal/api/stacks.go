@@ -2,7 +2,6 @@ package api
 
 import (
 	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -290,30 +289,36 @@ func (s *Server) ListTemplates(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
-// randReader is the entropy source for generateRandomHex. Tests swap it
+// randReader is the entropy source for generateHex. Tests swap it
 // via export_test.go to inject deterministic or failing readers.
 var randReader io.Reader = rand.Reader
 
-func generateRandomHex(n int) (string, error) {
-	b := make([]byte, n)
-	if _, err := io.ReadFull(randReader, b); err != nil {
-		return "", fmt.Errorf("generating random hex: %w", err)
-	}
-	return hex.EncodeToString(b), nil
-}
-
 // substituteVars replaces ${VAR_NAME} placeholders in the compose YAML.
-// Any unresolved variables are auto-generated as random 32-char hex strings.
-// This means templates "just work" without requiring the user to provide secrets.
+// If the compose contains an x-mortise.variables block, those specs drive
+// generation (e.g. jwt, hex with custom length). Any remaining unresolved
+// variables are auto-generated as random 32-char hex strings. User-provided
+// vars always take precedence over generators.
 func substituteVars(tpl string, vars map[string]string) (string, error) {
 	if vars == nil {
 		vars = make(map[string]string)
 	}
+
+	ext, cleaned, err := parseMortiseExtension(tpl)
+	if err != nil {
+		return "", fmt.Errorf("parse x-mortise: %w", err)
+	}
+	if ext != nil {
+		if err := resolveVarSpecs(ext, vars); err != nil {
+			return "", err
+		}
+		tpl = cleaned
+	}
+
 	result := tpl
 	for k, v := range vars {
 		result = strings.ReplaceAll(result, "${"+k+"}", v)
 	}
-	// Auto-generate any remaining unresolved variables.
+	// Auto-generate any remaining unresolved variables as random hex.
 	for {
 		idx := strings.Index(result, "${")
 		if idx == -1 {
@@ -324,7 +329,7 @@ func substituteVars(tpl string, vars map[string]string) (string, error) {
 			break
 		}
 		varName := result[idx+2 : idx+end]
-		generated, err := generateRandomHex(16)
+		generated, err := generateHex(32, randReader)
 		if err != nil {
 			return "", err
 		}

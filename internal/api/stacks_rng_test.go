@@ -12,16 +12,16 @@ func (failingReader) Read(p []byte) (int, error) {
 	return 0, errors.New("simulated rng failure")
 }
 
-// TestGenerateRandomHexErrorPropagation verifies that a failing RNG causes
+// TestGenerateHexErrorPropagation verifies that a failing RNG causes
 // substituteVars to return an error (instead of silently producing an empty
 // or broken secret).
-func TestGenerateRandomHexErrorPropagation(t *testing.T) {
+func TestGenerateHexErrorPropagation(t *testing.T) {
 	orig := randReader
 	randReader = failingReader{}
 	t.Cleanup(func() { randReader = orig })
 
-	t.Run("generateRandomHex returns the rng error", func(t *testing.T) {
-		if _, err := generateRandomHex(16); err == nil {
+	t.Run("generateHex returns the rng error", func(t *testing.T) {
+		if _, err := generateHex(32, randReader); err == nil {
 			t.Fatal("expected error from failing rng, got nil")
 		}
 	})
