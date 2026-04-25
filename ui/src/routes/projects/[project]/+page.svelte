@@ -10,7 +10,7 @@
 	import NewAppModal from '$lib/components/NewAppModal.svelte';
 	import AppDrawer from '$lib/components/AppDrawer.svelte';
 	import ViewModeToggle from '$lib/components/ViewModeToggle.svelte';
-	import { Plus, GitBranch, Container, Cloud, Clock } from 'lucide-svelte';
+	import { Plus, GitBranch, Container, Cloud, Clock, RotateCw, Loader2 } from 'lucide-svelte';
 
 	const projectName = $derived(page.params.project ?? '');
 	// App name from URL (e.g. /projects/foo/apps/bar → 'bar')
@@ -139,6 +139,38 @@
 		eventStream?.close();
 	});
 
+	const selectedEnv = $derived(store.currentEnv(projectName) || 'production');
+
+	const staleApps = $derived(
+		apps.filter(a =>
+			!!a.status?.pendingEnvHash &&
+			!!a.status?.deployedEnvHash &&
+			a.status.pendingEnvHash !== a.status.deployedEnvHash
+		)
+	);
+
+	let redeployingApps = $state<Set<string>>(new Set());
+	let redeployAllRunning = $state(false);
+
+	async function redeployOne(appName: string) {
+		redeployingApps = new Set([...redeployingApps, appName]);
+		try {
+			await api.redeploy(projectName, appName, selectedEnv);
+		} catch { /* error surfaces via SSE phase update */ }
+		finally {
+			const next = new Set(redeployingApps);
+			next.delete(appName);
+			redeployingApps = next;
+		}
+	}
+
+	async function redeployAllStale() {
+		redeployAllRunning = true;
+		const names = staleApps.map(a => a.metadata.name);
+		await Promise.allSettled(names.map(n => redeployOne(n)));
+		redeployAllRunning = false;
+	}
+
 	function lastDeploy(app: App): string {
 		const envs = app.status?.environments;
 		if (!envs?.length) return '-';
@@ -261,6 +293,35 @@
 						}
 					}}
 				/>
+
+				{#if staleApps.length > 0}
+					<div class="absolute bottom-4 left-1/2 -translate-x-1/2 z-10 flex items-center gap-3 rounded-lg border border-warning/30 bg-surface-800/95 backdrop-blur px-4 py-2.5 shadow-lg">
+						<RotateCw class="h-4 w-4 shrink-0 text-warning" />
+						<div class="flex items-center gap-2 text-xs">
+							{#each staleApps as app}
+								<button
+									type="button"
+									onclick={() => redeployOne(app.metadata.name)}
+									disabled={redeployingApps.has(app.metadata.name)}
+									class="rounded-md border border-surface-600 bg-surface-700 px-2 py-1 font-medium text-white hover:bg-surface-600 disabled:opacity-50 transition-colors"
+								>
+									{#if redeployingApps.has(app.metadata.name)}
+										<Loader2 class="inline h-3 w-3 animate-spin mr-1" />
+									{/if}
+									{app.metadata.name}
+								</button>
+							{/each}
+						</div>
+						<button
+							type="button"
+							onclick={redeployAllStale}
+							disabled={redeployAllRunning}
+							class="rounded-md bg-warning/20 px-3 py-1 text-xs font-medium text-warning hover:bg-warning/30 disabled:opacity-50 transition-colors"
+						>
+							{redeployAllRunning ? 'Redeploying...' : `Redeploy all (${staleApps.length})`}
+						</button>
+					</div>
+				{/if}
 			</div>
 		{:else}
 			<!-- List view -->
