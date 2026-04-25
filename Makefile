@@ -54,7 +54,7 @@ generate: controller-gen generate-api ## Generate code containing DeepCopy, Deep
 
 .PHONY: generate-api
 generate-api: ## Regenerate OpenAPI spec from swag annotations.
-	swag init --generalInfo main.go --dir ./cmd,./internal/api --output ./docs --outputTypes yaml --parseDependency --parseInternal
+	swag init --generalInfo main.go --dir ./cmd,./internal/api,./internal/webhook --output ./docs --outputTypes yaml --parseDependency --parseInternal
 	cp docs/swagger.yaml internal/api/openapi.yaml
 
 .PHONY: fmt

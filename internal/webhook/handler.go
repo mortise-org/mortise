@@ -57,6 +57,18 @@ func (h *Handler) Routes() http.Handler {
 	return r
 }
 
+// handleWebhook receives a git forge webhook payload.
+//
+// @Summary Receive git forge webhook
+// @Description HMAC-verified webhook receiver for GitHub, GitLab, and Gitea. Handles push events (triggers app redeploy) and pull_request events (creates/updates/deletes PreviewEnvironments). Authentication is via HMAC signature on the payload — no bearer token required.
+// @Tags webhooks
+// @Accept json
+// @Produce plain
+// @Param provider path string true "Git provider name (matches GitProvider CRD name)"
+// @Success 202 {string} string "Accepted"
+// @Failure 400 {string} string "Bad request or signature verification failed"
+// @Failure 404 {string} string "Provider not found"
+// @Router /webhooks/{provider} [post]
 func (h *Handler) handleWebhook(w http.ResponseWriter, req *http.Request) {
 	log := logf.FromContext(req.Context())
 	providerName := chi.URLParam(req, "provider")
