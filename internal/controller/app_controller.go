@@ -1441,14 +1441,8 @@ func (r *AppReconciler) reconcileEnvSecret(ctx context.Context, app *mortisev1al
 	if err != nil {
 		return fmt.Errorf("get shared vars from control ns: %w", err)
 	}
-	if len(sharedSource) > 0 {
-		if err := store.SetShared(ctx, envNs, sharedSource, sharedLabels); err != nil {
-			return fmt.Errorf("materialize shared-env: %w", err)
-		}
-	} else {
-		if err := store.EnsureSharedExists(ctx, envNs, sharedLabels); err != nil {
-			return fmt.Errorf("ensure shared-env: %w", err)
-		}
+	if err := store.SetShared(ctx, envNs, sharedSource, sharedLabels); err != nil {
+		return fmt.Errorf("materialize shared-env: %w", err)
 	}
 
 	// Check if the {app}-env Secret has been seeded by testing whether
