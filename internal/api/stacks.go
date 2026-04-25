@@ -303,17 +303,31 @@ func generateRandomHex(n int) (string, error) {
 }
 
 // substituteVars replaces ${VAR_NAME} placeholders in the compose YAML.
-// Any unresolved variables are auto-generated as random 32-char hex strings.
-// This means templates "just work" without requiring the user to provide secrets.
+// If the compose contains an x-mortise.variables block, those specs drive
+// generation (e.g. jwt, hex with custom length). Any remaining unresolved
+// variables are auto-generated as random 32-char hex strings. User-provided
+// vars always take precedence over generators.
 func substituteVars(tpl string, vars map[string]string) (string, error) {
 	if vars == nil {
 		vars = make(map[string]string)
 	}
+
+	ext, cleaned, err := parseMortiseExtension(tpl)
+	if err != nil {
+		return "", fmt.Errorf("parse x-mortise: %w", err)
+	}
+	if ext != nil {
+		if err := resolveVarSpecs(ext, vars); err != nil {
+			return "", err
+		}
+		tpl = cleaned
+	}
+
 	result := tpl
 	for k, v := range vars {
 		result = strings.ReplaceAll(result, "${"+k+"}", v)
 	}
-	// Auto-generate any remaining unresolved variables.
+	// Auto-generate any remaining unresolved variables as random hex.
 	for {
 		idx := strings.Index(result, "${")
 		if idx == -1 {
