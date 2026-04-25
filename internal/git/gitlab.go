@@ -1,5 +1,3 @@
-//lint:file-ignore SA1019 xanzy/go-gitlab is deprecated; migration to gitlab.com/gitlab-org/api/client-go tracked separately
-
 package git
 
 import (
@@ -9,7 +7,7 @@ import (
 	"net/http"
 	"strings"
 
-	gogitlab "github.com/xanzy/go-gitlab"
+	gogitlab "gitlab.com/gitlab-org/api/client-go"
 )
 
 // GitLabAPI implements GitAPI for GitLab (.com or self-hosted) via OAuth token.
