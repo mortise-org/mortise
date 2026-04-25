@@ -2,6 +2,7 @@
 	import { api } from '$lib/api';
 	import { store } from '$lib/store.svelte';
 	import type { App } from '$lib/types';
+	import { RotateCw } from 'lucide-svelte';
 
 	let {
 		project,
@@ -26,6 +27,27 @@
 	);
 
 	const phase = $derived(phaseProp ?? app.status?.phase ?? 'Pending');
+
+	const needsRedeploy = $derived(
+		!!app.status?.pendingEnvHash &&
+		!!app.status?.deployedEnvHash &&
+		app.status.pendingEnvHash !== app.status.deployedEnvHash
+	);
+
+	async function doRedeploy() {
+		errorMsg = '';
+		reloading = true;
+		const prevPhase = app.status?.phase;
+		onOptimisticPhase?.('Deploying');
+		try {
+			await api.redeploy(project, app.metadata.name, selectedEnv);
+		} catch (e) {
+			errorMsg = e instanceof Error ? e.message : 'Redeploy failed';
+			if (prevPhase) onOptimisticPhase?.(prevPhase);
+		} finally {
+			reloading = false;
+		}
+	}
 
 	const phaseChip: Record<string, string> = {
 		Ready: 'bg-success/10 text-success',
@@ -86,6 +108,19 @@
 		<div class="rounded-md bg-danger/10 px-3 py-2 text-xs text-danger">{errorMsg}</div>
 	{/if}
 
+	{#if needsRedeploy}
+		<div class="flex items-center justify-between rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning">
+			<span class="flex items-center gap-1.5">
+				<RotateCw class="h-3 w-3" />
+				Environment variables changed. Redeploy to apply.
+			</span>
+			<button type="button" onclick={doRedeploy} disabled={reloading || phase === 'Building' || phase === 'Deploying'}
+				class="rounded bg-warning/20 px-2 py-0.5 font-medium text-warning hover:bg-warning/30 disabled:opacity-50">
+				{reloading ? 'Redeploying...' : 'Redeploy'}
+			</button>
+		</div>
+	{/if}
+
 	<!-- Current deploy -->
 	<div class="rounded-lg border border-surface-600 bg-surface-900 p-3">
 		<div class="flex items-center justify-between">
@@ -98,6 +133,14 @@
 				{/if}
 			</div>
 			<div class="flex items-center gap-2">
+				<button
+					type="button"
+					onclick={doRedeploy}
+					disabled={reloading || phase === 'Building' || phase === 'Deploying' || phase === 'Pending'}
+					class="rounded-md bg-surface-700 px-2 py-1 text-xs text-gray-300 transition-colors hover:bg-surface-600 hover:text-white disabled:opacity-40"
+				>
+					Redeploy
+				</button>
 				{#if (envStatus?.deployHistory?.length ?? 0) > 1}
 					<button
 						type="button"

@@ -28,15 +28,9 @@
 
 	// SSE-fed state for build logs
 	let buildLogs = $state<Map<string, BuildLogsResponse>>(new Map());
-	let drawerApp = $state<App | null>(null);
-	$effect(() => {
-		if (selectedApp) {
-			const found = apps.find(a => a.metadata.name === selectedApp) ?? null;
-			if (found && !drawerApp) drawerApp = found;
-		} else {
-			drawerApp = null;
-		}
-	});
+	const drawerApp = $derived(
+		selectedApp ? apps.find(a => a.metadata.name === selectedApp) ?? null : null
+	);
 
 	let eventStream: ReturnType<typeof connectProjectEvents> | null = null;
 
@@ -94,9 +88,6 @@
 					apps = apps;
 				} else {
 					apps = [...apps, app];
-				}
-				if (app.metadata.name === selectedApp) {
-					drawerApp = app;
 				}
 			},
 			onAppDeleted: (name) => {

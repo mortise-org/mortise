@@ -35,18 +35,24 @@
 		rawText: string;
 	};
 
-	let needsRedeploy = $state(false);
+	const serverNeedsRedeploy = $derived(
+		!!app.status?.pendingEnvHash &&
+		!!app.status?.deployedEnvHash &&
+		app.status.pendingEnvHash !== app.status.deployedEnvHash
+	);
+	let localStale = $state(false);
+	const needsRedeploy = $derived(localStale || serverNeedsRedeploy);
 	let redeploying = $state(false);
 
 	function markStale() {
-		needsRedeploy = true;
+		localStale = true;
 	}
 
 	async function handleRedeploy() {
 		redeploying = true;
 		try {
 			await api.redeploy(project, app.metadata.name, activeEnv);
-			needsRedeploy = false;
+			localStale = false;
 		} catch {
 			redeploying = false;
 		} finally {
@@ -483,7 +489,7 @@
 					Redeploy
 				{/if}
 			</button>
-			<button type="button" onclick={() => { needsRedeploy = false; }}
+			<button type="button" onclick={() => { localStale = false; }}
 				class="text-info/60 hover:text-info">
 				<X class="h-3.5 w-3.5" />
 			</button>

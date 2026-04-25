@@ -132,6 +132,8 @@ export interface Condition {
 export interface AppStatus {
 	phase?: AppPhase;
 	environments?: EnvironmentStatus[];
+	pendingEnvHash?: string;
+	deployedEnvHash?: string;
 	conditions?: Condition[];
 }
 

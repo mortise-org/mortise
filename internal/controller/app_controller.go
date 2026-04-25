@@ -762,7 +762,7 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 			"mortise.dev/credentials-hash": credentialsHash,
 		})
 	}
-	if autoRedeploy && envHash != "" {
+	if envHash != "" {
 		podAnno = mergeAnnotations(podAnno, map[string]string{
 			"mortise.dev/env-hash": envHash,
 		})
@@ -809,12 +809,24 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 		return err
 	}
 
-	// Preserve the API-set restart annotation so the controller doesn't strip it.
+	app.Status.DeployedEnvHash = existing.Spec.Template.Annotations["mortise.dev/env-hash"]
+
+	// Preserve API-set annotations so the controller doesn't strip them.
 	if v, ok := existing.Spec.Template.Annotations["mortise.dev/restartedAt"]; ok {
 		if desired.Spec.Template.Annotations == nil {
 			desired.Spec.Template.Annotations = make(map[string]string)
 		}
 		desired.Spec.Template.Annotations["mortise.dev/restartedAt"] = v
+	}
+	// When autoRedeploy is off, freeze the deployed env-hash so the new
+	// hash doesn't trigger a rolling update. Users redeploy manually.
+	if !autoRedeploy {
+		if v, ok := existing.Spec.Template.Annotations["mortise.dev/env-hash"]; ok {
+			if desired.Spec.Template.Annotations == nil {
+				desired.Spec.Template.Annotations = make(map[string]string)
+			}
+			desired.Spec.Template.Annotations["mortise.dev/env-hash"] = v
+		}
 	}
 
 	desiredContainer := desired.Spec.Template.Spec.Containers[0]
@@ -945,7 +957,7 @@ func (r *AppReconciler) reconcileCronJob(ctx context.Context, app *mortisev1alph
 			"mortise.dev/credentials-hash": credentialsHash,
 		})
 	}
-	if autoRedeploy && envHash != "" {
+	if envHash != "" {
 		podAnno = mergeAnnotations(podAnno, map[string]string{
 			"mortise.dev/env-hash": envHash,
 		})
@@ -1971,6 +1983,7 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 	fresh.Status.LastBuiltSHA = app.Status.LastBuiltSHA
 	fresh.Status.LastBuiltImage = app.Status.LastBuiltImage
 	fresh.Status.PendingEnvHash = app.Status.PendingEnvHash
+	fresh.Status.DeployedEnvHash = app.Status.DeployedEnvHash
 	fresh.Status.Conditions = app.Status.Conditions
 	return r.Status().Update(ctx, &fresh)
 }

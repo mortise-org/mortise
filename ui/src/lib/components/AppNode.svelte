@@ -2,7 +2,7 @@
 	import { onMount } from 'svelte';
 	import type { NodeProps } from '@xyflow/svelte';
 	import { Handle, Position } from '@xyflow/svelte';
-	import { GitBranch, Container, Cloud, Clock, HardDrive } from 'lucide-svelte';
+	import { GitBranch, Container, Cloud, Clock, HardDrive, RotateCw } from 'lucide-svelte';
 	import type { App, AppPhase } from '$lib/types';
 
 	interface AppNodeData {
@@ -38,6 +38,12 @@
 		Failed: 'bg-danger/10 text-danger',
 		Pending: 'bg-info/10 text-info'
 	};
+
+	const needsRedeploy = $derived(
+		!!app.status?.pendingEnvHash &&
+		!!app.status?.deployedEnvHash &&
+		app.status.pendingEnvHash !== app.status.deployedEnvHash
+	);
 
 	const domain = $derived(envEntry?.domain ?? null);
 	const replicas = $derived(envEntry?.replicas ?? 1);
@@ -133,6 +139,13 @@
 		</div>
 	{#if (phase === 'Failed' || phase === 'CrashLooping') && errorMsg}
 		<span class="line-clamp-2 text-xs text-danger/80">{errorMsg}</span>
+	{/if}
+
+	{#if needsRedeploy && enabled}
+		<span class="flex items-center gap-1 text-xs font-medium text-warning">
+			<RotateCw class="h-3 w-3" />
+			Needs redeploy
+		</span>
 	{/if}
 
 	<!-- Domain or Private label -->
