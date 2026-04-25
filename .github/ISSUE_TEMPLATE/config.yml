@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question or Discussion
+    url: https://github.com/mortise-org/mortise/discussions
+    about: Ask questions and discuss Mortise here.
+  - name: Security Vulnerability
+    url: https://github.com/mortise-org/mortise/security/advisories/new
+    about: Report security vulnerabilities privately.
