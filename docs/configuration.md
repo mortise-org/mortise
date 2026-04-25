@@ -23,9 +23,10 @@ When you push to a connected repo, your git host sends a notification to
 - You want automatic push-to-deploy from git
 
 **When you don't:**
-- You're deploying on a LAN and accessing apps through the UI's "Open"
-  button (which proxies through the API: works without any domain)
-- You're only running internal/private services
+- You're only deploying image-source apps and accessing them via
+  `kubectl port-forward` during initial setup
+- You plan to set up a domain later and just want to verify the operator
+  is working first
 
 ### Setting it up
 
@@ -39,7 +40,7 @@ When you push to a connected repo, your git host sends a notification to
    | Single server (k3s) | A (wildcard) | `*.apps.example.com` | Your server's public IP |
    | Cloud load balancer (EKS, GKE) | CNAME (wildcard) | `*.apps.example.com` | Your load balancer hostname (e.g. `abc123.elb.amazonaws.com`) |
    | Behind Cloudflare Tunnel | CNAME (wildcard) | `*.apps.example.com` | Your tunnel ID `.cfargotunnel.com` |
-   | LAN only (no public DNS) | A (wildcard) | `*.apps.local` | Your server's LAN IP (e.g. `192.168.1.100`) |
+   | LAN only (no public DNS) | A (wildcard) | `*.apps.local` | Your server's LAN IP (e.g. `192.168.1.100`). See [Internal DNS guide](./recipes/internal-dns.md) |
 
    **How to find your cluster's address:**
    - **k3s on a VPS/server:** Your server's public IP (check your hosting
