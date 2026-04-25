@@ -99,7 +99,7 @@ func (g *GitHubAPI) ResolveCloneCredentials(_ context.Context, _ string) (GitCre
 }
 
 func (g *GitHubAPI) ListRepos(ctx context.Context) ([]Repository, error) {
-	opts := &gogithub.RepositoryListOptions{
+	opts := &gogithub.RepositoryListByAuthenticatedUserOptions{
 		Sort:        "pushed",
 		Direction:   "desc",
 		Affiliation: "owner,collaborator,organization_member",
@@ -107,7 +107,7 @@ func (g *GitHubAPI) ListRepos(ctx context.Context) ([]Repository, error) {
 			PerPage: 100,
 		},
 	}
-	repos, _, err := g.client.Repositories.List(ctx, "", opts)
+	repos, _, err := g.client.Repositories.ListByAuthenticatedUser(ctx, opts)
 	if err != nil {
 		return nil, wrapGitHubError(fmt.Errorf("list github repos: %w", err))
 	}

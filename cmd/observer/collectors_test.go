@@ -77,6 +77,7 @@ func TestParseLogTimestamp(t *testing.T) {
 // returns the given items. The standard fake tracker doesn't support
 // PodMetrics objects, so we use a reactor.
 func fakePodMetrics(items ...metricsv1beta1.PodMetrics) *metricsfake.Clientset {
+	//lint:ignore SA1019 NewClientset requires --with-applyconfig codegen not used in this module
 	mc := metricsfake.NewSimpleClientset()
 	mc.Fake.PrependReactor("list", "pods", func(action clienttesting.Action) (bool, runtime.Object, error) {
 		la := action.(clienttesting.ListAction)
@@ -160,6 +161,7 @@ func TestMetricsCollectorSkipsNonMortiseNamespaces(t *testing.T) {
 		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "default"}},
 		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "kube-system"}},
 	)
+	//lint:ignore SA1019 NewClientset requires --with-applyconfig codegen not used in this module
 	mc := metricsfake.NewSimpleClientset()
 
 	dir := t.TempDir()
@@ -532,6 +534,7 @@ func TestLogCollectorStopAll(t *testing.T) {
 
 func TestMetricsCollectorRunStopsOnCancel(t *testing.T) {
 	cs := fake.NewClientset()
+	//lint:ignore SA1019 NewClientset requires --with-applyconfig codegen not used in this module
 	mc := metricsfake.NewSimpleClientset()
 
 	dir := t.TempDir()

@@ -55,6 +55,7 @@ func newMetricsServer(t *testing.T, k8sClient client.Client, mc *metricsfake.Cli
 }
 
 func fakeMetricsClient(items ...metricsv1beta1.PodMetrics) *metricsfake.Clientset {
+	//lint:ignore SA1019 NewClientset requires --with-applyconfig codegen not used in this module
 	mc := metricsfake.NewSimpleClientset()
 	mc.Fake.PrependReactor("list", "pods", func(action clienttesting.Action) (bool, runtime.Object, error) {
 		la := action.(clienttesting.ListAction)
