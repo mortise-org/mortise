@@ -277,8 +277,9 @@ make dev-up
 
 ## Running tests in CI-like mode
 
-CI will eventually run `make test` on every PR and `make test-integration`
-nightly. You can replicate the CI environment locally:
+CI runs `make test`, `make test-charts`, Go vet/staticcheck, and a UI
+typecheck on every PR (`.github/workflows/ci.yml`). You can replicate
+the CI environment locally:
 
 ```bash
 # From a clean shell, no env overrides:
