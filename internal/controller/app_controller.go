@@ -819,9 +819,13 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 		}
 		desired.Spec.Template.Annotations["mortise.dev/restartedAt"] = v
 	}
-	// When autoRedeploy is off, freeze the deployed env-hash so the new
-	// hash doesn't trigger a rolling update. Users redeploy manually.
-	if !autoRedeploy {
+	// When autoRedeploy is off and the Deployment has already reached steady
+	// state, freeze the deployed env-hash so env var changes don't trigger a
+	// rolling update. Allow the hash to flow through on initial rollout so
+	// binding resolution and shared-env materialization settle without
+	// producing a false "needs redeploy" indicator.
+	deploymentReady := existing.Status.ReadyReplicas > 0
+	if !autoRedeploy && deploymentReady {
 		if v, ok := existing.Spec.Template.Annotations["mortise.dev/env-hash"]; ok {
 			if desired.Spec.Template.Annotations == nil {
 				desired.Spec.Template.Annotations = make(map[string]string)
@@ -1025,7 +1029,8 @@ func (r *AppReconciler) reconcileCronJob(ctx context.Context, app *mortisev1alph
 		}
 		desired.Spec.JobTemplate.Spec.Template.Annotations["mortise.dev/restartedAt"] = v
 	}
-	if !autoRedeploy {
+	cronReady := existing.Status.LastScheduleTime != nil
+	if !autoRedeploy && cronReady {
 		if v, ok := existing.Spec.JobTemplate.Spec.Template.Annotations["mortise.dev/env-hash"]; ok {
 			if desired.Spec.JobTemplate.Spec.Template.Annotations == nil {
 				desired.Spec.JobTemplate.Spec.Template.Annotations = make(map[string]string)
