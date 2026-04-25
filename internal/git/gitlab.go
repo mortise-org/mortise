@@ -1,5 +1,3 @@
-//lint:file-ignore SA1019 xanzy/go-gitlab is deprecated; migration to gitlab.com/gitlab-org/api/client-go tracked separately
-
 package git
 
 import (
@@ -9,7 +7,8 @@ import (
 	"net/http"
 	"strings"
 
-	gogitlab "github.com/xanzy/go-gitlab"
+	gogitlab "gitlab.com/gitlab-org/api/client-go"
+	"golang.org/x/oauth2"
 )
 
 // GitLabAPI implements GitAPI for GitLab (.com or self-hosted) via OAuth token.
@@ -25,7 +24,10 @@ func NewGitLabAPI(baseURL, token, webhookSecret string) (*GitLabAPI, error) {
 	if baseURL != "" && baseURL != "https://gitlab.com" {
 		opts = append(opts, gogitlab.WithBaseURL(strings.TrimRight(baseURL, "/")+"/api/v4/"))
 	}
-	c, err := gogitlab.NewOAuthClient(token, opts...)
+	ts := gogitlab.OAuthTokenSource{
+		TokenSource: oauth2.StaticTokenSource(&oauth2.Token{AccessToken: token}),
+	}
+	c, err := gogitlab.NewAuthSourceClient(ts, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("new gitlab client: %w", err)
 	}
