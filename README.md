@@ -146,8 +146,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for full system diagrams.
 | [Cluster setup](docs/cluster-setup.md) | Getting a cluster running (k3d, k3s, EKS, GKE, AKS) |
 | [Configuration](docs/configuration.md) | Domain, git providers, HTTPS, storage, environments |
 | [API quickstart](docs/api-quickstart.md) | End-to-end API workflow with curl |
-| [API reference](docs/api-endpoints.md) | Endpoint-by-endpoint reference |
-| [OpenAPI spec](docs/swagger.yaml) | Machine-readable OpenAPI 3.0 spec |
+| [OpenAPI spec](docs/swagger.yaml) | Full API reference — open in [Swagger Editor](https://editor.swagger.io) or [Stoplight](https://stoplight.io) |
 | [Systems overview](docs/systems-overview.md) | Runtime architecture, controllers, and reconciliation |
 | [Troubleshooting](docs/troubleshooting.md) | Common issues and fixes |
 

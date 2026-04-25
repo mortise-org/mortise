@@ -4639,6 +4639,38 @@ paths:
       summary: List available stack templates
       tags:
       - stacks
+  /webhooks/{provider}:
+    post:
+      consumes:
+      - application/json
+      description: HMAC-verified webhook receiver for GitHub, GitLab, and Gitea. Handles
+        push events (triggers app redeploy) and pull_request events (creates/updates/deletes
+        PreviewEnvironments). Authentication is via HMAC signature on the payload
+        — no bearer token required.
+      parameters:
+      - description: Git provider name (matches GitProvider CRD name)
+        in: path
+        name: provider
+        required: true
+        type: string
+      produces:
+      - text/plain
+      responses:
+        "202":
+          description: Accepted
+          schema:
+            type: string
+        "400":
+          description: Bad request or signature verification failed
+          schema:
+            type: string
+        "404":
+          description: Provider not found
+          schema:
+            type: string
+      summary: Receive git forge webhook
+      tags:
+      - webhooks
 securityDefinitions:
   BearerAuth:
     description: JWT bearer token from POST /api/auth/login
