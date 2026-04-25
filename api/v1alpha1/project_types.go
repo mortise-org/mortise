@@ -98,10 +98,13 @@ type ProjectSpec struct {
 	// +optional
 	Preview *PreviewConfig `json:"preview,omitempty"`
 
-	// Future fields (v2+):
-	// - Quota     Quota   — CPU/memory/storage caps per project
-	// - DomainSuffix string — override platform default domain
-	// - Retention Retention — preview env / build cache retention policy
+	// AutoRedeploy controls whether env var changes automatically trigger
+	// pod rollouts. When false (default), users must manually redeploy
+	// after changing variables. When true, the controller stamps a hash
+	// of the env Secret onto the pod template, triggering an automatic
+	// rolling update on any change.
+	// +optional
+	AutoRedeploy bool `json:"autoRedeploy,omitempty"`
 }
 
 // ProjectPhase represents the lifecycle phase of a Project.

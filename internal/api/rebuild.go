@@ -97,13 +97,14 @@ func (s *Server) Redeploy(w http.ResponseWriter, r *http.Request) {
 	env := envFromQuery(r)
 
 	envNs := constants.EnvNamespace(projectName, env)
-	if err := restartDeployment(r.Context(), s.client, envNs, appName); err != nil {
+
+	var app mortisev1alpha1.App
+	if err := s.client.Get(r.Context(), types.NamespacedName{Name: appName, Namespace: ns}, &app); err != nil {
 		writeError(w, err)
 		return
 	}
 
-	var app mortisev1alpha1.App
-	if err := s.client.Get(r.Context(), types.NamespacedName{Name: appName, Namespace: ns}, &app); err != nil {
+	if err := restartDeployment(r.Context(), s.client, envNs, appName, app.Status.PendingEnvHash); err != nil {
 		writeError(w, err)
 		return
 	}
@@ -136,7 +137,7 @@ func (s *Server) Redeploy(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "restarting"})
 }
 
-func restartDeployment(ctx context.Context, c client.Client, namespace, appName string) error {
+func restartDeployment(ctx context.Context, c client.Client, namespace, appName, pendingEnvHash string) error {
 	var dep appsv1.Deployment
 	if err := c.Get(ctx, types.NamespacedName{Name: appName, Namespace: namespace}, &dep); err != nil {
 		return err
@@ -146,5 +147,8 @@ func restartDeployment(ctx context.Context, c client.Client, namespace, appName 
 		dep.Spec.Template.Annotations = make(map[string]string)
 	}
 	dep.Spec.Template.Annotations["mortise.dev/restartedAt"] = fmt.Sprintf("%d", time.Now().UnixMilli())
+	if pendingEnvHash != "" {
+		dep.Spec.Template.Annotations["mortise.dev/env-hash"] = pendingEnvHash
+	}
 	return c.Update(ctx, &dep)
 }

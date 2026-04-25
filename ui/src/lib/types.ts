@@ -158,6 +158,7 @@ export interface Project {
 	namespace: string;
 	phase?: ProjectPhase;
 	appCount: number;
+	autoRedeploy: boolean;
 	createdAt?: string;
 }
 

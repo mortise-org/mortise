@@ -59,6 +59,14 @@ spec:
               declared environment (`pj-{metadata.name}-{env}`) which holds the running
               workloads.
             properties:
+              autoRedeploy:
+                description: |-
+                  AutoRedeploy controls whether env var changes automatically trigger
+                  pod rollouts. When false (default), users must manually redeploy
+                  after changing variables. When true, the controller stamps a hash
+                  of the env Secret onto the pod template, triggering an automatic
+                  rolling update on any change.
+                type: boolean
               description:
                 description: Description is a short, human-readable note about the
                   project.

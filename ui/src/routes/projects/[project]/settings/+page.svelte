@@ -371,6 +371,26 @@ if (tab === 'danger' && projectApps.length === 0 && !loadingApps) await loadApps
             </button>
           </div>
         </div>
+
+        <div class="border-t border-surface-600 pt-5">
+          <h2 class="mb-3 text-sm font-medium text-white">Deploy Behavior</h2>
+          <div class="flex items-start justify-between rounded-md border border-surface-600 p-4">
+            <div>
+              <p class="text-sm font-medium text-white">Auto-redeploy on variable changes</p>
+              <p class="mt-1 text-xs text-gray-500">When enabled, changing environment variables automatically triggers a rolling restart. When disabled, you must manually redeploy after saving changes.</p>
+            </div>
+            <button type="button" role="switch" aria-checked={project?.autoRedeploy ?? false} aria-label="Toggle auto-redeploy"
+              onclick={async () => {
+                if (!project) return;
+                const next = !project.autoRedeploy;
+                project = { ...project, autoRedeploy: next };
+                try { project = await api.updateProject(projectName, { autoRedeploy: next }); } catch { project = { ...project, autoRedeploy: !next }; }
+              }}
+              class="relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors {project?.autoRedeploy ? 'bg-accent' : 'bg-surface-600'}">
+              <span class="inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform {project?.autoRedeploy ? 'translate-x-4.5' : 'translate-x-0.5'}"></span>
+            </button>
+          </div>
+        </div>
       </div>
 
     {:else if activeTab === 'environments'}

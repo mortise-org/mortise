@@ -463,6 +463,12 @@ type AppStatus struct {
 	// +optional
 	DetectedPort int32 `json:"detectedPort,omitempty"`
 
+	// PendingEnvHash is the hash of the current env Secret state. When
+	// AutoRedeploy is disabled and this differs from the hash on the running
+	// pod template, the app has unapplied env changes.
+	// +optional
+	PendingEnvHash string `json:"pendingEnvHash,omitempty"`
+
 	// +listType=map
 	// +listMapKey=type
 	// +optional
