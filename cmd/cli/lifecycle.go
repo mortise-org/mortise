@@ -16,7 +16,7 @@ func newUpCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Check Docker
 			if err := runQuiet("docker", "info"); err != nil {
-				return fmt.Errorf("Docker is not running. Start Docker Desktop and try again")
+				return fmt.Errorf("docker is not running; start Docker Desktop and try again")
 			}
 
 			// Check if k3d cluster exists
@@ -26,11 +26,11 @@ func newUpCmd() *cobra.Command {
 			}
 
 			if !strings.Contains(out, `"mortise"`) {
-				return fmt.Errorf("Mortise cluster not found. Run 'mortise install' first")
+				return fmt.Errorf("mortise cluster not found; run 'mortise install' first")
 			}
 
 			if !strings.Contains(out, `"running"`) {
-				return fmt.Errorf("Mortise cluster exists but is not running. Start Docker and try again")
+				return fmt.Errorf("mortise cluster exists but is not running; start Docker and try again")
 			}
 
 			fmt.Println("Cluster 'mortise' is running")

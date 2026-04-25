@@ -79,7 +79,7 @@ func (v *AppValidator) validate(ctx context.Context, app *mortisev1alpha1.App) (
 		return nil, apierrors.NewForbidden(
 			schema.GroupResource{Group: "mortise.dev", Resource: "apps"},
 			app.Name,
-			fmt.Errorf("App %q is in namespace %q which is not owned by a Mortise Project — create the Project first", app.Name, app.Namespace),
+			fmt.Errorf("app %q is in namespace %q which is not owned by a Mortise Project — create the Project first", app.Name, app.Namespace),
 		)
 	}
 	validNames := projectEnvSet(project)

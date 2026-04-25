@@ -300,7 +300,7 @@ func (b *OCIBackend) resolveChallenge(ctx context.Context, header string) (strin
 
 	realm := params["realm"]
 	if realm == "" {
-		return "", fmt.Errorf("Bearer challenge missing realm")
+		return "", fmt.Errorf("bearer challenge missing realm")
 	}
 
 	tokenURL, err := url.Parse(realm)

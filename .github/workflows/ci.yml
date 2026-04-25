@@ -21,6 +21,9 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Install swag
+        run: go install github.com/swaggo/swag/cmd/swag@v1.16.6
+
       - name: Run tests
         run: make test
 
@@ -34,6 +37,16 @@ jobs:
         uses: azure/setup-helm@v4
         with:
           version: v3.17.3
+
+      - name: Add Helm repos
+        run: |
+          helm repo add traefik https://traefik.github.io/charts
+          helm repo add jetstack https://charts.jetstack.io
+          helm repo add metrics-server https://kubernetes-sigs.github.io/metrics-server/
+          helm repo update
+
+      - name: Fetch chart dependencies
+        run: helm dependency update charts/mortise
 
       - name: Helm lint
         run: make test-charts

@@ -1,41 +1,12 @@
 package api_test
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
-
-	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-
-	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
 )
-
-// seedGitProvider creates a GitProvider CRD for tests that need one.
-func seedGitProvider(t *testing.T, c client.Client) {
-	t.Helper()
-	ctx := context.Background()
-
-	_ = c.Create(ctx, &corev1.Namespace{
-		ObjectMeta: metav1.ObjectMeta{Name: "mortise-system"},
-	})
-
-	gp := &mortisev1alpha1.GitProvider{
-		ObjectMeta: metav1.ObjectMeta{Name: "github-main"},
-		Spec: mortisev1alpha1.GitProviderSpec{
-			Type:     mortisev1alpha1.GitProviderTypeGitHub,
-			Host:     "https://github.com",
-			ClientID: "test-id",
-		},
-	}
-	if err := c.Create(ctx, gp); err != nil {
-		t.Fatalf("create GitProvider: %v", err)
-	}
-}
 
 // --- Fix 2: Body size limit ---
 

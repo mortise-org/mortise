@@ -104,10 +104,3 @@ func resolvedEnvNames(envs []mortisev1alpha1.Environment) map[string]struct{} {
 	return out
 }
 
-// projectNameFromNamespace is kept as a thin wrapper over
-// constants.ProjectFromControlNs so existing call sites continue to compile;
-// it returns the project name when the namespace is a control namespace
-// (`pj-{name}`). New code should prefer the constants helper directly.
-func projectNameFromNamespace(ns string) (string, bool) {
-	return constants.ProjectFromControlNs(ns)
-}

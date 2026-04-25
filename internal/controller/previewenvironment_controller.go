@@ -80,7 +80,7 @@ type PreviewEnvironmentReconciler struct {
 func (r *PreviewEnvironmentReconciler) getProjectForApp(ctx context.Context, app *mortisev1alpha1.App) (*mortisev1alpha1.Project, error) {
 	projectName, ok := constants.ProjectFromControlNs(app.Namespace)
 	if !ok {
-		return nil, fmt.Errorf("App %q is not in a control namespace (%q)", app.Name, app.Namespace)
+		return nil, fmt.Errorf("app %q is not in a control namespace (%q)", app.Name, app.Namespace)
 	}
 	var project mortisev1alpha1.Project
 	if err := r.Get(ctx, types.NamespacedName{Name: projectName}, &project); err != nil {
@@ -721,12 +721,6 @@ func (r *PreviewEnvironmentReconciler) gcPreviewResources(ctx context.Context, p
 		}
 	}
 	return nil
-}
-
-// Naming helpers
-
-func previewResourceName(app string, prNumber int) string {
-	return fmt.Sprintf("%s-preview-pr-%d", app, prNumber)
 }
 
 // previewLabels returns the label set stamped on every resource the preview

@@ -1,3 +1,5 @@
+//lint:file-ignore SA1019 xanzy/go-gitlab is deprecated; migration to gitlab.com/gitlab-org/api/client-go tracked separately
+
 package git
 
 import (

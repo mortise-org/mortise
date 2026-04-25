@@ -53,7 +53,6 @@ const testImageNginx = "nginx:1.27"
 var _ = Describe("App Controller", func() {
 	const namespace = "pj-default-project"
 	const envNsProduction = "pj-default-project-production"
-	const envNsStaging = "pj-default-project-staging"
 
 	AfterEach(func() {
 		purgeAllAppsIn(context.Background(), namespace)
