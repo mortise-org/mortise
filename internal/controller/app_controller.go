@@ -1574,7 +1574,7 @@ func (r *AppReconciler) reconcileCredentialsSecret(ctx context.Context, app *mor
 		// Pre-existing Secret with the reserved name but no managed-by label
 		// — refuse to take it over. Users see a clear error rather than
 		// silent credential exfiltration.
-		return "", fmt.Errorf("Secret %q already exists in namespace %q and is not managed by Mortise; rename or delete it to let Mortise manage credentials", name, envNs)
+		return "", fmt.Errorf("secret %q already exists in namespace %q and is not managed by Mortise; rename or delete it to let Mortise manage credentials", name, envNs)
 	}
 	existing.Labels = desired.Labels
 	existing.Type = desired.Type
@@ -2252,33 +2252,6 @@ func toEnvVars(envs []mortisev1alpha1.EnvVar) []corev1.EnvVar {
 	return result
 }
 
-// findEnvVar returns a pointer to the first env var with the given name, or nil.
-func findEnvVar(envVars []corev1.EnvVar, name string) *corev1.EnvVar {
-	for i := range envVars {
-		if envVars[i].Name == name {
-			return &envVars[i]
-		}
-	}
-	return nil
-}
-
-// mergeEnvVars merges multiple env var slices in priority order. Each
-// successive layer overrides earlier layers when keys collide (spec §5.8b).
-func mergeEnvVars(layers ...[]corev1.EnvVar) []corev1.EnvVar {
-	seen := make(map[string]int) // name → index in result
-	var result []corev1.EnvVar
-	for _, layer := range layers {
-		for _, ev := range layer {
-			if idx, ok := seen[ev.Name]; ok {
-				result[idx] = ev
-			} else {
-				seen[ev.Name] = len(result)
-				result = append(result, ev)
-			}
-		}
-	}
-	return result
-}
 
 func (r *AppReconciler) effectiveResources(ctx context.Context, env *mortisev1alpha1.Environment) mortisev1alpha1.ResourceRequirements {
 	res := env.Resources
