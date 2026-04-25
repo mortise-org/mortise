@@ -147,6 +147,14 @@ export interface App {
 	status?: AppStatus;
 }
 
+export function appNeedsRedeploy(app: App): boolean {
+	return (
+		!!app.status?.pendingEnvHash &&
+		!!app.status?.deployedEnvHash &&
+		app.status.pendingEnvHash !== app.status.deployedEnvHash
+	);
+}
+
 export interface SecretResponse {
 	name: string;
 	keys: string[];

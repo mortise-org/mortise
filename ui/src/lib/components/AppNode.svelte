@@ -3,6 +3,7 @@
 	import type { NodeProps } from '@xyflow/svelte';
 	import { Handle, Position } from '@xyflow/svelte';
 	import { GitBranch, Container, Cloud, Clock, HardDrive, RotateCw } from 'lucide-svelte';
+	import { appNeedsRedeploy } from '$lib/types';
 	import type { App, AppPhase } from '$lib/types';
 
 	interface AppNodeData {
@@ -39,11 +40,7 @@
 		Pending: 'bg-info/10 text-info'
 	};
 
-	const needsRedeploy = $derived(
-		!!app.status?.pendingEnvHash &&
-		!!app.status?.deployedEnvHash &&
-		app.status.pendingEnvHash !== app.status.deployedEnvHash
-	);
+	const needsRedeploy = $derived(appNeedsRedeploy(app));
 
 	const domain = $derived(envEntry?.domain ?? null);
 	const replicas = $derived(envEntry?.replicas ?? 1);

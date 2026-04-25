@@ -4,6 +4,7 @@
 	import { goto } from '$app/navigation';
 	import { api } from '$lib/api';
 	import { store } from '$lib/store.svelte';
+	import { appNeedsRedeploy } from '$lib/types';
 	import type { App, AppPhase, Project, BuildLogsResponse } from '$lib/types';
 	import { connectProjectEvents } from '$lib/projectEvents';
 	import ProjectCanvas from '$lib/components/ProjectCanvas.svelte';
@@ -141,13 +142,7 @@
 
 	const selectedEnv = $derived(store.currentEnv(projectName) || 'production');
 
-	const staleApps = $derived(
-		apps.filter(a =>
-			!!a.status?.pendingEnvHash &&
-			!!a.status?.deployedEnvHash &&
-			a.status.pendingEnvHash !== a.status.deployedEnvHash
-		)
-	);
+	const staleApps = $derived(apps.filter(a => appNeedsRedeploy(a)));
 
 	let redeployingApps = $state<Set<string>>(new Set());
 	let redeployAllRunning = $state(false);

@@ -803,6 +803,7 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 	var existing appsv1.Deployment
 	err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: envNs}, &existing)
 	if errors.IsNotFound(err) {
+		app.Status.DeployedEnvHash = envHash
 		return r.Create(ctx, desired)
 	}
 	if err != nil {
@@ -1009,10 +1010,28 @@ func (r *AppReconciler) reconcileCronJob(ctx context.Context, app *mortisev1alph
 	var existing batchv1.CronJob
 	err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: envNs}, &existing)
 	if errors.IsNotFound(err) {
+		app.Status.DeployedEnvHash = envHash
 		return r.Create(ctx, desired)
 	}
 	if err != nil {
 		return err
+	}
+
+	app.Status.DeployedEnvHash = existing.Spec.JobTemplate.Spec.Template.Annotations["mortise.dev/env-hash"]
+
+	if v, ok := existing.Spec.JobTemplate.Spec.Template.Annotations["mortise.dev/restartedAt"]; ok {
+		if desired.Spec.JobTemplate.Spec.Template.Annotations == nil {
+			desired.Spec.JobTemplate.Spec.Template.Annotations = make(map[string]string)
+		}
+		desired.Spec.JobTemplate.Spec.Template.Annotations["mortise.dev/restartedAt"] = v
+	}
+	if !autoRedeploy {
+		if v, ok := existing.Spec.JobTemplate.Spec.Template.Annotations["mortise.dev/env-hash"]; ok {
+			if desired.Spec.JobTemplate.Spec.Template.Annotations == nil {
+				desired.Spec.JobTemplate.Spec.Template.Annotations = make(map[string]string)
+			}
+			desired.Spec.JobTemplate.Spec.Template.Annotations["mortise.dev/env-hash"] = v
+		}
 	}
 
 	existing.Annotations = desired.Annotations

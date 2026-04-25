@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { api } from '$lib/api';
 	import { store } from '$lib/store.svelte';
+	import { appNeedsRedeploy } from '$lib/types';
 	import type { App } from '$lib/types';
 	import BindingsPicker from '$lib/components/BindingsPicker.svelte';
 	import { Plus, Trash2, Link, Upload, FileText, X, Eye, EyeOff, Loader2, ChevronDown } from 'lucide-svelte';
@@ -35,11 +36,7 @@
 		rawText: string;
 	};
 
-	const serverNeedsRedeploy = $derived(
-		!!app.status?.pendingEnvHash &&
-		!!app.status?.deployedEnvHash &&
-		app.status.pendingEnvHash !== app.status.deployedEnvHash
-	);
+	const serverNeedsRedeploy = $derived(appNeedsRedeploy(app));
 	let localStale = $state(false);
 	$effect(() => {
 		if (!serverNeedsRedeploy) localStale = false;
@@ -56,8 +53,6 @@
 		try {
 			await api.redeploy(project, app.metadata.name, activeEnv);
 			localStale = false;
-		} catch {
-			redeploying = false;
 		} finally {
 			redeploying = false;
 		}
@@ -481,11 +476,11 @@
 
 <div class="flex h-full flex-col gap-3 overflow-y-auto p-1">
 {#if needsRedeploy}
-	<div class="flex items-center justify-between rounded-md border border-info/30 bg-info/10 px-3 py-2 text-xs text-info">
+	<div class="flex items-center justify-between rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning">
 		<span>Changes saved — redeploy to apply</span>
 		<div class="flex items-center gap-1.5">
 			<button type="button" onclick={handleRedeploy} disabled={redeploying}
-				class="rounded bg-info/20 px-2 py-0.5 font-medium text-info hover:bg-info/30 disabled:opacity-50">
+				class="rounded bg-warning/20 px-2 py-0.5 font-medium text-warning hover:bg-warning/30 disabled:opacity-50">
 				{#if redeploying}
 					<Loader2 class="inline h-3 w-3 animate-spin" />
 				{:else}
@@ -493,7 +488,7 @@
 				{/if}
 			</button>
 			<button type="button" onclick={() => { localStale = false; }}
-				class="text-info/60 hover:text-info">
+				class="text-warning/60 hover:text-warning">
 				<X class="h-3.5 w-3.5" />
 			</button>
 		</div>

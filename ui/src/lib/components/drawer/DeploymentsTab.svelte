@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { api } from '$lib/api';
 	import { store } from '$lib/store.svelte';
+	import { appNeedsRedeploy } from '$lib/types';
 	import type { App } from '$lib/types';
 	import { RotateCw } from 'lucide-svelte';
 
@@ -28,11 +29,7 @@
 
 	const phase = $derived(phaseProp ?? app.status?.phase ?? 'Pending');
 
-	const needsRedeploy = $derived(
-		!!app.status?.pendingEnvHash &&
-		!!app.status?.deployedEnvHash &&
-		app.status.pendingEnvHash !== app.status.deployedEnvHash
-	);
+	const needsRedeploy = $derived(appNeedsRedeploy(app));
 
 	async function doRedeploy() {
 		errorMsg = '';
