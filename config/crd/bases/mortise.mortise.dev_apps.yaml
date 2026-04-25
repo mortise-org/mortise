@@ -646,6 +646,12 @@ spec:
                   LastBuiltSHA is the git commit SHA of the most recently completed build.
                   The reconciler uses this to short-circuit rebuilds when the revision hasn't changed.
                 type: string
+              pendingEnvHash:
+                description: |-
+                  PendingEnvHash is the hash of the current env Secret state. When
+                  AutoRedeploy is disabled and this differs from the hash on the running
+                  pod template, the app has unapplied env changes.
+                type: string
               phase:
                 description: AppPhase represents the overall lifecycle phase.
                 enum:

@@ -1140,6 +1140,13 @@ definitions:
           The reconciler uses this to short-circuit rebuilds when the revision hasn't changed.
           +optional
         type: string
+      pendingEnvHash:
+        description: |-
+          PendingEnvHash is the hash of the current env Secret state. When
+          AutoRedeploy is disabled and this differs from the hash on the running
+          pod template, the app has unapplied env changes.
+          +optional
+        type: string
       phase:
         $ref: '#/definitions/v1alpha1.AppPhase'
     type: object

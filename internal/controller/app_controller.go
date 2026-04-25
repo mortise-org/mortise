@@ -195,6 +195,8 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 			return ctrl.Result{}, fmt.Errorf("reconcile credentials secret for env %s: %w", env.Name, err)
 		}
 
+		autoRedeploy := project != nil && project.Spec.AutoRedeploy
+
 		if app.Spec.Kind == mortisev1alpha1.AppKindCron {
 			// Cron envs without a schedule can't produce a valid CronJob.
 			// Auto-membership in a project env doesn't imply a schedule, so
@@ -202,13 +204,13 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 			if env.Schedule == "" {
 				continue
 			}
-			if err := r.reconcileCronJob(ctx, &app, env, envNs, credentialsHash); err != nil {
+			if err := r.reconcileCronJob(ctx, &app, env, envNs, credentialsHash, autoRedeploy); err != nil {
 				return ctrl.Result{}, fmt.Errorf("reconcile cronjob for env %s: %w", env.Name, err)
 			}
 			continue
 		}
 
-		if err := r.reconcileDeployment(ctx, &app, env, envNs, credentialsHash); err != nil {
+		if err := r.reconcileDeployment(ctx, &app, env, envNs, credentialsHash, autoRedeploy); err != nil {
 			return ctrl.Result{}, fmt.Errorf("reconcile deployment for env %s: %w", env.Name, err)
 		}
 
@@ -684,7 +686,7 @@ func (r *AppReconciler) setFailedCondition(ctx context.Context, app *mortisev1al
 	return fmt.Errorf("%s: %s", reason, msg)
 }
 
-func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1alpha1.App, env *mortisev1alpha1.Environment, envNs, credentialsHash string) error {
+func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1alpha1.App, env *mortisev1alpha1.Environment, envNs, credentialsHash string, autoRedeploy bool) error {
 	name := deploymentName(app.Name)
 	replicas := int32(1)
 	if env.Replicas != nil {
@@ -752,13 +754,15 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 	// rollout triggers. The credentials hash forces a pod restart when the
 	// materialised {app}-credentials Secret changes — kubelet won't otherwise
 	// pick up Secret rotation for env-var mounts without a pod recreate.
+	app.Status.PendingEnvHash = envHash
+
 	podAnno := userAnno
 	if credentialsHash != "" {
 		podAnno = mergeAnnotations(podAnno, map[string]string{
 			"mortise.dev/credentials-hash": credentialsHash,
 		})
 	}
-	if envHash != "" {
+	if autoRedeploy && envHash != "" {
 		podAnno = mergeAnnotations(podAnno, map[string]string{
 			"mortise.dev/env-hash": envHash,
 		})
@@ -902,7 +906,7 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 	return nil
 }
 
-func (r *AppReconciler) reconcileCronJob(ctx context.Context, app *mortisev1alpha1.App, env *mortisev1alpha1.Environment, envNs, credentialsHash string) error {
+func (r *AppReconciler) reconcileCronJob(ctx context.Context, app *mortisev1alpha1.App, env *mortisev1alpha1.Environment, envNs, credentialsHash string, autoRedeploy bool) error {
 	name := cronJobName(app.Name)
 
 	// Reconcile env Secret — same as Deployment path.
@@ -931,6 +935,8 @@ func (r *AppReconciler) reconcileCronJob(ctx context.Context, app *mortisev1alph
 		containers[0].VolumeMounts = mounts
 	}
 
+	app.Status.PendingEnvHash = envHash
+
 	userAnno := mergeAnnotations(nil, env.Annotations)
 
 	podAnno := userAnno
@@ -939,7 +945,7 @@ func (r *AppReconciler) reconcileCronJob(ctx context.Context, app *mortisev1alph
 			"mortise.dev/credentials-hash": credentialsHash,
 		})
 	}
-	if envHash != "" {
+	if autoRedeploy && envHash != "" {
 		podAnno = mergeAnnotations(podAnno, map[string]string{
 			"mortise.dev/env-hash": envHash,
 		})
@@ -1964,6 +1970,7 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 	fresh.Status.Environments = envStatuses
 	fresh.Status.LastBuiltSHA = app.Status.LastBuiltSHA
 	fresh.Status.LastBuiltImage = app.Status.LastBuiltImage
+	fresh.Status.PendingEnvHash = app.Status.PendingEnvHash
 	fresh.Status.Conditions = app.Status.Conditions
 	return r.Status().Update(ctx, &fresh)
 }

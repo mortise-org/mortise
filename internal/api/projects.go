@@ -52,12 +52,13 @@ type createProjectRequest struct {
 // stable subset of the CRD — callers shouldn't need to understand Kubernetes
 // metadata layout to read back a project.
 type projectResponse struct {
-	Name        string                       `json:"name"`
-	Description string                       `json:"description,omitempty"`
-	Namespace   string                       `json:"namespace"`
-	Phase       mortisev1alpha1.ProjectPhase `json:"phase,omitempty"`
-	AppCount    int32                        `json:"appCount"`
-	CreatedAt   string                       `json:"createdAt,omitempty"`
+	Name         string                       `json:"name"`
+	Description  string                       `json:"description,omitempty"`
+	Namespace    string                       `json:"namespace"`
+	Phase        mortisev1alpha1.ProjectPhase `json:"phase,omitempty"`
+	AppCount     int32                        `json:"appCount"`
+	AutoRedeploy bool                         `json:"autoRedeploy"`
+	CreatedAt    string                       `json:"createdAt,omitempty"`
 }
 
 func toProjectResponse(p *mortisev1alpha1.Project) projectResponse {
@@ -66,11 +67,12 @@ func toProjectResponse(p *mortisev1alpha1.Project) projectResponse {
 		ns = projectNamespace(p.Name)
 	}
 	resp := projectResponse{
-		Name:        p.Name,
-		Description: p.Spec.Description,
-		Namespace:   ns,
-		Phase:       p.Status.Phase,
-		AppCount:    p.Status.AppCount,
+		Name:         p.Name,
+		Description:  p.Spec.Description,
+		Namespace:    ns,
+		Phase:        p.Status.Phase,
+		AppCount:     p.Status.AppCount,
+		AutoRedeploy: p.Spec.AutoRedeploy,
 	}
 	if !p.CreationTimestamp.IsZero() {
 		resp.CreatedAt = p.CreationTimestamp.UTC().Format("2006-01-02T15:04:05Z")
@@ -261,6 +263,58 @@ func (s *Server) DeleteProject(w http.ResponseWriter, r *http.Request) {
 	s.recordActivity(r, name, "delete", "project", name, "Deleted project "+name, "")
 
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "terminating", "project": name})
+}
+
+type updateProjectRequest struct {
+	Description  *string `json:"description,omitempty"`
+	AutoRedeploy *bool   `json:"autoRedeploy,omitempty"`
+}
+
+// @Summary Update a project
+// @Description Updates mutable Project fields. Admin or project owner only.
+// @Tags projects
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param project path string true "Project name"
+// @Param body body updateProjectRequest true "Fields to update"
+// @Success 200 {object} projectResponse
+// @Failure 400 {object} errorResponse
+// @Failure 401 {object} errorResponse
+// @Failure 403 {object} errorResponse
+// @Failure 404 {object} errorResponse
+// @Router /projects/{project} [patch]
+func (s *Server) UpdateProject(w http.ResponseWriter, r *http.Request) {
+	projectName := chi.URLParam(r, "project")
+	if !s.authorize(w, r, authz.Resource{Kind: "project", Project: projectName}, authz.ActionUpdate) {
+		return
+	}
+
+	var req updateProjectRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse{"invalid JSON: " + err.Error()})
+		return
+	}
+
+	var project mortisev1alpha1.Project
+	if err := s.client.Get(r.Context(), types.NamespacedName{Name: projectName}, &project); err != nil {
+		writeError(w, err)
+		return
+	}
+
+	if req.Description != nil {
+		project.Spec.Description = *req.Description
+	}
+	if req.AutoRedeploy != nil {
+		project.Spec.AutoRedeploy = *req.AutoRedeploy
+	}
+
+	if err := s.client.Update(r.Context(), &project); err != nil {
+		writeError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, toProjectResponse(&project))
 }
 
 // resolveProject is called at the top of every app/secret/log/deploy handler

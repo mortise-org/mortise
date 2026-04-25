@@ -355,7 +355,7 @@ export const api = {
 		}),
 
 	// --- project settings ---
-	updateProject: (name: string, body: { description?: string }) =>
+	updateProject: (name: string, body: { description?: string; autoRedeploy?: boolean }) =>
 		request<Project>(`/projects/${enc(name)}`, {
 			method: 'PATCH',
 			body: JSON.stringify(body)
