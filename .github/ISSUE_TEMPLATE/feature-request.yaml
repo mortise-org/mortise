@@ -1,0 +1,51 @@
+name: Feature Request
+description: Suggest a new feature or improvement
+labels: ["kind/feature", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for suggesting an improvement. Please describe what you need and why.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: Describe the use case or pain point. What are you trying to do that you can't?
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: What would you like to see? Be as specific as you can.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Any other approaches you've considered or worked around?
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Operator / controller
+        - API
+        - UI
+        - CLI
+        - Helm chart
+        - Docs
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: Screenshots, links, related issues, etc.
