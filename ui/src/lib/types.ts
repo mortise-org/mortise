@@ -132,6 +132,8 @@ export interface Condition {
 export interface AppStatus {
 	phase?: AppPhase;
 	environments?: EnvironmentStatus[];
+	pendingEnvHash?: string;
+	deployedEnvHash?: string;
 	conditions?: Condition[];
 }
 
@@ -143,6 +145,14 @@ export interface App {
 	};
 	spec: AppSpec;
 	status?: AppStatus;
+}
+
+export function appNeedsRedeploy(app: App): boolean {
+	return (
+		!!app.status?.pendingEnvHash &&
+		!!app.status?.deployedEnvHash &&
+		app.status.pendingEnvHash !== app.status.deployedEnvHash
+	);
 }
 
 export interface SecretResponse {

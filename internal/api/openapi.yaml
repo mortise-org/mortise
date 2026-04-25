@@ -411,6 +411,8 @@ definitions:
     properties:
       appCount:
         type: integer
+      autoRedeploy:
+        type: boolean
       createdAt:
         type: string
       description:
@@ -494,6 +496,13 @@ definitions:
   api.updateMemberRequest:
     properties:
       role:
+        type: string
+    type: object
+  api.updateProjectRequest:
+    properties:
+      autoRedeploy:
+        type: boolean
+      description:
         type: string
     type: object
   api.updateUserRoleRequest:
@@ -1117,6 +1126,12 @@ definitions:
         items:
           $ref: '#/definitions/v1.Condition'
         type: array
+      deployedEnvHash:
+        description: |-
+          DeployedEnvHash is the env hash currently on the running pod template.
+          When it differs from PendingEnvHash, the app has unapplied env changes.
+          +optional
+        type: string
       detectedPort:
         description: |-
           DetectedPort is the container port auto-detected from EXPOSE directives
@@ -1142,9 +1157,7 @@ definitions:
         type: string
       pendingEnvHash:
         description: |-
-          PendingEnvHash is the hash of the current env Secret state. When
-          AutoRedeploy is disabled and this differs from the hash on the running
-          pod template, the app has unapplied env changes.
+          PendingEnvHash is the hash of the current env Secret state.
           +optional
         type: string
       phase:
@@ -2330,6 +2343,50 @@ paths:
       security:
       - BearerAuth: []
       summary: Get a project
+      tags:
+      - projects
+    patch:
+      consumes:
+      - application/json
+      description: Updates mutable Project fields. Admin or project owner only.
+      parameters:
+      - description: Project name
+        in: path
+        name: project
+        required: true
+        type: string
+      - description: Fields to update
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/api.updateProjectRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.projectResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.errorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/api.errorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/api.errorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.errorResponse'
+      security:
+      - BearerAuth: []
+      summary: Update a project
       tags:
       - projects
   /projects/{project}/activity:
