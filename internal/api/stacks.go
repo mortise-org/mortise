@@ -2,7 +2,6 @@ package api
 
 import (
 	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -290,17 +289,9 @@ func (s *Server) ListTemplates(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
-// randReader is the entropy source for generateRandomHex. Tests swap it
+// randReader is the entropy source for generateHex. Tests swap it
 // via export_test.go to inject deterministic or failing readers.
 var randReader io.Reader = rand.Reader
-
-func generateRandomHex(n int) (string, error) {
-	b := make([]byte, n)
-	if _, err := io.ReadFull(randReader, b); err != nil {
-		return "", fmt.Errorf("generating random hex: %w", err)
-	}
-	return hex.EncodeToString(b), nil
-}
 
 // substituteVars replaces ${VAR_NAME} placeholders in the compose YAML.
 // If the compose contains an x-mortise.variables block, those specs drive
@@ -338,7 +329,7 @@ func substituteVars(tpl string, vars map[string]string) (string, error) {
 			break
 		}
 		varName := result[idx+2 : idx+end]
-		generated, err := generateRandomHex(16)
+		generated, err := generateHex(32, randReader)
 		if err != nil {
 			return "", err
 		}
