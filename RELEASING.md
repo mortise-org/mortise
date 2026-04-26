@@ -8,7 +8,6 @@ drives the chart version, chart `appVersion`, and container image tag.
 | Artifact            | Where it lives                                    | Tag / version |
 |---------------------|---------------------------------------------------|---------------|
 | Container image     | `ghcr.io/mortise-org/mortise`                     | `<version>` (e.g. `0.1.0`) |
-| Dev / floating image | `ghcr.io/mortise-org/mortise`                     | `main`        |
 | `mortise` chart     | `https://mortise-org.github.io/mortise`           | `<version>`   |
 | `mortise-core` chart | `https://mortise-org.github.io/mortise`           | `<version>`   |
 | GitHub Release      | `github.com/mortise-org/mortise/releases`         | `v<version>`  |
@@ -42,19 +41,10 @@ or the gh-pages `index.yaml`.
 
 ## Dev builds
 
-Every push to `main` builds and pushes `ghcr.io/mortise-org/mortise:main`.
-This is the image you'd pull if you want "latest bleeding edge": it is
-not published to a chart, and the chart defaults never reference it.
-
-Use it locally with:
-
-```bash
-helm upgrade --install mortise mortise/mortise \
-  --set mortise-core.image.tag=main
-```
-
-Expect it to move several times a day. If you need reproducibility, pin to
-a specific SHA tag (the image is also tagged by short commit SHA).
+The release workflow only fires on `v*` tags — pushes to `main` do not
+build or publish an image. For local development, use `make dev-up` (k3d +
+Tilt) or `make build` to build a local image. If you need a specific
+commit, cut a prerelease tag (e.g. `v0.2.0-rc.1`).
 
 ## Hotfix / rollback
 
