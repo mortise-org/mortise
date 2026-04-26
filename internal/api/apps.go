@@ -1,9 +1,11 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -14,6 +16,38 @@ import (
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
 	"github.com/mortise-org/mortise/internal/authz"
 )
+
+// normalizeRepoURL expands short-form "owner/repo" strings to a full git URL.
+// If the URL already starts with http:// or https:// it is returned unchanged.
+// Otherwise it is treated as owner/repo shorthand: the host is resolved from
+// the GitProvider named by providerRef (or the first GitProvider in the cluster
+// when providerRef is empty). A ".git" suffix is appended if absent.
+// Falls back to https://github.com when no GitProvider can be found.
+func (s *Server) normalizeRepoURL(ctx context.Context, ns, providerRef, repo string) string {
+	if strings.HasPrefix(repo, "http://") || strings.HasPrefix(repo, "https://") {
+		return repo
+	}
+
+	host := "https://github.com"
+
+	if providerRef != "" {
+		var gp mortisev1alpha1.GitProvider
+		if err := s.client.Get(ctx, types.NamespacedName{Name: providerRef}, &gp); err == nil {
+			host = strings.TrimRight(gp.Spec.Host, "/")
+		}
+	} else {
+		var list mortisev1alpha1.GitProviderList
+		if err := s.client.List(ctx, &list); err == nil && len(list.Items) > 0 {
+			host = strings.TrimRight(list.Items[0].Spec.Host, "/")
+		}
+	}
+
+	url := host + "/" + repo
+	if !strings.HasSuffix(url, ".git") {
+		url += ".git"
+	}
+	return url
+}
 
 // maxAppNameLen caps app names. App names are suffixed with "-{env}" in
 // Deployment names; the longest env suffix is ~10 chars, and k8s names max
@@ -68,6 +102,12 @@ func (s *Server) CreateApp(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, errorResponse{msg})
 			return
 		}
+	}
+
+	// Normalize short-form repo URLs (owner/repo → full https URL) before
+	// storing on the CR. go-git requires a full URL.
+	if req.Spec.Source.Type == mortisev1alpha1.SourceTypeGit {
+		req.Spec.Source.Repo = s.normalizeRepoURL(r.Context(), ns, req.Spec.Source.ProviderRef, req.Spec.Source.Repo)
 	}
 
 	// Stamp which user created this app so the controller can resolve
@@ -191,6 +231,11 @@ func (s *Server) UpdateApp(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&spec); err != nil {
 		writeJSON(w, http.StatusBadRequest, errorResponse{"invalid JSON: " + err.Error()})
 		return
+	}
+
+	// Normalize short-form repo URLs on update too.
+	if spec.Source.Type == mortisev1alpha1.SourceTypeGit {
+		spec.Source.Repo = s.normalizeRepoURL(r.Context(), ns, spec.Source.ProviderRef, spec.Source.Repo)
 	}
 
 	app.Spec = spec
