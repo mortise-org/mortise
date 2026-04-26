@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Mortise</title>
+  <meta name="description" content="Self-hosted deploy platform for Kubernetes. Connect a repo or image and Mortise handles builds, deploys, domains, TLS, env vars, and preview environments." />
+  <meta property="og:type" content="website" />
+  <meta property="og:url" content="https://mortise.me" />
+  <meta property="og:title" content="Mortise" />
+  <meta property="og:description" content="Self-hosted deploy platform for Kubernetes. Connect a repo or image and Mortise handles builds, deploys, domains, TLS, env vars, and preview environments." />
+  <meta property="og:image" content="https://mortise.me/og-image.png" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:url" content="https://mortise.me" />
+  <meta name="twitter:title" content="Mortise" />
+  <meta name="twitter:description" content="Self-hosted deploy platform for Kubernetes. Connect a repo or image and Mortise handles builds, deploys, domains, TLS, env vars, and preview environments." />
+  <meta name="twitter:image" content="https://mortise.me/og-image.png" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #0f0f11;
+      color: #d1d5db;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 2rem;
+    }
+    .card {
+      max-width: 560px;
+      width: 100%;
+      text-align: center;
+    }
+    h1 {
+      font-size: 2.5rem;
+      font-weight: 700;
+      color: #fff;
+      letter-spacing: -0.03em;
+      margin-bottom: 1rem;
+    }
+    p {
+      font-size: 1.05rem;
+      line-height: 1.65;
+      color: #9ca3af;
+      margin-bottom: 2rem;
+    }
+    .actions {
+      display: flex;
+      gap: 0.75rem;
+      justify-content: center;
+      flex-wrap: wrap;
+    }
+    a.btn {
+      display: inline-block;
+      padding: 0.6rem 1.4rem;
+      border-radius: 6px;
+      font-size: 0.9rem;
+      font-weight: 500;
+      text-decoration: none;
+      transition: opacity 0.15s;
+    }
+    a.btn:hover { opacity: 0.8; }
+    a.btn-primary { background: #6366f1; color: #fff; }
+    a.btn-secondary { background: #1f2937; color: #d1d5db; border: 1px solid #374151; }
+    .preview {
+      margin-top: 3rem;
+      border-radius: 10px;
+      overflow: hidden;
+      border: 1px solid #1f2937;
+    }
+    .preview img { width: 100%; display: block; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Mortise</h1>
+    <p>Self-hosted deploy platform for Kubernetes. Connect a repo or image and Mortise handles builds, deploys, domains, TLS, env vars, and preview environments.</p>
+    <div class="actions">
+      <a class="btn btn-primary" href="https://github.com/mortise-org/mortise">GitHub</a>
+      <a class="btn btn-secondary" href="https://github.com/mortise-org/mortise/blob/main/docs/quickstart.md">Quickstart</a>
+    </div>
+    <div class="preview">
+      <img src="/og-image.png" alt="Mortise app canvas showing interconnected services" />
+    </div>
+  </div>
+</body>
+</html>
