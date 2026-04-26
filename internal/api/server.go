@@ -281,7 +281,26 @@ func (s *Server) Handler() http.Handler {
 				path = "index.html"
 			}
 			if _, err := fs.Stat(s.ui, path); err != nil {
+				path = "index.html"
 				req.URL.Path = "/"
+			}
+			// Rewrite index.html to inject absolute OG image URL so link
+			// previews (Discord, Slack, etc.) resolve the image correctly.
+			if path == "index.html" {
+				scheme := "https"
+				if proto := req.Header.Get("X-Forwarded-Proto"); proto != "" {
+					scheme = proto
+				} else if req.TLS == nil {
+					scheme = "http"
+				}
+				raw, err := fs.ReadFile(s.ui, "index.html")
+				if err == nil {
+					abs := scheme + "://" + req.Host + "/og-image.png"
+					body := strings.ReplaceAll(string(raw), `content="/og-image.png"`, `content="`+abs+`"`)
+					w.Header().Set("Content-Type", "text/html; charset=utf-8")
+					_, _ = w.Write([]byte(body))
+					return
+				}
 			}
 			uiHandler.ServeHTTP(w, req)
 		})
