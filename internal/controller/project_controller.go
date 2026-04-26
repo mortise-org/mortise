@@ -20,6 +20,7 @@ import (
 	"context"
 	stderrors "errors"
 	"fmt"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -109,6 +110,7 @@ type ProjectReconciler struct {
 // +kubebuilder:rbac:groups=mortise.mortise.dev,resources=projects/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=mortise.mortise.dev,resources=projects/finalizers,verbs=update
 // +kubebuilder:rbac:groups=mortise.mortise.dev,resources=apps,verbs=get;list;watch;patch;update
+// +kubebuilder:rbac:groups=mortise.mortise.dev,resources=projectmembers,verbs=get;list;watch;create
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch;create;update;patch;delete
 
 func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -180,6 +182,11 @@ func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		}
 		log.Error(err, "ensure control namespace failed")
 		return ctrl.Result{}, err
+	}
+
+	// Auto-create an owner ProjectMember for the project creator.
+	if err := r.ensureOwnerMember(ctx, &project, controlNs); err != nil {
+		return ctrl.Result{}, fmt.Errorf("ensure owner member: %w", err)
 	}
 
 	// Ensure one namespace per declared env.
@@ -534,6 +541,55 @@ func (r *ProjectReconciler) removeFinalizerWithRetry(ctx context.Context, name s
 	}
 
 	return fmt.Errorf("could not remove finalizer for Project %q after retries", name)
+}
+
+// ensureOwnerMember creates a ProjectMember with role owner for the address in
+// the mortise.dev/created-by annotation, if one does not already exist.
+// Idempotent: a second reconcile for the same project is a no-op.
+func (r *ProjectReconciler) ensureOwnerMember(ctx context.Context, project *mortisev1alpha1.Project, controlNs string) error {
+	email := project.Annotations["mortise.dev/created-by"]
+	if email == "" {
+		return nil
+	}
+
+	var members mortisev1alpha1.ProjectMemberList
+	if err := r.List(ctx, &members, client.InNamespace(controlNs)); err != nil {
+		return fmt.Errorf("list project members: %w", err)
+	}
+	for i := range members.Items {
+		if members.Items[i].Spec.Email == email {
+			return nil
+		}
+	}
+
+	name := "owner-" + strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' {
+			return r
+		}
+		if r >= 'A' && r <= 'Z' {
+			return r + 32
+		}
+		return '-'
+	}, email)
+	if len(name) > 253 {
+		name = name[:253]
+	}
+
+	member := &mortisev1alpha1.ProjectMember{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: controlNs,
+		},
+		Spec: mortisev1alpha1.ProjectMemberSpec{
+			Email:   email,
+			Project: project.Name,
+			Role:    mortisev1alpha1.ProjectRoleOwner,
+		},
+	}
+	if err := r.Create(ctx, member); err != nil && !errors.IsAlreadyExists(err) {
+		return fmt.Errorf("create owner ProjectMember: %w", err)
+	}
+	return nil
 }
 
 // SetupWithManager wires the controller. Watches Apps (to keep appCount fresh)
