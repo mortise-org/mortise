@@ -284,6 +284,14 @@ var _ = Describe("Project Controller", func() {
 		expectedMemberName := "member-" + hex.EncodeToString([]byte(creatorEmail))
 
 		AfterEach(func() {
+			// Envtest has no GC: explicitly delete ProjectMembers so the next
+			// It block doesn't see leftovers from the previous one.
+			var members mortisev1alpha1.ProjectMemberList
+			if err := k8sClient.List(ctx, &members, client.InNamespace(nsName)); err == nil {
+				for i := range members.Items {
+					_ = k8sClient.Delete(ctx, &members.Items[i])
+				}
+			}
 			proj := &mortisev1alpha1.Project{}
 			if err := k8sClient.Get(ctx, types.NamespacedName{Name: projectName}, proj); err == nil {
 				proj.Finalizers = nil
