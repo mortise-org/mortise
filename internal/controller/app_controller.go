@@ -2054,6 +2054,8 @@ func buildProbe(pc *mortisev1alpha1.ProbeConfig, defaultPort int32) *corev1.Prob
 		InitialDelaySeconds: 5,
 		PeriodSeconds:       10,
 		TimeoutSeconds:      3,
+		FailureThreshold:    3,
+		SuccessThreshold:    1,
 	}
 
 	if pc == nil {
@@ -2277,7 +2279,6 @@ func toEnvVars(envs []mortisev1alpha1.EnvVar) []corev1.EnvVar {
 	}
 	return result
 }
-
 
 func (r *AppReconciler) effectiveResources(ctx context.Context, env *mortisev1alpha1.Environment) mortisev1alpha1.ResourceRequirements {
 	res := env.Resources
