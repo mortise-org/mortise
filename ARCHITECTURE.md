@@ -35,6 +35,7 @@ flowchart TB
 
         subgraph BuildNS["mortise-deps namespace"]
             BuildKit["BuildKit Deployment + cache PVC"]
+            Observer["mortise-observer Deployment + SQLite PVC"]
         end
 
         subgraph ProjectNS["project namespace - one per Project, contains all Apps in that Project"]
@@ -54,6 +55,7 @@ flowchart TB
 
     Operator -->|GitAPI iface| GitHub
     Operator -->|BuildClient iface| BuildKit
+    Operator -->|adapter contract| Observer
     Operator -->|RegistryBackend iface| Registry
     Operator -->|IngressProvider iface| Traefik
     Operator --- MetaDB
@@ -110,7 +112,10 @@ flowchart TB
   bundled registry/buildkit stack: each corresponds to an outward interface
   (`IngressProvider`, `RegistryBackend`) or standard Kubernetes integration
   and can be turned off at install via chart values when the cluster
-  already has the component. See SPEC §8.3.
+  already has the component. See SPEC §8.3. **ExternalDNS is not in this
+  category** — it is not bundled in the Mortise chart at all. Users who want
+  DNS automation install ExternalDNS themselves; Mortise writes standard
+  Ingress hostname annotations that ExternalDNS picks up automatically.
 
 ### Component Roles & Scopes
 
@@ -124,6 +129,7 @@ flowchart TB
 | **ExternalDNS** | user-managed | Optional DNS automation. Mortise emits Ingress hostname annotations that ExternalDNS can consume. | Not bundled by the chart. Install separately if desired. |
 | **Bundled registry** | `mortise-deps` | OCI image registry for built images. | Enabled by chart values; can be disabled for external registries. |
 | **BuildKit** | `mortise-deps` | Builds container images from git sources. | Enabled by chart values (default on in batteries-included chart). |
+| **Observer** (`mortise-observer`) | `mortise-deps` | Historical logs/metrics/traffic adapter (SQLite-backed). Implements the adapter contract from SPEC §5.11a. Serves GET /v1/logs, /v1/metrics, /v1/metrics/live, /v1/traffic, /v1/traffic/live. Configured via `PlatformConfig.spec.observability.{logs,metrics,traffic}AdapterEndpoint`. | Runs as a separate Deployment alongside the operator; backed by a PVC for the SQLite database. |
 | **User App pods** | `pj-{name}-{env}` | The actual workloads Mortise deploys. An App spawns one Deployment per declared environment; each env's pods live in the matching `pj-{name}-{env}` namespace. | Pure 12-factor; no Mortise SDK or sidecar required. |
 | **Backing service pods** | `pj-{name}-{env}` | Apps with `credentials:` declared: typically stateful (Postgres, Redis). Other Apps in the same project+env bind via Service DNS. | v1 = `image` source + PVC + manual credentials. Users who need HA/PITR install CNPG or redis-operator directly and point Apps at them (SPEC §6.3). |
 
