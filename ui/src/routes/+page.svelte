@@ -36,7 +36,7 @@
 <div class="p-8">
 	<div class="mb-6 flex items-center justify-between">
 		<h1 class="text-xl font-semibold text-white">Projects</h1>
-		{#if store.isAdmin}
+		{#if store.isAdmin || store.user?.role === 'member'}
 			<a href="/projects/new"
 				class="flex items-center gap-1.5 rounded-md bg-accent px-3 py-2 text-sm font-medium text-white hover:bg-accent-hover transition-colors">
 				<Plus class="h-4 w-4" /> New Project
@@ -59,7 +59,7 @@
 			<p class="mx-auto mt-1 max-w-sm text-xs text-gray-500">
 				Create your first project to start deploying apps.
 			</p>
-			{#if store.isAdmin}
+			{#if store.isAdmin || store.user?.role === 'member'}
 				<a href="/projects/new"
 					class="mt-4 inline-flex items-center gap-1.5 rounded-md bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent-hover">
 					<Plus class="h-4 w-4" /> Create project

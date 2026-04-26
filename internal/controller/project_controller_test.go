@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"encoding/hex"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -25,6 +26,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
@@ -272,6 +274,101 @@ var _ = Describe("Project Controller", func() {
 			} else {
 				Expect(errors.IsNotFound(err)).To(BeTrue())
 			}
+		})
+	})
+
+	Context("owner auto-assignment via mortise.dev/created-by", func() {
+		const projectName = "owner-assign"
+		const creatorEmail = "creator@example.com"
+		nsName := ProjectNamespace(projectName)
+		expectedMemberName := "member-" + hex.EncodeToString([]byte(creatorEmail))
+
+		AfterEach(func() {
+			// Envtest has no GC: explicitly delete ProjectMembers so the next
+			// It block doesn't see leftovers from the previous one.
+			var members mortisev1alpha1.ProjectMemberList
+			if err := k8sClient.List(ctx, &members, client.InNamespace(nsName)); err == nil {
+				for i := range members.Items {
+					_ = k8sClient.Delete(ctx, &members.Items[i])
+				}
+			}
+			proj := &mortisev1alpha1.Project{}
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: projectName}, proj); err == nil {
+				proj.Finalizers = nil
+				_ = k8sClient.Update(ctx, proj)
+				_ = k8sClient.Delete(ctx, proj)
+			}
+			_ = k8sClient.Delete(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: nsName}})
+		})
+
+		It("creates a ProjectMember owner with correct name and label", func() {
+			project := &mortisev1alpha1.Project{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:        projectName,
+					Annotations: map[string]string{"mortise.dev/created-by": creatorEmail},
+				},
+			}
+			Expect(k8sClient.Create(ctx, project)).To(Succeed())
+
+			r := &ProjectReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: projectName}})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: projectName}})
+			Expect(err).NotTo(HaveOccurred())
+
+			var member mortisev1alpha1.ProjectMember
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      expectedMemberName,
+				Namespace: nsName,
+			}, &member)).To(Succeed())
+
+			Expect(member.Spec.Email).To(Equal(creatorEmail))
+			Expect(member.Spec.Role).To(Equal(mortisev1alpha1.ProjectRoleOwner))
+			Expect(member.Spec.Project).To(Equal(projectName))
+			Expect(member.Labels).To(HaveKeyWithValue("mortise.dev/member", "true"))
+		})
+
+		It("is idempotent — second reconcile does not create a duplicate", func() {
+			project := &mortisev1alpha1.Project{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:        projectName,
+					Annotations: map[string]string{"mortise.dev/created-by": creatorEmail},
+				},
+			}
+			Expect(k8sClient.Create(ctx, project)).To(Succeed())
+
+			r := &ProjectReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			for i := 0; i < 3; i++ {
+				_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: projectName}})
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			var members mortisev1alpha1.ProjectMemberList
+			Expect(k8sClient.List(ctx, &members, client.InNamespace(nsName))).To(Succeed())
+			ownerCount := 0
+			for _, m := range members.Items {
+				if m.Spec.Email == creatorEmail && m.Spec.Role == mortisev1alpha1.ProjectRoleOwner {
+					ownerCount++
+				}
+			}
+			Expect(ownerCount).To(Equal(1))
+		})
+
+		It("does not create a ProjectMember when created-by is absent", func() {
+			project := &mortisev1alpha1.Project{
+				ObjectMeta: metav1.ObjectMeta{Name: projectName},
+			}
+			Expect(k8sClient.Create(ctx, project)).To(Succeed())
+
+			r := &ProjectReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: projectName}})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: projectName}})
+			Expect(err).NotTo(HaveOccurred())
+
+			var members mortisev1alpha1.ProjectMemberList
+			Expect(k8sClient.List(ctx, &members, client.InNamespace(nsName))).To(Succeed())
+			Expect(members.Items).To(BeEmpty())
 		})
 	})
 

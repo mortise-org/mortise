@@ -2,10 +2,42 @@ package authz
 
 import (
 	"context"
+	"encoding/hex"
 	"testing"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+
+	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
 	"github.com/mortise-org/mortise/internal/auth"
+	"github.com/mortise-org/mortise/internal/constants"
 )
+
+func authzScheme(t *testing.T) *runtime.Scheme {
+	t.Helper()
+	s := runtime.NewScheme()
+	if err := mortisev1alpha1.AddToScheme(s); err != nil {
+		t.Fatalf("AddToScheme: %v", err)
+	}
+	return s
+}
+
+func memberForProject(email, project string, role mortisev1alpha1.ProjectRole) *mortisev1alpha1.ProjectMember {
+	name := "member-" + hex.EncodeToString([]byte(email))
+	return &mortisev1alpha1.ProjectMember{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: constants.ControlNamespace(project),
+			Labels:    map[string]string{"mortise.dev/member": "true"},
+		},
+		Spec: mortisev1alpha1.ProjectMemberSpec{
+			Email:   email,
+			Project: project,
+			Role:    role,
+		},
+	}
+}
 
 func TestAdminCanDoEverything(t *testing.T) {
 	engine := NewNativePolicyEngine(nil)
@@ -146,5 +178,74 @@ func TestMemberPlatformScoped(t *testing.T) {
 		if ok {
 			t.Errorf("member should not be allowed %s on user", a)
 		}
+	}
+}
+
+func TestProjectOwnerCanDoAll(t *testing.T) {
+	const email = "owner@example.com"
+	const project = "my-project"
+
+	c := fake.NewClientBuilder().
+		WithScheme(authzScheme(t)).
+		WithObjects(memberForProject(email, project, mortisev1alpha1.ProjectRoleOwner)).
+		Build()
+	engine := NewNativePolicyEngine(c)
+	ctx := context.Background()
+	principal := auth.Principal{ID: email, Email: email, Role: auth.RoleMember}
+	res := Resource{Kind: "app", Project: project}
+
+	for _, a := range []Action{ActionCreate, ActionRead, ActionUpdate, ActionDelete} {
+		ok, err := engine.Authorize(ctx, principal, res, a)
+		if err != nil {
+			t.Fatalf("Authorize(app, %s): %v", a, err)
+		}
+		if !ok {
+			t.Errorf("project owner should be allowed %s on app", a)
+		}
+	}
+}
+
+func TestNonMemberDeniedProjectAccess(t *testing.T) {
+	const project = "my-project"
+
+	// No ProjectMember records in the cluster.
+	c := fake.NewClientBuilder().
+		WithScheme(authzScheme(t)).
+		Build()
+	engine := NewNativePolicyEngine(c)
+	ctx := context.Background()
+	outsider := auth.Principal{ID: "outsider@example.com", Email: "outsider@example.com", Role: auth.RoleMember}
+
+	for _, a := range []Action{ActionCreate, ActionRead, ActionUpdate, ActionDelete} {
+		ok, err := engine.Authorize(ctx, outsider, Resource{Kind: "app", Project: project}, a)
+		if err != nil {
+			t.Fatalf("Authorize(app, %s): %v", a, err)
+		}
+		if ok {
+			t.Errorf("non-member should not be allowed %s on project app", a)
+		}
+	}
+}
+
+func TestProjectMemberNameConvention(t *testing.T) {
+	// Verify the name used by ensureOwnerMember matches what authorizeProject looks up.
+	// If these diverge the owner can never access their own project.
+	const email = "chase@mortise.dev"
+	expected := "member-" + hex.EncodeToString([]byte(email))
+
+	c := fake.NewClientBuilder().
+		WithScheme(authzScheme(t)).
+		WithObjects(memberForProject(email, "proj", mortisev1alpha1.ProjectRoleOwner)).
+		Build()
+	engine := NewNativePolicyEngine(c)
+	ctx := context.Background()
+	principal := auth.Principal{ID: email, Email: email, Role: auth.RoleMember}
+
+	ok, err := engine.Authorize(ctx, principal, Resource{Kind: "project", Project: "proj"}, ActionRead)
+	if err != nil {
+		t.Fatalf("Authorize: %v", err)
+	}
+	if !ok {
+		t.Errorf("owner lookup failed: ProjectMember name %q not found by authorizeProject", expected)
 	}
 }

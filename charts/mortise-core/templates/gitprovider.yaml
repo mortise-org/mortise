@@ -1,0 +1,13 @@
+{{- if .Values.github.clientID }}
+apiVersion: mortise.mortise.dev/v1alpha1
+kind: GitProvider
+metadata:
+  name: github
+  labels:
+    app.kubernetes.io/name: mortise
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  type: github
+  host: https://github.com
+  clientID: {{ .Values.github.clientID | quote }}
+{{- end }}
