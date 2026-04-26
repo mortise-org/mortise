@@ -250,6 +250,7 @@ install_mortise() {
     helm upgrade --install mortise "$chart_ref" \
         --namespace "$MORTISE_NAMESPACE" --create-namespace \
         --set platformConfig.buildPlatform="${BUILD_PLATFORM}" \
+        --set metricsServer.enabled=false \
         $traefik_flag \
         $storage_flags \
         $dev_image_flags \
