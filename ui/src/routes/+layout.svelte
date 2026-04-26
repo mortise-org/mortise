@@ -7,7 +7,7 @@
 	import { store } from '$lib/store.svelte';
 	import { currentProject } from '$lib/context.svelte';
 	// Lucide icons
-	import { Folder, Puzzle, Settings, LayoutDashboard, List, Bell, Activity, User, LogOut, ChevronDown, Users, Rocket } from 'lucide-svelte';
+	import { Folder, Puzzle, Settings, LayoutDashboard, List, Bell, Activity, User, LogOut, ChevronDown, Users, Rocket, Star } from 'lucide-svelte';
 	import ActivityRail from '$lib/components/ActivityRail.svelte';
 	import NotificationDropdown from '$lib/components/NotificationDropdown.svelte';
 	import type { EnvHealth } from '$lib/types';
@@ -298,6 +298,18 @@
 
 			<!-- Right side -->
 			<div class="flex items-center gap-1">
+				<!-- GitHub star CTA -->
+				<a
+					href="https://github.com/mortise-org/mortise"
+					target="_blank"
+					rel="noopener noreferrer"
+					class="flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-gray-500 hover:bg-surface-700 hover:text-yellow-400 transition-colors"
+					title="Star on GitHub"
+				>
+					<Star class="h-3.5 w-3.5" />
+					<span class="hidden sm:inline">Star</span>
+				</a>
+
 				{#if inProject}
 					<!-- Activity pulse button (project context only) -->
 					<button
