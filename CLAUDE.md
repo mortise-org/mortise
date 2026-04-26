@@ -1,5 +1,8 @@
 # Mortise
 
+> This file is named CLAUDE.md for Claude Code compatibility but applies to any AI assistant.
+> For a public-facing LLM index see https://mortise.me/llms.txt
+
 ## What this is
 
 Self-hosted Railway-style deploy platform for Kubernetes. One operator, one
