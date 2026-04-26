@@ -7,7 +7,7 @@
 [![Helm Chart](https://img.shields.io/badge/helm-mortise--org.github.io%2Fmortise-blue)](https://github.com/mortise-org/mortise#install)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
 
-Connect a git repo or pick a pre-built image - Mortise handles builds, deploys, domains, TLS, environment variables, volumes, preview environments, and service bindings. Kubernetes is abstracted away from users but remains fully extensible.
+Connect a git repo or pick a pre-built image - Mortise handles builds, deploys, domains, TLS, environment variables, volumes, preview environments, and service bindings. Kubernetes stays out of your way, but remains fully extensible.
 
 ---
 
