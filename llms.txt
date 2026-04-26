@@ -1,0 +1,29 @@
+# Mortise
+
+Mortise is a self-hosted, Railway-style deploy platform for Kubernetes. Connect a git repo or supply a pre-built image and Mortise handles builds, deploys, domains, TLS, environment variables, volumes, preview environments, and service-to-service bindings. Kubernetes is fully abstracted from end users; operators think in Apps and Projects, not Deployments or Ingresses.
+
+## Key URLs
+
+- Docs: https://mortise.me
+- Install script: https://mortise.me/install (macOS/Linux) or https://mortise.me/install.ps1 (Windows)
+- OpenAPI spec (live cluster): {base}/api/openapi.yaml
+- Helm chart: https://mortise-org.github.io/mortise
+
+## API Surface
+
+- REST API: mounted at /api on the Mortise operator pod. Full OpenAPI 3.0 spec at docs/swagger.yaml and served live at /api/openapi.yaml.
+- CLI: see cmd/cli — covers apps, projects, git providers, env vars, secrets, domains, logs, exec, and device-flow OAuth.
+
+## Deep Context
+
+- SPEC.md — product and engineering specification (workload model, bindings, build pipeline, CRD schema, scope boundaries)
+- ARCHITECTURE.md — system component diagrams and data-flow walkthrough
+
+## CRD Types (api/v1alpha1)
+
+- App — workload (git/image/external source, environments, storage, bindings)
+- Project — namespace + environment definitions
+- GitProvider — OAuth/device-flow credentials for a git forge (GitHub, GitLab, Gitea)
+- PlatformConfig — cluster-wide defaults (domain, TLS issuer, registry)
+- PreviewEnvironment — ephemeral envs created per pull request
+- ProjectMember — RBAC membership within a project

@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"os"
 
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -31,6 +32,15 @@ import (
 
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
 )
+
+// providerClientIDEnvVars maps each GitProvider type to the environment
+// variable that can supply a default clientID (matches the mapping in
+// internal/api/device_flow.go).
+var providerClientIDEnvVars = map[mortisev1alpha1.GitProviderType]string{
+	mortisev1alpha1.GitProviderTypeGitHub: "MORTISE_GITHUB_CLIENT_ID",
+	mortisev1alpha1.GitProviderTypeGitLab: "MORTISE_GITLAB_CLIENT_ID",
+	mortisev1alpha1.GitProviderTypeGitea:  "MORTISE_GITEA_CLIENT_ID",
+}
 
 // GitProviderReconciler reconciles a GitProvider object
 type GitProviderReconciler struct {
@@ -52,6 +62,23 @@ func (r *GitProviderReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, err
+	}
+
+	// Backfill clientID from the environment when it is absent from the spec.
+	// This handles GitProvider CRs created before clientID was introduced or
+	// adopted via manual Helm labeling (issue #139).
+	if gp.Spec.ClientID == "" {
+		if envVar, ok := providerClientIDEnvVars[gp.Spec.Type]; ok {
+			if clientID := os.Getenv(envVar); clientID != "" {
+				log.Info("backfilling clientID from env", "envVar", envVar)
+				patch := client.MergeFrom(gp.DeepCopy())
+				gp.Spec.ClientID = clientID
+				if err := r.Patch(ctx, &gp, patch); err != nil {
+					return ctrl.Result{}, fmt.Errorf("patch clientID: %w", err)
+				}
+				return ctrl.Result{Requeue: true}, nil
+			}
+		}
 	}
 
 	// Validate the type field.
