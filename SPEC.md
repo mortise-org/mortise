@@ -165,6 +165,10 @@ metadata:
 spec:
   description: "Core customer-facing SaaS"
 
+  # When true, changes to env Secrets trigger a rolling pod update via
+  # a mortise.dev/env-hash annotation on the Deployment pod template.
+  autoRedeploy: true
+
   # PR Environments are a project-level toggle (not per-App). When
   # enabled, every git-source App in the project gets a preview per PR.
   # See §5.8 for scope semantics; cron and non-public Apps still
@@ -412,6 +416,14 @@ spec:
       replicas: 1
       domain: my-app-staging.yourdomain.com
 
+  configFiles:                        # app-wide; mounted via ConfigMap into all environments
+    - path: /app/config/settings.toml
+      content: |
+        [server]
+        port = 8080
+    # Each entry requires: path (absolute, 2–4096 chars) and content (file body).
+    # All environments in the App receive the same configFiles.
+
   # PR Environments are configured on the parent Project (§5.0), not on
   # the App. There is no `spec.preview` on an App in v1.
 ```
@@ -482,11 +494,12 @@ need. Cross-env constants go in a YAML anchor.
 
 Override via `source.build.mode: dockerfile | railpack` (default `auto`).
 
-**BuildKit:** runs as a single rootless Deployment in the `mortise-builds`
-namespace with a PVC for `/var/lib/buildkit` layer cache. Installed on-demand
-the first time a `git` App is created (not part of base install). Operator
-serializes submissions through an internal queue and talks to BuildKit via the
-native Go client. Scale-out revisited if p99 queue wait exceeds ~2 minutes.
+**BuildKit:** runs as a single rootless Deployment in the `mortise-deps`
+namespace with a PVC for `/var/lib/buildkit` layer cache. Bundled and enabled
+by default in the umbrella chart (`buildkit.enabled: true`); can be disabled if
+you supply your own BuildKit instance. Operator serializes submissions through
+an internal queue and talks to BuildKit via the native Go client. Scale-out
+revisited if p99 queue wait exceeds ~2 minutes.
 
 **Build cache:** OCI artifacts in the configured registry, keyed per app per
 branch.
@@ -612,30 +625,13 @@ spec:
 ```
 
 **Flavor B: `importFrom` an existing Service + Secret.**
-When the external service was installed by another operator (Crossplane,
-CNPG, ACK, the cluster owner), it already exposes a `Service` and a
-`Secret`. No point re-typing the same credentials into Mortise. `importFrom`
-references them and Mortise wires them straight through to binders:
 
-```yaml
-spec:
-  source:
-    type: external
-    external:
-      importFrom:
-        service: { name: cnpg-prod, namespace: databases }      # takes host/port from this Service
-        secret:  { name: cnpg-prod-app, namespace: databases }  # takes user/password/etc. from this Secret
-        keyMap:                                                 # optional; remap Secret keys to credential names
-          username: user
-          password: password
-  credentials: [host, port, user, password]                     # which keys to expose to binders
-```
+> **Post-v1.** `importFrom` is not yet implemented. Use Flavor A (declare host/port and credentials manually) for now.
 
-Mortise reads the referenced `Service`/`Secret` at reconcile time,
-projects the values into its own `{app}-credentials` Secret in the App's
-namespace (so cross-namespace `secretKeyRef` works: see Issue #2), and
-watches the source Secret for rotation. The source resources are **not**
-owned by Mortise; deleting the App does not delete them.
+When implemented, this flavor will let users reference a `Service` and
+`Secret` already in the cluster (e.g. produced by Crossplane, CNPG, or
+ACK) so Mortise can wire them straight through to binders without
+re-typing the credentials. Tracked for a post-v1 release.
 
 **Constraints (v1):**
 - `network.public: true` still means "give it a domain and TLS," routed
@@ -645,10 +641,6 @@ owned by Mortise; deleting the App does not delete them.
   workload. Setting these is a validation error.
 - No health checks or deploy history: the upstream's lifecycle is the
   user's problem.
-- Cross-namespace refs in `importFrom` require the operator's
-  ServiceAccount to have read access on the source namespace. Chart
-  ships with a `ClusterRole` for `services` + `secrets` GET/WATCH;
-  restrictive setups can scope this down with a supplemental RoleBinding.
 
 ### 5.5b Secret Mounts: files alongside env-var bindings
 
@@ -853,18 +845,17 @@ separately-installed project Mortise does not own. The pattern:
 
 1. User installs ESO (`helm install external-secrets ...`) and a
    `ClusterSecretStore` pointing at their backend.
-2. User sets `secrets.mode: external` on their App and references a
-   path in the backend via the Mortise UI/CRD.
-3. Mortise writes an `ExternalSecret` CR in the App's namespace; ESO
-   reconciles it and produces a regular k8s Secret.
-4. Mortise consumes that Secret the same way it would consume a
-   natively-managed one.
+2. ESO reconciles `ExternalSecret` CRs and writes regular k8s Secrets
+   into the App's namespace.
+3. Mortise reads those Secrets the same way it reads any natively-managed
+   k8s Secret.
 
-Mortise never imports ESO's Go types or talks to the backend directly.
-The integration is two CRs passing k8s Secrets between them. If ESO is
-not installed, Mortise falls back to native k8s Secrets: nothing breaks,
-users just don't have the external-backend option. See §11.1 for why
-this is not a "plug-in protocol."
+There is no `secrets.mode` or `secrets` field on the App CRD. No
+in-CRD declaration is needed or supported. Mortise never imports ESO's
+Go types or talks to the secret backend directly. The integration is
+two separate operators sharing k8s Secrets as the exchange medium. If
+ESO is not installed, Mortise works with natively-managed k8s Secrets:
+nothing breaks. See §11.1 for why this is not a "plug-in protocol."
 
 ### 5.9a Env-var Editing Surface
 
@@ -943,6 +934,21 @@ Project roles (`ProjectMember` CRD, per project):
 | **developer** | App lifecycle operations, but no member/token management; cannot delete app/project. Restricted envs are read-only. |
 | **viewer** | Read-only in project. |
 
+**Restricted environments.** When `environments[].restricted: true` on a
+`Project`, Developer-role members have read-only access to that environment.
+Owners retain full access. Useful for production: Developers can deploy to
+staging freely but cannot touch production env vars or trigger manual
+redeploys directly.
+
+```yaml
+# Project CRD with restricted production environment
+spec:
+  environments:
+    - name: production
+      restricted: true
+    - name: staging
+```
+
 **SSO for user apps is not a Mortise concern.** Mortise-v1's job is what
 Railway's is: hand users env vars and a URL. A user who wants their Gitea
 to "Login with Authentik" installs Authentik themselves, creates the OIDC
@@ -952,6 +958,34 @@ automated OIDC/SAML client provisioning for user apps are post-v1 topics
 to be specced if and when real demand shows up; they are not a v1 contract.
 
 ### 5.11 Observability (v1)
+
+**mortise-observer (bundled, enabled by default).** The chart includes a
+`mortise-observer` binary that implements the log/metrics/traffic adapter
+contract (§5.11a). It runs as a separate pod backed by a SQLite database on
+a PVC and serves historical data to the Mortise UI. Default retention:
+
+| Data type | Retention |
+|---|---|
+| Logs | 48 hours |
+| Metrics | 72 hours |
+| Traffic | 48 hours |
+
+Observer HTTP endpoints (served at the adapter base URL):
+
+| Endpoint | Description |
+|---|---|
+| `GET /v1/logs` | Historical log lines (time range query) |
+| `GET /v1/metrics` | Historical metrics |
+| `GET /v1/metrics/live` | Live metrics stream (SSE) |
+| `GET /v1/traffic` | Historical traffic data |
+| `GET /v1/traffic/live` | Live traffic stream (SSE) |
+
+The observer is wired in via `PlatformConfig.spec.observability`:
+`metricsAdapterEndpoint`, `logsAdapterEndpoint`, `trafficAdapterEndpoint`.
+When those are unset, the operator defaults to the in-cluster observer URL
+automatically. Users who want a different backend (Loki, Prometheus, etc.)
+point the endpoint fields at their own adapter that implements the same
+contract (§5.11a).
 
 **Metrics:** `metrics-server` baseline: CPU/memory per pod/environment
 surfaced in UI. No Prometheus installed by core. Users who want deeper
@@ -1002,19 +1036,20 @@ log streaming ship in v1:
    When a range is selected, the view switches from SSE streaming to a
    one-shot fetch rendered as a static scrollable list.
 
-**Historical log search via adapter (post-v1).** Mortise defines a
-minimal HTTP contract (§5.11a) that a thin adapter service implements.
-Users deploy one adapter that translates Mortise's queries into their
-actual log backend (Loki, CloudWatch, OpenSearch, Splunk, etc.). Mortise
-maintains one contract; adapters are maintained as separate projects in
-the tenon model. When `PlatformConfig.spec.observability.logsAdapterEndpoint`
-is set, the Logs tab shows a "History" view alongside live streaming.
-When not set, the live tab is the only view: no placeholder or prompt.
+**Historical log search via adapter.** Mortise defines a minimal HTTP
+contract (§5.11a) that a thin adapter service implements. The bundled
+`mortise-observer` (§5.11) satisfies this contract out of the box. Users
+who need a different backend (Loki, CloudWatch, OpenSearch, Splunk) deploy
+an adapter that implements the same contract and set
+`PlatformConfig.spec.observability.logsAdapterEndpoint` to point at it.
+When that field is set, the Logs tab shows a "History" view alongside live
+streaming. When not set, the live tab is the only view: no placeholder or
+prompt.
 
 **Per-project Activity store (convenience, not source of truth).** In
 addition to the stdout audit stream, the operator maintains a small
 in-cluster store of recent audit events *per project* so the UI
-Activity rail (UI_SPEC §12.22) can render history without a log
+Activity rail can render history without a log
 agent. v1 store: a ConfigMap named `activity-{project-name}` in the
 project's control namespace (`pj-{project-name}`), capped at the last
 500 events per project with a
@@ -1027,13 +1062,14 @@ point a log agent at the stream and get full history: no Mortise
 change required. A dedicated `ActivityEvent` CRD or annotation ring
 is deferred until real demand; see §10.
 
-### 5.11a Log Adapter Contract (post-v1)
+### 5.11a Log/Metrics/Traffic Adapter Contract
 
 No standardized cross-backend log query API exists (OpenTelemetry has
 an ingest protocol but no query API; Loki's HTTP API is not implemented
 by CloudWatch, Splunk, or OpenSearch). Rather than maintain N backend
-integrations, Mortise defines one minimal HTTP contract and ships
-reference adapter projects as tenons (§9).
+integrations, Mortise defines one minimal HTTP contract. The bundled
+`mortise-observer` binary (§5.11) is the v1 reference implementation;
+users who want to plug in a different backend implement this same contract.
 
 **Contract: single endpoint:**
 
@@ -1178,7 +1214,7 @@ eliminates the need for callback infrastructure in the GitHub path.
   the top bar. Closed by default; opens as a slide-out over the
   canvas/drawer. Renders the per-project activity store (§5.11) merged
   with synthesized deploy rows from App `status.deploys` history.
-  Filter chips: Deploys / Changes / Members / All. See UI_SPEC §12.22.
+  Filter chips: Deploys / Changes / Members / All.
 
 Top-bar project switcher lets users jump between projects without
 returning to the dashboard.
@@ -1236,6 +1272,7 @@ successful login.
 | `PreviewEnvironment` | Namespaced | Ephemeral PR environments (auto-managed) |
 | `PlatformConfig` | Cluster | Platform settings (domain, default SC) |
 | `GitProvider` | Cluster | One per configured git provider |
+| `ProjectMember` | Namespaced | Binds a user to a project with owner/developer/viewer role |
 
 ---
 
@@ -1513,15 +1550,21 @@ Self-hosting the Mortise project's own CI is out of scope.
 ```
 charts/
 └── mortise/               # single chart: not an umbrella
-    ├── Chart.yaml          # depends on traefik, cert-manager, external-dns (bundled), registry (conditional)
+    ├── Chart.yaml          # depends on traefik, cert-manager, registry (conditional)
     ├── values.yaml
     └── templates/          # operator Deployment, RBAC, CRDs, Service, etc.
 ```
 
 Mortise is one chart. It declares a handful of well-known upstream charts as
-dependencies (Traefik, cert-manager, ExternalDNS, Distribution registry) so a single
+dependencies (Traefik, cert-manager, Distribution registry) so a single
 `helm install` gives a working cluster out of the box. Those dependencies
 can be turned off (§8.3) when the cluster already has equivalents.
+
+**ExternalDNS is not bundled.** If you use ExternalDNS for DNS automation,
+install it separately and point it at the cluster; it will pick up Ingress
+annotations automatically. Mortise writes standard
+`external-dns.alpha.kubernetes.io/hostname` annotations on every Ingress; no
+Mortise-specific ExternalDNS configuration is required.
 
 There is no umbrella chart, no addon subchart directory, no preset system
 to maintain. §6.1 invariant #1 guarantees the chart alone is the whole
@@ -1532,15 +1575,17 @@ product.
 ```bash
 helm install mortise oci://ghcr.io/mortise/mortise \
   --namespace mortise-system --create-namespace \
-  --set domain=yourdomain.com \
-  --set external-dns.provider.name=cloudflare \
-  --set external-dns.env[0].name=CF_API_TOKEN \
-  --set external-dns.env[0].value=xxx
+  --set domain=yourdomain.com
 ```
 
 One command. The result is the full Railway-equivalent product: deploy from
 git or image, bindings, previews, TLS, domains, native auth. No second
 install step, no addon picker, no "did you remember to enable X?"
+
+If you want automatic DNS record management, install ExternalDNS separately
+and configure it to watch Ingress annotations. Mortise writes
+`external-dns.alpha.kubernetes.io/hostname` on every Ingress; ExternalDNS
+picks these up with no further Mortise configuration.
 
 ### 8.3 Bring-Your-Own Platform Components
 
@@ -1551,13 +1596,16 @@ Each is on by default but switchable at install:
 |---|---|---|
 | `traefik.enabled` | `true` | Operator annotates Ingress for the existing controller; user picks `ingress.className` |
 | `certManager.enabled` | `true` | Operator expects an existing `ClusterIssuer`; user sets `tls.clusterIssuer` |
-| `externalDNS.enabled` | `true` | Operator still annotates Ingress; user's existing ExternalDNS picks it up, or DNS is managed manually |
 | `registry.enabled` | `true` | Operator pushes to external registry; user sets `registry.url` + `registry.pullSecret` |
 
-Each toggle corresponds to an outward interface (§11.1): `IngressProvider`,
-`RegistryBackend`: or an annotation-driven integration (ExternalDNS).
-Disabling a bundled component does not disable the feature; it swaps the
-implementation.
+**Note:** ExternalDNS is not a chart dependency and has no `externalDNS.enabled`
+toggle. It is user-installed. Mortise annotates Ingresses with the standard
+`external-dns.alpha.kubernetes.io/hostname` annotation; ExternalDNS picks those
+up automatically. DNS is managed manually when ExternalDNS is not present.
+
+Each bundled component toggle corresponds to an outward interface (§11.1):
+`IngressProvider`, `RegistryBackend`. Disabling a bundled component does not
+disable the feature; it swaps the implementation.
 
 ### 8.4 Restricted-Network Installs (Proxied / Custom-CA)
 
@@ -1611,7 +1659,7 @@ in a shippable state: nothing half-done carried over.
 - kubebuilder scaffolding for the `App`, `PreviewEnvironment`,
   `PlatformConfig`, `GitProvider` CRDs (skeleton, no reconcile yet)
 - Umbrella Helm chart with `mortise-core` subchart (operator Deployment,
-  CRDs, RBAC; Traefik/cert-manager/ExternalDNS declared as chart dependencies)
+  CRDs, RBAC; Traefik/cert-manager declared as chart dependencies; ExternalDNS is user-installed)
 - Makefile with all test-bench targets (may be stubs at first)
 - CI: `test.yml` (unit + envtest) and `test-integration.yml` (k3d)
 - Test helpers: `loadFixture`, `createTestNamespace`, `requireEventually`,
