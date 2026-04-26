@@ -19,8 +19,8 @@ package controller
 import (
 	"context"
 	stderrors "errors"
+	"encoding/hex"
 	"fmt"
-	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -552,33 +552,28 @@ func (r *ProjectReconciler) ensureOwnerMember(ctx context.Context, project *mort
 		return nil
 	}
 
-	var members mortisev1alpha1.ProjectMemberList
-	if err := r.List(ctx, &members, client.InNamespace(controlNs)); err != nil {
-		return fmt.Errorf("list project members: %w", err)
-	}
-	for i := range members.Items {
-		if members.Items[i].Spec.Email == email {
-			return nil
-		}
-	}
+	// Name must match the convention in internal/authz/native.go so that
+	// authorizeProject can find this member by a deterministic Get.
+	name := "member-" + hex.EncodeToString([]byte(email))
 
-	name := "owner-" + strings.Map(func(r rune) rune {
-		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' {
-			return r
-		}
-		if r >= 'A' && r <= 'Z' {
-			return r + 32
-		}
-		return '-'
-	}, email)
-	if len(name) > 253 {
-		name = name[:253]
+	var existing mortisev1alpha1.ProjectMember
+	err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: controlNs}, &existing)
+	if err == nil {
+		return nil
+	}
+	if !errors.IsNotFound(err) {
+		return fmt.Errorf("get owner ProjectMember: %w", err)
 	}
 
 	member := &mortisev1alpha1.ProjectMember{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: controlNs,
+			// Label required by ListProjects to include this project
+			// in the member's project list.
+			Labels: map[string]string{
+				"mortise.dev/member": "true",
+			},
 		},
 		Spec: mortisev1alpha1.ProjectMemberSpec{
 			Email:   email,
