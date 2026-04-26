@@ -278,14 +278,9 @@ var _ = Describe("Project Controller", func() {
 	})
 
 	Context("owner auto-assignment via mortise.dev/created-by", func() {
-		const projectName = "owner-assign"
 		const creatorEmail = "creator@example.com"
-		nsName := ProjectNamespace(projectName)
-		expectedMemberName := "member-" + hex.EncodeToString([]byte(creatorEmail))
 
-		AfterEach(func() {
-			// Envtest has no GC: explicitly delete ProjectMembers so the next
-			// It block doesn't see leftovers from the previous one.
+		cleanupProject := func(projectName, nsName string) {
 			var members mortisev1alpha1.ProjectMemberList
 			if err := k8sClient.List(ctx, &members, client.InNamespace(nsName)); err == nil {
 				for i := range members.Items {
@@ -299,9 +294,14 @@ var _ = Describe("Project Controller", func() {
 				_ = k8sClient.Delete(ctx, proj)
 			}
 			_ = k8sClient.Delete(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: nsName}})
-		})
+		}
 
 		It("creates a ProjectMember owner with correct name and label", func() {
+			projectName := "oa-creates"
+			nsName := ProjectNamespace(projectName)
+			expectedMemberName := "member-" + hex.EncodeToString([]byte(creatorEmail))
+			DeferCleanup(cleanupProject, projectName, nsName)
+
 			project := &mortisev1alpha1.Project{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:        projectName,
@@ -329,6 +329,10 @@ var _ = Describe("Project Controller", func() {
 		})
 
 		It("is idempotent — second reconcile does not create a duplicate", func() {
+			projectName := "oa-idem"
+			nsName := ProjectNamespace(projectName)
+			DeferCleanup(cleanupProject, projectName, nsName)
+
 			project := &mortisev1alpha1.Project{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:        projectName,
@@ -355,6 +359,10 @@ var _ = Describe("Project Controller", func() {
 		})
 
 		It("does not create a ProjectMember when created-by is absent", func() {
+			projectName := "oa-no-ann"
+			nsName := ProjectNamespace(projectName)
+			DeferCleanup(cleanupProject, projectName, nsName)
+
 			project := &mortisev1alpha1.Project{
 				ObjectMeta: metav1.ObjectMeta{Name: projectName},
 			}
