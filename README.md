@@ -7,7 +7,7 @@
 [![Helm Chart](https://img.shields.io/badge/helm-mortise--org.github.io%2Fmortise-blue)](https://mortise-org.github.io/mortise)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
 
-Connect a git repo or pick a pre-built image — Mortise handles builds, deploys, domains, TLS, environment variables, volumes, preview environments, and service bindings. Kubernetes is fully abstracted away from users.
+Connect a git repo or pick a pre-built image - Mortise handles builds, deploys, domains, TLS, environment variables, volumes, preview environments, and service bindings. Kubernetes is fully abstracted away from users.
 
 ---
 
@@ -23,7 +23,7 @@ One command. Provisions k3s on Linux or k3d on macOS/Windows, helm-installs the 
 curl -fsSL https://mortise.me/install | bash
 ```
 
-**Linux** (requires sudo — installs k3s natively)
+**Linux** (requires sudo - installs k3s natively)
 ```bash
 curl -fsSL https://mortise.me/install | bash
 ```
@@ -87,7 +87,7 @@ After installing, follow the **[Quickstart](docs/quickstart.md)** to create an a
 |-----------|---------|
 | **Operator** | Kubernetes controller that reconciles `App`, `Project`, `GitProvider`, `PreviewEnvironment` CRDs |
 | **REST API** | Project, app, env var, deploy, rollback, and domain management |
-| **SvelteKit UI** | Canvas-based dashboard, app drawer, env var editor, project settings — embedded in the operator binary |
+| **SvelteKit UI** | Canvas-based dashboard, app drawer, env var editor, project settings - embedded in the operator binary |
 | **CLI** | `mortise login`, `mortise app create`, `mortise deploy`, `mortise env` |
 | **Helm Charts** | `mortise` (batteries-included) and `mortise-core` (operator-only) |
 
@@ -95,17 +95,17 @@ After installing, follow the **[Quickstart](docs/quickstart.md)** to create an a
 
 ## Features
 
-- **Git-source deploys** — connect GitHub, GitLab, or Gitea; auto-build via Railpack or Dockerfile
-- **Image deploys** — deploy any container image directly
-- **Docker Compose templates** — one-click Supabase stack (6 services) or bring your own Compose file
-- **Environment variables** — Secret-backed storage, masked values, source badges, multi-line paste, raw editor
-- **Project variables** — project-level vars shared across all apps in a project
-- **Service bindings** — bind apps to backing services, auto-inject `DATABASE_HOST`, `DATABASE_PORT`, `DATABASE_URL`
-- **Auto-domain routing** — public apps get `{app}.{platformDomain}` automatically with TLS
-- **Per-environment namespaces** — production, staging, and preview environments each get an isolated k8s namespace
-- **Preview environments** — PR-driven ephemeral deploys for git-source apps
-- **CrashLoop detection** — surfaces pod crash reasons directly in the UI
-- **GitHub device flow** — one-click git provider connection from the settings page
+- **Git-source deploys** - connect GitHub, GitLab, or Gitea; auto-build via Railpack or Dockerfile
+- **Image deploys** - deploy any container image directly
+- **Docker Compose templates** - one-click Supabase stack (6 services) or bring your own Compose file
+- **Environment variables** - Secret-backed storage, masked values, source badges, multi-line paste, raw editor
+- **Project variables** - project-level vars shared across all apps in a project
+- **Service bindings** - bind apps to backing services, auto-inject `DATABASE_HOST`, `DATABASE_PORT`, `DATABASE_URL`
+- **Auto-domain routing** - public apps get `{app}.{platformDomain}` automatically with TLS
+- **Per-environment namespaces** - production, staging, and preview environments each get an isolated k8s namespace
+- **Preview environments** - PR-driven ephemeral deploys for git-source apps
+- **CrashLoop detection** - surfaces pod crash reasons directly in the UI
+- **GitHub device flow** - one-click git provider connection from the settings page
 
 ---
 
@@ -129,7 +129,7 @@ flowchart LR
     Operator --> Registry["OCI Registry\n(image storage)"]
 ```
 
-External capabilities (OIDC, monitoring, backups, external secrets) plug in through standard Kubernetes primitives — Mortise coexists with Argo CD, Flux, ESO, and other operators.
+External capabilities (OIDC, monitoring, backups, external secrets) plug in through standard Kubernetes primitives - Mortise coexists with Argo CD, Flux, ESO, and other operators.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for full system diagrams.
 
@@ -146,7 +146,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for full system diagrams.
 | [Cluster setup](docs/cluster-setup.md) | Getting a cluster running (k3d, k3s, EKS, GKE, AKS) |
 | [Configuration](docs/configuration.md) | Domain, git providers, HTTPS, storage, environments |
 | [API quickstart](docs/api-quickstart.md) | End-to-end API workflow with curl |
-| [OpenAPI spec](docs/swagger.yaml) | Full API reference — open in [Swagger Editor](https://editor.swagger.io) or [Stoplight](https://stoplight.io) |
+| [OpenAPI spec](docs/swagger.yaml) | Full API reference - open in [Swagger Editor](https://editor.swagger.io) or [Stoplight](https://stoplight.io) |
 | [Systems overview](docs/systems-overview.md) | Runtime architecture, controllers, and reconciliation |
 | [Troubleshooting](docs/troubleshooting.md) | Common issues and fixes |
 
@@ -194,4 +194,4 @@ Full guide: [DEVELOPMENT.md](DEVELOPMENT.md)
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). Bug reports and feature requests go through [GitHub Issues](https://github.com/mortise-org/mortise/issues). Questions and discussion in [GitHub Discussions](https://github.com/mortise-org/mortise/discussions).
 
-Security issues: see [SECURITY.md](SECURITY.md) — do not open a public issue.
+Security issues: see [SECURITY.md](SECURITY.md) - do not open a public issue.

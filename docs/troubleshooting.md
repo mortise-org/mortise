@@ -12,7 +12,7 @@ I/O wait. Builds that should take 30 seconds take 5+ minutes.
 **Cause:** The default `buildkit.storage: pvc` creates a PersistentVolumeClaim
 using the cluster's default StorageClass. If that default is an NFS-based
 provisioner (e.g. `nfs-subdir-external-provisioner`), BuildKit's layer cache
-performs terribly — it does massive small-file I/O that NFS is not designed for.
+performs terribly - it does massive small-file I/O that NFS is not designed for.
 
 **Quick fix:** Switch BuildKit to `emptyDir`, which uses fast local node disk:
 
@@ -38,10 +38,10 @@ cache because every layer operation hits local disk instead of the network.
 to either:
 
 1. Make that StorageClass the cluster default, or
-2. Add a `buildkit.storageClassName` value to the chart (not yet implemented —
+2. Add a `buildkit.storageClassName` value to the chart (not yet implemented -
    contributions welcome)
 
-This would give you persistent cache on fast local disk — the best of both
+This would give you persistent cache on fast local disk - the best of both
 worlds.
 
 ---
@@ -55,7 +55,7 @@ hostname can't be resolved or the connection is refused.
 **Cause:** Mortise's bundled OCI registry runs as a ClusterIP service at
 `registry.mortise-deps.svc:5000`. BuildKit can reach it (BuildKit runs as a
 pod with access to cluster DNS), but kubelet/containerd runs on the **host
-network** — it uses host DNS, not CoreDNS, so it can't resolve
+network** - it uses host DNS, not CoreDNS, so it can't resolve
 `.svc` names. Even if DNS resolved, containerd defaults to HTTPS but the
 registry is HTTP-only.
 
@@ -68,12 +68,12 @@ via cluster DNS.
 
 **What you still need:** Most container runtimes need to be told that
 `localhost:30500` is an HTTP registry. containerd has a built-in rule that
-treats `localhost` as HTTP — but some distros (k3s, Talos, RKE2) configure
+treats `localhost` as HTTP - but some distros (k3s, Talos, RKE2) configure
 containerd with a `config_path` that overrides this default.
 
 Add the appropriate snippet for your distro:
 
-**k3s / RKE2** — `/etc/rancher/k3s/registries.yaml` (then restart k3s):
+**k3s / RKE2** - `/etc/rancher/k3s/registries.yaml` (then restart k3s):
 ```yaml
 mirrors:
   "localhost:30500":
@@ -81,7 +81,7 @@ mirrors:
       - "http://localhost:30500"
 ```
 
-**Talos** — machine config patch:
+**Talos** - machine config patch:
 ```yaml
 machine:
   registries:
@@ -91,7 +91,7 @@ machine:
           - http://localhost:30500
 ```
 
-**kubeadm / vanilla containerd** —
+**kubeadm / vanilla containerd** -
 `/etc/containerd/certs.d/localhost:30500/hosts.toml`:
 ```toml
 server = "http://localhost:30500"
@@ -111,5 +111,5 @@ mirror rules that rewrite the registry address, plus a `hostPort` on the
 registry pod. The DaemonSet proxy generalises this approach to real clusters.
 
 **External registries:** If you point `PlatformConfig.spec.registry.url` at
-an external registry (GHCR, ECR, Harbor, etc.), none of this applies —
+an external registry (GHCR, ECR, Harbor, etc.), none of this applies -
 kubelet can already reach those registries over HTTPS with standard DNS.

@@ -1337,7 +1337,7 @@ definitions:
         description: |-
           Enabled, when set to false, opts this App out of the named project
           environment. The App controller GCs any resources it previously
-          reconciled for that env. A nil pointer means "enabled" — Apps
+          reconciled for that env. A nil pointer means "enabled" - Apps
           auto-participate in every project environment by default.
           +optional
         type: boolean
@@ -1370,7 +1370,7 @@ definitions:
           SecretMounts mounts existing k8s Secrets in the App's namespace as
           files on the container filesystem. See spec §5.5b. Each entry becomes
           a `Volume` + `VolumeMount` on the Deployment's Pod template. Names
-          must not collide with `spec.storage[].name` — the operator does not
+          must not collide with `spec.storage[].name` - the operator does not
           reconcile such collisions; the apiserver will reject the Deployment.
           +optional
         items:
@@ -1481,7 +1481,7 @@ definitions:
       public:
         description: |-
           Public toggles whether an Ingress is created for this App.
-          Note: no `omitempty` on purpose — `false` must survive JSON
+          Note: no `omitempty` on purpose - `false` must survive JSON
           marshalling (see commit c7c58a2). The API server applies the default
           on create when the field is missing entirely.
           +optional
@@ -4646,7 +4646,7 @@ paths:
       description: HMAC-verified webhook receiver for GitHub, GitLab, and Gitea. Handles
         push events (triggers app redeploy) and pull_request events (creates/updates/deletes
         PreviewEnvironments). Authentication is via HMAC signature on the payload
-        — no bearer token required.
+        - no bearer token required.
       parameters:
       - description: Git provider name (matches GitProvider CRD name)
         in: path
