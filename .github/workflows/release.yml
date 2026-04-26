@@ -96,6 +96,8 @@ jobs:
             sed -i "s/^version: .*/version: ${VERSION}/" "${chart}/Chart.yaml"
             sed -i "s/^appVersion: .*/appVersion: \"${VERSION}\"/" "${chart}/Chart.yaml"
           done
+          # Keep the mortise-core subchart pin in the umbrella chart in sync.
+          sed -i '/name: mortise-core/{n;s/version:.*/version: "'"${VERSION}"'"/}' charts/mortise/Chart.yaml
 
       - name: Package charts
         run: |
