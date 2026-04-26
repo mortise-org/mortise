@@ -284,6 +284,7 @@ flowchart TB
     MSc["metrics-server dep (disable-able)"]
     REG["Bundled registry template (disable-able)"]
     BK["BuildKit template (disable-able)"]
+    OBS["mortise-observer Deployment + SQLite PVC (disable-able)"]
 
     Chart --> OP
     Chart --> CRDs
@@ -292,6 +293,7 @@ flowchart TB
     Chart --> MSc
     Chart --> REG
     Chart --> BK
+    Chart --> OBS
 
     Upstream["Upstream projects the user may install separately - Authentik Keycloak kube-prometheus-stack Loki Velero ExternalSecrets Operator CNPG redis-operator etc."]
     Chart -.coexists with.-> Upstream

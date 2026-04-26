@@ -494,11 +494,12 @@ need. Cross-env constants go in a YAML anchor.
 
 Override via `source.build.mode: dockerfile | railpack` (default `auto`).
 
-**BuildKit:** runs as a single rootless Deployment in the `mortise-builds`
-namespace with a PVC for `/var/lib/buildkit` layer cache. Installed on-demand
-the first time a `git` App is created (not part of base install). Operator
-serializes submissions through an internal queue and talks to BuildKit via the
-native Go client. Scale-out revisited if p99 queue wait exceeds ~2 minutes.
+**BuildKit:** runs as a single rootless Deployment in the `mortise-deps`
+namespace with a PVC for `/var/lib/buildkit` layer cache. Bundled and enabled
+by default in the umbrella chart (`buildkit.enabled: true`); can be disabled if
+you supply your own BuildKit instance. Operator serializes submissions through
+an internal queue and talks to BuildKit via the native Go client. Scale-out
+revisited if p99 queue wait exceeds ~2 minutes.
 
 **Build cache:** OCI artifacts in the configured registry, keyed per app per
 branch.
@@ -1048,7 +1049,7 @@ prompt.
 **Per-project Activity store (convenience, not source of truth).** In
 addition to the stdout audit stream, the operator maintains a small
 in-cluster store of recent audit events *per project* so the UI
-Activity rail (UI_SPEC §12.22) can render history without a log
+Activity rail can render history without a log
 agent. v1 store: a ConfigMap named `activity-{project-name}` in the
 project's control namespace (`pj-{project-name}`), capped at the last
 500 events per project with a
@@ -1213,7 +1214,7 @@ eliminates the need for callback infrastructure in the GitHub path.
   the top bar. Closed by default; opens as a slide-out over the
   canvas/drawer. Renders the per-project activity store (§5.11) merged
   with synthesized deploy rows from App `status.deploys` history.
-  Filter chips: Deploys / Changes / Members / All. See UI_SPEC §12.22.
+  Filter chips: Deploys / Changes / Members / All.
 
 Top-bar project switcher lets users jump between projects without
 returning to the dashboard.
