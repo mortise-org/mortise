@@ -151,6 +151,7 @@ dev-up: build-ui ## Create k3d dev cluster with build infra, install Mortise, po
 	@echo "==> Installing Mortise via Helm..."
 	helm upgrade --install mortise charts/mortise \
 		--namespace mortise-system --create-namespace \
+		--skip-crds \
 		--set mortise-core.image.repository=mortise \
 		--set mortise-core.image.tag=dev \
 		--set mortise-core.image.pullPolicy=Never \
@@ -223,6 +224,7 @@ test-integration: ## Create k3d cluster, install chart + test deps, run integrat
 	@echo "==> Installing Mortise via Helm..."
 	helm upgrade --install mortise charts/mortise \
 		--namespace mortise-system --create-namespace \
+		--skip-crds \
 		--set mortise-core.image.repository=mortise \
 		--set mortise-core.image.tag=int \
 		--set mortise-core.image.pullPolicy=Never \
