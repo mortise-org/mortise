@@ -41,13 +41,34 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
 
+      - id: meta-observer
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-observer
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+
       - uses: docker/build-push-action@v5
         with:
           context: .
+          target: operator
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - uses: docker/build-push-action@v5
+        with:
+          context: .
+          target: observer
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta-observer.outputs.tags }}
+          labels: ${{ steps.meta-observer.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
