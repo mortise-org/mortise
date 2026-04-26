@@ -1,6 +1,7 @@
 package templates
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -47,5 +48,17 @@ func TestLoadUnknown(t *testing.T) {
 	_, err := Load("nonexistent")
 	if err == nil {
 		t.Error("expected error for unknown template")
+	}
+}
+
+func TestSupabasePostgRESTSchemaReload(t *testing.T) {
+	tpl, err := Load("supabase")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"PGRST_DB_CHANNEL_ENABLED", "PGRST_DB_CHANNEL"} {
+		if !strings.Contains(tpl.Compose, want) {
+			t.Errorf("supabase template missing %q — PostgREST schema reload will not work", want)
+		}
 	}
 }
