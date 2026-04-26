@@ -3661,6 +3661,248 @@ var _ = Describe("App Controller — git source", func() {
 			Expect(dep.Spec.Template.Spec.Containers[0].Image).To(Equal("nginx:1.28"))
 		})
 	})
+
+	Context("reconcileEnvSecret — seed-if-missing and binding lifecycle", func() {
+		ctx := context.Background()
+
+		AfterEach(func() {
+			purgeAllAppsIn(ctx, namespace)
+		})
+
+		It("seeds env.Env vars into {app}-env Secret on first deploy and does not overwrite on second reconcile", func() {
+			appName := "seed-test"
+			app := &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{Name: appName, Namespace: namespace},
+				Spec: mortisev1alpha1.AppSpec{
+					Source: mortisev1alpha1.AppSource{
+						Type:  mortisev1alpha1.SourceTypeImage,
+						Image: testImageNginx,
+					},
+					Network: mortisev1alpha1.NetworkConfig{Public: true},
+					Environments: []mortisev1alpha1.Environment{{
+						Name:   "production",
+						Domain: "seed.example.com",
+						Env: []mortisev1alpha1.EnvVar{
+							{Name: "PORT", Value: "3000"},
+							{Name: "NODE_ENV", Value: "production"},
+						},
+					}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// After first reconcile, env.Env vars must be seeded.
+			envData := readAppEnvSecret(ctx, appName, envNsProduction)
+			Expect(envData).To(HaveKeyWithValue("PORT", "3000"))
+			Expect(envData).To(HaveKeyWithValue("NODE_ENV", "production"))
+
+			// Simulate user changing PORT directly in the Secret (out-of-band).
+			var sec corev1.Secret
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      envstore.AppEnvSecretName(appName),
+				Namespace: envNsProduction,
+			}, &sec)).To(Succeed())
+			sec.Data["PORT"] = []byte("4000")
+			Expect(k8sClient.Update(ctx, &sec)).To(Succeed())
+
+			// Second reconcile must NOT re-seed (Secret already exists).
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			envData = readAppEnvSecret(ctx, appName, envNsProduction)
+			Expect(envData).To(HaveKeyWithValue("PORT", "4000"), "second reconcile should not overwrite user-edited value")
+		})
+
+		It("adds binding vars on first binding, clears them when binding is removed", func() {
+			dbName := "seed-db"
+			apiName := "seed-api"
+
+			dbApp := &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{Name: dbName, Namespace: namespace},
+				Spec: mortisev1alpha1.AppSpec{
+					Source: mortisev1alpha1.AppSource{
+						Type:  mortisev1alpha1.SourceTypeImage,
+						Image: "postgres:16",
+					},
+					Network: mortisev1alpha1.NetworkConfig{Public: false},
+					Credentials: []mortisev1alpha1.Credential{
+						{Name: "host"},
+						{Name: "port"},
+					},
+					Environments: []mortisev1alpha1.Environment{{
+						Name:     "production",
+						Replicas: ptr.To[int32](1),
+					}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, dbApp)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, dbApp)).To(Succeed()) }()
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: dbName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// API app with a binding to db.
+			apiApp := &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{Name: apiName, Namespace: namespace},
+				Spec: mortisev1alpha1.AppSpec{
+					Source: mortisev1alpha1.AppSource{
+						Type:  mortisev1alpha1.SourceTypeImage,
+						Image: testImageNginx,
+					},
+					Network: mortisev1alpha1.NetworkConfig{Public: true},
+					Environments: []mortisev1alpha1.Environment{{
+						Name:     "production",
+						Replicas: ptr.To[int32](1),
+						Domain:   "api-bind.example.com",
+						Bindings: []mortisev1alpha1.Binding{{Ref: dbName}},
+						Env:      []mortisev1alpha1.EnvVar{{Name: "USER_VAR", Value: "stays"}},
+					}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, apiApp)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, apiApp)).To(Succeed()) }()
+
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: apiName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			envData := readAppEnvSecret(ctx, apiName, envNsProduction)
+			Expect(envData).To(HaveKey("SEED_DB_HOST"), "binding vars should appear after first reconcile with binding")
+			Expect(envData).To(HaveKeyWithValue("USER_VAR", "stays"))
+
+			// Remove the binding from the App.
+			var fetchedApp mortisev1alpha1.App
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: apiName, Namespace: namespace}, &fetchedApp)).To(Succeed())
+			fetchedApp.Spec.Environments[0].Bindings = nil
+			Expect(k8sClient.Update(ctx, &fetchedApp)).To(Succeed())
+
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: apiName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			envData = readAppEnvSecret(ctx, apiName, envNsProduction)
+			Expect(envData).NotTo(HaveKey("SEED_DB_HOST"), "binding vars should be cleared after binding removed")
+			// User var must survive the binding removal.
+			Expect(envData).To(HaveKeyWithValue("USER_VAR", "stays"))
+		})
+
+		It("creates empty {app}-env Secret even when there are no vars and no bindings", func() {
+			appName := "no-vars-app"
+			app := &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{Name: appName, Namespace: namespace},
+				Spec: mortisev1alpha1.AppSpec{
+					Source: mortisev1alpha1.AppSource{
+						Type:  mortisev1alpha1.SourceTypeImage,
+						Image: testImageNginx,
+					},
+					Network: mortisev1alpha1.NetworkConfig{Public: false},
+					Environments: []mortisev1alpha1.Environment{{
+						Name:     "production",
+						Replicas: ptr.To[int32](1),
+					}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Secret must exist (for envFrom Optional mount) even though it has no data.
+			var sec corev1.Secret
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      envstore.AppEnvSecretName(appName),
+				Namespace: envNsProduction,
+			}, &sec)).To(Succeed(), "app-env Secret should exist even with no vars")
+		})
+
+		It("returns an error when a binding references a missing App CRD", func() {
+			appName := "missing-dep-app"
+			app := &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{Name: appName, Namespace: namespace},
+				Spec: mortisev1alpha1.AppSpec{
+					Source: mortisev1alpha1.AppSource{
+						Type:  mortisev1alpha1.SourceTypeImage,
+						Image: testImageNginx,
+					},
+					Network: mortisev1alpha1.NetworkConfig{Public: false},
+					Environments: []mortisev1alpha1.Environment{{
+						Name:     "production",
+						Replicas: ptr.To[int32](1),
+						Bindings: []mortisev1alpha1.Binding{{Ref: "does-not-exist"}},
+					}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).To(HaveOccurred(), "reconcile should fail when bound App does not exist")
+		})
+
+		It("materialises shared-env in the env namespace from control-namespace shared vars", func() {
+			appName := "shared-materialize"
+			app := &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{Name: appName, Namespace: namespace},
+				Spec: mortisev1alpha1.AppSpec{
+					Source: mortisev1alpha1.AppSource{
+						Type:  mortisev1alpha1.SourceTypeImage,
+						Image: testImageNginx,
+					},
+					Network: mortisev1alpha1.NetworkConfig{Public: false},
+					Environments: []mortisev1alpha1.Environment{{
+						Name:     "production",
+						Replicas: ptr.To[int32](1),
+					}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+
+			// Write shared vars to the control namespace (the App's namespace = pj-default-project).
+			store := &envstore.Store{Client: k8sClient}
+			Expect(store.SetSharedSource(ctx, namespace, []envstore.Env{
+				{Name: "GLOBAL_LOG_LEVEL", Value: "debug", Source: "shared"},
+			}, nil)).To(Succeed())
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// shared-env in the env namespace should now carry GLOBAL_LOG_LEVEL.
+			var sharedSec corev1.Secret
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      envstore.SharedEnvName,
+				Namespace: envNsProduction,
+			}, &sharedSec)).To(Succeed())
+			Expect(string(sharedSec.Data["GLOBAL_LOG_LEVEL"])).To(Equal("debug"))
+
+			// Clean up the shared vars source so it doesn't bleed into other tests.
+			_ = store.SetSharedSource(ctx, namespace, nil, nil)
+		})
+	})
 })
 
 // deploymentConflictClient wraps a client.Client and returns a 409 Conflict

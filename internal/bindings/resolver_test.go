@@ -449,3 +449,288 @@ func findVar(vars []bindings.ResolvedVar, name string) *bindings.ResolvedVar {
 	}
 	return nil
 }
+
+func TestInternalPortZeroDefaultsTo8080(t *testing.T) {
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "svc", Namespace: "pj-web"},
+		Spec: mortisev1alpha1.AppSpec{
+			Source:  mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: "nginx:1.25"},
+			Network: mortisev1alpha1.NetworkConfig{Port: 0}, // zero — should default to 8080
+			Environments: []mortisev1alpha1.Environment{
+				{Name: "production"},
+			},
+		},
+	}
+	c := newFakeClient(t, app)
+	r := &bindings.Resolver{Client: c}
+
+	vars, err := r.Resolve(context.Background(), "web", "production", []mortisev1alpha1.Binding{
+		{Ref: "svc"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	portVar := findVar(vars, "SVC_PORT")
+	if portVar == nil {
+		t.Fatal("expected SVC_PORT")
+	}
+	if portVar.Value != "8080" {
+		t.Errorf("expected SVC_PORT=8080 for zero port, got %q", portVar.Value)
+	}
+}
+
+func TestEmptyBindingsReturnsEmpty(t *testing.T) {
+	c := newFakeClient(t)
+	r := &bindings.Resolver{Client: c}
+
+	vars, err := r.Resolve(context.Background(), "web", "production", nil)
+	if err != nil {
+		t.Fatalf("empty bindings should not return error, got %v", err)
+	}
+	if len(vars) != 0 {
+		t.Errorf("expected empty result for empty bindings, got %v", vars)
+	}
+}
+
+func TestBoundAppNotInEnvListIsEnabled(t *testing.T) {
+	// App has only "staging" in its env list; resolving for "production"
+	// should succeed because the default is enabled when env not listed.
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "svc", Namespace: "pj-web"},
+		Spec: mortisev1alpha1.AppSpec{
+			Source:  mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: "nginx:1.25"},
+			Network: mortisev1alpha1.NetworkConfig{Port: 80},
+			Environments: []mortisev1alpha1.Environment{
+				{Name: "staging"},
+			},
+		},
+	}
+	c := newFakeClient(t, app)
+	r := &bindings.Resolver{Client: c}
+
+	vars, err := r.Resolve(context.Background(), "web", "production", []mortisev1alpha1.Binding{
+		{Ref: "svc"},
+	})
+	if err != nil {
+		t.Fatalf("expected no error when env not in list (default enabled), got %v", err)
+	}
+	if findVar(vars, "SVC_HOST") == nil {
+		t.Error("expected SVC_HOST in result")
+	}
+}
+
+func TestBoundAppNilEnabledInEnvIsEnabled(t *testing.T) {
+	// App lists "production" with Enabled=nil — should be treated as enabled.
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "svc", Namespace: "pj-web"},
+		Spec: mortisev1alpha1.AppSpec{
+			Source:  mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: "nginx:1.25"},
+			Network: mortisev1alpha1.NetworkConfig{Port: 80},
+			Environments: []mortisev1alpha1.Environment{
+				{Name: "production", Enabled: nil},
+			},
+		},
+	}
+	c := newFakeClient(t, app)
+	r := &bindings.Resolver{Client: c}
+
+	vars, err := r.Resolve(context.Background(), "web", "production", []mortisev1alpha1.Binding{
+		{Ref: "svc"},
+	})
+	if err != nil {
+		t.Fatalf("expected no error for nil Enabled, got %v", err)
+	}
+	if findVar(vars, "SVC_HOST") == nil {
+		t.Error("expected SVC_HOST")
+	}
+}
+
+func TestCredentialKeyMissingInSecretReturnsEmpty(t *testing.T) {
+	db := newDB("db", "pj-web")
+	// Credentials Secret exists but is missing the "password" key.
+	creds := credentialsSecret("db", "pj-web-production", map[string]string{
+		"username": "postgres",
+		// "password" intentionally absent
+	})
+	c := newFakeClient(t, db, creds)
+	r := &bindings.Resolver{Client: c}
+
+	vars, err := r.Resolve(context.Background(), "web", "production", []mortisev1alpha1.Binding{
+		{Ref: "db"},
+	})
+	if err != nil {
+		t.Fatalf("missing credential key should not error, got %v", err)
+	}
+	pwVar := findVar(vars, "DB_PASSWORD")
+	if pwVar == nil {
+		t.Fatal("expected DB_PASSWORD in result even when key missing")
+	}
+	if pwVar.Value != "" {
+		t.Errorf("expected empty string for missing key, got %q", pwVar.Value)
+	}
+}
+
+func TestResolveInternalAndExternalCombined(t *testing.T) {
+	internal := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "cache", Namespace: "pj-web"},
+		Spec: mortisev1alpha1.AppSpec{
+			Source:  mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: "redis:7"},
+			Network: mortisev1alpha1.NetworkConfig{Port: 6379},
+			Environments: []mortisev1alpha1.Environment{
+				{Name: "production"},
+			},
+		},
+	}
+	external := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "mailer", Namespace: "pj-web"},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{
+				Type: mortisev1alpha1.SourceTypeExternal,
+				External: &mortisev1alpha1.ExternalSource{
+					Host: "smtp.example.com",
+					Port: 587,
+				},
+			},
+			Environments: []mortisev1alpha1.Environment{{Name: "production"}},
+		},
+	}
+	c := newFakeClient(t, internal, external)
+	r := &bindings.Resolver{Client: c}
+
+	vars, err := r.Resolve(context.Background(), "web", "production", []mortisev1alpha1.Binding{
+		{Ref: "cache"},
+		{Ref: "mailer"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if findVar(vars, "CACHE_HOST") == nil {
+		t.Error("expected CACHE_HOST (internal binding)")
+	}
+	if findVar(vars, "MAILER_HOST") == nil {
+		t.Error("expected MAILER_HOST (external binding)")
+	}
+	mailerHost := findVar(vars, "MAILER_HOST")
+	if mailerHost.Value != "smtp.example.com" {
+		t.Errorf("MAILER_HOST = %q, want smtp.example.com", mailerHost.Value)
+	}
+	mailerPort := findVar(vars, "MAILER_PORT")
+	if mailerPort == nil || mailerPort.Value != "587" {
+		t.Errorf("MAILER_PORT = %v, want 587", mailerPort)
+	}
+}
+
+func TestPrefixAllDigitsFallsBackToBinding(t *testing.T) {
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "123", Namespace: "pj-web"},
+		Spec: mortisev1alpha1.AppSpec{
+			Source:  mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: "nginx:1.25"},
+			Network: mortisev1alpha1.NetworkConfig{Port: 80},
+			Environments: []mortisev1alpha1.Environment{
+				{Name: "production"},
+			},
+		},
+	}
+	c := newFakeClient(t, app)
+	r := &bindings.Resolver{Client: c}
+
+	vars, err := r.Resolve(context.Background(), "web", "production", []mortisev1alpha1.Binding{
+		{Ref: "123"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if findVar(vars, "BINDING_HOST") == nil {
+		t.Error("expected BINDING_HOST when all-digit app name strips to empty")
+	}
+	if findVar(vars, "BINDING_PORT") == nil {
+		t.Error("expected BINDING_PORT when all-digit app name strips to empty")
+	}
+}
+
+func TestAutoURLForRedisImage(t *testing.T) {
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "cache", Namespace: "pj-web"},
+		Spec: mortisev1alpha1.AppSpec{
+			Source:  mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: "redis:7"},
+			Network: mortisev1alpha1.NetworkConfig{Port: 6379},
+			Environments: []mortisev1alpha1.Environment{
+				{Name: "production"},
+			},
+		},
+	}
+	c := newFakeClient(t, app)
+	r := &bindings.Resolver{Client: c}
+
+	vars, err := r.Resolve(context.Background(), "web", "production", []mortisev1alpha1.Binding{
+		{Ref: "cache"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	urlVar := findVar(vars, "CACHE_URL")
+	if urlVar == nil {
+		t.Fatal("expected CACHE_URL for redis image")
+	}
+	if !strings.HasPrefix(urlVar.Value, "redis://") {
+		t.Errorf("expected redis:// URL, got %q", urlVar.Value)
+	}
+}
+
+func TestAutoURLForMySQLImage(t *testing.T) {
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "db", Namespace: "pj-web"},
+		Spec: mortisev1alpha1.AppSpec{
+			Source:  mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: "mysql:8"},
+			Network: mortisev1alpha1.NetworkConfig{Port: 3306},
+			Environments: []mortisev1alpha1.Environment{
+				{Name: "production"},
+			},
+		},
+	}
+	c := newFakeClient(t, app)
+	r := &bindings.Resolver{Client: c}
+
+	vars, err := r.Resolve(context.Background(), "web", "production", []mortisev1alpha1.Binding{
+		{Ref: "db"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	urlVar := findVar(vars, "DB_URL")
+	if urlVar == nil {
+		t.Fatal("expected DB_URL for mysql image")
+	}
+	if !strings.HasPrefix(urlVar.Value, "mysql://") {
+		t.Errorf("expected mysql:// URL, got %q", urlVar.Value)
+	}
+}
+
+func TestAutoURLForMongoImage(t *testing.T) {
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "docstore", Namespace: "pj-web"},
+		Spec: mortisev1alpha1.AppSpec{
+			Source:  mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: "mongo:6"},
+			Network: mortisev1alpha1.NetworkConfig{Port: 27017},
+			Environments: []mortisev1alpha1.Environment{
+				{Name: "production"},
+			},
+		},
+	}
+	c := newFakeClient(t, app)
+	r := &bindings.Resolver{Client: c}
+
+	vars, err := r.Resolve(context.Background(), "web", "production", []mortisev1alpha1.Binding{
+		{Ref: "docstore"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	urlVar := findVar(vars, "DOCSTORE_URL")
+	if urlVar == nil {
+		t.Fatal("expected DOCSTORE_URL for mongo image")
+	}
+	if !strings.HasPrefix(urlVar.Value, "mongodb://") {
+		t.Errorf("expected mongodb:// URL, got %q", urlVar.Value)
+	}
+}
