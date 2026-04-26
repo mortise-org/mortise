@@ -1014,7 +1014,7 @@ When not set, the live tab is the only view: no placeholder or prompt.
 **Per-project Activity store (convenience, not source of truth).** In
 addition to the stdout audit stream, the operator maintains a small
 in-cluster store of recent audit events *per project* so the UI
-Activity rail (UI_SPEC §12.22) can render history without a log
+Activity rail can render history without a log
 agent. v1 store: a ConfigMap named `activity-{project-name}` in the
 project's control namespace (`pj-{project-name}`), capped at the last
 500 events per project with a
@@ -1178,7 +1178,7 @@ eliminates the need for callback infrastructure in the GitHub path.
   the top bar. Closed by default; opens as a slide-out over the
   canvas/drawer. Renders the per-project activity store (§5.11) merged
   with synthesized deploy rows from App `status.deploys` history.
-  Filter chips: Deploys / Changes / Members / All. See UI_SPEC §12.22.
+  Filter chips: Deploys / Changes / Members / All.
 
 Top-bar project switcher lets users jump between projects without
 returning to the dashboard.

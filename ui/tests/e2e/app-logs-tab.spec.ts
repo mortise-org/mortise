@@ -12,7 +12,7 @@ import {
 // ---------------------------------------------------------------------------
 // LogsTab E2E tests
 //
-// Covers the rebuilt LogsTab (UI_SPEC §3.12):
+// Covers the rebuilt LogsTab:
 //   - Live | Build sub-tab bar
 //   - Live: env pills, always-visible pod picker, Previous toggle visibility
 //     rules, time-range chips, Live tail switch, Copy/Clear
