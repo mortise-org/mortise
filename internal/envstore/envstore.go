@@ -12,6 +12,7 @@ package envstore
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"regexp"
 	"sort"
 	"strings"
@@ -375,6 +376,10 @@ update:
 	// Re-fetch to ensure we have the latest version before updating.
 	if err := s.Client.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, &existing); err != nil {
 		return fmt.Errorf("re-get env secret %s/%s: %w", namespace, name, err)
+	}
+
+	if reflect.DeepEqual(existing.Data, desired.Data) {
+		return nil
 	}
 
 	existing.Data = desired.Data

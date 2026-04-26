@@ -185,3 +185,38 @@ func TestAnnotationsEqual(t *testing.T) {
 		}
 	})
 }
+
+func TestBuildProbe_SetsKubernetesDefaults(t *testing.T) {
+	probe := buildProbe(nil, 8080)
+
+	if probe.FailureThreshold != 3 {
+		t.Fatalf("FailureThreshold = %d, want 3 (k8s default)", probe.FailureThreshold)
+	}
+	if probe.SuccessThreshold != 1 {
+		t.Fatalf("SuccessThreshold = %d, want 1 (k8s default)", probe.SuccessThreshold)
+	}
+}
+
+func TestBuildProbe_CustomConfig(t *testing.T) {
+	pc := &mortisev1alpha1.ProbeConfig{
+		Path:                "/healthz",
+		Port:                9090,
+		InitialDelaySeconds: 10,
+		PeriodSeconds:       30,
+		TimeoutSeconds:      5,
+	}
+	probe := buildProbe(pc, 8080)
+
+	if probe.FailureThreshold != 3 {
+		t.Fatalf("FailureThreshold = %d, want 3", probe.FailureThreshold)
+	}
+	if probe.SuccessThreshold != 1 {
+		t.Fatalf("SuccessThreshold = %d, want 1", probe.SuccessThreshold)
+	}
+	if probe.HTTPGet == nil || probe.HTTPGet.Path != "/healthz" {
+		t.Fatalf("expected HTTPGet probe with path /healthz")
+	}
+	if probe.HTTPGet.Port.IntValue() != 9090 {
+		t.Fatalf("expected port 9090, got %d", probe.HTTPGet.Port.IntValue())
+	}
+}

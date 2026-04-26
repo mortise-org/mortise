@@ -1468,19 +1468,30 @@ func (r *AppReconciler) reconcileEnvSecret(ctx context.Context, app *mortisev1al
 	// the Secret object exists — not whether it has data. This lets us
 	// distinguish "first deploy" (no Secret) from "user cleared all vars"
 	// (empty Secret).
-	seeded, err := store.SecretExists(ctx, envNs, app.Name)
-	if err != nil {
-		return fmt.Errorf("check app env secret existence: %w", err)
+	// Seed spec-defined env vars that aren't already in the Secret.
+	// This replaces the old SecretExists gate which had a race: if
+	// ReplaceSource or EnsureExists created the Secret before Set ran,
+	// the existence check returned true and seeding was skipped forever.
+	// By merging only missing keys, we handle the race without overwriting
+	// values the user may have changed via the UI.
+	existing, _ := store.Get(ctx, envNs, app.Name)
+	existingKeys := make(map[string]bool, len(existing))
+	for _, e := range existing {
+		existingKeys[e.Name] = true
 	}
-	if !seeded {
-		var seed []envstore.Env
-		for _, ev := range env.Env {
-			seed = append(seed, envstore.Env{Name: ev.Name, Value: ev.Value, Source: "user"})
+	var missing []envstore.Env
+	for _, ev := range env.Env {
+		if !existingKeys[ev.Name] {
+			missing = append(missing, envstore.Env{Name: ev.Name, Value: ev.Value, Source: "user"})
 		}
-		for _, sv := range app.Spec.SharedVars {
-			seed = append(seed, envstore.Env{Name: sv.Name, Value: sv.Value, Source: "shared"})
+	}
+	for _, sv := range app.Spec.SharedVars {
+		if !existingKeys[sv.Name] {
+			missing = append(missing, envstore.Env{Name: sv.Name, Value: sv.Value, Source: "shared"})
 		}
-		if err := store.Set(ctx, envNs, app.Name, seed, labels); err != nil {
+	}
+	if len(missing) > 0 {
+		if err := store.Merge(ctx, envNs, app.Name, missing, labels); err != nil {
 			return fmt.Errorf("seed env secret: %w", err)
 		}
 	}
@@ -1500,12 +1511,7 @@ func (r *AppReconciler) reconcileEnvSecret(ctx context.Context, app *mortisev1al
 			})
 		}
 	}
-	if err := store.ReplaceSource(ctx, envNs, app.Name, "binding", bindingEnvs, labels); err != nil {
-		return fmt.Errorf("replace binding vars: %w", err)
-	}
-
-	// Ensure the Secret exists even if there are no vars.
-	return store.EnsureExists(ctx, envNs, app.Name, labels)
+	return store.ReplaceSource(ctx, envNs, app.Name, "binding", bindingEnvs, labels)
 }
 
 // credentialsSecretName is the name of the {app}-credentials Secret this
@@ -2054,6 +2060,8 @@ func buildProbe(pc *mortisev1alpha1.ProbeConfig, defaultPort int32) *corev1.Prob
 		InitialDelaySeconds: 5,
 		PeriodSeconds:       10,
 		TimeoutSeconds:      3,
+		FailureThreshold:    3,
+		SuccessThreshold:    1,
 	}
 
 	if pc == nil {
@@ -2277,7 +2285,6 @@ func toEnvVars(envs []mortisev1alpha1.EnvVar) []corev1.EnvVar {
 	}
 	return result
 }
-
 
 func (r *AppReconciler) effectiveResources(ctx context.Context, env *mortisev1alpha1.Environment) mortisev1alpha1.ResourceRequirements {
 	res := env.Resources
