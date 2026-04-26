@@ -124,7 +124,7 @@ metricsServer:
 # out by pointing PlatformConfig.spec.observability at your own adapter.
 observer:
   enabled: true
-  image: ghcr.io/mortise-org/mortise-observer:0.1.0
+  image: ghcr.io/mortise-org/mortise:0.1.1-observer
   storage: emptyDir
   storageSize: 2Gi
   retention:

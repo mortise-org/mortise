@@ -44,7 +44,9 @@ jobs:
       - id: meta-observer
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-observer
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          flavor: |
+            suffix=-observer
           tags: |
             type=ref,event=branch
             type=semver,pattern={{version}}
@@ -119,6 +121,10 @@ jobs:
           done
           # Keep the mortise-core subchart pin in the umbrella chart in sync.
           sed -i '/name: mortise-core/{n;s/version:.*/version: "'"${VERSION}"'"/}' charts/mortise/Chart.yaml
+          # Stamp operator image tag in mortise-core values.
+          sed -i "s/^  tag: .*/  tag: ${VERSION}/" charts/mortise-core/values.yaml
+          # Stamp observer image tag in umbrella values.
+          sed -i "s|image: ghcr.io/mortise-org/mortise:.*-observer|image: ghcr.io/mortise-org/mortise:${VERSION}-observer|" charts/mortise/values.yaml
 
       - name: Package charts
         run: |
