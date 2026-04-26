@@ -112,8 +112,8 @@ func TestPreviewEnvironmentViaWebhook(t *testing.T) {
 	app.Annotations["mortise.dev/revision"] = "main"
 	app.Annotations["mortise.dev/created-by"] = testEmail
 
-	// Project-level preview toggle (SPEC §5.8). Use a TTL well beyond the
-	// test timeout so the PE never self-expires mid-run.
+	// Project-level preview toggle. Use a TTL well beyond the test timeout
+	// so the PE never self-expires mid-run.
 	enableProjectPreview(t, projectName, &mortisev1alpha1.PreviewConfig{
 		Enabled: true,
 		Domain:  fmt.Sprintf("pr-{number}-%s.test.local", app.Name),

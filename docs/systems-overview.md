@@ -195,4 +195,4 @@ See `DEVELOPMENT.md` for full workflows.
 ## Notes on docs accuracy
 
 - This document tracks implementation behavior in this repository state.
-- Product/spec docs (`SPEC.md`, `PROGRESS.md`) can describe in-progress or future behavior; if they differ, code paths in `internal/api` and controllers are the source of truth for runtime behavior.
+- If docs differ from code, the code paths in `internal/api` and controllers are the source of truth for runtime behavior.

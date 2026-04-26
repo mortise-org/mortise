@@ -1,6 +1,6 @@
 # Fixture for preview environment integration tests. The test overrides
 # metadata.namespace, spec.source.repo, and spec.source.providerRef.
-# Per SPEC §5.8, preview is a project-level toggle; tests flip it on via
+# Preview is a project-level toggle; tests flip it on via
 # enableProjectPreview() on the parent Project, not via a field on the App.
 apiVersion: mortise.mortise.dev/v1alpha1
 kind: App

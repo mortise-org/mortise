@@ -1,7 +1,7 @@
 # Mortise: Architecture & System Diagrams
 
-> Companion to [`SPEC.md`](./SPEC.md). Diagrams render natively on GitHub via
-> Mermaid. For each diagram: the picture first, then a short "how to read it."
+> Diagrams render natively on GitHub via Mermaid. For each diagram: the picture
+> first, then a short "how to read it."
 
 ---
 
@@ -80,8 +80,8 @@ flowchart TB
 - **Dotted arrows** = the operator reconciling a resource (creating / updating /
   deleting Kubernetes objects based on CRD state).
 - **Named arrows** (`GitProvider iface`, `BuildClient iface`, etc.) cross one of
-  the outward interface seams defined in SPEC §11. Everything the operator does
-  *outside* the Kubernetes API goes through one of these contracts.
+  the outward interface seams. Everything the operator does *outside* the
+  Kubernetes API goes through one of these contracts.
 - **Namespaces are organized around Projects.** `mortise-system` holds the
   platform itself; dependencies run in `mortise-deps`;
   interfere with user workloads; each **Project** owns a *control*
@@ -105,12 +105,12 @@ flowchart TB
   namespace: no separate Mortise-managed secret store, no `SecretBackend`
   abstraction. External secret managers (Vault, AWS SM, etc.) integrate via
   the ExternalSecrets Operator, which produces k8s Secrets that Mortise
-  reads like any other. See SPEC §5.9.
+  reads like any other.
 - **"Optional" labels** on Traefik, cert-manager, metrics-server, and the
   bundled registry/buildkit stack: each corresponds to an outward interface
   (`IngressProvider`, `RegistryBackend`) or standard Kubernetes integration
   and can be turned off at install via chart values when the cluster
-  already has the component. See SPEC §8.3.
+  already has the component.
 
 ### Component Roles & Scopes
 
@@ -119,13 +119,13 @@ flowchart TB
 | **Mortise Operator** | `mortise-system` | Reconciles CRDs (`Project`, `App`, `PreviewEnvironment`, `PlatformConfig`, `GitProvider`). Serves the REST API and UI. Handles webhooks. Owns everything the platform creates. | Never touches resources outside what it created; coexists with Argo CD, manual kubectl, other tools. |
 | **Project** (CRD) | cluster-scoped | Top-level grouping. Each Project owns a control namespace named `pj-{name}` plus one `pj-{name}-{env}` per declared environment, all via owner reference; deleting the Project deletes the namespaces and cascades to every resource inside. | Users interact via project name only; the `pj-` prefix is internal plumbing. |
 | **Operator state** | `mortise-system` | Deploy history in App CRD status; users/sessions as k8s Secrets; audit/build logs to stdout. No PVC, no database: operator is stateless. | Never stores user app data. |
-| **Traefik** | `mortise-system` | Ingress controller. Routes external HTTPS traffic to user Apps and the Mortise API/UI. | Installed and managed by the Mortise chart; can be disabled when the cluster has an existing controller (SPEC §8.3). |
+| **Traefik** | `mortise-system` | Ingress controller. Routes external HTTPS traffic to user Apps and the Mortise API/UI. | Installed and managed by the Mortise chart; can be disabled when the cluster has an existing controller. |
 | **cert-manager** | `mortise-system` | Issues TLS certs via ACME (or self-signed in dev/test). Triggered by annotations on Ingress resources. | Core chart dependency; not touched by user. |
 | **ExternalDNS** | user-managed | Optional DNS automation. Mortise emits Ingress hostname annotations that ExternalDNS can consume. | Not bundled by the chart. Install separately if desired. |
 | **Bundled registry** | `mortise-deps` | OCI image registry for built images. | Enabled by chart values; can be disabled for external registries. |
 | **BuildKit** | `mortise-deps` | Builds container images from git sources. | Enabled by chart values (default on in batteries-included chart). |
 | **User App pods** | `pj-{name}-{env}` | The actual workloads Mortise deploys. An App spawns one Deployment per declared environment; each env's pods live in the matching `pj-{name}-{env}` namespace. | Pure 12-factor; no Mortise SDK or sidecar required. |
-| **Backing service pods** | `pj-{name}-{env}` | Apps with `credentials:` declared: typically stateful (Postgres, Redis). Other Apps in the same project+env bind via Service DNS. | v1 = `image` source + PVC + manual credentials. Users who need HA/PITR install CNPG or redis-operator directly and point Apps at them (SPEC §6.3). |
+| **Backing service pods** | `pj-{name}-{env}` | Apps with `credentials:` declared: typically stateful (Postgres, Redis). Other Apps in the same project+env bind via Service DNS. | v1 = `image` source + PVC + manual credentials. Users who need HA/PITR install CNPG or redis-operator directly and point Apps at them. |
 
 ---
 
@@ -194,7 +194,7 @@ sequenceDiagram
 
 ---
 
-## 3. Interface Contracts (Visual of SPEC §11)
+## 3. Interface Contracts
 
 The two-layer contract model as a picture. Read top to bottom.
 
@@ -297,8 +297,7 @@ flowchart TB
   This is the whole product: §6.1 invariant #1.
 - **"disable-able" deps** = Traefik, cert-manager, metrics-server are bundled
   for a one-command install but can each be turned off when the cluster
-  already has them (SPEC §8.3). Disabling swaps the implementation; the
-  feature stays.
+  already has them. Disabling swaps the implementation; the feature stays.
 - **Dotted "coexists with" edge** = everything off to the right is an
   upstream project the user installs themselves using its own chart.
   Mortise does not package, vendor, or wrap them. Integration is through
@@ -306,9 +305,8 @@ flowchart TB
   scrapes pods; Velero snapshots namespaces; an OIDC provider exposes an
   `issuerURL`. None of these require code in Mortise.
 - **Not in the chart either:** the `external` / `helm` source types and
-  Cloudflare Tunnel automation are post-v1 operator features (SPEC §6.2).
-  they add code to the same operator binary, not new subcharts. App preset
-  repositories are data, not code (SPEC §6.5).
+  Cloudflare Tunnel automation are post-v1 operator features.
+  They add code to the same operator binary, not new subcharts.
 - **BuildKit is chart-managed.** In the batteries-included chart,
   BuildKit is installed at chart install time when `buildkit.enabled=true`
   (default).
@@ -379,9 +377,9 @@ when reading the code or debugging a specific interaction.
 - **Upstream projects users install alongside Mortise** (Authentik,
   Prometheus, Loki, Velero, ESO, CNPG, etc.): those each have their own
   docs and architecture; Mortise coexists with them through standard
-  Kubernetes primitives (see SPEC §6.3) and does not wrap them.
+  Kubernetes primitives and does not wrap them.
 - **CI pipeline for Mortise itself**: GitHub Actions running `make test`
-  and `make test-integration`; covered in SPEC §7.
+  and `make test-integration`.
 - **RBAC and service account details**: operator has cluster-wide read
   across CRDs + write within namespaces it creates; detailed RBAC manifest
   lives in the chart, not in this overview.

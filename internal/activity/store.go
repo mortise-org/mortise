@@ -3,7 +3,7 @@ package activity
 import "context"
 
 // Store is the per-project append-only activity event store. Backed by a
-// ConfigMap ring buffer in the project namespace (see SPEC §5.11).
+// ConfigMap ring buffer in the project namespace.
 type Store interface {
 	// Append adds an event to the project's ring buffer and emits a
 	// stdout audit line. Never returns an error for "ConfigMap not

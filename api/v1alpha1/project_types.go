@@ -20,7 +20,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// PreviewConfig is the project-level PR environments toggle (SPEC §5.8).
+// PreviewConfig is the project-level PR environments toggle.
 // When set with Enabled=true, every App inside the Project reconciles into
 // each open PR's preview namespace — there is no per-App opt-out.
 // Domain, TTL, and Resources act as defaults shared across every PR preview
@@ -92,9 +92,9 @@ type ProjectSpec struct {
 	// +optional
 	Environments []ProjectEnvironment `json:"environments,omitempty"`
 
-	// Preview controls PR-driven preview environments at the Project scope
-	// (SPEC §5.8). When Enabled=true, every App in this Project participates
-	// in each open PR's preview namespace. There is no per-App opt-out in v1.
+	// Preview controls PR-driven preview environments at the Project scope.
+	// When Enabled=true, every App in this Project participates in each open
+	// PR's preview namespace. There is no per-App opt-out in v1.
 	// +optional
 	Preview *PreviewConfig `json:"preview,omitempty"`
 

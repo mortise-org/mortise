@@ -2,7 +2,7 @@ package activity
 
 import "time"
 
-// Event is a single project-scoped audit entry. Fields mirror SPEC §5.11.
+// Event is a single project-scoped audit entry.
 type Event struct {
 	Timestamp    time.Time         `json:"ts"`
 	Actor        string            `json:"actor"`

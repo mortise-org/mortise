@@ -193,8 +193,8 @@ func (h *Handler) dispatchToApps(ctx context.Context, br BuildRequest) {
 
 // dispatchPREvent handles pull_request events: creates, updates, or deletes
 // PreviewEnvironment CRDs for matching Apps. Preview is gated at the Project
-// level (SPEC §5.8): every App in a Project with preview.enabled=true
-// participates in each open PR's preview namespace.
+// level: every App in a Project with preview.enabled=true participates in
+// each open PR's preview namespace.
 func (h *Handler) dispatchPREvent(ctx context.Context, pr PREvent) {
 	log := logf.FromContext(ctx)
 

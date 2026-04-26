@@ -168,7 +168,6 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for full system diagrams.
 | [CONTRIBUTING.md](CONTRIBUTING.md) | PR process, coding guidelines, commit conventions |
 | [DEVELOPMENT.md](DEVELOPMENT.md) | Local dev loop, test layers, common tasks |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | System diagrams and interface contracts |
-| [SPEC.md](SPEC.md) | Full product and engineering spec |
 | [RELEASING.md](RELEASING.md) | How to cut a release |
 
 ---

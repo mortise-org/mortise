@@ -108,9 +108,9 @@ spec:
                 type: array
               preview:
                 description: |-
-                  Preview controls PR-driven preview environments at the Project scope
-                  (SPEC §5.8). When Enabled=true, every App in this Project participates
-                  in each open PR's preview namespace. There is no per-App opt-out in v1.
+                  Preview controls PR-driven preview environments at the Project scope.
+                  When Enabled=true, every App in this Project participates in each open
+                  PR's preview namespace. There is no per-App opt-out in v1.
                 properties:
                   botPR:
                     description: |-

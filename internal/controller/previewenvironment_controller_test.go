@@ -67,7 +67,7 @@ func createPreviewTestProject(ctx context.Context, previewEnabled bool) (*mortis
 
 // helper: create a minimal App in the given namespace. Project-level preview
 // is controlled via createPreviewTestProject; Apps no longer carry preview
-// config (SPEC §5.8).
+// config.
 func createPreviewApp(ctx context.Context, name, namespace string, staging *mortisev1alpha1.Environment) *mortisev1alpha1.App {
 	envs := []mortisev1alpha1.Environment{}
 	if staging != nil {

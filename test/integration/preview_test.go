@@ -91,7 +91,7 @@ func TestPreviewEnvironmentLifecycle(t *testing.T) {
 	app.Annotations["mortise.dev/revision"] = "main"
 	app.Annotations["mortise.dev/created-by"] = testEmail
 
-	// Project-level preview toggle (SPEC §5.8).
+	// Project-level preview toggle.
 	enableProjectPreview(t, projectName, &mortisev1alpha1.PreviewConfig{
 		Enabled: true,
 		Domain:  fmt.Sprintf("pr-{number}-%s.test.local", app.Name),
@@ -230,7 +230,7 @@ func TestPreviewDisabledAppRejectsPreview(t *testing.T) {
 	ns := createProjectForTest(t, projectName)
 
 	// Create an App inside a Project whose preview is disabled by default —
-	// project-level preview is the gate (SPEC §5.8).
+	// project-level preview is the gate.
 	app := helpers.LoadFixture(t, filepath.Join(fixturesDir(), "image-basic.yaml"))
 	app.Namespace = ns
 	app.Name = "no-preview-app"
@@ -336,7 +336,7 @@ func TestPreviewInheritsStagingBindings(t *testing.T) {
 	apiApp.Annotations["mortise.dev/revision"] = "main"
 	apiApp.Annotations["mortise.dev/created-by"] = testEmail
 
-	// Project-level preview toggle (SPEC §5.8).
+	// Project-level preview toggle.
 	enableProjectPreview(t, projectName, &mortisev1alpha1.PreviewConfig{
 		Enabled: true,
 		Domain:  fmt.Sprintf("pr-{number}-%s.test.local", apiApp.Name),
@@ -410,7 +410,7 @@ func TestPreviewInheritsStagingBindings(t *testing.T) {
 
 // enableProjectPreview fetches the named Project and sets its Spec.Preview
 // to the provided config. Used to flip on project-level PR environments
-// (SPEC §5.8) in integration tests.
+// in integration tests.
 func enableProjectPreview(t *testing.T, projectName string, cfg *mortisev1alpha1.PreviewConfig) {
 	t.Helper()
 	var project mortisev1alpha1.Project

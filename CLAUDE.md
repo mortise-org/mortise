@@ -7,8 +7,8 @@ Helm chart. Users connect a git repo or pick an image → Mortise handles
 builds, deploys, domains, TLS, env vars, volumes, preview envs, and bindings.
 Kubernetes is fully abstracted away from the user.
 
-Read SPEC.md for the full product spec. Read ARCHITECTURE.md for system
-diagrams. This file is the operating manual for working in this codebase.
+Read ARCHITECTURE.md for system diagrams. This file is the operating manual
+for working in this codebase.
 
 ## Releases
 
@@ -66,7 +66,7 @@ controller  →  RegistryBackend  →  generic OCI (config-driven)
 controller  →  IngressProvider  →  generic annotation-driven
 ```
 
-DNS is annotation-driven via ExternalDNS (no Go interface: see SPEC §11.1).
+DNS is annotation-driven via ExternalDNS (no Go interface).
 
 No interface without a real v1 implementation behind it.
 
