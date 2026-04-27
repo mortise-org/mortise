@@ -51,6 +51,31 @@ jobs:
       - name: Helm lint
         run: make test-charts
 
+  integration:
+    name: Integration tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.17.3
+
+      - name: Install k3d
+        run: |
+          curl -fsSL -o /usr/local/bin/k3d "https://github.com/k3d-io/k3d/releases/download/v5.8.3/k3d-linux-amd64"
+          chmod +x /usr/local/bin/k3d
+
+      - name: Run integration tests
+        run: make test-integration
+
   lint:
     name: Go vet + staticcheck
     runs-on: ubuntu-latest

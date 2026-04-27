@@ -41,6 +41,7 @@ const webhookSecret = "int-test-webhook-secret"
 // This complements TestPreviewEnvironmentLifecycle (which bypasses the webhook
 // by creating the PE directly) by proving the handler itself is wired up.
 func TestPreviewEnvironmentViaWebhook(t *testing.T) {
+	t.Parallel()
 	projectName := "prev-wh-" + randSuffix()
 	ns := createProjectForTest(t, projectName)
 
@@ -123,7 +124,7 @@ func TestPreviewEnvironmentViaWebhook(t *testing.T) {
 	if err := k8sClient.Create(context.Background(), app); err != nil {
 		t.Fatalf("create App: %v", err)
 	}
-	helpers.WaitForAppReady(t, k8sClient, ns, app.Name, 3*time.Minute)
+	helpers.WaitForAppReady(t, k8sClient, ns, app.Name, 5*time.Minute)
 
 	// --- Open a real PR in Gitea so we have an owner-recognised SHA + branch.
 	prBranch := "feature/preview-via-webhook"
@@ -240,6 +241,7 @@ func TestPreviewEnvironmentViaWebhook(t *testing.T) {
 // a pull_request webhook arriving at a project whose preview is disabled
 // should be accepted (HMAC valid) but no PreviewEnvironment should be created.
 func TestPreviewEnvironmentViaWebhook_PreviewDisabled(t *testing.T) {
+	t.Parallel()
 	projectName := "prev-wh-off-" + randSuffix()
 	ns := createProjectForTest(t, projectName)
 

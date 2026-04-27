@@ -26,6 +26,7 @@ import (
 // wait for resources, push a new SHA, wait for rebuild, then delete and verify
 // cleanup.
 func TestPreviewEnvironmentLifecycle(t *testing.T) {
+	t.Parallel()
 	projectName := "prev-life-" + randSuffix()
 	ns := createProjectForTest(t, projectName)
 
@@ -103,7 +104,7 @@ func TestPreviewEnvironmentLifecycle(t *testing.T) {
 	}
 
 	// Wait for the base App to be ready before creating previews.
-	helpers.WaitForAppReady(t, k8sClient, ns, app.Name, 3*time.Minute)
+	helpers.WaitForAppReady(t, k8sClient, ns, app.Name, 5*time.Minute)
 
 	// --- Get the current HEAD SHA from the Gitea repo for the PreviewEnvironment.
 	headSHA := getGiteaBranchSHA(t, giteaLocalURL, boot.Token, boot.Owner, boot.Name, "main")
@@ -226,6 +227,7 @@ func TestPreviewEnvironmentLifecycle(t *testing.T) {
 // referencing an App with preview disabled (or no preview block) transitions
 // to Failed with a clear condition.
 func TestPreviewDisabledAppRejectsPreview(t *testing.T) {
+	t.Parallel()
 	projectName := "prev-disabled-" + randSuffix()
 	ns := createProjectForTest(t, projectName)
 
@@ -267,6 +269,7 @@ func TestPreviewDisabledAppRejectsPreview(t *testing.T) {
 // inherits env vars from the parent App's staging bindings (e.g. DATABASE_URL
 // from a bound Postgres App).
 func TestPreviewInheritsStagingBindings(t *testing.T) {
+	t.Parallel()
 	projectName := "prev-bind-" + randSuffix()
 	ns := createProjectForTest(t, projectName)
 
@@ -276,7 +279,7 @@ func TestPreviewInheritsStagingBindings(t *testing.T) {
 	if err := k8sClient.Create(context.Background(), pgApp); err != nil {
 		t.Fatalf("create postgres App: %v", err)
 	}
-	helpers.WaitForAppReady(t, k8sClient, ns, pgApp.Name, 3*time.Minute)
+	helpers.WaitForAppReady(t, k8sClient, ns, pgApp.Name, 8*time.Minute)
 
 	// --- Port-forward to Gitea + registry for the git-source API App.
 	giteaLocalPort := helpers.PortForward(t, "mortise-test-deps", "gitea", 3000)

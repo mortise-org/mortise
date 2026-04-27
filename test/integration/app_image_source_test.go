@@ -18,6 +18,7 @@ import (
 )
 
 func TestImageSourceAppGoesReady(t *testing.T) {
+	t.Parallel()
 	projectName := "img-src-" + randSuffix()
 	ns := createProjectForTest(t, projectName)
 

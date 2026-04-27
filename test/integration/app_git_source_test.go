@@ -46,6 +46,7 @@ CMD ["httpd", "-f", "-p", "8080", "-h", "/var/www"]
 //  6. Zot's /v2/mortise/{app}/tags/list reports the built tag.
 //  7. The Deployment is running with the pushed image.
 func TestGitSourceAppBuildsAndDeploys(t *testing.T) {
+	t.Parallel()
 	projectName := "git-src-" + randSuffix()
 	ns := createProjectForTest(t, projectName)
 
@@ -130,7 +131,7 @@ func TestGitSourceAppBuildsAndDeploys(t *testing.T) {
 
 	// --- Wait for build → deploy → ready. Generous timeout: first run pulls
 	// alpine + go-git clone + BuildKit layer push all on a cold cluster.
-	helpers.WaitForAppReady(t, k8sClient, ns, app.Name, 3*time.Minute)
+	helpers.WaitForAppReady(t, k8sClient, ns, app.Name, 5*time.Minute)
 
 	// --- Assert the registry has a tag under mortise/<appName>.
 	tags := helpers.AssertRegistryHasTags(t, registryLocalURL, "mortise", app.Name, 30*time.Second)

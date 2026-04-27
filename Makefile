@@ -212,17 +212,29 @@ test-integration: ## Create k3d cluster, install chart + test deps, run integrat
 	@echo "==> Building Docker images..."
 	$(CONTAINER_TOOL) build --target operator -t $(INT_IMG) .
 	$(CONTAINER_TOOL) build --target observer -t $(INT_OBSERVER_IMG) .
+	@echo "==> Pre-pulling test images..."
+	$(CONTAINER_TOOL) pull nginx:1.27
+	$(CONTAINER_TOOL) pull postgres:16
+	$(CONTAINER_TOOL) pull redis:7
+	$(CONTAINER_TOOL) pull busybox:1.37
+	$(CONTAINER_TOOL) pull alpine:3.20
 	@echo "==> Loading images into k3d..."
-	k3d image import $(INT_IMG) $(INT_OBSERVER_IMG) -c $(INT_CLUSTER)
+	k3d image import $(INT_IMG) $(INT_OBSERVER_IMG) nginx:1.27 postgres:16 redis:7 busybox:1.37 alpine:3.20 -c $(INT_CLUSTER)
 	@echo "==> Installing CRDs..."
 	kubectl apply -f charts/mortise-core/crds/
-	@echo "==> Installing test-only dependencies (Zot, Gitea, BuildKit)..."
+	@echo "==> Installing test-only dependencies (registry, Gitea, BuildKit)..."
 	kubectl create namespace mortise-system --dry-run=client -o yaml | kubectl apply -f -
 	kubectl apply -f test/integration/manifests/
 	@echo "==> Waiting for test dependencies to become ready..."
 	kubectl -n mortise-test-deps rollout status deployment/registry  --timeout=120s
 	kubectl -n mortise-test-deps rollout status deployment/gitea     --timeout=180s
 	kubectl -n mortise-test-deps rollout status deployment/buildkitd --timeout=180s
+	@echo "==> Fetching Helm chart dependencies..."
+	helm repo add traefik https://traefik.github.io/charts
+	helm repo add jetstack https://charts.jetstack.io
+	helm repo add metrics-server https://kubernetes-sigs.github.io/metrics-server/
+	helm repo update
+	helm dependency build charts/mortise
 	@echo "==> Installing Mortise via Helm..."
 	helm upgrade --install mortise charts/mortise \
 		--namespace mortise-system --create-namespace \
@@ -241,7 +253,7 @@ test-integration: ## Create k3d cluster, install chart + test deps, run integrat
 		--set metricsServer.enabled=false \
 		--wait --timeout 120s
 	@echo "==> Running integration tests..."
-	go test -tags integration -count=1 -timeout 15m ./test/integration/... || { \
+	go test -v -parallel 25 -tags integration -count=1 -timeout 45m ./test/integration/... || { \
 		k3d cluster delete $(INT_CLUSTER); exit 1; \
 	}
 	@echo "==> Tearing down cluster..."

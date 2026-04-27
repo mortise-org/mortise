@@ -1,0 +1,12 @@
+# Stub IngressClass so integration tests can create Ingress resources.
+# Traefik is disabled in the k3d config (no controller runs), but the
+# IngressClass must exist for skipIfNoIngressClass and for Mortise's
+# ingress reconciliation to proceed.
+apiVersion: networking.k8s.io/v1
+kind: IngressClass
+metadata:
+  name: traefik
+  annotations:
+    ingressclass.kubernetes.io/is-default-class: "true"
+spec:
+  controller: traefik.io/ingress-controller
