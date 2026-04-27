@@ -217,8 +217,10 @@ func (c *TrafficCollector) processLine(line []byte) {
 		return
 	}
 
+	lookupKey := stripTraefikPort(entry.ServiceName)
+
 	c.svcMu.RLock()
-	aek, ok := c.svcCache[entry.ServiceName]
+	aek, ok := c.svcCache[lookupKey]
 	c.svcMu.RUnlock()
 	if !ok {
 		return
@@ -310,6 +312,28 @@ func (c *TrafficCollector) stopAll() {
 		cancel()
 	}
 	clear(c.tailers)
+}
+
+// stripTraefikPort removes the port segment from Traefik's ServiceName format.
+// Traefik emits "{ns}-{svc}-{port}@{provider}", but the cache key is "{ns}-{svc}@{provider}".
+func stripTraefikPort(svcName string) string {
+	atIdx := strings.Index(svcName, "@")
+	if atIdx <= 0 {
+		return svcName
+	}
+	prefix := svcName[:atIdx]
+	suffix := svcName[atIdx:]
+	lastDash := strings.LastIndex(prefix, "-")
+	if lastDash <= 0 {
+		return svcName
+	}
+	candidate := prefix[lastDash+1:]
+	for _, c := range candidate {
+		if c < '0' || c > '9' {
+			return svcName
+		}
+	}
+	return prefix[:lastDash] + suffix
 }
 
 func percentile(values []float64, p float64) float64 {

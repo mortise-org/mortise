@@ -46,7 +46,7 @@
 	let pollTimer: ReturnType<typeof setInterval> | undefined;
 
 	function formatCPU(cores: number): string {
-		if (cores < 0.01) return `${(cores * 1000).toFixed(0)}m`;
+		if (cores < 1) return `${(cores * 1000).toFixed(0)}m`;
 		return `${cores.toFixed(2)} cores`;
 	}
 
