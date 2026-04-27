@@ -1,0 +1,27 @@
+# Integration-test fixture for a git-source backend with bindings.
+# The test overrides metadata.namespace, metadata.annotations,
+# spec.source.repo, and spec.source.providerRef. Bindings are appended
+# by the test code.
+apiVersion: mortise.mortise.dev/v1alpha1
+kind: App
+metadata:
+  name: test-backend
+  annotations:
+    mortise.dev/revision: ""
+spec:
+  source:
+    type: git
+    repo: http://gitea.mortise-test-deps.svc:3000/mortise-test/testrepo.git
+    branch: main
+    providerRef: gitea-int
+    build:
+      dockerfilePath: Dockerfile
+  network:
+    public: false
+    port: 3000
+  environments:
+    - name: production
+      replicas: 1
+      resources:
+        cpu: "100m"
+        memory: "128Mi"
