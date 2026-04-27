@@ -15,11 +15,14 @@
 		onAppDeleted: () => void;
 	} = $props();
 
-	// Shadow the app prop with the most-recently server-returned spec so that
-	// concurrent saves (e.g. Scale then Source) don't clobber each other while
-	// waiting for the SSE update to arrive from the parent.
 	let specOverride = $state<AppSpec | null>(null);
-	$effect(() => { void app; specOverride = null; });
+	let lastSeenSpec = $state<AppSpec | null>(null);
+	$effect(() => {
+		if (lastSeenSpec !== null && app.spec !== lastSeenSpec) {
+			specOverride = null;
+		}
+		lastSeenSpec = app.spec;
+	});
 	function cloneSpec(): AppSpec { return JSON.parse(JSON.stringify(specOverride ?? app.spec)); }
 
 	const selectedEnv = $derived(store.currentEnv(project) ?? '');
@@ -63,7 +66,7 @@
 	let buildMode = $state<'auto' | 'dockerfile' | 'railpack'>('auto');
 	let dockerfilePath = $state('');
 	let buildContext = $state<'' | 'root' | 'subdir'>('');
-	let buildArgs = $state<Record<string, string>>({});
+	let buildArgs = $state<[string, string][]>([]);
 	let savingBuild = $state(false);
 
 	// --- Networking ---
@@ -78,7 +81,7 @@
 		buildMode = app.spec.source.build?.mode ?? 'auto';
 		dockerfilePath = app.spec.source.build?.dockerfilePath ?? '';
 		buildContext = app.spec.source.build?.context ?? '';
-		buildArgs = { ...(app.spec.source.build?.args ?? {}) };
+		buildArgs = Object.entries(app.spec.source.build?.args ?? {});
 		netPublic = app.spec.network?.public ?? true;
 		netPort = String(app.spec.network?.port ?? '');
 	});
@@ -245,7 +248,8 @@
 	async function saveBuild() {
 		savingBuild = true;
 		const optimisticSpec = cloneSpec();
-		const args = Object.keys(buildArgs).length > 0 ? buildArgs : undefined;
+		const filtered = buildArgs.filter(([k]) => k.trim() !== '');
+		const args = filtered.length > 0 ? Object.fromEntries(filtered) : undefined;
 		optimisticSpec.source = {
 			...optimisticSpec.source,
 			build: {
@@ -585,29 +589,33 @@
 				<div>
 					<p class={labelCls}>Build args</p>
 					<p class="mb-2 text-xs text-gray-500">Passed as Docker <code class="font-mono">--build-arg</code>. Required for build-time env vars (e.g. <code class="font-mono">VITE_*</code>).</p>
-					{#each Object.entries(buildArgs) as [k, v], i}
+					{#each buildArgs as [k, v], i}
 						<div class="mb-1.5 flex gap-1.5">
 							<input type="text" value={k}
 								oninput={(e) => {
-									const entries = Object.entries(buildArgs);
-									entries[i] = [(e.target as HTMLInputElement).value, entries[i][1]];
-									buildArgs = Object.fromEntries(entries);
+									buildArgs = buildArgs.map((entry, j) =>
+										j === i ? [(e.target as HTMLInputElement).value, entry[1]] as [string, string] : entry
+									);
 								}}
 								placeholder="ARG_NAME"
 								class="flex-1 rounded-md border border-surface-600 bg-surface-800 px-2 py-1.5 font-mono text-xs text-white placeholder-gray-600 outline-none focus:border-accent" />
 							<input type="text" value={v}
-								oninput={(e) => { buildArgs = { ...buildArgs, [k]: (e.target as HTMLInputElement).value }; }}
+								oninput={(e) => {
+									buildArgs = buildArgs.map((entry, j) =>
+										j === i ? [entry[0], (e.target as HTMLInputElement).value] as [string, string] : entry
+									);
+								}}
 								placeholder="value"
 								class="flex-1 rounded-md border border-surface-600 bg-surface-800 px-2 py-1.5 font-mono text-xs text-white placeholder-gray-600 outline-none focus:border-accent" />
 							<button type="button"
-								onclick={() => { const { [k]: _, ...rest } = buildArgs; buildArgs = rest; }}
+								onclick={() => { buildArgs = buildArgs.filter((_, j) => j !== i); }}
 								class="rounded p-1 text-gray-500 hover:text-danger">
 								<Trash2 class="h-3.5 w-3.5" />
 							</button>
 						</div>
 					{/each}
 					<button type="button"
-						onclick={() => { buildArgs = { ...buildArgs, '': '' }; }}
+						onclick={() => { buildArgs = [...buildArgs, ['', '']]; }}
 						class="mt-1 flex items-center gap-1 text-xs text-accent hover:text-accent-hover">
 						<Plus class="h-3 w-3" /> Add build arg
 					</button>
