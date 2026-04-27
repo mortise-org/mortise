@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -23,6 +24,7 @@ type LogCollector struct {
 	tailers     map[string]context.CancelFunc
 	tailerCount int
 	logCh       chan LogEntry
+	dropped     atomic.Int64
 }
 
 func NewLogCollector(cs kubernetes.Interface, store *Store, interval time.Duration, maxPods int, log *slog.Logger) *LogCollector {
@@ -75,6 +77,9 @@ func (c *LogCollector) flushLoop(ctx context.Context) {
 			if len(buf) > 0 {
 				c.flushBatch(buf)
 				buf = buf[:0]
+			}
+			if n := c.dropped.Swap(0); n > 0 {
+				c.log.Warn("log channel full, lines dropped", "count", n)
 			}
 		}
 	}
@@ -206,6 +211,7 @@ func (c *LogCollector) tailPod(ctx context.Context, namespace, podName, app, env
 			Line:      content,
 		}:
 		default:
+			c.dropped.Add(1)
 		}
 	}
 }

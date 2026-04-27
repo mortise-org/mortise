@@ -589,3 +589,28 @@ func TestLogCollectorRunStopsOnCancel(t *testing.T) {
 		t.Fatal("Run did not return after context cancellation")
 	}
 }
+
+func TestStripTraefikPort(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"pj-foo-prod-app-80@kubernetes", "pj-foo-prod-app@kubernetes"},
+		{"pj-foo-prod-app-8080@kubernetes", "pj-foo-prod-app@kubernetes"},
+		{"pj-foo-prod-redis-6379-6379@kubernetes", "pj-foo-prod-redis-6379@kubernetes"},
+		{"pj-foo-prod-app2-80@kubernetes", "pj-foo-prod-app2@kubernetes"},
+		{"pj-foo-prod-app@kubernetes", "pj-foo-prod-app@kubernetes"},
+		{"no-at-sign", "no-at-sign"},
+		{"", ""},
+		{"@kubernetes", "@kubernetes"},
+		{"single-80@kubernetes", "single@kubernetes"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got := stripTraefikPort(tt.input)
+			if got != tt.want {
+				t.Errorf("stripTraefikPort(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
