@@ -51,6 +51,28 @@ jobs:
       - name: Helm lint
         run: make test-charts
 
+  integration:
+    name: Integration tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.17.3
+
+      - name: Install k3d
+        run: curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | bash
+
+      - name: Run integration tests
+        run: make test-integration
+
   lint:
     name: Go vet + staticcheck
     runs-on: ubuntu-latest
