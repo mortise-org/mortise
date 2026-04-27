@@ -8,6 +8,7 @@ spec:
     image: redis:7
   network:
     public: false
+    port: 6379
   credentials:
     - name: host
     - name: port
