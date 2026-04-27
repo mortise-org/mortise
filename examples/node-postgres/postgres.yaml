@@ -1,0 +1,32 @@
+apiVersion: mortise.mortise.dev/v1alpha1
+kind: App
+metadata:
+  name: postgres
+spec:
+  source:
+    type: image
+    image: postgres:16
+  network:
+    public: false
+  storage:
+    - name: pgdata
+      mountPath: /var/lib/postgresql/data
+      size: 1Gi
+  credentials:
+    - name: host
+    - name: port
+    - name: user
+      value: postgres
+    - name: password
+      value: changeme
+    - name: DATABASE_URL
+      value: postgres://postgres:changeme@postgres/postgres
+  environments:
+    - name: production
+      replicas: 1
+      resources:
+        cpu: "100m"
+        memory: "256Mi"
+      env:
+        - name: POSTGRES_PASSWORD
+          value: changeme

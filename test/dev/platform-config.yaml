@@ -12,6 +12,7 @@ spec:
     insecureSkipTLSVerify: true
   build:
     buildkitAddr: tcp://buildkitd.mortise-test-deps.svc:1234
+    defaultPlatform: linux/amd64
   observability:
     metricsAdapterEndpoint: http://mortise-observer.mortise-deps.svc:9091
     logsAdapterEndpoint: http://mortise-observer.mortise-deps.svc:9091

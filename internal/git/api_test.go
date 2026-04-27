@@ -14,19 +14,32 @@ import (
 
 // fakeGitAPI is a test double satisfying GitAPI.
 type fakeGitAPI struct {
-	webhookErr  error
-	statusErr   error
-	sigErr      error
-	creds       GitCredentials
-	credsErr    error
-	repos       []Repository
-	reposErr    error
-	branches    []Branch
-	branchesErr error
+	webhookErr      error
+	statusErr       error
+	sigErr          error
+	creds           GitCredentials
+	credsErr        error
+	repos           []Repository
+	reposErr        error
+	branches        []Branch
+	branchesErr     error
+	webhooks        []WebhookInfo
+	webhooksErr     error
+	deleteHookErr   error
+	deletedHookIDs  []int64
 }
 
 func (f *fakeGitAPI) RegisterWebhook(_ context.Context, _ string, _ WebhookConfig) error {
 	return f.webhookErr
+}
+
+func (f *fakeGitAPI) ListWebhooks(_ context.Context, _ string) ([]WebhookInfo, error) {
+	return f.webhooks, f.webhooksErr
+}
+
+func (f *fakeGitAPI) DeleteWebhook(_ context.Context, _ string, hookID int64) error {
+	f.deletedHookIDs = append(f.deletedHookIDs, hookID)
+	return f.deleteHookErr
 }
 
 func (f *fakeGitAPI) PostCommitStatus(_ context.Context, _, _ string, _ CommitStatus) error {
@@ -144,8 +157,12 @@ func TestSplitRepo(t *testing.T) {
 		expectError bool
 	}{
 		{"owner/repo", "owner", "repo", false},
+		{"owner/repo.git", "owner", "repo", false},
 		{"github.com/owner/repo", "owner", "repo", false},
+		{"github.com/owner/repo.git", "owner", "repo", false},
 		{"https://github.com/owner/repo", "owner", "repo", false},
+		{"https://github.com/owner/repo.git", "owner", "repo", false},
+		{"http://github.com/owner/repo.git", "owner", "repo", false},
 		{"only-one-part", "", "", true},
 	}
 	for _, tt := range tests {

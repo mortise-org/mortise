@@ -24,9 +24,10 @@ import (
 // build completes in a handful of seconds against the in-cluster BuildKit.
 const (
 	testDockerfile = `FROM alpine:3.20
-RUN echo "mortise integration test" > /hello.txt
-EXPOSE 8080
-CMD ["sh", "-c", "while true; do echo ok | nc -l -p 8080; done"]
+RUN apk add --no-cache busybox-extras \
+ && mkdir -p /var/www \
+ && echo "mortise integration test" > /var/www/index.html
+CMD ["httpd", "-f", "-p", "8080", "-h", "/var/www"]
 `
 	testReadme = "This repository is created by Mortise integration tests.\n"
 )

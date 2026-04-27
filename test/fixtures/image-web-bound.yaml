@@ -1,0 +1,17 @@
+apiVersion: mortise.mortise.dev/v1alpha1
+kind: App
+metadata:
+  name: test-web
+spec:
+  source:
+    type: image
+    image: nginx:1.27
+  network:
+    public: true
+    port: 80
+  environments:
+    - name: production
+      replicas: 1
+      resources:
+        cpu: "50m"
+        memory: "64Mi"
