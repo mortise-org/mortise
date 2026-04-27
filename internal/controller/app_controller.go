@@ -2296,10 +2296,10 @@ func (r *AppReconciler) effectiveResources(ctx context.Context, env *mortisev1al
 		}
 	}
 	if res.CPU == "" {
-		res.CPU = "500m"
+		res.CPU = "100m"
 	}
 	if res.Memory == "" {
-		res.Memory = "512Mi"
+		res.Memory = "256Mi"
 	}
 	return res
 }
