@@ -19,7 +19,7 @@ import (
 func main() {
 	var (
 		listen        = flag.String("listen", ":9091", "HTTP listen address")
-		pollInterval  = flag.Duration("metrics-poll-interval", 60*time.Second, "Metrics collection interval")
+		pollInterval  = flag.Duration("metrics-poll-interval", 5*time.Second, "Metrics collection interval")
 		metricsRet    = flag.Duration("metrics-retention", 72*time.Hour, "Metrics retention duration")
 		logRet        = flag.Duration("log-retention", 48*time.Hour, "Log retention duration")
 		trafficRet    = flag.Duration("traffic-retention", 48*time.Hour, "Traffic retention duration")

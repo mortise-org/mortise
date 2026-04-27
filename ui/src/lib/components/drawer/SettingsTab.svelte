@@ -15,6 +15,16 @@
 		onAppDeleted: () => void;
 	} = $props();
 
+	let specOverride = $state<AppSpec | null>(null);
+	let lastSeenSpec = $state<AppSpec | null>(null);
+	$effect(() => {
+		if (lastSeenSpec !== null && app.spec !== lastSeenSpec) {
+			specOverride = null;
+		}
+		lastSeenSpec = app.spec;
+	});
+	function cloneSpec(): AppSpec { return JSON.parse(JSON.stringify(specOverride ?? app.spec)); }
+
 	const selectedEnv = $derived(store.currentEnv(project) ?? '');
 	const envEntry = $derived(app.spec.environments?.find(e => e.name === selectedEnv));
 	const envEnabled = $derived(envEntry?.enabled !== false);
@@ -24,7 +34,7 @@
 		if (!selectedEnv) return;
 		togglingEnabled = true;
 		const next = !envEnabled;
-		const spec = JSON.parse(JSON.stringify(app.spec));
+		const spec = cloneSpec();
 		spec.environments = spec.environments ?? [];
 		const idx = spec.environments.findIndex((e: { name: string }) => e.name === selectedEnv);
 		if (idx >= 0) {
@@ -33,7 +43,8 @@
 			spec.environments.push({ name: selectedEnv, enabled: next });
 		}
 		try {
-			await api.updateApp(project, app.metadata.name, spec);
+			const result = await api.updateApp(project, app.metadata.name, spec);
+			specOverride = result.spec;
 		} catch (e) {
 			errorMsg = e instanceof Error ? e.message : 'Failed to toggle environment';
 		} finally {
@@ -55,6 +66,7 @@
 	let buildMode = $state<'auto' | 'dockerfile' | 'railpack'>('auto');
 	let dockerfilePath = $state('');
 	let buildContext = $state<'' | 'root' | 'subdir'>('');
+	let buildArgs = $state<[string, string][]>([]);
 	let savingBuild = $state(false);
 
 	// --- Networking ---
@@ -69,6 +81,7 @@
 		buildMode = app.spec.source.build?.mode ?? 'auto';
 		dockerfilePath = app.spec.source.build?.dockerfilePath ?? '';
 		buildContext = app.spec.source.build?.context ?? '';
+		buildArgs = Object.entries(app.spec.source.build?.args ?? {});
 		netPublic = app.spec.network?.public ?? true;
 		netPort = String(app.spec.network?.port ?? '');
 	});
@@ -138,7 +151,7 @@
 		if (!newVol.name || !newVol.mountPath) return;
 		savingVolume = true;
 		const prevVol = { ...newVol };
-		const optimisticSpec = JSON.parse(JSON.stringify(app.spec));
+		const optimisticSpec = cloneSpec();
 		optimisticSpec.storage = [...(optimisticSpec.storage ?? []), {
 			name: newVol.name,
 			mountPath: newVol.mountPath,
@@ -148,7 +161,8 @@
 		showAddVolume = false;
 		newVol = { name: '', mountPath: '', size: '', storageClass: '' };
 		try {
-			await api.updateApp(project, app.metadata.name, optimisticSpec);
+			const result = await api.updateApp(project, app.metadata.name, optimisticSpec);
+			specOverride = result.spec;
 		} catch (e) {
 			errorMsg = e instanceof Error ? e.message : 'Failed to add volume';
 			showAddVolume = true;
@@ -159,10 +173,11 @@
 	}
 
 	async function removeVolume(idx: number) {
-		const optimisticSpec = JSON.parse(JSON.stringify(app.spec));
+		const optimisticSpec = cloneSpec();
 		optimisticSpec.storage = (optimisticSpec.storage ?? []).filter((_: unknown, i: number) => i !== idx);
 		try {
-			await api.updateApp(project, app.metadata.name, optimisticSpec);
+			const result = await api.updateApp(project, app.metadata.name, optimisticSpec);
+			specOverride = result.spec;
 		} catch (e) {
 			errorMsg = e instanceof Error ? e.message : 'Failed to remove volume';
 		}
@@ -197,7 +212,7 @@
 	}
 
 	function buildUpdatedSpec(): AppSpec {
-		const spec = JSON.parse(JSON.stringify(app.spec));
+		const spec = cloneSpec();
 
 		// Source
 		if (spec.source.type === 'git') {
@@ -221,7 +236,8 @@
 		errorMsg = '';
 		const optimisticSpec = buildUpdatedSpec();
 		try {
-			await api.updateApp(project, app.metadata.name, optimisticSpec);
+			const result = await api.updateApp(project, app.metadata.name, optimisticSpec);
+			specOverride = result.spec;
 		} catch (e) {
 			errorMsg = e instanceof Error ? e.message : 'Failed to save';
 		} finally {
@@ -231,17 +247,21 @@
 
 	async function saveBuild() {
 		savingBuild = true;
-		const optimisticSpec = JSON.parse(JSON.stringify(app.spec));
+		const optimisticSpec = cloneSpec();
+		const filtered = buildArgs.filter(([k]) => k.trim() !== '');
+		const args = filtered.length > 0 ? Object.fromEntries(filtered) : undefined;
 		optimisticSpec.source = {
 			...optimisticSpec.source,
 			build: {
 				mode: buildMode,
 				dockerfilePath: buildMode === 'dockerfile' ? dockerfilePath : undefined,
-				context: buildContext === '' ? undefined : buildContext
+				context: buildContext === '' ? undefined : buildContext,
+				args
 			}
 		};
 		try {
-			await api.updateApp(project, app.metadata.name, optimisticSpec);
+			const result = await api.updateApp(project, app.metadata.name, optimisticSpec);
+			specOverride = result.spec;
 		} catch (e) {
 			errorMsg = e instanceof Error ? e.message : 'Failed to save build config';
 		} finally {
@@ -254,7 +274,8 @@
 		errorMsg = '';
 		const optimisticSpec = buildUpdatedSpec();
 		try {
-			await api.updateApp(project, app.metadata.name, optimisticSpec);
+			const result = await api.updateApp(project, app.metadata.name, optimisticSpec);
+			specOverride = result.spec;
 		} catch (e) {
 			errorMsg = e instanceof Error ? e.message : 'Failed to save';
 		} finally {
@@ -266,19 +287,21 @@
 		if (!selectedEnv) return;
 		saving = true;
 		errorMsg = '';
-		const optimisticSpec = JSON.parse(JSON.stringify(app.spec));
+		const optimisticSpec = cloneSpec();
 		optimisticSpec.environments = optimisticSpec.environments ?? [];
 		let envIdx = optimisticSpec.environments.findIndex((e: { name: string }) => e.name === selectedEnv);
 		if (envIdx < 0) {
 			optimisticSpec.environments.push({ name: selectedEnv });
 			envIdx = optimisticSpec.environments.length - 1;
 		}
-		optimisticSpec.environments[envIdx].replicas = parseInt(scaleReplicas, 10) || 1;
-		optimisticSpec.environments[envIdx].resources = optimisticSpec.environments[envIdx].resources ?? {};
-		if (scaleCpu) optimisticSpec.environments[envIdx].resources.cpu = scaleCpu;
-		if (scaleMemory) optimisticSpec.environments[envIdx].resources.memory = scaleMemory;
+		const envSpec = optimisticSpec.environments[envIdx];
+		envSpec.replicas = parseInt(scaleReplicas, 10) || 1;
+		envSpec.resources = envSpec.resources ?? {};
+		if (scaleCpu) envSpec.resources.cpu = scaleCpu;
+		if (scaleMemory) envSpec.resources.memory = scaleMemory;
 		try {
-			await api.updateApp(project, app.metadata.name, optimisticSpec);
+			const result = await api.updateApp(project, app.metadata.name, optimisticSpec);
+			specOverride = result.spec;
 		} catch (e) {
 			errorMsg = e instanceof Error ? e.message : 'Failed to save';
 		} finally {
@@ -320,7 +343,7 @@
 		if (!selectedEnv) return;
 		savingTls = true;
 		try {
-			const spec = JSON.parse(JSON.stringify(app.spec));
+			const spec = cloneSpec();
 			spec.environments = spec.environments ?? [];
 			let envIdx = spec.environments.findIndex((e: { name: string }) => e.name === selectedEnv);
 			if (envIdx < 0) {
@@ -331,7 +354,8 @@
 				clusterIssuer: tlsClusterIssuer || undefined,
 				secretName: tlsSecretName || undefined
 			};
-			await api.updateApp(project, app.metadata.name, spec);
+			const result = await api.updateApp(project, app.metadata.name, spec);
+			specOverride = result.spec;
 		} catch (e) {
 			errorMsg = e instanceof Error ? e.message : 'Failed to save TLS config';
 		} finally {
@@ -389,7 +413,7 @@
 		if (!selectedEnv) return;
 		savingAnnotations = true;
 		try {
-			const spec = JSON.parse(JSON.stringify(app.spec));
+			const spec = cloneSpec();
 			spec.environments = spec.environments ?? [];
 			let envIdx = spec.environments.findIndex((e: { name: string }) => e.name === selectedEnv);
 			if (envIdx < 0) {
@@ -397,7 +421,8 @@
 				envIdx = spec.environments.length - 1;
 			}
 			spec.environments[envIdx] = { ...spec.environments[envIdx], annotations };
-			await api.updateApp(project, app.metadata.name, spec);
+			const result = await api.updateApp(project, app.metadata.name, spec);
+			specOverride = result.spec;
 		} catch (e) {
 			errorMsg = e instanceof Error ? e.message : 'Failed to save annotations';
 		} finally {
@@ -422,7 +447,7 @@
 		if (!selectedEnv) return;
 		savingMounts = true;
 		try {
-			const spec = JSON.parse(JSON.stringify(app.spec));
+			const spec = cloneSpec();
 			spec.environments = spec.environments ?? [];
 			let envIdx = spec.environments.findIndex((e: { name: string }) => e.name === selectedEnv);
 			if (envIdx < 0) {
@@ -430,7 +455,8 @@
 				envIdx = spec.environments.length - 1;
 			}
 			spec.environments[envIdx] = { ...spec.environments[envIdx], secretMounts };
-			await api.updateApp(project, app.metadata.name, spec);
+			const result = await api.updateApp(project, app.metadata.name, spec);
+			specOverride = result.spec;
 		} catch (e) {
 			errorMsg = e instanceof Error ? e.message : 'Failed to save mounts';
 		} finally {
@@ -441,11 +467,12 @@
 	async function handleDelete() {
 		if (deleteConfirmText !== app.metadata.name) return;
 		deleting = true;
-		onAppDeleted();
 		try {
 			await api.deleteApp(project, app.metadata.name);
-		} catch {
-			// drawer is already closed; error is unrecoverable from the user's perspective
+			onAppDeleted();
+		} catch (e) {
+			errorMsg = e instanceof Error ? e.message : 'Failed to delete app';
+			deleting = false;
 		}
 	}
 
@@ -557,6 +584,44 @@
 						<p class="mt-1 text-xs text-gray-500">Override the build context root when the Dockerfile references sibling directories.</p>
 					</div>
 				{/if}
+
+			<!-- Build args (show for git+dockerfile/auto source; hidden for image/railpack) -->
+			{#if app.spec.source.type === 'git' && buildMode !== 'railpack'}
+				<div>
+					<p class={labelCls}>Build args</p>
+					<p class="mb-2 text-xs text-gray-500">Passed as Docker <code class="font-mono">--build-arg</code>. Required for build-time env vars (e.g. <code class="font-mono">VITE_*</code>).</p>
+					{#each buildArgs as [k, v], i}
+						<div class="mb-1.5 flex gap-1.5">
+							<input type="text" value={k}
+								oninput={(e) => {
+									buildArgs = buildArgs.map((entry, j) =>
+										j === i ? [(e.target as HTMLInputElement).value, entry[1]] as [string, string] : entry
+									);
+								}}
+								placeholder="ARG_NAME"
+								class="flex-1 rounded-md border border-surface-600 bg-surface-800 px-2 py-1.5 font-mono text-xs text-white placeholder-gray-600 outline-none focus:border-accent" />
+							<input type="text" value={v}
+								oninput={(e) => {
+									buildArgs = buildArgs.map((entry, j) =>
+										j === i ? [entry[0], (e.target as HTMLInputElement).value] as [string, string] : entry
+									);
+								}}
+								placeholder="value"
+								class="flex-1 rounded-md border border-surface-600 bg-surface-800 px-2 py-1.5 font-mono text-xs text-white placeholder-gray-600 outline-none focus:border-accent" />
+							<button type="button"
+								onclick={() => { buildArgs = buildArgs.filter((_, j) => j !== i); }}
+								class="rounded p-1 text-gray-500 hover:text-danger">
+								<Trash2 class="h-3.5 w-3.5" />
+							</button>
+						</div>
+					{/each}
+					<button type="button"
+						onclick={() => { buildArgs = [...buildArgs, ['', '']]; }}
+						class="mt-1 flex items-center gap-1 text-xs text-accent hover:text-accent-hover">
+						<Plus class="h-3 w-3" /> Add build arg
+					</button>
+				</div>
+			{/if}
 			</div>
 			<button type="button" onclick={saveBuild} disabled={savingBuild}
 				class={btnPrimary}>

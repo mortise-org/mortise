@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -22,6 +23,8 @@ type LogCollector struct {
 	mu          sync.Mutex
 	tailers     map[string]context.CancelFunc
 	tailerCount int
+	logCh       chan LogEntry
+	dropped     atomic.Int64
 }
 
 func NewLogCollector(cs kubernetes.Interface, store *Store, interval time.Duration, maxPods int, log *slog.Logger) *LogCollector {
@@ -32,10 +35,13 @@ func NewLogCollector(cs kubernetes.Interface, store *Store, interval time.Durati
 		maxPods:   maxPods,
 		log:       log,
 		tailers:   make(map[string]context.CancelFunc),
+		logCh:     make(chan LogEntry, 4096),
 	}
 }
 
 func (c *LogCollector) Run(ctx context.Context) {
+	go c.flushLoop(ctx)
+
 	ticker := time.NewTicker(c.interval)
 	defer ticker.Stop()
 
@@ -47,6 +53,54 @@ func (c *LogCollector) Run(ctx context.Context) {
 			return
 		case <-ticker.C:
 			c.sync(ctx)
+		}
+	}
+}
+
+func (c *LogCollector) flushLoop(ctx context.Context) {
+	ticker := time.NewTicker(250 * time.Millisecond)
+	defer ticker.Stop()
+
+	buf := make([]LogEntry, 0, 256)
+	for {
+		select {
+		case <-ctx.Done():
+			c.drainAndFlush(buf)
+			return
+		case entry := <-c.logCh:
+			buf = append(buf, entry)
+			if len(buf) >= 256 {
+				c.flushBatch(buf)
+				buf = buf[:0]
+			}
+		case <-ticker.C:
+			if len(buf) > 0 {
+				c.flushBatch(buf)
+				buf = buf[:0]
+			}
+			if n := c.dropped.Swap(0); n > 0 {
+				c.log.Warn("log channel full, lines dropped", "count", n)
+			}
+		}
+	}
+}
+
+func (c *LogCollector) flushBatch(entries []LogEntry) {
+	if err := c.store.InsertLogs(entries); err != nil {
+		c.log.Warn("failed to insert log batch", "count", len(entries), "error", err)
+	}
+}
+
+func (c *LogCollector) drainAndFlush(buf []LogEntry) {
+	for {
+		select {
+		case entry := <-c.logCh:
+			buf = append(buf, entry)
+		default:
+			if len(buf) > 0 {
+				c.flushBatch(buf)
+			}
+			return
 		}
 	}
 }
@@ -146,7 +200,8 @@ func (c *LogCollector) tailPod(ctx context.Context, namespace, podName, app, env
 		line := scanner.Text()
 		ts, content := parseLogTimestamp(line)
 
-		if err := c.store.InsertLog(LogEntry{
+		select {
+		case c.logCh <- LogEntry{
 			Ts:        ts,
 			Pod:       podName,
 			Namespace: namespace,
@@ -154,8 +209,9 @@ func (c *LogCollector) tailPod(ctx context.Context, namespace, podName, app, env
 			Env:       env,
 			Stream:    "stdout",
 			Line:      content,
-		}); err != nil {
-			c.log.Warn("failed to insert log", "error", err)
+		}:
+		default:
+			c.dropped.Add(1)
 		}
 	}
 }

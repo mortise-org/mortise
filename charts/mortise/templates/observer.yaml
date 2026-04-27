@@ -31,9 +31,13 @@ spec:
             - --traffic-retention={{ .Values.observer.retention.traffic | default "48h" }}
             - --max-log-pods={{ .Values.observer.maxLogPods | default "100" }}
             - --storage-path=/data
-            - --ingress-namespace={{ include "mortise.depsNamespace" . }}
+            - --ingress-namespace={{ .Values.observer.ingressNamespace | default (include "mortise.depsNamespace" .) }}
             - --traffic-bucket-size={{ .Values.observer.trafficBucketSize | default "5s" }}
-            {{- if not .Values.traefik.enabled }}
+            {{- $enableTraffic := .Values.traefik.enabled }}
+            {{- if hasKey .Values.observer "enableTraffic" }}
+            {{- $enableTraffic = .Values.observer.enableTraffic }}
+            {{- end }}
+            {{- if not $enableTraffic }}
             - --enable-traffic=false
             {{- end }}
           ports:
