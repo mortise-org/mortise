@@ -250,7 +250,7 @@ test-integration: ## Create k3d cluster, install chart + test deps, run integrat
 		--set metricsServer.enabled=false \
 		--wait --timeout 120s
 	@echo "==> Running integration tests..."
-	go test -v -tags integration -count=1 -timeout 45m ./test/integration/... || { \
+	go test -v -parallel 23 -tags integration -count=1 -timeout 45m ./test/integration/... || { \
 		k3d cluster delete $(INT_CLUSTER); exit 1; \
 	}
 	@echo "==> Tearing down cluster..."
