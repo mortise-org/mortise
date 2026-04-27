@@ -141,12 +141,14 @@ dev-up: build-ui ## Create k3d dev cluster with build infra, install Mortise, po
 	k3d image import $(DEV_IMG) $(DEV_OBSERVER_IMG) -c $(DEV_CLUSTER)
 	@echo "==> Installing CRDs..."
 	kubectl apply -f charts/mortise-core/crds/
-	@echo "==> Deploying build infrastructure (BuildKit + registry)..."
+	@echo "==> Deploying test infrastructure (registry, Gitea, BuildKit)..."
 	kubectl apply -f test/integration/manifests/00-namespace.yaml \
 		-f test/integration/manifests/10-registry.yaml \
+		-f test/integration/manifests/20-gitea.yaml \
 		-f test/integration/manifests/30-buildkit.yaml
-	@echo "==> Waiting for build infrastructure to become ready..."
+	@echo "==> Waiting for test infrastructure to become ready..."
 	kubectl -n mortise-test-deps rollout status deployment/registry  --timeout=120s
+	kubectl -n mortise-test-deps rollout status deployment/gitea     --timeout=180s
 	kubectl -n mortise-test-deps rollout status deployment/buildkitd --timeout=180s
 	@echo "==> Installing Mortise via Helm..."
 	helm upgrade --install mortise charts/mortise \
@@ -177,7 +179,7 @@ dev-up: build-ui ## Create k3d dev cluster with build infra, install Mortise, po
 	@sleep 2
 	@echo ""
 	@echo "✓ Mortise dev cluster is running at http://localhost:8090"
-	@echo "  Build infra: BuildKit + registry (with node-local mirror)"
+	@echo "  Test infra: Gitea + BuildKit + registry (with node-local mirror)"
 	@echo "  Run 'make dev-reload' to rebuild and redeploy without recreating the cluster"
 	@echo "  Run 'make dev-down' to tear down"
 
