@@ -25,7 +25,8 @@ import (
 const (
 	testDockerfile = `FROM alpine:3.20
 RUN echo "mortise integration test" > /hello.txt
-CMD ["sh", "-c", "cat /hello.txt && sleep 3600"]
+EXPOSE 8080
+CMD ["sh", "-c", "while true; do echo ok | nc -l -p 8080; done"]
 `
 	testReadme = "This repository is created by Mortise integration tests.\n"
 )
