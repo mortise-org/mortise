@@ -221,6 +221,12 @@ test-integration: ## Create k3d cluster, install chart + test deps, run integrat
 	kubectl -n mortise-test-deps rollout status deployment/registry  --timeout=120s
 	kubectl -n mortise-test-deps rollout status deployment/gitea     --timeout=180s
 	kubectl -n mortise-test-deps rollout status deployment/buildkitd --timeout=180s
+	@echo "==> Fetching Helm chart dependencies..."
+	helm repo add traefik https://traefik.github.io/charts
+	helm repo add jetstack https://charts.jetstack.io
+	helm repo add metrics-server https://kubernetes-sigs.github.io/metrics-server/
+	helm repo update
+	helm dependency build charts/mortise
 	@echo "==> Installing Mortise via Helm..."
 	helm upgrade --install mortise charts/mortise \
 		--namespace mortise-system --create-namespace \
