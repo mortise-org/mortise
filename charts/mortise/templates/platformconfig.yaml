@@ -27,4 +27,8 @@ spec:
     metricsAdapterEndpoint: http://mortise-observer.{{ include "mortise.depsNamespace" . }}.svc:9091
     trafficAdapterEndpoint: http://mortise-observer.{{ include "mortise.depsNamespace" . }}.svc:9091
   {{- end }}
+  defaults:
+    resources:
+      cpu: {{ (.Values.platformConfig.defaults).resources.cpu | default "100m" | quote }}
+      memory: {{ (.Values.platformConfig.defaults).resources.memory | default "256Mi" | quote }}
 {{- end }}

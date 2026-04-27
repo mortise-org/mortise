@@ -142,3 +142,7 @@ platformConfig:
   enabled: true
   domain: ""
   buildPlatform: ""
+  defaults:
+    resources:
+      cpu: "100m"
+      memory: "256Mi"
