@@ -19,6 +19,7 @@ import (
 )
 
 func TestProjectCreatesNamespace(t *testing.T) {
+	t.Parallel()
 	name := "proj-ns-" + randSuffix()
 	project := &mortisev1alpha1.Project{
 		ObjectMeta: metav1.ObjectMeta{Name: name},
@@ -58,6 +59,7 @@ func TestProjectCreatesNamespace(t *testing.T) {
 }
 
 func TestProjectDeleteCascades(t *testing.T) {
+	t.Parallel()
 	name := "proj-cascade-" + randSuffix()
 	project := &mortisev1alpha1.Project{
 		ObjectMeta: metav1.ObjectMeta{Name: name},

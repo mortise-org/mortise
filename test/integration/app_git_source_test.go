@@ -44,6 +44,7 @@ CMD ["sh", "-c", "cat /hello.txt && sleep 3600"]
 //  6. Zot's /v2/mortise/{app}/tags/list reports the built tag.
 //  7. The Deployment is running with the pushed image.
 func TestGitSourceAppBuildsAndDeploys(t *testing.T) {
+	t.Parallel()
 	projectName := "git-src-" + randSuffix()
 	ns := createProjectForTest(t, projectName)
 

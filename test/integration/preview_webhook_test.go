@@ -41,6 +41,7 @@ const webhookSecret = "int-test-webhook-secret"
 // This complements TestPreviewEnvironmentLifecycle (which bypasses the webhook
 // by creating the PE directly) by proving the handler itself is wired up.
 func TestPreviewEnvironmentViaWebhook(t *testing.T) {
+	t.Parallel()
 	projectName := "prev-wh-" + randSuffix()
 	ns := createProjectForTest(t, projectName)
 
@@ -240,6 +241,7 @@ func TestPreviewEnvironmentViaWebhook(t *testing.T) {
 // a pull_request webhook arriving at a project whose preview is disabled
 // should be accepted (HMAC valid) but no PreviewEnvironment should be created.
 func TestPreviewEnvironmentViaWebhook_PreviewDisabled(t *testing.T) {
+	t.Parallel()
 	projectName := "prev-wh-off-" + randSuffix()
 	ns := createProjectForTest(t, projectName)
 

@@ -20,6 +20,7 @@ import (
 )
 
 func TestExternalSourceCreatesExternalNameService(t *testing.T) {
+	t.Parallel()
 	projectName := "ext-" + randSuffix()
 	ns := createProjectForTest(t, projectName)
 
@@ -74,6 +75,7 @@ func TestExternalSourceCreatesExternalNameService(t *testing.T) {
 }
 
 func TestExternalSourceBindingInjectsHostPort(t *testing.T) {
+	t.Parallel()
 	projectName := "ext-" + randSuffix()
 	ns := createProjectForTest(t, projectName)
 

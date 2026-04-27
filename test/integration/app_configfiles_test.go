@@ -18,6 +18,7 @@ import (
 )
 
 func TestConfigFilesCreateAndGarbageCollect(t *testing.T) {
+	t.Parallel()
 	projectName := "cfg-" + randSuffix()
 	ns := createProjectForTest(t, projectName)
 

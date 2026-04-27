@@ -20,6 +20,7 @@ import (
 )
 
 func TestStorageProvisionsPVCAndMount(t *testing.T) {
+	t.Parallel()
 	projectName := "stor-" + randSuffix()
 	ns := createProjectForTest(t, projectName)
 

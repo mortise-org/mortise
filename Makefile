@@ -210,8 +210,13 @@ test-integration: ## Create k3d cluster, install chart + test deps, run integrat
 	@echo "==> Building Docker images..."
 	$(CONTAINER_TOOL) build --target operator -t $(INT_IMG) .
 	$(CONTAINER_TOOL) build --target observer -t $(INT_OBSERVER_IMG) .
+	@echo "==> Pre-pulling test images..."
+	$(CONTAINER_TOOL) pull nginx:1.27
+	$(CONTAINER_TOOL) pull postgres:16
+	$(CONTAINER_TOOL) pull busybox:1.37
+	$(CONTAINER_TOOL) pull alpine:3.20
 	@echo "==> Loading images into k3d..."
-	k3d image import $(INT_IMG) $(INT_OBSERVER_IMG) -c $(INT_CLUSTER)
+	k3d image import $(INT_IMG) $(INT_OBSERVER_IMG) nginx:1.27 postgres:16 busybox:1.37 alpine:3.20 -c $(INT_CLUSTER)
 	@echo "==> Installing CRDs..."
 	kubectl apply -f charts/mortise-core/crds/
 	@echo "==> Installing test-only dependencies (registry, Gitea, BuildKit)..."

@@ -26,6 +26,7 @@ import (
 // wait for resources, push a new SHA, wait for rebuild, then delete and verify
 // cleanup.
 func TestPreviewEnvironmentLifecycle(t *testing.T) {
+	t.Parallel()
 	projectName := "prev-life-" + randSuffix()
 	ns := createProjectForTest(t, projectName)
 
@@ -226,6 +227,7 @@ func TestPreviewEnvironmentLifecycle(t *testing.T) {
 // referencing an App with preview disabled (or no preview block) transitions
 // to Failed with a clear condition.
 func TestPreviewDisabledAppRejectsPreview(t *testing.T) {
+	t.Parallel()
 	projectName := "prev-disabled-" + randSuffix()
 	ns := createProjectForTest(t, projectName)
 
@@ -267,6 +269,7 @@ func TestPreviewDisabledAppRejectsPreview(t *testing.T) {
 // inherits env vars from the parent App's staging bindings (e.g. DATABASE_URL
 // from a bound Postgres App).
 func TestPreviewInheritsStagingBindings(t *testing.T) {
+	t.Parallel()
 	projectName := "prev-bind-" + randSuffix()
 	ns := createProjectForTest(t, projectName)
 

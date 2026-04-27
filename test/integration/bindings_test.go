@@ -20,6 +20,7 @@ import (
 )
 
 func TestSameProjectBindingInjectsEnv(t *testing.T) {
+	t.Parallel()
 	projectName := "bind-" + randSuffix()
 	ns := createProjectForTest(t, projectName)
 

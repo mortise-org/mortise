@@ -22,6 +22,7 @@ import (
 )
 
 func TestCronAppCreatesCronJob(t *testing.T) {
+	t.Parallel()
 	projectName := "cron-" + randSuffix()
 	ns := createProjectForTest(t, projectName)
 
@@ -90,6 +91,7 @@ func TestCronAppCreatesCronJob(t *testing.T) {
 }
 
 func TestCronAppScheduleUpdate(t *testing.T) {
+	t.Parallel()
 	projectName := "cron-" + randSuffix()
 	ns := createProjectForTest(t, projectName)
 

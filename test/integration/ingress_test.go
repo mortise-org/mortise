@@ -32,6 +32,7 @@ func skipIfNoIngressClass(t *testing.T) {
 }
 
 func TestIngressCreatedForPublicApp(t *testing.T) {
+	t.Parallel()
 	skipIfNoIngressClass(t)
 	ns := createProjectForTest(t, "ing-public-"+randSuffix())
 
@@ -76,6 +77,7 @@ func TestIngressCreatedForPublicApp(t *testing.T) {
 }
 
 func TestNoIngressForPrivateApp(t *testing.T) {
+	t.Parallel()
 	skipIfNoIngressClass(t)
 	ns := createProjectForTest(t, "ing-private-"+randSuffix())
 
@@ -104,6 +106,7 @@ func TestNoIngressForPrivateApp(t *testing.T) {
 }
 
 func TestCustomDomainsCreateAdditionalRules(t *testing.T) {
+	t.Parallel()
 	skipIfNoIngressClass(t)
 	ns := createProjectForTest(t, "ing-custom-"+randSuffix())
 
@@ -164,6 +167,7 @@ func TestCustomDomainsCreateAdditionalRules(t *testing.T) {
 }
 
 func TestAnnotationPassthrough(t *testing.T) {
+	t.Parallel()
 	skipIfNoIngressClass(t)
 	ns := createProjectForTest(t, "ing-annot-"+randSuffix())
 
@@ -205,6 +209,7 @@ func TestAnnotationPassthrough(t *testing.T) {
 }
 
 func TestTLSSecretOverride(t *testing.T) {
+	t.Parallel()
 	skipIfNoIngressClass(t)
 	ns := createProjectForTest(t, "ing-tls-"+randSuffix())
 	projectName, _ := constants.ProjectFromControlNs(ns)

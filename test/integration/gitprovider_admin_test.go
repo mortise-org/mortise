@@ -44,6 +44,7 @@ const (
 // against the running Mortise API in the k3d cluster. It creates, conflicts,
 // and deletes a GitProvider, asserting the managed CRD and Secret lifecycle.
 func TestGitProviderAdminAPICRUD(t *testing.T) {
+	t.Parallel()
 	mortisePort := helpers.PortForward(t, "mortise-system", "mortise", 80)
 	mortiseURL := fmt.Sprintf("http://127.0.0.1:%d", mortisePort)
 
@@ -142,6 +143,7 @@ func TestGitProviderAdminAPICRUD(t *testing.T) {
 // API: create provider, store a PAT at /api/auth/git/{provider}/token, verify
 // /status reports connected, and confirm the token can call Gitea's /api/v1/user.
 func TestGiteaOAuthFlow(t *testing.T) {
+	t.Parallel()
 	mortisePort := helpers.PortForward(t, "mortise-system", "mortise", 80)
 	giteaPort := helpers.PortForward(t, "mortise-test-deps", "gitea", 3000)
 
