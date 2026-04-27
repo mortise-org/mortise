@@ -1750,6 +1750,35 @@ func (r *AppReconciler) ensureWebhook(ctx context.Context, app *mortisev1alpha1.
 		return fmt.Errorf("create git API: %w", err)
 	}
 
+	// Check existing hooks: recover lost annotations and clean stale hooks.
+	existing, err := api.ListWebhooks(ctx, app.Spec.Source.Repo)
+	if err != nil {
+		log.Error(err, "failed to list webhooks, proceeding with registration")
+	} else {
+		for _, hook := range existing {
+			if !strings.Contains(hook.URL, "/api/webhooks/") {
+				continue
+			}
+			if hook.URL == webhookURL {
+				// Already registered, annotation was lost — restore it.
+				if app.Annotations == nil {
+					app.Annotations = make(map[string]string)
+				}
+				app.Annotations["mortise.dev/webhook-registered"] = app.Spec.Source.Repo
+				if err := r.Update(ctx, app); err != nil {
+					log.Error(err, "failed to save webhook-registered annotation")
+				}
+				return nil
+			}
+			// Stale Mortise webhook pointing at a different domain — remove it.
+			if delErr := api.DeleteWebhook(ctx, app.Spec.Source.Repo, hook.ID); delErr != nil {
+				log.Error(delErr, "failed to delete stale webhook", "hookID", hook.ID, "url", hook.URL)
+			} else {
+				log.Info("deleted stale webhook", "hookID", hook.ID, "url", hook.URL)
+			}
+		}
+	}
+
 	if err := api.RegisterWebhook(ctx, app.Spec.Source.Repo, git.WebhookConfig{
 		URL:    webhookURL,
 		Secret: webhookSecret,

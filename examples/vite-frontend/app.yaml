@@ -1,0 +1,22 @@
+apiVersion: mortise.mortise.dev/v1alpha1
+kind: App
+metadata:
+  name: frontend
+spec:
+  source:
+    type: git
+    repo: https://github.com/your-org/your-vite-app
+    branch: main
+    build:
+      args:
+        VITE_API_URL: https://api.yourdomain.com
+        VITE_APP_TITLE: My App
+  network:
+    public: true
+    port: 80
+  environments:
+    - name: production
+      replicas: 2
+      resources:
+        cpu: "100m"
+        memory: "128Mi"

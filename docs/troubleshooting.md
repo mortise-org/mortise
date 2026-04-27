@@ -113,3 +113,40 @@ registry pod. The DaemonSet proxy generalises this approach to real clusters.
 **External registries:** If you point `PlatformConfig.spec.registry.url` at
 an external registry (GHCR, ECR, Harbor, etc.), none of this applies -
 kubelet can already reach those registries over HTTPS with standard DNS.
+
+---
+
+## Known Limitations
+
+### supabase/postgres and POSTGRES_USER
+
+The `supabase/postgres` image ships a custom `pg_hba.conf` with a
+`supabase_map` that only permits specific OS-to-DB user mappings. Setting
+`POSTGRES_USER` to anything other than the default breaks init scripts with
+"peer authentication failed".
+
+**Workaround:** Use the standard `postgres:16` image if you need custom
+users, or omit `POSTGRES_USER` when using `supabase/postgres`.
+
+### Inter-service startup ordering
+
+Mortise has no init container or dependency ordering mechanism. When deploying
+multi-service stacks (e.g. a web app that depends on postgres), services that
+start before their dependencies will crash-loop until the dependency is ready.
+Kubernetes restart policy handles this automatically — pods retry and
+eventually succeed. This is expected behavior, not a bug.
+
+For faster startup, set conservative `startupProbe` values or pre-create
+backing services before dependent apps.
+
+### envFrom injects ALL env vars into containers
+
+Mortise injects all configured env vars (user-set, shared, binding-injected)
+into every container via `envFrom: secretRef`. Some images reserve specific
+env var names (e.g. `POSTGRES_USER`, `POSTGRES_DB`, `PORT`). If a binding or
+shared variable uses one of these reserved names, it may conflict with the
+image's init scripts.
+
+**Workaround:** Avoid naming binding credentials after image-reserved env var
+names. Use prefixed names like `DB_USER` instead of `POSTGRES_USER` for
+bindings.

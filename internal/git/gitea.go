@@ -57,6 +57,35 @@ func (g *GiteaAPI) RegisterWebhook(ctx context.Context, repo string, cfg Webhook
 	return err
 }
 
+func (g *GiteaAPI) ListWebhooks(ctx context.Context, repo string) ([]WebhookInfo, error) {
+	owner, name, err := splitRepo(repo)
+	if err != nil {
+		return nil, err
+	}
+	hooks, _, err := g.client.ListRepoHooks(owner, name, gogitea.ListHooksOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("list gitea hooks: %w", err)
+	}
+	result := make([]WebhookInfo, 0, len(hooks))
+	for _, h := range hooks {
+		result = append(result, WebhookInfo{
+			ID:     h.ID,
+			URL:    h.Config["url"],
+			Active: h.Active,
+		})
+	}
+	return result, nil
+}
+
+func (g *GiteaAPI) DeleteWebhook(ctx context.Context, repo string, hookID int64) error {
+	owner, name, err := splitRepo(repo)
+	if err != nil {
+		return err
+	}
+	_, err = g.client.DeleteRepoHook(owner, name, hookID)
+	return err
+}
+
 func (g *GiteaAPI) PostCommitStatus(_ context.Context, repo, sha string, status CommitStatus) error {
 	owner, name, err := splitRepo(repo)
 	if err != nil {

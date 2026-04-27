@@ -1,0 +1,19 @@
+apiVersion: mortise.mortise.dev/v1alpha1
+kind: App
+metadata:
+  name: test-redis
+spec:
+  source:
+    type: image
+    image: redis:7
+  network:
+    public: false
+  credentials:
+    - name: host
+    - name: port
+  environments:
+    - name: production
+      replicas: 1
+      resources:
+        cpu: "50m"
+        memory: "64Mi"

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	gogitlab "gitlab.com/gitlab-org/api/client-go"
 	"golang.org/x/oauth2"
@@ -48,6 +49,28 @@ func (g *GitLabAPI) RegisterWebhook(ctx context.Context, repo string, cfg Webhoo
 		EnableSSLVerification: gogitlab.Ptr(true),
 	}
 	_, _, err := g.client.Projects.AddProjectHook(repo, opts)
+	return err
+}
+
+func (g *GitLabAPI) ListWebhooks(ctx context.Context, repo string) ([]WebhookInfo, error) {
+	hooks, _, err := g.client.Projects.ListProjectHooks(repo, nil)
+	if err != nil {
+		return nil, fmt.Errorf("list gitlab hooks: %w", err)
+	}
+	result := make([]WebhookInfo, 0, len(hooks))
+	for _, h := range hooks {
+		active := h.DisabledUntil == nil || h.DisabledUntil.Before(time.Now())
+		result = append(result, WebhookInfo{
+			ID:     h.ID,
+			URL:    h.URL,
+			Active: active,
+		})
+	}
+	return result, nil
+}
+
+func (g *GitLabAPI) DeleteWebhook(ctx context.Context, repo string, hookID int64) error {
+	_, err := g.client.Projects.DeleteProjectHook(repo, hookID)
 	return err
 }
 
