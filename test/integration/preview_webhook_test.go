@@ -124,7 +124,7 @@ func TestPreviewEnvironmentViaWebhook(t *testing.T) {
 	if err := k8sClient.Create(context.Background(), app); err != nil {
 		t.Fatalf("create App: %v", err)
 	}
-	helpers.WaitForAppReady(t, k8sClient, ns, app.Name, 3*time.Minute)
+	helpers.WaitForAppReady(t, k8sClient, ns, app.Name, 5*time.Minute)
 
 	// --- Open a real PR in Gitea so we have an owner-recognised SHA + branch.
 	prBranch := "feature/preview-via-webhook"

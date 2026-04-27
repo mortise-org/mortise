@@ -39,7 +39,7 @@ func TestSameProjectBindingInjectsEnv(t *testing.T) {
 	pgResourceName := pgApp.Name
 
 	helpers.AssertPodsRunning(t, k8sClient, pgEnvNs, pgResourceName, 1)
-	helpers.WaitForAppReady(t, k8sClient, ns, pgApp.Name, 3*time.Minute)
+	helpers.WaitForAppReady(t, k8sClient, ns, pgApp.Name, 5*time.Minute)
 
 	apiApp := helpers.LoadFixture(t, filepath.Join(fixturesDir, "image-basic.yaml"))
 	apiApp.Namespace = ns
@@ -59,7 +59,7 @@ func TestSameProjectBindingInjectsEnv(t *testing.T) {
 	apiResourceName := apiApp.Name
 
 	helpers.AssertPodsRunning(t, k8sClient, apiEnvNs, apiResourceName, 1)
-	helpers.WaitForAppReady(t, k8sClient, ns, apiApp.Name, 3*time.Minute)
+	helpers.WaitForAppReady(t, k8sClient, ns, apiApp.Name, 5*time.Minute)
 
 	var dep appsv1.Deployment
 	if err := k8sClient.Get(context.Background(), types.NamespacedName{

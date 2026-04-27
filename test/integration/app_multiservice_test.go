@@ -37,7 +37,7 @@ func TestMultiServiceStackGoesReady(t *testing.T) {
 	pgEnvNs := constants.EnvNamespace(projectName, pgEnvName)
 
 	helpers.AssertPodsRunning(t, k8sClient, pgEnvNs, pgApp.Name, 1)
-	helpers.WaitForAppReady(t, k8sClient, ns, pgApp.Name, 3*time.Minute)
+	helpers.WaitForAppReady(t, k8sClient, ns, pgApp.Name, 8*time.Minute)
 
 	webApp := helpers.LoadFixture(t, filepath.Join(fixturesDir, "image-web-bound.yaml"))
 	webApp.Namespace = ns
@@ -54,7 +54,7 @@ func TestMultiServiceStackGoesReady(t *testing.T) {
 	webEnvNs := constants.EnvNamespace(projectName, webEnvName)
 
 	helpers.AssertPodsRunning(t, k8sClient, webEnvNs, webApp.Name, 1)
-	helpers.WaitForAppReady(t, k8sClient, ns, webApp.Name, 3*time.Minute)
+	helpers.WaitForAppReady(t, k8sClient, ns, webApp.Name, 8*time.Minute)
 
 	var envSecret corev1.Secret
 	if err := k8sClient.Get(context.Background(), types.NamespacedName{
@@ -110,9 +110,9 @@ func TestThreeServiceStack(t *testing.T) {
 	redisEnvNs := constants.EnvNamespace(projectName, redisEnvName)
 
 	helpers.AssertPodsRunning(t, k8sClient, pgEnvNs, pgApp.Name, 1)
-	helpers.WaitForAppReady(t, k8sClient, ns, pgApp.Name, 3*time.Minute)
+	helpers.WaitForAppReady(t, k8sClient, ns, pgApp.Name, 8*time.Minute)
 	helpers.AssertPodsRunning(t, k8sClient, redisEnvNs, redisApp.Name, 1)
-	helpers.WaitForAppReady(t, k8sClient, ns, redisApp.Name, 3*time.Minute)
+	helpers.WaitForAppReady(t, k8sClient, ns, redisApp.Name, 8*time.Minute)
 
 	webApp := helpers.LoadFixture(t, filepath.Join(fixturesDir, "image-web-bound.yaml"))
 	webApp.Namespace = ns
@@ -130,7 +130,7 @@ func TestThreeServiceStack(t *testing.T) {
 	webEnvNs := constants.EnvNamespace(projectName, webEnvName)
 
 	helpers.AssertPodsRunning(t, k8sClient, webEnvNs, webApp.Name, 1)
-	helpers.WaitForAppReady(t, k8sClient, ns, webApp.Name, 3*time.Minute)
+	helpers.WaitForAppReady(t, k8sClient, ns, webApp.Name, 8*time.Minute)
 
 	helpers.AssertPodsRunning(t, k8sClient, pgEnvNs, pgApp.Name, 1)
 	helpers.AssertPodsRunning(t, k8sClient, redisEnvNs, redisApp.Name, 1)

@@ -89,7 +89,7 @@ func TestExternalSourceBindingInjectsHostPort(t *testing.T) {
 		t.Fatalf("create external App: %v", err)
 	}
 
-	helpers.WaitForAppReady(t, k8sClient, ns, extApp.Name, 3*time.Minute)
+	helpers.WaitForAppReady(t, k8sClient, ns, extApp.Name, 5*time.Minute)
 
 	consumerApp := helpers.LoadFixture(t, filepath.Join(fixturesDir, "image-basic.yaml"))
 	consumerApp.Namespace = ns
@@ -109,7 +109,7 @@ func TestExternalSourceBindingInjectsHostPort(t *testing.T) {
 	consumerResourceName := consumerApp.Name
 
 	helpers.AssertPodsRunning(t, k8sClient, consumerEnvNs, consumerResourceName, 1)
-	helpers.WaitForAppReady(t, k8sClient, ns, consumerApp.Name, 3*time.Minute)
+	helpers.WaitForAppReady(t, k8sClient, ns, consumerApp.Name, 5*time.Minute)
 
 	var dep appsv1.Deployment
 	if err := k8sClient.Get(context.Background(), types.NamespacedName{

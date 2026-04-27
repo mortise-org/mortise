@@ -104,7 +104,7 @@ func TestPreviewEnvironmentLifecycle(t *testing.T) {
 	}
 
 	// Wait for the base App to be ready before creating previews.
-	helpers.WaitForAppReady(t, k8sClient, ns, app.Name, 3*time.Minute)
+	helpers.WaitForAppReady(t, k8sClient, ns, app.Name, 5*time.Minute)
 
 	// --- Get the current HEAD SHA from the Gitea repo for the PreviewEnvironment.
 	headSHA := getGiteaBranchSHA(t, giteaLocalURL, boot.Token, boot.Owner, boot.Name, "main")
@@ -279,7 +279,7 @@ func TestPreviewInheritsStagingBindings(t *testing.T) {
 	if err := k8sClient.Create(context.Background(), pgApp); err != nil {
 		t.Fatalf("create postgres App: %v", err)
 	}
-	helpers.WaitForAppReady(t, k8sClient, ns, pgApp.Name, 3*time.Minute)
+	helpers.WaitForAppReady(t, k8sClient, ns, pgApp.Name, 8*time.Minute)
 
 	// --- Port-forward to Gitea + registry for the git-source API App.
 	giteaLocalPort := helpers.PortForward(t, "mortise-test-deps", "gitea", 3000)

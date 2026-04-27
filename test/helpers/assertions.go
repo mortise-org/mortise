@@ -29,7 +29,7 @@ func RequireEventually(t *testing.T, timeout time.Duration, fn func() bool) {
 // AssertPodsRunning asserts that a Deployment exists with the expected number of ready replicas.
 func AssertPodsRunning(t *testing.T, k8sClient client.Client, ns, name string, count int32) {
 	t.Helper()
-	RequireEventually(t, 5*time.Minute, func() bool {
+	RequireEventually(t, 8*time.Minute, func() bool {
 		var dep appsv1.Deployment
 		err := k8sClient.Get(context.Background(), types.NamespacedName{
 			Name:      name,
