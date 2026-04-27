@@ -64,6 +64,39 @@ func (g *GitHubAPI) RegisterWebhook(ctx context.Context, repo string, cfg Webhoo
 	return err
 }
 
+func (g *GitHubAPI) ListWebhooks(ctx context.Context, repo string) ([]WebhookInfo, error) {
+	owner, name, err := splitRepo(repo)
+	if err != nil {
+		return nil, err
+	}
+	hooks, _, err := g.client.Repositories.ListHooks(ctx, owner, name, nil)
+	if err != nil {
+		return nil, fmt.Errorf("list github hooks: %w", err)
+	}
+	result := make([]WebhookInfo, 0, len(hooks))
+	for _, h := range hooks {
+		url := ""
+		if h.Config != nil {
+			url = h.Config.GetURL()
+		}
+		result = append(result, WebhookInfo{
+			ID:     h.GetID(),
+			URL:    url,
+			Active: h.GetActive(),
+		})
+	}
+	return result, nil
+}
+
+func (g *GitHubAPI) DeleteWebhook(ctx context.Context, repo string, hookID int64) error {
+	owner, name, err := splitRepo(repo)
+	if err != nil {
+		return err
+	}
+	_, err = g.client.Repositories.DeleteHook(ctx, owner, name, hookID)
+	return err
+}
+
 func (g *GitHubAPI) PostCommitStatus(ctx context.Context, repo, sha string, status CommitStatus) error {
 	owner, name, err := splitRepo(repo)
 	if err != nil {
@@ -200,7 +233,7 @@ func splitRepo(repo string) (string, string, error) {
 		parts := strings.SplitN(repo, "/", 3)
 		if len(parts) == 3 {
 			// host/owner/repo
-			return parts[1], parts[2], nil
+			return parts[1], strings.TrimSuffix(parts[2], ".git"), nil
 		}
 		// owner/repo
 		return parts[0], strings.TrimSuffix(parts[1], ".git"), nil

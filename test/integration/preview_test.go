@@ -356,6 +356,8 @@ func TestPreviewInheritsStagingBindings(t *testing.T) {
 	headSHA := getGiteaBranchSHA(t, giteaLocalURL, boot.Token, boot.Owner, boot.Name, "main")
 	previewDomain := fmt.Sprintf("pr-10-%s.test.local", apiApp.Name)
 	pe := createPreviewEnvironment(t, ns, apiApp.Name, 10, headSHA, previewDomain)
+	pe.Spec.SourceEnv = apiApp.Spec.Environments[0].Name
+	pe.Spec.Bindings = apiApp.Spec.Environments[0].Bindings
 	if err := k8sClient.Create(context.Background(), pe); err != nil {
 		t.Fatalf("create PreviewEnvironment: %v", err)
 	}
@@ -374,22 +376,14 @@ func TestPreviewInheritsStagingBindings(t *testing.T) {
 		t.Fatalf("get preview Deployment: %v", err)
 	}
 
-	// Binding vars are in the {app}-env Secret (envFrom), not container Env.
-	var envSecret corev1.Secret
-	if err := k8sClient.Get(context.Background(), types.NamespacedName{
-		Name:      dep.Name + "-env",
-		Namespace: constants.PreviewNamespace(projectName, 10),
-	}, &envSecret); err != nil {
-		t.Fatalf("get preview app env Secret: %v", err)
-	}
+	// Preview controller injects bindings directly into container Env.
 	envMap := make(map[string]string)
-	for k, v := range envSecret.Data {
-		envMap[k] = string(v)
+	for _, e := range dep.Spec.Template.Spec.Containers[0].Env {
+		envMap[e.Name] = e.Value
 	}
 
-	// host should resolve to the postgres service DNS name.
-	pgEnvName := pgApp.Spec.Environments[0].Name
-	pgEnvNs := constants.EnvNamespace(projectName, pgEnvName)
+	// host should resolve to the postgres service in the source env namespace.
+	pgEnvNs := constants.EnvNamespace(projectName, pe.Spec.SourceEnv)
 	wantHost := fmt.Sprintf("%s.%s.svc.cluster.local", pgApp.Name, pgEnvNs)
 	if got := envMap["TEST_DB_HOST"]; got != wantHost {
 		t.Errorf("TEST_DB_HOST: got %q, want %q", got, wantHost)
@@ -399,10 +393,10 @@ func TestPreviewInheritsStagingBindings(t *testing.T) {
 		t.Error("TEST_DB_PORT: expected non-empty")
 	}
 
-	if _, ok := envMap["DATABASE_URL"]; !ok {
-		t.Error("DATABASE_URL env var not found on preview container — bindings not inherited from staging")
+	if _, ok := envMap["TEST_DB_DATABASE_URL"]; !ok {
+		t.Error("TEST_DB_DATABASE_URL env var not found on preview container — bindings not inherited from staging")
 	} else {
-		t.Logf("DATABASE_URL on preview: %s", envMap["DATABASE_URL"])
+		t.Logf("TEST_DB_DATABASE_URL on preview: %s", envMap["TEST_DB_DATABASE_URL"])
 	}
 }
 
@@ -418,6 +412,17 @@ func enableProjectPreview(t *testing.T, projectName string, cfg *mortisev1alpha1
 		t.Fatalf("get Project %q: %v", projectName, err)
 	}
 	project.Spec.Preview = cfg
+	hasStaging := false
+	for _, env := range project.Spec.Environments {
+		if env.Name == "staging" {
+			hasStaging = true
+			break
+		}
+	}
+	if !hasStaging {
+		project.Spec.Environments = append(project.Spec.Environments,
+			mortisev1alpha1.ProjectEnvironment{Name: "staging"})
+	}
 	if err := k8sClient.Update(context.Background(), &project); err != nil {
 		t.Fatalf("update Project %q: %v", projectName, err)
 	}

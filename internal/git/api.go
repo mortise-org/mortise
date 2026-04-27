@@ -16,6 +16,12 @@ type WebhookConfig struct {
 	Events []string
 }
 
+type WebhookInfo struct {
+	ID     int64
+	URL    string
+	Active bool
+}
+
 type CommitStatusState string
 
 const (
@@ -63,6 +69,8 @@ type TreeEntry struct {
 // GitAPI handles forge-specific REST API calls. One implementation per forge.
 type GitAPI interface {
 	RegisterWebhook(ctx context.Context, repo string, cfg WebhookConfig) error
+	ListWebhooks(ctx context.Context, repo string) ([]WebhookInfo, error)
+	DeleteWebhook(ctx context.Context, repo string, hookID int64) error
 	PostCommitStatus(ctx context.Context, repo, sha string, status CommitStatus) error
 	VerifyWebhookSignature(body []byte, header http.Header) error
 	ResolveCloneCredentials(ctx context.Context, repo string) (GitCredentials, error)

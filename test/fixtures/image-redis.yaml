@@ -1,17 +1,20 @@
 apiVersion: mortise.mortise.dev/v1alpha1
 kind: App
 metadata:
-  name: test-nginx
+  name: test-redis
 spec:
   source:
     type: image
-    image: nginx:1.27
+    image: redis:7
   network:
-    public: true
-    port: 80
+    public: false
+    port: 6379
+  credentials:
+    - name: host
+    - name: port
   environments:
     - name: production
       replicas: 1
       resources:
-        cpu: "100m"
-        memory: "128Mi"
+        cpu: "50m"
+        memory: "64Mi"

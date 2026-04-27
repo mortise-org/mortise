@@ -1,14 +1,13 @@
 apiVersion: mortise.mortise.dev/v1alpha1
 kind: App
 metadata:
-  name: test-db
+  name: postgres
 spec:
   source:
     type: image
     image: postgres:16
   network:
     public: false
-    port: 5432
   storage:
     - name: pgdata
       mountPath: /var/lib/postgresql/data
@@ -19,9 +18,9 @@ spec:
     - name: user
       value: postgres
     - name: password
-      value: testpassword
+      value: changeme
     - name: DATABASE_URL
-      value: postgres://postgres:testpassword@test-db/postgres
+      value: postgres://postgres:changeme@postgres/postgres
   environments:
     - name: production
       replicas: 1
@@ -30,4 +29,4 @@ spec:
         memory: "256Mi"
       env:
         - name: POSTGRES_PASSWORD
-          value: testpassword
+          value: changeme

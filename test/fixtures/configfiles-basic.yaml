@@ -8,6 +8,7 @@ spec:
     image: nginx:1.27
   network:
     public: false
+    port: 80
   configFiles:
     - path: /etc/app/app.conf
       content: |

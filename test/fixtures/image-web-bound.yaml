@@ -1,7 +1,7 @@
 apiVersion: mortise.mortise.dev/v1alpha1
 kind: App
 metadata:
-  name: test-nginx
+  name: test-web
 spec:
   source:
     type: image
@@ -13,5 +13,5 @@ spec:
     - name: production
       replicas: 1
       resources:
-        cpu: "100m"
-        memory: "128Mi"
+        cpu: "50m"
+        memory: "64Mi"
