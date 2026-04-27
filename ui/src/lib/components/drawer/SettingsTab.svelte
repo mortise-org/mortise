@@ -467,11 +467,12 @@
 	async function handleDelete() {
 		if (deleteConfirmText !== app.metadata.name) return;
 		deleting = true;
-		onAppDeleted();
 		try {
 			await api.deleteApp(project, app.metadata.name);
-		} catch {
-			// drawer is already closed; error is unrecoverable from the user's perspective
+			onAppDeleted();
+		} catch (e) {
+			errorMsg = e instanceof Error ? e.message : 'Failed to delete app';
+			deleting = false;
 		}
 	}
 
