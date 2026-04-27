@@ -16,7 +16,7 @@
 	} = $props();
 
 	const width = 640;
-	const padding = { top: 16, right: 16, bottom: 32, left: 56 };
+	const basePadding = { top: 16, right: 16, bottom: 32 };
 
 	const allPoints = $derived.by(() => {
 		const out: Array<{ ts: number; value: number }> = [];
@@ -59,6 +59,20 @@
 		if (maxY <= 0) maxY = 1;
 		maxY *= 1.1;
 		return { minX, maxX, minY: 0, maxY };
+	});
+
+	const padding = $derived.by(() => {
+		const ticks: number[] = [];
+		for (let i = 0; i < 5; i++) {
+			ticks.push(domain.minY + ((domain.maxY - domain.minY) * i) / 4);
+		}
+		let maxLen = 0;
+		for (const t of ticks) {
+			const len = formatValue(t).length;
+			if (len > maxLen) maxLen = len;
+		}
+		const left = Math.max(56, maxLen * 8 + 12);
+		return { ...basePadding, left };
 	});
 
 	function xScale(ts: number): number {

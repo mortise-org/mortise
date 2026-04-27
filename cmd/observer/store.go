@@ -128,6 +128,9 @@ func NewStore(path string) (*Store, error) {
 			return nil, fmt.Errorf("exec DDL: %w", err)
 		}
 	}
+	db.SetMaxOpenConns(4)
+	db.SetMaxIdleConns(4)
+
 	return &Store{db: db}, nil
 }
 
@@ -204,6 +207,29 @@ func (s *Store) InsertLog(e LogEntry) error {
 		e.Ts, e.Pod, e.Namespace, e.App, e.Env, e.Stream, e.Line,
 	)
 	return err
+}
+
+func (s *Store) InsertLogs(entries []LogEntry) error {
+	if len(entries) == 0 {
+		return nil
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	stmt, err := tx.Prepare("INSERT INTO logs (ts, pod, namespace, app, env, stream, line) VALUES (?, ?, ?, ?, ?, ?, ?)")
+	if err != nil {
+		tx.Rollback()
+		return err
+	}
+	defer stmt.Close()
+	for _, e := range entries {
+		if _, err := stmt.Exec(e.Ts, e.Pod, e.Namespace, e.App, e.Env, e.Stream, e.Line); err != nil {
+			tx.Rollback()
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (s *Store) QueryLogs(namespace, app, env string, start, end int64, limit int, filter, before string) ([]LogLine, bool, error) {
@@ -320,25 +346,45 @@ func (s *Store) QueryTraffic(namespace, app, env string, start, end, step int64)
 	return series, rows.Err()
 }
 
+const trimChunkSize = 1000
+
 func (s *Store) Trim(metricsRetention, logRetention, trafficRetention time.Duration) (int64, int64, error) {
 	metricsCutoff := time.Now().Add(-metricsRetention).Unix()
-	res, err := s.db.Exec("DELETE FROM metrics WHERE ts < ?", metricsCutoff)
+	metricsDeleted, err := s.chunkedDelete("metrics", "ts < ?", metricsCutoff)
 	if err != nil {
 		return 0, 0, err
 	}
-	metricsDeleted, _ := res.RowsAffected()
 
 	logsCutoff := time.Now().Add(-logRetention).UTC().Format(time.RFC3339Nano)
-	res, err = s.db.Exec("DELETE FROM logs WHERE ts < ?", logsCutoff)
+	logsDeleted, err := s.chunkedDelete("logs", "ts < ?", logsCutoff)
 	if err != nil {
 		return metricsDeleted, 0, err
 	}
-	logsDeleted, _ := res.RowsAffected()
 
 	trafficCutoff := time.Now().Add(-trafficRetention).Unix()
-	if _, err := s.db.Exec("DELETE FROM traffic WHERE ts < ?", trafficCutoff); err != nil {
+	if _, err := s.chunkedDelete("traffic", "ts < ?", trafficCutoff); err != nil {
 		return metricsDeleted, logsDeleted, err
 	}
 
 	return metricsDeleted, logsDeleted, nil
+}
+
+func (s *Store) chunkedDelete(table, where string, cutoff any) (int64, error) {
+	query := fmt.Sprintf(
+		"DELETE FROM %s WHERE rowid IN (SELECT rowid FROM %s WHERE %s LIMIT %d)",
+		table, table, where, trimChunkSize,
+	)
+	var total int64
+	for {
+		res, err := s.db.Exec(query, cutoff)
+		if err != nil {
+			return total, err
+		}
+		n, _ := res.RowsAffected()
+		total += n
+		if n < trimChunkSize {
+			return total, nil
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
