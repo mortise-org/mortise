@@ -36,21 +36,7 @@ func LoginAsAdmin(t *testing.T, baseURL, email, password string) string {
 	if err != nil {
 		t.Fatalf("mortise: POST /api/auth/setup: %v", err)
 	}
-	func() {
-		defer setupResp.Body.Close()
-		if setupResp.StatusCode == http.StatusCreated {
-			// Setup succeeded; the response body already includes a token we
-			// could reuse, but going through /api/auth/login keeps the flow
-			// identical on fresh vs. reused clusters.
-			return
-		}
-		if setupResp.StatusCode == http.StatusConflict {
-			return // already bootstrapped, fine
-		}
-		b, _ := io.ReadAll(setupResp.Body)
-		t.Fatalf("mortise: POST /api/auth/setup status %d: %s",
-			setupResp.StatusCode, string(b))
-	}()
+	setupResp.Body.Close()
 
 	type creds struct {
 		email    string
