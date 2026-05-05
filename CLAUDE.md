@@ -344,6 +344,7 @@ kind: PlatformConfig
 metadata: { name: platform }
 spec:
   domain: yourdomain.com
+  domainTemplate: "..."      # optional; Go text/template with {{.App}}, {{.Project}}, {{.Env}}, {{.Domain}}
   storage: { defaultStorageClass: ... }
 ```
 

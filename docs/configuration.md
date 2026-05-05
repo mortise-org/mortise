@@ -10,8 +10,11 @@ All configuration happens in **Settings** in the Mortise UI, or via the
 ## Platform domain
 
 **What it does:** Gives your apps automatic URLs. When set to
-`apps.example.com`, an app called `api` gets `api.apps.example.com`
-in production and `api-staging.apps.example.com` in staging.
+`apps.example.com`, an app called `api` in project `backend` gets
+`api-backend.apps.example.com` in production and
+`api-backend-staging.apps.example.com` in staging. The project name is
+included in the domain to prevent collisions when different projects have
+apps with the same name.
 
 **What it also does:** Serves as the callback address for git webhooks.
 When you push to a connected repo, your git host sends a notification to
@@ -74,6 +77,56 @@ When you push to a connected repo, your git host sends a notification to
    power-user option; most setups work fine with a wildcard record.
 
 3. **Enter the domain** in Settings > Platform Domain and save.
+
+### Domain template
+
+The default domain pattern is:
+
+```
+{{.App}}-{{.Project}}{{if ne .Env "production"}}-{{.Env}}{{end}}.{{.Domain}}
+```
+
+This produces domains like `api-backend.apps.example.com` for production
+and `api-backend-staging.apps.example.com` for staging.
+
+You can customize the pattern by setting `domainTemplate` on your
+PlatformConfig:
+
+```yaml
+apiVersion: mortise.mortise.dev/v1alpha1
+kind: PlatformConfig
+metadata:
+  name: platform
+spec:
+  domain: apps.example.com
+  domainTemplate: "{{.App}}.{{.Domain}}"  # restore old {app}.{domain} pattern
+```
+
+Available template variables:
+
+| Variable | Description | Example value |
+|----------|-------------|---------------|
+| `{{.App}}` | App name | `api` |
+| `{{.Project}}` | Project name | `backend` |
+| `{{.Env}}` | Environment name | `production`, `staging` |
+| `{{.Domain}}` | Platform domain | `apps.example.com` |
+
+A few useful patterns:
+
+| Pattern | Production result | Staging result |
+|---------|-------------------|----------------|
+| Default (see above) | `api-backend.apps.example.com` | `api-backend-staging.apps.example.com` |
+| `{{.App}}.{{.Domain}}` | `api.apps.example.com` | `api.apps.example.com` |
+| `{{.App}}.{{.Project}}.{{.Domain}}` | `api.backend.apps.example.com` | `api.backend.apps.example.com` |
+
+Templates that omit `{{.Env}}` produce the same domain for every
+environment. Use the `{{if ne .Env "production"}}` conditional from the
+default template to differentiate environments while keeping production
+domains clean.
+
+If two apps in different projects produce the same hostname, the operator
+rejects the second with a `DomainCollision` status condition. The default
+template avoids this by including the project name.
 
 ### Webhook reachability
 

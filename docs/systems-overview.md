@@ -68,6 +68,7 @@ Preview namespaces follow a PR pattern (controller-managed) and are isolated fro
 - For `cron`: CronJob path
 - For `external`: external service facade path
 - Resolves bindings and environment materialization
+- Detects domain collisions across apps and rejects with a `DomainCollision` status condition
 - Tracks build/deploy status in `status.environments`
 
 ### PreviewEnvironment controller
