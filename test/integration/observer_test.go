@@ -53,6 +53,37 @@ func observerGet(t *testing.T, path string, params map[string]string) map[string
 	return result
 }
 
+// observerTryGet is like observerGet but returns (nil, false) on transient
+// errors (network, 5xx) instead of calling t.Fatalf. For use inside polling
+// loops where retries are expected.
+func observerTryGet(t *testing.T, path string, params map[string]string) (map[string]any, bool) {
+	t.Helper()
+	resp, err := http.Get(observerURL(path, params))
+	if err != nil {
+		t.Logf("observer GET %s: %v", path, err)
+		return nil, false
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Logf("observer read body: %v", err)
+		return nil, false
+	}
+	if resp.StatusCode >= 500 {
+		t.Logf("observer GET %s: transient %d, body: %s", path, resp.StatusCode, body)
+		return nil, false
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("observer GET %s: status %d, body: %s", path, resp.StatusCode, body)
+	}
+	var result map[string]any
+	if err := json.Unmarshal(body, &result); err != nil {
+		t.Logf("observer unmarshal: %v (body: %s)", err, body)
+		return nil, false
+	}
+	return result, true
+}
+
 func TestObserverHealth(t *testing.T) {
 	t.Parallel()
 	skipIfObserverUnavailable(t)
@@ -117,7 +148,7 @@ func TestObserverMetrics(t *testing.T) {
 	// Poll until the observer has collected at least one metrics data point.
 	helpers.RequireEventually(t, 90*time.Second, func() bool {
 		end := fmt.Sprintf("%d", time.Now().Unix())
-		result := observerGet(t, "/v1/metrics", map[string]string{
+		result, ok := observerTryGet(t, "/v1/metrics", map[string]string{
 			"namespace": envNs,
 			"app":       app.Name,
 			"env":       envName,
@@ -125,6 +156,9 @@ func TestObserverMetrics(t *testing.T) {
 			"end":       end,
 			"step":      "5",
 		})
+		if !ok {
+			return false
+		}
 
 		pods, ok := result["pods"].([]any)
 		if !ok || len(pods) == 0 {
@@ -235,13 +269,16 @@ func TestObserverLogs(t *testing.T) {
 	// Poll until the observer has collected at least one log line.
 	helpers.RequireEventually(t, 90*time.Second, func() bool {
 		end := fmt.Sprintf("%d", time.Now().Add(1*time.Minute).Unix())
-		result := observerGet(t, "/v1/logs", map[string]string{
+		result, ok := observerTryGet(t, "/v1/logs", map[string]string{
 			"namespace": envNs,
 			"app":       app.Name,
 			"env":       envName,
 			"start":     start,
 			"end":       end,
 		})
+		if !ok {
+			return false
+		}
 
 		lines, ok := result["lines"].([]any)
 		return ok && len(lines) > 0
@@ -366,7 +403,7 @@ func TestObserverTraffic(t *testing.T) {
 	// Poll until the observer has traffic data for our app.
 	helpers.RequireEventually(t, 120*time.Second, func() bool {
 		end := fmt.Sprintf("%d", time.Now().Unix())
-		result := observerGet(t, "/v1/traffic", map[string]string{
+		result, ok := observerTryGet(t, "/v1/traffic", map[string]string{
 			"namespace": envNs,
 			"app":       app.Name,
 			"env":       envName,
@@ -374,6 +411,9 @@ func TestObserverTraffic(t *testing.T) {
 			"end":       end,
 			"step":      "5",
 		})
+		if !ok {
+			return false
+		}
 
 		series, ok := result["series"].(map[string]any)
 		if !ok {
