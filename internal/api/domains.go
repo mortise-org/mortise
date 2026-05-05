@@ -7,9 +7,11 @@ import (
 	"slices"
 
 	"github.com/go-chi/chi/v5"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
 	"github.com/mortise-org/mortise/internal/authz"
+	"github.com/mortise-org/mortise/internal/constants"
 )
 
 // hostnameRegex validates a bare hostname (no scheme, no port).
@@ -186,4 +188,94 @@ func findEnvironment(app *mortisev1alpha1.App, name string) *mortisev1alpha1.Env
 		}
 	}
 	return nil
+}
+
+// domainValidateRequest is the JSON body for POST /api/domains/validate.
+type domainValidateRequest struct {
+	Domain string `json:"domain"`
+}
+
+// domainConflict describes which app/env already holds a domain.
+type domainConflict struct {
+	Project     string `json:"project"`
+	App         string `json:"app"`
+	Environment string `json:"environment"`
+}
+
+// domainValidateResponse is the result of a domain collision check.
+type domainValidateResponse struct {
+	Valid    bool            `json:"valid"`
+	Conflict *domainConflict `json:"conflict,omitempty"`
+}
+
+// ValidateDomain checks whether a domain is already in use by any app.
+//
+// POST /api/domains/validate
+//
+// @Summary Validate a domain for conflicts
+// @Description Checks if a domain is already assigned to any app across all projects.
+// @Tags domains
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param body body domainValidateRequest true "Domain to validate"
+// @Success 200 {object} domainValidateResponse
+// @Failure 400 {object} errorResponse
+// @Router /domains/validate [post]
+func (s *Server) ValidateDomain(w http.ResponseWriter, r *http.Request) {
+	if !s.authorize(w, r, authz.Resource{Kind: "app"}, authz.ActionRead) {
+		return
+	}
+
+	var req domainValidateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse{"invalid JSON: " + err.Error()})
+		return
+	}
+	if req.Domain == "" {
+		writeJSON(w, http.StatusBadRequest, errorResponse{"domain is required"})
+		return
+	}
+	if !hostnameRegex.MatchString(req.Domain) {
+		writeJSON(w, http.StatusBadRequest, errorResponse{"domain must be a valid hostname"})
+		return
+	}
+
+	var apps mortisev1alpha1.AppList
+	if err := s.client.List(r.Context(), &apps, &client.ListOptions{}); err != nil {
+		writeError(w, err)
+		return
+	}
+
+	for i := range apps.Items {
+		app := &apps.Items[i]
+		projectName, _ := constants.ProjectFromControlNs(app.Namespace)
+
+		for _, env := range app.Spec.Environments {
+			if env.Domain == req.Domain {
+				writeJSON(w, http.StatusOK, domainValidateResponse{
+					Valid: false,
+					Conflict: &domainConflict{
+						Project:     projectName,
+						App:         app.Name,
+						Environment: env.Name,
+					},
+				})
+				return
+			}
+			if slices.Contains(env.CustomDomains, req.Domain) {
+				writeJSON(w, http.StatusOK, domainValidateResponse{
+					Valid: false,
+					Conflict: &domainConflict{
+						Project:     projectName,
+						App:         app.Name,
+						Environment: env.Name,
+					},
+				})
+				return
+			}
+		}
+	}
+
+	writeJSON(w, http.StatusOK, domainValidateResponse{Valid: true})
 }

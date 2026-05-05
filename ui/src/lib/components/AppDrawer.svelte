@@ -39,8 +39,6 @@
 		return envStatusEntry?.phase ?? agg;
 	});
 
-	let appURL = $state<string | null>(null);
-	let connecting = $state(false);
 	let reloading = $state(false);
 	let errorMsg = $state('');
 
@@ -58,17 +56,11 @@
 		}
 	});
 
-	async function connectApp() {
-		if (!liveApp) return;
-		connecting = true;
-		try {
-			const resp = await api.connectApp(project, liveApp.metadata.name);
-			appURL = resp.url;
-			window.open(resp.url, '_blank');
-		} catch {
-			// ignore
-		} finally {
-			connecting = false;
+	const appDomain = $derived(envSpecEntry?.domain ?? null);
+
+	function openApp() {
+		if (appDomain) {
+			window.open('http://' + appDomain, '_blank');
 		}
 	}
 
@@ -236,28 +228,15 @@
 					{reloading ? 'Redeploying…' : 'Redeploy'}
 				</button>
 			{/if}
-			{#if envEnabled && effectivePhase === 'Ready'}
-				{#if appURL}
-					<a
-						href={appURL}
-						target="_blank"
-						rel="noopener noreferrer"
-						class="flex items-center gap-1 rounded-md px-2 py-1 text-xs text-success hover:bg-surface-700 transition-colors"
-					>
-						<ExternalLink class="h-3 w-3" />
-						Open
-					</a>
-				{:else}
-					<button
-						type="button"
-						onclick={connectApp}
-						disabled={connecting}
-						class="flex items-center gap-1 rounded-md px-2 py-1 text-xs text-gray-400 hover:bg-surface-700 hover:text-white transition-colors disabled:opacity-50"
-					>
-						<ExternalLink class="h-3 w-3" />
-						{connecting ? 'Connecting...' : 'Open'}
-					</button>
-				{/if}
+			{#if envEnabled && effectivePhase === 'Ready' && appDomain}
+				<button
+					type="button"
+					onclick={openApp}
+					class="flex items-center gap-1 rounded-md px-2 py-1 text-xs text-gray-400 hover:bg-surface-700 hover:text-white transition-colors"
+				>
+					<ExternalLink class="h-3 w-3" />
+					Open
+				</button>
 			{/if}
 			<button
 				type="button"

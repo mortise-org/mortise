@@ -311,6 +311,34 @@ export const api = {
 			`/projects/${enc(project)}/apps/${enc(app)}/domains/${enc(domain)}?environment=${enc(environment)}`,
 			{ method: 'DELETE' }
 		),
+	validateDomain: (domain: string) =>
+		request<{ valid: boolean; conflict?: { project: string; app: string; environment: string } }>(
+			'/domains/validate',
+			{ method: 'POST', body: JSON.stringify({ domain }) }
+		),
+
+	// --- build args ---
+	getBuildArgs: (project: string, app: string) =>
+		request<Array<{ name: string; value: string }>>(
+			`/projects/${enc(project)}/apps/${enc(app)}/build-args`
+		),
+	putBuildArgs: (project: string, app: string, args: Array<{ name: string; value: string }>) =>
+		request<Array<{ name: string; value: string }>>(
+			`/projects/${enc(project)}/apps/${enc(app)}/build-args`,
+			{ method: 'PUT', body: JSON.stringify(args) }
+		),
+
+	// --- password management ---
+	resetUserPassword: (email: string, password?: string) =>
+		request<{ password: string }>(
+			`/admin/users/${enc(email)}/password`,
+			{ method: 'POST', body: JSON.stringify({ password: password || '' }) }
+		),
+	changePassword: (currentPassword: string, newPassword: string) =>
+		request<{ status: string }>(
+			'/me/password',
+			{ method: 'POST', body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }) }
+		),
 
 	// --- platform config ---
 	getPlatform: () => request<PlatformResponse>('/platform'),

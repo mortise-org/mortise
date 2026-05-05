@@ -1,6 +1,7 @@
 package api
 
 import (
+	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
@@ -219,4 +220,125 @@ func (s *Server) DeleteUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// resetPasswordRequest is the JSON body for POST /api/admin/users/{email}/password.
+type resetPasswordRequest struct {
+	Password string `json:"password"`
+}
+
+// resetPasswordResponse is returned by password reset/set operations.
+type resetPasswordResponse struct {
+	Password string `json:"password"`
+}
+
+// @Summary Reset a user's password
+// @Description Sets a new password for a user. If password is omitted, one is auto-generated. Admin-only.
+// @Tags users
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param email path string true "User email"
+// @Param body body resetPasswordRequest false "Optional password"
+// @Success 200 {object} resetPasswordResponse
+// @Failure 400 {object} errorResponse
+// @Failure 401 {object} errorResponse
+// @Failure 403 {object} errorResponse
+// @Failure 404 {object} errorResponse
+// @Failure 501 {object} errorResponse
+// @Router /admin/users/{email}/password [post]
+//
+// ResetUserPassword sets or generates a new password for a user. Admin-only.
+func (s *Server) ResetUserPassword(w http.ResponseWriter, r *http.Request) {
+	if !s.authorize(w, r, authz.Resource{Kind: "user"}, authz.ActionUpdate) {
+		return
+	}
+
+	email := chi.URLParam(r, "email")
+	if email == "" {
+		writeJSON(w, http.StatusBadRequest, errorResponse{"email is required"})
+		return
+	}
+
+	native, ok := s.auth.(*auth.NativeAuthProvider)
+	if !ok {
+		writeJSON(w, http.StatusNotImplemented, errorResponse{"password management requires native auth provider"})
+		return
+	}
+
+	var req resetPasswordRequest
+	_ = json.NewDecoder(r.Body).Decode(&req)
+
+	password := req.Password
+	if password == "" {
+		buf := make([]byte, 16)
+		if _, err := rand.Read(buf); err != nil {
+			writeJSON(w, http.StatusInternalServerError, errorResponse{"generating password: " + err.Error()})
+			return
+		}
+		password = hex.EncodeToString(buf)
+	}
+
+	if err := native.UpdatePassword(r.Context(), email, password); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse{err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, resetPasswordResponse{Password: password})
+}
+
+// changePasswordRequest is the JSON body for POST /api/me/password.
+type changePasswordRequest struct {
+	CurrentPassword string `json:"current_password"`
+	NewPassword     string `json:"new_password"`
+}
+
+// @Summary Change own password
+// @Description Allows an authenticated user to change their own password. Requires current password verification.
+// @Tags auth
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param body body changePasswordRequest true "Current and new password"
+// @Success 200 {object} map[string]string
+// @Failure 400 {object} errorResponse
+// @Failure 401 {object} errorResponse
+// @Failure 501 {object} errorResponse
+// @Router /me/password [post]
+//
+// ChangePassword allows authenticated users to change their own password.
+func (s *Server) ChangePassword(w http.ResponseWriter, r *http.Request) {
+	principal := PrincipalFromContext(r.Context())
+	if principal == nil {
+		writeJSON(w, http.StatusUnauthorized, errorResponse{"not authenticated"})
+		return
+	}
+
+	native, ok := s.auth.(*auth.NativeAuthProvider)
+	if !ok {
+		writeJSON(w, http.StatusNotImplemented, errorResponse{"password management requires native auth provider"})
+		return
+	}
+
+	var req changePasswordRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse{"invalid JSON: " + err.Error()})
+		return
+	}
+	if req.CurrentPassword == "" || req.NewPassword == "" {
+		writeJSON(w, http.StatusBadRequest, errorResponse{"current_password and new_password are required"})
+		return
+	}
+
+	if err := native.VerifyPassword(r.Context(), principal.Email, req.CurrentPassword); err != nil {
+		writeJSON(w, http.StatusUnauthorized, errorResponse{"current password is incorrect"})
+		return
+	}
+
+	if err := native.UpdatePassword(r.Context(), principal.Email, req.NewPassword); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse{err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }

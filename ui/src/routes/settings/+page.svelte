@@ -3,7 +3,7 @@
 	import { api } from '$lib/api';
 	import { store } from '$lib/store.svelte';
 	import type { GitProviderSummary, PlatformResponse, PlatformUser } from '$lib/types';
-	import { GitBranch, Plus, Trash2, Check, Loader2, Lock, Copy } from 'lucide-svelte';
+	import { GitBranch, Plus, Trash2, Check, Loader2, Lock, Copy, KeyRound } from 'lucide-svelte';
 
 	let platform = $state<PlatformResponse | null>(null);
 	let providers = $state<GitProviderSummary[]>([]);
@@ -118,6 +118,74 @@
 		} catch (e) {
 			users = prev;
 			usersError = e instanceof Error ? e.message : 'Failed to delete user';
+		}
+	}
+
+	// Reset password (admin)
+	let resetPasswordEmail = $state<string | null>(null);
+	let resetPasswordValue = $state('');
+	let resettingPassword = $state(false);
+	let resetPasswordResult = $state<string | null>(null);
+
+	function openResetPassword(email: string) {
+		resetPasswordEmail = email;
+		resetPasswordValue = '';
+		resetPasswordResult = null;
+		usersError = '';
+	}
+
+	function cancelResetPassword() {
+		resetPasswordEmail = null;
+		resetPasswordValue = '';
+		resetPasswordResult = null;
+	}
+
+	async function handleResetPassword() {
+		if (!resetPasswordEmail) return;
+		resettingPassword = true;
+		usersError = '';
+		try {
+			const res = await api.resetUserPassword(resetPasswordEmail, resetPasswordValue || undefined);
+			resetPasswordResult = res.password;
+			resetPasswordValue = '';
+		} catch (e) {
+			usersError = e instanceof Error ? e.message : 'Failed to reset password';
+		} finally {
+			resettingPassword = false;
+		}
+	}
+
+	// Self-service password change
+	let showChangePassword = $state(false);
+	let currentPassword = $state('');
+	let newPassword = $state('');
+	let confirmPassword = $state('');
+	let changingPassword = $state(false);
+	let changePasswordError = $state('');
+	let changePasswordSuccess = $state(false);
+
+	async function handleChangePassword() {
+		changePasswordError = '';
+		if (newPassword.length < 8) {
+			changePasswordError = 'New password must be at least 8 characters';
+			return;
+		}
+		if (newPassword !== confirmPassword) {
+			changePasswordError = 'Passwords do not match';
+			return;
+		}
+		changingPassword = true;
+		try {
+			await api.changePassword(currentPassword, newPassword);
+			changePasswordSuccess = true;
+			currentPassword = '';
+			newPassword = '';
+			confirmPassword = '';
+			setTimeout(() => { changePasswordSuccess = false; showChangePassword = false; }, 2000);
+		} catch (e) {
+			changePasswordError = e instanceof Error ? e.message : 'Failed to change password';
+		} finally {
+			changingPassword = false;
 		}
 	}
 
@@ -442,7 +510,8 @@
 		storage: ['storage', 'storageclass', 'pvc', 'volume'],
 		tls: ['tls', 'cert', 'issuer', 'ssl'],
 		observability: ['observability', 'metrics', 'logs', 'traffic', 'adapter', 'observer', 'monitoring'],
-		users: ['users', 'invite', 'admin']
+		users: ['users', 'invite', 'admin'],
+		account: ['account', 'password', 'change']
 	};
 	function sectionVisible(id: string): boolean {
 		if (!filterText) return true;
@@ -527,6 +596,55 @@
 		{:else}
 			<div class="rounded-md border border-surface-600 p-4 text-center">
 				<p class="text-sm text-gray-500">No git providers connected. Click "Add Connection" to get started.</p>
+			</div>
+		{/if}
+	</section>
+
+	<!-- Account (all users) -->
+	<section class="mb-8 space-y-4" id="account" style:display={sectionVisible('account') ? '' : 'none'}>
+		<h2 class="border-b border-surface-600 pb-2 text-sm font-medium text-gray-300">Account</h2>
+
+		{#if !showChangePassword}
+			<button type="button" onclick={() => { showChangePassword = true; changePasswordError = ''; changePasswordSuccess = false; }}
+				class="flex items-center gap-2 rounded-md border border-surface-600 px-3 py-2 text-sm text-gray-400 hover:bg-surface-700 hover:text-white transition-colors">
+				<KeyRound class="h-4 w-4" />
+				Change Password
+			</button>
+		{:else}
+			<div class="rounded-md border border-surface-600 bg-surface-800/50 p-4 space-y-3">
+				<h3 class="text-sm font-medium text-white">Change Password</h3>
+				{#if changePasswordError}
+					<div class="rounded-md bg-danger/10 px-3 py-2 text-xs text-danger">{changePasswordError}</div>
+				{/if}
+				{#if changePasswordSuccess}
+					<div class="rounded-md bg-success/10 px-3 py-2 text-xs text-success">Password changed successfully.</div>
+				{:else}
+					<div>
+						<label class="block text-xs text-gray-500 mb-1" for="current-password">Current password</label>
+						<input id="current-password" type="password" bind:value={currentPassword}
+							class="w-full rounded-md border border-surface-600 bg-surface-900 px-3 py-2 text-sm text-white placeholder-gray-500 outline-none focus:border-accent" />
+					</div>
+					<div>
+						<label class="block text-xs text-gray-500 mb-1" for="new-password">New password</label>
+						<input id="new-password" type="password" bind:value={newPassword} placeholder="Min 8 characters"
+							class="w-full rounded-md border border-surface-600 bg-surface-900 px-3 py-2 text-sm text-white placeholder-gray-500 outline-none focus:border-accent" />
+					</div>
+					<div>
+						<label class="block text-xs text-gray-500 mb-1" for="confirm-password">Confirm new password</label>
+						<input id="confirm-password" type="password" bind:value={confirmPassword}
+							class="w-full rounded-md border border-surface-600 bg-surface-900 px-3 py-2 text-sm text-white placeholder-gray-500 outline-none focus:border-accent" />
+					</div>
+					<div class="flex gap-2">
+						<button type="button" onclick={handleChangePassword} disabled={changingPassword || !currentPassword || !newPassword || !confirmPassword}
+							class="rounded-md bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent-hover disabled:opacity-50">
+							{changingPassword ? 'Saving...' : 'Update Password'}
+						</button>
+						<button type="button" onclick={() => { showChangePassword = false; currentPassword = ''; newPassword = ''; confirmPassword = ''; changePasswordError = ''; }}
+							class="rounded-md border border-surface-600 px-4 py-2 text-sm text-gray-400 hover:bg-surface-700 hover:text-white">
+							Cancel
+						</button>
+					</div>
+				{/if}
 			</div>
 		{/if}
 	</section>
@@ -742,31 +860,80 @@
 			{:else}
 				<div class="space-y-1.5">
 					{#each users as u}
-						<div class="flex items-center justify-between rounded-md border border-surface-600 bg-surface-800 px-4 py-3">
-							<div class="flex-1 min-w-0">
-								<p class="text-sm text-white truncate">{u.email}</p>
+						<div class="rounded-md border border-surface-600 bg-surface-800">
+							<div class="flex items-center justify-between px-4 py-3">
+								<div class="flex-1 min-w-0">
+									<p class="text-sm text-white truncate">{u.email}</p>
+								</div>
+								<div class="flex items-center gap-3">
+									<select
+										value={u.role}
+										onchange={(e) => handleUpdateUserRole(u.email, (e.target as HTMLSelectElement).value as 'admin' | 'member' | 'viewer')}
+										disabled={u.email === store.user?.email}
+										class="rounded-md border border-surface-600 bg-surface-900 px-2 py-1 text-xs text-white outline-none focus:border-accent disabled:opacity-50"
+									>
+										<option value="admin">Admin</option>
+										<option value="member">Member</option>
+										<option value="viewer">Viewer</option>
+									</select>
+									<button
+										type="button"
+										onclick={() => openResetPassword(u.email)}
+										class="rounded-md p-1.5 text-gray-500 hover:bg-surface-600 hover:text-white"
+										title="Reset password"
+									>
+										<KeyRound class="h-4 w-4" />
+									</button>
+									<button
+										type="button"
+										onclick={() => handleDeleteUser(u.email)}
+										disabled={u.email === store.user?.email}
+										class="rounded-md p-1.5 text-gray-500 hover:bg-surface-600 hover:text-danger disabled:opacity-30 disabled:cursor-not-allowed"
+										title={u.email === store.user?.email ? 'Cannot delete yourself' : 'Delete user'}
+									>
+										<Trash2 class="h-4 w-4" />
+									</button>
+								</div>
 							</div>
-							<div class="flex items-center gap-3">
-								<select
-									value={u.role}
-									onchange={(e) => handleUpdateUserRole(u.email, (e.target as HTMLSelectElement).value as 'admin' | 'member' | 'viewer')}
-									disabled={u.email === store.user?.email}
-									class="rounded-md border border-surface-600 bg-surface-900 px-2 py-1 text-xs text-white outline-none focus:border-accent disabled:opacity-50"
-								>
-									<option value="admin">Admin</option>
-									<option value="member">Member</option>
-									<option value="viewer">Viewer</option>
-								</select>
-								<button
-									type="button"
-									onclick={() => handleDeleteUser(u.email)}
-									disabled={u.email === store.user?.email}
-									class="rounded-md p-1.5 text-gray-500 hover:bg-surface-600 hover:text-danger disabled:opacity-30 disabled:cursor-not-allowed"
-									title={u.email === store.user?.email ? 'Cannot delete yourself' : 'Delete user'}
-								>
-									<Trash2 class="h-4 w-4" />
-								</button>
-							</div>
+							{#if resetPasswordEmail === u.email}
+								<div class="border-t border-surface-600 px-4 py-3 space-y-3">
+									{#if resetPasswordResult}
+										<div class="rounded-md border border-success/30 bg-success/10 p-3">
+											<p class="mb-1 text-xs font-medium text-success">Password reset. Copy it now — it will not be shown again.</p>
+											<div class="flex items-center gap-2">
+												<code class="flex-1 truncate rounded bg-surface-800 px-2 py-1 font-mono text-xs text-gray-300">{resetPasswordResult}</code>
+												<button type="button" onclick={() => copyPassword(resetPasswordResult!)}
+													class="text-gray-400 hover:text-white" aria-label="Copy password">
+													{#if copiedPassword}<Check class="h-3.5 w-3.5 text-success" />{:else}<Copy class="h-3.5 w-3.5" />{/if}
+												</button>
+											</div>
+										</div>
+										<button type="button" onclick={cancelResetPassword}
+											class="text-xs text-gray-500 hover:text-white">Done</button>
+									{:else}
+										<p class="text-xs text-gray-400">Set a new password for {u.email}, or leave blank to auto-generate one.</p>
+										<div class="flex gap-2">
+											<input type="text" bind:value={resetPasswordValue}
+												placeholder="Leave blank to generate"
+												class="flex-1 rounded-md border border-surface-600 bg-surface-900 px-3 py-2 text-sm text-white font-mono placeholder-gray-500 outline-none focus:border-accent" />
+											<button type="button" onclick={() => { resetPasswordValue = generatePassword(); }}
+												class="rounded-md border border-surface-600 px-2.5 py-1.5 text-xs text-gray-400 hover:bg-surface-600 hover:text-white">
+												Generate
+											</button>
+										</div>
+										<div class="flex gap-2">
+											<button type="button" onclick={handleResetPassword} disabled={resettingPassword}
+												class="rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-white hover:bg-accent-hover disabled:opacity-50">
+												{resettingPassword ? 'Resetting...' : 'Reset Password'}
+											</button>
+											<button type="button" onclick={cancelResetPassword}
+												class="rounded-md border border-surface-600 px-3 py-1.5 text-xs text-gray-400 hover:bg-surface-700 hover:text-white">
+												Cancel
+											</button>
+										</div>
+									{/if}
+								</div>
+							{/if}
 						</div>
 					{/each}
 				</div>

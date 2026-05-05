@@ -164,3 +164,67 @@ func TestBcryptVerification(t *testing.T) {
 		t.Fatal("expected failure for wrong password")
 	}
 }
+
+func TestUpdatePassword(t *testing.T) {
+	provider, ctx := setup(t)
+
+	if err := provider.CreateUser(ctx, "alice@example.com", "oldpass123", RoleMember); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	if err := provider.UpdatePassword(ctx, "alice@example.com", "newpass456"); err != nil {
+		t.Fatalf("UpdatePassword: %v", err)
+	}
+
+	// Old password no longer works
+	if _, err := provider.Authenticate(ctx, Credentials{Email: "alice@example.com", Password: "oldpass123"}); err == nil {
+		t.Fatal("old password should no longer work")
+	}
+
+	// New password works
+	if _, err := provider.Authenticate(ctx, Credentials{Email: "alice@example.com", Password: "newpass456"}); err != nil {
+		t.Fatalf("new password should work: %v", err)
+	}
+}
+
+func TestUpdatePasswordTooShort(t *testing.T) {
+	provider, ctx := setup(t)
+
+	if err := provider.CreateUser(ctx, "alice@example.com", "longpass", RoleMember); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	err := provider.UpdatePassword(ctx, "alice@example.com", "short")
+	if err == nil {
+		t.Fatal("expected error for short password")
+	}
+}
+
+func TestUpdatePasswordNonexistent(t *testing.T) {
+	provider, ctx := setup(t)
+
+	err := provider.UpdatePassword(ctx, "ghost@example.com", "newpass123")
+	if err == nil {
+		t.Fatal("expected error for non-existent user")
+	}
+}
+
+func TestVerifyPassword(t *testing.T) {
+	provider, ctx := setup(t)
+
+	if err := provider.CreateUser(ctx, "bob@example.com", "correct1", RoleMember); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	if err := provider.VerifyPassword(ctx, "bob@example.com", "correct1"); err != nil {
+		t.Fatalf("VerifyPassword should succeed: %v", err)
+	}
+
+	if err := provider.VerifyPassword(ctx, "bob@example.com", "wrong"); err == nil {
+		t.Fatal("VerifyPassword should fail for wrong password")
+	}
+
+	if err := provider.VerifyPassword(ctx, "ghost@example.com", "anything"); err == nil {
+		t.Fatal("VerifyPassword should fail for non-existent user")
+	}
+}

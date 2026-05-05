@@ -79,8 +79,14 @@
 		};
 	}
 
+	type BuildArgEntry = { name: string; value: string };
+
 	let envSection = $state<SectionState>(makeSection());
 	let sharedSection = $state<SectionState>(makeSection());
+	let buildArgs = $state<BuildArgEntry[]>([]);
+	let buildArgsLoading = $state(false);
+	let buildArgsSaving = $state(false);
+	let buildArgsError = $state('');
 	let lastLoadedEnv = $state('');
 	let lastLoadedApp = $state('');
 
@@ -104,6 +110,7 @@
 		pendingCredentials = null;
 		void loadEnv(env);
 		void loadShared();
+		void loadBuildArgs();
 	});
 
 	async function loadEnv(envName: string) {
@@ -144,6 +151,52 @@
 		} finally {
 			sharedSection.loading = false;
 		}
+	}
+
+	const isGitSource = $derived(app.spec.source.type === 'git');
+
+	async function loadBuildArgs() {
+		if (!isGitSource) return;
+		buildArgsLoading = true;
+		buildArgsError = '';
+		try {
+			buildArgs = await api.getBuildArgs(project, app.metadata.name);
+		} catch (e) {
+			buildArgsError = e instanceof Error ? e.message : 'Failed to load build args';
+			buildArgs = [];
+		} finally {
+			buildArgsLoading = false;
+		}
+	}
+
+	async function saveBuildArgs() {
+		buildArgsSaving = true;
+		buildArgsError = '';
+		try {
+			const filtered = buildArgs.filter(a => a.name.trim() !== '');
+			buildArgs = await api.putBuildArgs(project, app.metadata.name, filtered);
+			markStale();
+		} catch (e) {
+			buildArgsError = e instanceof Error ? e.message : 'Failed to save build args';
+		} finally {
+			buildArgsSaving = false;
+		}
+	}
+
+	function addBuildArg() {
+		buildArgs = [...buildArgs, { name: '', value: '' }];
+	}
+
+	function removeBuildArg(idx: number) {
+		buildArgs = buildArgs.filter((_, i) => i !== idx);
+	}
+
+	function updateBuildArgKey(idx: number, key: string) {
+		buildArgs = buildArgs.map((a, i) => i === idx ? { ...a, name: key } : a);
+	}
+
+	function updateBuildArgValue(idx: number, value: string) {
+		buildArgs = buildArgs.map((a, i) => i === idx ? { ...a, value } : a);
 	}
 
 	// ---- Actions ----
@@ -500,7 +553,7 @@
 		{@const s = envSection}
 		<div class="rounded-lg border border-surface-600 bg-surface-900">
 			<div class="flex items-center justify-between px-3 py-2.5">
-				<span class="text-sm font-medium text-white">{activeEnv}</span>
+				<span class="text-sm font-medium text-white">Runtime - {activeEnv}</span>
 				<div class="flex items-center gap-2">
 					<div class="flex gap-1">
 						<button type="button" onclick={() => { envSection.rawMode = false; }}
@@ -620,12 +673,58 @@
 									</button>
 								</div>
 								<button type="button" onclick={() => deleteVar(envSection, idx, false)}
-									class="shrink-0 rounded p-1 text-gray-600 opacity-0 group-hover:opacity-100 hover:text-danger transition-all">
+									class="shrink-0 rounded p-1 text-gray-500 hover:text-danger transition-colors">
 									<Trash2 class="h-3.5 w-3.5" />
 								</button>
 							</div>
 						{/each}
 					{/if}
+				{/if}
+			</div>
+		</div>
+	{/if}
+
+	<!-- Build args section (git-source apps only) -->
+	{#if isGitSource && activeEnv}
+		<div class="rounded-lg border border-surface-600 bg-surface-900">
+			<div class="flex items-center justify-between px-3 py-2.5">
+				<span class="text-sm font-medium text-white">Build - {activeEnv}</span>
+				<div class="flex items-center gap-2">
+					<button type="button" onclick={saveBuildArgs} disabled={buildArgsSaving}
+						class="rounded-md bg-accent px-3 py-1 text-xs font-medium text-white hover:bg-accent-hover disabled:opacity-50">
+						{buildArgsSaving ? 'Saving...' : 'Save'}
+					</button>
+					<button type="button" onclick={addBuildArg}
+						class="flex items-center gap-1 rounded-md border border-surface-600 px-2 py-1 text-xs text-gray-400 hover:bg-surface-700 hover:text-white">
+						<Plus class="h-3.5 w-3.5" />
+					</button>
+				</div>
+			</div>
+			<div class="border-t border-surface-600 px-3 py-2">
+				{#if buildArgsLoading}
+					<p class="text-xs text-gray-500">Loading...</p>
+				{:else if buildArgsError}
+					<p class="text-xs text-danger">{buildArgsError}</p>
+				{:else if buildArgs.length === 0}
+					<p class="text-xs text-gray-500">No build args. These are passed as <code class="font-mono">--build-arg</code> during image builds (e.g. <code class="font-mono">VITE_*</code> vars).</p>
+				{:else}
+					{#each buildArgs as arg, i}
+						<div class="mb-1.5 flex items-center gap-1.5">
+							<input type="text" value={arg.name}
+								oninput={(e) => updateBuildArgKey(i, (e.target as HTMLInputElement).value)}
+								placeholder="ARG_NAME"
+								class="flex-[2] rounded-md border border-surface-600 bg-surface-800 px-2 py-1.5 font-mono text-xs text-white placeholder-gray-600 outline-none focus:border-accent" />
+							<input type="text" value={arg.value}
+								oninput={(e) => updateBuildArgValue(i, (e.target as HTMLInputElement).value)}
+								placeholder="value"
+								class="flex-[3] rounded-md border border-surface-600 bg-surface-800 px-2 py-1.5 font-mono text-xs text-white placeholder-gray-600 outline-none focus:border-accent" />
+							<button type="button"
+								onclick={() => removeBuildArg(i)}
+								class="rounded p-1 text-gray-500 hover:text-danger">
+								<Trash2 class="h-3.5 w-3.5" />
+							</button>
+						</div>
+					{/each}
 				{/if}
 			</div>
 		</div>
@@ -738,7 +837,7 @@
 								</button>
 							</div>
 							<button type="button" onclick={() => deleteVar(sharedSection, idx, true)}
-								class="shrink-0 rounded p-1 text-gray-600 opacity-0 group-hover:opacity-100 hover:text-danger transition-all">
+								class="shrink-0 rounded p-1 text-gray-500 hover:text-danger transition-colors">
 								<Trash2 class="h-3.5 w-3.5" />
 							</button>
 						</div>
@@ -826,7 +925,7 @@
 								{/if}
 							</div>
 							<button type="button" onclick={() => removeBinding(binding.ref)}
-								class="shrink-0 rounded p-1 text-gray-600 opacity-0 group-hover:opacity-100 hover:text-danger transition-all">
+								class="shrink-0 rounded p-1 text-gray-500 hover:text-danger transition-colors">
 								<Trash2 class="h-3.5 w-3.5" />
 							</button>
 						</div>
@@ -901,7 +1000,7 @@
 								{/if}
 							</div>
 							<button type="button" onclick={() => removeCredential(cred.name)}
-								class="shrink-0 rounded p-1 text-gray-600 opacity-0 group-hover:opacity-100 hover:text-danger transition-all">
+								class="shrink-0 rounded p-1 text-gray-500 hover:text-danger transition-colors">
 								<Trash2 class="h-3.5 w-3.5" />
 							</button>
 						</div>
