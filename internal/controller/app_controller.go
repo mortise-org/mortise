@@ -428,6 +428,14 @@ func (r *AppReconciler) reconcileGitSource(ctx context.Context, app *mortisev1al
 	}
 	r.Builds.set(key, tracker)
 
+	noCache := app.Annotations["mortise.dev/no-cache-build"] == "true"
+	if noCache {
+		delete(app.Annotations, "mortise.dev/no-cache-build")
+		if err := r.Update(ctx, app); err != nil {
+			log.Error(err, "clear no-cache-build annotation")
+		}
+	}
+
 	bp := buildParams{
 		appName:      app.Name,
 		namespace:    app.Namespace,
@@ -439,6 +447,7 @@ func (r *AppReconciler) reconcileGitSource(ctx context.Context, app *mortisev1al
 		dockerfile:   dockerfilePath(app),
 		buildArgs:    buildArgsOf(app),
 		buildContext: buildContextOf(app),
+		noCache:      noCache,
 		imageRef:     imageRef,
 		pullImageRef: pullRef,
 	}
@@ -465,6 +474,7 @@ type buildParams struct {
 	dockerfile   string
 	buildArgs    map[string]string
 	buildContext mortisev1alpha1.BuildContext
+	noCache      bool // skip all layer caching (user-triggered rebuild)
 	imageRef     registry.ImageRef
 	pullImageRef registry.ImageRef // kubelet-facing image ref (may differ from imageRef when a node-local proxy is used)
 }
@@ -1965,6 +1975,7 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 		if nsErr != nil {
 			return nsErr
 		}
+		rollingOut := false
 		if isCron {
 			var cj batchv1.CronJob
 			if err := r.Get(ctx, types.NamespacedName{Name: cronJobName(app.Name), Namespace: envNs}, &cj); err == nil {
@@ -1975,6 +1986,9 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 			var dep appsv1.Deployment
 			if err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: envNs}, &dep); err == nil {
 				es.ReadyReplicas = dep.Status.ReadyReplicas
+				if deploymentRollingOut(&dep) {
+					rollingOut = true
+				}
 			}
 		}
 
@@ -1999,7 +2013,7 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 		if !isCron && env.Replicas != nil {
 			expectedReplicas = *env.Replicas
 		}
-		ready := es.ReadyReplicas >= expectedReplicas
+		ready := es.ReadyReplicas >= expectedReplicas && !rollingOut
 		if ready {
 			es.Phase = mortisev1alpha1.AppPhaseReady
 		} else {
@@ -2175,6 +2189,22 @@ func appPort(app *mortisev1alpha1.App) int32 {
 // (`pj-{project}-{env}`) so the namespace disambiguates. Keeping the app
 // name alone means in-cluster DNS for app `web` in env `staging` is
 // simply `web.pj-myproj-staging.svc.cluster.local`.
+// deploymentRollingOut returns true when a Deployment has a rollout in
+// progress: the controller has observed a newer generation but not all pods
+// have been updated yet, or updated pods haven't become ready.
+func deploymentRollingOut(dep *appsv1.Deployment) bool {
+	if dep.Generation > dep.Status.ObservedGeneration {
+		return true
+	}
+	if dep.Spec.Replicas != nil {
+		want := *dep.Spec.Replicas
+		if dep.Status.UpdatedReplicas < want || dep.Status.AvailableReplicas < want {
+			return true
+		}
+	}
+	return false
+}
+
 func deploymentName(appName string) string { return appName }
 func cronJobName(appName string) string    { return appName }
 func serviceName(appName string) string    { return appName }

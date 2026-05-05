@@ -319,10 +319,13 @@ func (b *BuildKitClient) dockerfileSolveOpt(req BuildRequest) bkclient.SolveOpt 
 	}
 
 	var cacheImports []bkclient.CacheOptionsEntry
-	if req.CacheFrom != "" {
+	if req.CacheFrom != "" && !req.NoCache {
 		cacheImports = []bkclient.CacheOptionsEntry{
 			{Type: "registry", Attrs: map[string]string{"ref": req.CacheFrom}},
 		}
+	}
+	if req.NoCache {
+		frontendAttrs["no-cache"] = ""
 	}
 
 	return bkclient.SolveOpt{

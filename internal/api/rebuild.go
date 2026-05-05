@@ -54,6 +54,16 @@ func (s *Server) Rebuild(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Signal a no-cache build so BuildKit rebuilds all layers from scratch.
+	if app.Annotations == nil {
+		app.Annotations = make(map[string]string)
+	}
+	app.Annotations["mortise.dev/no-cache-build"] = "true"
+	if err := s.client.Update(r.Context(), &app); err != nil {
+		writeError(w, err)
+		return
+	}
+
 	// Clear lastBuiltSHA so the reconciler sees the revision as new.
 	app.Status.LastBuiltSHA = ""
 	app.Status.Phase = mortisev1alpha1.AppPhaseBuilding
@@ -109,6 +119,8 @@ func (s *Server) Redeploy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	app.Status.Phase = mortisev1alpha1.AppPhaseDeploying
+
 	var envStatus *mortisev1alpha1.EnvironmentStatus
 	for i := range app.Status.Environments {
 		if app.Status.Environments[i].Name == env {
@@ -116,20 +128,23 @@ func (s *Server) Redeploy(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 	}
-	if envStatus != nil && envStatus.CurrentImage != "" {
-		record := mortisev1alpha1.DeployRecord{
-			Image:     envStatus.CurrentImage,
-			Digest:    envStatus.CurrentDigest,
-			Timestamp: metav1.Now(),
+	if envStatus != nil {
+		envStatus.Phase = mortisev1alpha1.AppPhaseDeploying
+		if envStatus.CurrentImage != "" {
+			record := mortisev1alpha1.DeployRecord{
+				Image:     envStatus.CurrentImage,
+				Digest:    envStatus.CurrentDigest,
+				Timestamp: metav1.Now(),
+			}
+			envStatus.DeployHistory = append([]mortisev1alpha1.DeployRecord{record}, envStatus.DeployHistory...)
+			if len(envStatus.DeployHistory) > 20 {
+				envStatus.DeployHistory = envStatus.DeployHistory[:20]
+			}
 		}
-		envStatus.DeployHistory = append([]mortisev1alpha1.DeployRecord{record}, envStatus.DeployHistory...)
-		if len(envStatus.DeployHistory) > 20 {
-			envStatus.DeployHistory = envStatus.DeployHistory[:20]
-		}
-		if err := s.client.Status().Update(r.Context(), &app); err != nil {
-			writeError(w, err)
-			return
-		}
+	}
+	if err := s.client.Status().Update(r.Context(), &app); err != nil {
+		writeError(w, err)
+		return
 	}
 
 	s.recordActivity(r, projectName, "deploy", "app", appName, "Triggered redeploy for "+appName+" in "+env, "")
