@@ -150,6 +150,8 @@ dev-up: build-ui ## Create k3d dev cluster with build infra, install Mortise, po
 	kubectl -n mortise-test-deps rollout status deployment/registry  --timeout=120s
 	kubectl -n mortise-test-deps rollout status deployment/gitea     --timeout=180s
 	kubectl -n mortise-test-deps rollout status deployment/buildkitd --timeout=180s
+	@echo "==> Fetching Helm chart dependencies..."
+	@helm dependency build charts/mortise 2>/dev/null || true
 	@echo "==> Installing Mortise via Helm..."
 	helm upgrade --install mortise charts/mortise \
 		--namespace mortise-system --create-namespace \
@@ -160,14 +162,14 @@ dev-up: build-ui ## Create k3d dev cluster with build infra, install Mortise, po
 		--set observer.enabled=true \
 		--set observer.image=$(DEV_OBSERVER_IMG) \
 		--set observer.imagePullPolicy=Never \
+		--set observer.metricsPollInterval=5s \
 		--set registry.enabled=false \
 		--set buildkit.enabled=false \
 		--set platformConfig.enabled=false \
-		--set traefik.enabled=false \
 		--set cert-manager.enabled=false \
-		--set metricsServer.enabled=false \
+		--set metricsServer.args='{--kubelet-insecure-tls}' \
 		--set mortise-core.github.clientID=$(GITHUB_CLIENT_ID) \
-		--wait --timeout 120s
+		--wait --timeout 180s
 	@echo "==> Applying dev PlatformConfig..."
 	kubectl apply -f test/dev/platform-config.yaml
 	@echo "==> Restarting operator to pick up config..."
@@ -245,13 +247,13 @@ test-integration: ## Create k3d cluster, install chart + test deps, run integrat
 		--set observer.enabled=true \
 		--set observer.image=$(INT_OBSERVER_IMG) \
 		--set observer.imagePullPolicy=Never \
+		--set observer.metricsPollInterval=5s \
 		--set registry.enabled=false \
 		--set buildkit.enabled=false \
 		--set platformConfig.enabled=false \
-		--set traefik.enabled=false \
 		--set cert-manager.enabled=false \
-		--set metricsServer.enabled=false \
-		--wait --timeout 120s
+		--set metricsServer.args='{--kubelet-insecure-tls}' \
+		--wait --timeout 180s
 	@echo "==> Running integration tests..."
 	go test -v -parallel 25 -tags integration -count=1 -timeout 45m ./test/integration/... || { \
 		k3d cluster delete $(INT_CLUSTER); exit 1; \
@@ -351,12 +353,12 @@ dev-reload: build-ui ## Rebuild image, re-apply CRDs + chart, restart Mortise in
 		--set observer.enabled=true \
 		--set observer.image=$(DEV_OBSERVER_IMG) \
 		--set observer.imagePullPolicy=Never \
+		--set observer.metricsPollInterval=5s \
 		--set registry.enabled=false \
 		--set buildkit.enabled=false \
 		--set platformConfig.enabled=false \
-		--set traefik.enabled=false \
 		--set cert-manager.enabled=false \
-		--set metricsServer.enabled=false
+		--set metricsServer.args='{--kubelet-insecure-tls}'
 	kubectl rollout restart deployment/mortise -n mortise-system
 	kubectl rollout status deployment/mortise -n mortise-system --timeout 60s
 	@-pkill -f "[k]ubectl port-forward.*8090" >/dev/null 2>&1

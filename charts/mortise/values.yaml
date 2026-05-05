@@ -53,6 +53,7 @@ mortise-core:
 # bundles Traefik, EKS may use ALB, etc.)
 traefik:
   enabled: true
+  namespaceOverride: mortise-deps
   # Values passed to the Traefik subchart. See:
   # https://github.com/traefik/traefik-helm-chart/blob/master/traefik/values.yaml
   logs:
