@@ -29,6 +29,7 @@ import (
 	networkingv1 "k8s.io/api/networking/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/types"
 	clocktesting "k8s.io/utils/clock/testing"
@@ -1935,9 +1936,18 @@ var _ = Describe("App Controller", func() {
 			_, err = reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{Name: app2Name, Namespace: namespace},
 			})
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("shared.example.com"))
-			Expect(err.Error()).To(ContainSubstring("already in use"))
+			Expect(err).NotTo(HaveOccurred())
+
+			// The colliding app should have Failed status with a DomainCollision condition.
+			var updated mortisev1alpha1.App
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: app2Name, Namespace: namespace}, &updated)).To(Succeed())
+			Expect(updated.Status.Phase).To(Equal(mortisev1alpha1.AppPhaseFailed))
+			cond := meta.FindStatusCondition(updated.Status.Conditions, "DomainCollision")
+			Expect(cond).NotTo(BeNil())
+			Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+			Expect(cond.Reason).To(Equal("DomainInUse"))
+			Expect(cond.Message).To(ContainSubstring("shared.example.com"))
+			Expect(cond.Message).To(ContainSubstring("already in use"))
 		})
 
 		It("allows the same app to re-reconcile its own domain", func() {
@@ -2009,6 +2019,11 @@ var _ = Describe("renderDomainTemplate", func() {
 
 	It("returns empty for invalid template syntax", func() {
 		result := renderDomainTemplate("{{.Invalid", "app", "proj", "production", "example.com")
+		Expect(result).To(BeEmpty())
+	})
+
+	It("returns empty when a non-first label is invalid in multi-level template", func() {
+		result := renderDomainTemplate("{{.App}}.{{.Project}}.{{.Domain}}", "web", "bad_project", "production", "example.com")
 		Expect(result).To(BeEmpty())
 	})
 })
