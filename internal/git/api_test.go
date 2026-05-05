@@ -14,19 +14,19 @@ import (
 
 // fakeGitAPI is a test double satisfying GitAPI.
 type fakeGitAPI struct {
-	webhookErr      error
-	statusErr       error
-	sigErr          error
-	creds           GitCredentials
-	credsErr        error
-	repos           []Repository
-	reposErr        error
-	branches        []Branch
-	branchesErr     error
-	webhooks        []WebhookInfo
-	webhooksErr     error
-	deleteHookErr   error
-	deletedHookIDs  []int64
+	webhookErr     error
+	statusErr      error
+	sigErr         error
+	creds          GitCredentials
+	credsErr       error
+	repos          []Repository
+	reposErr       error
+	branches       []Branch
+	branchesErr    error
+	webhooks       []WebhookInfo
+	webhooksErr    error
+	deleteHookErr  error
+	deletedHookIDs []int64
 }
 
 func (f *fakeGitAPI) RegisterWebhook(_ context.Context, _ string, _ WebhookConfig) error {

@@ -117,6 +117,15 @@ type PlatformConfigSpec struct {
 	// +optional
 	Domain string `json:"domain,omitempty"`
 
+	// DomainTemplate is a Go text/template that controls how auto-generated
+	// hostnames are constructed. Available variables: {{.App}}, {{.Project}},
+	// {{.Env}}, {{.Domain}}. The {{.Env}} component is omitted for the
+	// production environment. When empty, defaults to
+	// "{{.App}}-{{.Project}}{{if ne .Env \"production\"}}-{{.Env}}{{end}}.{{.Domain}}"
+	// which produces collision-safe flat subdomains (single-level wildcard).
+	// +optional
+	DomainTemplate string `json:"domainTemplate,omitempty"`
+
 	// Storage configures platform-level storage defaults.
 	// +optional
 	Storage StorageConfig `json:"storage,omitempty"`

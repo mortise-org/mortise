@@ -282,7 +282,7 @@ func (h *Handler) handlePROpenOrSync(ctx context.Context, app *mortisev1alpha1.A
 	// Resolve domain from template.
 	domain := ""
 	if preview != nil {
-		domain = resolvePreviewDomainTemplate(preview.Domain, app.Name, pr.Number)
+		domain = resolvePreviewDomainTemplate(preview.Domain, app.Name, project.Name, pr.Number)
 	}
 
 	// Default TTL: 72h.
@@ -723,13 +723,14 @@ func previewEnvName(appName string, prNumber int) string {
 	return fmt.Sprintf("%s-preview-pr-%d", appName, prNumber)
 }
 
-// resolvePreviewDomainTemplate replaces {number} and {app} in a domain template.
-func resolvePreviewDomainTemplate(template, appName string, prNumber int) string {
+// resolvePreviewDomainTemplate replaces {number}, {app}, and {project} in a domain template.
+func resolvePreviewDomainTemplate(template, appName, projectName string, prNumber int) string {
 	if template == "" {
 		return ""
 	}
 	result := strings.ReplaceAll(template, "{number}", fmt.Sprintf("%d", prNumber))
 	result = strings.ReplaceAll(result, "{app}", appName)
+	result = strings.ReplaceAll(result, "{project}", projectName)
 	return result
 }
 
