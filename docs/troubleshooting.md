@@ -116,6 +116,50 @@ kubelet can already reach those registries over HTTPS with standard DNS.
 
 ---
 
+## Observer traffic empty with BYO Traefik
+
+**Symptom:** The observer is enabled (`observer.enableTraffic: true`) and
+tailing Traefik pods, but `/v1/traffic` returns all null series. No errors
+in the observer logs.
+
+**Cause:** The observer's traffic collector expects Traefik access logs in
+**JSON format** with fields like `ServiceName`, `OriginStatus`, and
+`Duration`. Traefik's default access log format is Common Log Format (CLF),
+which fails `json.Unmarshal` silently — every line is discarded.
+
+**Fix:** Configure your Traefik installation to emit JSON access logs:
+
+```yaml
+# Traefik Helm values
+logs:
+  access:
+    enabled: true
+    format: json
+    fields:
+      headers:
+        defaultMode: drop
+```
+
+If you installed Traefik via Helm:
+
+```bash
+helm upgrade traefik traefik/traefik \
+  --namespace traefik-system --reuse-values \
+  --set 'logs.access.enabled=true' \
+  --set 'logs.access.format=json' \
+  --set 'logs.access.fields.headers.defaultMode=drop'
+```
+
+After the Traefik pods restart, the observer will begin parsing traffic data
+within seconds. Verify with `curl http://localhost:8090/v1/traffic`.
+
+**Why the bundled Traefik doesn't hit this:** The Mortise chart's Traefik
+subchart pre-configures JSON access logs in `charts/mortise/values.yaml`.
+This only affects BYO Traefik installations where you set
+`traefik.enabled=false`.
+
+---
+
 ## Known Limitations
 
 ### supabase/postgres and POSTGRES_USER

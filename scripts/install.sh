@@ -322,6 +322,8 @@ wait_and_print_success() {
     printf '  Port-forward is running in the background.\n'
     printf '  To restart it later: kubectl port-forward -n %s svc/mortise %s:80\n' "$MORTISE_NAMESPACE" "$pf_port"
     printf '\n'
+    printf '  LLM context & API reference: https://mortise.me/llms.txt\n'
+    printf '\n'
 }
 
 # ---------------------------------------------------------------------------
