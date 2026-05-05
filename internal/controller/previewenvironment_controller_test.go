@@ -35,6 +35,7 @@ import (
 
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
 	"github.com/mortise-org/mortise/internal/constants"
+	"github.com/mortise-org/mortise/internal/envstore"
 )
 
 // helper: create a test Project and its control namespace (`pj-{name}`). The
@@ -274,10 +275,20 @@ var _ = Describe("PreviewEnvironment Controller", func() {
 			memReq := dep.Spec.Template.Spec.Containers[0].Resources.Requests["memory"]
 			Expect(memReq.String()).To(Equal("256Mi"))
 
-			// Verify env vars inherited.
-			Expect(dep.Spec.Template.Spec.Containers[0].Env).To(ContainElement(
-				corev1.EnvVar{Name: "ENV", Value: "staging"},
-			))
+			// Verify envFrom mounts the app-env and shared-env Secrets.
+			Expect(dep.Spec.Template.Spec.Containers[0].EnvFrom).To(HaveLen(2))
+
+			// Verify pe.Spec.Env overrides landed in the {app}-env Secret.
+			store := &envstore.Store{Client: k8sClient}
+			appEnvVars, err := store.Get(ctx, previewNs, "webapp")
+			Expect(err).NotTo(HaveOccurred())
+			var found bool
+			for _, e := range appEnvVars {
+				if e.Name == "ENV" && e.Value == "staging" {
+					found = true
+				}
+			}
+			Expect(found).To(BeTrue(), "expected ENV=staging in preview app-env Secret")
 
 			// Verify Service.
 			var svc corev1.Service
@@ -298,6 +309,195 @@ var _ = Describe("PreviewEnvironment Controller", func() {
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: pe.Name, Namespace: ns}, &updated)).To(Succeed())
 			Expect(updated.Status.Phase).To(Equal(mortisev1alpha1.PreviewPhaseReady))
 			Expect(updated.Status.URL).To(Equal("https://" + previewDomain))
+		})
+	})
+
+	Context("preview env var inheritance from source environment", func() {
+		It("should inherit per-env vars from source environment's app-env Secret", func() {
+			ctx := context.Background()
+			project, ns := createPreviewTestProject(ctx, true)
+
+			createPreviewApp(ctx, "inherit-app", ns, &mortisev1alpha1.Environment{
+				Name: "staging",
+			})
+
+			// Seed the source env's {app}-env Secret with per-env vars.
+			sourceEnvNs := constants.EnvNamespace(project.Name, "staging")
+			sourceNs := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: sourceEnvNs}}
+			Expect(k8sClient.Create(ctx, sourceNs)).To(Succeed())
+
+			store := &envstore.Store{Client: k8sClient}
+			Expect(store.Set(ctx, sourceEnvNs, "inherit-app", []envstore.Env{
+				{Name: "DATABASE_URL", Value: "postgres://db:5432/app", Source: "user"},
+				{Name: "LOG_LEVEL", Value: "info", Source: "user"},
+			}, nil)).To(Succeed())
+
+			pe := createPreviewEnv(ctx, "inherit-app-preview-pr-10", ns, "inherit-app", 10, "abc123", "feat", "pr-10-inherit-app.example.com", 72*time.Hour)
+			pe.Status.Image = "registry.example.com/mortise/inherit-app:pr-10"
+			Expect(k8sClient.Status().Update(ctx, pe)).To(Succeed())
+
+			reconciler := &PreviewEnvironmentReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+				Clock:  clocktesting.NewFakeClock(time.Now()),
+			}
+
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: pe.Name, Namespace: ns},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			previewNs := constants.PreviewNamespace(project.Name, 10)
+			previewEnvVars, err := store.Get(ctx, previewNs, "inherit-app")
+			Expect(err).NotTo(HaveOccurred())
+
+			envMap := make(map[string]string)
+			for _, e := range previewEnvVars {
+				envMap[e.Name] = e.Value
+			}
+			Expect(envMap).To(HaveKeyWithValue("DATABASE_URL", "postgres://db:5432/app"))
+			Expect(envMap).To(HaveKeyWithValue("LOG_LEVEL", "info"))
+		})
+
+		It("should inherit shared-env from source environment namespace", func() {
+			ctx := context.Background()
+			project, ns := createPreviewTestProject(ctx, true)
+
+			createPreviewApp(ctx, "shared-app", ns, &mortisev1alpha1.Environment{
+				Name: "staging",
+			})
+
+			// Seed shared-env in the source env namespace.
+			sourceEnvNs := constants.EnvNamespace(project.Name, "staging")
+			sourceNs := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: sourceEnvNs}}
+			Expect(k8sClient.Create(ctx, sourceNs)).To(Succeed())
+
+			store := &envstore.Store{Client: k8sClient}
+			Expect(store.SetShared(ctx, sourceEnvNs, []envstore.Env{
+				{Name: "SENTRY_DSN", Value: "https://sentry.io/123", Source: "shared"},
+				{Name: "FEATURE_FLAG", Value: "true", Source: "shared"},
+			}, nil)).To(Succeed())
+
+			pe := createPreviewEnv(ctx, "shared-app-preview-pr-20", ns, "shared-app", 20, "def456", "feat", "pr-20-shared-app.example.com", 72*time.Hour)
+			pe.Status.Image = "registry.example.com/mortise/shared-app:pr-20"
+			Expect(k8sClient.Status().Update(ctx, pe)).To(Succeed())
+
+			reconciler := &PreviewEnvironmentReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+				Clock:  clocktesting.NewFakeClock(time.Now()),
+			}
+
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: pe.Name, Namespace: ns},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			previewNs := constants.PreviewNamespace(project.Name, 20)
+			sharedVars, err := store.GetShared(ctx, previewNs)
+			Expect(err).NotTo(HaveOccurred())
+
+			envMap := make(map[string]string)
+			for _, e := range sharedVars {
+				envMap[e.Name] = e.Value
+			}
+			Expect(envMap).To(HaveKeyWithValue("SENTRY_DSN", "https://sentry.io/123"))
+			Expect(envMap).To(HaveKeyWithValue("FEATURE_FLAG", "true"))
+		})
+
+		It("should let pe.Spec.Env overrides win over inherited vars", func() {
+			ctx := context.Background()
+			project, ns := createPreviewTestProject(ctx, true)
+
+			createPreviewApp(ctx, "override-app", ns, &mortisev1alpha1.Environment{
+				Name: "staging",
+			})
+
+			sourceEnvNs := constants.EnvNamespace(project.Name, "staging")
+			sourceNs := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: sourceEnvNs}}
+			Expect(k8sClient.Create(ctx, sourceNs)).To(Succeed())
+
+			store := &envstore.Store{Client: k8sClient}
+			Expect(store.Set(ctx, sourceEnvNs, "override-app", []envstore.Env{
+				{Name: "DATABASE_URL", Value: "postgres://prod:5432/app", Source: "user"},
+				{Name: "LOG_LEVEL", Value: "warn", Source: "user"},
+			}, nil)).To(Succeed())
+
+			pe := createPreviewEnv(ctx, "override-app-preview-pr-30", ns, "override-app", 30, "ghi789", "feat", "pr-30-override-app.example.com", 72*time.Hour)
+			pe.Spec.Env = []mortisev1alpha1.EnvVar{
+				{Name: "DATABASE_URL", Value: "postgres://preview:5432/test"},
+			}
+			Expect(k8sClient.Update(ctx, pe)).To(Succeed())
+			pe.Status.Image = "registry.example.com/mortise/override-app:pr-30"
+			Expect(k8sClient.Status().Update(ctx, pe)).To(Succeed())
+
+			reconciler := &PreviewEnvironmentReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+				Clock:  clocktesting.NewFakeClock(time.Now()),
+			}
+
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: pe.Name, Namespace: ns},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			previewNs := constants.PreviewNamespace(project.Name, 30)
+			previewEnvVars, err := store.Get(ctx, previewNs, "override-app")
+			Expect(err).NotTo(HaveOccurred())
+
+			envMap := make(map[string]string)
+			for _, e := range previewEnvVars {
+				envMap[e.Name] = e.Value
+			}
+			// Override wins.
+			Expect(envMap).To(HaveKeyWithValue("DATABASE_URL", "postgres://preview:5432/test"))
+			// Inherited var preserved.
+			Expect(envMap).To(HaveKeyWithValue("LOG_LEVEL", "warn"))
+		})
+
+		It("should work when source env has no existing Secrets (empty inheritance)", func() {
+			ctx := context.Background()
+			project, ns := createPreviewTestProject(ctx, true)
+
+			createPreviewApp(ctx, "empty-app", ns, &mortisev1alpha1.Environment{
+				Name: "staging",
+			})
+
+			// Source env namespace exists but has no Secrets.
+			sourceEnvNs := constants.EnvNamespace(project.Name, "staging")
+			sourceNs := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: sourceEnvNs}}
+			Expect(k8sClient.Create(ctx, sourceNs)).To(Succeed())
+
+			pe := createPreviewEnv(ctx, "empty-app-preview-pr-40", ns, "empty-app", 40, "jkl012", "feat", "pr-40-empty-app.example.com", 72*time.Hour)
+			pe.Spec.Env = []mortisev1alpha1.EnvVar{
+				{Name: "ONLY_OVERRIDE", Value: "yes"},
+			}
+			Expect(k8sClient.Update(ctx, pe)).To(Succeed())
+			pe.Status.Image = "registry.example.com/mortise/empty-app:pr-40"
+			Expect(k8sClient.Status().Update(ctx, pe)).To(Succeed())
+
+			reconciler := &PreviewEnvironmentReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+				Clock:  clocktesting.NewFakeClock(time.Now()),
+			}
+
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: pe.Name, Namespace: ns},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			previewNs := constants.PreviewNamespace(project.Name, 40)
+			store := &envstore.Store{Client: k8sClient}
+			previewEnvVars, err := store.Get(ctx, previewNs, "empty-app")
+			Expect(err).NotTo(HaveOccurred())
+
+			envMap := make(map[string]string)
+			for _, e := range previewEnvVars {
+				envMap[e.Name] = e.Value
+			}
+			Expect(envMap).To(HaveKeyWithValue("ONLY_OVERRIDE", "yes"))
 		})
 	})
 

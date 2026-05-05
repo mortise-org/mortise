@@ -43,6 +43,7 @@ import (
 	"github.com/mortise-org/mortise/internal/bindings"
 	"github.com/mortise-org/mortise/internal/build"
 	"github.com/mortise-org/mortise/internal/constants"
+	"github.com/mortise-org/mortise/internal/envstore"
 	"github.com/mortise-org/mortise/internal/git"
 	"github.com/mortise-org/mortise/internal/ingress"
 	"github.com/mortise-org/mortise/internal/registry"
@@ -163,6 +164,12 @@ func (r *PreviewEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.R
 
 	if err := r.ensurePreviewNamespace(ctx, project, &pe, previewNs); err != nil {
 		return ctrl.Result{}, r.setPreviewFailed(ctx, &pe, "NamespaceCreateFailed", err.Error())
+	}
+
+	// Env vars are independent of the build — reconcile them as soon as the
+	// namespace exists so they're available even while a build is in progress.
+	if err := r.reconcilePreviewEnvSecret(ctx, &pe, &app, previewNs); err != nil {
+		return ctrl.Result{}, fmt.Errorf("reconcile preview env secret: %w", err)
 	}
 
 	// Calculate expiresAt if not set.
@@ -348,22 +355,6 @@ func (r *PreviewEnvironmentReconciler) reconcilePreviewDeployment(ctx context.Co
 		replicas = *pe.Spec.Replicas
 	}
 
-	envVars := toEnvVars(pe.Spec.Env)
-	if len(pe.Spec.Bindings) > 0 {
-		projectName, ok := constants.ProjectFromControlNs(pe.Namespace)
-		if !ok {
-			return fmt.Errorf("preview %q not in a control namespace (%q)", pe.Name, pe.Namespace)
-		}
-		resolver := &bindings.Resolver{Client: r.Client}
-		boundVars, err := resolver.Resolve(ctx, projectName, pe.Spec.SourceEnv, pe.Spec.Bindings)
-		if err != nil {
-			return fmt.Errorf("resolve bindings: %w", err)
-		}
-		for _, bv := range boundVars {
-			envVars = append(envVars, corev1.EnvVar{Name: bv.Name, Value: bv.Value})
-		}
-	}
-
 	image := pe.Status.Image
 	if image == "" {
 		image = app.Spec.Source.Image
@@ -371,9 +362,9 @@ func (r *PreviewEnvironmentReconciler) reconcilePreviewDeployment(ctx context.Co
 
 	containers := []corev1.Container{
 		{
-			Name:  pe.Spec.AppRef,
-			Image: image,
-			Env:   envVars,
+			Name:    pe.Spec.AppRef,
+			Image:   image,
+			EnvFrom: envstore.EnvFromSources(pe.Spec.AppRef),
 		},
 	}
 
@@ -416,6 +407,78 @@ func (r *PreviewEnvironmentReconciler) reconcilePreviewDeployment(ctx context.Co
 
 	existing.Spec = desired.Spec
 	return r.Update(ctx, &existing)
+}
+
+// reconcilePreviewEnvSecret builds the preview's {app}-env and shared-env
+// Secrets by inheriting from the source environment, then layering preview
+// overrides on top.
+//
+// Layering order (later wins):
+//  1. shared-env from source env namespace → copied to preview ns
+//  2. {app}-env from source env namespace (user + binding vars)
+//  3. bindings resolved against source env (pe.Spec.Bindings)
+//  4. pe.Spec.Env overrides
+func (r *PreviewEnvironmentReconciler) reconcilePreviewEnvSecret(ctx context.Context, pe *mortisev1alpha1.PreviewEnvironment, app *mortisev1alpha1.App, previewNs string) error {
+	projectName, ok := constants.ProjectFromControlNs(pe.Namespace)
+	if !ok {
+		return fmt.Errorf("preview %q not in a control namespace (%q)", pe.Name, pe.Namespace)
+	}
+	sourceEnvNs := constants.EnvNamespace(projectName, pe.Spec.SourceEnv)
+	store := &envstore.Store{Client: r.Client}
+	labels := map[string]string{
+		constants.AppNameLabel:         pe.Spec.AppRef,
+		constants.ProjectLabel:         projectName,
+		"app.kubernetes.io/managed-by": "mortise",
+		"app.kubernetes.io/component":  "preview",
+	}
+
+	// Copy shared-env from source env namespace into the preview namespace.
+	sourceShared, err := store.GetShared(ctx, sourceEnvNs)
+	if err != nil {
+		return fmt.Errorf("read shared-env from source env %q: %w", sourceEnvNs, err)
+	}
+	if len(sourceShared) > 0 {
+		if err := store.SetShared(ctx, previewNs, sourceShared, labels); err != nil {
+			return fmt.Errorf("copy shared-env to preview ns: %w", err)
+		}
+	} else {
+		if err := store.EnsureSharedExists(ctx, previewNs, labels); err != nil {
+			return fmt.Errorf("ensure shared-env in preview ns: %w", err)
+		}
+	}
+
+	// Read inherited per-app env vars from the source environment.
+	inherited, err := store.Get(ctx, sourceEnvNs, app.Name)
+	if err != nil {
+		return fmt.Errorf("read app env vars from source env %q: %w", sourceEnvNs, err)
+	}
+	merged := make(map[string]envstore.Env, len(inherited))
+	for _, e := range inherited {
+		merged[e.Name] = e
+	}
+
+	// Resolve preview bindings against the source env.
+	if len(pe.Spec.Bindings) > 0 {
+		resolver := &bindings.Resolver{Client: r.Client}
+		boundVars, err := resolver.Resolve(ctx, projectName, pe.Spec.SourceEnv, pe.Spec.Bindings)
+		if err != nil {
+			return fmt.Errorf("resolve bindings: %w", err)
+		}
+		for _, bv := range boundVars {
+			merged[bv.Name] = envstore.Env{Name: bv.Name, Value: bv.Value, Source: "binding"}
+		}
+	}
+
+	// pe.Spec.Env overrides win over everything.
+	for _, ev := range pe.Spec.Env {
+		merged[ev.Name] = envstore.Env{Name: ev.Name, Value: ev.Value, Source: "user"}
+	}
+
+	flat := make([]envstore.Env, 0, len(merged))
+	for _, e := range merged {
+		flat = append(flat, e)
+	}
+	return store.Set(ctx, previewNs, app.Name, flat, labels)
 }
 
 func (r *PreviewEnvironmentReconciler) reconcilePreviewService(ctx context.Context, pe *mortisev1alpha1.PreviewEnvironment, app *mortisev1alpha1.App, previewNs string) error {
