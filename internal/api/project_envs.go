@@ -310,15 +310,21 @@ type cloneProjectEnvRequest struct {
 }
 
 // CloneProjectEnvironment creates a new environment by copying the full
-// configuration (env vars, bindings, resources, replicas) from an existing
-// source environment. For every App in the project, the source's environment
-// overrides are duplicated into the new env entry on the App CRD. The
-// controller then reconciles the new env namespace and secrets.
+// configuration from an existing source environment. For every App in the
+// project, CRD-level overrides (replicas, resources, probes, bindings,
+// annotations) and Secret-level env vars (set via the UI/API) are merged
+// into the new env entry. Binding-sourced vars are excluded because the
+// controller re-resolves them in the new namespace.
+//
+// The operation is retry-safe: if a previous call partially completed
+// (project env created but app overrides not fully applied), a repeat
+// call skips the project update and continues cloning app overrides,
+// returning 200 instead of 201.
 //
 // POST /api/projects/{project}/environments/{source}/clone  { "name": "staging" }
 //
 // @Summary Clone a project environment
-// @Description Creates a new environment pre-populated with the source's config for every app
+// @Description Creates a new environment pre-populated with the source's config (CRD overrides + Secret-level env vars) for every app. Retry-safe: returns 200 if the target already exists.
 // @Tags environments
 // @Accept json
 // @Produce json
@@ -326,11 +332,11 @@ type cloneProjectEnvRequest struct {
 // @Param project path string true "Project name"
 // @Param source path string true "Source environment name"
 // @Param body body cloneProjectEnvRequest true "Target environment name and display order"
-// @Success 201 {object} projectEnvResponse
+// @Success 200 {object} projectEnvResponse "Retry: target env already existed"
+// @Success 201 {object} projectEnvResponse "Created"
 // @Failure 400 {object} errorResponse
 // @Failure 403 {object} errorResponse
 // @Failure 404 {object} errorResponse
-// @Failure 409 {object} errorResponse
 // @Router /projects/{project}/environments/{source}/clone [post]
 func (s *Server) CloneProjectEnvironment(w http.ResponseWriter, r *http.Request) {
 	projectName := chi.URLParam(r, "project")

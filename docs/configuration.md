@@ -221,3 +221,40 @@ deployed to staging doesn't affect production.
 
 Environment-specific settings (replicas, resources, env vars, domains) can
 be set per app in the app drawer.
+
+### Cloning an environment
+
+You can create a new environment by cloning an existing one. Cloning copies
+the full configuration for every app in the project:
+
+- **CRD-level overrides:** replicas, resources, probes, schedule, annotations
+- **Environment variables:** both CRD-declared vars and vars set through the
+  UI/API (stored in Secrets)
+- **Bindings:** binding references are copied, but binding-sourced env vars
+  are excluded — the controller re-resolves them in the new namespace
+
+Clone via the API:
+
+```bash
+curl -s -X POST "$BASE/api/projects/$PROJECT/environments/$SOURCE_ENV/clone" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "{\"name\":\"staging\",\"displayOrder\":1}" | jq
+```
+
+The operation is retry-safe: if a previous call partially completed, a
+repeat call finishes the remaining work without duplicating anything.
+
+### Preview environments
+
+When preview environments are enabled on a project (Project Settings >
+Preview), opening a pull request creates an ephemeral environment for
+every app in the project. The preview environment inherits configuration
+from its source environment:
+
+- **Per-app env vars** from the source env's Secret
+- **Shared env vars** from the source env's `shared-env` Secret
+- **Bindings** are live-resolved against the source environment
+
+Preview-specific overrides (`pe.Spec.Env`) win over inherited values.
+When the PR closes or the TTL expires, all preview resources are deleted.
