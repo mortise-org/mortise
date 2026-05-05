@@ -176,7 +176,7 @@ spec:
   # don't get a public URL.
   preview:
     enabled: true
-    domain: "pr-{number}-{app}.yourdomain.com"  # `{app}` renders per-App
+    domain: "{app}-{project}-pr-{number}.yourdomain.com"  # `{app}`, `{project}`, `{number}` render per-App
     ttl: 72h
     resources: { cpu: 250m, memory: 256Mi }     # preview default; apps can't override
     botPR: false                                 # opt-in: preview bots' PRs (dependabot etc.)
@@ -363,7 +363,8 @@ spec:
     # --- OR ---
     # type: image
     # image: ghcr.io/paperless-ngx/paperless-ngx:latest
-    # pullSecretRef: ghcr-credentials
+    # pullSecretRef: ghcr-credentials  # wired into the app's ServiceAccount imagePullSecrets
+    #                                   # (merged with the platform registry pull secret)
 
   network:
     public: true                      # default true; false for backing services
@@ -686,8 +687,22 @@ service. No contradiction; they serve different needs.
 ### 5.6 Network, Domains, TLS
 
 Operator annotates `Ingress` → ExternalDNS creates DNS record → cert-manager
-issues TLS cert. Zero user action. Each environment gets its own subdomain
-automatically, rooted at the platform domain configured at install.
+issues TLS cert. Zero user action. Each environment gets a collision-safe
+subdomain automatically, rooted at the platform domain configured at install.
+The default pattern includes the project name to prevent hostname collisions
+when two projects have apps with the same name:
+
+- Production: `{app}-{project}.{domain}` (e.g. `api-backend.apps.example.com`)
+- Other envs: `{app}-{project}-{env}.{domain}` (e.g. `api-backend-staging.apps.example.com`)
+
+The domain pattern is configurable via `PlatformConfig.spec.domainTemplate`,
+a Go `text/template` string with variables `{{.App}}`, `{{.Project}}`,
+`{{.Env}}`, and `{{.Domain}}`. The default template is:
+`{{.App}}-{{.Project}}{{if ne .Env "production"}}-{{.Env}}{{end}}.{{.Domain}}`
+
+**Collision detection.** The operator rejects reconciliation with a
+`DomainCollision` status condition if a computed hostname is already owned
+by another app. This prevents silent routing conflicts.
 
 Custom domains: user sets CNAME, adds the domain in UI, Ingress rule + TLS
 added by operator.
@@ -751,11 +766,22 @@ cluster's default SC). For v1:
 - Independent Deployments, isolated by namespace
 - **Promote:** staging → production with no rebuild
 - **Rollback:** deploy history (digest + timestamp + SHA); one-click
+- **Clone:** create a new environment from an existing one via
+  `POST /api/projects/{project}/environments/{source}/clone`.
+  Copies per-app CRD overrides (replicas, resources, probes, bindings,
+  schedule, annotations) and Secret-level env vars (set via the UI/API).
+  Binding-sourced vars are excluded — the controller re-resolves them
+  in the new namespace. The operation is retry-safe: partial failures
+  can be retried without duplication.
 - **Preview environments (project-level toggle, §5.0 `spec.preview.enabled`).**
   When enabled on the parent Project, PR opens → operator creates one
-  `PreviewEnvironment` per App in the project, clones staging's config,
-  DNS + TLS handled automatically, bindings live-resolved through the
-  preview namespace (no credential copy). PR closes or TTL expires →
+  `PreviewEnvironment` per App in the project. The preview controller
+  inherits the source environment's configuration:
+  - Per-app env vars from the source env's `{app}-env` Secret
+  - Shared env vars from the source env's `shared-env` Secret
+  - Bindings live-resolved against the source environment
+  - `pe.Spec.Env` overrides win over all inherited values
+  DNS + TLS handled automatically. PR closes or TTL expires →
   everything deleted. URL posted as PR comment.
 
   **Scope semantics (option a).** *Every* App in the project reconciles
@@ -963,9 +989,11 @@ to be specced if and when real demand shows up; they are not a v1 contract.
 ### 5.11 Observability (v1)
 
 **mortise-observer (bundled, enabled by default).** The chart includes a
-`mortise-observer` binary that implements the log/metrics/traffic adapter
-contract (§5.11a). It runs as a separate pod backed by a SQLite database on
-a PVC and serves historical data to the Mortise UI. Default retention:
+`mortise-observer` binary (image: `ghcr.io/mortise-org/mortise-observer:{version}`,
+a separate image repository from the operator) that implements the
+log/metrics/traffic adapter contract (§5.11a). It runs as a separate pod
+backed by a SQLite database on a PVC and serves historical data to the
+Mortise UI. Default retention:
 
 | Data type | Retention |
 |---|---|
@@ -1806,8 +1834,11 @@ touching only one subdir rebuilds only that App.
   opt-in. When enabled, every App in the project participates (§5.8).
 - `PreviewEnvironment` CRD auto-managed by a dedicated controller
 - PR open → for each App in the project with previews enabled,
-  clone staging env config; apply project-level `preview.*` overrides;
-  DNS + TLS handled by existing ExternalDNS/cert-manager plumbing
+  inherit source env config: per-app env vars from the `{app}-env`
+  Secret, shared vars from `shared-env`, binding refs live-resolved
+  in the preview namespace; `pe.Spec.Env` overrides win over
+  inherited values; DNS + TLS handled by existing
+  ExternalDNS/cert-manager plumbing
 - Cron and non-public Apps reconcile into the preview namespace but get
   no public URL (§5.8a, §5.8 scope semantics)
 - Bindings live-resolved within the preview namespace (no credential copy)
@@ -2127,8 +2158,9 @@ broken lightly.
   today, moving to `v1beta1` and `v1` over time.
 - **REST API**: documented `/api/...` project/app-scoped endpoints (for
   example `POST /api/projects/{project}/apps/{app}/deploy`,
-  `POST /api/projects/{project}/apps/{app}/secrets`). Used by the UI, CLI,
-  and external CI systems. Full OpenAPI spec published.
+  `POST /api/projects/{project}/apps/{app}/secrets`,
+  `POST /api/projects/{project}/environments/{source}/clone`). Used by
+  the UI, CLI, and external CI systems. Full OpenAPI spec published.
 
 **What external callers need to agree to, in practice:**
 

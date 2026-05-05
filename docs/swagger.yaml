@@ -94,6 +94,13 @@ definitions:
       to:
         type: string
     type: object
+  api.cloneProjectEnvRequest:
+    properties:
+      displayOrder:
+        type: integer
+      name:
+        type: string
+    type: object
   api.createAppRequest:
     properties:
       name:
@@ -1337,7 +1344,7 @@ definitions:
         description: |-
           Enabled, when set to false, opts this App out of the named project
           environment. The App controller GCs any resources it previously
-          reconciled for that env. A nil pointer means "enabled" - Apps
+          reconciled for that env. A nil pointer means "enabled" — Apps
           auto-participate in every project environment by default.
           +optional
         type: boolean
@@ -1370,7 +1377,7 @@ definitions:
           SecretMounts mounts existing k8s Secrets in the App's namespace as
           files on the container filesystem. See spec §5.5b. Each entry becomes
           a `Volume` + `VolumeMount` on the Deployment's Pod template. Names
-          must not collide with `spec.storage[].name` - the operator does not
+          must not collide with `spec.storage[].name` — the operator does not
           reconcile such collisions; the apiserver will reject the Deployment.
           +optional
         items:
@@ -1481,7 +1488,7 @@ definitions:
       public:
         description: |-
           Public toggles whether an Ingress is created for this App.
-          Note: no `omitempty` on purpose - `false` must survive JSON
+          Note: no `omitempty` on purpose — `false` must survive JSON
           marshalling (see commit c7c58a2). The API server applies the default
           on create when the field is missing entirely.
           +optional
@@ -4111,6 +4118,58 @@ paths:
       summary: Update a project environment
       tags:
       - environments
+  /projects/{project}/environments/{source}/clone:
+    post:
+      consumes:
+      - application/json
+      description: 'Creates a new environment pre-populated with the source''s config
+        (CRD overrides + Secret-level env vars) for every app. Retry-safe: returns
+        200 if the target already exists.'
+      parameters:
+      - description: Project name
+        in: path
+        name: project
+        required: true
+        type: string
+      - description: Source environment name
+        in: path
+        name: source
+        required: true
+        type: string
+      - description: Target environment name and display order
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/api.cloneProjectEnvRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: 'Retry: target env already existed'
+          schema:
+            $ref: '#/definitions/api.projectEnvResponse'
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/api.projectEnvResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.errorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/api.errorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.errorResponse'
+      security:
+      - BearerAuth: []
+      summary: Clone a project environment
+      tags:
+      - environments
   /projects/{project}/events:
     get:
       description: Streams app updates, pod changes, and build logs via SSE for real-time
@@ -4646,7 +4705,7 @@ paths:
       description: HMAC-verified webhook receiver for GitHub, GitLab, and Gitea. Handles
         push events (triggers app redeploy) and pull_request events (creates/updates/deletes
         PreviewEnvironments). Authentication is via HMAC signature on the payload
-        - no bearer token required.
+        — no bearer token required.
       parameters:
       - description: Git provider name (matches GitProvider CRD name)
         in: path

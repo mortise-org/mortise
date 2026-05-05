@@ -10,8 +10,11 @@ All configuration happens in **Settings** in the Mortise UI, or via the
 ## Platform domain
 
 **What it does:** Gives your apps automatic URLs. When set to
-`apps.example.com`, an app called `api` gets `api.apps.example.com`
-in production and `api-staging.apps.example.com` in staging.
+`apps.example.com`, an app called `api` in project `backend` gets
+`api-backend.apps.example.com` in production and
+`api-backend-staging.apps.example.com` in staging. The project name is
+included in the domain to prevent collisions when different projects have
+apps with the same name.
 
 **What it also does:** Serves as the callback address for git webhooks.
 When you push to a connected repo, your git host sends a notification to
@@ -74,6 +77,56 @@ When you push to a connected repo, your git host sends a notification to
    power-user option; most setups work fine with a wildcard record.
 
 3. **Enter the domain** in Settings > Platform Domain and save.
+
+### Domain template
+
+The default domain pattern is:
+
+```
+{{.App}}-{{.Project}}{{if ne .Env "production"}}-{{.Env}}{{end}}.{{.Domain}}
+```
+
+This produces domains like `api-backend.apps.example.com` for production
+and `api-backend-staging.apps.example.com` for staging.
+
+You can customize the pattern by setting `domainTemplate` on your
+PlatformConfig:
+
+```yaml
+apiVersion: mortise.mortise.dev/v1alpha1
+kind: PlatformConfig
+metadata:
+  name: platform
+spec:
+  domain: apps.example.com
+  domainTemplate: "{{.App}}.{{.Domain}}"  # restore old {app}.{domain} pattern
+```
+
+Available template variables:
+
+| Variable | Description | Example value |
+|----------|-------------|---------------|
+| `{{.App}}` | App name | `api` |
+| `{{.Project}}` | Project name | `backend` |
+| `{{.Env}}` | Environment name | `production`, `staging` |
+| `{{.Domain}}` | Platform domain | `apps.example.com` |
+
+A few useful patterns:
+
+| Pattern | Production result | Staging result |
+|---------|-------------------|----------------|
+| Default (see above) | `api-backend.apps.example.com` | `api-backend-staging.apps.example.com` |
+| `{{.App}}.{{.Domain}}` | `api.apps.example.com` | `api.apps.example.com` |
+| `{{.App}}.{{.Project}}.{{.Domain}}` | `api.backend.apps.example.com` | `api.backend.apps.example.com` |
+
+Templates that omit `{{.Env}}` produce the same domain for every
+environment. Use the `{{if ne .Env "production"}}` conditional from the
+default template to differentiate environments while keeping production
+domains clean.
+
+If two apps in different projects produce the same hostname, the operator
+rejects the second with a `DomainCollision` status condition. The default
+template avoids this by including the project name.
 
 ### Webhook reachability
 
@@ -221,3 +274,40 @@ deployed to staging doesn't affect production.
 
 Environment-specific settings (replicas, resources, env vars, domains) can
 be set per app in the app drawer.
+
+### Cloning an environment
+
+You can create a new environment by cloning an existing one. Cloning copies
+the full configuration for every app in the project:
+
+- **CRD-level overrides:** replicas, resources, probes, schedule, annotations
+- **Environment variables:** both CRD-declared vars and vars set through the
+  UI/API (stored in Secrets)
+- **Bindings:** binding references are copied, but binding-sourced env vars
+  are excluded — the controller re-resolves them in the new namespace
+
+Clone via the API:
+
+```bash
+curl -s -X POST "$BASE/api/projects/$PROJECT/environments/$SOURCE_ENV/clone" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "{\"name\":\"staging\",\"displayOrder\":1}" | jq
+```
+
+The operation is retry-safe: if a previous call partially completed, a
+repeat call finishes the remaining work without duplicating anything.
+
+### Preview environments
+
+When preview environments are enabled on a project (Project Settings >
+Preview), opening a pull request creates an ephemeral environment for
+every app in the project. The preview environment inherits configuration
+from its source environment:
+
+- **Per-app env vars** from the source env's Secret
+- **Shared env vars** from the source env's `shared-env` Secret
+- **Bindings** are live-resolved against the source environment
+
+Preview-specific overrides (`pe.Spec.Env`) win over inherited values.
+When the PR closes or the TTL expires, all preview resources are deleted.

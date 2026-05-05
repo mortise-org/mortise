@@ -7,8 +7,9 @@ This quickstart walks through a complete API-first flow:
 3. create a project
 4. create an app
 5. configure env vars and secrets
-6. trigger deploy
-7. inspect runtime state
+6. clone an environment
+7. trigger deploy
+8. inspect runtime state
 
 Assumptions:
 
@@ -103,7 +104,30 @@ curl -s -X POST "$BASE/api/projects/$PROJECT/apps/$APP/secrets?env=$ENV" \
   -d '{"name":"web-secret","data":{"API_KEY":"supersecret"}}' | jq
 ```
 
-## 6) Trigger deploy with a new image tag
+## 6) Clone an environment
+
+Create a staging environment by cloning production's full configuration
+(replicas, resources, env vars, bindings):
+
+```bash
+curl -s -X POST "$BASE/api/projects/$PROJECT/environments/$ENV/clone" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"staging","displayOrder":1}' | jq
+```
+
+The clone copies both CRD-level overrides and env vars set through the
+API/UI. Binding references are copied but binding-sourced env vars are
+re-resolved by the controller in the new namespace.
+
+Verify the new environment:
+
+```bash
+curl -s "$BASE/api/projects/$PROJECT/environments" \
+  -H "Authorization: Bearer $TOKEN" | jq
+```
+
+## 7) Trigger deploy with a new image tag
 
 ```bash
 curl -s -X POST "$BASE/api/projects/$PROJECT/apps/$APP/deploy" \
@@ -112,7 +136,7 @@ curl -s -X POST "$BASE/api/projects/$PROJECT/apps/$APP/deploy" \
   -d "{\"environment\":\"$ENV\",\"image\":\"nginx:1.27.1\"}" | jq
 ```
 
-## 7) Inspect runtime state
+## 8) Inspect runtime state
 
 List pods:
 
@@ -134,7 +158,7 @@ Stream logs (SSE):
 curl -N "$BASE/api/projects/$PROJECT/apps/$APP/logs?env=$ENV&follow=true&token=$TOKEN"
 ```
 
-## 8) Optional: create deploy token for CI
+## 9) Optional: create deploy token for CI
 
 Create app+environment deploy token:
 
@@ -156,7 +180,7 @@ curl -s -X POST "$BASE/api/projects/$PROJECT/apps/$APP/deploy" \
   -d "{\"environment\":\"$ENV\",\"image\":\"nginx:1.27.2\"}" | jq
 ```
 
-## 9) Cleanup
+## 10) Cleanup
 
 Delete the project:
 
