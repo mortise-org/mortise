@@ -2196,11 +2196,12 @@ func deploymentRollingOut(dep *appsv1.Deployment) bool {
 	if dep.Generation > dep.Status.ObservedGeneration {
 		return true
 	}
+	want := int32(1)
 	if dep.Spec.Replicas != nil {
-		want := *dep.Spec.Replicas
-		if dep.Status.UpdatedReplicas < want || dep.Status.AvailableReplicas < want {
-			return true
-		}
+		want = *dep.Spec.Replicas
+	}
+	if dep.Status.UpdatedReplicas < want || dep.Status.AvailableReplicas < want {
+		return true
 	}
 	return false
 }

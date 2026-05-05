@@ -64,6 +64,14 @@ func (s *Server) Rebuild(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Re-fetch so the status update uses the current resourceVersion. A
+	// controller reconcile between the annotation write and this point would
+	// bump the resourceVersion, causing a stale-object conflict otherwise.
+	if err := s.client.Get(r.Context(), types.NamespacedName{Name: appName, Namespace: ns}, &app); err != nil {
+		writeError(w, err)
+		return
+	}
+
 	// Clear lastBuiltSHA so the reconciler sees the revision as new.
 	app.Status.LastBuiltSHA = ""
 	app.Status.Phase = mortisev1alpha1.AppPhaseBuilding
@@ -115,6 +123,14 @@ func (s *Server) Redeploy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := restartDeployment(r.Context(), s.client, envNs, appName, app.Status.PendingEnvHash); err != nil {
+		writeError(w, err)
+		return
+	}
+
+	// Re-fetch so the status update uses the current resourceVersion. A
+	// controller reconcile between the restart and this point would bump the
+	// resourceVersion, causing a stale-object conflict otherwise.
+	if err := s.client.Get(r.Context(), types.NamespacedName{Name: appName, Namespace: ns}, &app); err != nil {
 		writeError(w, err)
 		return
 	}

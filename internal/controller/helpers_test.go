@@ -301,6 +301,19 @@ func TestDeploymentRollingOut(t *testing.T) {
 			},
 			want: false,
 		},
+		{
+			name: "nil replicas — rolling out (no pods available yet)",
+			dep: appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{Generation: 1},
+				Spec:       appsv1.DeploymentSpec{},
+				Status: appsv1.DeploymentStatus{
+					ObservedGeneration: 1,
+					UpdatedReplicas:    0,
+					AvailableReplicas:  0,
+				},
+			},
+			want: true,
+		},
 	}
 
 	for _, tc := range tests {
