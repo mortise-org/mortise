@@ -166,6 +166,12 @@ func (r *PreviewEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.R
 		return ctrl.Result{}, r.setPreviewFailed(ctx, &pe, "NamespaceCreateFailed", err.Error())
 	}
 
+	// Env vars are independent of the build — reconcile them as soon as the
+	// namespace exists so they're available even while a build is in progress.
+	if err := r.reconcilePreviewEnvSecret(ctx, &pe, &app, previewNs); err != nil {
+		return ctrl.Result{}, fmt.Errorf("reconcile preview env secret: %w", err)
+	}
+
 	// Calculate expiresAt if not set.
 	if pe.Status.ExpiresAt == nil && pe.Spec.TTL.Duration > 0 {
 		expires := metav1.NewTime(r.clock().Now().Add(pe.Spec.TTL.Duration))
@@ -347,10 +353,6 @@ func (r *PreviewEnvironmentReconciler) reconcilePreviewDeployment(ctx context.Co
 	replicas := int32(1)
 	if pe.Spec.Replicas != nil {
 		replicas = *pe.Spec.Replicas
-	}
-
-	if err := r.reconcilePreviewEnvSecret(ctx, pe, app, previewNs); err != nil {
-		return fmt.Errorf("reconcile preview env secret: %w", err)
 	}
 
 	image := pe.Status.Image

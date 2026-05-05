@@ -60,6 +60,23 @@ func TestPreviewEnvironmentInheritsSourceEnvVars(t *testing.T) {
 		t.Fatalf("seed shared vars: %v", err)
 	}
 
+	// Patch source type to git so the PE controller accepts this app.
+	// The app is already deployed (image source), so this doesn't affect
+	// the running workload — it just lets us test env var inheritance
+	// without needing full Gitea + BuildKit infrastructure.
+	var latest mortisev1alpha1.App
+	if err := k8sClient.Get(context.Background(), types.NamespacedName{
+		Namespace: ns, Name: app.Name,
+	}, &latest); err != nil {
+		t.Fatalf("get app for patch: %v", err)
+	}
+	latest.Spec.Source.Type = mortisev1alpha1.SourceTypeGit
+	latest.Spec.Source.Repo = "http://fake/repo.git"
+	latest.Spec.Source.Branch = "main"
+	if err := k8sClient.Update(context.Background(), &latest); err != nil {
+		t.Fatalf("patch app source type: %v", err)
+	}
+
 	// Enable project-level preview.
 	enableProjectPreview(t, projectName, &mortisev1alpha1.PreviewConfig{
 		Enabled: true,
@@ -174,7 +191,7 @@ func TestEnvironmentCloneCreatesEnvWithConfig(t *testing.T) {
 	// Port-forward to the Mortise API and log in.
 	mortisePort := helpers.PortForward(t, "mortise-system", "mortise", 80)
 	mortiseURL := fmt.Sprintf("http://127.0.0.1:%d", mortisePort)
-	token := helpers.LoginAsAdmin(t, mortiseURL, "admin@local", "admin123")
+	token := helpers.LoginAsAdmin(t, mortiseURL, "admin-integ@example.invalid", "integ-admin-pw-01")
 
 	// Call the clone API endpoint.
 	cloneURL := fmt.Sprintf("%s/api/projects/%s/environments/%s/clone", mortiseURL, projectName, prodEnvName)
