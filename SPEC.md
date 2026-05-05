@@ -176,7 +176,7 @@ spec:
   # don't get a public URL.
   preview:
     enabled: true
-    domain: "pr-{number}-{app}.yourdomain.com"  # `{app}` renders per-App
+    domain: "{app}-{project}-pr-{number}.yourdomain.com"  # `{app}`, `{project}`, `{number}` render per-App
     ttl: 72h
     resources: { cpu: 250m, memory: 256Mi }     # preview default; apps can't override
     botPR: false                                 # opt-in: preview bots' PRs (dependabot etc.)
@@ -199,7 +199,10 @@ bindings:
 ```
 
 The resolver looks up the bound App in the same project's control namespace
-and generates host, port, URL, and credential env vars.
+and generates host, port, URL, and credential env vars. If the bound app
+no longer exists (deleted) or is disabled in the target environment, the
+binding is skipped and zero vars are produced for it — stale binding vars
+are cleared on the consumer's next reconcile.
 
 #### What Projects provide in v1
 
@@ -360,7 +363,8 @@ spec:
     # --- OR ---
     # type: image
     # image: ghcr.io/paperless-ngx/paperless-ngx:latest
-    # pullSecretRef: ghcr-credentials
+    # pullSecretRef: ghcr-credentials  # wired into the app's ServiceAccount imagePullSecrets
+    #                                   # (merged with the platform registry pull secret)
 
   network:
     public: true                      # default true; false for backing services
@@ -683,8 +687,22 @@ service. No contradiction; they serve different needs.
 ### 5.6 Network, Domains, TLS
 
 Operator annotates `Ingress` → ExternalDNS creates DNS record → cert-manager
-issues TLS cert. Zero user action. Each environment gets its own subdomain
-automatically, rooted at the platform domain configured at install.
+issues TLS cert. Zero user action. Each environment gets a collision-safe
+subdomain automatically, rooted at the platform domain configured at install.
+The default pattern includes the project name to prevent hostname collisions
+when two projects have apps with the same name:
+
+- Production: `{app}-{project}.{domain}` (e.g. `api-backend.apps.example.com`)
+- Other envs: `{app}-{project}-{env}.{domain}` (e.g. `api-backend-staging.apps.example.com`)
+
+The domain pattern is configurable via `PlatformConfig.spec.domainTemplate`,
+a Go `text/template` string with variables `{{.App}}`, `{{.Project}}`,
+`{{.Env}}`, and `{{.Domain}}`. The default template is:
+`{{.App}}-{{.Project}}{{if ne .Env "production"}}-{{.Env}}{{end}}.{{.Domain}}`
+
+**Collision detection.** The operator rejects reconciliation with a
+`DomainCollision` status condition if a computed hostname is already owned
+by another app. This prevents silent routing conflicts.
 
 Custom domains: user sets CNAME, adds the domain in UI, Ingress rule + TLS
 added by operator.
@@ -971,9 +989,11 @@ to be specced if and when real demand shows up; they are not a v1 contract.
 ### 5.11 Observability (v1)
 
 **mortise-observer (bundled, enabled by default).** The chart includes a
-`mortise-observer` binary that implements the log/metrics/traffic adapter
-contract (§5.11a). It runs as a separate pod backed by a SQLite database on
-a PVC and serves historical data to the Mortise UI. Default retention:
+`mortise-observer` binary (image: `ghcr.io/mortise-org/mortise-observer:{version}`,
+a separate image repository from the operator) that implements the
+log/metrics/traffic adapter contract (§5.11a). It runs as a separate pod
+backed by a SQLite database on a PVC and serves historical data to the
+Mortise UI. Default retention:
 
 | Data type | Retention |
 |---|---|

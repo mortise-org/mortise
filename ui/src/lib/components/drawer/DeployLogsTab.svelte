@@ -242,7 +242,10 @@
 		void selectedEnv;
 		void selectedPod;
 		void previous;
-		untrack(() => { if (mode === 'live') connectLive(false); });
+		untrack(() => {
+			events = [];
+			if (mode === 'live') connectLive(false);
+		});
 	});
 
 	$effect(() => {

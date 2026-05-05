@@ -153,7 +153,7 @@
 		{#if envStatus?.currentImage}
 			<p class="mt-1.5 text-xs text-gray-500">
 				{#if envStatus.deployHistory?.length}
-					{@const latest = envStatus.deployHistory[envStatus.deployHistory.length - 1]}
+					{@const latest = envStatus.deployHistory[0]}
 					Deployed {fmtTime(latest.timestamp)}
 					{#if latest.gitSHA} · git {latest.gitSHA.slice(0, 7)}{/if}
 				{/if}
@@ -168,7 +168,7 @@
 		<div>
 			<h3 class="mb-2 text-xs font-medium uppercase tracking-wide text-gray-500">History</h3>
 			<div class="space-y-1.5">
-				{#each envStatus.deployHistory.toReversed().slice(1) as record, i}
+				{#each envStatus.deployHistory.slice(1) as record, i}
 					<div class="flex items-center justify-between rounded-md bg-surface-900 px-3 py-2">
 						<div class="min-w-0 flex-1">
 							<p class="truncate font-mono text-xs text-gray-300">{shortDigest(record.image)}</p>
@@ -180,7 +180,7 @@
 							<span class="text-xs text-gray-500">{fmtTime(record.timestamp)}</span>
 							<button
 								type="button"
-								onclick={() => doRollback(selectedEnv, envStatus!.deployHistory!.length - 1 - i - 1)}
+								onclick={() => doRollback(selectedEnv, i + 1)}
 								disabled={reloading}
 								class="text-xs text-accent hover:text-accent-hover disabled:opacity-40"
 							>
