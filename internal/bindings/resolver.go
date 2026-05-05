@@ -7,8 +7,10 @@ import (
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
 	"github.com/mortise-org/mortise/internal/constants"
@@ -35,12 +37,20 @@ type ResolvedVar struct {
 //
 // Credential values are read from the bound app's {name}-credentials Secret
 // in the project's env namespace.
+//
+// When a bound app no longer exists (e.g. deleted), the binding is skipped
+// and zero vars are produced for it. This lets the caller's ReplaceSource
+// call clear stale binding vars from the consumer's env Secret.
+// A missing credentials Secret while the App CRD still exists is treated
+// as a transient error (the bound app hasn't finished deploying yet) and
+// retried rather than silently producing partial vars.
 func (r *Resolver) Resolve(
 	ctx context.Context,
 	project string,
 	env string,
 	bindings []mortisev1alpha1.Binding,
 ) ([]ResolvedVar, error) {
+	log := logf.FromContext(ctx)
 	var result []ResolvedVar
 
 	controlNs := constants.ControlNamespace(project)
@@ -50,6 +60,10 @@ func (r *Resolver) Resolve(
 		var boundApp mortisev1alpha1.App
 		key := client.ObjectKey{Name: b.Ref, Namespace: controlNs}
 		if err := r.Client.Get(ctx, key, &boundApp); err != nil {
+			if errors.IsNotFound(err) {
+				log.Info("bound app not found, skipping binding", "binding", b.Ref, "project", project)
+				continue
+			}
 			return nil, fmt.Errorf("resolve binding %q in project %q: %w", b.Ref, project, err)
 		}
 
@@ -61,8 +75,8 @@ func (r *Resolver) Resolve(
 			}
 		} else {
 			if !boundAppEnabledIn(&boundApp, env) {
-				return nil, fmt.Errorf("binding %q: bound app has no enabled instance in env %q of project %q",
-					b.Ref, env, project)
+				log.Info("bound app disabled in env, skipping binding", "binding", b.Ref, "env", env, "project", project)
+				continue
 			}
 			hostValue = fmt.Sprintf("%s.%s.svc.cluster.local", boundApp.Name, envNs)
 			port := boundApp.Spec.Network.Port

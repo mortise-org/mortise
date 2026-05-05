@@ -82,7 +82,7 @@
 			case 'warning':
 				return 'bg-warning';
 			case 'danger':
-				return 'bg-error';
+				return 'bg-danger';
 			default:
 				return 'bg-gray-500';
 		}

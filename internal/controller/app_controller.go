@@ -1493,7 +1493,10 @@ func (r *AppReconciler) reconcileEnvSecret(ctx context.Context, app *mortisev1al
 	// the existence check returned true and seeding was skipped forever.
 	// By merging only missing keys, we handle the race without overwriting
 	// values the user may have changed via the UI.
-	existing, _ := store.Get(ctx, envNs, app.Name)
+	existing, err := store.Get(ctx, envNs, app.Name)
+	if err != nil {
+		return fmt.Errorf("read existing env vars: %w", err)
+	}
 	existingKeys := make(map[string]bool, len(existing))
 	for _, e := range existing {
 		existingKeys[e.Name] = true

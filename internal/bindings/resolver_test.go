@@ -126,15 +126,47 @@ func TestMultipleBindingsInSameProject(t *testing.T) {
 	}
 }
 
-func TestResolveMissingBindingReturnsError(t *testing.T) {
+func TestResolveMissingBindingSkipsGracefully(t *testing.T) {
 	c := newFakeClient(t)
 	r := &bindings.Resolver{Client: c}
 
-	_, err := r.Resolve(context.Background(), "web", "production", []mortisev1alpha1.Binding{
+	vars, err := r.Resolve(context.Background(), "web", "production", []mortisev1alpha1.Binding{
 		{Ref: "does-not-exist"},
 	})
-	if err == nil {
-		t.Fatal("expected error for missing bound app, got nil")
+	if err != nil {
+		t.Fatalf("expected no error for missing bound app, got %v", err)
+	}
+	if len(vars) != 0 {
+		t.Errorf("expected zero vars for missing bound app, got %d", len(vars))
+	}
+}
+
+func TestResolveMissingBindingPreservesOtherBindings(t *testing.T) {
+	svc := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "cache", Namespace: "pj-web"},
+		Spec: mortisev1alpha1.AppSpec{
+			Source:  mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: "redis:7"},
+			Network: mortisev1alpha1.NetworkConfig{Port: 6379},
+			Environments: []mortisev1alpha1.Environment{
+				{Name: "production"},
+			},
+		},
+	}
+	c := newFakeClient(t, svc)
+	r := &bindings.Resolver{Client: c}
+
+	vars, err := r.Resolve(context.Background(), "web", "production", []mortisev1alpha1.Binding{
+		{Ref: "deleted-db"},
+		{Ref: "cache"},
+	})
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if findVar(vars, "DELETED_DB_HOST") != nil {
+		t.Error("deleted binding should produce zero vars")
+	}
+	if findVar(vars, "CACHE_HOST") == nil {
+		t.Error("expected CACHE_HOST from surviving binding")
 	}
 }
 
@@ -327,7 +359,7 @@ func TestResolveMultipleBindingsNoPrefixCollision(t *testing.T) {
 	}
 }
 
-func TestResolveBoundAppDisabledInEnv(t *testing.T) {
+func TestResolveBoundAppDisabledInEnvSkipsGracefully(t *testing.T) {
 	disabled := false
 	svc := &mortisev1alpha1.App{
 		ObjectMeta: metav1.ObjectMeta{Name: "db", Namespace: "pj-web"},
@@ -344,14 +376,14 @@ func TestResolveBoundAppDisabledInEnv(t *testing.T) {
 	c := newFakeClient(t, svc)
 	r := &bindings.Resolver{Client: c}
 
-	_, err := r.Resolve(context.Background(), "web", "production", []mortisev1alpha1.Binding{
+	vars, err := r.Resolve(context.Background(), "web", "production", []mortisev1alpha1.Binding{
 		{Ref: "db"},
 	})
-	if err == nil {
-		t.Fatal("expected error when bound app is disabled in env, got nil")
+	if err != nil {
+		t.Fatalf("expected no error when bound app is disabled, got %v", err)
 	}
-	if !strings.Contains(err.Error(), "enabled instance") {
-		t.Errorf("expected error to mention enabled status, got: %v", err)
+	if len(vars) != 0 {
+		t.Errorf("expected zero vars for disabled bound app, got %d", len(vars))
 	}
 }
 
@@ -364,7 +396,7 @@ func TestResolveCredentialsMissingSecretReturnsError(t *testing.T) {
 		{Ref: "db"},
 	})
 	if err == nil {
-		t.Fatal("expected error when credentials Secret is missing")
+		t.Fatal("expected error when credentials Secret is missing but App CRD exists")
 	}
 	if !strings.Contains(err.Error(), "credentials") {
 		t.Errorf("expected error to mention credentials, got: %v", err)
