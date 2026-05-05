@@ -44,14 +44,12 @@ jobs:
       - id: meta-observer
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          flavor: |
-            suffix=-observer
-            latest=false
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-observer
           tags: |
             type=ref,event=branch
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable={{is_default_branch}}
 
       - uses: docker/build-push-action@v5
         with:
@@ -125,7 +123,7 @@ jobs:
           # Stamp operator image tag in mortise-core values.
           sed -i "s/^  tag: .*/  tag: ${VERSION}/" charts/mortise-core/values.yaml
           # Stamp observer image tag in umbrella values.
-          sed -i "s|image: ghcr.io/mortise-org/mortise:.*-observer|image: ghcr.io/mortise-org/mortise:${VERSION}-observer|" charts/mortise/values.yaml
+          sed -i "s|image: ghcr.io/mortise-org/mortise-observer:.*|image: ghcr.io/mortise-org/mortise-observer:${VERSION}|" charts/mortise/values.yaml
 
       - name: Package charts
         run: |

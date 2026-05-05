@@ -122,11 +122,8 @@ func withoutStagingEnv(ctx context.Context) {
 	}
 	proj.Spec.Environments = kept
 	Expect(k8sClient.Update(ctx, &proj)).To(Succeed())
-
-	var ns corev1.Namespace
-	if err := k8sClient.Get(ctx, client.ObjectKey{Name: "pj-default-project-staging"}, &ns); err == nil {
-		_ = k8sClient.Delete(ctx, &ns)
-	}
+	// Don't delete the namespace — envtest doesn't finalize namespace
+	// deletions, so the ns would stay Terminating and block later tests.
 }
 
 // seedDefaultProject creates the Project record that parents Apps living in
