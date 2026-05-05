@@ -8,10 +8,16 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"testing"
 	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
+	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
 	"github.com/mortise-org/mortise/internal/constants"
 	"github.com/mortise-org/mortise/test/helpers"
 )
@@ -19,15 +25,11 @@ import (
 func observerURL(path string, params map[string]string) string {
 	u := fmt.Sprintf("http://127.0.0.1:%d%s", observerLocalPort, path)
 	if len(params) > 0 {
-		u += "?"
-		first := true
+		q := url.Values{}
 		for k, v := range params {
-			if !first {
-				u += "&"
-			}
-			u += k + "=" + v
-			first = false
+			q.Set(k, v)
 		}
+		u += "?" + q.Encode()
 	}
 	return u
 }
@@ -491,5 +493,149 @@ func TestObserverTrafficEmptyRange(t *testing.T) {
 	requests, _ := series["requests"].([]any)
 	if len(requests) != 0 {
 		t.Fatalf("expected empty requests, got %d", len(requests))
+	}
+}
+
+func TestObserverMetricsAfterRedeploy(t *testing.T) {
+	t.Parallel()
+	skipIfObserverUnavailable(t)
+
+	projectName := "obs-redeploy-" + randSuffix()
+	ns := createProjectForTest(t, projectName)
+
+	app := helpers.LoadFixture(t, filepath.Join(fixturesDir(), "image-basic.yaml"))
+	app.Namespace = ns
+	app.Name = "redeploy-app"
+
+	if err := k8sClient.Create(context.Background(), app); err != nil {
+		t.Fatalf("create app: %v", err)
+	}
+
+	envName := app.Spec.Environments[0].Name
+	envNs := constants.EnvNamespace(projectName, envName)
+
+	helpers.WaitForAppReady(t, k8sClient, ns, app.Name, 2*time.Minute)
+	helpers.AssertPodsRunning(t, k8sClient, envNs, app.Name, 1)
+
+	// Wait for observer to collect metrics from the initial deployment.
+	start := fmt.Sprintf("%d", time.Now().Add(-1*time.Minute).Unix())
+	helpers.RequireEventually(t, 90*time.Second, func() bool {
+		end := fmt.Sprintf("%d", time.Now().Unix())
+		result, ok := observerTryGet(t, "/v1/metrics", map[string]string{
+			"namespace": envNs,
+			"app":       app.Name,
+			"env":       envName,
+			"start":     start,
+			"end":       end,
+			"step":      "5",
+		})
+		if !ok {
+			return false
+		}
+		pods, ok := result["pods"].([]any)
+		return ok && len(pods) > 0
+	})
+
+	// Record the pre-deploy pod name.
+	var preDep appsv1.Deployment
+	if err := k8sClient.Get(context.Background(), types.NamespacedName{
+		Name: app.Name, Namespace: envNs,
+	}, &preDep); err != nil {
+		t.Fatalf("get deployment: %v", err)
+	}
+	preGeneration := preDep.Status.ObservedGeneration
+
+	// Patch the image to trigger a rolling update.
+	var live mortisev1alpha1.App
+	if err := k8sClient.Get(context.Background(), types.NamespacedName{
+		Name: app.Name, Namespace: ns,
+	}, &live); err != nil {
+		t.Fatalf("get app for patch: %v", err)
+	}
+	patch := client.MergeFrom(live.DeepCopy())
+	live.Spec.Source.Image = "redis:7"
+	if err := k8sClient.Patch(context.Background(), &live, patch); err != nil {
+		t.Fatalf("patch app image: %v", err)
+	}
+
+	// Wait for the rolling update to complete: new generation, ready replicas.
+	helpers.RequireEventually(t, 2*time.Minute, func() bool {
+		var dep appsv1.Deployment
+		if err := k8sClient.Get(context.Background(), types.NamespacedName{
+			Name: app.Name, Namespace: envNs,
+		}, &dep); err != nil {
+			return false
+		}
+		return dep.Status.ObservedGeneration > preGeneration &&
+			dep.Status.ReadyReplicas == 1 &&
+			dep.Status.UpdatedReplicas == 1
+	})
+
+	// Record the new pod name from the updated Deployment's ReplicaSet.
+	var postDep appsv1.Deployment
+	if err := k8sClient.Get(context.Background(), types.NamespacedName{
+		Name: app.Name, Namespace: envNs,
+	}, &postDep); err != nil {
+		t.Fatalf("get post-deploy deployment: %v", err)
+	}
+
+	// Poll until the observer returns metrics referencing the new pod.
+	redeployStart := fmt.Sprintf("%d", time.Now().Add(-1*time.Minute).Unix())
+	helpers.RequireEventually(t, 90*time.Second, func() bool {
+		end := fmt.Sprintf("%d", time.Now().Unix())
+		result, ok := observerTryGet(t, "/v1/metrics", map[string]string{
+			"namespace": envNs,
+			"app":       app.Name,
+			"env":       envName,
+			"start":     redeployStart,
+			"end":       end,
+			"step":      "5",
+		})
+		if !ok {
+			return false
+		}
+		pods, ok := result["pods"].([]any)
+		if !ok || len(pods) == 0 {
+			return false
+		}
+		for _, p := range pods {
+			pod := p.(map[string]any)
+			mem, ok := pod["memory"].([]any)
+			if ok && len(mem) > 0 {
+				return true
+			}
+		}
+		return false
+	})
+
+	end := fmt.Sprintf("%d", time.Now().Unix())
+	result := observerGet(t, "/v1/metrics", map[string]string{
+		"namespace": envNs,
+		"app":       app.Name,
+		"env":       envName,
+		"start":     redeployStart,
+		"end":       end,
+		"step":      "5",
+	})
+
+	pods := result["pods"].([]any)
+	if len(pods) == 0 {
+		t.Fatal("expected metrics for post-deploy pod")
+	}
+
+	pod := pods[0].(map[string]any)
+	podName, _ := pod["name"].(string)
+	if podName == "" {
+		t.Fatal("post-deploy pod name is empty")
+	}
+
+	mem := pod["memory"].([]any)
+	if len(mem) == 0 {
+		t.Fatal("expected memory data for post-deploy pod")
+	}
+	point := mem[0].([]any)
+	memVal := point[1].(float64)
+	if memVal <= 0 {
+		t.Errorf("expected post-deploy memory > 0, got %f", memVal)
 	}
 }
