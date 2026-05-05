@@ -141,6 +141,13 @@ func TestAutoDefaultDomainMultiLevelTemplate(t *testing.T) {
 	}
 }
 
+func TestRenderDomainTemplateInvalidSecondLabel(t *testing.T) {
+	got := renderDomainTemplate("{{.App}}.{{.Project}}.{{.Domain}}", "web", "bad_project", "production", "example.com")
+	if got != "" {
+		t.Errorf("expected empty domain for invalid second label, got %q", got)
+	}
+}
+
 func TestAutoDefaultDomainEmptyDomain(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = mortisev1alpha1.AddToScheme(scheme)

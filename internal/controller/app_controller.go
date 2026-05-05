@@ -228,7 +228,18 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 			if env.Domain != "" {
 				allHosts := append([]string{env.Domain}, env.CustomDomains...)
 				if err := r.checkDomainCollisions(ctx, &app, env.Name, allHosts); err != nil {
-					return ctrl.Result{}, err
+					app.Status.Phase = mortisev1alpha1.AppPhaseFailed
+					meta.SetStatusCondition(&app.Status.Conditions, metav1.Condition{
+						Type:               "DomainCollision",
+						Status:             metav1.ConditionTrue,
+						Reason:             "DomainInUse",
+						Message:            err.Error(),
+						ObservedGeneration: app.Generation,
+					})
+					if updateErr := r.Status().Update(ctx, &app); updateErr != nil {
+						log.Error(updateErr, "update status after domain collision")
+					}
+					return ctrl.Result{}, nil
 				}
 				if err := r.reconcileIngress(ctx, &app, env, envNs); err != nil {
 					return ctrl.Result{}, fmt.Errorf("reconcile ingress for env %s: %w", env.Name, err)
@@ -2224,10 +2235,19 @@ func renderDomainTemplate(tmpl, appName, projectName, envName, platformDomain st
 
 	host := buf.String()
 
-	// Validate the subdomain label (everything before the first dot).
-	parts := strings.SplitN(host, ".", 2)
-	if len(parts) < 2 || !isValidDNSLabel(parts[0]) {
+	// Validate all subdomain labels before the platform domain suffix.
+	if !strings.HasSuffix(host, "."+platformDomain) {
 		return ""
+	}
+	prefix := strings.TrimSuffix(host, "."+platformDomain)
+	labels := strings.Split(prefix, ".")
+	if len(labels) == 0 {
+		return ""
+	}
+	for _, label := range labels {
+		if !isValidDNSLabel(label) {
+			return ""
+		}
 	}
 
 	return host
@@ -2278,7 +2298,9 @@ func (r *AppReconciler) checkDomainCollisions(ctx context.Context, app *mortisev
 	}
 
 	var allIngresses networkingv1.IngressList
-	if err := r.List(ctx, &allIngresses); err != nil {
+	if err := r.List(ctx, &allIngresses, client.MatchingLabels{
+		"app.kubernetes.io/managed-by": "mortise",
+	}); err != nil {
 		return fmt.Errorf("list ingresses for collision check: %w", err)
 	}
 
@@ -2519,6 +2541,7 @@ func toSecretVolumesAndMounts(mounts []mortisev1alpha1.SecretMount) ([]corev1.Vo
 // ExternalName Service + Ingress to expose the external host through Mortise's
 // domain/TLS setup.
 func (r *AppReconciler) reconcileExternalSource(ctx context.Context, app *mortisev1alpha1.App) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
 	project, err := r.fetchParentProject(ctx, app)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("fetch parent project: %w", err)
@@ -2548,7 +2571,18 @@ func (r *AppReconciler) reconcileExternalSource(ctx context.Context, app *mortis
 			if env.Domain != "" {
 				allHosts := append([]string{env.Domain}, env.CustomDomains...)
 				if err := r.checkDomainCollisions(ctx, app, env.Name, allHosts); err != nil {
-					return ctrl.Result{}, err
+					app.Status.Phase = mortisev1alpha1.AppPhaseFailed
+					meta.SetStatusCondition(&app.Status.Conditions, metav1.Condition{
+						Type:               "DomainCollision",
+						Status:             metav1.ConditionTrue,
+						Reason:             "DomainInUse",
+						Message:            err.Error(),
+						ObservedGeneration: app.Generation,
+					})
+					if updateErr := r.Status().Update(ctx, app); updateErr != nil {
+						log.Error(updateErr, "update status after domain collision")
+					}
+					return ctrl.Result{}, nil
 				}
 				if err := r.reconcileExternalNameService(ctx, app, env, envNs); err != nil {
 					return ctrl.Result{}, fmt.Errorf("reconcile externalname service for env %s: %w", env.Name, err)
