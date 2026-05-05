@@ -4291,6 +4291,8 @@ var _ = Describe("App Controller — git source", func() {
 					Credentials: []mortisev1alpha1.Credential{
 						{Name: "host"},
 						{Name: "port"},
+						{Name: "username", Value: "postgres"},
+						{Name: "password", Value: "secret"},
 					},
 					Environments: []mortisev1alpha1.Environment{{
 						Name:     "production",
@@ -4299,6 +4301,19 @@ var _ = Describe("App Controller — git source", func() {
 				},
 			}
 			Expect(k8sClient.Create(ctx, dbApp)).To(Succeed())
+
+			dbCredSecret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      dbName + "-credentials",
+					Namespace: envNsProduction,
+				},
+				Data: map[string][]byte{
+					"username": []byte("postgres"),
+					"password": []byte("secret"),
+				},
+			}
+			Expect(k8sClient.Create(ctx, dbCredSecret)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, dbCredSecret) }()
 
 			apiApp := &mortisev1alpha1.App{
 				ObjectMeta: metav1.ObjectMeta{Name: apiName, Namespace: namespace},
@@ -4329,6 +4344,8 @@ var _ = Describe("App Controller — git source", func() {
 			envData := readAppEnvSecret(ctx, apiName, envNsProduction)
 			Expect(envData).To(HaveKey("STALE_DB_HOST"), "binding vars should exist after first reconcile")
 			Expect(envData).To(HaveKey("STALE_DB_PORT"))
+			Expect(envData).To(HaveKey("STALE_DB_USERNAME"), "credential vars should exist after first reconcile")
+			Expect(envData).To(HaveKey("STALE_DB_PASSWORD"), "credential vars should exist after first reconcile")
 
 			// Delete the bound app.
 			Expect(k8sClient.Delete(ctx, dbApp)).To(Succeed())
@@ -4341,6 +4358,8 @@ var _ = Describe("App Controller — git source", func() {
 			envData = readAppEnvSecret(ctx, apiName, envNsProduction)
 			Expect(envData).NotTo(HaveKey("STALE_DB_HOST"), "stale binding vars should be cleared")
 			Expect(envData).NotTo(HaveKey("STALE_DB_PORT"), "stale binding vars should be cleared")
+			Expect(envData).NotTo(HaveKey("STALE_DB_USERNAME"), "stale credential vars should be cleared")
+			Expect(envData).NotTo(HaveKey("STALE_DB_PASSWORD"), "stale credential vars should be cleared")
 		})
 
 		It("preserves valid bindings when one of multiple bound apps is deleted", func() {
@@ -4363,6 +4382,7 @@ var _ = Describe("App Controller — git source", func() {
 					Credentials: []mortisev1alpha1.Credential{
 						{Name: "host"},
 						{Name: "port"},
+						{Name: "password", Value: "secret"},
 					},
 					Environments: []mortisev1alpha1.Environment{{
 						Name:     "production",
@@ -4373,6 +4393,18 @@ var _ = Describe("App Controller — git source", func() {
 			Expect(k8sClient.Create(ctx, cacheApp)).To(Succeed())
 			defer func() { _ = k8sClient.Delete(ctx, cacheApp) }()
 			Expect(k8sClient.Create(ctx, dbApp)).To(Succeed())
+
+			survDbCredSecret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "surv-db-credentials",
+					Namespace: envNsProduction,
+				},
+				Data: map[string][]byte{
+					"password": []byte("secret"),
+				},
+			}
+			Expect(k8sClient.Create(ctx, survDbCredSecret)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, survDbCredSecret) }()
 
 			consumer := &mortisev1alpha1.App{
 				ObjectMeta: metav1.ObjectMeta{Name: "surv-api", Namespace: namespace},
@@ -4403,6 +4435,7 @@ var _ = Describe("App Controller — git source", func() {
 			envData := readAppEnvSecret(ctx, "surv-api", envNsProduction)
 			Expect(envData).To(HaveKey("SURV_CACHE_HOST"))
 			Expect(envData).To(HaveKey("SURV_DB_HOST"))
+			Expect(envData).To(HaveKey("SURV_DB_PASSWORD"), "credential vars should exist after first reconcile")
 
 			// Delete the DB, keep the cache.
 			Expect(k8sClient.Delete(ctx, dbApp)).To(Succeed())
@@ -4416,6 +4449,7 @@ var _ = Describe("App Controller — git source", func() {
 			Expect(envData).To(HaveKey("SURV_CACHE_PORT"), "surviving binding should still resolve")
 			Expect(envData).NotTo(HaveKey("SURV_DB_HOST"), "deleted binding vars should be cleared")
 			Expect(envData).NotTo(HaveKey("SURV_DB_PORT"), "deleted binding vars should be cleared")
+			Expect(envData).NotTo(HaveKey("SURV_DB_PASSWORD"), "deleted credential vars should be cleared")
 		})
 
 		It("skips binding when bound app is disabled in the target env", func() {

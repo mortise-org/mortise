@@ -387,28 +387,19 @@ func TestResolveBoundAppDisabledInEnvSkipsGracefully(t *testing.T) {
 	}
 }
 
-func TestResolveCredentialsMissingSecretSkipsCredentialVars(t *testing.T) {
+func TestResolveCredentialsMissingSecretReturnsError(t *testing.T) {
 	db := newDB("db", "pj-web")
 	c := newFakeClient(t, db)
 	r := &bindings.Resolver{Client: c}
 
-	vars, err := r.Resolve(context.Background(), "web", "production", []mortisev1alpha1.Binding{
+	_, err := r.Resolve(context.Background(), "web", "production", []mortisev1alpha1.Binding{
 		{Ref: "db"},
 	})
-	if err != nil {
-		t.Fatalf("expected no error when credentials Secret is missing, got %v", err)
+	if err == nil {
+		t.Fatal("expected error when credentials Secret is missing but App CRD exists")
 	}
-	if findVar(vars, "DB_HOST") == nil {
-		t.Error("expected DB_HOST even when credentials Secret is missing")
-	}
-	if findVar(vars, "DB_PORT") == nil {
-		t.Error("expected DB_PORT even when credentials Secret is missing")
-	}
-	if findVar(vars, "DB_PASSWORD") != nil {
-		t.Error("expected no DB_PASSWORD when credentials Secret is missing")
-	}
-	if findVar(vars, "DB_USERNAME") != nil {
-		t.Error("expected no DB_USERNAME when credentials Secret is missing")
+	if !strings.Contains(err.Error(), "credentials") {
+		t.Errorf("expected error to mention credentials, got: %v", err)
 	}
 }
 

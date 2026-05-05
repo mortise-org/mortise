@@ -238,20 +238,12 @@
 		void loadPods();
 	});
 
-	let lastPod = $state('');
-	let lastPrevious = $state(false);
 	$effect(() => {
 		void selectedEnv;
-		const pod = selectedPod;
-		const prev = previous;
+		void selectedPod;
+		void previous;
 		untrack(() => {
-			const podChanged = pod !== lastPod;
-			const prevChanged = prev !== lastPrevious;
-			lastPod = pod;
-			lastPrevious = prev;
-			if (podChanged || prevChanged) {
-				events = [];
-			}
+			events = [];
 			if (mode === 'live') connectLive(false);
 		});
 	});
