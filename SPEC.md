@@ -748,11 +748,22 @@ cluster's default SC). For v1:
 - Independent Deployments, isolated by namespace
 - **Promote:** staging → production with no rebuild
 - **Rollback:** deploy history (digest + timestamp + SHA); one-click
+- **Clone:** create a new environment from an existing one via
+  `POST /api/projects/{project}/environments/{source}/clone`.
+  Copies per-app CRD overrides (replicas, resources, probes, bindings,
+  schedule, annotations) and Secret-level env vars (set via the UI/API).
+  Binding-sourced vars are excluded — the controller re-resolves them
+  in the new namespace. The operation is retry-safe: partial failures
+  can be retried without duplication.
 - **Preview environments (project-level toggle, §5.0 `spec.preview.enabled`).**
   When enabled on the parent Project, PR opens → operator creates one
-  `PreviewEnvironment` per App in the project, clones staging's config,
-  DNS + TLS handled automatically, bindings live-resolved through the
-  preview namespace (no credential copy). PR closes or TTL expires →
+  `PreviewEnvironment` per App in the project. The preview controller
+  inherits the source environment's configuration:
+  - Per-app env vars from the source env's `{app}-env` Secret
+  - Shared env vars from the source env's `shared-env` Secret
+  - Bindings live-resolved against the source environment
+  - `pe.Spec.Env` overrides win over all inherited values
+  DNS + TLS handled automatically. PR closes or TTL expires →
   everything deleted. URL posted as PR comment.
 
   **Scope semantics (option a).** *Every* App in the project reconciles
@@ -1803,8 +1814,11 @@ touching only one subdir rebuilds only that App.
   opt-in. When enabled, every App in the project participates (§5.8).
 - `PreviewEnvironment` CRD auto-managed by a dedicated controller
 - PR open → for each App in the project with previews enabled,
-  clone staging env config; apply project-level `preview.*` overrides;
-  DNS + TLS handled by existing ExternalDNS/cert-manager plumbing
+  inherit source env config: per-app env vars from the `{app}-env`
+  Secret, shared vars from `shared-env`, binding refs live-resolved
+  in the preview namespace; `pe.Spec.Env` overrides win over
+  inherited values; DNS + TLS handled by existing
+  ExternalDNS/cert-manager plumbing
 - Cron and non-public Apps reconcile into the preview namespace but get
   no public URL (§5.8a, §5.8 scope semantics)
 - Bindings live-resolved within the preview namespace (no credential copy)
@@ -2124,8 +2138,9 @@ broken lightly.
   today, moving to `v1beta1` and `v1` over time.
 - **REST API**: documented `/api/...` project/app-scoped endpoints (for
   example `POST /api/projects/{project}/apps/{app}/deploy`,
-  `POST /api/projects/{project}/apps/{app}/secrets`). Used by the UI, CLI,
-  and external CI systems. Full OpenAPI spec published.
+  `POST /api/projects/{project}/apps/{app}/secrets`,
+  `POST /api/projects/{project}/environments/{source}/clone`). Used by
+  the UI, CLI, and external CI systems. Full OpenAPI spec published.
 
 **What external callers need to agree to, in practice:**
 
