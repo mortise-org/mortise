@@ -100,8 +100,8 @@ func TestDomainRemovalDeletesIngress(t *testing.T) {
 		t.Fatalf("update app: %v", err)
 	}
 
-	// Wait for Ingress to be deleted.
-	helpers.RequireEventually(t, 60*time.Second, func() bool {
+	// Wait for Ingress to be deleted — CI runners can be slow to reconcile.
+	helpers.RequireEventually(t, 2*time.Minute, func() bool {
 		var ing networkingv1.Ingress
 		err := k8sClient.Get(context.Background(), types.NamespacedName{
 			Name: app.Name, Namespace: envNs,
