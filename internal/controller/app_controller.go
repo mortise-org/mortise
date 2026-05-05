@@ -26,6 +26,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"text/template"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -220,13 +221,15 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 
 		if app.Spec.Network.Public {
 			if env.Domain == "" {
-				// Auto-compute domain from platform config: {app}.{platformDomain}
-				// for production, {app}-{env}.{platformDomain} for other envs.
 				if computed := r.autoDefaultDomain(ctx, &app, env.Name); computed != "" {
 					env.Domain = computed
 				}
 			}
 			if env.Domain != "" {
+				allHosts := append([]string{env.Domain}, env.CustomDomains...)
+				if err := r.checkDomainCollisions(ctx, &app, env.Name, allHosts); err != nil {
+					return ctrl.Result{}, err
+				}
 				if err := r.reconcileIngress(ctx, &app, env, envNs); err != nil {
 					return ctrl.Result{}, fmt.Errorf("reconcile ingress for env %s: %w", env.Name, err)
 				}
@@ -1197,10 +1200,15 @@ func (r *AppReconciler) reconcileIngress(ctx context.Context, app *mortisev1alph
 
 func (r *AppReconciler) reconcileServiceAccount(ctx context.Context, app *mortisev1alpha1.App, envNs, envName string) error {
 	var imagePullSecrets []corev1.LocalObjectReference
+	seen := map[string]bool{}
 	if r.RegistryBackend != nil {
 		if ref := r.RegistryBackend.PullSecretRef(); ref != "" {
-			imagePullSecrets = []corev1.LocalObjectReference{{Name: ref}}
+			imagePullSecrets = append(imagePullSecrets, corev1.LocalObjectReference{Name: ref})
+			seen[ref] = true
 		}
+	}
+	if ref := app.Spec.Source.PullSecretRef; ref != "" && !seen[ref] {
+		imagePullSecrets = append(imagePullSecrets, corev1.LocalObjectReference{Name: ref})
 	}
 
 	desired := &corev1.ServiceAccount{
@@ -2161,33 +2169,68 @@ func cronJobName(appName string) string    { return appName }
 func serviceName(appName string) string    { return appName }
 func ingressName(appName string) string    { return appName }
 
+// defaultDomainTemplate is the collision-safe default: {app}-{project}.{domain}
+// for production, {app}-{project}-{env}.{domain} for other environments.
+const defaultDomainTemplate = `{{.App}}-{{.Project}}{{if ne .Env "production"}}-{{.Env}}{{end}}.{{.Domain}}`
+
+// domainTemplateData provides the variables available in domain templates.
+type domainTemplateData struct {
+	App     string
+	Project string
+	Env     string
+	Domain  string
+}
+
 // autoDefaultDomain computes a domain for public apps that don't have one set.
-// Returns "{app}.{platformDomain}" for the first/default environment, or
-// "{app}-{env}.{platformDomain}" for others. Returns "" if PlatformConfig has
-// no domain configured.
+// Uses PlatformConfig.Spec.DomainTemplate if configured, otherwise falls back
+// to the collision-safe default "{app}-{project}.{domain}".
 func (r *AppReconciler) autoDefaultDomain(ctx context.Context, app *mortisev1alpha1.App, envName string) string {
 	var pc mortisev1alpha1.PlatformConfig
 	if err := r.Get(ctx, types.NamespacedName{Name: "platform"}, &pc); err != nil || pc.Spec.Domain == "" {
 		return ""
 	}
 
-	// For the first environment (typically "production"), use {app}.{domain}.
-	// For other environments, use {app}-{env}.{domain} to avoid collisions.
-	var label string
-	if envName == "production" {
-		label = app.Name
-	} else {
-		label = app.Name + "-" + envName
-	}
-
-	// DNS labels must be at most 63 characters, contain only lowercase
-	// alphanumeric characters or hyphens, must not start or end with a
-	// hyphen, and must not start with a digit.
-	if !isValidDNSLabel(label) {
+	projectName, err := appProjectName(app)
+	if err != nil {
 		return ""
 	}
 
-	return fmt.Sprintf("%s.%s", label, pc.Spec.Domain)
+	return renderDomainTemplate(pc.Spec.DomainTemplate, app.Name, projectName, envName, pc.Spec.Domain)
+}
+
+// renderDomainTemplate evaluates a domain template with the given context.
+// Exported for testing and reuse by the preview controller.
+func renderDomainTemplate(tmpl, appName, projectName, envName, platformDomain string) string {
+	if tmpl == "" {
+		tmpl = defaultDomainTemplate
+	}
+
+	t, err := template.New("domain").Parse(tmpl)
+	if err != nil {
+		return ""
+	}
+
+	data := domainTemplateData{
+		App:     appName,
+		Project: projectName,
+		Env:     envName,
+		Domain:  platformDomain,
+	}
+
+	var buf strings.Builder
+	if err := t.Execute(&buf, data); err != nil {
+		return ""
+	}
+
+	host := buf.String()
+
+	// Validate the subdomain label (everything before the first dot).
+	parts := strings.SplitN(host, ".", 2)
+	if len(parts) < 2 || !isValidDNSLabel(parts[0]) {
+		return ""
+	}
+
+	return host
 }
 
 // isValidDNSLabel checks that s is a valid DNS label per RFC 1123: at most 63
@@ -2214,6 +2257,46 @@ func isValidDNSLabel(s string) bool {
 		}
 	}
 	return true
+}
+
+// checkDomainCollisions lists all Ingresses across all namespaces and rejects
+// reconciliation if any hostname in hosts is already owned by a different App.
+// Ingresses owned by the same App (same name+project labels) are not collisions.
+func (r *AppReconciler) checkDomainCollisions(ctx context.Context, app *mortisev1alpha1.App, envName string, hosts []string) error {
+	if len(hosts) == 0 {
+		return nil
+	}
+
+	projectName, err := appProjectName(app)
+	if err != nil {
+		return err
+	}
+
+	hostSet := make(map[string]struct{}, len(hosts))
+	for _, h := range hosts {
+		hostSet[h] = struct{}{}
+	}
+
+	var allIngresses networkingv1.IngressList
+	if err := r.List(ctx, &allIngresses); err != nil {
+		return fmt.Errorf("list ingresses for collision check: %w", err)
+	}
+
+	for i := range allIngresses.Items {
+		ing := &allIngresses.Items[i]
+		ownerApp := ing.Labels[constants.AppNameLabel]
+		ownerProject := ing.Labels[constants.ProjectLabel]
+		if ownerApp == app.Name && ownerProject == projectName {
+			continue
+		}
+
+		for _, rule := range ing.Spec.Rules {
+			if _, collision := hostSet[rule.Host]; collision {
+				return fmt.Errorf("domain %q already in use by app %q in project %q", rule.Host, ownerApp, ownerProject)
+			}
+		}
+	}
+	return nil
 }
 
 // appLabels stamps the standard Mortise ownership labels. `mortise.dev/project`
@@ -2481,6 +2564,10 @@ func (r *AppReconciler) reconcileExternalSource(ctx context.Context, app *mortis
 				}
 			}
 			if env.Domain != "" {
+				allHosts := append([]string{env.Domain}, env.CustomDomains...)
+				if err := r.checkDomainCollisions(ctx, app, env.Name, allHosts); err != nil {
+					return ctrl.Result{}, err
+				}
 				if err := r.reconcileExternalNameService(ctx, app, env, envNs); err != nil {
 					return ctrl.Result{}, fmt.Errorf("reconcile externalname service for env %s: %w", env.Name, err)
 				}

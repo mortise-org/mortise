@@ -1615,6 +1615,402 @@ var _ = Describe("App Controller", func() {
 			Expect(sa.ImagePullSecrets[0].Name).To(Equal("registry-pull"))
 		})
 	})
+
+	Context("per-app pullSecretRef wiring (#107)", func() {
+		ctx := context.Background()
+
+		It("merges per-app pullSecretRef into ServiceAccount imagePullSecrets", func() {
+			const appName = "sa-app-pull"
+			app := &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{Name: appName, Namespace: namespace},
+				Spec: mortisev1alpha1.AppSpec{
+					Source: mortisev1alpha1.AppSource{
+						Type:          mortisev1alpha1.SourceTypeImage,
+						Image:         "ghcr.io/private/app:latest",
+						PullSecretRef: "my-ghcr-secret",
+					},
+					Network: mortisev1alpha1.NetworkConfig{Public: false},
+					Environments: []mortisev1alpha1.Environment{
+						{Name: "production", Replicas: ptr.To[int32](1)},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var sa corev1.ServiceAccount
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName, Namespace: envNsProduction,
+			}, &sa)).To(Succeed())
+			Expect(sa.ImagePullSecrets).To(HaveLen(1))
+			Expect(sa.ImagePullSecrets[0].Name).To(Equal("my-ghcr-secret"))
+		})
+
+		It("merges platform and per-app pull secrets, deduped", func() {
+			const appName = "sa-both-pull"
+			app := &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{Name: appName, Namespace: namespace},
+				Spec: mortisev1alpha1.AppSpec{
+					Source: mortisev1alpha1.AppSource{
+						Type:          mortisev1alpha1.SourceTypeImage,
+						Image:         "ghcr.io/private/app:latest",
+						PullSecretRef: "my-ghcr-secret",
+					},
+					Network: mortisev1alpha1.NetworkConfig{Public: false},
+					Environments: []mortisev1alpha1.Environment{
+						{Name: "production", Replicas: ptr.To[int32](1)},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+
+			reconciler := &AppReconciler{
+				Client:          k8sClient,
+				Scheme:          k8sClient.Scheme(),
+				RegistryBackend: &fakeRegistryBackend{pullSecretName: "registry-pull"},
+			}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var sa corev1.ServiceAccount
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName, Namespace: envNsProduction,
+			}, &sa)).To(Succeed())
+			Expect(sa.ImagePullSecrets).To(HaveLen(2))
+			Expect(sa.ImagePullSecrets[0].Name).To(Equal("registry-pull"))
+			Expect(sa.ImagePullSecrets[1].Name).To(Equal("my-ghcr-secret"))
+		})
+
+		It("deduplicates when platform and per-app secrets are the same", func() {
+			const appName = "sa-dedup-pull"
+			app := &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{Name: appName, Namespace: namespace},
+				Spec: mortisev1alpha1.AppSpec{
+					Source: mortisev1alpha1.AppSource{
+						Type:          mortisev1alpha1.SourceTypeImage,
+						Image:         "ghcr.io/private/app:latest",
+						PullSecretRef: "registry-pull",
+					},
+					Network: mortisev1alpha1.NetworkConfig{Public: false},
+					Environments: []mortisev1alpha1.Environment{
+						{Name: "production", Replicas: ptr.To[int32](1)},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+
+			reconciler := &AppReconciler{
+				Client:          k8sClient,
+				Scheme:          k8sClient.Scheme(),
+				RegistryBackend: &fakeRegistryBackend{pullSecretName: "registry-pull"},
+			}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var sa corev1.ServiceAccount
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName, Namespace: envNsProduction,
+			}, &sa)).To(Succeed())
+			Expect(sa.ImagePullSecrets).To(HaveLen(1))
+			Expect(sa.ImagePullSecrets[0].Name).To(Equal("registry-pull"))
+		})
+	})
+
+	Context("auto-generated domain includes project name (#160)", func() {
+		ctx := context.Background()
+
+		It("generates {app}-{project}.{domain} for production", func() {
+			const appName = "domain-proj-prod"
+			pc := &mortisev1alpha1.PlatformConfig{
+				ObjectMeta: metav1.ObjectMeta{Name: "platform"},
+				Spec:       mortisev1alpha1.PlatformConfigSpec{Domain: "example.com"},
+			}
+			Expect(k8sClient.Create(ctx, pc)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, pc)).To(Succeed()) }()
+
+			app := &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{Name: appName, Namespace: namespace},
+				Spec: mortisev1alpha1.AppSpec{
+					Source:  mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: testImageNginx},
+					Network: mortisev1alpha1.NetworkConfig{Public: true},
+					Environments: []mortisev1alpha1.Environment{
+						{Name: "production", Replicas: ptr.To[int32](1)},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+
+			reconciler := &AppReconciler{
+				Client:          k8sClient,
+				Scheme:          k8sClient.Scheme(),
+				IngressProvider: ingress.NewAnnotationProvider(ingress.AnnotationProviderConfig{}),
+			}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var ing networkingv1.Ingress
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName, Namespace: envNsProduction,
+			}, &ing)).To(Succeed())
+			Expect(ing.Spec.Rules[0].Host).To(Equal("domain-proj-prod-default-project.example.com"))
+		})
+
+		It("generates {app}-{project}-{env}.{domain} for non-production", func() {
+			const appName = "domain-proj-stg"
+			pc := &mortisev1alpha1.PlatformConfig{
+				ObjectMeta: metav1.ObjectMeta{Name: "platform"},
+				Spec:       mortisev1alpha1.PlatformConfigSpec{Domain: "example.com"},
+			}
+			Expect(k8sClient.Create(ctx, pc)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, pc)).To(Succeed()) }()
+
+			withStagingEnv(ctx)
+			defer withoutStagingEnv(ctx)
+
+			app := &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{Name: appName, Namespace: namespace},
+				Spec: mortisev1alpha1.AppSpec{
+					Source:  mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: testImageNginx},
+					Network: mortisev1alpha1.NetworkConfig{Public: true},
+					Environments: []mortisev1alpha1.Environment{
+						{Name: "production", Replicas: ptr.To[int32](1)},
+						{Name: "staging", Replicas: ptr.To[int32](1)},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+
+			reconciler := &AppReconciler{
+				Client:          k8sClient,
+				Scheme:          k8sClient.Scheme(),
+				IngressProvider: ingress.NewAnnotationProvider(ingress.AnnotationProviderConfig{}),
+			}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var ing networkingv1.Ingress
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName, Namespace: "pj-default-project-staging",
+			}, &ing)).To(Succeed())
+			Expect(ing.Spec.Rules[0].Host).To(Equal("domain-proj-stg-default-project-staging.example.com"))
+		})
+
+		It("uses custom domainTemplate from PlatformConfig", func() {
+			const appName = "domain-custom-tmpl"
+			pc := &mortisev1alpha1.PlatformConfig{
+				ObjectMeta: metav1.ObjectMeta{Name: "platform"},
+				Spec: mortisev1alpha1.PlatformConfigSpec{
+					Domain:         "example.com",
+					DomainTemplate: "{{.App}}.{{.Domain}}",
+				},
+			}
+			Expect(k8sClient.Create(ctx, pc)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, pc)).To(Succeed()) }()
+
+			app := &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{Name: appName, Namespace: namespace},
+				Spec: mortisev1alpha1.AppSpec{
+					Source:  mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: testImageNginx},
+					Network: mortisev1alpha1.NetworkConfig{Public: true},
+					Environments: []mortisev1alpha1.Environment{
+						{Name: "production", Replicas: ptr.To[int32](1)},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+
+			reconciler := &AppReconciler{
+				Client:          k8sClient,
+				Scheme:          k8sClient.Scheme(),
+				IngressProvider: ingress.NewAnnotationProvider(ingress.AnnotationProviderConfig{}),
+			}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var ing networkingv1.Ingress
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName, Namespace: envNsProduction,
+			}, &ing)).To(Succeed())
+			Expect(ing.Spec.Rules[0].Host).To(Equal("domain-custom-tmpl.example.com"))
+		})
+
+		It("does not collide when explicit domain is set", func() {
+			const appName = "domain-explicit"
+			app := &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{Name: appName, Namespace: namespace},
+				Spec: mortisev1alpha1.AppSpec{
+					Source:  mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: testImageNginx},
+					Network: mortisev1alpha1.NetworkConfig{Public: true},
+					Environments: []mortisev1alpha1.Environment{
+						{Name: "production", Replicas: ptr.To[int32](1), Domain: "my-custom.example.com"},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+
+			reconciler := &AppReconciler{
+				Client:          k8sClient,
+				Scheme:          k8sClient.Scheme(),
+				IngressProvider: ingress.NewAnnotationProvider(ingress.AnnotationProviderConfig{}),
+			}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var ing networkingv1.Ingress
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName, Namespace: envNsProduction,
+			}, &ing)).To(Succeed())
+			Expect(ing.Spec.Rules[0].Host).To(Equal("my-custom.example.com"))
+		})
+	})
+
+	Context("domain collision detection (#160)", func() {
+		ctx := context.Background()
+
+		It("rejects reconcile when another app already owns the domain", func() {
+			// Create the first app with a specific domain.
+			const app1Name = "collision-owner"
+			app1 := &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{Name: app1Name, Namespace: namespace},
+				Spec: mortisev1alpha1.AppSpec{
+					Source:  mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: testImageNginx},
+					Network: mortisev1alpha1.NetworkConfig{Public: true},
+					Environments: []mortisev1alpha1.Environment{
+						{Name: "production", Replicas: ptr.To[int32](1), Domain: "shared.example.com"},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app1)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app1)).To(Succeed()) }()
+
+			reconciler := &AppReconciler{
+				Client:          k8sClient,
+				Scheme:          k8sClient.Scheme(),
+				IngressProvider: ingress.NewAnnotationProvider(ingress.AnnotationProviderConfig{}),
+			}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: app1Name, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Create a second app that claims the same domain.
+			const app2Name = "collision-thief"
+			app2 := &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{Name: app2Name, Namespace: namespace},
+				Spec: mortisev1alpha1.AppSpec{
+					Source:  mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: testImageNginx},
+					Network: mortisev1alpha1.NetworkConfig{Public: true},
+					Environments: []mortisev1alpha1.Environment{
+						{Name: "production", Replicas: ptr.To[int32](1), Domain: "shared.example.com"},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app2)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app2)).To(Succeed()) }()
+
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: app2Name, Namespace: namespace},
+			})
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("shared.example.com"))
+			Expect(err.Error()).To(ContainSubstring("already in use"))
+		})
+
+		It("allows the same app to re-reconcile its own domain", func() {
+			const appName = "collision-self"
+			app := &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{Name: appName, Namespace: namespace},
+				Spec: mortisev1alpha1.AppSpec{
+					Source:  mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: testImageNginx},
+					Network: mortisev1alpha1.NetworkConfig{Public: true},
+					Environments: []mortisev1alpha1.Environment{
+						{Name: "production", Replicas: ptr.To[int32](1), Domain: "self.example.com"},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+
+			reconciler := &AppReconciler{
+				Client:          k8sClient,
+				Scheme:          k8sClient.Scheme(),
+				IngressProvider: ingress.NewAnnotationProvider(ingress.AnnotationProviderConfig{}),
+			}
+
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Re-reconcile: should succeed since the ingress belongs to this app.
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
+})
+
+var _ = Describe("renderDomainTemplate", func() {
+	It("uses default template with project scoping", func() {
+		result := renderDomainTemplate("", "api", "team-a", "production", "example.com")
+		Expect(result).To(Equal("api-team-a.example.com"))
+	})
+
+	It("includes env name for non-production", func() {
+		result := renderDomainTemplate("", "api", "team-a", "staging", "example.com")
+		Expect(result).To(Equal("api-team-a-staging.example.com"))
+	})
+
+	It("evaluates custom Go template", func() {
+		result := renderDomainTemplate("{{.App}}.{{.Project}}.{{.Domain}}", "web", "myproj", "production", "example.com")
+		Expect(result).To(Equal("web.myproj.example.com"))
+	})
+
+	It("supports legacy single-level template without project", func() {
+		result := renderDomainTemplate("{{.App}}.{{.Domain}}", "web", "myproj", "production", "example.com")
+		Expect(result).To(Equal("web.example.com"))
+	})
+
+	It("returns empty for invalid DNS label", func() {
+		result := renderDomainTemplate("", "UPPER", "project", "production", "example.com")
+		Expect(result).To(BeEmpty())
+	})
+
+	It("returns empty for label exceeding 63 chars", func() {
+		longName := "a234567890123456789012345678901234567890123456789012345678901234"
+		result := renderDomainTemplate("", longName, "p", "production", "example.com")
+		Expect(result).To(BeEmpty())
+	})
+
+	It("returns empty for invalid template syntax", func() {
+		result := renderDomainTemplate("{{.Invalid", "app", "proj", "production", "example.com")
+		Expect(result).To(BeEmpty())
+	})
 })
 
 // --- Mock types for git-source tests ---

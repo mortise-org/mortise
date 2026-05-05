@@ -753,16 +753,18 @@ func previewBuildArgs(app *mortisev1alpha1.App) map[string]string {
 }
 
 // ResolvePreviewDomain resolves a preview domain template. The template may
-// contain {number} and {app} placeholders. If template is empty, a default
-// pattern using the platform domain is constructed.
-func ResolvePreviewDomain(template, appName string, prNumber int, platformDomain string) string {
+// contain {number}, {app}, and {project} placeholders. If template is empty,
+// a default pattern using the platform domain is constructed:
+// {app}-{project}-pr-{number}.{platformDomain}
+func ResolvePreviewDomain(template, appName, projectName string, prNumber int, platformDomain string) string {
 	if template == "" {
 		if platformDomain == "" {
 			platformDomain = "example.com"
 		}
-		template = fmt.Sprintf("pr-{number}-{app}.%s", platformDomain)
+		template = fmt.Sprintf("{app}-{project}-pr-{number}.%s", platformDomain)
 	}
 	result := strings.ReplaceAll(template, "{number}", fmt.Sprintf("%d", prNumber))
 	result = strings.ReplaceAll(result, "{app}", appName)
+	result = strings.ReplaceAll(result, "{project}", projectName)
 	return result
 }

@@ -18,8 +18,8 @@ package controller
 
 import (
 	"context"
-	stderrors "errors"
 	"encoding/hex"
+	stderrors "errors"
 	"fmt"
 
 	corev1 "k8s.io/api/core/v1"

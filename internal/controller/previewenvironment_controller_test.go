@@ -57,7 +57,7 @@ func createPreviewTestProject(ctx context.Context, previewEnabled bool) (*mortis
 	if previewEnabled {
 		project.Spec.Preview = &mortisev1alpha1.PreviewConfig{
 			Enabled: true,
-			Domain:  "pr-{number}-{app}.example.com",
+			Domain:  "{app}-{project}-pr-{number}.example.com",
 			TTL:     "72h",
 		}
 	}
@@ -232,7 +232,8 @@ var _ = Describe("PreviewEnvironment Controller", func() {
 			}
 			Expect(k8sClient.Update(ctx, project)).To(Succeed())
 
-			pe := createPreviewEnv(ctx, "webapp-preview-pr-42", ns, "webapp", 42, "deadbeef", "feat-x", "pr-42-webapp.example.com", 72*time.Hour)
+			previewDomain := fmt.Sprintf("webapp-%s-pr-42.example.com", project.Name)
+			pe := createPreviewEnv(ctx, "webapp-preview-pr-42", ns, "webapp", 42, "deadbeef", "feat-x", previewDomain, 72*time.Hour)
 
 			// Set replicas and resources from override on the PE spec directly.
 			pe.Spec.Replicas = ptr.To(int32(1))
@@ -288,15 +289,15 @@ var _ = Describe("PreviewEnvironment Controller", func() {
 			var ing networkingv1.Ingress
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "webapp", Namespace: previewNs}, &ing)).To(Succeed())
 			Expect(ing.Spec.Rules).To(HaveLen(1))
-			Expect(ing.Spec.Rules[0].Host).To(Equal("pr-42-webapp.example.com"))
+			Expect(ing.Spec.Rules[0].Host).To(Equal(previewDomain))
 			Expect(ing.Spec.TLS).To(HaveLen(1))
-			Expect(ing.Spec.TLS[0].Hosts).To(ContainElement("pr-42-webapp.example.com"))
+			Expect(ing.Spec.TLS[0].Hosts).To(ContainElement(previewDomain))
 
 			// Verify status.
 			var updated mortisev1alpha1.PreviewEnvironment
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: pe.Name, Namespace: ns}, &updated)).To(Succeed())
 			Expect(updated.Status.Phase).To(Equal(mortisev1alpha1.PreviewPhaseReady))
-			Expect(updated.Status.URL).To(Equal("https://pr-42-webapp.example.com"))
+			Expect(updated.Status.URL).To(Equal("https://" + previewDomain))
 		})
 	})
 
@@ -450,18 +451,23 @@ var _ = Describe("PreviewEnvironment Controller", func() {
 })
 
 var _ = Describe("ResolvePreviewDomain", func() {
-	It("should replace {number} and {app} placeholders", func() {
-		result := ResolvePreviewDomain("pr-{number}-{app}.yourdomain.com", "myapp", 42, "")
-		Expect(result).To(Equal("pr-42-myapp.yourdomain.com"))
+	It("should replace {number}, {app}, and {project} placeholders", func() {
+		result := ResolvePreviewDomain("{app}-{project}-pr-{number}.yourdomain.com", "myapp", "myproject", 42, "")
+		Expect(result).To(Equal("myapp-myproject-pr-42.yourdomain.com"))
 	})
 
-	It("should construct default when template is empty", func() {
-		result := ResolvePreviewDomain("", "myapp", 42, "platform.dev")
-		Expect(result).To(Equal("pr-42-myapp.platform.dev"))
+	It("should construct default with project name when template is empty", func() {
+		result := ResolvePreviewDomain("", "myapp", "myproject", 42, "platform.dev")
+		Expect(result).To(Equal("myapp-myproject-pr-42.platform.dev"))
 	})
 
 	It("should use example.com when both template and platformDomain are empty", func() {
-		result := ResolvePreviewDomain("", "myapp", 42, "")
-		Expect(result).To(Equal("pr-42-myapp.example.com"))
+		result := ResolvePreviewDomain("", "myapp", "myproject", 42, "")
+		Expect(result).To(Equal("myapp-myproject-pr-42.example.com"))
+	})
+
+	It("should support legacy templates without {project}", func() {
+		result := ResolvePreviewDomain("pr-{number}-{app}.custom.dev", "api", "team-a", 7, "")
+		Expect(result).To(Equal("pr-7-api.custom.dev"))
 	})
 })
