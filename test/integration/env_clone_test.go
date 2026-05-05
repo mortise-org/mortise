@@ -53,10 +53,16 @@ func TestPreviewEnvironmentInheritsSourceEnvVars(t *testing.T) {
 		t.Fatalf("seed env vars: %v", err)
 	}
 
-	// Seed shared vars.
-	if err := store.MergeShared(context.Background(), envNs, []envstore.Env{
+	// Seed shared vars in both the control-namespace source (so re-reconcile
+	// materializes them) and the env namespace (so the PE controller can read
+	// them immediately without waiting for re-reconciliation).
+	sharedVars := []envstore.Env{
 		{Name: "SENTRY_DSN", Value: "https://sentry.io/123", Source: "shared"},
-	}, nil); err != nil {
+	}
+	if err := store.MergeSharedSource(context.Background(), ns, sharedVars, nil); err != nil {
+		t.Fatalf("seed shared source: %v", err)
+	}
+	if err := store.MergeShared(context.Background(), envNs, sharedVars, nil); err != nil {
 		t.Fatalf("seed shared vars: %v", err)
 	}
 
