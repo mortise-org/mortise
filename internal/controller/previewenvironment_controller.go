@@ -431,17 +431,25 @@ func (r *PreviewEnvironmentReconciler) reconcilePreviewEnvSecret(ctx context.Con
 	}
 
 	// Copy shared-env from source env namespace into the preview namespace.
-	sourceShared, _ := store.GetShared(ctx, sourceEnvNs)
+	sourceShared, err := store.GetShared(ctx, sourceEnvNs)
+	if err != nil {
+		return fmt.Errorf("read shared-env from source env %q: %w", sourceEnvNs, err)
+	}
 	if len(sourceShared) > 0 {
 		if err := store.SetShared(ctx, previewNs, sourceShared, labels); err != nil {
 			return fmt.Errorf("copy shared-env to preview ns: %w", err)
 		}
 	} else {
-		_ = store.EnsureSharedExists(ctx, previewNs, labels)
+		if err := store.EnsureSharedExists(ctx, previewNs, labels); err != nil {
+			return fmt.Errorf("ensure shared-env in preview ns: %w", err)
+		}
 	}
 
 	// Read inherited per-app env vars from the source environment.
-	inherited, _ := store.Get(ctx, sourceEnvNs, app.Name)
+	inherited, err := store.Get(ctx, sourceEnvNs, app.Name)
+	if err != nil {
+		return fmt.Errorf("read app env vars from source env %q: %w", sourceEnvNs, err)
+	}
 	merged := make(map[string]envstore.Env, len(inherited))
 	for _, e := range inherited {
 		merged[e.Name] = e

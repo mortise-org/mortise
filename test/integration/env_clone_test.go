@@ -3,9 +3,13 @@
 package integration
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
 	"path/filepath"
-	"runtime"
 	"testing"
 	"time"
 
@@ -27,10 +31,7 @@ func TestPreviewEnvironmentInheritsSourceEnvVars(t *testing.T) {
 	projectName := "prev-inherit-" + randSuffix()
 	ns := createProjectForTest(t, projectName)
 
-	_, thisFile, _, _ := runtime.Caller(0)
-	fixturesDir := filepath.Join(filepath.Dir(thisFile), "..", "fixtures")
-
-	app := helpers.LoadFixture(t, filepath.Join(fixturesDir, "image-basic.yaml"))
+	app := helpers.LoadFixture(t, filepath.Join(fixturesDir(), "image-basic.yaml"))
 	app.Namespace = ns
 	app.Name = "inherit-app-" + randSuffix()
 
@@ -141,18 +142,15 @@ func TestPreviewEnvironmentInheritsSourceEnvVars(t *testing.T) {
 }
 
 // TestEnvironmentCloneCreatesEnvWithConfig creates a project with production
-// env + an app with env vars and bindings, then clones production to staging
-// by directly modifying the Project and App CRDs (simulating what the clone
-// API handler does), and verifies the controller reconciles the new env.
+// env + an app with Secret-level env vars, then calls the clone API endpoint
+// to clone production→staging, and verifies the controller reconciles the new
+// env with the cloned env vars. Also verifies retry-safety (second call → 200).
 func TestEnvironmentCloneCreatesEnvWithConfig(t *testing.T) {
 	t.Parallel()
 	projectName := "clone-" + randSuffix()
 	ns := createProjectForTest(t, projectName)
 
-	_, thisFile, _, _ := runtime.Caller(0)
-	fixturesDir := filepath.Join(filepath.Dir(thisFile), "..", "fixtures")
-
-	app := helpers.LoadFixture(t, filepath.Join(fixturesDir, "image-basic.yaml"))
+	app := helpers.LoadFixture(t, filepath.Join(fixturesDir(), "image-basic.yaml"))
 	app.Namespace = ns
 	app.Name = "clone-app-" + randSuffix()
 
@@ -163,7 +161,7 @@ func TestEnvironmentCloneCreatesEnvWithConfig(t *testing.T) {
 	prodEnvName := app.Spec.Environments[0].Name
 	helpers.WaitForAppReady(t, k8sClient, ns, app.Name, 5*time.Minute)
 
-	// Seed production env vars.
+	// Seed production env vars via envstore (simulates user setting vars in the UI).
 	prodEnvNs := constants.EnvNamespace(projectName, prodEnvName)
 	store := &envstore.Store{Client: k8sClient}
 	if err := store.Merge(context.Background(), prodEnvNs, app.Name, []envstore.Env{
@@ -173,69 +171,57 @@ func TestEnvironmentCloneCreatesEnvWithConfig(t *testing.T) {
 		t.Fatalf("seed env vars: %v", err)
 	}
 
-	// Add "staging" to the project environments.
+	// Port-forward to the Mortise API and log in.
+	mortisePort := helpers.PortForward(t, "mortise-system", "mortise", 80)
+	mortiseURL := fmt.Sprintf("http://127.0.0.1:%d", mortisePort)
+	token := helpers.LoginAsAdmin(t, mortiseURL, "admin@local", "admin123")
+
+	// Call the clone API endpoint.
+	cloneURL := fmt.Sprintf("%s/api/projects/%s/environments/%s/clone", mortiseURL, projectName, prodEnvName)
+	resp := doCloneJSON(t, http.MethodPost, cloneURL, token, map[string]any{
+		"name":         "staging",
+		"displayOrder": 1,
+	})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("clone: expected 201, got %d: %s", resp.StatusCode, resp.Body)
+	}
+
+	// Verify retry-safety: second call returns 200.
+	resp = doCloneJSON(t, http.MethodPost, cloneURL, token, map[string]any{
+		"name":         "staging",
+		"displayOrder": 1,
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("retry clone: expected 200, got %d: %s", resp.StatusCode, resp.Body)
+	}
+
+	// Verify the project now has both envs.
 	var project mortisev1alpha1.Project
 	if err := k8sClient.Get(context.Background(), types.NamespacedName{Name: projectName}, &project); err != nil {
 		t.Fatalf("get project: %v", err)
 	}
-	project.Spec.Environments = append(project.Spec.Environments,
-		mortisev1alpha1.ProjectEnvironment{Name: "staging", DisplayOrder: 1})
-	if err := k8sClient.Update(context.Background(), &project); err != nil {
-		t.Fatalf("add staging env: %v", err)
+	if len(project.Spec.Environments) != 2 {
+		t.Fatalf("expected 2 envs on project, got %d", len(project.Spec.Environments))
 	}
 
-	// Clone production's overrides to staging on the App.
+	// Verify app has the cloned env with the Secret-level vars on the CRD.
 	var latestApp mortisev1alpha1.App
 	if err := k8sClient.Get(context.Background(), types.NamespacedName{Namespace: ns, Name: app.Name}, &latestApp); err != nil {
 		t.Fatalf("get app: %v", err)
 	}
-	var sourceEnv *mortisev1alpha1.Environment
+	var cloned *mortisev1alpha1.Environment
 	for i := range latestApp.Spec.Environments {
-		if latestApp.Spec.Environments[i].Name == prodEnvName {
-			sourceEnv = &latestApp.Spec.Environments[i]
+		if latestApp.Spec.Environments[i].Name == "staging" {
+			cloned = &latestApp.Spec.Environments[i]
 			break
 		}
 	}
-	clonedEnv := mortisev1alpha1.Environment{Name: "staging"}
-	if sourceEnv != nil {
-		clonedEnv.Replicas = sourceEnv.Replicas
-		clonedEnv.Resources = sourceEnv.Resources
-		if len(sourceEnv.Env) > 0 {
-			clonedEnv.Env = make([]mortisev1alpha1.EnvVar, len(sourceEnv.Env))
-			copy(clonedEnv.Env, sourceEnv.Env)
-		}
-		if len(sourceEnv.Bindings) > 0 {
-			clonedEnv.Bindings = make([]mortisev1alpha1.Binding, len(sourceEnv.Bindings))
-			copy(clonedEnv.Bindings, sourceEnv.Bindings)
-		}
+	if cloned == nil {
+		t.Fatal("staging env not found on app spec")
 	}
-	latestApp.Spec.Environments = append(latestApp.Spec.Environments, clonedEnv)
-	if err := k8sClient.Update(context.Background(), &latestApp); err != nil {
-		t.Fatalf("update app with staging env: %v", err)
-	}
-
-	// Wait for the staging env namespace and app-env Secret to appear.
-	stagingEnvNs := constants.EnvNamespace(projectName, "staging")
-	helpers.RequireEventually(t, 2*time.Minute, func() bool {
-		var secret corev1.Secret
-		return k8sClient.Get(context.Background(), types.NamespacedName{
-			Name:      app.Name + "-env",
-			Namespace: stagingEnvNs,
-		}, &secret) == nil
-	})
-
-	// Verify the cloned env vars seeded into the staging env Secret.
-	var envSecret corev1.Secret
-	if err := k8sClient.Get(context.Background(), types.NamespacedName{
-		Name:      app.Name + "-env",
-		Namespace: stagingEnvNs,
-	}, &envSecret); err != nil {
-		t.Fatalf("get staging env Secret: %v", err)
-	}
-
 	envMap := make(map[string]string)
-	for k, v := range envSecret.Data {
-		envMap[k] = string(v)
+	for _, ev := range cloned.Env {
+		envMap[ev.Name] = ev.Value
 	}
 	if got, want := envMap["DATABASE_URL"], "postgres://prod:5432/app"; got != want {
 		t.Errorf("DATABASE_URL: got %q, want %q", got, want)
@@ -243,4 +229,61 @@ func TestEnvironmentCloneCreatesEnvWithConfig(t *testing.T) {
 	if got, want := envMap["API_KEY"], "prod-key-123"; got != want {
 		t.Errorf("API_KEY: got %q, want %q", got, want)
 	}
+
+	// Wait for the controller to reconcile the staging env Secret.
+	stagingEnvNs := constants.EnvNamespace(projectName, "staging")
+	helpers.RequireEventually(t, 2*time.Minute, func() bool {
+		var secret corev1.Secret
+		return k8sClient.Get(context.Background(), types.NamespacedName{
+			Name:      app.Name + "-env",
+			Namespace: stagingEnvNs,
+		}, &secret) == nil && len(secret.Data) > 0
+	})
+
+	// Verify the staging env Secret has the cloned vars.
+	var envSecret corev1.Secret
+	if err := k8sClient.Get(context.Background(), types.NamespacedName{
+		Name:      app.Name + "-env",
+		Namespace: stagingEnvNs,
+	}, &envSecret); err != nil {
+		t.Fatalf("get staging env Secret: %v", err)
+	}
+	secretMap := make(map[string]string)
+	for k, v := range envSecret.Data {
+		secretMap[k] = string(v)
+	}
+	if got, want := secretMap["DATABASE_URL"], "postgres://prod:5432/app"; got != want {
+		t.Errorf("staging Secret DATABASE_URL: got %q, want %q", got, want)
+	}
+	if got, want := secretMap["API_KEY"], "prod-key-123"; got != want {
+		t.Errorf("staging Secret API_KEY: got %q, want %q", got, want)
+	}
+}
+
+type cloneHTTPResult struct {
+	StatusCode int
+	Body       string
+}
+
+func doCloneJSON(t *testing.T, method, url, token string, body any) cloneHTTPResult {
+	t.Helper()
+	var reader io.Reader
+	if body != nil {
+		b, _ := json.Marshal(body)
+		reader = bytes.NewReader(b)
+	}
+	req, _ := http.NewRequest(method, url, reader)
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("%s %s: %v", method, url, err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	return cloneHTTPResult{StatusCode: resp.StatusCode, Body: string(b)}
 }

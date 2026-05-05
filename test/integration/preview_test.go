@@ -18,6 +18,7 @@ import (
 
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
 	"github.com/mortise-org/mortise/internal/constants"
+	"github.com/mortise-org/mortise/internal/envstore"
 	"github.com/mortise-org/mortise/test/helpers"
 )
 
@@ -370,19 +371,16 @@ func TestPreviewInheritsStagingBindings(t *testing.T) {
 
 	waitForPreviewReady(t, ns, pe.Name, 5*time.Minute)
 
-	// --- Verify the preview Deployment has binding env vars injected.
-	previewResourceName := apiApp.Name
-	var dep appsv1.Deployment
-	if err := k8sClient.Get(context.Background(), types.NamespacedName{
-		Name: previewResourceName, Namespace: constants.PreviewNamespace(projectName, 10),
-	}, &dep); err != nil {
-		t.Fatalf("get preview Deployment: %v", err)
+	// --- Verify the preview app-env Secret has binding env vars.
+	previewNs := constants.PreviewNamespace(projectName, 10)
+	store := &envstore.Store{Client: k8sClient}
+	previewVars, err := store.Get(context.Background(), previewNs, apiApp.Name)
+	if err != nil {
+		t.Fatalf("read preview env vars: %v", err)
 	}
-
-	// Preview controller injects bindings directly into container Env.
 	envMap := make(map[string]string)
-	for _, e := range dep.Spec.Template.Spec.Containers[0].Env {
-		envMap[e.Name] = e.Value
+	for _, ev := range previewVars {
+		envMap[ev.Name] = ev.Value
 	}
 
 	// host should resolve to the postgres service in the source env namespace.

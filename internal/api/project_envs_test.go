@@ -491,7 +491,9 @@ func TestCloneProjectEnvironmentSourceNotFound(t *testing.T) {
 	}
 }
 
-// TestCloneProjectEnvironmentDuplicateTarget returns 409 when the target name already exists.
+// TestCloneProjectEnvironmentDuplicateTarget returns 200 (retry-safe) when
+// the target env already exists on the project — the handler skips the
+// project update and continues with per-app cloning.
 func TestCloneProjectEnvironmentDuplicateTarget(t *testing.T) {
 	k8sClient := setupEnvtest(t)
 	srv := newAdminServer(t, k8sClient)
@@ -501,8 +503,8 @@ func TestCloneProjectEnvironmentDuplicateTarget(t *testing.T) {
 	w := doRequest(h, http.MethodPost, "/api/projects/demo/environments/production/clone", map[string]any{
 		"name": "staging",
 	})
-	if w.Code != http.StatusConflict {
-		t.Fatalf("expected 409, got %d: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 (retry-safe), got %d: %s", w.Code, w.Body.String())
 	}
 }
 
