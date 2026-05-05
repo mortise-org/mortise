@@ -339,23 +339,32 @@ func TestObserverTraffic(t *testing.T) {
 
 	start := fmt.Sprintf("%d", time.Now().Add(-1*time.Minute).Unix())
 
-	// Send several HTTP requests through Traefik.
+	// Send requests continuously in the background. Traefik needs time to
+	// discover the new Ingress, so early requests may 404 (no ServiceName in
+	// the access log → traffic collector ignores them). Keeping the stream
+	// going ensures we generate routable traffic once the route is live.
+	stopTraffic := make(chan struct{})
+	t.Cleanup(func() { close(stopTraffic) })
 	client := &http.Client{Timeout: 5 * time.Second}
-	for i := 0; i < 10; i++ {
-		req, _ := http.NewRequest("GET", fmt.Sprintf("http://127.0.0.1:%d/", traefikPort), nil)
-		req.Host = "traffic-app.test"
-		resp, err := client.Do(req)
-		if err != nil {
-			t.Logf("request %d failed (may be expected during startup): %v", i, err)
-			time.Sleep(1 * time.Second)
-			continue
+	go func() {
+		for {
+			select {
+			case <-stopTraffic:
+				return
+			default:
+			}
+			req, _ := http.NewRequest("GET", fmt.Sprintf("http://127.0.0.1:%d/", traefikPort), nil)
+			req.Host = "traffic-app.test"
+			resp, err := client.Do(req)
+			if err == nil {
+				resp.Body.Close()
+			}
+			time.Sleep(500 * time.Millisecond)
 		}
-		resp.Body.Close()
-		time.Sleep(200 * time.Millisecond)
-	}
+	}()
 
 	// Poll until the observer has traffic data for our app.
-	helpers.RequireEventually(t, 90*time.Second, func() bool {
+	helpers.RequireEventually(t, 120*time.Second, func() bool {
 		end := fmt.Sprintf("%d", time.Now().Unix())
 		result := observerGet(t, "/v1/traffic", map[string]string{
 			"namespace": envNs,
