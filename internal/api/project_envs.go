@@ -302,6 +302,143 @@ func (s *Server) DeleteProjectEnvironment(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted", "name": envName})
 }
 
+type cloneProjectEnvRequest struct {
+	Name         string `json:"name"`
+	DisplayOrder int    `json:"displayOrder,omitempty"`
+}
+
+// CloneProjectEnvironment creates a new environment by copying the full
+// configuration (env vars, bindings, resources, replicas) from an existing
+// source environment. For every App in the project, the source's environment
+// overrides are duplicated into the new env entry on the App CRD. The
+// controller then reconciles the new env namespace and secrets.
+//
+// POST /api/projects/{project}/environments/{source}/clone  { "name": "staging" }
+//
+// @Summary Clone a project environment
+// @Description Creates a new environment pre-populated with the source's config for every app
+// @Tags environments
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param project path string true "Project name"
+// @Param source path string true "Source environment name"
+// @Param body body cloneProjectEnvRequest true "Target environment name and display order"
+// @Success 201 {object} projectEnvResponse
+// @Failure 400 {object} errorResponse
+// @Failure 403 {object} errorResponse
+// @Failure 404 {object} errorResponse
+// @Failure 409 {object} errorResponse
+// @Router /projects/{project}/environments/{source}/clone [post]
+func (s *Server) CloneProjectEnvironment(w http.ResponseWriter, r *http.Request) {
+	projectName := chi.URLParam(r, "project")
+	if !s.authorize(w, r, authz.Resource{Kind: "project", Project: projectName}, authz.ActionCreate) {
+		return
+	}
+	project, ok := s.getProject(w, r)
+	if !ok {
+		return
+	}
+	sourceName := chi.URLParam(r, "source")
+
+	if indexOfEnv(project, sourceName) < 0 {
+		writeJSON(w, http.StatusNotFound, errorResponse{fmt.Sprintf("source environment %q not found on project %q", sourceName, project.Name)})
+		return
+	}
+
+	var req cloneProjectEnvRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse{"invalid JSON: " + err.Error()})
+		return
+	}
+	if msg := validateDNSLabel("name", req.Name, maxProjectEnvNameLen); msg != "" {
+		writeJSON(w, http.StatusBadRequest, errorResponse{msg})
+		return
+	}
+	for _, existing := range project.Spec.Environments {
+		if existing.Name == req.Name {
+			writeJSON(w, http.StatusConflict, errorResponse{fmt.Sprintf("environment %q already exists on project %q", req.Name, project.Name)})
+			return
+		}
+	}
+
+	// Add the new environment to the project.
+	project.Spec.Environments = append(project.Spec.Environments, mortisev1alpha1.ProjectEnvironment{
+		Name:         req.Name,
+		DisplayOrder: req.DisplayOrder,
+	})
+	if err := s.client.Update(r.Context(), project); err != nil {
+		writeError(w, err)
+		return
+	}
+
+	// Clone env overrides from source to target for every App.
+	if err := s.cloneAppOverrides(r.Context(), projectNs(project), sourceName, req.Name); err != nil {
+		writeError(w, err)
+		return
+	}
+
+	s.recordActivity(r, projectName, "create", "environment", req.Name,
+		fmt.Sprintf("Cloned environment %s from %s", req.Name, sourceName), "")
+
+	writeJSON(w, http.StatusCreated, projectEnvResponse{
+		Name:         req.Name,
+		DisplayOrder: req.DisplayOrder,
+		Health:       EnvHealthUnknown,
+	})
+}
+
+// cloneAppOverrides copies the source environment's overrides (env vars,
+// bindings, resources, replicas, probes, schedule, annotations) to a new
+// environment entry on every App in the project.
+func (s *Server) cloneAppOverrides(ctx context.Context, ns, sourceName, targetName string) error {
+	var apps mortisev1alpha1.AppList
+	if err := s.client.List(ctx, &apps, client.InNamespace(ns)); err != nil {
+		return err
+	}
+	for i := range apps.Items {
+		app := &apps.Items[i]
+		var sourceEnv *mortisev1alpha1.Environment
+		for j := range app.Spec.Environments {
+			if app.Spec.Environments[j].Name == sourceName {
+				sourceEnv = &app.Spec.Environments[j]
+				break
+			}
+		}
+
+		cloned := mortisev1alpha1.Environment{Name: targetName}
+		if sourceEnv != nil {
+			cloned.Replicas = sourceEnv.Replicas
+			cloned.Resources = sourceEnv.Resources
+			cloned.LivenessProbe = sourceEnv.LivenessProbe
+			cloned.ReadinessProbe = sourceEnv.ReadinessProbe
+			cloned.StartupProbe = sourceEnv.StartupProbe
+			cloned.Schedule = sourceEnv.Schedule
+			cloned.ConcurrencyPolicy = sourceEnv.ConcurrencyPolicy
+			if len(sourceEnv.Env) > 0 {
+				cloned.Env = make([]mortisev1alpha1.EnvVar, len(sourceEnv.Env))
+				copy(cloned.Env, sourceEnv.Env)
+			}
+			if len(sourceEnv.Bindings) > 0 {
+				cloned.Bindings = make([]mortisev1alpha1.Binding, len(sourceEnv.Bindings))
+				copy(cloned.Bindings, sourceEnv.Bindings)
+			}
+			if len(sourceEnv.Annotations) > 0 {
+				cloned.Annotations = make(map[string]string, len(sourceEnv.Annotations))
+				for k, v := range sourceEnv.Annotations {
+					cloned.Annotations[k] = v
+				}
+			}
+		}
+
+		app.Spec.Environments = append(app.Spec.Environments, cloned)
+		if err := s.client.Update(ctx, app); err != nil {
+			return fmt.Errorf("clone env overrides for app %q: %w", app.Name, err)
+		}
+	}
+	return nil
+}
+
 // getProject is like resolveProject but returns the full Project pointer so
 // callers can mutate and update the CRD.
 func (s *Server) getProject(w http.ResponseWriter, r *http.Request) (*mortisev1alpha1.Project, bool) {

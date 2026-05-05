@@ -356,3 +356,167 @@ func TestAppEnvRejectsUnknownProjectEnv(t *testing.T) {
 		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
 	}
 }
+
+// TestCloneProjectEnvironment clones production→staging and verifies the
+// new env appears on the project and all app overrides are copied.
+func TestCloneProjectEnvironment(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+	ns := seedProject(t, k8sClient, "demo")
+
+	replicas := int32(3)
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: ns},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: "nginx:1.25.0"},
+			Environments: []mortisev1alpha1.Environment{{
+				Name:      "production",
+				Replicas:  &replicas,
+				Resources: mortisev1alpha1.ResourceRequirements{CPU: "500m", Memory: "512Mi"},
+				Env: []mortisev1alpha1.EnvVar{
+					{Name: "DATABASE_URL", Value: "postgres://prod:5432/app"},
+					{Name: "LOG_LEVEL", Value: "warn"},
+				},
+				Bindings: []mortisev1alpha1.Binding{{Ref: "redis"}},
+			}},
+		},
+	}
+	if err := k8sClient.Create(context.Background(), app); err != nil {
+		t.Fatalf("create app: %v", err)
+	}
+
+	w := doRequest(h, http.MethodPost, "/api/projects/demo/environments/production/clone", map[string]any{
+		"name":         "staging",
+		"displayOrder": 5,
+	})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Verify project has the new env.
+	var proj mortisev1alpha1.Project
+	if err := k8sClient.Get(context.Background(), types.NamespacedName{Name: "demo"}, &proj); err != nil {
+		t.Fatalf("get project: %v", err)
+	}
+	if len(proj.Spec.Environments) != 2 {
+		t.Fatalf("expected 2 envs, got %d", len(proj.Spec.Environments))
+	}
+
+	// Verify app has cloned env overrides.
+	var got mortisev1alpha1.App
+	if err := k8sClient.Get(context.Background(), types.NamespacedName{Namespace: ns, Name: "web"}, &got); err != nil {
+		t.Fatalf("get app: %v", err)
+	}
+	if len(got.Spec.Environments) != 2 {
+		t.Fatalf("expected 2 env overrides on app, got %d", len(got.Spec.Environments))
+	}
+
+	var cloned *mortisev1alpha1.Environment
+	for i := range got.Spec.Environments {
+		if got.Spec.Environments[i].Name == "staging" {
+			cloned = &got.Spec.Environments[i]
+			break
+		}
+	}
+	if cloned == nil {
+		t.Fatal("staging env override not found on app")
+	}
+	if cloned.Replicas == nil || *cloned.Replicas != 3 {
+		t.Errorf("expected replicas 3, got %v", cloned.Replicas)
+	}
+	if cloned.Resources.CPU != "500m" || cloned.Resources.Memory != "512Mi" {
+		t.Errorf("resources not cloned: %+v", cloned.Resources)
+	}
+	if len(cloned.Env) != 2 {
+		t.Fatalf("expected 2 env vars, got %d", len(cloned.Env))
+	}
+	if cloned.Env[0].Name != "DATABASE_URL" || cloned.Env[0].Value != "postgres://prod:5432/app" {
+		t.Errorf("unexpected env[0]: %+v", cloned.Env[0])
+	}
+	if len(cloned.Bindings) != 1 || cloned.Bindings[0].Ref != "redis" {
+		t.Errorf("bindings not cloned: %+v", cloned.Bindings)
+	}
+}
+
+// TestCloneProjectEnvironmentNoSourceOverrides clones when apps have no
+// explicit overrides for the source env — should create an empty env entry.
+func TestCloneProjectEnvironmentNoSourceOverrides(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+	ns := seedProject(t, k8sClient, "demo")
+
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "api", Namespace: ns},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: "nginx:1.25.0"},
+		},
+	}
+	if err := k8sClient.Create(context.Background(), app); err != nil {
+		t.Fatalf("create app: %v", err)
+	}
+
+	w := doRequest(h, http.MethodPost, "/api/projects/demo/environments/production/clone", map[string]any{
+		"name": "staging",
+	})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var got mortisev1alpha1.App
+	if err := k8sClient.Get(context.Background(), types.NamespacedName{Namespace: ns, Name: "api"}, &got); err != nil {
+		t.Fatalf("get app: %v", err)
+	}
+	if len(got.Spec.Environments) != 1 {
+		t.Fatalf("expected 1 env override, got %d", len(got.Spec.Environments))
+	}
+	if got.Spec.Environments[0].Name != "staging" {
+		t.Errorf("expected staging, got %q", got.Spec.Environments[0].Name)
+	}
+}
+
+// TestCloneProjectEnvironmentSourceNotFound returns 404 when the source doesn't exist.
+func TestCloneProjectEnvironmentSourceNotFound(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+	seedProject(t, k8sClient, "demo")
+
+	w := doRequest(h, http.MethodPost, "/api/projects/demo/environments/ghost/clone", map[string]any{
+		"name": "staging",
+	})
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestCloneProjectEnvironmentDuplicateTarget returns 409 when the target name already exists.
+func TestCloneProjectEnvironmentDuplicateTarget(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+	seedProject(t, k8sClient, "demo", "production", "staging")
+
+	w := doRequest(h, http.MethodPost, "/api/projects/demo/environments/production/clone", map[string]any{
+		"name": "staging",
+	})
+	if w.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestCloneProjectEnvironmentInvalidTargetName returns 400 for bad target names.
+func TestCloneProjectEnvironmentInvalidTargetName(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+	seedProject(t, k8sClient, "demo")
+
+	w := doRequest(h, http.MethodPost, "/api/projects/demo/environments/production/clone", map[string]any{
+		"name": "INVALID",
+	})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+}

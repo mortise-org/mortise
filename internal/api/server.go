@@ -193,6 +193,7 @@ func (s *Server) Handler() http.Handler {
 
 			r.Get("/projects/{project}/environments", s.ListProjectEnvironments)
 			r.Post("/projects/{project}/environments", s.CreateProjectEnvironment)
+			r.Post("/projects/{project}/environments/{source}/clone", s.CloneProjectEnvironment)
 			r.Patch("/projects/{project}/environments/{name}", s.UpdateProjectEnvironment)
 			r.Delete("/projects/{project}/environments/{name}", s.DeleteProjectEnvironment)
 
