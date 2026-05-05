@@ -177,6 +177,41 @@ func TestSolveOpt_CacheFrom(t *testing.T) {
 	}
 }
 
+// TestSolveOpt_NoCache verifies that NoCache skips cache imports and sets the
+// no-cache frontend attribute.
+func TestSolveOpt_NoCache(t *testing.T) {
+	c := newWithSolver(Config{Addr: "tcp://localhost:1234"}, &fakeSolverImpl{resp: &bkclient.SolveResponse{}})
+	opt := c.dockerfileSolveOpt(BuildRequest{
+		SourceDir:  "/tmp/src",
+		PushTarget: "registry/img:tag",
+		CacheFrom:  "registry/cache:latest",
+		NoCache:    true,
+	})
+	if len(opt.CacheImports) != 0 {
+		t.Fatalf("expected no cache imports with NoCache=true, got %v", opt.CacheImports)
+	}
+	if _, ok := opt.FrontendAttrs["no-cache"]; !ok {
+		t.Fatal("expected no-cache frontend attr to be set")
+	}
+}
+
+// TestSolveOpt_NoCacheWithoutCacheFrom verifies NoCache works even when
+// CacheFrom is empty (the common rebuild case).
+func TestSolveOpt_NoCacheWithoutCacheFrom(t *testing.T) {
+	c := newWithSolver(Config{Addr: "tcp://localhost:1234"}, &fakeSolverImpl{resp: &bkclient.SolveResponse{}})
+	opt := c.dockerfileSolveOpt(BuildRequest{
+		SourceDir:  "/tmp/src",
+		PushTarget: "registry/img:tag",
+		NoCache:    true,
+	})
+	if len(opt.CacheImports) != 0 {
+		t.Fatalf("expected no cache imports, got %v", opt.CacheImports)
+	}
+	if _, ok := opt.FrontendAttrs["no-cache"]; !ok {
+		t.Fatal("expected no-cache frontend attr to be set")
+	}
+}
+
 // TestSolveOpt_Platform verifies DefaultPlatform is forwarded.
 func TestSolveOpt_Platform(t *testing.T) {
 	c := newWithSolver(Config{Addr: "tcp://localhost:1234", DefaultPlatform: "linux/arm64"}, &fakeSolverImpl{resp: &bkclient.SolveResponse{}})

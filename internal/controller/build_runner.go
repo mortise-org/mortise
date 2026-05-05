@@ -110,6 +110,7 @@ func runBuild(
 		Dockerfile:    p.dockerfile,
 		BuildArgs:     p.buildArgs,
 		ContextMode:   toContextMode(p.buildContext),
+		NoCache:       p.noCache,
 		PushTarget:    p.imageRef.Full,
 	}
 

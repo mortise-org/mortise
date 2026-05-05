@@ -14,6 +14,9 @@ import (
 	"strings"
 	"testing"
 
+	appsv1 "k8s.io/api/apps/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
 )
 
@@ -218,5 +221,107 @@ func TestBuildProbe_CustomConfig(t *testing.T) {
 	}
 	if probe.HTTPGet.Port.IntValue() != 9090 {
 		t.Fatalf("expected port 9090, got %d", probe.HTTPGet.Port.IntValue())
+	}
+}
+
+func TestDeploymentRollingOut(t *testing.T) {
+	replicas := func(n int32) *int32 { return &n }
+
+	tests := []struct {
+		name string
+		dep  appsv1.Deployment
+		want bool
+	}{
+		{
+			name: "fully rolled out",
+			dep: appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{Generation: 3},
+				Spec:       appsv1.DeploymentSpec{Replicas: replicas(2)},
+				Status: appsv1.DeploymentStatus{
+					ObservedGeneration: 3,
+					UpdatedReplicas:    2,
+					AvailableReplicas:  2,
+					ReadyReplicas:      2,
+				},
+			},
+			want: false,
+		},
+		{
+			name: "generation not yet observed",
+			dep: appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{Generation: 4},
+				Spec:       appsv1.DeploymentSpec{Replicas: replicas(2)},
+				Status: appsv1.DeploymentStatus{
+					ObservedGeneration: 3,
+					UpdatedReplicas:    2,
+					AvailableReplicas:  2,
+					ReadyReplicas:      2,
+				},
+			},
+			want: true,
+		},
+		{
+			name: "updated replicas behind desired",
+			dep: appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{Generation: 3},
+				Spec:       appsv1.DeploymentSpec{Replicas: replicas(3)},
+				Status: appsv1.DeploymentStatus{
+					ObservedGeneration: 3,
+					UpdatedReplicas:    1,
+					AvailableReplicas:  3,
+					ReadyReplicas:      3,
+				},
+			},
+			want: true,
+		},
+		{
+			name: "available replicas behind desired",
+			dep: appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{Generation: 3},
+				Spec:       appsv1.DeploymentSpec{Replicas: replicas(2)},
+				Status: appsv1.DeploymentStatus{
+					ObservedGeneration: 3,
+					UpdatedReplicas:    2,
+					AvailableReplicas:  1,
+					ReadyReplicas:      1,
+				},
+			},
+			want: true,
+		},
+		{
+			name: "nil replicas (defaults to 1) — fully available",
+			dep: appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{Generation: 1},
+				Spec:       appsv1.DeploymentSpec{},
+				Status: appsv1.DeploymentStatus{
+					ObservedGeneration: 1,
+					UpdatedReplicas:    1,
+					AvailableReplicas:  1,
+				},
+			},
+			want: false,
+		},
+		{
+			name: "nil replicas — rolling out (no pods available yet)",
+			dep: appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{Generation: 1},
+				Spec:       appsv1.DeploymentSpec{},
+				Status: appsv1.DeploymentStatus{
+					ObservedGeneration: 1,
+					UpdatedReplicas:    0,
+					AvailableReplicas:  0,
+				},
+			},
+			want: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := deploymentRollingOut(&tc.dep)
+			if got != tc.want {
+				t.Fatalf("deploymentRollingOut() = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
