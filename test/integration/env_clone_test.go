@@ -53,17 +53,13 @@ func TestPreviewEnvironmentInheritsSourceEnvVars(t *testing.T) {
 		t.Fatalf("seed env vars: %v", err)
 	}
 
-	// Seed shared vars in both the control-namespace source (so re-reconcile
-	// materializes them) and the env namespace (so the PE controller can read
-	// them immediately without waiting for re-reconciliation).
-	sharedVars := []envstore.Env{
+	// Seed shared vars via the control-namespace source. The app controller
+	// materializes these into the env namespace's shared-env Secret on
+	// reconcile, so we can't write to that Secret directly (conflict).
+	if err := store.MergeSharedSource(context.Background(), ns, []envstore.Env{
 		{Name: "SENTRY_DSN", Value: "https://sentry.io/123", Source: "shared"},
-	}
-	if err := store.MergeSharedSource(context.Background(), ns, sharedVars, nil); err != nil {
+	}, nil); err != nil {
 		t.Fatalf("seed shared source: %v", err)
-	}
-	if err := store.MergeShared(context.Background(), envNs, sharedVars, nil); err != nil {
-		t.Fatalf("seed shared vars: %v", err)
 	}
 
 	// Patch source type to git so the PE controller accepts this app.
@@ -82,6 +78,18 @@ func TestPreviewEnvironmentInheritsSourceEnvVars(t *testing.T) {
 	if err := k8sClient.Update(context.Background(), &latest); err != nil {
 		t.Fatalf("patch app source type: %v", err)
 	}
+
+	// Wait for the app controller to materialize shared vars into the env
+	// namespace (triggered by the source type patch above).
+	helpers.RequireEventually(t, 1*time.Minute, func() bool {
+		var secret corev1.Secret
+		if err := k8sClient.Get(context.Background(), types.NamespacedName{
+			Name: envstore.SharedEnvName, Namespace: envNs,
+		}, &secret); err != nil {
+			return false
+		}
+		return len(secret.Data["SENTRY_DSN"]) > 0
+	})
 
 	// Enable project-level preview.
 	enableProjectPreview(t, projectName, &mortisev1alpha1.PreviewConfig{
