@@ -199,7 +199,10 @@ bindings:
 ```
 
 The resolver looks up the bound App in the same project's control namespace
-and generates host, port, URL, and credential env vars.
+and generates host, port, URL, and credential env vars. If the bound app
+no longer exists (deleted) or is disabled in the target environment, the
+binding is skipped and zero vars are produced for it — stale binding vars
+are cleared on the consumer's next reconcile.
 
 #### What Projects provide in v1
 
