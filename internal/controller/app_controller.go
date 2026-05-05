@@ -2380,24 +2380,6 @@ func annotationsEqual(a, b map[string]string) bool {
 	return true
 }
 
-func toEnvVars(envs []mortisev1alpha1.EnvVar) []corev1.EnvVar {
-	result := make([]corev1.EnvVar, 0, len(envs))
-	for _, e := range envs {
-		ev := corev1.EnvVar{Name: e.Name, Value: e.Value}
-		if e.ValueFrom != nil && e.ValueFrom.SecretRef != "" {
-			ev.ValueFrom = &corev1.EnvVarSource{
-				SecretKeyRef: &corev1.SecretKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{Name: e.ValueFrom.SecretRef},
-					Key:                  e.Name,
-				},
-			}
-			ev.Value = ""
-		}
-		result = append(result, ev)
-	}
-	return result
-}
-
 func (r *AppReconciler) effectiveResources(ctx context.Context, env *mortisev1alpha1.Environment) mortisev1alpha1.ResourceRequirements {
 	res := env.Resources
 	if res.CPU == "" && res.Memory == "" {
