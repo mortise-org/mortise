@@ -4244,7 +4244,7 @@ var _ = Describe("App Controller — git source", func() {
 			}, &sec)).To(Succeed(), "app-env Secret should exist even with no vars")
 		})
 
-		It("returns an error when a binding references a missing App CRD", func() {
+		It("skips binding gracefully when a binding references a missing App CRD", func() {
 			appName := "missing-dep-app"
 			app := &mortisev1alpha1.App{
 				ObjectMeta: metav1.ObjectMeta{Name: appName, Namespace: namespace},
@@ -4268,7 +4268,196 @@ var _ = Describe("App Controller — git source", func() {
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
 			})
-			Expect(err).To(HaveOccurred(), "reconcile should fail when bound App does not exist")
+			Expect(err).NotTo(HaveOccurred(), "reconcile should succeed: missing bound apps are skipped")
+
+			envData := readAppEnvSecret(ctx, appName, envNsProduction)
+			for k := range envData {
+				Expect(k).NotTo(HavePrefix("DOES_NOT_EXIST_"), "no binding vars should exist for missing app")
+			}
+		})
+
+		It("clears stale binding vars when bound app is deleted between reconciles", func() {
+			dbName := "stale-db"
+			apiName := "stale-api"
+
+			dbApp := &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{Name: dbName, Namespace: namespace},
+				Spec: mortisev1alpha1.AppSpec{
+					Source: mortisev1alpha1.AppSource{
+						Type:  mortisev1alpha1.SourceTypeImage,
+						Image: "postgres:16",
+					},
+					Network: mortisev1alpha1.NetworkConfig{Public: false},
+					Credentials: []mortisev1alpha1.Credential{
+						{Name: "host"},
+						{Name: "port"},
+					},
+					Environments: []mortisev1alpha1.Environment{{
+						Name:     "production",
+						Replicas: ptr.To[int32](1),
+					}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, dbApp)).To(Succeed())
+
+			apiApp := &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{Name: apiName, Namespace: namespace},
+				Spec: mortisev1alpha1.AppSpec{
+					Source: mortisev1alpha1.AppSource{
+						Type:  mortisev1alpha1.SourceTypeImage,
+						Image: testImageNginx,
+					},
+					Network: mortisev1alpha1.NetworkConfig{Public: true},
+					Environments: []mortisev1alpha1.Environment{{
+						Name:     "production",
+						Domain:   "stale.example.com",
+						Replicas: ptr.To[int32](1),
+						Bindings: []mortisev1alpha1.Binding{{Ref: dbName}},
+					}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, apiApp)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, apiApp)).To(Succeed()) }()
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+
+			// First reconcile: binding vars should be populated.
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: apiName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			envData := readAppEnvSecret(ctx, apiName, envNsProduction)
+			Expect(envData).To(HaveKey("STALE_DB_HOST"), "binding vars should exist after first reconcile")
+			Expect(envData).To(HaveKey("STALE_DB_PORT"))
+
+			// Delete the bound app.
+			Expect(k8sClient.Delete(ctx, dbApp)).To(Succeed())
+
+			// Re-reconcile the consumer: should succeed and clear stale vars.
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: apiName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred(), "reconcile should succeed after bound app deleted")
+			envData = readAppEnvSecret(ctx, apiName, envNsProduction)
+			Expect(envData).NotTo(HaveKey("STALE_DB_HOST"), "stale binding vars should be cleared")
+			Expect(envData).NotTo(HaveKey("STALE_DB_PORT"), "stale binding vars should be cleared")
+		})
+
+		It("preserves valid bindings when one of multiple bound apps is deleted", func() {
+			cacheApp := &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{Name: "surv-cache", Namespace: namespace},
+				Spec: mortisev1alpha1.AppSpec{
+					Source:  mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: "redis:7"},
+					Network: mortisev1alpha1.NetworkConfig{Port: 6379, Public: false},
+					Environments: []mortisev1alpha1.Environment{{
+						Name:     "production",
+						Replicas: ptr.To[int32](1),
+					}},
+				},
+			}
+			dbApp := &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{Name: "surv-db", Namespace: namespace},
+				Spec: mortisev1alpha1.AppSpec{
+					Source:  mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: "postgres:16"},
+					Network: mortisev1alpha1.NetworkConfig{Public: false},
+					Credentials: []mortisev1alpha1.Credential{
+						{Name: "host"},
+						{Name: "port"},
+					},
+					Environments: []mortisev1alpha1.Environment{{
+						Name:     "production",
+						Replicas: ptr.To[int32](1),
+					}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, cacheApp)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, cacheApp) }()
+			Expect(k8sClient.Create(ctx, dbApp)).To(Succeed())
+
+			consumer := &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{Name: "surv-api", Namespace: namespace},
+				Spec: mortisev1alpha1.AppSpec{
+					Source:  mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: testImageNginx},
+					Network: mortisev1alpha1.NetworkConfig{Public: true},
+					Environments: []mortisev1alpha1.Environment{{
+						Name:     "production",
+						Domain:   "surv.example.com",
+						Replicas: ptr.To[int32](1),
+						Bindings: []mortisev1alpha1.Binding{
+							{Ref: "surv-cache"},
+							{Ref: "surv-db"},
+						},
+					}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, consumer)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, consumer)).To(Succeed()) }()
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+
+			// Both bindings resolve.
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: "surv-api", Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			envData := readAppEnvSecret(ctx, "surv-api", envNsProduction)
+			Expect(envData).To(HaveKey("SURV_CACHE_HOST"))
+			Expect(envData).To(HaveKey("SURV_DB_HOST"))
+
+			// Delete the DB, keep the cache.
+			Expect(k8sClient.Delete(ctx, dbApp)).To(Succeed())
+
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: "surv-api", Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			envData = readAppEnvSecret(ctx, "surv-api", envNsProduction)
+			Expect(envData).To(HaveKey("SURV_CACHE_HOST"), "surviving binding should still resolve")
+			Expect(envData).To(HaveKey("SURV_CACHE_PORT"), "surviving binding should still resolve")
+			Expect(envData).NotTo(HaveKey("SURV_DB_HOST"), "deleted binding vars should be cleared")
+			Expect(envData).NotTo(HaveKey("SURV_DB_PORT"), "deleted binding vars should be cleared")
+		})
+
+		It("skips binding when bound app is disabled in the target env", func() {
+			disabled := false
+			boundApp := &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{Name: "disabled-svc", Namespace: namespace},
+				Spec: mortisev1alpha1.AppSpec{
+					Source:  mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: "redis:7"},
+					Network: mortisev1alpha1.NetworkConfig{Port: 6379, Public: false},
+					Environments: []mortisev1alpha1.Environment{{
+						Name:    "production",
+						Enabled: &disabled,
+					}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, boundApp)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, boundApp)).To(Succeed()) }()
+
+			consumer := &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{Name: "disabled-consumer", Namespace: namespace},
+				Spec: mortisev1alpha1.AppSpec{
+					Source:  mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: testImageNginx},
+					Network: mortisev1alpha1.NetworkConfig{Public: true},
+					Environments: []mortisev1alpha1.Environment{{
+						Name:     "production",
+						Domain:   "disabled.example.com",
+						Replicas: ptr.To[int32](1),
+						Bindings: []mortisev1alpha1.Binding{{Ref: "disabled-svc"}},
+					}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, consumer)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, consumer)).To(Succeed()) }()
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: "disabled-consumer", Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred(), "reconcile should succeed when bound app is disabled")
+
+			envData := readAppEnvSecret(ctx, "disabled-consumer", envNsProduction)
+			Expect(envData).NotTo(HaveKey("DISABLED_SVC_HOST"), "disabled binding should produce zero vars")
 		})
 
 		It("materialises shared-env in the env namespace from control-namespace shared vars", func() {
