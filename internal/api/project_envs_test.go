@@ -97,6 +97,52 @@ func TestListProjectEnvironmentsHealthRollup(t *testing.T) {
 	}
 }
 
+// TestListProjectEnvironmentsPerEnvPhase verifies that env health uses per-env
+// phase rather than the aggregate app phase. An app deploying in production
+// should not make staging show as warning when staging is Ready.
+func TestListProjectEnvironmentsPerEnvPhase(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+	ns := seedProject(t, k8sClient, "perenv", "production", "staging")
+
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: ns},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: "nginx:1.25.0"},
+		},
+	}
+	if err := k8sClient.Create(context.Background(), app); err != nil {
+		t.Fatalf("create app: %v", err)
+	}
+	app.Status.Phase = mortisev1alpha1.AppPhaseDeploying
+	app.Status.Environments = []mortisev1alpha1.EnvironmentStatus{
+		{Name: "production", Phase: mortisev1alpha1.AppPhaseDeploying, ReadyReplicas: 0},
+		{Name: "staging", Phase: mortisev1alpha1.AppPhaseReady, ReadyReplicas: 1},
+	}
+	if err := k8sClient.Status().Update(context.Background(), app); err != nil {
+		t.Fatalf("update status: %v", err)
+	}
+
+	w := doRequest(h, http.MethodGet, "/api/projects/perenv/environments", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var envs []map[string]any
+	_ = json.NewDecoder(w.Body).Decode(&envs)
+	envByName := map[string]map[string]any{}
+	for _, e := range envs {
+		envByName[e["name"].(string)] = e
+	}
+	if got := envByName["production"]["health"]; got != "warning" {
+		t.Errorf("production: expected warning, got %v", got)
+	}
+	if got := envByName["staging"]["health"]; got != "healthy" {
+		t.Errorf("staging: expected healthy, got %v", got)
+	}
+}
+
 // TestCreateProjectEnvironment verifies admins can append a new env.
 func TestCreateProjectEnvironment(t *testing.T) {
 	k8sClient := setupEnvtest(t)

@@ -648,16 +648,15 @@ func appParticipatesInEnv(app *mortisev1alpha1.App, envName string) bool {
 	return true
 }
 
-// phaseForEnv picks the most relevant phase for this (app, env) pair. The App
-// status doesn't yet track a phase per env, so we fall back to the app-wide
-// phase — refined if/when the controller starts emitting per-env phases.
+// phaseForEnv returns the per-env phase when available, falling back to the
+// app-wide aggregate phase for older status entries that predate per-env tracking.
 func phaseForEnv(app *mortisev1alpha1.App, envName string) mortisev1alpha1.AppPhase {
 	for _, es := range app.Status.Environments {
 		if es.Name != envName {
 			continue
 		}
-		if app.Status.Phase == mortisev1alpha1.AppPhaseReady && es.ReadyReplicas == 0 {
-			return mortisev1alpha1.AppPhaseDeploying
+		if es.Phase != "" {
+			return es.Phase
 		}
 		return app.Status.Phase
 	}

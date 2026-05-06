@@ -21,6 +21,7 @@ var hostnameRegex = regexp.MustCompile(`^([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0
 type domainsResponse struct {
 	Primary string   `json:"primary"`
 	Custom  []string `json:"custom"`
+	Auto    string   `json:"auto,omitempty"`
 }
 
 type addDomainRequest struct {
@@ -56,21 +57,14 @@ func (s *Server) ListDomains(w http.ResponseWriter, r *http.Request) {
 
 	env := findEnvironment(app, envName)
 	if env == nil {
-		// No spec override, but status may have an auto-generated domain.
-		var primary string
-		for _, se := range app.Status.Environments {
-			if se.Name == envName {
-				primary = se.Domain
-				break
-			}
-		}
-		writeJSON(w, http.StatusOK, domainsResponse{Primary: primary})
+		writeJSON(w, http.StatusOK, domainsResponse{Auto: statusDomain(app, envName)})
 		return
 	}
 
 	writeJSON(w, http.StatusOK, domainsResponse{
-		Primary: resolvePrimaryDomain(app, env, envName),
+		Primary: env.Domain,
 		Custom:  env.CustomDomains,
+		Auto:    statusDomain(app, envName),
 	})
 }
 
@@ -140,6 +134,14 @@ func (s *Server) AddDomain(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+		for _, se := range other.Status.Environments {
+			if se.Domain == req.Domain {
+				writeJSON(w, http.StatusConflict, errorResponse{
+					fmt.Sprintf("domain %s is already used by %s in %s (%s)", req.Domain, other.Name, otherProject, se.Name),
+				})
+				return
+			}
+		}
 	}
 
 	env.CustomDomains = append(env.CustomDomains, req.Domain)
@@ -151,8 +153,9 @@ func (s *Server) AddDomain(w http.ResponseWriter, r *http.Request) {
 	s.recordActivity(r, projectName, "update", "domain", req.Domain, "Added custom domain "+req.Domain+" to "+app.Name+" in "+envName, "")
 
 	writeJSON(w, http.StatusOK, domainsResponse{
-		Primary: resolvePrimaryDomain(app, env, envName),
+		Primary: env.Domain,
 		Custom:  env.CustomDomains,
+		Auto:    statusDomain(app, envName),
 	})
 }
 
@@ -204,8 +207,9 @@ func (s *Server) RemoveDomain(w http.ResponseWriter, r *http.Request) {
 	s.recordActivity(r, projectName, "update", "domain", domain, "Removed custom domain "+domain+" from "+app.Name+" in "+envName, "")
 
 	writeJSON(w, http.StatusOK, domainsResponse{
-		Primary: resolvePrimaryDomain(app, env, envName),
+		Primary: env.Domain,
 		Custom:  env.CustomDomains,
+		Auto:    statusDomain(app, envName),
 	})
 }
 
@@ -221,12 +225,9 @@ func findEnvironment(app *mortisev1alpha1.App, name string) *mortisev1alpha1.Env
 	return nil
 }
 
-// resolvePrimaryDomain returns the spec domain if set, otherwise falls back
-// to the auto-generated domain from status.
-func resolvePrimaryDomain(app *mortisev1alpha1.App, env *mortisev1alpha1.Environment, envName string) string {
-	if env.Domain != "" {
-		return env.Domain
-	}
+// statusDomain returns the auto-generated domain from the app's status for
+// the given environment, or empty if none exists.
+func statusDomain(app *mortisev1alpha1.App, envName string) string {
 	for _, se := range app.Status.Environments {
 		if se.Name == envName {
 			return se.Domain
@@ -322,6 +323,19 @@ func (s *Server) ValidateDomain(w http.ResponseWriter, r *http.Request) {
 						Project:     projectName,
 						App:         app.Name,
 						Environment: env.Name,
+					},
+				})
+				return
+			}
+		}
+		for _, se := range app.Status.Environments {
+			if se.Domain == req.Domain {
+				writeJSON(w, http.StatusOK, domainValidateResponse{
+					Valid: false,
+					Conflict: &domainConflict{
+						Project:     projectName,
+						App:         app.Name,
+						Environment: se.Name,
 					},
 				})
 				return

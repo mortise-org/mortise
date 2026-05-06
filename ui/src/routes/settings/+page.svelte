@@ -369,7 +369,12 @@
 			autoPollInterval = Math.max((data.interval || 5) * 1000, 8000);
 			devicePollTimer = setInterval(autoDevicePoll, autoPollInterval);
 		} catch (e) {
-			error = e instanceof Error ? e.message : 'Connection failed';
+			const msg = e instanceof Error ? e.message : 'Connection failed';
+			if (msg.includes('client ID') || msg.includes('clientID')) {
+				error = 'GitHub OAuth App not configured. Use the Personal Access Token method instead, or ask your admin to set github.clientID in the Helm values.';
+			} else {
+				error = msg;
+			}
 			connectingProvider = null;
 			addStep = 'method';
 		}

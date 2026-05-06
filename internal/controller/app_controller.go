@@ -2025,14 +2025,6 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 		}
 		ready := es.ReadyReplicas >= expectedReplicas && !rollingOut
 
-		// A redeploy sets restartedAt on the Deployment's pod template. Until
-		// the rollout finishes, the phase must stay Deploying even if the old
-		// pods still satisfy the replica count (the "phase snap-back" bug).
-		pendingRestart := restartedAt != "" && restartedAt != es.LastProcessedRestartedAt
-		if ready && pendingRestart {
-			ready = false
-		}
-
 		if ready {
 			if restartedAt != "" {
 				es.LastProcessedRestartedAt = restartedAt

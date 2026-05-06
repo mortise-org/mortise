@@ -1452,6 +1452,77 @@ var _ = Describe("App Controller", func() {
 		})
 	})
 
+	Context("redeploy reaches Ready after rollout completes", func() {
+		const appName = "test-redeploy-ready"
+		ctx := context.Background()
+
+		var (
+			app        *mortisev1alpha1.App
+			reconciler *AppReconciler
+		)
+
+		BeforeEach(func() {
+			reconciler = &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			app = &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      appName,
+					Namespace: namespace,
+				},
+				Spec: mortisev1alpha1.AppSpec{
+					Source: mortisev1alpha1.AppSource{
+						Type:  mortisev1alpha1.SourceTypeImage,
+						Image: testImageNginx,
+					},
+					Environments: []mortisev1alpha1.Environment{
+						{Name: "production", Replicas: ptr.To[int32](1)},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+		})
+
+		AfterEach(func() {
+			Expect(k8sClient.Delete(ctx, app)).To(Succeed())
+		})
+
+		It("should transition to Ready after restart annotation is set", func() {
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Simulate the redeploy API: set restartedAt on the Deployment pod template.
+			var dep appsv1.Deployment
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName, Namespace: envNsProduction,
+			}, &dep)).To(Succeed())
+			if dep.Spec.Template.Annotations == nil {
+				dep.Spec.Template.Annotations = make(map[string]string)
+			}
+			dep.Spec.Template.Annotations["mortise.dev/restartedAt"] = "1234567890"
+			Expect(k8sClient.Update(ctx, &dep)).To(Succeed())
+
+			// Simulate completed rollout: ReadyReplicas = desired, generation observed.
+			dep.Status.ReadyReplicas = 1
+			dep.Status.Replicas = 1
+			dep.Status.UpdatedReplicas = 1
+			dep.Status.AvailableReplicas = 1
+			dep.Status.ObservedGeneration = dep.Generation
+			Expect(k8sClient.Status().Update(ctx, &dep)).To(Succeed())
+
+			// Reconcile again — app should reach Ready, not be stuck in Deploying.
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: appName, Namespace: namespace}, app)).To(Succeed())
+			Expect(app.Status.Phase).To(Equal(mortisev1alpha1.AppPhaseReady))
+			Expect(app.Status.Environments[0].Phase).To(Equal(mortisev1alpha1.AppPhaseReady))
+			Expect(app.Status.Environments[0].LastProcessedRestartedAt).To(Equal("1234567890"))
+		})
+	})
+
 	Context("ServiceAccount creation and imagePullSecret wiring", func() {
 		ctx := context.Background()
 

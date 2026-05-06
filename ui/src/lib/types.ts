@@ -31,6 +31,7 @@ export interface NetworkConfig {
 export interface DomainsResponse {
 	primary: string;
 	custom: string[];
+	auto?: string;
 }
 
 export interface PlatformResponse {
@@ -121,6 +122,7 @@ export interface EnvironmentStatus {
 	readyReplicas?: number;
 	currentImage?: string;
 	currentDigest?: string;
+	domain?: string;
 	deployHistory?: DeployRecord[];
 }
 

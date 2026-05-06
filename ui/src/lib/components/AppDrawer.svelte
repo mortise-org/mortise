@@ -58,7 +58,7 @@
 		}
 	});
 
-	const appDomain = $derived(envSpecEntry?.domain ?? null);
+	const appDomain = $derived(envSpecEntry?.domain || envStatusEntry?.domain || envSpecEntry?.customDomains?.[0] || null);
 
 	function openApp() {
 		if (appDomain) {

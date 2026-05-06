@@ -983,8 +983,20 @@
 		<div class={sectionCls}>
 			<h3 class={headingCls}>Domains</h3>
 
-			{#if !domains?.primary && (!domains?.custom || domains.custom.length === 0)}
+			{#if !domains?.primary && !domains?.auto && (!domains?.custom || domains.custom.length === 0)}
 				<p class="text-xs text-gray-500">No domains configured. Add a domain to make this app reachable.</p>
+			{/if}
+
+			{#if domains?.auto}
+				<div class="flex items-center justify-between rounded-md bg-surface-700 px-3 py-2">
+					<div>
+						<div class="flex items-center gap-2">
+							<p class="text-xs text-gray-500">Auto-generated</p>
+							<span class="rounded bg-surface-600 px-1.5 py-0.5 text-[10px] font-medium text-gray-400">Generated</span>
+						</div>
+						<p class="font-mono text-xs text-gray-200">{domains.auto}</p>
+					</div>
+				</div>
 			{/if}
 
 			{#if domains?.primary && !editingPrimary}
