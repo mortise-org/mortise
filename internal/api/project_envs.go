@@ -421,9 +421,28 @@ func (s *Server) cloneAppOverrides(ctx context.Context, projectName, ns, sourceN
 	store := &envstore.Store{Client: s.client}
 
 	for i := range apps.Items {
-		app := &apps.Items[i]
+		appName := apps.Items[i].Name
+		if err := s.cloneEnvToApp(ctx, ns, appName, sourceName, targetName, sourceEnvNs, store); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
-		// Retry-safe: skip apps that already have the target env.
+const maxConflictRetries = 5
+
+func (s *Server) cloneEnvToApp(ctx context.Context, ns, appName, sourceName, targetName, sourceEnvNs string, store *envstore.Store) error {
+	secretVars, err := store.Get(ctx, sourceEnvNs, appName)
+	if err != nil {
+		return fmt.Errorf("read source env vars for app %q: %w", appName, err)
+	}
+
+	for attempt := range maxConflictRetries {
+		var app mortisev1alpha1.App
+		if err := s.client.Get(ctx, types.NamespacedName{Namespace: ns, Name: appName}, &app); err != nil {
+			return fmt.Errorf("get app %q: %w", appName, err)
+		}
+
 		hasTarget := false
 		for j := range app.Spec.Environments {
 			if app.Spec.Environments[j].Name == targetName {
@@ -432,7 +451,7 @@ func (s *Server) cloneAppOverrides(ctx context.Context, projectName, ns, sourceN
 			}
 		}
 		if hasTarget {
-			continue
+			return nil
 		}
 
 		var sourceEnv *mortisev1alpha1.Environment
@@ -443,14 +462,6 @@ func (s *Server) cloneAppOverrides(ctx context.Context, projectName, ns, sourceN
 			}
 		}
 
-		// Read Secret-level env vars from the source env namespace.
-		secretVars, err := store.Get(ctx, sourceEnvNs, app.Name)
-		if err != nil {
-			return fmt.Errorf("read source env vars for app %q: %w", app.Name, err)
-		}
-
-		// Merge: Secret vars first, then CRD vars win on conflict.
-		// Exclude binding-sourced vars — they'll be re-resolved by the controller.
 		envMap := make(map[string]mortisev1alpha1.EnvVar)
 		for _, ev := range secretVars {
 			if ev.Source == "binding" {
@@ -493,8 +504,12 @@ func (s *Server) cloneAppOverrides(ctx context.Context, projectName, ns, sourceN
 		}
 
 		app.Spec.Environments = append(app.Spec.Environments, cloned)
-		if err := s.client.Update(ctx, app); err != nil {
-			return fmt.Errorf("clone env overrides for app %q: %w", app.Name, err)
+		updateErr := s.client.Update(ctx, &app)
+		if updateErr == nil {
+			return nil
+		}
+		if !errors.IsConflict(updateErr) || attempt == maxConflictRetries-1 {
+			return fmt.Errorf("clone env overrides for app %q: %w", appName, updateErr)
 		}
 	}
 	return nil

@@ -128,8 +128,8 @@ func NewStore(path string) (*Store, error) {
 			return nil, fmt.Errorf("exec DDL: %w", err)
 		}
 	}
-	db.SetMaxOpenConns(4)
-	db.SetMaxIdleConns(4)
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
 
 	return &Store{db: db}, nil
 }
