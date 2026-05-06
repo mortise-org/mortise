@@ -224,6 +224,8 @@ test-integration: ## Create k3d cluster, install chart + test deps, run integrat
 	k3d image import $(INT_IMG) $(INT_OBSERVER_IMG) nginx:1.27 postgres:16 redis:7 busybox:1.37 alpine:3.20 -c $(INT_CLUSTER)
 	@echo "==> Installing CRDs..."
 	kubectl apply -f charts/mortise-core/crds/
+	@echo "==> Waiting for CRDs to be established..."
+	kubectl wait --for=condition=Established crd/platformconfigs.mortise.mortise.dev --timeout=30s
 	@echo "==> Installing test-only dependencies (registry, Gitea, BuildKit)..."
 	kubectl create namespace mortise-system --dry-run=client -o yaml | kubectl apply -f -
 	kubectl apply -f test/integration/manifests/
