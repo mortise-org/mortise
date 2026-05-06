@@ -201,6 +201,8 @@ func (s *Server) Handler() http.Handler {
 			r.Patch("/projects/{project}/environments/{name}", s.UpdateProjectEnvironment)
 			r.Delete("/projects/{project}/environments/{name}", s.DeleteProjectEnvironment)
 
+			r.Get("/projects/{project}/previews", s.ListPreviews)
+
 			r.Post("/projects/{project}/apps", s.CreateApp)
 			r.Get("/projects/{project}/apps", s.ListApps)
 			r.Get("/projects/{project}/apps/{app}", s.GetApp)

@@ -35,8 +35,12 @@ export interface DomainsResponse {
 
 export interface PlatformResponse {
 	domain: string;
+	domainTemplate?: string;
+	defaults?: { cpu?: string; memory?: string };
 	tls: { certManagerClusterIssuer?: string };
 	storage?: { defaultStorageClass?: string };
+	registry?: { url?: string; namespace?: string };
+	build?: { buildkitAddr?: string; defaultPlatform?: string };
 	phase?: string;
 	observability?: {
 		logsAdapterEndpoint?: string;
@@ -162,6 +166,12 @@ export interface SecretResponse {
 
 export type ProjectPhase = 'Pending' | 'Ready' | 'Terminating' | 'Failed';
 
+export interface PreviewConfig {
+	enabled: boolean;
+	domain?: string;
+	ttl?: string;
+}
+
 export interface Project {
 	name: string;
 	description?: string;
@@ -170,6 +180,8 @@ export interface Project {
 	appCount: number;
 	autoRedeploy: boolean;
 	createdAt?: string;
+	preview?: PreviewConfig;
+	health?: EnvHealth;
 }
 
 export type EnvHealth = 'healthy' | 'warning' | 'danger' | 'unknown';

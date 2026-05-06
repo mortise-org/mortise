@@ -5,7 +5,7 @@
   import { api } from '$lib/api';
   import { store } from '$lib/store.svelte';
   import type { Project, ProjectMember, ProjectEnvironment, App, EnvHealth } from '$lib/types';
-  import { Plus, Trash2, Check, ArrowUp, ArrowDown } from 'lucide-svelte';
+  import { Plus, Trash2, Check, ArrowUp, ArrowDown, Copy } from 'lucide-svelte';
 
   const projectName = $derived(page.params.project ?? '');
   let project = $state<Project | null>(null);
@@ -34,6 +34,10 @@
   let envDeleteTarget = $state<ProjectEnvironment | null>(null);
   let envDeleteAffected = $state<string[]>([]);
   let deletingEnv = $state(false);
+  let showCloneDialog = $state(false);
+  let cloneSource = $state('');
+  let cloneName = $state('');
+  let cloningEnv = $state(false);
 
   const DNS_LABEL = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/;
 
@@ -83,7 +87,7 @@
     const prev = envs;
     envs = next.map((e, i) => ({ ...e, displayOrder: i }));
     try {
-      await api.updateProjectEnvironment(projectName, name, { displayOrder: target });
+      await api.updateProjectEnvironment(projectName, name, { displayOrder: envs.find(e => e.name === name)!.displayOrder });
       envs = await store.invalidateProjectEnvs(projectName);
     } catch (e) {
       envs = prev;
@@ -132,6 +136,31 @@
     }
   }
 
+  async function cloneEnv() {
+    const name = cloneName.trim().toLowerCase();
+    envError = '';
+    if (!DNS_LABEL.test(name) || name.length > 63) {
+      envError = 'Name must be a DNS label (lowercase letters, digits, dashes; ≤63 chars).';
+      return;
+    }
+    if (envs.some(e => e.name === name)) {
+      envError = 'An environment with that name already exists.';
+      return;
+    }
+    cloningEnv = true;
+    try {
+      await api.cloneEnvironment(projectName, cloneSource, name, envs.length);
+      envs = await store.invalidateProjectEnvs(projectName);
+      showCloneDialog = false;
+      cloneName = '';
+      cloneSource = '';
+    } catch (e) {
+      envError = e instanceof Error ? e.message : 'Failed to clone environment';
+    } finally {
+      cloningEnv = false;
+    }
+  }
+
   function healthDot(h?: EnvHealth): string {
     switch (h) {
       case 'healthy': return 'bg-success';
@@ -161,6 +190,11 @@
     try {
       project = await api.getProject(projectName);
       editDesc = project.description ?? '';
+      if (project.preview) {
+        prEnabled = project.preview.enabled;
+        prDomainTemplate = project.preview.domain ?? '';
+        prTtl = project.preview.ttl || '72h';
+      }
     } catch {
       // ignore
     } finally {
@@ -353,8 +387,8 @@ if (tab === 'danger' && projectApps.length === 0 && !loadingApps) await loadApps
             <div>
               <label class={labelCls} for="pr-domain">Domain template</label>
               <input id="pr-domain" type="text" bind:value={prDomainTemplate}
-                placeholder="pr-{'{number}'}.{'{app}'}.example.com" class={inputCls} />
-              <p class="mt-1 text-xs text-gray-500">Tokens: {'{number}'}, {'{app}'}</p>
+                placeholder={'{app}-{project}-pr-{number}.example.com'} class={inputCls} />
+              <p class="mt-1 text-xs text-gray-500">Tokens: {'{app}'}, {'{project}'}, {'{number}'}. Leave blank for platform default.</p>
             </div>
             <div>
               <label class={labelCls} for="pr-ttl">TTL after PR close</label>
@@ -447,6 +481,11 @@ if (tab === 'danger' && projectApps.length === 0 && !loadingApps) await loadApps
                     <span class="inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform {env.restricted ? 'translate-x-4.5' : 'translate-x-0.5'}"></span>
                   </button>
                 </div>
+                <button type="button"
+                  onclick={() => { cloneSource = env.name; cloneName = ''; showCloneDialog = true; envError = ''; }}
+                  class="flex items-center gap-1 text-xs text-gray-500 hover:text-accent">
+                  <Copy class="h-3.5 w-3.5" /> Clone
+                </button>
                 {#if envs.length > 1}
                   <button type="button"
                     onclick={() => openEnvDelete(env)}
@@ -508,6 +547,33 @@ if (tab === 'danger' && projectApps.length === 0 && !loadingApps) await loadApps
               <button type="button" onclick={confirmEnvDelete} disabled={deletingEnv}
                 class="rounded-md bg-danger px-4 py-2 text-sm font-medium text-white hover:bg-danger/80 disabled:opacity-50">
                 {deletingEnv ? 'Deleting…' : 'Delete environment'}
+              </button>
+            </div>
+          </div>
+        </div>
+      {/if}
+
+      {#if showCloneDialog}
+        <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+          <div class="w-[28rem] rounded-lg border border-surface-600 bg-surface-800 p-5">
+            <h3 class="mb-2 text-sm font-semibold text-white">Clone environment "{cloneSource}"</h3>
+            <p class="mb-3 text-xs text-gray-400">
+              Creates a new environment with the same configuration, env vars, and overrides as "{cloneSource}".
+            </p>
+            <div class="mb-4">
+              <label class={labelCls} for="clone-name">New environment name</label>
+              <input id="clone-name" type="text" bind:value={cloneName} placeholder="e.g. staging-copy" class={inputCls} />
+              <p class="mt-1 text-xs text-gray-500">Lowercase letters, digits, and dashes. Max 63 chars.</p>
+            </div>
+            {#if envError}
+              <p class="mb-3 rounded bg-danger/10 px-3 py-2 text-xs text-danger">{envError}</p>
+            {/if}
+            <div class="flex justify-end gap-2">
+              <button type="button" onclick={() => { showCloneDialog = false; cloneName = ''; cloneSource = ''; envError = ''; }}
+                class={btnSecondary}>Cancel</button>
+              <button type="button" onclick={cloneEnv} disabled={!cloneName.trim() || cloningEnv}
+                class={btnPrimary}>
+                {cloningEnv ? 'Cloning…' : 'Clone'}
               </button>
             </div>
           </div>

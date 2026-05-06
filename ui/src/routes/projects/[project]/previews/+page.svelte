@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import { onMount } from 'svelte';
+	import { api } from '$lib/api';
 	import type { PreviewEnvironment } from '$lib/types';
 	import { GitBranch, Clock, Globe } from 'lucide-svelte';
 
@@ -9,8 +10,14 @@
 	let loading = $state(true);
 
 	onMount(async () => {
-		// Preview environments API not yet implemented; show empty state
-		loading = false;
+		try {
+			const data = await api.listPreviewEnvironments(projectName);
+			previews = data as PreviewEnvironment[];
+		} catch {
+			previews = [];
+		} finally {
+			loading = false;
+		}
 	});
 
 	function phaseClass(phase: string): string {

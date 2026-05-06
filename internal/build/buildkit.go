@@ -130,6 +130,14 @@ func (b *BuildKitClient) run(ctx context.Context, req BuildRequest, ch chan<- Bu
 		return
 	}
 
+	// Railpack builds have no frontend-level no-cache knob. Set IgnoreCache
+	// on every op in the LLB definition so BuildKit skips cached layers for
+	// this specific build without affecting other concurrent builds.
+	if def != nil && req.NoCache {
+		markDefinitionNoCache(def)
+		ch <- BuildEvent{Type: EventLog, Line: "[no-cache] ignoring build cache for all layers"}
+	}
+
 	resp, err := b.solver.Solve(ctx, def, opt, statusCh)
 	<-logDone // drain remaining log events before writing the terminal event
 
@@ -143,6 +151,16 @@ func (b *BuildKitClient) run(ctx context.Context, req BuildRequest, ch chan<- Bu
 		digest = resp.ExporterResponse[exptypes.ExporterImageDigestKey]
 	}
 	ch <- BuildEvent{Type: EventSuccess, Digest: digest, DetectedPort: detectedPort}
+}
+
+// markDefinitionNoCache sets IgnoreCache on every op in an LLB Definition,
+// causing BuildKit to re-execute all layers instead of serving them from cache.
+// This is scoped to the single Definition — other concurrent builds are unaffected.
+func markDefinitionNoCache(def *llb.Definition) {
+	for dgst, md := range def.Metadata {
+		md.IgnoreCache = true
+		def.Metadata[dgst] = md
+	}
 }
 
 // buildSolveOpt decides between Dockerfile and Railpack, returning the

@@ -41,6 +41,7 @@ type projectEnvResponse struct {
 	Name         string    `json:"name"`
 	DisplayOrder int       `json:"displayOrder"`
 	Health       EnvHealth `json:"health"`
+	Restricted   bool      `json:"restricted,omitempty"`
 }
 
 type createProjectEnvRequest struct {
@@ -49,10 +50,11 @@ type createProjectEnvRequest struct {
 }
 
 // patchProjectEnvRequest is the JSON body for PATCH .../environments/{name}.
-// Both fields are optional — omitting a field leaves the existing value in place.
+// All fields are optional — omitting a field leaves the existing value in place.
 type patchProjectEnvRequest struct {
 	Name         *string `json:"name,omitempty"`
 	DisplayOrder *int    `json:"displayOrder,omitempty"`
+	Restricted   *bool   `json:"restricted,omitempty"`
 }
 
 // ListProjectEnvironments returns the project's ordered env list with an
@@ -97,6 +99,7 @@ func (s *Server) ListProjectEnvironments(w http.ResponseWriter, r *http.Request)
 			Name:         env.Name,
 			DisplayOrder: env.DisplayOrder,
 			Health:       aggregateEnvHealth(env.Name, apps.Items),
+			Restricted:   env.Restricted,
 		})
 	}
 	writeJSON(w, http.StatusOK, resp)
@@ -172,7 +175,7 @@ func (s *Server) CreateProjectEnvironment(w http.ResponseWriter, r *http.Request
 // PATCH /api/projects/{project}/environments/{name}  { "name": "stage", "displayOrder": 2 }
 //
 // @Summary Update a project environment
-// @Description Edits the display order and/or renames an environment, cascading to App overrides
+// @Description Edits the display order and/or renames an environment. When displayOrder changes, the displaced environment is automatically swapped. Renames cascade to App overrides.
 // @Tags environments
 // @Accept json
 // @Produce json
@@ -228,7 +231,20 @@ func (s *Server) UpdateProjectEnvironment(w http.ResponseWriter, r *http.Request
 		project.Spec.Environments[idx].Name = *req.Name
 	}
 	if req.DisplayOrder != nil {
-		project.Spec.Environments[idx].DisplayOrder = *req.DisplayOrder
+		oldOrder := project.Spec.Environments[idx].DisplayOrder
+		newOrder := *req.DisplayOrder
+		if oldOrder != newOrder {
+			for i := range project.Spec.Environments {
+				if i != idx && project.Spec.Environments[i].DisplayOrder == newOrder {
+					project.Spec.Environments[i].DisplayOrder = oldOrder
+					break
+				}
+			}
+			project.Spec.Environments[idx].DisplayOrder = newOrder
+		}
+	}
+	if req.Restricted != nil {
+		project.Spec.Environments[idx].Restricted = *req.Restricted
 	}
 
 	if err := s.client.Update(r.Context(), project); err != nil {
@@ -246,6 +262,7 @@ func (s *Server) UpdateProjectEnvironment(w http.ResponseWriter, r *http.Request
 		Name:         updated.Name,
 		DisplayOrder: updated.DisplayOrder,
 		Health:       EnvHealthUnknown,
+		Restricted:   updated.Restricted,
 	})
 }
 

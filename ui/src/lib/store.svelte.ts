@@ -1,6 +1,6 @@
 import { browser } from '$app/environment';
 import { api } from './api';
-import type { App, AppSpec, Project, ProjectEnvironment } from './types';
+import type { App, AppSpec, PreviewSummary, Project, ProjectEnvironment } from './types';
 
 interface StagedChange {
 	appName: string;
@@ -29,6 +29,9 @@ class MortiseStore {
 	// Project environments keyed by project name. Sole source of truth: the
 	// navbar, settings page, drawer, and canvas all read from this map.
 	projectEnvs = $state<Record<string, ProjectEnvironment[]>>({});
+
+	// Preview environments keyed by project name.
+	previewEnvs = $state<Record<string, PreviewSummary[]>>({});
 
 	// Staged changes (client-side only, in-memory)
 	stagedChanges = $state<Map<string, StagedChange>>(new Map());
@@ -133,6 +136,16 @@ class MortiseStore {
 
 	async invalidateProjectEnvs(projectName: string): Promise<ProjectEnvironment[]> {
 		return this.loadProjectEnvs(projectName);
+	}
+
+	async loadPreviewEnvs(projectName: string): Promise<PreviewSummary[]> {
+		try {
+			const previews = await api.listPreviewEnvironments(projectName);
+			this.previewEnvs = { ...this.previewEnvs, [projectName]: previews };
+			return previews;
+		} catch {
+			return [];
+		}
 	}
 
 	stageChange(appName: string, original: AppSpec, dirty: AppSpec) {

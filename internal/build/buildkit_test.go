@@ -10,6 +10,7 @@ import (
 	bkclient "github.com/moby/buildkit/client"
 	"github.com/moby/buildkit/client/llb"
 	exptypes "github.com/moby/buildkit/exporter/containerimage/exptypes"
+	digest "github.com/opencontainers/go-digest"
 )
 
 // testSourceDir creates a temp directory with a minimal Dockerfile so tests
@@ -456,6 +457,29 @@ func TestParseDockerfileExpose_MissingFile(t *testing.T) {
 	}
 }
 
+// TestMarkDefinitionNoCache verifies that markDefinitionNoCache sets
+// IgnoreCache on every op in a Definition.
+func TestMarkDefinitionNoCache(t *testing.T) {
+	def := &llb.Definition{
+		Metadata: map[digest.Digest]llb.OpMetadata{
+			"sha256:aaa": {},
+			"sha256:bbb": {IgnoreCache: false},
+		},
+	}
+	markDefinitionNoCache(def)
+	for dgst, md := range def.Metadata {
+		if !md.IgnoreCache {
+			t.Errorf("op %s: IgnoreCache = false, want true", dgst)
+		}
+	}
+}
+
+// TestMarkDefinitionNoCache_Empty verifies no panic on an empty metadata map.
+func TestMarkDefinitionNoCache_Empty(t *testing.T) {
+	def := &llb.Definition{Metadata: map[digest.Digest]llb.OpMetadata{}}
+	markDefinitionNoCache(def)
+}
+
 // fakeSolverImpl is the concrete fake used in most tests. It feeds log data
 // into the statusChan before returning.
 type fakeSolverImpl struct {
@@ -481,3 +505,4 @@ func (f *fakeSolverImpl) Solve(ctx context.Context, _ *llb.Definition, _ bkclien
 	}
 	return f.resp, f.err
 }
+

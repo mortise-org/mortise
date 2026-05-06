@@ -7,6 +7,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
@@ -20,12 +21,19 @@ const platformConfigName = "platform"
 // patchPlatformRequest is the JSON body accepted by PATCH /api/platform.
 // All fields are optional; only non-zero fields overwrite the existing value.
 type patchPlatformRequest struct {
-	Domain        string                      `json:"domain,omitempty"`
-	TLS           *patchPlatformTLS           `json:"tls,omitempty"`
-	Storage       *patchPlatformStorage       `json:"storage,omitempty"`
-	Registry      *patchPlatformRegistry      `json:"registry,omitempty"`
-	Build         *patchPlatformBuild         `json:"build,omitempty"`
-	Observability *patchPlatformObservability `json:"observability,omitempty"`
+	Domain         string                      `json:"domain,omitempty"`
+	DomainTemplate string                      `json:"domainTemplate,omitempty"`
+	TLS            *patchPlatformTLS           `json:"tls,omitempty"`
+	Storage        *patchPlatformStorage       `json:"storage,omitempty"`
+	Registry       *patchPlatformRegistry      `json:"registry,omitempty"`
+	Build          *patchPlatformBuild         `json:"build,omitempty"`
+	Defaults       *patchPlatformDefaults      `json:"defaults,omitempty"`
+	Observability  *patchPlatformObservability `json:"observability,omitempty"`
+}
+
+type patchPlatformDefaults struct {
+	CPU    string `json:"cpu,omitempty"`
+	Memory string `json:"memory,omitempty"`
 }
 
 type patchPlatformTLS struct {
@@ -69,13 +77,32 @@ const (
 	adapterTokensNamespace  = "mortise-system"
 )
 
+type platformRegistryResponse struct {
+	URL       string `json:"url,omitempty"`
+	Namespace string `json:"namespace,omitempty"`
+}
+
+type platformBuildResponse struct {
+	BuildkitAddr    string `json:"buildkitAddr,omitempty"`
+	DefaultPlatform string `json:"defaultPlatform,omitempty"`
+}
+
+type platformDefaultsResponse struct {
+	CPU    string `json:"cpu,omitempty"`
+	Memory string `json:"memory,omitempty"`
+}
+
 // platformResponse is the JSON shape returned from GET and PATCH.
 type platformResponse struct {
-	Domain        string                              `json:"domain"`
-	TLS           mortisev1alpha1.TLSConfig           `json:"tls"`
-	Storage       mortisev1alpha1.StorageConfig       `json:"storage,omitempty"`
-	Phase         mortisev1alpha1.PlatformConfigPhase `json:"phase,omitempty"`
-	Observability *platformObservabilityResponse      `json:"observability,omitempty"`
+	Domain         string                              `json:"domain"`
+	DomainTemplate string                              `json:"domainTemplate,omitempty"`
+	TLS            mortisev1alpha1.TLSConfig           `json:"tls"`
+	Storage        mortisev1alpha1.StorageConfig       `json:"storage,omitempty"`
+	Registry       *platformRegistryResponse           `json:"registry,omitempty"`
+	Build          *platformBuildResponse              `json:"build,omitempty"`
+	Defaults       *platformDefaultsResponse           `json:"defaults,omitempty"`
+	Phase          mortisev1alpha1.PlatformConfigPhase `json:"phase,omitempty"`
+	Observability  *platformObservabilityResponse      `json:"observability,omitempty"`
 }
 
 // GetPlatform returns the current PlatformConfig.
@@ -133,6 +160,21 @@ func (s *Server) PatchPlatform(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, errorResponse{"invalid JSON: " + err.Error()})
 		return
+	}
+
+	if req.Defaults != nil {
+		if req.Defaults.CPU != "" {
+			if _, err := resource.ParseQuantity(req.Defaults.CPU); err != nil {
+				writeJSON(w, http.StatusBadRequest, errorResponse{"invalid CPU quantity: " + err.Error()})
+				return
+			}
+		}
+		if req.Defaults.Memory != "" {
+			if _, err := resource.ParseQuantity(req.Defaults.Memory); err != nil {
+				writeJSON(w, http.StatusBadRequest, errorResponse{"invalid memory quantity: " + err.Error()})
+				return
+			}
+		}
 	}
 
 	if req.Observability != nil {
@@ -234,10 +276,23 @@ func adapterTokenSecretRef(key string) *mortisev1alpha1.SecretRef {
 
 func newPlatformResponse(pc *mortisev1alpha1.PlatformConfig) platformResponse {
 	resp := platformResponse{
-		Domain:  pc.Spec.Domain,
-		TLS:     pc.Spec.TLS,
-		Storage: pc.Spec.Storage,
-		Phase:   pc.Status.Phase,
+		Domain:         pc.Spec.Domain,
+		DomainTemplate: pc.Spec.DomainTemplate,
+		TLS:            pc.Spec.TLS,
+		Storage:        pc.Spec.Storage,
+		Phase:          pc.Status.Phase,
+	}
+	reg := pc.Spec.Registry
+	if reg.URL != "" || reg.Namespace != "" {
+		resp.Registry = &platformRegistryResponse{URL: reg.URL, Namespace: reg.Namespace}
+	}
+	bld := pc.Spec.Build
+	if bld.BuildkitAddr != "" || bld.DefaultPlatform != "" {
+		resp.Build = &platformBuildResponse{BuildkitAddr: bld.BuildkitAddr, DefaultPlatform: bld.DefaultPlatform}
+	}
+	def := pc.Spec.Defaults
+	if def.Resources.CPU != "" || def.Resources.Memory != "" {
+		resp.Defaults = &platformDefaultsResponse{CPU: def.Resources.CPU, Memory: def.Resources.Memory}
 	}
 	obs := pc.Spec.Observability
 	if obs.LogsAdapterEndpoint != "" || obs.MetricsAdapterEndpoint != "" || obs.TrafficAdapterEndpoint != "" ||
@@ -258,6 +313,17 @@ func newPlatformResponse(pc *mortisev1alpha1.PlatformConfig) platformResponse {
 func buildPlatformSpec(base mortisev1alpha1.PlatformConfigSpec, req *patchPlatformRequest) mortisev1alpha1.PlatformConfigSpec {
 	if req.Domain != "" {
 		base.Domain = req.Domain
+	}
+	if req.DomainTemplate != "" {
+		base.DomainTemplate = req.DomainTemplate
+	}
+	if req.Defaults != nil {
+		if req.Defaults.CPU != "" {
+			base.Defaults.Resources.CPU = req.Defaults.CPU
+		}
+		if req.Defaults.Memory != "" {
+			base.Defaults.Resources.Memory = req.Defaults.Memory
+		}
 	}
 	if req.TLS != nil && req.TLS.CertManagerClusterIssuer != "" {
 		base.TLS.CertManagerClusterIssuer = req.TLS.CertManagerClusterIssuer

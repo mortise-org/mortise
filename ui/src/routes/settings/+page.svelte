@@ -14,6 +14,11 @@
 
 	// Platform form (admin only)
 	let domain = $state('');
+	let domainTemplate = $state('');
+	let savingDomainTemplate = $state(false);
+	let defaultCpu = $state('');
+	let defaultMemory = $state('');
+	let savingDefaults = $state(false);
 	let defaultStorageClass = $state('');
 	let tlsClusterIssuer = $state('');
 	let savingStorage = $state(false);
@@ -419,8 +424,15 @@
 			users = userList ?? [];
 			if (platform) {
 				domain = platform.domain ?? '';
+				domainTemplate = platform.domainTemplate ?? '';
+				defaultCpu = platform.defaults?.cpu ?? '';
+				defaultMemory = platform.defaults?.memory ?? '';
 				tlsClusterIssuer = platform.tls?.certManagerClusterIssuer ?? '';
 				defaultStorageClass = platform.storage?.defaultStorageClass ?? '';
+				registryUrl = platform.registry?.url ?? '';
+				registryNamespace = platform.registry?.namespace ?? '';
+				buildkitAddress = platform.build?.buildkitAddr ?? '';
+				buildkitPlatform = platform.build?.defaultPlatform ?? 'linux/amd64';
 				logsAdapterEndpoint = platform.observability?.logsAdapterEndpoint ?? '';
 				hasLogsToken = platform.observability?.hasLogsToken ?? false;
 				metricsAdapterEndpoint = platform.observability?.metricsAdapterEndpoint ?? '';
@@ -453,6 +465,22 @@
 		} finally {
 			saving = false;
 		}
+	}
+
+	async function saveDomainTemplate() {
+		savingDomainTemplate = true;
+		error = '';
+		try { await api.patchPlatform({ domainTemplate }); }
+		catch (e) { error = e instanceof Error ? e.message : 'Failed to save domain template'; }
+		finally { savingDomainTemplate = false; }
+	}
+
+	async function saveDefaults() {
+		savingDefaults = true;
+		error = '';
+		try { await api.patchPlatform({ defaults: { cpu: defaultCpu, memory: defaultMemory } }); }
+		catch (e) { error = e instanceof Error ? e.message : 'Failed to save default resources'; }
+		finally { savingDefaults = false; }
 	}
 
 	async function saveRegistry() {
@@ -505,7 +533,9 @@
 
 	const sectionKeywords: Record<string, string[]> = {
 		'git-providers': ['git', 'provider', 'github', 'gitlab', 'gitea', 'oauth', 'connect'],
-		general: ['general', 'domain', 'platform'],
+		general: ['general', 'domain', 'platform', 'domaintemplate', 'template'],
+		'domain-template': ['domain', 'domaintemplate', 'template', 'url', 'pattern'],
+		defaults: ['defaults', 'resources', 'cpu', 'memory', 'request', 'limit'],
 		registry: ['registry', 'oci', 'zot', 'image'],
 		build: ['build', 'buildkit', 'container'],
 		storage: ['storage', 'storageclass', 'pvc', 'volume'],
@@ -531,6 +561,7 @@
 		type="text"
 		bind:value={filterText}
 		placeholder="Filter settings..."
+		autocomplete="off"
 		class="mb-6 w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-white placeholder-gray-500 outline-none focus:border-accent"
 	/>
 
@@ -669,6 +700,48 @@
 				class="rounded-md bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent-hover disabled:opacity-50">
 				{saving ? 'Saving...' : 'Save'}
 			</button>
+		</section>
+
+		<!-- Domain Template -->
+		<section class="mb-8 space-y-4" id="domain-template" style:display={sectionVisible('domain-template') ? '' : 'none'}>
+			<h2 class="border-b border-surface-600 pb-2 text-sm font-medium text-gray-300">Domain Template</h2>
+			<p class="text-xs text-gray-500">Customize the URL pattern for app domains. Available tokens: <code class="rounded bg-surface-700 px-1 font-mono text-gray-300">{'{{.App}}'}</code>, <code class="rounded bg-surface-700 px-1 font-mono text-gray-300">{'{{.Project}}'}</code>, <code class="rounded bg-surface-700 px-1 font-mono text-gray-300">{'{{.Env}}'}</code>, <code class="rounded bg-surface-700 px-1 font-mono text-gray-300">{'{{.Domain}}'}</code>.</p>
+			<div class="space-y-3 rounded-md border border-surface-600 bg-surface-800/50 p-4">
+				<div>
+					<label class="block text-xs text-gray-500 mb-1" for="domain-template-input">Template</label>
+					<input id="domain-template-input" type="text" bind:value={domainTemplate} placeholder="{'{{.App}}-{{.Project}}.{{.Domain}}'}"
+						class="w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-white placeholder-gray-500 outline-none font-mono focus:border-accent" />
+					<p class="mt-1 text-xs text-gray-500">Default when empty: <code class="rounded bg-surface-700 px-1 font-mono text-gray-300">{'{{.App}}-{{.Project}}.{{.Domain}}'}</code></p>
+				</div>
+				<button type="button" onclick={saveDomainTemplate} disabled={savingDomainTemplate}
+					class="rounded-md bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent-hover disabled:opacity-50">
+					{savingDomainTemplate ? 'Saving...' : 'Save'}
+				</button>
+			</div>
+		</section>
+
+		<!-- Default Resources -->
+		<section class="mb-8 space-y-4" id="defaults" style:display={sectionVisible('defaults') ? '' : 'none'}>
+			<h2 class="border-b border-surface-600 pb-2 text-sm font-medium text-gray-300">Default Resources</h2>
+			<p class="text-xs text-gray-500">Default CPU and memory resource requests for new apps that don't specify their own.</p>
+			<div class="space-y-3 rounded-md border border-surface-600 bg-surface-800/50 p-4">
+				<div>
+					<label class="block text-xs text-gray-500 mb-1" for="default-cpu">CPU</label>
+					<input id="default-cpu" type="text" bind:value={defaultCpu} placeholder="100m"
+						class="w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-white placeholder-gray-500 outline-none font-mono focus:border-accent" />
+					<p class="mt-1 text-xs text-gray-500">Kubernetes CPU units, e.g. <code class="rounded bg-surface-700 px-1 font-mono text-gray-300">100m</code>, <code class="rounded bg-surface-700 px-1 font-mono text-gray-300">500m</code>, <code class="rounded bg-surface-700 px-1 font-mono text-gray-300">1</code></p>
+				</div>
+				<div>
+					<label class="block text-xs text-gray-500 mb-1" for="default-memory">Memory</label>
+					<input id="default-memory" type="text" bind:value={defaultMemory} placeholder="128Mi"
+						class="w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-white placeholder-gray-500 outline-none font-mono focus:border-accent" />
+					<p class="mt-1 text-xs text-gray-500">Kubernetes memory units, e.g. <code class="rounded bg-surface-700 px-1 font-mono text-gray-300">128Mi</code>, <code class="rounded bg-surface-700 px-1 font-mono text-gray-300">256Mi</code>, <code class="rounded bg-surface-700 px-1 font-mono text-gray-300">512Mi</code></p>
+				</div>
+				<button type="button" onclick={saveDefaults} disabled={savingDefaults}
+					class="rounded-md bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent-hover disabled:opacity-50">
+					{savingDefaults ? 'Saving...' : 'Save'}
+				</button>
+			</div>
 		</section>
 
 		<!-- Registry -->
