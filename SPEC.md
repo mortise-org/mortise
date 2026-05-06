@@ -232,20 +232,104 @@ domain" concept does not exist.
 
 | Method + path | Purpose |
 |---|---|
-| `GET /api/projects` | list all projects |
-| `POST /api/projects` | create a project (admin only) |
-| `GET /api/projects/{p}` | get project details + app count |
-| `DELETE /api/projects/{p}` | delete project + every app in it (admin only) |
+| **Auth** | |
+| `GET /api/auth/status` | check setup/login state |
+| `POST /api/auth/setup` | initial admin setup |
+| `POST /api/auth/login` | login, returns JWT |
+| `POST /api/me/password` | change own password |
+| **Admin** | |
+| `GET /api/admin/users` | list platform users |
+| `POST /api/admin/users` | create user |
+| `PATCH /api/admin/users/{email}` | update user role |
+| `DELETE /api/admin/users/{email}` | delete user |
+| `POST /api/admin/users/{email}/password` | reset user password |
+| **Git providers** | |
+| `GET /api/gitproviders` | list git providers |
+| `POST /api/gitproviders` | create git provider |
+| `DELETE /api/gitproviders/{name}` | delete git provider |
+| `GET /api/gitproviders/{name}/webhook-secret` | get webhook HMAC secret |
+| `POST /api/auth/git/{provider}/device` | start device flow |
+| `POST /api/auth/git/{provider}/device/poll` | poll device flow |
+| `GET /api/auth/git/{provider}/status` | check git token status |
+| `POST /api/auth/git/{provider}/token` | store personal access token |
+| **Projects** | |
+| `GET /api/projects` | list projects (scoped by membership) |
+| `POST /api/projects` | create project (admin only) |
+| `GET /api/projects/{p}` | get project with health status |
+| `PATCH /api/projects/{p}` | update project (description, autoRedeploy, preview) |
+| `DELETE /api/projects/{p}` | delete project + all apps (admin only) |
+| **Project members** | |
+| `GET /api/projects/{p}/members` | list project members |
+| `POST /api/projects/{p}/members` | add member |
+| `PATCH /api/projects/{p}/members/{email}` | update member role |
+| `DELETE /api/projects/{p}/members/{email}` | remove member |
+| **Environments** | |
+| `GET /api/projects/{p}/environments` | list environments with health |
+| `POST /api/projects/{p}/environments` | create environment |
+| `POST /api/projects/{p}/environments/{src}/clone` | clone environment |
+| `PATCH /api/projects/{p}/environments/{name}` | update env (reorder auto-swaps) |
+| `DELETE /api/projects/{p}/environments/{name}` | delete environment |
+| `GET /api/projects/{p}/previews` | list preview environments |
+| **Apps** | |
 | `GET /api/projects/{p}/apps` | list apps in project |
-| `POST /api/projects/{p}/apps` | create app in project |
+| `POST /api/projects/{p}/apps` | create app |
 | `GET /api/projects/{p}/apps/{a}` | get app |
 | `PUT /api/projects/{p}/apps/{a}` | update app |
 | `DELETE /api/projects/{p}/apps/{a}` | delete app |
+| `POST /api/projects/{p}/stacks` | create multi-app stack |
+| `GET /api/templates` | list app templates |
+| **App operations** | |
+| `POST /api/projects/{p}/apps/{a}/redeploy` | restart deployment |
+| `POST /api/projects/{p}/apps/{a}/rebuild` | rebuild from source |
+| `POST /api/projects/{p}/apps/{a}/rollback` | rollback to previous image |
+| `POST /api/projects/{p}/apps/{a}/promote` | promote env image to another env |
+| `POST /api/projects/{p}/apps/{a}/deploy` | deploy webhook (JWT or deploy token) |
+| `POST /api/projects/{p}/apps/{a}/exec` | exec into running pod |
+| `POST /api/projects/{p}/apps/{a}/connect` | connect app to git repo |
+| `POST /api/projects/{p}/apps/{a}/disconnect` | disconnect from git |
+| **Secrets & env vars** | |
 | `POST /api/projects/{p}/apps/{a}/secrets` | upsert secret |
-| `GET /api/projects/{p}/apps/{a}/secrets` | list (names only) |
+| `GET /api/projects/{p}/apps/{a}/secrets` | list secrets (names only) |
 | `DELETE /api/projects/{p}/apps/{a}/secrets/{s}` | delete secret |
+| `GET /api/projects/{p}/apps/{a}/env` | get env vars |
+| `PUT /api/projects/{p}/apps/{a}/env` | replace env vars |
+| `PATCH /api/projects/{p}/apps/{a}/env` | merge env vars |
+| `POST /api/projects/{p}/apps/{a}/env/import` | import .env file |
+| `GET /api/projects/{p}/apps/{a}/build-args` | get build args |
+| `PUT /api/projects/{p}/apps/{a}/build-args` | replace build args |
+| `GET /api/projects/{p}/shared-vars` | get shared variables |
+| `PUT /api/projects/{p}/shared-vars` | replace shared variables |
+| **Domains** | |
+| `GET /api/projects/{p}/apps/{a}/domains` | list domains |
+| `POST /api/projects/{p}/apps/{a}/domains` | add domain (validates cross-app collisions) |
+| `DELETE /api/projects/{p}/apps/{a}/domains/{d}` | remove domain |
+| `POST /api/domains/validate` | validate domain for conflicts |
+| **Tokens** | |
+| `POST /api/projects/{p}/tokens` | create project deploy token |
+| `GET /api/projects/{p}/tokens` | list project tokens |
+| `DELETE /api/projects/{p}/tokens/{name}` | delete project token |
+| `POST /api/projects/{p}/apps/{a}/tokens` | create app deploy token |
+| `GET /api/projects/{p}/apps/{a}/tokens` | list app tokens |
+| `DELETE /api/projects/{p}/apps/{a}/tokens/{name}` | delete app token |
+| **Observability** | |
 | `GET /api/projects/{p}/apps/{a}/logs` | SSE multi-pod log stream |
-| `POST /api/projects/{p}/apps/{a}/deploy` | deploy webhook (per-App token) |
+| `GET /api/projects/{p}/apps/{a}/logs/history` | historical log lines |
+| `GET /api/projects/{p}/apps/{a}/build-logs` | build log lines |
+| `GET /api/projects/{p}/apps/{a}/pods` | list pods |
+| `GET /api/projects/{p}/apps/{a}/metrics/current` | current pod metrics |
+| `GET /api/projects/{p}/apps/{a}/metrics` | metrics history |
+| `GET /api/projects/{p}/apps/{a}/traffic` | traffic history |
+| `GET /api/projects/{p}/apps/{a}/traffic/current` | current traffic stats |
+| **Misc** | |
+| `GET /api/projects/{p}/bindings` | list binding edges |
+| `GET /api/projects/{p}/activity` | project activity feed |
+| `GET /api/activity` | platform-wide activity feed |
+| `GET /api/projects/{p}/events` | SSE project event stream |
+| `GET /api/repos` | list git repos |
+| `GET /api/repos/{owner}/{repo}/branches` | list branches |
+| `GET /api/repos/{owner}/{repo}/tree` | get repo file tree |
+| `GET /api/platform` | get platform config |
+| `PATCH /api/platform` | update platform config (admin) |
 
 The pre-Project `?namespace=` query param is **removed**. This is a
 breaking change, but the project is pre-release and there is no existing

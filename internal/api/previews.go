@@ -25,6 +25,18 @@ type previewSummaryResponse struct {
 // ListPreviews returns preview environment summaries for a project.
 //
 // GET /api/projects/{project}/previews
+//
+// @Summary List preview environments
+// @Description Returns active preview environments for a project
+// @Tags previews
+// @Produce json
+// @Security BearerAuth
+// @Param project path string true "Project name"
+// @Success 200 {array} previewSummaryResponse
+// @Failure 401 {object} errorResponse
+// @Failure 403 {object} errorResponse
+// @Failure 404 {object} errorResponse
+// @Router /projects/{project}/previews [get]
 func (s *Server) ListPreviews(w http.ResponseWriter, r *http.Request) {
 	ns, projectName, ok := s.resolveProject(w, r)
 	if !ok {

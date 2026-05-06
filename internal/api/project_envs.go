@@ -175,7 +175,7 @@ func (s *Server) CreateProjectEnvironment(w http.ResponseWriter, r *http.Request
 // PATCH /api/projects/{project}/environments/{name}  { "name": "stage", "displayOrder": 2 }
 //
 // @Summary Update a project environment
-// @Description Edits the display order and/or renames an environment, cascading to App overrides
+// @Description Edits the display order and/or renames an environment. When displayOrder changes, the displaced environment is automatically swapped. Renames cascade to App overrides.
 // @Tags environments
 // @Accept json
 // @Produce json

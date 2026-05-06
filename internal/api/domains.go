@@ -72,7 +72,7 @@ func (s *Server) ListDomains(w http.ResponseWriter, r *http.Request) {
 // POST /api/projects/{project}/apps/{app}/domains?environment=production
 //
 // @Summary Add a custom domain
-// @Description Append a custom domain to an app's environment. Auto-creates the environment override entry if it does not exist.
+// @Description Append a custom domain to an app's environment. Validates cross-app uniqueness and returns 409 on collision. Auto-creates the environment override entry if it does not exist.
 // @Tags domains
 // @Accept json
 // @Produce json
