@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { api } from '$lib/api';
 	import { store } from '$lib/store.svelte';
-	import type { App, BuildLogsResponse } from '$lib/types';
+	import type { App, BuildLogsResponse, Pod } from '$lib/types';
 	import { X, GitBranch, Container, Cloud, ExternalLink, Rocket } from 'lucide-svelte';
 	import DeploymentsTab from './drawer/DeploymentsTab.svelte';
 	import VariablesTab from './drawer/VariablesTab.svelte';
@@ -15,12 +15,14 @@
 		appName,
 		liveApp = null,
 		liveBuildLogs = null,
+		livePods = null,
 		onClose
 	}: {
 		project: string;
 		appName: string;
 		liveApp?: App | null;
 		liveBuildLogs?: BuildLogsResponse | null;
+		livePods?: Pod[] | null;
 		onClose: () => void;
 	} = $props();
 
@@ -74,7 +76,7 @@
 
 	// Clear optimistic override once the real polled phase catches up.
 	$effect(() => {
-		if (optimisticPhase && liveApp?.status?.phase && liveApp.status.phase !== optimisticPhase) {
+		if (optimisticPhase && liveApp?.status?.phase === optimisticPhase) {
 			optimisticPhase = null;
 		}
 	});
@@ -287,7 +289,7 @@
 			{:else if store.drawerTab === 'variables'}
 				<VariablesTab {project} app={liveApp} />
 			{:else if store.drawerTab === 'deployLogs'}
-				<DeployLogsTab {project} app={liveApp} />
+				<DeployLogsTab {project} app={liveApp} {livePods} />
 			{:else if store.drawerTab === 'buildLogs'}
 				<BuildLogsTab {project} app={liveApp} sseBuildLogs={liveBuildLogs} />
 			{:else if store.drawerTab === 'metrics'}

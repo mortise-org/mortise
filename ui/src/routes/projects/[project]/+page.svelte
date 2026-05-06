@@ -5,7 +5,7 @@
 	import { api } from '$lib/api';
 	import { store } from '$lib/store.svelte';
 	import { appNeedsRedeploy } from '$lib/types';
-	import type { App, AppPhase, Project, BuildLogsResponse } from '$lib/types';
+	import type { App, AppPhase, Project, BuildLogsResponse, Pod } from '$lib/types';
 	import { connectProjectEvents } from '$lib/projectEvents';
 	import ProjectCanvas from '$lib/components/ProjectCanvas.svelte';
 	import NewAppModal from '$lib/components/NewAppModal.svelte';
@@ -29,6 +29,8 @@
 
 	// SSE-fed state for build logs
 	let buildLogs = $state<Map<string, BuildLogsResponse>>(new Map());
+	// SSE-fed state for pod updates (keyed by "app:env")
+	let podUpdates = $state(new Map<string, Pod[]>());
 	const drawerApp = $derived(
 		selectedApp ? apps.find(a => a.metadata.name === selectedApp) ?? null : null
 	);
@@ -94,18 +96,22 @@
 			onAppDeleted: (name) => {
 				apps = apps.filter(a => a.metadata.name !== name);
 			},
-			onPods: () => {},
+			onPods: (app, env, pods) => {
+				podUpdates = new Map(podUpdates).set(app + ':' + env, pods);
+			},
 			onBuildLog: (appName, resp) => {
 				const existing = buildLogs.get(appName);
 				if (existing && resp.offset > 0) {
-					existing.lines.length = resp.offset;
-					existing.lines.push(...resp.lines);
-					existing.building = resp.building;
-					existing.timestamp = resp.timestamp;
-					existing.commitSHA = resp.commitSHA;
-					existing.status = resp.status;
-					existing.error = resp.error;
-					buildLogs = new Map(buildLogs);
+					const merged = {
+						...existing,
+						lines: [...existing.lines.slice(0, resp.offset), ...resp.lines],
+						building: resp.building,
+						timestamp: resp.timestamp,
+						commitSHA: resp.commitSHA,
+						status: resp.status,
+						error: resp.error
+					};
+					buildLogs = new Map(buildLogs).set(appName, merged);
 				} else {
 					buildLogs = new Map(buildLogs).set(appName, resp);
 				}
@@ -423,6 +429,7 @@
 			appName={selectedApp}
 			liveApp={drawerApp}
 			liveBuildLogs={buildLogs.get(selectedApp ?? '') ?? null}
+			livePods={podUpdates.get((selectedApp ?? '') + ':' + (store.currentEnv(projectName) ?? '')) ?? null}
 			onClose={() => selectedApp = null}
 		/>
 	{/key}

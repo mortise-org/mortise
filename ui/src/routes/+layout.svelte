@@ -10,7 +10,7 @@
 	import { Folder, Puzzle, Settings, LayoutDashboard, List, Bell, Activity, User, LogOut, ChevronDown, Users, Rocket } from 'lucide-svelte';
 	import ActivityRail from '$lib/components/ActivityRail.svelte';
 	import NotificationDropdown from '$lib/components/NotificationDropdown.svelte';
-	import type { EnvHealth } from '$lib/types';
+	import type { EnvHealth, PreviewSummary } from '$lib/types';
 
 	let { children } = $props();
 
@@ -74,6 +74,11 @@
 	const currentEnvHealth = $derived<EnvHealth>(
 		projectEnvs.find((e) => e.name === currentEnv)?.health ?? 'unknown'
 	);
+
+	const activePreviews = $derived.by<PreviewSummary[]>(() => {
+		if (!activeProject) return [];
+		return (store.previewEnvs[activeProject] ?? []).filter((p) => p.phase !== 'Expired');
+	});
 
 	function dotClass(h: EnvHealth | undefined): string {
 		switch (h) {
@@ -151,6 +156,7 @@
 			.catch(() => {
 				/* keep previous envs on failure */
 			});
+		store.loadPreviewEnvs(proj);
 	});
 
 	// Keep ?env= in sync with store.currentEnv so deep links + reloads are stable.
@@ -273,7 +279,7 @@
 							</button>
 							{#if envSwitcherOpen}
 								<div
-									class="absolute left-0 top-full z-50 mt-1 w-40 rounded-md border border-surface-600 bg-surface-800 shadow-xl"
+									class="absolute left-0 top-full z-50 mt-1 w-56 rounded-md border border-surface-600 bg-surface-800 shadow-xl"
 								>
 									{#each projectEnvs as env}
 										<button
@@ -289,6 +295,21 @@
 											{env.name}
 										</button>
 									{/each}
+									{#if activePreviews.length > 0}
+										<div class="border-t border-surface-600 my-1"></div>
+										{#each activePreviews as preview}
+											<button
+												type="button"
+												onclick={() => selectEnv('preview:' + preview.name)}
+												class="flex w-full items-center gap-2 px-3 py-2 text-sm {currentEnv === 'preview:' + preview.name
+													? 'bg-surface-600 text-white'
+													: 'text-gray-300 hover:bg-surface-700 hover:text-white'}"
+											>
+												<span class="inline-flex items-center rounded px-1 py-0.5 text-[10px] font-semibold leading-none bg-purple-500/20 text-purple-400">PR</span>
+												<span class="truncate">#{preview.pr.number} &middot; {preview.pr.branch}</span>
+											</button>
+										{/each}
+									{/if}
 								</div>
 							{/if}
 						</div>

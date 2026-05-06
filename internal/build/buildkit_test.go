@@ -456,6 +456,76 @@ func TestParseDockerfileExpose_MissingFile(t *testing.T) {
 	}
 }
 
+// TestPruneCache_Success verifies that pruneCache calls Prune and emits log
+// events for progress.
+func TestPruneCache_Success(t *testing.T) {
+	fs := &fakeSolverImpl{}
+	c := newWithSolver(Config{}, fs)
+
+	ch := make(chan BuildEvent, 16)
+	err := c.pruneCache(context.Background(), ch)
+	if err != nil {
+		t.Fatalf("pruneCache returned error: %v", err)
+	}
+	if fs.pruneCalls != 1 {
+		t.Fatalf("pruneCalls = %d, want 1", fs.pruneCalls)
+	}
+
+	var lines []string
+	close(ch)
+	for ev := range ch {
+		if ev.Type == EventLog {
+			lines = append(lines, ev.Line)
+		}
+	}
+	if len(lines) < 2 {
+		t.Fatalf("expected at least 2 log lines (start + summary), got %d: %v", len(lines), lines)
+	}
+}
+
+// TestPruneCache_Error verifies that a Prune failure is propagated.
+func TestPruneCache_Error(t *testing.T) {
+	fs := &fakeSolverImpl{pruneErr: errors.New("prune failed")}
+	c := newWithSolver(Config{}, fs)
+
+	ch := make(chan BuildEvent, 16)
+	err := c.pruneCache(context.Background(), ch)
+	if err == nil {
+		t.Fatal("expected error from pruneCache")
+	}
+	if err.Error() != "prune failed" {
+		t.Fatalf("error = %q, want %q", err.Error(), "prune failed")
+	}
+}
+
+// TestSubmit_NoCacheDockerfile verifies that NoCache on a Dockerfile build does
+// NOT call Prune (Dockerfile has its own no-cache frontend attr).
+func TestSubmit_NoCacheDockerfile(t *testing.T) {
+	fs := &fakeSolverImpl{
+		resp: &bkclient.SolveResponse{
+			ExporterResponse: map[string]string{
+				exptypes.ExporterImageDigestKey: "sha256:abc",
+			},
+		},
+	}
+	c := newWithSolver(Config{}, fs)
+
+	srcDir := testSourceDir(t)
+	ch, err := c.Submit(context.Background(), BuildRequest{
+		SourceDir:  srcDir,
+		PushTarget: "registry/img:tag",
+		NoCache:    true,
+	})
+	if err != nil {
+		t.Fatalf("Submit returned error: %v", err)
+	}
+	for range ch {
+	}
+	if fs.pruneCalls != 0 {
+		t.Fatalf("pruneCalls = %d, want 0 (Dockerfile builds should not prune)", fs.pruneCalls)
+	}
+}
+
 // fakeSolverImpl is the concrete fake used in most tests. It feeds log data
 // into the statusChan before returning.
 type fakeSolverImpl struct {
@@ -463,6 +533,8 @@ type fakeSolverImpl struct {
 	err        error
 	logs       []string
 	sideEffect func() // called before returning, e.g. to cancel ctx
+	pruneErr   error
+	pruneCalls int
 }
 
 func (f *fakeSolverImpl) Solve(ctx context.Context, _ *llb.Definition, _ bkclient.SolveOpt, statusChan chan *bkclient.SolveStatus) (*bkclient.SolveResponse, error) {
@@ -480,4 +552,12 @@ func (f *fakeSolverImpl) Solve(ctx context.Context, _ *llb.Definition, _ bkclien
 		f.sideEffect()
 	}
 	return f.resp, f.err
+}
+
+func (f *fakeSolverImpl) Prune(_ context.Context, ch chan bkclient.UsageInfo, _ ...bkclient.PruneOption) error {
+	f.pruneCalls++
+	if ch != nil {
+		close(ch)
+	}
+	return f.pruneErr
 }

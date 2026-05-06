@@ -2,8 +2,9 @@
 	import { api } from '$lib/api';
 	import { store } from '$lib/store.svelte';
 	import { appNeedsRedeploy } from '$lib/types';
-	import type { App } from '$lib/types';
+	import type { App, EnvVar } from '$lib/types';
 	import BindingsPicker from '$lib/components/BindingsPicker.svelte';
+	import EnvVarEditor from '$lib/components/EnvVarEditor.svelte';
 	import { Plus, Trash2, Link, Upload, FileText, X, Eye, EyeOff, Loader2, ChevronDown } from 'lucide-svelte';
 
 	let {
@@ -79,11 +80,9 @@
 		};
 	}
 
-	type BuildArgEntry = { name: string; value: string };
-
 	let envSection = $state<SectionState>(makeSection());
 	let sharedSection = $state<SectionState>(makeSection());
-	let buildArgs = $state<BuildArgEntry[]>([]);
+	let buildArgs = $state<EnvVar[]>([]);
 	let buildArgsLoading = $state(false);
 	let buildArgsSaving = $state(false);
 	let buildArgsError = $state('');
@@ -173,7 +172,9 @@
 		buildArgsSaving = true;
 		buildArgsError = '';
 		try {
-			const filtered = buildArgs.filter(a => a.name.trim() !== '');
+			const filtered = buildArgs
+				.filter(a => a.name.trim() !== '')
+				.map(a => ({ name: a.name, value: a.value ?? '' }));
 			buildArgs = await api.putBuildArgs(project, app.metadata.name, filtered);
 			markStale();
 		} catch (e) {
@@ -181,22 +182,6 @@
 		} finally {
 			buildArgsSaving = false;
 		}
-	}
-
-	function addBuildArg() {
-		buildArgs = [...buildArgs, { name: '', value: '' }];
-	}
-
-	function removeBuildArg(idx: number) {
-		buildArgs = buildArgs.filter((_, i) => i !== idx);
-	}
-
-	function updateBuildArgKey(idx: number, key: string) {
-		buildArgs = buildArgs.map((a, i) => i === idx ? { ...a, name: key } : a);
-	}
-
-	function updateBuildArgValue(idx: number, value: string) {
-		buildArgs = buildArgs.map((a, i) => i === idx ? { ...a, value } : a);
 	}
 
 	// ---- Actions ----
@@ -694,10 +679,6 @@
 						class="rounded-md bg-accent px-3 py-1 text-xs font-medium text-white hover:bg-accent-hover disabled:opacity-50">
 						{buildArgsSaving ? 'Saving...' : 'Save'}
 					</button>
-					<button type="button" onclick={addBuildArg}
-						class="flex items-center gap-1 rounded-md border border-surface-600 px-2 py-1 text-xs text-gray-400 hover:bg-surface-700 hover:text-white">
-						<Plus class="h-3.5 w-3.5" />
-					</button>
 				</div>
 			</div>
 			<div class="border-t border-surface-600 px-3 py-2">
@@ -705,26 +686,9 @@
 					<p class="text-xs text-gray-500">Loading...</p>
 				{:else if buildArgsError}
 					<p class="text-xs text-danger">{buildArgsError}</p>
-				{:else if buildArgs.length === 0}
-					<p class="text-xs text-gray-500">No build args. These are passed as <code class="font-mono">--build-arg</code> during image builds (e.g. <code class="font-mono">VITE_*</code> vars).</p>
 				{:else}
-					{#each buildArgs as arg, i}
-						<div class="mb-1.5 flex items-center gap-1.5">
-							<input type="text" value={arg.name}
-								oninput={(e) => updateBuildArgKey(i, (e.target as HTMLInputElement).value)}
-								placeholder="ARG_NAME"
-								class="flex-[2] rounded-md border border-surface-600 bg-surface-800 px-2 py-1.5 font-mono text-xs text-white placeholder-gray-600 outline-none focus:border-accent" />
-							<input type="text" value={arg.value}
-								oninput={(e) => updateBuildArgValue(i, (e.target as HTMLInputElement).value)}
-								placeholder="value"
-								class="flex-[3] rounded-md border border-surface-600 bg-surface-800 px-2 py-1.5 font-mono text-xs text-white placeholder-gray-600 outline-none focus:border-accent" />
-							<button type="button"
-								onclick={() => removeBuildArg(i)}
-								class="rounded p-1 text-gray-500 hover:text-danger">
-								<Trash2 class="h-3.5 w-3.5" />
-							</button>
-						</div>
-					{/each}
+					<EnvVarEditor bind:value={buildArgs}
+						placeholder="No build args. These are passed as --build-arg during image builds (e.g. VITE_* vars)." />
 				{/if}
 			</div>
 		</div>

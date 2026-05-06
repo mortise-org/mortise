@@ -8,10 +8,12 @@
 
 	let {
 		project,
-		app
+		app,
+		livePods = null
 	}: {
 		project: string;
 		app: App;
+		livePods?: Pod[] | null;
 	} = $props();
 
 	const isBuilding = $derived(app.status?.phase === 'Building');
@@ -222,6 +224,14 @@
 	$effect(() => {
 		if (!podsLoaded) void loadPods();
 		untrack(() => { if (mode === 'live') connectLive(false); });
+	});
+
+	$effect(() => {
+		if (livePods) {
+			pods = livePods;
+			podsLoaded = true;
+			reconcilePodSelection();
+		}
 	});
 
 	let lastEnv = $state('');

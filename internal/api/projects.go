@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"sort"
 
 	"github.com/go-chi/chi/v5"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -52,16 +53,18 @@ type createProjectRequest struct {
 // stable subset of the CRD — callers shouldn't need to understand Kubernetes
 // metadata layout to read back a project.
 type projectResponse struct {
-	Name         string                       `json:"name"`
-	Description  string                       `json:"description,omitempty"`
-	Namespace    string                       `json:"namespace"`
-	Phase        mortisev1alpha1.ProjectPhase `json:"phase,omitempty"`
-	AppCount     int32                        `json:"appCount"`
-	AutoRedeploy bool                         `json:"autoRedeploy"`
-	CreatedAt    string                       `json:"createdAt,omitempty"`
+	Name         string                          `json:"name"`
+	Description  string                          `json:"description,omitempty"`
+	Namespace    string                          `json:"namespace"`
+	Phase        mortisev1alpha1.ProjectPhase    `json:"phase,omitempty"`
+	AppCount     int32                           `json:"appCount"`
+	AutoRedeploy bool                            `json:"autoRedeploy"`
+	CreatedAt    string                          `json:"createdAt,omitempty"`
+	Preview      *mortisev1alpha1.PreviewConfig  `json:"preview,omitempty"`
+	Health       EnvHealth                       `json:"health,omitempty"`
 }
 
-func toProjectResponse(p *mortisev1alpha1.Project) projectResponse {
+func toProjectResponse(p *mortisev1alpha1.Project, apps []mortisev1alpha1.App) projectResponse {
 	ns := p.Status.Namespace
 	if ns == "" {
 		ns = projectNamespace(p.Name)
@@ -73,11 +76,36 @@ func toProjectResponse(p *mortisev1alpha1.Project) projectResponse {
 		Phase:        p.Status.Phase,
 		AppCount:     p.Status.AppCount,
 		AutoRedeploy: p.Spec.AutoRedeploy,
+		Preview:      p.Spec.Preview,
 	}
 	if !p.CreationTimestamp.IsZero() {
 		resp.CreatedAt = p.CreationTimestamp.UTC().Format("2006-01-02T15:04:05Z")
 	}
+	if apps != nil {
+		resp.Health = productionHealth(p, apps)
+	}
 	return resp
+}
+
+func productionHealth(p *mortisev1alpha1.Project, apps []mortisev1alpha1.App) EnvHealth {
+	prodName := "production"
+	for _, env := range p.Spec.Environments {
+		if env.DisplayOrder == 0 {
+			prodName = env.Name
+			break
+		}
+	}
+	ns := p.Status.Namespace
+	if ns == "" {
+		ns = projectNamespace(p.Name)
+	}
+	var projectApps []mortisev1alpha1.App
+	for i := range apps {
+		if apps[i].Namespace == ns {
+			projectApps = append(projectApps, apps[i])
+		}
+	}
+	return aggregateEnvHealth(prodName, projectApps)
 }
 
 // @Summary Create a project
@@ -134,7 +162,7 @@ func (s *Server) CreateProject(w http.ResponseWriter, r *http.Request) {
 
 	s.recordActivity(r, project.Name, "create", "project", project.Name, "Created project "+project.Name, "")
 
-	writeJSON(w, http.StatusCreated, toProjectResponse(project))
+	writeJSON(w, http.StatusCreated, toProjectResponse(project, nil))
 }
 
 // @Summary List projects
@@ -160,13 +188,24 @@ func (s *Server) ListProjects(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	sort.SliceStable(list.Items, func(i, j int) bool {
+		return list.Items[i].Name < list.Items[j].Name
+	})
+
+	// Load all apps once for production health aggregation.
+	var allApps mortisev1alpha1.AppList
+	if err := s.client.List(r.Context(), &allApps); err != nil {
+		writeError(w, err)
+		return
+	}
+
 	principal := PrincipalFromContext(r.Context())
 
 	// Admins and platform viewers see everything.
 	if principal != nil && (principal.Role == auth.RoleAdmin || principal.Role == auth.RoleViewer) {
 		resp := make([]projectResponse, 0, len(list.Items))
 		for i := range list.Items {
-			resp = append(resp, toProjectResponse(&list.Items[i]))
+			resp = append(resp, toProjectResponse(&list.Items[i], allApps.Items))
 		}
 		writeJSON(w, http.StatusOK, resp)
 		return
@@ -192,7 +231,7 @@ func (s *Server) ListProjects(w http.ResponseWriter, r *http.Request) {
 	resp := make([]projectResponse, 0, len(list.Items))
 	for i := range list.Items {
 		if memberProjects[list.Items[i].Name] {
-			resp = append(resp, toProjectResponse(&list.Items[i]))
+			resp = append(resp, toProjectResponse(&list.Items[i], allApps.Items))
 		}
 	}
 	writeJSON(w, http.StatusOK, resp)
@@ -223,7 +262,13 @@ func (s *Server) GetProject(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, toProjectResponse(&project))
+	ns := project.Status.Namespace
+	if ns == "" {
+		ns = projectNamespace(project.Name)
+	}
+	var apps mortisev1alpha1.AppList
+	_ = s.client.List(r.Context(), &apps, client.InNamespace(ns))
+	writeJSON(w, http.StatusOK, toProjectResponse(&project, apps.Items))
 }
 
 // @Summary Delete a project
@@ -265,9 +310,16 @@ func (s *Server) DeleteProject(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "terminating", "project": name})
 }
 
+type updateProjectPreview struct {
+	Enabled        *bool   `json:"enabled,omitempty"`
+	DomainTemplate *string `json:"domainTemplate,omitempty"`
+	TTL            *string `json:"ttl,omitempty"`
+}
+
 type updateProjectRequest struct {
-	Description  *string `json:"description,omitempty"`
-	AutoRedeploy *bool   `json:"autoRedeploy,omitempty"`
+	Description  *string               `json:"description,omitempty"`
+	AutoRedeploy *bool                 `json:"autoRedeploy,omitempty"`
+	Preview      *updateProjectPreview `json:"preview,omitempty"`
 }
 
 // @Summary Update a project
@@ -308,13 +360,27 @@ func (s *Server) UpdateProject(w http.ResponseWriter, r *http.Request) {
 	if req.AutoRedeploy != nil {
 		project.Spec.AutoRedeploy = *req.AutoRedeploy
 	}
+	if req.Preview != nil {
+		if project.Spec.Preview == nil {
+			project.Spec.Preview = &mortisev1alpha1.PreviewConfig{}
+		}
+		if req.Preview.Enabled != nil {
+			project.Spec.Preview.Enabled = *req.Preview.Enabled
+		}
+		if req.Preview.DomainTemplate != nil {
+			project.Spec.Preview.Domain = *req.Preview.DomainTemplate
+		}
+		if req.Preview.TTL != nil {
+			project.Spec.Preview.TTL = *req.Preview.TTL
+		}
+	}
 
 	if err := s.client.Update(r.Context(), &project); err != nil {
 		writeError(w, err)
 		return
 	}
 
-	writeJSON(w, http.StatusOK, toProjectResponse(&project))
+	writeJSON(w, http.StatusOK, toProjectResponse(&project, nil))
 }
 
 // resolveProject is called at the top of every app/secret/log/deploy handler

@@ -427,6 +427,13 @@ type EnvironmentStatus struct {
 	// UI reads this to show "Your app is at {domain}".
 	// +optional
 	Domain string `json:"domain,omitempty"`
+
+	// LastProcessedRestartedAt stores the mortise.dev/restartedAt annotation
+	// value from the Deployment once the rollout completes. Prevents the
+	// controller from snapping the phase back to Ready before a user-triggered
+	// redeploy has actually rolled out.
+	// +optional
+	LastProcessedRestartedAt string `json:"lastProcessedRestartedAt,omitempty"`
 }
 
 // AppPhase represents the overall lifecycle phase.

@@ -5,6 +5,7 @@
 	import { store } from '$lib/store.svelte';
 	import type { Project } from '$lib/types';
 	import { Folder, Plus } from 'lucide-svelte';
+	import type { EnvHealth } from '$lib/types';
 
 	let projects = $state<Project[]>([]);
 	let loading = $state(true);
@@ -30,6 +31,15 @@
 		if (phase === 'Failed') return 'text-danger';
 		if (phase === 'Terminating') return 'text-warning';
 		return 'text-info';
+	}
+
+	function healthDot(h?: EnvHealth): string {
+		switch (h) {
+			case 'healthy': return 'bg-success';
+			case 'warning': return 'bg-warning';
+			case 'danger':  return 'bg-danger';
+			default:        return 'bg-gray-500';
+		}
 	}
 </script>
 
@@ -75,7 +85,10 @@
 				>
 					<div class="flex items-start justify-between gap-2">
 						<div class="flex items-center gap-2 min-w-0">
-							<Folder class="h-4 w-4 shrink-0 text-gray-400 group-hover:text-accent" />
+							<span class="relative shrink-0">
+								<Folder class="h-4 w-4 text-gray-400 group-hover:text-accent" />
+								<span class="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full {healthDot(project.health)}"></span>
+							</span>
 							<h2 class="truncate text-sm font-medium text-white group-hover:text-accent">{project.name}</h2>
 						</div>
 						<span class="shrink-0 text-xs {phaseColor(project.phase)}">{project.phase ?? 'Pending'}</span>

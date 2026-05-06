@@ -620,6 +620,13 @@ spec:
                         controller from spec or auto-generated from the platform domain. The
                         UI reads this to show "Your app is at {domain}".
                       type: string
+                    lastProcessedRestartedAt:
+                      description: |-
+                        LastProcessedRestartedAt stores the mortise.dev/restartedAt annotation
+                        value from the Deployment once the rollout completes. Prevents the
+                        controller from snapping the phase back to Ready before a user-triggered
+                        redeploy has actually rolled out.
+                      type: string
                     message:
                       type: string
                     name:

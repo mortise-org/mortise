@@ -317,6 +317,20 @@
 		savingDomain = true;
 		const domainToAdd = newDomain.trim();
 		const prevDomains = domains;
+
+		try {
+			const result = await api.validateDomain(domainToAdd, app.metadata.name, project);
+			if (!result.valid && result.conflict) {
+				errorMsg = `Already used by ${result.conflict.app} in ${result.conflict.project} (${result.conflict.environment})`;
+				savingDomain = false;
+				return;
+			}
+		} catch {
+			errorMsg = 'Failed to validate domain';
+			savingDomain = false;
+			return;
+		}
+
 		domains = domains ? { ...domains, custom: [...(domains.custom ?? []), domainToAdd] } : domains;
 		newDomain = '';
 		try {

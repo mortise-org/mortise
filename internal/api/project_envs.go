@@ -41,6 +41,7 @@ type projectEnvResponse struct {
 	Name         string    `json:"name"`
 	DisplayOrder int       `json:"displayOrder"`
 	Health       EnvHealth `json:"health"`
+	Restricted   bool      `json:"restricted,omitempty"`
 }
 
 type createProjectEnvRequest struct {
@@ -49,10 +50,11 @@ type createProjectEnvRequest struct {
 }
 
 // patchProjectEnvRequest is the JSON body for PATCH .../environments/{name}.
-// Both fields are optional — omitting a field leaves the existing value in place.
+// All fields are optional — omitting a field leaves the existing value in place.
 type patchProjectEnvRequest struct {
 	Name         *string `json:"name,omitempty"`
 	DisplayOrder *int    `json:"displayOrder,omitempty"`
+	Restricted   *bool   `json:"restricted,omitempty"`
 }
 
 // ListProjectEnvironments returns the project's ordered env list with an
@@ -97,6 +99,7 @@ func (s *Server) ListProjectEnvironments(w http.ResponseWriter, r *http.Request)
 			Name:         env.Name,
 			DisplayOrder: env.DisplayOrder,
 			Health:       aggregateEnvHealth(env.Name, apps.Items),
+			Restricted:   env.Restricted,
 		})
 	}
 	writeJSON(w, http.StatusOK, resp)
@@ -230,6 +233,9 @@ func (s *Server) UpdateProjectEnvironment(w http.ResponseWriter, r *http.Request
 	if req.DisplayOrder != nil {
 		project.Spec.Environments[idx].DisplayOrder = *req.DisplayOrder
 	}
+	if req.Restricted != nil {
+		project.Spec.Environments[idx].Restricted = *req.Restricted
+	}
 
 	if err := s.client.Update(r.Context(), project); err != nil {
 		writeError(w, err)
@@ -246,6 +252,7 @@ func (s *Server) UpdateProjectEnvironment(w http.ResponseWriter, r *http.Request
 		Name:         updated.Name,
 		DisplayOrder: updated.DisplayOrder,
 		Health:       EnvHealthUnknown,
+		Restricted:   updated.Restricted,
 	})
 }
 

@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"regexp"
 	"slices"
@@ -109,6 +110,28 @@ func (s *Server) AddDomain(w http.ResponseWriter, r *http.Request) {
 	if slices.Contains(env.CustomDomains, req.Domain) {
 		writeJSON(w, http.StatusConflict, errorResponse{"domain already exists"})
 		return
+	}
+
+	// Check for cross-app domain collisions before accepting.
+	var allApps mortisev1alpha1.AppList
+	if err := s.client.List(r.Context(), &allApps, &client.ListOptions{}); err != nil {
+		writeError(w, err)
+		return
+	}
+	for i := range allApps.Items {
+		other := &allApps.Items[i]
+		if other.Namespace == app.Namespace && other.Name == app.Name {
+			continue
+		}
+		otherProject, _ := constants.ProjectFromControlNs(other.Namespace)
+		for _, oe := range other.Spec.Environments {
+			if oe.Domain == req.Domain || slices.Contains(oe.CustomDomains, req.Domain) {
+				writeJSON(w, http.StatusConflict, errorResponse{
+					fmt.Sprintf("domain %s is already used by %s in %s (%s)", req.Domain, other.Name, otherProject, oe.Name),
+				})
+				return
+			}
+		}
 	}
 
 	env.CustomDomains = append(env.CustomDomains, req.Domain)

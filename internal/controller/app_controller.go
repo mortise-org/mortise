@@ -1979,6 +1979,7 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 			return nsErr
 		}
 		rollingOut := false
+		restartedAt := ""
 		if isCron {
 			var cj batchv1.CronJob
 			if err := r.Get(ctx, types.NamespacedName{Name: cronJobName(app.Name), Namespace: envNs}, &cj); err == nil {
@@ -1992,12 +1993,14 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 				if deploymentRollingOut(&dep) {
 					rollingOut = true
 				}
+				restartedAt = dep.Spec.Template.Annotations["mortise.dev/restartedAt"]
 			}
 		}
 
-		// Carry forward deploy history and append if image changed.
+		// Carry forward deploy history, restart tracking, and append if image changed.
 		if prev, ok := existingByName[env.Name]; ok {
 			es.DeployHistory = prev.DeployHistory
+			es.LastProcessedRestartedAt = prev.LastProcessedRestartedAt
 		}
 		if needsDeployRecord(es.CurrentImage, es.DeployHistory) {
 			record := mortisev1alpha1.DeployRecord{
@@ -2017,7 +2020,19 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 			expectedReplicas = *env.Replicas
 		}
 		ready := es.ReadyReplicas >= expectedReplicas && !rollingOut
+
+		// A redeploy sets restartedAt on the Deployment's pod template. Until
+		// the rollout finishes, the phase must stay Deploying even if the old
+		// pods still satisfy the replica count (the "phase snap-back" bug).
+		pendingRestart := restartedAt != "" && restartedAt != es.LastProcessedRestartedAt
+		if ready && pendingRestart {
+			ready = false
+		}
+
 		if ready {
+			if restartedAt != "" {
+				es.LastProcessedRestartedAt = restartedAt
+			}
 			es.Phase = mortisev1alpha1.AppPhaseReady
 		} else {
 			es.Phase = mortisev1alpha1.AppPhaseDeploying

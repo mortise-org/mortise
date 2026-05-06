@@ -107,6 +107,11 @@ export const api = {
 			`/projects/${enc(project)}/environments/${enc(name)}`,
 			{ method: 'DELETE' }
 		),
+	cloneEnvironment: (project: string, source: string, name: string, displayOrder = 0) =>
+		request<ProjectEnvironment>(`/projects/${enc(project)}/environments/${enc(source)}/clone`, {
+			method: 'POST',
+			body: JSON.stringify({ name, displayOrder })
+		}),
 
 	// --- bindings (project+env-scoped canvas edges) ---
 	listBindings: (project: string, environment: string) =>
@@ -342,7 +347,7 @@ export const api = {
 
 	// --- platform config ---
 	getPlatform: () => request<PlatformResponse>('/platform'),
-	patchPlatform: (body: Partial<{ domain: string; tls: { certManagerClusterIssuer: string }; storage: { defaultStorageClass: string }; registry: { url: string; namespace: string }; build: { buildkitAddr: string; defaultPlatform: string }; observability: { logsAdapterEndpoint: string; logsAdapterToken?: string; metricsAdapterEndpoint: string; metricsAdapterToken?: string; trafficAdapterEndpoint: string; trafficAdapterToken?: string } }>) =>
+	patchPlatform: (body: Partial<{ domain: string; domainTemplate: string; defaults: { cpu: string; memory: string }; tls: { certManagerClusterIssuer: string }; storage: { defaultStorageClass: string }; registry: { url: string; namespace: string }; build: { buildkitAddr: string; defaultPlatform: string }; observability: { logsAdapterEndpoint: string; logsAdapterToken?: string; metricsAdapterEndpoint: string; metricsAdapterToken?: string; trafficAdapterEndpoint: string; trafficAdapterToken?: string } }>) =>
 		request<PlatformResponse>('/platform', {
 			method: 'PATCH',
 			body: JSON.stringify(body)
