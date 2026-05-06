@@ -59,15 +59,40 @@ func (n *NativeAuthProvider) Authenticate(ctx context.Context, creds Credentials
 		return Principal{}, fmt.Errorf("invalid credentials")
 	}
 
+	var gen int64
+	if raw, ok := secret.Data["password_gen"]; ok {
+		fmt.Sscanf(string(raw), "%d", &gen)
+	}
+
 	return Principal{
-		ID:    string(secret.Data["email"]),
-		Email: string(secret.Data["email"]),
-		Role:  Role(secret.Data["role"]),
+		ID:          string(secret.Data["email"]),
+		Email:       string(secret.Data["email"]),
+		Role:        Role(secret.Data["role"]),
+		PasswordGen: gen,
 	}, nil
 }
 
 func (n *NativeAuthProvider) Principal(ctx context.Context, session SessionToken) (Principal, error) {
-	return n.jwt.ValidateToken(ctx, string(session))
+	principal, tokenGen, err := n.jwt.ValidateToken(ctx, string(session))
+	if err != nil {
+		return Principal{}, err
+	}
+
+	var secret corev1.Secret
+	if err := n.client.Get(ctx, types.NamespacedName{
+		Name:      userSecretName(principal.Email),
+		Namespace: namespace,
+	}, &secret); err == nil {
+		if raw, ok := secret.Data["password_gen"]; ok {
+			var currentGen int64
+			fmt.Sscanf(string(raw), "%d", &currentGen)
+			if tokenGen < currentGen {
+				return Principal{}, fmt.Errorf("session invalidated by password change")
+			}
+		}
+	}
+
+	return principal, nil
 }
 
 func (n *NativeAuthProvider) ListUsers(ctx context.Context) ([]User, error) {
@@ -177,4 +202,62 @@ func (n *NativeAuthProvider) GenerateSessionToken(ctx context.Context, p Princip
 		return "", err
 	}
 	return SessionToken(token), nil
+}
+
+// UpdatePassword replaces the password hash for an existing user.
+func (n *NativeAuthProvider) UpdatePassword(ctx context.Context, email, newPassword string) error {
+	if len(newPassword) < 8 {
+		return fmt.Errorf("password must be at least 8 characters")
+	}
+
+	var secret corev1.Secret
+	err := n.client.Get(ctx, types.NamespacedName{
+		Name:      userSecretName(email),
+		Namespace: namespace,
+	}, &secret)
+	if errors.IsNotFound(err) {
+		return fmt.Errorf("user not found or password could not be updated")
+	}
+	if err != nil {
+		return fmt.Errorf("reading user secret: %w", err)
+	}
+
+	hash, err := bcrypt.GenerateFromPassword([]byte(newPassword), bcrypt.DefaultCost)
+	if err != nil {
+		return fmt.Errorf("hashing password: %w", err)
+	}
+
+	secret.Data["password_hash"] = hash
+
+	var gen int64
+	if raw, ok := secret.Data["password_gen"]; ok {
+		fmt.Sscanf(string(raw), "%d", &gen)
+	}
+	gen++
+	secret.Data["password_gen"] = fmt.Appendf(nil, "%d", gen)
+
+	if err := n.client.Update(ctx, &secret); err != nil {
+		return fmt.Errorf("updating user secret: %w", err)
+	}
+	return nil
+}
+
+// VerifyPassword checks a plaintext password against the stored hash for a user.
+func (n *NativeAuthProvider) VerifyPassword(ctx context.Context, email, password string) error {
+	var secret corev1.Secret
+	err := n.client.Get(ctx, types.NamespacedName{
+		Name:      userSecretName(email),
+		Namespace: namespace,
+	}, &secret)
+	if errors.IsNotFound(err) {
+		return fmt.Errorf("invalid credentials")
+	}
+	if err != nil {
+		return fmt.Errorf("reading user secret: %w", err)
+	}
+
+	if err := bcrypt.CompareHashAndPassword(secret.Data["password_hash"], []byte(password)); err != nil {
+		return fmt.Errorf("invalid credentials")
+	}
+	return nil
 }

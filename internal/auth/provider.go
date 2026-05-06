@@ -16,9 +16,10 @@ type Credentials struct {
 }
 
 type Principal struct {
-	ID    string
-	Email string
-	Role  Role
+	ID          string
+	Email       string
+	Role        Role
+	PasswordGen int64
 }
 
 type SessionToken string

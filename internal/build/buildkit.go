@@ -16,6 +16,7 @@ import (
 	exptypes "github.com/moby/buildkit/exporter/containerimage/exptypes"
 	"github.com/moby/buildkit/session"
 	"github.com/moby/buildkit/session/auth/authprovider"
+	"github.com/moby/buildkit/session/secrets/secretsprovider"
 	"github.com/tonistiigi/fsutil"
 
 	rpbuildkit "github.com/railwayapp/railpack/buildkit"
@@ -370,7 +371,7 @@ func (b *BuildKitClient) railpackSolveOpt(ctx context.Context, req BuildRequest,
 		return nil, bkclient.SolveOpt{}, 0, fmt.Errorf("railpack: init app: %w", err)
 	}
 
-	env := &rpapp.Environment{}
+	env := rpapp.NewEnvironment(&req.BuildArgs)
 	result := rpcore.GenerateBuildPlan(rpApp, env, &rpcore.GenerateBuildPlanOptions{})
 	if !result.Success || result.Plan == nil {
 		msg := "railpack: failed to generate build plan"
@@ -414,6 +415,13 @@ func (b *BuildKitClient) railpackSolveOpt(ctx context.Context, req BuildRequest,
 
 	detectedPort := firstExposedPort(image.Config.ExposedPorts)
 
+	// Build a secrets map so BuildKit can resolve secrets mounted by railpack
+	// as env vars during build steps (e.g. VITE_* vars for frontend builds).
+	secretsMap := make(map[string][]byte, len(req.BuildArgs))
+	for k, v := range req.BuildArgs {
+		secretsMap[k] = []byte(v)
+	}
+
 	return def, bkclient.SolveOpt{
 		LocalMounts: map[string]fsutil.FS{
 			"context": appFS,
@@ -430,6 +438,7 @@ func (b *BuildKitClient) railpackSolveOpt(ctx context.Context, req BuildRequest,
 		},
 		Session: []session.Attachable{
 			authprovider.NewDockerAuthProvider(authprovider.DockerAuthProviderConfig{}),
+			secretsprovider.FromMap(secretsMap),
 		},
 	}, detectedPort, nil
 }

@@ -67,7 +67,6 @@
 	let buildMode = $state<'auto' | 'dockerfile' | 'railpack'>('auto');
 	let dockerfilePath = $state('');
 	let buildContext = $state<'' | 'root' | 'subdir'>('');
-	let buildArgs = $state<[string, string][]>([]);
 	let savingBuild = $state(false);
 
 	// --- Networking ---
@@ -83,7 +82,6 @@
 		buildMode = app.spec.source.build?.mode ?? 'auto';
 		dockerfilePath = app.spec.source.build?.dockerfilePath ?? '';
 		buildContext = app.spec.source.build?.context ?? '';
-		buildArgs = Object.entries(app.spec.source.build?.args ?? {});
 		netPublic = app.spec.network?.public ?? true;
 		netPort = String(app.spec.network?.port ?? '');
 	});
@@ -103,6 +101,10 @@
 	let domains = $state<DomainsResponse | null>(null);
 	let newDomain = $state('');
 	let savingDomain = $state(false);
+	let editingPrimary = $state(false);
+	let primaryDomainInput = $state('');
+	let primaryDomainError = $state('');
+	let savingPrimary = $state(false);
 
 	// --- TLS overrides (for active env) ---
 	let tlsClusterIssuer = $state('');
@@ -251,15 +253,13 @@
 	async function saveBuild() {
 		savingBuild = true;
 		const optimisticSpec = cloneSpec();
-		const filtered = buildArgs.filter(([k]) => k.trim() !== '');
-		const args = filtered.length > 0 ? Object.fromEntries(filtered) : undefined;
 		optimisticSpec.source = {
 			...optimisticSpec.source,
 			build: {
+				...optimisticSpec.source.build,
 				mode: buildMode,
 				dockerfilePath: buildMode === 'dockerfile' ? dockerfilePath : undefined,
 				context: buildContext === '' ? undefined : buildContext,
-				args
 			}
 		};
 		try {
@@ -339,6 +339,69 @@
 		} catch (e) {
 			errorMsg = e instanceof Error ? e.message : 'Failed to remove domain';
 			domains = prevDomains;
+		}
+	}
+
+	function startEditPrimary() {
+		editingPrimary = true;
+		primaryDomainInput = domains?.primary ?? '';
+		primaryDomainError = '';
+	}
+
+	async function savePrimaryDomain() {
+		if (!selectedEnv) return;
+		const domain = primaryDomainInput.trim();
+		primaryDomainError = '';
+
+		if (domain && domain !== domains?.primary) {
+			try {
+				const result = await api.validateDomain(domain, app.metadata.name, project);
+				if (!result.valid && result.conflict) {
+					primaryDomainError = `Already used by ${result.conflict.app} in ${result.conflict.project} (${result.conflict.environment})`;
+					return;
+				}
+			} catch {
+				primaryDomainError = 'Failed to validate domain';
+				return;
+			}
+		}
+
+		savingPrimary = true;
+		try {
+			const envs = [...(app.spec.environments ?? [])];
+			const idx = envs.findIndex(e => e.name === selectedEnv);
+			if (idx >= 0) {
+				envs[idx] = { ...envs[idx], domain };
+			} else {
+				envs.push({ name: selectedEnv, domain });
+			}
+			const result = await api.updateApp(project, app.metadata.name, { ...app.spec, environments: envs });
+			specOverride = result.spec;
+			domains = domains ? { ...domains, primary: domain } : { primary: domain, custom: [] };
+			editingPrimary = false;
+		} catch (e) {
+			primaryDomainError = e instanceof Error ? e.message : 'Failed to save';
+		} finally {
+			savingPrimary = false;
+		}
+	}
+
+	async function removePrimaryDomain() {
+		if (!selectedEnv) return;
+		savingPrimary = true;
+		try {
+			const envs = [...(app.spec.environments ?? [])];
+			const idx = envs.findIndex(e => e.name === selectedEnv);
+			if (idx >= 0) {
+				envs[idx] = { ...envs[idx], domain: '' };
+			}
+			const result = await api.updateApp(project, app.metadata.name, { ...app.spec, environments: envs });
+			specOverride = result.spec;
+			domains = domains ? { ...domains, primary: '' } : { primary: '', custom: [] };
+		} catch (e) {
+			errorMsg = e instanceof Error ? e.message : 'Failed to remove primary domain';
+		} finally {
+			savingPrimary = false;
 		}
 	}
 
@@ -593,43 +656,6 @@
 					</div>
 				{/if}
 
-			<!-- Build args (show for git+dockerfile/auto source; hidden for image/railpack) -->
-			{#if app.spec.source.type === 'git' && buildMode !== 'railpack'}
-				<div>
-					<p class={labelCls}>Build args</p>
-					<p class="mb-2 text-xs text-gray-500">Passed as Docker <code class="font-mono">--build-arg</code>. Required for build-time env vars (e.g. <code class="font-mono">VITE_*</code>).</p>
-					{#each buildArgs as [k, v], i}
-						<div class="mb-1.5 flex gap-1.5">
-							<input type="text" value={k}
-								oninput={(e) => {
-									buildArgs = buildArgs.map((entry, j) =>
-										j === i ? [(e.target as HTMLInputElement).value, entry[1]] as [string, string] : entry
-									);
-								}}
-								placeholder="ARG_NAME"
-								class="flex-1 rounded-md border border-surface-600 bg-surface-800 px-2 py-1.5 font-mono text-xs text-white placeholder-gray-600 outline-none focus:border-accent" />
-							<input type="text" value={v}
-								oninput={(e) => {
-									buildArgs = buildArgs.map((entry, j) =>
-										j === i ? [entry[0], (e.target as HTMLInputElement).value] as [string, string] : entry
-									);
-								}}
-								placeholder="value"
-								class="flex-1 rounded-md border border-surface-600 bg-surface-800 px-2 py-1.5 font-mono text-xs text-white placeholder-gray-600 outline-none focus:border-accent" />
-							<button type="button"
-								onclick={() => { buildArgs = buildArgs.filter((_, j) => j !== i); }}
-								class="rounded p-1 text-gray-500 hover:text-danger">
-								<Trash2 class="h-3.5 w-3.5" />
-							</button>
-						</div>
-					{/each}
-					<button type="button"
-						onclick={() => { buildArgs = [...buildArgs, ['', '']]; }}
-						class="mt-1 flex items-center gap-1 text-xs text-accent hover:text-accent-hover">
-						<Plus class="h-3 w-3" /> Add build arg
-					</button>
-				</div>
-			{/if}
 			</div>
 			<button type="button" onclick={saveBuild} disabled={savingBuild}
 				class={btnPrimary}>
@@ -665,24 +691,6 @@
 					<label class={labelCls} for="net-port">Port</label>
 					<input id="net-port" type="number" bind:value={netPort} placeholder="8080" class={inputCls} />
 				</div>
-				{#if envEntry?.domain}
-					<div>
-						<p class={labelCls}>Primary domain</p>
-						<div class="flex items-center gap-2">
-							<p class="flex-1 rounded-md bg-surface-700 px-3 py-1.5 font-mono text-xs text-gray-300">
-								{envEntry.domain}
-							</p>
-							<button
-								type="button"
-								onclick={() => copyText(envEntry!.domain!)}
-								class="text-gray-500 hover:text-white"
-								aria-label="Copy domain"
-							>
-								<Copy class="h-3.5 w-3.5" />
-							</button>
-						</div>
-					</div>
-				{/if}
 			</div>
 			<div class="flex justify-end pt-1">
 				<button type="button" onclick={saveNetworking} disabled={saving} class={btnPrimary}>
@@ -820,10 +828,84 @@
 		<div class={sectionCls}>
 			<h3 class={headingCls}>Domains</h3>
 
-			{#if domains?.primary}
-				<div class="rounded-md bg-surface-700 px-3 py-2">
-					<p class="text-xs text-gray-500">Primary</p>
-					<p class="font-mono text-xs text-gray-200">{domains.primary}</p>
+			{#if !domains?.primary && (!domains?.custom || domains.custom.length === 0)}
+				<p class="text-xs text-gray-500">No domains configured. Add a domain to make this app reachable.</p>
+			{/if}
+
+			{#if domains?.primary && !editingPrimary}
+				<div class="flex items-center justify-between rounded-md bg-surface-700 px-3 py-2">
+					<div>
+						<p class="text-xs text-gray-500">Primary</p>
+						<p class="font-mono text-xs text-gray-200">{domains.primary}</p>
+					</div>
+					<div class="flex items-center gap-2">
+						<button
+							type="button"
+							onclick={startEditPrimary}
+							class="text-xs text-gray-500 hover:text-white"
+						>
+							Edit
+						</button>
+						<button
+							type="button"
+							onclick={removePrimaryDomain}
+							disabled={savingPrimary}
+							class="text-xs text-gray-500 hover:text-danger"
+						>
+							Remove
+						</button>
+					</div>
+				</div>
+			{:else if editingPrimary}
+				<div class="space-y-2">
+					<div class="flex gap-2">
+						<input
+							type="text"
+							bind:value={primaryDomainInput}
+							placeholder="app.example.com"
+							class="{inputCls} flex-1"
+						/>
+						<button
+							type="button"
+							onclick={savePrimaryDomain}
+							disabled={savingPrimary}
+							class={btnPrimary}
+						>
+							{savingPrimary ? 'Saving…' : 'Save'}
+						</button>
+						<button
+							type="button"
+							onclick={() => { editingPrimary = false; primaryDomainError = ''; }}
+							class="rounded-md px-2 py-1 text-xs text-gray-400 hover:bg-surface-700 hover:text-white"
+						>
+							Cancel
+						</button>
+					</div>
+					{#if primaryDomainError}
+						<p class="text-xs text-danger">{primaryDomainError}</p>
+					{/if}
+				</div>
+			{:else if !domains?.primary}
+				<div class="space-y-2">
+					<div class="flex gap-2">
+						<input
+							type="text"
+							bind:value={primaryDomainInput}
+							placeholder="app.example.com"
+							class="{inputCls} flex-1"
+						/>
+						<button
+							type="button"
+							onclick={savePrimaryDomain}
+							disabled={savingPrimary || !primaryDomainInput.trim()}
+							class={btnPrimary}
+						>
+							{savingPrimary ? 'Saving…' : 'Set primary'}
+						</button>
+					</div>
+					{#if primaryDomainError}
+						<p class="text-xs text-danger">{primaryDomainError}</p>
+					{/if}
 				</div>
 			{/if}
 

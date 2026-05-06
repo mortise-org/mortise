@@ -169,6 +169,10 @@ func (s *Server) Handler() http.Handler {
 			r.Post("/admin/users", s.CreateUser)
 			r.Patch("/admin/users/{email}", s.UpdateUserRole)
 			r.Delete("/admin/users/{email}", s.DeleteUser)
+			r.Post("/admin/users/{email}/password", s.ResetUserPassword)
+
+			// Self-service account
+			r.Post("/me/password", s.ChangePassword)
 
 			r.Get("/gitproviders", s.ListGitProviders)
 			r.Post("/gitproviders", s.CreateGitProvider)
@@ -238,12 +242,17 @@ func (s *Server) Handler() http.Handler {
 			r.Patch("/projects/{project}/apps/{app}/env", s.PatchEnv)
 			r.Post("/projects/{project}/apps/{app}/env/import", s.ImportEnv)
 
+			r.Get("/projects/{project}/apps/{app}/build-args", s.GetBuildArgs)
+			r.Put("/projects/{project}/apps/{app}/build-args", s.PutBuildArgs)
+
 			r.Get("/projects/{project}/shared-vars", s.GetSharedVars)
 			r.Put("/projects/{project}/shared-vars", s.PutSharedVars)
 
 			r.Get("/projects/{project}/apps/{app}/domains", s.ListDomains)
 			r.Post("/projects/{project}/apps/{app}/domains", s.AddDomain)
 			r.Delete("/projects/{project}/apps/{app}/domains/{domain}", s.RemoveDomain)
+
+			r.Post("/domains/validate", s.ValidateDomain)
 
 			r.Get("/repos", s.ListRepos)
 			r.Get("/repos/{owner}/{repo}/branches", s.ListBranches)

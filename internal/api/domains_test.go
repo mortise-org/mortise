@@ -300,3 +300,169 @@ func TestRemoveDomain(t *testing.T) {
 		t.Errorf("expected keep-me.example.com, got %s", updated.Spec.Environments[0].CustomDomains[0])
 	}
 }
+
+func TestValidateDomain_NoConflict(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+
+	w := doRequest(h, http.MethodPost, "/api/domains/validate", map[string]string{
+		"domain": "available.example.com",
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]any
+	_ = json.NewDecoder(w.Body).Decode(&resp)
+	if resp["valid"] != true {
+		t.Errorf("expected valid=true, got %v", resp["valid"])
+	}
+	if resp["conflict"] != nil {
+		t.Errorf("expected no conflict, got %v", resp["conflict"])
+	}
+}
+
+func TestValidateDomain_ConflictPrimary(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+	ns := seedProject(t, k8sClient, "default")
+
+	ctx := context.Background()
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "webapp", Namespace: ns},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{Type: "image", Image: "nginx:1.25.0"},
+			Environments: []mortisev1alpha1.Environment{
+				{Name: "production", Domain: "taken.example.com"},
+			},
+		},
+	}
+	if err := k8sClient.Create(ctx, app); err != nil {
+		t.Fatalf("create app: %v", err)
+	}
+
+	w := doRequest(h, http.MethodPost, "/api/domains/validate", map[string]string{
+		"domain": "taken.example.com",
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]any
+	_ = json.NewDecoder(w.Body).Decode(&resp)
+	if resp["valid"] != false {
+		t.Errorf("expected valid=false, got %v", resp["valid"])
+	}
+	conflict := resp["conflict"].(map[string]any)
+	if conflict["project"] != "default" {
+		t.Errorf("expected project=default, got %v", conflict["project"])
+	}
+	if conflict["app"] != "webapp" {
+		t.Errorf("expected app=webapp, got %v", conflict["app"])
+	}
+	if conflict["environment"] != "production" {
+		t.Errorf("expected environment=production, got %v", conflict["environment"])
+	}
+}
+
+func TestValidateDomain_ConflictCustom(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+	ns := seedProject(t, k8sClient, "default")
+
+	ctx := context.Background()
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "api", Namespace: ns},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{Type: "image", Image: "nginx:1.25.0"},
+			Environments: []mortisev1alpha1.Environment{
+				{
+					Name:          "production",
+					Domain:        "api.example.com",
+					CustomDomains: []string{"custom.example.com"},
+				},
+			},
+		},
+	}
+	if err := k8sClient.Create(ctx, app); err != nil {
+		t.Fatalf("create app: %v", err)
+	}
+
+	w := doRequest(h, http.MethodPost, "/api/domains/validate", map[string]string{
+		"domain": "custom.example.com",
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]any
+	_ = json.NewDecoder(w.Body).Decode(&resp)
+	if resp["valid"] != false {
+		t.Errorf("expected valid=false, got %v", resp["valid"])
+	}
+}
+
+func TestValidateDomain_InvalidHostname(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+
+	w := doRequest(h, http.MethodPost, "/api/domains/validate", map[string]string{
+		"domain": "not a valid hostname!",
+	})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestValidateDomain_SelfExclusion(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+	ns := seedProject(t, k8sClient, "default")
+
+	ctx := context.Background()
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "webapp", Namespace: ns},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{Type: "image", Image: "nginx:1.25.0"},
+			Environments: []mortisev1alpha1.Environment{
+				{Name: "production", Domain: "myapp.example.com"},
+			},
+		},
+	}
+	if err := k8sClient.Create(ctx, app); err != nil {
+		t.Fatalf("create app: %v", err)
+	}
+
+	// Without exclusion, the domain conflicts with itself.
+	w := doRequest(h, http.MethodPost, "/api/domains/validate", map[string]any{
+		"domain": "myapp.example.com",
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]any
+	_ = json.NewDecoder(w.Body).Decode(&resp)
+	if resp["valid"] != false {
+		t.Fatalf("expected conflict without exclusion, got valid=true")
+	}
+
+	// With self-exclusion, the domain is valid.
+	w = doRequest(h, http.MethodPost, "/api/domains/validate", map[string]any{
+		"domain":          "myapp.example.com",
+		"exclude_app":     "webapp",
+		"exclude_project": "default",
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	resp = nil
+	_ = json.NewDecoder(w.Body).Decode(&resp)
+	if resp["valid"] != true {
+		t.Errorf("expected valid=true with self-exclusion, got %v", resp["valid"])
+	}
+}
