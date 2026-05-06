@@ -6,6 +6,7 @@ Mortise is a self-hosted, Railway-style deploy platform for Kubernetes. Connect 
 
 - Docs: https://mortise.me
 - Install script: https://mortise.me/install (macOS/Linux) or https://mortise.me/install.ps1 (Windows)
+- OpenAPI spec (stable): https://raw.githubusercontent.com/mortise-org/mortise/main/docs/swagger.yaml
 - OpenAPI spec (live cluster): {base}/api/openapi.yaml
 - Helm chart: https://mortise-org.github.io/mortise
 

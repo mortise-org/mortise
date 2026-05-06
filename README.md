@@ -162,6 +162,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for full system diagrams.
 | [External Secrets](docs/recipes/external-secrets.md) | Vault, AWS SM, GCP SM via ESO |
 | [Backup](docs/recipes/backup.md) | Velero backup and restore |
 | [Cloudflare Tunnel](docs/recipes/cloudflare-tunnel.md) | Access without a public IP |
+| [Local-Only Deployment](docs/recipes/local-only.md) | Run without DNS, TLS, or ingress |
 
 **For contributors:**
 
