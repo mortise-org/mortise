@@ -4,8 +4,12 @@ package integration
 
 import (
 	"context"
+	"fmt"
 	"log"
+	"net"
+	"net/http"
 	"os"
+	"os/exec"
 	"testing"
 	"time"
 
@@ -26,6 +30,14 @@ import (
 
 // k8sClient is the package-level client shared by all integration tests.
 var k8sClient client.Client
+
+// observerLocalPort is the local port for the shared observer port-forward.
+// observerAvailable is false when the observer is not reachable.
+var (
+	observerLocalPort int
+	observerAvailable bool
+	observerCancel    context.CancelFunc
+)
 
 func TestMain(m *testing.M) {
 	cfg := loadKubeconfig()
@@ -66,7 +78,14 @@ func TestMain(m *testing.M) {
 	// Assert the Mortise manager Deployment is available.
 	assertMortiseReady()
 
-	os.Exit(m.Run())
+	// Soft check: try to port-forward to the observer and verify /healthz.
+	observerLocalPort, observerAvailable, observerCancel = probeObserver()
+
+	code := m.Run()
+	if observerCancel != nil {
+		observerCancel()
+	}
+	os.Exit(code)
 }
 
 func loadKubeconfig() *rest.Config {
@@ -100,6 +119,90 @@ func assertMortiseReady() {
 	}
 	log.Fatal("mortise Deployment in mortise-system is not available after 60s. " +
 		"Run `make dev-up` or `make test-integration` to install the chart first.")
+}
+
+func probeObserver() (int, bool, context.CancelFunc) {
+	// Check that the observer Deployment exists and is available.
+	deadline := time.Now().Add(60 * time.Second)
+	found := false
+	for time.Now().Before(deadline) {
+		var dep appsv1.Deployment
+		err := k8sClient.Get(context.Background(), types.NamespacedName{
+			Name:      "mortise-observer",
+			Namespace: "mortise-deps",
+		}, &dep)
+		if err == nil && dep.Status.AvailableReplicas > 0 {
+			found = true
+			break
+		}
+		time.Sleep(2 * time.Second)
+	}
+	if !found {
+		log.Println("observer: Deployment not available — observer tests will be skipped")
+		return 0, false, nil
+	}
+
+	// Pick a free port and start a port-forward.
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		log.Printf("observer: failed to pick free port: %v — observer tests will be skipped", err)
+		return 0, false, nil
+	}
+	port := l.Addr().(*net.TCPAddr).Port
+	l.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cmd := exec.CommandContext(ctx, "kubectl",
+		"-n", "mortise-deps",
+		"port-forward",
+		"svc/mortise-observer",
+		fmt.Sprintf("%d:9091", port),
+	)
+	if err := cmd.Start(); err != nil {
+		cancel()
+		log.Printf("observer: port-forward start failed: %v — observer tests will be skipped", err)
+		return 0, false, nil
+	}
+
+	// Wait for port to accept connections.
+	addr := fmt.Sprintf("127.0.0.1:%d", port)
+	connDeadline := time.Now().Add(30 * time.Second)
+	connected := false
+	for time.Now().Before(connDeadline) {
+		c, err := net.DialTimeout("tcp", addr, 500*time.Millisecond)
+		if err == nil {
+			c.Close()
+			connected = true
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	if !connected {
+		cancel()
+		_ = cmd.Wait()
+		log.Println("observer: port-forward not reachable — observer tests will be skipped")
+		return 0, false, nil
+	}
+
+	// Hit /healthz.
+	resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/healthz", port))
+	if err != nil || resp.StatusCode != 200 {
+		cancel()
+		_ = cmd.Wait()
+		log.Printf("observer: /healthz check failed — observer tests will be skipped")
+		return 0, false, nil
+	}
+	resp.Body.Close()
+
+	log.Printf("observer: healthy on localhost:%d", port)
+	return port, true, cancel
+}
+
+func skipIfObserverUnavailable(t *testing.T) {
+	t.Helper()
+	if !observerAvailable {
+		t.Skip("observer not available")
+	}
 }
 
 func createProjectForTest(t *testing.T, name string) string {

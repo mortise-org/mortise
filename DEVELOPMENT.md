@@ -115,11 +115,15 @@ make test-integration-fast  # run suite against existing dev cluster (requires m
   cluster your kubeconfig points at (typically the `make dev-up` cluster).
 - Tests live in `test/integration/`: `app_image_source_test.go`,
   `app_git_source_test.go`, `bindings_test.go`, `ingress_test.go`,
-  `project_lifecycle_test.go`, `preview_test.go`, `gitprovider_admin_test.go`.
-- `TestMain` in `suite_test.go` asserts the cluster is reachable and the
-  Mortise Deployment is available before any test runs.
+  `project_lifecycle_test.go`, `preview_test.go`, `gitprovider_admin_test.go`,
+  `observer_test.go`.
+- `TestMain` in `suite_test.go` asserts the cluster is reachable, the
+  Mortise Deployment is available, and the observer is healthy (soft
+  check — observer tests skip if unavailable) before any test runs.
 - Each test creates its own namespace via `createTestNamespace(t)` and
   cleans up via `t.Cleanup`.
+- Integration tests enable Traefik (in `mortise-deps`), metrics-server,
+  and the observer with a 5s poll interval for fast data collection.
 
 ### UI E2E tests (Playwright)
 

@@ -163,7 +163,7 @@ make test-integration-fast # run integration suite against existing dev cluster
 | Unit | go test + fake client | Pure logic, no cluster | <10s |
 | envtest | controller-runtime envtest | Reconcile loops, real apiserver+etcd | ~2s/test |
 | Chart lint | helm lint + template | Chart schema, toggle combos, PVC defaults | <30s |
-| Integration | k3d + Helm install | Real cluster, real pods, real networking | <3min total |
+| Integration | k3d + Helm install | Real cluster, real pods, real networking, observer | <5min total |
 | Chart integration | k3d + umbrella chart | Full chart deploy, PVC persistence, install script | ~10min (release only) |
 | UI E2E | Playwright | Critical user flows against k3d | Per PR |
 
