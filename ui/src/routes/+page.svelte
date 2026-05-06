@@ -26,20 +26,17 @@
 		}
 	});
 
-	function phaseColor(phase?: string): string {
-		if (phase === 'Ready') return 'text-success';
-		if (phase === 'Failed') return 'text-danger';
-		if (phase === 'Terminating') return 'text-warning';
-		return 'text-info';
-	}
-
-	function healthDot(h?: EnvHealth): string {
-		switch (h) {
-			case 'healthy': return 'bg-success';
-			case 'warning': return 'bg-warning';
-			case 'danger':  return 'bg-danger';
-			default:        return 'bg-gray-500';
+	function projectStatus(phase?: string, health?: EnvHealth): { label: string; color: string } {
+		if (phase === 'Failed') return { label: 'Failed', color: 'text-danger' };
+		if (phase === 'Terminating') return { label: 'Terminating', color: 'text-warning' };
+		if (phase === 'Pending') return { label: 'Pending', color: 'text-info' };
+		if (phase === 'Ready') {
+			if (health === 'danger') return { label: 'Unhealthy', color: 'text-danger' };
+			if (health === 'warning') return { label: 'Degraded', color: 'text-warning' };
+			if (health === 'healthy') return { label: 'Ready', color: 'text-success' };
+			return { label: 'Ready', color: 'text-gray-500' };
 		}
+		return { label: phase ?? 'Pending', color: 'text-info' };
 	}
 </script>
 
@@ -79,19 +76,17 @@
 	{:else}
 		<div class="grid gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
 			{#each projects as project}
+				{@const status = projectStatus(project.phase, project.health)}
 				<a
 					href="/projects/{encodeURIComponent(project.name)}"
 					class="group block rounded-lg border border-surface-600 bg-surface-800 p-5 transition-all duration-150 hover:-translate-y-0.5 hover:border-surface-500 hover:shadow-lg hover:shadow-black/20 cursor-pointer"
 				>
 					<div class="flex items-start justify-between gap-2">
 						<div class="flex items-center gap-2 min-w-0">
-							<span class="relative shrink-0">
-								<Folder class="h-4 w-4 text-gray-400 group-hover:text-accent" />
-								<span class="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full {healthDot(project.health)}"></span>
-							</span>
+							<Folder class="h-4 w-4 shrink-0 text-gray-400 group-hover:text-accent" />
 							<h2 class="truncate text-sm font-medium text-white group-hover:text-accent">{project.name}</h2>
 						</div>
-						<span class="shrink-0 text-xs {phaseColor(project.phase)}">{project.phase ?? 'Pending'}</span>
+						<span class="shrink-0 text-xs {status.color}">{status.label}</span>
 					</div>
 					{#if project.description}
 						<p class="mt-2 text-xs text-gray-500 line-clamp-2">{project.description}</p>

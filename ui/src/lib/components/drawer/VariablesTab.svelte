@@ -4,7 +4,6 @@
 	import { appNeedsRedeploy } from '$lib/types';
 	import type { App, EnvVar } from '$lib/types';
 	import BindingsPicker from '$lib/components/BindingsPicker.svelte';
-	import EnvVarEditor from '$lib/components/EnvVarEditor.svelte';
 	import { Plus, Trash2, Link, Upload, FileText, X, Eye, EyeOff, Loader2, ChevronDown } from 'lucide-svelte';
 
 	let {
@@ -82,10 +81,7 @@
 
 	let envSection = $state<SectionState>(makeSection());
 	let sharedSection = $state<SectionState>(makeSection());
-	let buildArgs = $state<EnvVar[]>([]);
-	let buildArgsLoading = $state(false);
-	let buildArgsSaving = $state(false);
-	let buildArgsError = $state('');
+	let buildSection = $state<SectionState>(makeSection());
 	let lastLoadedEnv = $state('');
 	let lastLoadedApp = $state('');
 
@@ -156,32 +152,108 @@
 
 	async function loadBuildArgs() {
 		if (!isGitSource) return;
-		buildArgsLoading = true;
-		buildArgsError = '';
+		buildSection.loading = true;
+		buildSection.error = '';
 		try {
-			buildArgs = await api.getBuildArgs(project, app.metadata.name);
+			const rows = await api.getBuildArgs(project, app.metadata.name);
+			const entries: EnvEntry[] = (rows ?? []).map(r => ({
+				name: r.name,
+				value: r.value ?? '',
+				source: 'user',
+				revealed: false
+			}));
+			buildSection.entries = entries;
+			buildSection.originalEntries = entries.map(e => ({ ...e }));
+			buildSection.editedKeys = new Set();
 		} catch (e) {
-			buildArgsError = e instanceof Error ? e.message : 'Failed to load build args';
-			buildArgs = [];
+			buildSection.error = e instanceof Error ? e.message : 'Failed to load build args';
+			buildSection.entries = [];
 		} finally {
-			buildArgsLoading = false;
+			buildSection.loading = false;
 		}
 	}
 
-	async function saveBuildArgs() {
-		buildArgsSaving = true;
-		buildArgsError = '';
+	async function saveBuildSection() {
+		buildSection.saving = true;
+		buildSection.error = '';
 		try {
-			const filtered = buildArgs
-				.filter(a => a.name.trim() !== '')
-				.map(a => ({ name: a.name, value: a.value ?? '' }));
-			buildArgs = await api.putBuildArgs(project, app.metadata.name, filtered);
+			const seen = new Set<string>();
+			const dupes: string[] = [];
+			for (const e of buildSection.entries) {
+				if (seen.has(e.name)) dupes.push(e.name);
+				seen.add(e.name);
+			}
+			if (dupes.length > 0) {
+				buildSection.error = `Duplicate keys: ${[...new Set(dupes)].join(', ')}. Rename or remove duplicates before saving.`;
+				buildSection.saving = false;
+				return;
+			}
+			const filtered = buildSection.entries
+				.filter(e => e.name.trim() !== '')
+				.map(e => ({ name: e.name, value: e.value }));
+			const result = await api.putBuildArgs(project, app.metadata.name, filtered);
+			buildSection.entries = (result ?? []).map(r => ({
+				name: r.name, value: r.value ?? '', source: 'user', revealed: false
+			}));
+			buildSection.originalEntries = buildSection.entries.map(e => ({ ...e }));
+			buildSection.editedKeys = new Set();
 			markStale();
 		} catch (e) {
-			buildArgsError = e instanceof Error ? e.message : 'Failed to save build args';
+			buildSection.error = e instanceof Error ? e.message : 'Failed to save build args';
 		} finally {
-			buildArgsSaving = false;
+			buildSection.saving = false;
 		}
+	}
+
+	async function addBuildVar() {
+		if (!buildSection.newKey.trim()) return;
+		let key = buildSection.newKey.trim();
+		const existingKeys = new Set(buildSection.entries.map(e => e.name));
+		if (existingKeys.has(key)) {
+			let suffix = 2;
+			while (existingKeys.has(`${key}_${suffix}`)) suffix++;
+			key = `${key}_${suffix}`;
+		}
+		buildSection.entries = [...buildSection.entries, {
+			name: key, value: buildSection.newValue, source: 'user', revealed: false
+		}];
+		buildSection.showNewRow = false;
+		buildSection.newKey = '';
+		buildSection.newValue = '';
+		buildSection.editedKeys = new Set([...buildSection.editedKeys, key]);
+		await saveBuildSection();
+	}
+
+	async function deleteBuildVar(idx: number) {
+		const key = buildSection.entries[idx].name;
+		buildSection.entries = buildSection.entries.filter((_, i) => i !== idx);
+		const next = new Set(buildSection.editedKeys);
+		next.delete(key);
+		buildSection.editedKeys = next;
+		await saveBuildSection();
+	}
+
+	async function importRawBuild() {
+		const parsed: Record<string, string> = {};
+		for (const line of buildSection.rawText.split('\n')) {
+			const trimmed = line.trim();
+			if (!trimmed || trimmed.startsWith('#')) continue;
+			const idx = trimmed.indexOf('=');
+			if (idx < 0) continue;
+			const key = trimmed.slice(0, idx).trim();
+			let val = trimmed.slice(idx + 1).trim();
+			if (val.length >= 2 && ((val[0] === '"' && val[val.length - 1] === '"') || (val[0] === "'" && val[val.length - 1] === "'"))) {
+				val = val.slice(1, -1);
+			}
+			parsed[key] = val;
+		}
+		buildSection.entries = Object.entries(parsed).map(([key, val]) => ({
+			name: key, value: val, source: 'user', revealed: false
+		}));
+		buildSection.rawMode = false;
+		buildSection.rawText = '';
+		buildSection.editedKeys = new Set(Object.keys(parsed));
+		await saveBuildSection();
 	}
 
 	// ---- Actions ----
@@ -671,24 +743,120 @@
 
 	<!-- Build args section (git-source apps only) -->
 	{#if isGitSource && activeEnv}
+		{@const bs = buildSection}
 		<div class="rounded-lg border border-surface-600 bg-surface-900">
 			<div class="flex items-center justify-between px-3 py-2.5">
 				<span class="text-sm font-medium text-white">Build - {activeEnv}</span>
 				<div class="flex items-center gap-2">
-					<button type="button" onclick={saveBuildArgs} disabled={buildArgsSaving}
-						class="rounded-md bg-accent px-3 py-1 text-xs font-medium text-white hover:bg-accent-hover disabled:opacity-50">
-						{buildArgsSaving ? 'Saving...' : 'Save'}
-					</button>
+					<div class="flex gap-1">
+						<button type="button" onclick={() => { buildSection.rawMode = false; }}
+							class="{!bs.rawMode ? 'text-white bg-surface-700' : 'text-gray-500 hover:text-white'} text-xs px-2 py-1 rounded">
+							<FileText class="inline h-3 w-3 mr-1" />Table
+						</button>
+						<button type="button" onclick={() => { buildSection.rawMode = true; buildSection.rawText = entriesToRaw(bs.entries); }}
+							class="{bs.rawMode ? 'text-white bg-surface-700' : 'text-gray-500 hover:text-white'} text-xs px-2 py-1 rounded">
+							<Upload class="inline h-3 w-3 mr-1" />Raw
+						</button>
+					</div>
+					{#if bs.editedKeys.size > 0 && !bs.rawMode}
+						<button type="button" onclick={saveBuildSection} disabled={bs.saving}
+							class="rounded-md bg-accent px-3 py-1 text-xs font-medium text-white hover:bg-accent-hover disabled:opacity-50">
+							{bs.saving ? 'Saving...' : `Save ${bs.editedKeys.size} change${bs.editedKeys.size === 1 ? '' : 's'}`}
+						</button>
+					{/if}
+					{#if !bs.rawMode}
+						<button type="button" onclick={() => { buildSection.showNewRow = true; }}
+							class="flex items-center gap-1 rounded-md border border-surface-600 px-2 py-1 text-xs text-gray-400 hover:bg-surface-700 hover:text-white">
+							<Plus class="h-3.5 w-3.5" />
+						</button>
+					{/if}
 				</div>
 			</div>
-			<div class="border-t border-surface-600 px-3 py-2">
-				{#if buildArgsLoading}
-					<p class="text-xs text-gray-500">Loading...</p>
-				{:else if buildArgsError}
-					<p class="text-xs text-danger">{buildArgsError}</p>
+
+			<div class="border-t border-surface-600">
+				{#if bs.error}
+					<div class="px-3 py-2 text-xs text-danger">{bs.error}</div>
+				{/if}
+
+				{#if bs.loading}
+					<div class="flex items-center justify-center py-6">
+						<div class="inline-block h-4 w-4 animate-spin rounded-full border-2 border-gray-500 border-t-transparent"></div>
+					</div>
+				{:else if bs.rawMode}
+					<div class="p-3 space-y-3">
+						<p class="text-xs text-gray-500">Edit as .env format. Save replaces all build args.</p>
+						<textarea bind:value={buildSection.rawText} rows={10}
+							placeholder="VITE_API_URL=https://...&#10;NODE_ENV=production"
+							class="w-full resize-y rounded-md border border-surface-600 bg-surface-700 px-3 py-2 font-mono text-xs text-white placeholder-gray-500 outline-none focus:border-accent">
+						</textarea>
+						<div class="flex gap-2">
+							<button type="button" onclick={() => importRawBuild()} disabled={!bs.rawText.trim() || bs.saving}
+								class="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white hover:bg-accent-hover disabled:opacity-50">
+								{bs.saving ? 'Saving...' : 'Save'}
+							</button>
+							<button type="button" onclick={() => { buildSection.rawMode = false; }}
+								class="rounded-md border border-surface-600 px-3 py-1.5 text-sm text-gray-400 hover:bg-surface-700 hover:text-white">
+								Cancel
+							</button>
+						</div>
+					</div>
 				{:else}
-					<EnvVarEditor bind:value={buildArgs}
-						placeholder="No build args. These are passed as --build-arg during image builds (e.g. VITE_* vars)." />
+					{#if bs.showNewRow}
+						<div class="flex items-center gap-2 border-b border-surface-600 px-3 py-2 bg-surface-700/30">
+							<input type="text" bind:value={buildSection.newKey} placeholder="VARIABLE_NAME"
+								onpaste={(e) => handleKeyPaste(buildSection, e)}
+								onkeydown={(e) => { if (e.key === 'Enter' && buildSection.newKey.trim()) addBuildVar(); }}
+								class="w-[40%] rounded-md border border-surface-600 bg-surface-800 px-2.5 py-1.5 font-mono text-sm text-white placeholder-gray-500 outline-none focus:border-accent" />
+							<input type="text" bind:value={buildSection.newValue} placeholder="value"
+								onkeydown={(e) => { if (e.key === 'Enter' && buildSection.newKey.trim()) addBuildVar(); }}
+								class="flex-1 rounded-md border border-surface-600 bg-surface-800 px-2.5 py-1.5 text-sm text-white placeholder-gray-500 outline-none focus:border-accent" />
+							<button type="button" onclick={addBuildVar} disabled={!bs.newKey.trim() || bs.saving}
+								class="rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-white hover:bg-accent-hover disabled:opacity-50">Add</button>
+							<button type="button" onclick={() => { buildSection.showNewRow = false; buildSection.newKey = ''; buildSection.newValue = ''; }}
+								class="rounded p-1.5 text-gray-500 hover:text-white"><X class="h-3.5 w-3.5" /></button>
+						</div>
+					{/if}
+
+					{#if bs.entries.length === 0 && !bs.showNewRow}
+						<div class="py-8 text-center text-xs text-gray-500">
+							No build args. Click + to add one, or paste a .env file.
+						</div>
+					{:else}
+						{#each bs.entries as entry, idx}
+							<div class="group flex items-center gap-2 border-b border-surface-600 px-3 py-2 hover:bg-surface-700/30">
+								<div class="flex items-center gap-2 w-[40%] min-w-0">
+									<span class="font-mono text-sm text-gray-200 truncate">{entry.name}</span>
+									{#if bs.editedKeys.has(entry.name)}
+										<span class="shrink-0 inline-flex items-center rounded-full bg-accent/10 px-1.5 py-0.5 text-[10px] font-medium text-accent">edited</span>
+									{/if}
+								</div>
+								<div class="flex-1 flex items-center gap-1 min-w-0">
+									{#if entry.revealed}
+										<input type="text" value={entry.value}
+											oninput={(e) => handleValueEdit(buildSection, idx, (e.target as HTMLInputElement).value)}
+											class="w-full rounded border border-transparent bg-transparent px-1 py-0.5 font-mono text-xs text-gray-400 outline-none focus:border-surface-500 focus:bg-surface-700 hover:border-surface-600" />
+									{:else}
+										<button type="button" onclick={() => toggleReveal(buildSection, idx)}
+											class="w-full text-left px-1 py-0.5 font-mono text-xs text-gray-500 hover:text-gray-400 truncate">
+											{'*'.repeat(Math.min(entry.value.length || 7, 20))}
+										</button>
+									{/if}
+									<button type="button" onclick={() => toggleReveal(buildSection, idx)}
+										class="shrink-0 p-1 text-gray-600 hover:text-gray-400" title={entry.revealed ? 'Hide' : 'Reveal'}>
+										{#if entry.revealed}
+											<EyeOff class="h-3.5 w-3.5" />
+										{:else}
+											<Eye class="h-3.5 w-3.5" />
+										{/if}
+									</button>
+								</div>
+								<button type="button" onclick={() => deleteBuildVar(idx)}
+									class="shrink-0 rounded p-1 text-gray-500 hover:text-danger transition-colors">
+									<Trash2 class="h-3.5 w-3.5" />
+								</button>
+							</div>
+						{/each}
+					{/if}
 				{/if}
 			</div>
 		</div>
