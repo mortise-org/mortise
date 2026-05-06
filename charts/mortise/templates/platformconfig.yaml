@@ -7,6 +7,9 @@ metadata:
     {{- include "mortise.labels" . | nindent 4 }}
 spec:
   domain: {{ .Values.platformConfig.domain | default "" | quote }}
+  {{- if .Values.platformConfig.externalDomain }}
+  externalDomain: {{ .Values.platformConfig.externalDomain | quote }}
+  {{- end }}
   {{- if .Values.registry.enabled }}
   registry:
     url: http://{{ include "mortise.registryAddr" . }}

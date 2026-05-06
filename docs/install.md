@@ -195,6 +195,7 @@ metadata:
   name: platform
 spec:
   domain: apps.example.com
+  externalDomain: mortise.example.com  # optional: where Mortise API is reachable (for webhooks, deploy tokens)
   registry:
     url: https://ghcr.io/my-org
     pullSecretName: ghcr-pull
@@ -344,6 +345,7 @@ mortise-core:
 platformConfig:
   enabled: true
   domain: apps.example.com          # wildcard {app}.apps.example.com
+  externalDomain: mortise.example.com  # optional: where Mortise API is reachable
 ```
 
 Save as `values.yaml` and run `helm install -f values.yaml`.

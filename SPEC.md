@@ -773,6 +773,14 @@ service. No contradiction; they serve different needs.
 Operator annotates `Ingress` → ExternalDNS creates DNS record → cert-manager
 issues TLS cert. Zero user action. Each environment gets a collision-safe
 subdomain automatically, rooted at the platform domain configured at install.
+
+**Two domain concepts.** `PlatformConfig.spec.domain` is used exclusively for
+generating app subdomains. `PlatformConfig.spec.externalDomain` is where Mortise
+itself is publicly reachable — git webhook callbacks, deploy token API calls, and
+the UI all use this address. If `externalDomain` is empty, `domain` is used as
+fallback. This separation matters when app traffic routes through a wildcard DNS
+record (e.g. `*.apps.example.com`) while the Mortise API lives at a separate
+address (e.g. `mortise.example.com`, a Cloudflare Tunnel, or an IP).
 The default pattern includes the project name to prevent hostname collisions
 when two projects have apps with the same name:
 
@@ -1292,8 +1300,10 @@ controller auto-creates a default `GitProvider` named `github` so
 users don't need to configure one manually.
 
 After credentials are configured, the per-repo webhook is registered
-automatically by the GitProvider controller when a user connects a repo
-(POST `/repos/{owner}/{repo}/hooks` on GitHub; equivalent on the others).
+automatically by the App controller when it reconciles a git-source app.
+The callback URL is `https://{externalDomain}/api/webhooks/{provider}`
+(falls back to `domain` if `externalDomain` is not set). The git host
+must be able to reach this address for push-to-deploy to work.
 
 **Device flow API routes:**
 - `POST /api/auth/git/{provider}/device`: initiates device flow, returns user code + verification URI.
@@ -1385,7 +1395,7 @@ successful login.
 | `Project` | Cluster | Top-level grouping; owns a k8s namespace |
 | `App` | Namespaced | Deploy anything (git or image in v1); lives in a Project's namespace |
 | `PreviewEnvironment` | Namespaced | Ephemeral PR environments (auto-managed) |
-| `PlatformConfig` | Cluster | Platform settings (domain, default SC) |
+| `PlatformConfig` | Cluster | Platform settings (domain, externalDomain, default SC) |
 | `GitProvider` | Cluster | One per configured git provider |
 | `ProjectMember` | Namespaced | Binds a user to a project with owner/developer/viewer role |
 

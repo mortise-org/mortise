@@ -344,6 +344,7 @@ kind: PlatformConfig
 metadata: { name: platform }
 spec:
   domain: yourdomain.com
+  externalDomain: mortise.yourdomain.com  # optional; where Mortise API is publicly reachable (webhooks, deploy tokens)
   domainTemplate: "..."      # optional; Go text/template with {{.App}}, {{.Project}}, {{.Env}}, {{.Domain}}
   storage: { defaultStorageClass: ... }
 ```

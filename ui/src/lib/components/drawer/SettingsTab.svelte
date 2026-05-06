@@ -2,7 +2,7 @@
 	import { onMount } from 'svelte';
 	import { api } from '$lib/api';
 	import { store } from '$lib/store.svelte';
-	import type { App, AppSpec, DeployToken, DomainsResponse, SecretMount } from '$lib/types';
+	import type { App, AppSpec, BindingEdge, DeployToken, DomainsResponse, SecretMount } from '$lib/types';
 	import { Copy, Plus, Trash2, ChevronDown } from 'lucide-svelte';
 
 	let {
@@ -62,6 +62,16 @@
 	let srcPath = $state('');
 	let srcImage = $state('');
 	let srcPullSecretRef = $state('');
+
+	// --- Pull credentials ---
+	let pullRegistry = $state('');
+	let pullUsername = $state('');
+	let pullPassword = $state('');
+	let pullHasPassword = $state(false);
+	let pullConnected = $state(false);
+	let savingPull = $state(false);
+	let deletingPull = $state(false);
+	let showAdvancedPull = $state(false);
 
 	// --- Build ---
 	let buildMode = $state<'auto' | 'dockerfile' | 'railpack'>('auto');
@@ -145,6 +155,8 @@
 	let confirmDelete = $state(false);
 	let deleteConfirmText = $state('');
 	let deleting = $state(false);
+	let bindingConsumers = $state<string[]>([]);
+	let loadingConsumers = $state(false);
 
 	// --- Storage ---
 	let showAddVolume = $state(false);
@@ -188,7 +200,7 @@
 	}
 
 	onMount(async () => {
-		await Promise.all([loadDomains(), loadTokens()]);
+		await Promise.all([loadDomains(), loadTokens(), loadPullCredentials()]);
 	});
 
 	$effect(() => {
@@ -212,6 +224,57 @@
 			tokens = [];
 		} finally {
 			loadingTokens = false;
+		}
+	}
+
+	async function loadPullCredentials() {
+		if (app.spec.source.type !== 'image') return;
+		try {
+			const creds = await api.getPullCredentials(project, app.metadata.name);
+			pullRegistry = creds.registry ?? '';
+			pullUsername = creds.username ?? '';
+			pullHasPassword = creds.hasPassword ?? false;
+			pullConnected = !!creds.registry;
+		} catch {
+			// ignore
+		}
+	}
+
+	async function savePullCredentials() {
+		if (!pullRegistry || !pullUsername || !pullPassword) {
+			errorMsg = 'Registry, username, and password are all required';
+			return;
+		}
+		savingPull = true;
+		errorMsg = '';
+		try {
+			const creds = await api.setPullCredentials(project, app.metadata.name, pullRegistry, pullUsername, pullPassword);
+			pullRegistry = creds.registry;
+			pullUsername = creds.username;
+			pullHasPassword = creds.hasPassword;
+			pullConnected = true;
+			pullPassword = '';
+		} catch (e) {
+			errorMsg = e instanceof Error ? e.message : 'Failed to save pull credentials';
+		} finally {
+			savingPull = false;
+		}
+	}
+
+	async function deletePullCredentials() {
+		deletingPull = true;
+		errorMsg = '';
+		try {
+			await api.deletePullCredentials(project, app.metadata.name);
+			pullRegistry = '';
+			pullUsername = '';
+			pullPassword = '';
+			pullHasPassword = false;
+			pullConnected = false;
+		} catch (e) {
+			errorMsg = e instanceof Error ? e.message : 'Failed to remove pull credentials';
+		} finally {
+			deletingPull = false;
 		}
 	}
 
@@ -544,6 +607,40 @@
 		}
 	}
 
+	async function loadBindingConsumers() {
+		loadingConsumers = true;
+		try {
+			const envs = store.projectEnvs[project] ?? [];
+			const allEdges: BindingEdge[] = [];
+			await Promise.all(
+				envs.map(async (env) => {
+					try {
+						const edges = await api.listBindings(project, env.name);
+						allEdges.push(...edges);
+					} catch {
+						// ignore per-env failures
+					}
+				})
+			);
+			const consumers = new Set<string>();
+			for (const edge of allEdges) {
+				if (edge.to === app.metadata.name) {
+					consumers.add(edge.from);
+				}
+			}
+			bindingConsumers = [...consumers].sort();
+		} catch {
+			bindingConsumers = [];
+		} finally {
+			loadingConsumers = false;
+		}
+	}
+
+	async function startDelete() {
+		confirmDelete = true;
+		await loadBindingConsumers();
+	}
+
 	async function handleDelete() {
 		if (deleteConfirmText !== app.metadata.name) return;
 		deleting = true;
@@ -621,10 +718,54 @@
 						<label class={labelCls} for="src-image">Image</label>
 						<input id="src-image" type="text" bind:value={srcImage} placeholder="registry.example.com/app:latest" class={inputCls} />
 					</div>
+
+					<!-- Pull credentials -->
+					<div class="rounded-md border border-surface-600 bg-surface-800 p-3 space-y-2">
+						<h4 class="text-xs font-medium text-gray-400">Registry credentials</h4>
+						{#if pullConnected}
+							<div class="flex items-center justify-between">
+								<p class="text-xs text-gray-300">
+									Connected to <span class="font-medium text-white">{pullRegistry}</span> as <span class="font-medium text-white">{pullUsername}</span>
+								</p>
+								<button type="button" onclick={deletePullCredentials} disabled={deletingPull} class="rounded-md border border-danger/50 px-2 py-1 text-xs text-danger hover:bg-danger/10 transition-colors disabled:opacity-50">
+									{deletingPull ? 'Removing…' : 'Remove'}
+								</button>
+							</div>
+						{:else}
+							<div>
+								<label class={labelCls} for="pull-registry">Registry URL</label>
+								<input id="pull-registry" type="text" bind:value={pullRegistry} placeholder="ghcr.io" class={inputCls} />
+							</div>
+							<div>
+								<label class={labelCls} for="pull-username">Username</label>
+								<input id="pull-username" type="text" bind:value={pullUsername} placeholder="username" class={inputCls} />
+							</div>
+							<div>
+								<label class={labelCls} for="pull-password">Password / token</label>
+								<input id="pull-password" type="password" bind:value={pullPassword} placeholder="••••••••" class={inputCls} />
+							</div>
+							<div class="flex justify-end">
+								<button type="button" onclick={savePullCredentials} disabled={savingPull} class={btnPrimary}>
+									{savingPull ? 'Saving…' : 'Save credentials'}
+								</button>
+							</div>
+						{/if}
+					</div>
+
+					<!-- Advanced: manual k8s secret ref -->
 					<div>
-						<label class={labelCls} for="src-pull-secret">Pull secret name <span class="text-gray-600">(optional)</span></label>
-						<input id="src-pull-secret" type="text" bind:value={srcPullSecretRef} placeholder="my-registry-secret" class={inputCls} />
-						<p class="mt-0.5 text-xs text-gray-500">Name of a k8s Secret in the project namespace for private registries.</p>
+						<button type="button" onclick={() => showAdvancedPull = !showAdvancedPull}
+							class="flex items-center gap-1 text-xs text-gray-500 hover:text-gray-300 transition-colors">
+							<ChevronDown class="h-3 w-3 transition-transform {showAdvancedPull ? 'rotate-180' : ''}" />
+							Advanced
+						</button>
+						{#if showAdvancedPull}
+							<div class="mt-2">
+								<label class={labelCls} for="src-pull-secret">Manual pull secret <span class="text-gray-600">(k8s Secret name)</span></label>
+								<input id="src-pull-secret" type="text" bind:value={srcPullSecretRef} placeholder="my-registry-secret" class={inputCls} />
+								<p class="mt-0.5 text-xs text-gray-500">Name of an existing k8s Secret you manage yourself. Overrides credentials above.</p>
+							</div>
+						{/if}
 					</div>
 				{/if}
 			</div>
@@ -1172,6 +1313,13 @@
 			<h3 class="mb-3 text-sm font-medium text-danger">Danger Zone</h3>
 			{#if confirmDelete}
 				<div class="space-y-2">
+					{#if loadingConsumers}
+						<div class="h-6 animate-pulse rounded bg-surface-700"></div>
+					{:else if bindingConsumers.length > 0}
+						<div class="rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning">
+							<strong>{app.metadata.name}</strong> is bound to by: <strong>{bindingConsumers.join(', ')}</strong>. Deleting it will remove binding variables from those apps and may cause them to crash.
+						</div>
+					{/if}
 					<p class="text-xs text-gray-400">Type <strong class="text-white">{app.metadata.name}</strong> to confirm deletion.</p>
 					<input
 						type="text"
@@ -1190,7 +1338,7 @@
 						</button>
 						<button
 							type="button"
-							onclick={() => { confirmDelete = false; deleteConfirmText = ''; }}
+							onclick={() => { confirmDelete = false; deleteConfirmText = ''; bindingConsumers = []; }}
 							class={btnSecondary}
 						>
 							Cancel
@@ -1205,7 +1353,7 @@
 					</div>
 					<button
 						type="button"
-						onclick={() => (confirmDelete = true)}
+						onclick={startDelete}
 						class="rounded-md bg-danger px-3 py-1.5 text-sm font-medium text-white hover:bg-danger/80"
 					>
 						Delete

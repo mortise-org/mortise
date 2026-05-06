@@ -16,9 +16,11 @@ All configuration happens in **Settings** in the Mortise UI, or via the
 included in the domain to prevent collisions when different projects have
 apps with the same name.
 
-**What it also does:** Serves as the callback address for git webhooks.
-When you push to a connected repo, your git host sends a notification to
-`https://apps.example.com/api/webhooks/{provider}` to trigger a build.
+**What it does NOT do:** This is the domain used to generate app
+subdomains. It is not necessarily where Mortise itself is reachable. If
+the Mortise UI/API lives at a different address (e.g. behind a tunnel,
+on a different port, or at an IP), set the **External Domain** field
+instead. See [External domain](#external-domain) below.
 
 **When you need it:**
 - You want apps to be reachable at real URLs (not just through the UI's
@@ -128,16 +130,47 @@ If two apps in different projects produce the same hostname, the operator
 rejects the second with a `DomainCollision` status condition. The default
 template avoids this by including the project name.
 
+### External domain
+
+**What it does:** Tells Mortise where it is publicly reachable — the
+address that git hosts, CI systems, and deploy tokens use to reach the
+Mortise API. Webhook callbacks are sent to
+`https://{externalDomain}/api/webhooks/{provider}`.
+
+**When you need it:**
+- Your app subdomain (`apps.example.com`) is different from where
+  Mortise itself is reachable (e.g. `mortise.example.com`,
+  `deploy.internal.mycompany.io`)
+- You're running behind a Cloudflare Tunnel, reverse proxy, or NAT
+  where the Mortise API is on a different hostname or port than the
+  wildcard used for app routing
+
+**When you don't:**
+- The platform domain also serves as the Mortise API address — the
+  default behavior when external domain is empty
+
+Set it in **Settings > External Domain** in the UI, or via the
+PlatformConfig CRD:
+
+```yaml
+spec:
+  domain: apps.example.com          # used for app subdomains
+  externalDomain: mortise.example.com  # where Mortise API is reachable
+```
+
+If left empty, the platform domain is used for webhook callbacks.
+
 ### Webhook reachability
 
-For automatic push-to-deploy, your git host needs to reach your domain:
+For automatic push-to-deploy, your git host needs to reach the
+**external domain** (or platform domain if external domain is not set):
 
-- **github.com / gitlab.com:** Your domain must be reachable from the
-  public internet. If you're behind NAT, use a Cloudflare Tunnel or
-  similar.
+- **github.com / gitlab.com:** The external domain must be reachable
+  from the public internet. If you're behind NAT, use a Cloudflare
+  Tunnel or similar.
 - **Self-hosted Gitea / GitLab:** Only needs to reach Mortise over your
-  local network. A LAN address like `apps.local` or `192.168.1.100`
-  works fine.
+  local network. A LAN address like `deploy.local` or
+  `192.168.1.100` works fine.
 - **No webhooks:** You can always trigger deploys manually via the
   CLI (`mortise deploy`) or the deploy API. Webhooks are a convenience,
   not a requirement.

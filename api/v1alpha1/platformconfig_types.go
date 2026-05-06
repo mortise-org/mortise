@@ -117,6 +117,12 @@ type PlatformConfigSpec struct {
 	// +optional
 	Domain string `json:"domain,omitempty"`
 
+	// ExternalDomain is the hostname where the Mortise API is publicly
+	// reachable. Used for git webhook callbacks. Falls back to Domain
+	// when unset.
+	// +optional
+	ExternalDomain string `json:"externalDomain,omitempty"`
+
 	// DomainTemplate is a Go text/template that controls how auto-generated
 	// hostnames are constructed. Available variables: {{.App}}, {{.Project}},
 	// {{.Env}}, {{.Domain}}. The {{.Env}} component is omitted for the

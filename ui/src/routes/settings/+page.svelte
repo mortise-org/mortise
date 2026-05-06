@@ -14,6 +14,7 @@
 
 	// Platform form (admin only)
 	let domain = $state('');
+	let externalDomain = $state('');
 	let domainTemplate = $state('');
 	let savingDomainTemplate = $state(false);
 	let defaultCpu = $state('');
@@ -424,6 +425,7 @@
 			users = userList ?? [];
 			if (platform) {
 				domain = platform.domain ?? '';
+				externalDomain = platform.externalDomain ?? '';
 				domainTemplate = platform.domainTemplate ?? '';
 				defaultCpu = platform.defaults?.cpu ?? '';
 				defaultMemory = platform.defaults?.memory ?? '';
@@ -459,7 +461,7 @@
 		saving = true;
 		error = '';
 		try {
-			await api.patchPlatform({ domain });
+			await api.patchPlatform({ domain, externalDomain });
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'Save failed';
 		} finally {
@@ -533,7 +535,7 @@
 
 	const sectionKeywords: Record<string, string[]> = {
 		'git-providers': ['git', 'provider', 'github', 'gitlab', 'gitea', 'oauth', 'connect'],
-		general: ['general', 'domain', 'platform', 'domaintemplate', 'template'],
+		general: ['general', 'domain', 'externaldomain', 'platform', 'domaintemplate', 'template', 'webhook'],
 		'domain-template': ['domain', 'domaintemplate', 'template', 'url', 'pattern'],
 		defaults: ['defaults', 'resources', 'cpu', 'memory', 'request', 'limit'],
 		registry: ['registry', 'oci', 'zot', 'image'],
@@ -695,6 +697,12 @@
 				<label class="text-sm text-gray-400" for="platform-domain">Domain</label>
 				<input id="platform-domain" type="text" bind:value={domain} placeholder="apps.example.com"
 					class="mt-1 w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-white placeholder-gray-500 outline-none focus:border-accent" />
+			</div>
+			<div>
+				<label class="text-sm text-gray-400" for="platform-external-domain">External Domain</label>
+				<input id="platform-external-domain" type="text" bind:value={externalDomain} placeholder="mortise.example.com"
+					class="mt-1 w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-white placeholder-gray-500 outline-none focus:border-accent" />
+				<p class="mt-1 text-xs text-gray-500">Hostname where Mortise is publicly reachable (e.g., mortise.example.com). Used for git webhook callbacks. Defaults to the platform domain if unset.</p>
 			</div>
 			<button type="button" onclick={savePlatform} disabled={saving}
 				class="rounded-md bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent-hover disabled:opacity-50">

@@ -35,4 +35,4 @@ serviceAccount:
   name: mortise-controller
 
 github:
-  clientID: "Ov23lizLTd25E32VrWwl"
+  clientID: ""

@@ -347,7 +347,7 @@ export const api = {
 
 	// --- platform config ---
 	getPlatform: () => request<PlatformResponse>('/platform'),
-	patchPlatform: (body: Partial<{ domain: string; domainTemplate: string; defaults: { cpu: string; memory: string }; tls: { certManagerClusterIssuer: string }; storage: { defaultStorageClass: string }; registry: { url: string; namespace: string }; build: { buildkitAddr: string; defaultPlatform: string }; observability: { logsAdapterEndpoint: string; logsAdapterToken?: string; metricsAdapterEndpoint: string; metricsAdapterToken?: string; trafficAdapterEndpoint: string; trafficAdapterToken?: string } }>) =>
+	patchPlatform: (body: Partial<{ domain: string; externalDomain: string; domainTemplate: string; defaults: { cpu: string; memory: string }; tls: { certManagerClusterIssuer: string }; storage: { defaultStorageClass: string }; registry: { url: string; namespace: string }; build: { buildkitAddr: string; defaultPlatform: string }; observability: { logsAdapterEndpoint: string; logsAdapterToken?: string; metricsAdapterEndpoint: string; metricsAdapterToken?: string; trafficAdapterEndpoint: string; trafficAdapterToken?: string } }>) =>
 		request<PlatformResponse>('/platform', {
 			method: 'PATCH',
 			body: JSON.stringify(body)
@@ -481,6 +481,24 @@ export const api = {
 		request<void>(`/projects/${enc(project)}/apps/${enc(app)}/env/${enc(env)}`, {
 			method: 'PATCH',
 			body: JSON.stringify({ [key]: null })
+		}),
+
+	// --- pull credentials ---
+	getPullCredentials: (project: string, app: string) =>
+		request<{ registry: string; username: string; hasPassword: boolean }>(
+			`/projects/${enc(project)}/apps/${enc(app)}/pull-credentials`
+		),
+	setPullCredentials: (project: string, app: string, registry: string, username: string, password: string) =>
+		request<{ registry: string; username: string; hasPassword: boolean }>(
+			`/projects/${enc(project)}/apps/${enc(app)}/pull-credentials`,
+			{
+				method: 'POST',
+				body: JSON.stringify({ registry, username, password })
+			}
+		),
+	deletePullCredentials: (project: string, app: string) =>
+		request<{ status: string }>(`/projects/${enc(project)}/apps/${enc(app)}/pull-credentials`, {
+			method: 'DELETE'
 		}),
 
 	// --- observability ---

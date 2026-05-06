@@ -35,6 +35,7 @@ export interface DomainsResponse {
 
 export interface PlatformResponse {
 	domain: string;
+	externalDomain?: string;
 	domainTemplate?: string;
 	defaults?: { cpu?: string; memory?: string };
 	tls: { certManagerClusterIssuer?: string };

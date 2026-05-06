@@ -116,6 +116,12 @@ spec:
                   "{{.App}}-{{.Project}}{{if ne .Env \"production\"}}-{{.Env}}{{end}}.{{.Domain}}"
                   which produces collision-safe flat subdomains (single-level wildcard).
                 type: string
+              externalDomain:
+                description: |-
+                  ExternalDomain is the hostname where the Mortise API is publicly
+                  reachable. Used for git webhook callbacks. Falls back to Domain
+                  when unset.
+                type: string
               github:
                 description: |-
                   GitHub holds optional overrides for the project-maintained GitHub App.

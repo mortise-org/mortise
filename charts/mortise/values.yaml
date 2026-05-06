@@ -44,7 +44,7 @@ mortise-core:
     name: mortise-controller
 
   github:
-    clientID: "Ov23lizLTd25E32VrWwl"
+    clientID: ""
 
 # ---------------------------------------------------------------------------
 # Traefik — ingress controller
@@ -142,6 +142,7 @@ observer:
 platformConfig:
   enabled: true
   domain: ""
+  externalDomain: ""
   buildPlatform: ""
   defaults:
     resources:

@@ -118,6 +118,7 @@ func (s *Server) authorize(w http.ResponseWriter, r *http.Request, resource auth
 //	/api/projects/{project}                                        get/delete
 //	/api/projects/{project}/apps                                   list/create
 //	/api/projects/{project}/apps/{app}                             get/update/delete
+//	/api/projects/{project}/apps/{app}/pull-credentials            get/set/delete registry pull credentials
 //	/api/projects/{project}/apps/{app}/deploy                      deploy webhook
 //	/api/projects/{project}/apps/{app}/rollback                   rollback to previous deploy
 //	/api/projects/{project}/apps/{app}/promote                    promote image between envs
@@ -211,6 +212,10 @@ func (s *Server) Handler() http.Handler {
 
 			r.Post("/projects/{project}/stacks", s.CreateStack)
 			r.Get("/templates", s.ListTemplates)
+
+			r.Get("/projects/{project}/apps/{app}/pull-credentials", s.GetPullCredentials)
+			r.Post("/projects/{project}/apps/{app}/pull-credentials", s.SetPullCredentials)
+			r.Delete("/projects/{project}/apps/{app}/pull-credentials", s.DeletePullCredentials)
 
 			r.Post("/projects/{project}/apps/{app}/exec", s.ExecInApp)
 			r.Post("/projects/{project}/apps/{app}/rollback", s.Rollback)

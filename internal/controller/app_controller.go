@@ -1754,7 +1754,11 @@ func (r *AppReconciler) ensureWebhook(ctx context.Context, app *mortisev1alpha1.
 	if err := r.Get(ctx, types.NamespacedName{Name: "platform"}, &pc); err != nil {
 		return fmt.Errorf("get PlatformConfig: %w", err)
 	}
-	if pc.Spec.Domain == "" {
+	host := pc.Spec.ExternalDomain
+	if host == "" {
+		host = pc.Spec.Domain
+	}
+	if host == "" {
 		return nil // no domain configured, can't register webhooks
 	}
 
@@ -1762,7 +1766,7 @@ func (r *AppReconciler) ensureWebhook(ctx context.Context, app *mortisev1alpha1.
 	if pc.Spec.TLS.CertManagerClusterIssuer == "" {
 		scheme = "http"
 	}
-	webhookURL := fmt.Sprintf("%s://%s/api/webhooks/%s", scheme, pc.Spec.Domain, gp.Name)
+	webhookURL := fmt.Sprintf("%s://%s/api/webhooks/%s", scheme, host, gp.Name)
 
 	// Resolve webhook secret.
 	var webhookSecret string

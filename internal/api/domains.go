@@ -56,12 +56,20 @@ func (s *Server) ListDomains(w http.ResponseWriter, r *http.Request) {
 
 	env := findEnvironment(app, envName)
 	if env == nil {
-		writeJSON(w, http.StatusOK, domainsResponse{})
+		// No spec override, but status may have an auto-generated domain.
+		var primary string
+		for _, se := range app.Status.Environments {
+			if se.Name == envName {
+				primary = se.Domain
+				break
+			}
+		}
+		writeJSON(w, http.StatusOK, domainsResponse{Primary: primary})
 		return
 	}
 
 	writeJSON(w, http.StatusOK, domainsResponse{
-		Primary: env.Domain,
+		Primary: resolvePrimaryDomain(app, env, envName),
 		Custom:  env.CustomDomains,
 	})
 }
@@ -143,7 +151,7 @@ func (s *Server) AddDomain(w http.ResponseWriter, r *http.Request) {
 	s.recordActivity(r, projectName, "update", "domain", req.Domain, "Added custom domain "+req.Domain+" to "+app.Name+" in "+envName, "")
 
 	writeJSON(w, http.StatusOK, domainsResponse{
-		Primary: env.Domain,
+		Primary: resolvePrimaryDomain(app, env, envName),
 		Custom:  env.CustomDomains,
 	})
 }
@@ -196,7 +204,7 @@ func (s *Server) RemoveDomain(w http.ResponseWriter, r *http.Request) {
 	s.recordActivity(r, projectName, "update", "domain", domain, "Removed custom domain "+domain+" from "+app.Name+" in "+envName, "")
 
 	writeJSON(w, http.StatusOK, domainsResponse{
-		Primary: env.Domain,
+		Primary: resolvePrimaryDomain(app, env, envName),
 		Custom:  env.CustomDomains,
 	})
 }
@@ -211,6 +219,20 @@ func findEnvironment(app *mortisev1alpha1.App, name string) *mortisev1alpha1.Env
 		}
 	}
 	return nil
+}
+
+// resolvePrimaryDomain returns the spec domain if set, otherwise falls back
+// to the auto-generated domain from status.
+func resolvePrimaryDomain(app *mortisev1alpha1.App, env *mortisev1alpha1.Environment, envName string) string {
+	if env.Domain != "" {
+		return env.Domain
+	}
+	for _, se := range app.Status.Environments {
+		if se.Name == envName {
+			return se.Domain
+		}
+	}
+	return ""
 }
 
 // domainValidateRequest is the JSON body for POST /api/domains/validate.

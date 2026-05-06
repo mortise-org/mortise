@@ -22,6 +22,7 @@ const platformConfigName = "platform"
 // All fields are optional; only non-zero fields overwrite the existing value.
 type patchPlatformRequest struct {
 	Domain         string                      `json:"domain,omitempty"`
+	ExternalDomain string                      `json:"externalDomain,omitempty"`
 	DomainTemplate string                      `json:"domainTemplate,omitempty"`
 	TLS            *patchPlatformTLS           `json:"tls,omitempty"`
 	Storage        *patchPlatformStorage       `json:"storage,omitempty"`
@@ -95,6 +96,7 @@ type platformDefaultsResponse struct {
 // platformResponse is the JSON shape returned from GET and PATCH.
 type platformResponse struct {
 	Domain         string                              `json:"domain"`
+	ExternalDomain string                              `json:"externalDomain,omitempty"`
 	DomainTemplate string                              `json:"domainTemplate,omitempty"`
 	TLS            mortisev1alpha1.TLSConfig           `json:"tls"`
 	Storage        mortisev1alpha1.StorageConfig       `json:"storage,omitempty"`
@@ -277,6 +279,7 @@ func adapterTokenSecretRef(key string) *mortisev1alpha1.SecretRef {
 func newPlatformResponse(pc *mortisev1alpha1.PlatformConfig) platformResponse {
 	resp := platformResponse{
 		Domain:         pc.Spec.Domain,
+		ExternalDomain: pc.Spec.ExternalDomain,
 		DomainTemplate: pc.Spec.DomainTemplate,
 		TLS:            pc.Spec.TLS,
 		Storage:        pc.Spec.Storage,
@@ -313,6 +316,9 @@ func newPlatformResponse(pc *mortisev1alpha1.PlatformConfig) platformResponse {
 func buildPlatformSpec(base mortisev1alpha1.PlatformConfigSpec, req *patchPlatformRequest) mortisev1alpha1.PlatformConfigSpec {
 	if req.Domain != "" {
 		base.Domain = req.Domain
+	}
+	if req.ExternalDomain != "" {
+		base.ExternalDomain = req.ExternalDomain
 	}
 	if req.DomainTemplate != "" {
 		base.DomainTemplate = req.DomainTemplate
