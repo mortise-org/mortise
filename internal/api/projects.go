@@ -88,12 +88,22 @@ func toProjectResponse(p *mortisev1alpha1.Project, apps []mortisev1alpha1.App) p
 }
 
 func productionHealth(p *mortisev1alpha1.Project, apps []mortisev1alpha1.App) EnvHealth {
-	prodName := "production"
+	// Prefer the env literally named "production"; fall back to the
+	// lowest-display-order env if no such name exists.
+	prodName := ""
+	lowestOrder := -1
 	for _, env := range p.Spec.Environments {
-		if env.DisplayOrder == 0 {
+		if env.Name == "production" {
 			prodName = env.Name
 			break
 		}
+		if lowestOrder < 0 || env.DisplayOrder < lowestOrder {
+			lowestOrder = env.DisplayOrder
+			prodName = env.Name
+		}
+	}
+	if prodName == "" {
+		prodName = "production"
 	}
 	ns := p.Status.Namespace
 	if ns == "" {
@@ -267,7 +277,10 @@ func (s *Server) GetProject(w http.ResponseWriter, r *http.Request) {
 		ns = projectNamespace(project.Name)
 	}
 	var apps mortisev1alpha1.AppList
-	_ = s.client.List(r.Context(), &apps, client.InNamespace(ns))
+	if err := s.client.List(r.Context(), &apps, client.InNamespace(ns)); err != nil {
+		writeError(w, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, toProjectResponse(&project, apps.Items))
 }
 
@@ -380,7 +393,16 @@ func (s *Server) UpdateProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, toProjectResponse(&project, nil))
+	ns := project.Status.Namespace
+	if ns == "" {
+		ns = projectNamespace(project.Name)
+	}
+	var apps mortisev1alpha1.AppList
+	if err := s.client.List(r.Context(), &apps, client.InNamespace(ns)); err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, toProjectResponse(&project, apps.Items))
 }
 
 // resolveProject is called at the top of every app/secret/log/deploy handler

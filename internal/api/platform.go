@@ -7,6 +7,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
@@ -159,6 +160,21 @@ func (s *Server) PatchPlatform(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, errorResponse{"invalid JSON: " + err.Error()})
 		return
+	}
+
+	if req.Defaults != nil {
+		if req.Defaults.CPU != "" {
+			if _, err := resource.ParseQuantity(req.Defaults.CPU); err != nil {
+				writeJSON(w, http.StatusBadRequest, errorResponse{"invalid CPU quantity: " + err.Error()})
+				return
+			}
+		}
+		if req.Defaults.Memory != "" {
+			if _, err := resource.ParseQuantity(req.Defaults.Memory); err != nil {
+				writeJSON(w, http.StatusBadRequest, errorResponse{"invalid memory quantity: " + err.Error()})
+				return
+			}
+		}
 	}
 
 	if req.Observability != nil {

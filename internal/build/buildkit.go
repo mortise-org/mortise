@@ -52,7 +52,6 @@ type Config struct {
 // BuildKit daemon.
 type solver interface {
 	Solve(ctx context.Context, def *llb.Definition, opt bkclient.SolveOpt, statusChan chan *bkclient.SolveStatus) (*bkclient.SolveResponse, error)
-	Prune(ctx context.Context, ch chan bkclient.UsageInfo, opts ...bkclient.PruneOption) error
 }
 
 // BuildKitClient implements BuildClient using a buildkitd daemon.
@@ -131,14 +130,12 @@ func (b *BuildKitClient) run(ctx context.Context, req BuildRequest, ch chan<- Bu
 		return
 	}
 
-	// Railpack builds have no frontend-level no-cache knob. Clear the
-	// BuildKit build cache before solving so every layer is rebuilt.
+	// Railpack builds have no frontend-level no-cache knob. Set IgnoreCache
+	// on every op in the LLB definition so BuildKit skips cached layers for
+	// this specific build without affecting other concurrent builds.
 	if def != nil && req.NoCache {
-		if err := b.pruneCache(ctx, ch); err != nil {
-			ch <- BuildEvent{Type: EventFailure, Error: fmt.Sprintf("cache prune: %v", err)}
-			<-logDone
-			return
-		}
+		markDefinitionNoCache(def)
+		ch <- BuildEvent{Type: EventLog, Line: "[no-cache] ignoring build cache for all layers"}
 	}
 
 	resp, err := b.solver.Solve(ctx, def, opt, statusCh)
@@ -156,28 +153,14 @@ func (b *BuildKitClient) run(ctx context.Context, req BuildRequest, ch chan<- Bu
 	ch <- BuildEvent{Type: EventSuccess, Digest: digest, DetectedPort: detectedPort}
 }
 
-// pruneCache calls BuildKit's Prune API to clear all build cache. Progress
-// is streamed as log events so the user sees what's being reclaimed.
-func (b *BuildKitClient) pruneCache(ctx context.Context, ch chan<- BuildEvent) error {
-	ch <- BuildEvent{Type: EventLog, Line: "[no-cache] pruning build cache before rebuild"}
-
-	pruneCh := make(chan bkclient.UsageInfo)
-	pruneDone := make(chan error, 1)
-	go func() {
-		pruneDone <- b.solver.Prune(ctx, pruneCh, bkclient.PruneAll)
-	}()
-
-	var totalBytes int64
-	for info := range pruneCh {
-		totalBytes += info.Size
+// markDefinitionNoCache sets IgnoreCache on every op in an LLB Definition,
+// causing BuildKit to re-execute all layers instead of serving them from cache.
+// This is scoped to the single Definition — other concurrent builds are unaffected.
+func markDefinitionNoCache(def *llb.Definition) {
+	for dgst, md := range def.Metadata {
+		md.IgnoreCache = true
+		def.Metadata[dgst] = md
 	}
-
-	if err := <-pruneDone; err != nil {
-		return err
-	}
-
-	ch <- BuildEvent{Type: EventLog, Line: fmt.Sprintf("[no-cache] pruned %d MB of build cache", totalBytes/(1024*1024))}
-	return nil
 }
 
 // buildSolveOpt decides between Dockerfile and Railpack, returning the
