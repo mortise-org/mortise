@@ -347,7 +347,7 @@ export const api = {
 
 	// --- platform config ---
 	getPlatform: () => request<PlatformResponse>('/platform'),
-	patchPlatform: (body: Partial<{ domain: string; externalDomain: string; domainTemplate: string; defaults: { cpu: string; memory: string }; tls: { certManagerClusterIssuer: string }; storage: { defaultStorageClass: string }; registry: { url: string; namespace: string }; build: { buildkitAddr: string; defaultPlatform: string }; observability: { logsAdapterEndpoint: string; logsAdapterToken?: string; metricsAdapterEndpoint: string; metricsAdapterToken?: string; trafficAdapterEndpoint: string; trafficAdapterToken?: string } }>) =>
+	patchPlatform: (body: Partial<{ domain: string; externalDomain: string; domainTemplate: string; defaults: { cpu: string; memory: string }; tls: { certManagerClusterIssuer: string }; storage: { defaultStorageClass: string }; registry: { url: string; namespace: string }; build: { buildkitAddr: string; defaultPlatform: string }; observability: { logsAdapterEndpoint: string; logsAdapterToken?: string; metricsAdapterEndpoint: string; metricsAdapterToken?: string; trafficAdapterEndpoint: string; trafficAdapterToken?: string }; github: { clientID: string } }>) =>
 		request<PlatformResponse>('/platform', {
 			method: 'PATCH',
 			body: JSON.stringify(body)

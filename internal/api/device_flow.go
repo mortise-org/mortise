@@ -411,6 +411,14 @@ func (d *DeviceFlowHandler) getOrCreateGitProvider(ctx context.Context, name str
 		return nil, fmt.Errorf("git provider %q not found and unsupported provider type %q", name, providerType)
 	}
 	clientID := os.Getenv(defaults.clientIDEnv)
+	if clientID == "" && providerType == mortisev1alpha1.GitProviderTypeGitHub {
+		var pc mortisev1alpha1.PlatformConfig
+		if err := d.client.Get(ctx, types.NamespacedName{Name: platformConfigName}, &pc); err == nil {
+			if pc.Spec.GitHub != nil {
+				clientID = pc.Spec.GitHub.ClientID
+			}
+		}
+	}
 	if clientID == "" {
 		return nil, fmt.Errorf("git provider %q not found and no default client ID available (set %s)", name, defaults.clientIDEnv)
 	}

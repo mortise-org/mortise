@@ -52,6 +52,7 @@ export interface PlatformResponse {
 		trafficAdapterEndpoint?: string;
 		hasTrafficToken?: boolean;
 	};
+	github?: { clientID?: string };
 }
 
 

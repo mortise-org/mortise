@@ -204,6 +204,18 @@
 		} catch { /* ignore */ }
 	}
 
+	// --- GitHub OAuth ---
+	let githubClientID = $state('');
+	let savingGitHub = $state(false);
+
+	async function saveGitHub() {
+		savingGitHub = true;
+		error = '';
+		try { await api.patchPlatform({ github: { clientID: githubClientID } }); }
+		catch (e) { error = e instanceof Error ? e.message : 'Failed to save GitHub config'; }
+		finally { savingGitHub = false; }
+	}
+
 	// --- Add Provider Modal ---
 	type ProviderType = 'github' | 'gitlab' | 'gitea';
 	type AuthMethod = 'device_flow' | 'pat' | 'oauth_app';
@@ -446,6 +458,7 @@
 				hasMetricsToken = platform.observability?.hasMetricsToken ?? false;
 				trafficAdapterEndpoint = platform.observability?.trafficAdapterEndpoint ?? '';
 				hasTrafficToken = platform.observability?.hasTrafficToken ?? false;
+				githubClientID = platform.github?.clientID ?? '';
 			}
 			// Check connection status for all providers
 			for (const p of providers) {
@@ -690,6 +703,24 @@
 
 	<!-- Admin-only sections below -->
 	{#if store.isAdmin}
+		<!-- GitHub OAuth (admin) -->
+		<section class="mb-8 space-y-4" id="github-oauth" style:display={sectionVisible('git-providers') ? '' : 'none'}>
+			<h2 class="border-b border-surface-600 pb-2 text-sm font-medium text-gray-300">GitHub Device Flow</h2>
+			<p class="text-xs text-gray-500">Set the OAuth App client ID to enable the GitHub device flow for all users. Without this, users must authenticate via Personal Access Token instead.</p>
+			<div class="space-y-3 rounded-md border border-surface-600 bg-surface-800/50 p-4">
+				<div>
+					<label class="block text-xs text-gray-500 mb-1" for="github-client-id">GitHub OAuth App Client ID</label>
+					<input id="github-client-id" type="text" bind:value={githubClientID} placeholder="Ov23li..."
+						class="w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-white font-mono placeholder-gray-500 outline-none focus:border-accent" />
+					<p class="mt-1 text-xs text-gray-500">Create an OAuth App at GitHub &gt; Settings &gt; Developer Settings &gt; OAuth Apps. Set the callback URL to your Mortise domain.</p>
+				</div>
+				<button type="button" onclick={saveGitHub} disabled={savingGitHub}
+					class="rounded-md bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent-hover disabled:opacity-50">
+					{savingGitHub ? 'Saving...' : 'Save'}
+				</button>
+			</div>
+		</section>
+
 		<!-- General -->
 		<section class="mb-8 space-y-4" id="general" style:display={sectionVisible('general') ? '' : 'none'}>
 			<h2 class="border-b border-surface-600 pb-2 text-sm font-medium text-gray-300">Platform Domain</h2>

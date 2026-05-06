@@ -30,6 +30,7 @@ type patchPlatformRequest struct {
 	Build          *patchPlatformBuild         `json:"build,omitempty"`
 	Defaults       *patchPlatformDefaults      `json:"defaults,omitempty"`
 	Observability  *patchPlatformObservability `json:"observability,omitempty"`
+	GitHub         *patchPlatformGitHub       `json:"github,omitempty"`
 }
 
 type patchPlatformDefaults struct {
@@ -55,6 +56,10 @@ type patchPlatformBuild struct {
 	DefaultPlatform string `json:"defaultPlatform,omitempty"`
 }
 
+type patchPlatformGitHub struct {
+	ClientID string `json:"clientID,omitempty"`
+}
+
 type patchPlatformObservability struct {
 	LogsAdapterEndpoint    string `json:"logsAdapterEndpoint,omitempty"`
 	LogsAdapterToken       string `json:"logsAdapterToken,omitempty"`
@@ -77,6 +82,10 @@ const (
 	adapterTokensSecretName = "observer-adapter-tokens"
 	adapterTokensNamespace  = "mortise-system"
 )
+
+type platformGitHubResponse struct {
+	ClientID string `json:"clientID,omitempty"`
+}
 
 type platformRegistryResponse struct {
 	URL       string `json:"url,omitempty"`
@@ -105,6 +114,7 @@ type platformResponse struct {
 	Defaults       *platformDefaultsResponse           `json:"defaults,omitempty"`
 	Phase          mortisev1alpha1.PlatformConfigPhase `json:"phase,omitempty"`
 	Observability  *platformObservabilityResponse      `json:"observability,omitempty"`
+	GitHub         *platformGitHubResponse             `json:"github,omitempty"`
 }
 
 // GetPlatform returns the current PlatformConfig.
@@ -309,6 +319,9 @@ func newPlatformResponse(pc *mortisev1alpha1.PlatformConfig) platformResponse {
 			HasTrafficToken:        obs.TrafficAdapterTokenSecretRef != nil,
 		}
 	}
+	if pc.Spec.GitHub != nil && pc.Spec.GitHub.ClientID != "" {
+		resp.GitHub = &platformGitHubResponse{ClientID: pc.Spec.GitHub.ClientID}
+	}
 	return resp
 }
 
@@ -372,6 +385,12 @@ func buildPlatformSpec(base mortisev1alpha1.PlatformConfigSpec, req *patchPlatfo
 		if req.Observability.TrafficAdapterToken != "" {
 			base.Observability.TrafficAdapterTokenSecretRef = adapterTokenSecretRef("traffic")
 		}
+	}
+	if req.GitHub != nil {
+		if base.GitHub == nil {
+			base.GitHub = &mortisev1alpha1.GitHubConfig{}
+		}
+		base.GitHub.ClientID = req.GitHub.ClientID
 	}
 	return base
 }
