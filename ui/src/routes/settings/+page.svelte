@@ -142,11 +142,12 @@
 
 	async function handleResetPassword() {
 		if (!resetPasswordEmail) return;
+		const password = resetPasswordValue || generatePassword();
 		resettingPassword = true;
 		usersError = '';
 		try {
-			const res = await api.resetUserPassword(resetPasswordEmail, resetPasswordValue || undefined);
-			resetPasswordResult = res.password;
+			await api.resetUserPassword(resetPasswordEmail, password);
+			resetPasswordResult = password;
 			resetPasswordValue = '';
 		} catch (e) {
 			usersError = e instanceof Error ? e.message : 'Failed to reset password';

@@ -1,7 +1,6 @@
 package api
 
 import (
-	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
@@ -227,20 +226,15 @@ type resetPasswordRequest struct {
 	Password string `json:"password"`
 }
 
-// resetPasswordResponse is returned by password reset/set operations.
-type resetPasswordResponse struct {
-	Password string `json:"password"`
-}
-
 // @Summary Reset a user's password
-// @Description Sets a new password for a user. If password is omitted, one is auto-generated. Admin-only.
+// @Description Sets a new password for a user. Password must be provided by the client. Admin-only.
 // @Tags users
 // @Accept json
 // @Produce json
 // @Security BearerAuth
 // @Param email path string true "User email"
-// @Param body body resetPasswordRequest false "Optional password"
-// @Success 200 {object} resetPasswordResponse
+// @Param body body resetPasswordRequest true "New password"
+// @Success 200 {object} map[string]string
 // @Failure 400 {object} errorResponse
 // @Failure 401 {object} errorResponse
 // @Failure 403 {object} errorResponse
@@ -248,7 +242,7 @@ type resetPasswordResponse struct {
 // @Failure 501 {object} errorResponse
 // @Router /admin/users/{email}/password [post]
 //
-// ResetUserPassword sets or generates a new password for a user. Admin-only.
+// ResetUserPassword sets a new password for a user. Admin-only.
 func (s *Server) ResetUserPassword(w http.ResponseWriter, r *http.Request) {
 	if !s.authorize(w, r, authz.Resource{Kind: "user"}, authz.ActionUpdate) {
 		return
@@ -267,24 +261,21 @@ func (s *Server) ResetUserPassword(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req resetPasswordRequest
-	_ = json.NewDecoder(r.Body).Decode(&req)
-
-	password := req.Password
-	if password == "" {
-		buf := make([]byte, 16)
-		if _, err := rand.Read(buf); err != nil {
-			writeJSON(w, http.StatusInternalServerError, errorResponse{"generating password: " + err.Error()})
-			return
-		}
-		password = hex.EncodeToString(buf)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse{"invalid JSON: " + err.Error()})
+		return
+	}
+	if req.Password == "" {
+		writeJSON(w, http.StatusBadRequest, errorResponse{"password is required"})
+		return
 	}
 
-	if err := native.UpdatePassword(r.Context(), email, password); err != nil {
+	if err := native.UpdatePassword(r.Context(), email, req.Password); err != nil {
 		writeJSON(w, http.StatusBadRequest, errorResponse{err.Error()})
 		return
 	}
 
-	writeJSON(w, http.StatusOK, resetPasswordResponse{Password: password})
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 // changePasswordRequest is the JSON body for POST /api/me/password.

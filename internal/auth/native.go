@@ -59,15 +59,40 @@ func (n *NativeAuthProvider) Authenticate(ctx context.Context, creds Credentials
 		return Principal{}, fmt.Errorf("invalid credentials")
 	}
 
+	var gen int64
+	if raw, ok := secret.Data["password_gen"]; ok {
+		fmt.Sscanf(string(raw), "%d", &gen)
+	}
+
 	return Principal{
-		ID:    string(secret.Data["email"]),
-		Email: string(secret.Data["email"]),
-		Role:  Role(secret.Data["role"]),
+		ID:          string(secret.Data["email"]),
+		Email:       string(secret.Data["email"]),
+		Role:        Role(secret.Data["role"]),
+		PasswordGen: gen,
 	}, nil
 }
 
 func (n *NativeAuthProvider) Principal(ctx context.Context, session SessionToken) (Principal, error) {
-	return n.jwt.ValidateToken(ctx, string(session))
+	principal, tokenGen, err := n.jwt.ValidateToken(ctx, string(session))
+	if err != nil {
+		return Principal{}, err
+	}
+
+	var secret corev1.Secret
+	if err := n.client.Get(ctx, types.NamespacedName{
+		Name:      userSecretName(principal.Email),
+		Namespace: namespace,
+	}, &secret); err == nil {
+		if raw, ok := secret.Data["password_gen"]; ok {
+			var currentGen int64
+			fmt.Sscanf(string(raw), "%d", &currentGen)
+			if tokenGen < currentGen {
+				return Principal{}, fmt.Errorf("session invalidated by password change")
+			}
+		}
+	}
+
+	return principal, nil
 }
 
 func (n *NativeAuthProvider) ListUsers(ctx context.Context) ([]User, error) {
@@ -191,7 +216,7 @@ func (n *NativeAuthProvider) UpdatePassword(ctx context.Context, email, newPassw
 		Namespace: namespace,
 	}, &secret)
 	if errors.IsNotFound(err) {
-		return fmt.Errorf("user not found: %s", email)
+		return fmt.Errorf("user not found or password could not be updated")
 	}
 	if err != nil {
 		return fmt.Errorf("reading user secret: %w", err)
@@ -203,6 +228,14 @@ func (n *NativeAuthProvider) UpdatePassword(ctx context.Context, email, newPassw
 	}
 
 	secret.Data["password_hash"] = hash
+
+	var gen int64
+	if raw, ok := secret.Data["password_gen"]; ok {
+		fmt.Sscanf(string(raw), "%d", &gen)
+	}
+	gen++
+	secret.Data["password_gen"] = fmt.Appendf(nil, "%d", gen)
+
 	if err := n.client.Update(ctx, &secret); err != nil {
 		return fmt.Errorf("updating user secret: %w", err)
 	}
@@ -217,7 +250,7 @@ func (n *NativeAuthProvider) VerifyPassword(ctx context.Context, email, password
 		Namespace: namespace,
 	}, &secret)
 	if errors.IsNotFound(err) {
-		return fmt.Errorf("user not found: %s", email)
+		return fmt.Errorf("invalid credentials")
 	}
 	if err != nil {
 		return fmt.Errorf("reading user secret: %w", err)

@@ -72,21 +72,24 @@ func (h *JWTHelper) GenerateToken(ctx context.Context, p Principal) (string, err
 		return "", err
 	}
 
+	now := time.Now()
 	claims := jwt.MapClaims{
-		"sub":   p.ID,
-		"email": p.Email,
-		"role":  string(p.Role),
-		"exp":   time.Now().Add(tokenExpiry).Unix(),
+		"sub":     p.ID,
+		"email":   p.Email,
+		"role":    string(p.Role),
+		"pwd_gen": p.PasswordGen,
+		"iat":     now.Unix(),
+		"exp":     now.Add(tokenExpiry).Unix(),
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	return token.SignedString(key)
 }
 
-func (h *JWTHelper) ValidateToken(ctx context.Context, tokenString string) (Principal, error) {
+func (h *JWTHelper) ValidateToken(ctx context.Context, tokenString string) (Principal, int64, error) {
 	key, err := h.signingKey(ctx)
 	if err != nil {
-		return Principal{}, err
+		return Principal{}, 0, err
 	}
 
 	token, err := jwt.Parse(tokenString, func(t *jwt.Token) (any, error) {
@@ -96,21 +99,23 @@ func (h *JWTHelper) ValidateToken(ctx context.Context, tokenString string) (Prin
 		return key, nil
 	})
 	if err != nil {
-		return Principal{}, fmt.Errorf("invalid token: %w", err)
+		return Principal{}, 0, fmt.Errorf("invalid token: %w", err)
 	}
 
 	claims, ok := token.Claims.(jwt.MapClaims)
 	if !ok || !token.Valid {
-		return Principal{}, fmt.Errorf("invalid token claims")
+		return Principal{}, 0, fmt.Errorf("invalid token claims")
 	}
 
 	sub, _ := claims["sub"].(string)
 	email, _ := claims["email"].(string)
 	role, _ := claims["role"].(string)
+	pwdGen, _ := claims["pwd_gen"].(float64)
 
 	return Principal{
-		ID:    sub,
-		Email: email,
-		Role:  Role(role),
-	}, nil
+		ID:          sub,
+		Email:       email,
+		Role:        Role(role),
+		PasswordGen: int64(pwdGen),
+	}, int64(pwdGen), nil
 }

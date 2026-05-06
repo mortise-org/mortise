@@ -228,3 +228,49 @@ func TestVerifyPassword(t *testing.T) {
 		t.Fatal("VerifyPassword should fail for non-existent user")
 	}
 }
+
+func TestPasswordChangeInvalidatesToken(t *testing.T) {
+	provider, ctx := setup(t)
+
+	if err := provider.CreateUser(ctx, "carol@example.com", "original1", RoleMember); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	// Generate a session token.
+	principal, err := provider.Authenticate(ctx, Credentials{Email: "carol@example.com", Password: "original1"})
+	if err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
+	token, err := provider.GenerateSessionToken(ctx, principal)
+	if err != nil {
+		t.Fatalf("GenerateSessionToken: %v", err)
+	}
+
+	// Token should work before password change.
+	if _, err := provider.Principal(ctx, token); err != nil {
+		t.Fatalf("token should be valid before password change: %v", err)
+	}
+
+	// Change password.
+	if err := provider.UpdatePassword(ctx, "carol@example.com", "newpassword1"); err != nil {
+		t.Fatalf("UpdatePassword: %v", err)
+	}
+
+	// Token issued before password change should be rejected.
+	if _, err := provider.Principal(ctx, token); err == nil {
+		t.Fatal("token issued before password change should be rejected")
+	}
+
+	// A new token should work.
+	principal, err = provider.Authenticate(ctx, Credentials{Email: "carol@example.com", Password: "newpassword1"})
+	if err != nil {
+		t.Fatalf("Authenticate with new password: %v", err)
+	}
+	newToken, err := provider.GenerateSessionToken(ctx, principal)
+	if err != nil {
+		t.Fatalf("GenerateSessionToken: %v", err)
+	}
+	if _, err := provider.Principal(ctx, newToken); err != nil {
+		t.Fatalf("new token should be valid: %v", err)
+	}
+}

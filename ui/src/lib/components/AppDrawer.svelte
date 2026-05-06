@@ -60,7 +60,7 @@
 
 	function openApp() {
 		if (appDomain) {
-			window.open('http://' + appDomain, '_blank');
+			window.open('//' + appDomain, '_blank');
 		}
 	}
 

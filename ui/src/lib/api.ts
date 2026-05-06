@@ -311,10 +311,10 @@ export const api = {
 			`/projects/${enc(project)}/apps/${enc(app)}/domains/${enc(domain)}?environment=${enc(environment)}`,
 			{ method: 'DELETE' }
 		),
-	validateDomain: (domain: string) =>
+	validateDomain: (domain: string, excludeApp?: string, excludeProject?: string) =>
 		request<{ valid: boolean; conflict?: { project: string; app: string; environment: string } }>(
 			'/domains/validate',
-			{ method: 'POST', body: JSON.stringify({ domain }) }
+			{ method: 'POST', body: JSON.stringify({ domain, exclude_app: excludeApp, exclude_project: excludeProject }) }
 		),
 
 	// --- build args ---
@@ -329,10 +329,10 @@ export const api = {
 		),
 
 	// --- password management ---
-	resetUserPassword: (email: string, password?: string) =>
-		request<{ password: string }>(
+	resetUserPassword: (email: string, password: string) =>
+		request<{ status: string }>(
 			`/admin/users/${enc(email)}/password`,
-			{ method: 'POST', body: JSON.stringify({ password: password || '' }) }
+			{ method: 'POST', body: JSON.stringify({ password }) }
 		),
 	changePassword: (currentPassword: string, newPassword: string) =>
 		request<{ status: string }>(

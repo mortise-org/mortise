@@ -192,7 +192,9 @@ func findEnvironment(app *mortisev1alpha1.App, name string) *mortisev1alpha1.Env
 
 // domainValidateRequest is the JSON body for POST /api/domains/validate.
 type domainValidateRequest struct {
-	Domain string `json:"domain"`
+	Domain     string `json:"domain"`
+	ExcludeApp string `json:"exclude_app,omitempty"`
+	ExcludeProject string `json:"exclude_project,omitempty"`
 }
 
 // domainConflict describes which app/env already holds a domain.
@@ -250,6 +252,11 @@ func (s *Server) ValidateDomain(w http.ResponseWriter, r *http.Request) {
 	for i := range apps.Items {
 		app := &apps.Items[i]
 		projectName, _ := constants.ProjectFromControlNs(app.Namespace)
+
+		if req.ExcludeApp != "" && req.ExcludeProject != "" &&
+			app.Name == req.ExcludeApp && projectName == req.ExcludeProject {
+			continue
+		}
 
 		for _, env := range app.Spec.Environments {
 			if env.Domain == req.Domain {

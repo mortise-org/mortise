@@ -355,7 +355,7 @@
 
 		if (domain && domain !== domains?.primary) {
 			try {
-				const result = await api.validateDomain(domain);
+				const result = await api.validateDomain(domain, app.metadata.name, project);
 				if (!result.valid && result.conflict) {
 					primaryDomainError = `Already used by ${result.conflict.app} in ${result.conflict.project} (${result.conflict.environment})`;
 					return;

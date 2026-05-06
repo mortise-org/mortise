@@ -5,7 +5,6 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
 	"github.com/mortise-org/mortise/internal/authz"
@@ -101,21 +100,6 @@ func (s *Server) PutBuildArgs(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, buildArgsFromApp(app))
 }
 
-// resolveApp fetches the App CRD by project and app URL params.
-func (s *Server) resolveApp(w http.ResponseWriter, r *http.Request) (*mortisev1alpha1.App, bool) {
-	project, ok := s.getProject(w, r)
-	if !ok {
-		return nil, false
-	}
-	appName := chi.URLParam(r, "app")
-
-	var app mortisev1alpha1.App
-	if err := s.client.Get(r.Context(), client.ObjectKey{Name: appName, Namespace: projectNs(project)}, &app); err != nil {
-		writeError(w, err)
-		return nil, false
-	}
-	return &app, true
-}
 
 func buildArgsFromApp(app *mortisev1alpha1.App) []buildArgResponse {
 	if app.Spec.Source.Build == nil || len(app.Spec.Source.Build.Args) == 0 {

@@ -35,7 +35,7 @@ func (s *Server) jwtAuthMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
-		principal, err := s.jwt.ValidateToken(r.Context(), token)
+		principal, err := s.auth.Principal(r.Context(), auth.SessionToken(token))
 		if err != nil {
 			writeJSON(w, http.StatusUnauthorized, errorResponse{"invalid token"})
 			return
@@ -56,7 +56,7 @@ func (s *Server) optionalJWTMiddleware(next http.Handler) http.Handler {
 		if header != "" && strings.HasPrefix(header, "Bearer ") {
 			token := strings.TrimPrefix(header, "Bearer ")
 			if token != "" && !strings.HasPrefix(token, "mrt_") {
-				principal, err := s.jwt.ValidateToken(r.Context(), token)
+				principal, err := s.auth.Principal(r.Context(), auth.SessionToken(token))
 				if err != nil {
 					writeJSON(w, http.StatusUnauthorized, errorResponse{"invalid token"})
 					return
