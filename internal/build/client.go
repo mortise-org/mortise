@@ -31,6 +31,7 @@ type BuildRequest struct {
 	Dockerfile    string
 	BuildArgs     map[string]string
 	CacheFrom     string
+	NoCache       bool // Skip all layer caching (force full rebuild).
 	PushTarget    string
 }
 

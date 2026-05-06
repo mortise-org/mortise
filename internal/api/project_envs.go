@@ -14,6 +14,8 @@ import (
 
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
 	"github.com/mortise-org/mortise/internal/authz"
+	"github.com/mortise-org/mortise/internal/constants"
+	"github.com/mortise-org/mortise/internal/envstore"
 )
 
 // maxProjectEnvNameLen caps project env names. Environment names are used as
@@ -300,6 +302,202 @@ func (s *Server) DeleteProjectEnvironment(w http.ResponseWriter, r *http.Request
 	s.recordActivity(r, projectName, "delete", "environment", envName, "Deleted project environment "+envName, "")
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted", "name": envName})
+}
+
+type cloneProjectEnvRequest struct {
+	Name         string `json:"name"`
+	DisplayOrder int    `json:"displayOrder,omitempty"`
+}
+
+// CloneProjectEnvironment creates a new environment by copying the full
+// configuration from an existing source environment. For every App in the
+// project, CRD-level overrides (replicas, resources, probes, bindings,
+// annotations) and Secret-level env vars (set via the UI/API) are merged
+// into the new env entry. Binding-sourced vars are excluded because the
+// controller re-resolves them in the new namespace.
+//
+// The operation is retry-safe: if a previous call partially completed
+// (project env created but app overrides not fully applied), a repeat
+// call skips the project update and continues cloning app overrides,
+// returning 200 instead of 201.
+//
+// POST /api/projects/{project}/environments/{source}/clone  { "name": "staging" }
+//
+// @Summary Clone a project environment
+// @Description Creates a new environment pre-populated with the source's config (CRD overrides + Secret-level env vars) for every app. Retry-safe: returns 200 if the target already exists.
+// @Tags environments
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param project path string true "Project name"
+// @Param source path string true "Source environment name"
+// @Param body body cloneProjectEnvRequest true "Target environment name and display order"
+// @Success 200 {object} projectEnvResponse "Retry: target env already existed"
+// @Success 201 {object} projectEnvResponse "Created"
+// @Failure 400 {object} errorResponse
+// @Failure 403 {object} errorResponse
+// @Failure 404 {object} errorResponse
+// @Router /projects/{project}/environments/{source}/clone [post]
+func (s *Server) CloneProjectEnvironment(w http.ResponseWriter, r *http.Request) {
+	projectName := chi.URLParam(r, "project")
+	if !s.authorize(w, r, authz.Resource{Kind: "project", Project: projectName}, authz.ActionCreate) {
+		return
+	}
+	project, ok := s.getProject(w, r)
+	if !ok {
+		return
+	}
+	sourceName := chi.URLParam(r, "source")
+
+	if indexOfEnv(project, sourceName) < 0 {
+		writeJSON(w, http.StatusNotFound, errorResponse{fmt.Sprintf("source environment %q not found on project %q", sourceName, project.Name)})
+		return
+	}
+
+	var req cloneProjectEnvRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse{"invalid JSON: " + err.Error()})
+		return
+	}
+	if msg := validateDNSLabel("name", req.Name, maxProjectEnvNameLen); msg != "" {
+		writeJSON(w, http.StatusBadRequest, errorResponse{msg})
+		return
+	}
+
+	// Retry-safe: if the target env already exists on the project (partial
+	// failure added the env but didn't finish cloning app overrides), skip
+	// the project update and continue with per-app cloning.
+	targetExists := false
+	for _, existing := range project.Spec.Environments {
+		if existing.Name == req.Name {
+			targetExists = true
+			break
+		}
+	}
+
+	if !targetExists {
+		project.Spec.Environments = append(project.Spec.Environments, mortisev1alpha1.ProjectEnvironment{
+			Name:         req.Name,
+			DisplayOrder: req.DisplayOrder,
+		})
+		if err := s.client.Update(r.Context(), project); err != nil {
+			writeError(w, err)
+			return
+		}
+	}
+
+	// Clone env overrides (CRD + Secret-level) from source to target for every App.
+	if err := s.cloneAppOverrides(r.Context(), projectName, projectNs(project), sourceName, req.Name); err != nil {
+		writeError(w, err)
+		return
+	}
+
+	s.recordActivity(r, projectName, "create", "environment", req.Name,
+		fmt.Sprintf("Cloned environment %s from %s", req.Name, sourceName), "")
+
+	status := http.StatusCreated
+	if targetExists {
+		status = http.StatusOK
+	}
+	writeJSON(w, status, projectEnvResponse{
+		Name:         req.Name,
+		DisplayOrder: req.DisplayOrder,
+		Health:       EnvHealthUnknown,
+	})
+}
+
+// cloneAppOverrides copies the source environment's overrides (env vars,
+// bindings, resources, replicas, probes, schedule, annotations) to a new
+// environment entry on every App in the project. It also reads Secret-level
+// env vars (set via the UI/API) and merges them into the cloned CRD entry
+// so users who set env vars only through the UI don't get an empty clone.
+// Binding-sourced vars are excluded — the controller re-resolves them.
+func (s *Server) cloneAppOverrides(ctx context.Context, projectName, ns, sourceName, targetName string) error {
+	var apps mortisev1alpha1.AppList
+	if err := s.client.List(ctx, &apps, client.InNamespace(ns)); err != nil {
+		return err
+	}
+	sourceEnvNs := constants.EnvNamespace(projectName, sourceName)
+	store := &envstore.Store{Client: s.client}
+
+	for i := range apps.Items {
+		app := &apps.Items[i]
+
+		// Retry-safe: skip apps that already have the target env.
+		hasTarget := false
+		for j := range app.Spec.Environments {
+			if app.Spec.Environments[j].Name == targetName {
+				hasTarget = true
+				break
+			}
+		}
+		if hasTarget {
+			continue
+		}
+
+		var sourceEnv *mortisev1alpha1.Environment
+		for j := range app.Spec.Environments {
+			if app.Spec.Environments[j].Name == sourceName {
+				sourceEnv = &app.Spec.Environments[j]
+				break
+			}
+		}
+
+		// Read Secret-level env vars from the source env namespace.
+		secretVars, err := store.Get(ctx, sourceEnvNs, app.Name)
+		if err != nil {
+			return fmt.Errorf("read source env vars for app %q: %w", app.Name, err)
+		}
+
+		// Merge: Secret vars first, then CRD vars win on conflict.
+		// Exclude binding-sourced vars — they'll be re-resolved by the controller.
+		envMap := make(map[string]mortisev1alpha1.EnvVar)
+		for _, ev := range secretVars {
+			if ev.Source == "binding" {
+				continue
+			}
+			envMap[ev.Name] = mortisev1alpha1.EnvVar{Name: ev.Name, Value: ev.Value}
+		}
+		if sourceEnv != nil {
+			for _, ev := range sourceEnv.Env {
+				envMap[ev.Name] = ev
+			}
+		}
+
+		cloned := mortisev1alpha1.Environment{Name: targetName}
+		if sourceEnv != nil {
+			cloned.Replicas = sourceEnv.Replicas
+			cloned.Resources = sourceEnv.Resources
+			cloned.LivenessProbe = sourceEnv.LivenessProbe
+			cloned.ReadinessProbe = sourceEnv.ReadinessProbe
+			cloned.StartupProbe = sourceEnv.StartupProbe
+			cloned.Schedule = sourceEnv.Schedule
+			cloned.ConcurrencyPolicy = sourceEnv.ConcurrencyPolicy
+			if len(sourceEnv.Bindings) > 0 {
+				cloned.Bindings = make([]mortisev1alpha1.Binding, len(sourceEnv.Bindings))
+				copy(cloned.Bindings, sourceEnv.Bindings)
+			}
+			if len(sourceEnv.Annotations) > 0 {
+				cloned.Annotations = make(map[string]string, len(sourceEnv.Annotations))
+				for k, v := range sourceEnv.Annotations {
+					cloned.Annotations[k] = v
+				}
+			}
+		}
+		if len(envMap) > 0 {
+			cloned.Env = make([]mortisev1alpha1.EnvVar, 0, len(envMap))
+			for _, ev := range envMap {
+				cloned.Env = append(cloned.Env, ev)
+			}
+			sort.Slice(cloned.Env, func(a, b int) bool { return cloned.Env[a].Name < cloned.Env[b].Name })
+		}
+
+		app.Spec.Environments = append(app.Spec.Environments, cloned)
+		if err := s.client.Update(ctx, app); err != nil {
+			return fmt.Errorf("clone env overrides for app %q: %w", app.Name, err)
+		}
+	}
+	return nil
 }
 
 // getProject is like resolveProject but returns the full Project pointer so

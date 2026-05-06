@@ -734,6 +734,228 @@ func TestRollbackRequiresAuth(t *testing.T) {
 	}
 }
 
+func TestRebuild(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+	ns := seedProject(t, k8sClient, "default")
+
+	ctx := context.Background()
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "rebuild-app", Namespace: ns},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeGit, Repo: "https://github.com/example/repo"},
+			Environments: []mortisev1alpha1.Environment{
+				{Name: "production"},
+			},
+		},
+	}
+	if err := k8sClient.Create(ctx, app); err != nil {
+		t.Fatalf("create app: %v", err)
+	}
+	app.Status.Phase = mortisev1alpha1.AppPhaseReady
+	app.Status.LastBuiltSHA = "abc123"
+	if err := k8sClient.Status().Update(ctx, app); err != nil {
+		t.Fatalf("update status: %v", err)
+	}
+
+	w := doRequest(h, http.MethodPost, "/api/projects/default/apps/rebuild-app/rebuild", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("rebuild: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	if err := k8sClient.Get(ctx, types.NamespacedName{Name: "rebuild-app", Namespace: ns}, app); err != nil {
+		t.Fatalf("get app: %v", err)
+	}
+	if app.Annotations["mortise.dev/no-cache-build"] != "true" {
+		t.Errorf("expected no-cache-build annotation, got %q", app.Annotations["mortise.dev/no-cache-build"])
+	}
+	if app.Status.LastBuiltSHA != "" {
+		t.Errorf("expected LastBuiltSHA cleared, got %q", app.Status.LastBuiltSHA)
+	}
+	if app.Status.Phase != mortisev1alpha1.AppPhaseBuilding {
+		t.Errorf("expected phase Building, got %s", app.Status.Phase)
+	}
+	if app.Status.Conditions != nil {
+		t.Errorf("expected conditions cleared, got %v", app.Status.Conditions)
+	}
+}
+
+func TestRebuildRejectsImageSource(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+	ns := seedProject(t, k8sClient, "default")
+
+	ctx := context.Background()
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "rebuild-img", Namespace: ns},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: "nginx:1.27"},
+		},
+	}
+	if err := k8sClient.Create(ctx, app); err != nil {
+		t.Fatalf("create app: %v", err)
+	}
+
+	w := doRequest(h, http.MethodPost, "/api/projects/default/apps/rebuild-img/rebuild", nil)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for image-source rebuild, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestRedeploy(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+	ns := seedProject(t, k8sClient, "default")
+
+	ctx := context.Background()
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "redeploy-app", Namespace: ns},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: "nginx:1.27"},
+			Environments: []mortisev1alpha1.Environment{
+				{Name: "production"},
+			},
+		},
+	}
+	if err := k8sClient.Create(ctx, app); err != nil {
+		t.Fatalf("create app: %v", err)
+	}
+
+	envNs := constants.EnvNamespace("default", "production")
+	dep := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: "redeploy-app", Namespace: envNs},
+		Spec: appsv1.DeploymentSpec{
+			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "redeploy-app"}},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "redeploy-app"}},
+				Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "app", Image: "nginx:1.27"}}},
+			},
+		},
+	}
+	if err := k8sClient.Create(ctx, dep); err != nil {
+		t.Fatalf("create deployment: %v", err)
+	}
+
+	app.Status.Phase = mortisev1alpha1.AppPhaseReady
+	app.Status.Environments = []mortisev1alpha1.EnvironmentStatus{
+		{
+			Name:         "production",
+			Phase:        mortisev1alpha1.AppPhaseReady,
+			CurrentImage: "nginx:1.27",
+		},
+	}
+	if err := k8sClient.Status().Update(ctx, app); err != nil {
+		t.Fatalf("update status: %v", err)
+	}
+
+	w := doRequest(h, http.MethodPost, "/api/projects/default/apps/redeploy-app/redeploy?environment=production", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("redeploy: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Verify Deployment was annotated with restartedAt.
+	if err := k8sClient.Get(ctx, types.NamespacedName{Name: "redeploy-app", Namespace: envNs}, dep); err != nil {
+		t.Fatalf("get deployment: %v", err)
+	}
+	if dep.Spec.Template.Annotations["mortise.dev/restartedAt"] == "" {
+		t.Error("expected restartedAt annotation on pod template")
+	}
+
+	// Verify app status was updated.
+	if err := k8sClient.Get(ctx, types.NamespacedName{Name: "redeploy-app", Namespace: ns}, app); err != nil {
+		t.Fatalf("get app: %v", err)
+	}
+	if app.Status.Phase != mortisev1alpha1.AppPhaseDeploying {
+		t.Errorf("expected top-level phase Deploying, got %s", app.Status.Phase)
+	}
+	if len(app.Status.Environments) != 1 {
+		t.Fatalf("expected 1 env status, got %d", len(app.Status.Environments))
+	}
+	es := app.Status.Environments[0]
+	if es.Phase != mortisev1alpha1.AppPhaseDeploying {
+		t.Errorf("expected env phase Deploying, got %s", es.Phase)
+	}
+	if len(es.DeployHistory) != 1 {
+		t.Fatalf("expected 1 deploy record, got %d", len(es.DeployHistory))
+	}
+	if es.DeployHistory[0].Image != "nginx:1.27" {
+		t.Errorf("expected deploy record image nginx:1.27, got %s", es.DeployHistory[0].Image)
+	}
+}
+
+func TestRedeployHistoryCap(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+	ns := seedProject(t, k8sClient, "default")
+
+	ctx := context.Background()
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "redeploy-cap", Namespace: ns},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: "nginx:1.27"},
+			Environments: []mortisev1alpha1.Environment{
+				{Name: "production"},
+			},
+		},
+	}
+	if err := k8sClient.Create(ctx, app); err != nil {
+		t.Fatalf("create app: %v", err)
+	}
+
+	envNs := constants.EnvNamespace("default", "production")
+	dep := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: "redeploy-cap", Namespace: envNs},
+		Spec: appsv1.DeploymentSpec{
+			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "redeploy-cap"}},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "redeploy-cap"}},
+				Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "app", Image: "nginx:1.27"}}},
+			},
+		},
+	}
+	if err := k8sClient.Create(ctx, dep); err != nil {
+		t.Fatalf("create deployment: %v", err)
+	}
+
+	// Seed 20 existing deploy records.
+	history := make([]mortisev1alpha1.DeployRecord, 20)
+	for i := range history {
+		history[i] = mortisev1alpha1.DeployRecord{Image: fmt.Sprintf("nginx:1.%d", i), Timestamp: metav1.Now()}
+	}
+	app.Status.Phase = mortisev1alpha1.AppPhaseReady
+	app.Status.Environments = []mortisev1alpha1.EnvironmentStatus{
+		{
+			Name:          "production",
+			Phase:         mortisev1alpha1.AppPhaseReady,
+			CurrentImage:  "nginx:1.27",
+			DeployHistory: history,
+		},
+	}
+	if err := k8sClient.Status().Update(ctx, app); err != nil {
+		t.Fatalf("update status: %v", err)
+	}
+
+	w := doRequest(h, http.MethodPost, "/api/projects/default/apps/redeploy-cap/redeploy?environment=production", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("redeploy: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	if err := k8sClient.Get(ctx, types.NamespacedName{Name: "redeploy-cap", Namespace: ns}, app); err != nil {
+		t.Fatalf("get app: %v", err)
+	}
+	es := app.Status.Environments[0]
+	if len(es.DeployHistory) != 20 {
+		t.Errorf("expected history capped at 20, got %d", len(es.DeployHistory))
+	}
+	if es.DeployHistory[0].Image != "nginx:1.27" {
+		t.Errorf("expected newest record first (nginx:1.27), got %s", es.DeployHistory[0].Image)
+	}
+}
+
 func TestPromote(t *testing.T) {
 	k8sClient := setupEnvtest(t)
 	srv := newAdminServer(t, k8sClient)

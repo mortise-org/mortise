@@ -103,7 +103,7 @@ After installing, follow the **[Quickstart](docs/quickstart.md)** to create an a
 - **Environment variables** - Secret-backed storage, masked values, source badges, multi-line paste, raw editor
 - **Project variables** - project-level vars shared across all apps in a project
 - **Service bindings** - bind apps to backing services, auto-inject `DATABASE_HOST`, `DATABASE_PORT`, `DATABASE_URL`
-- **Auto-domain routing** - public apps get `{app}.{platformDomain}` automatically with TLS
+- **Auto-domain routing** - public apps get `{app}-{project}.{platformDomain}` automatically with TLS (customizable via `domainTemplate`)
 - **Per-environment namespaces** - production, staging, and preview environments each get an isolated k8s namespace
 - **Preview environments** - PR-driven ephemeral deploys for git-source apps
 - **CrashLoop detection** - surfaces pod crash reasons directly in the UI
@@ -162,6 +162,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for full system diagrams.
 | [External Secrets](docs/recipes/external-secrets.md) | Vault, AWS SM, GCP SM via ESO |
 | [Backup](docs/recipes/backup.md) | Velero backup and restore |
 | [Cloudflare Tunnel](docs/recipes/cloudflare-tunnel.md) | Access without a public IP |
+| [Local-Only Deployment](docs/recipes/local-only.md) | Run without DNS, TLS, or ingress |
 
 **For contributors:**
 

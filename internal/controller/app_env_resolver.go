@@ -103,4 +103,3 @@ func resolvedEnvNames(envs []mortisev1alpha1.Environment) map[string]struct{} {
 	}
 	return out
 }
-

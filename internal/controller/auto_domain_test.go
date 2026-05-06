@@ -33,9 +33,9 @@ func TestAutoDefaultDomain(t *testing.T) {
 		env  string
 		want string
 	}{
-		{"production", "web.example.com"},
-		{"staging", "web-staging.example.com"},
-		{"preview", "web-preview.example.com"},
+		{"production", "web-myproject.example.com"},
+		{"staging", "web-myproject-staging.example.com"},
+		{"preview", "web-myproject-preview.example.com"},
 	}
 
 	for _, tt := range tests {
@@ -77,8 +77,8 @@ func TestAutoDefaultDomainLongName(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(pc).Build()
 	r := &AppReconciler{Client: c}
 
-	// 64-char app name exceeds DNS label limit
-	longName := "this-is-an-extremely-long-application-name-that-exceeds-dns-limi"
+	// combined app-project label exceeds DNS label limit
+	longName := "this-is-a-very-long-app-name-that-will-exceed-dns-limi"
 	app := &mortisev1alpha1.App{
 		ObjectMeta: metav1.ObjectMeta{Name: longName, Namespace: "pj-myproject"},
 	}
@@ -86,6 +86,65 @@ func TestAutoDefaultDomainLongName(t *testing.T) {
 	got := r.autoDefaultDomain(context.Background(), app, "production")
 	if got != "" {
 		t.Errorf("expected empty domain for long name, got %q", got)
+	}
+}
+
+func TestAutoDefaultDomainCustomTemplate(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = mortisev1alpha1.AddToScheme(scheme)
+
+	pc := &mortisev1alpha1.PlatformConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "platform"},
+		Spec: mortisev1alpha1.PlatformConfigSpec{
+			Domain:         "example.com",
+			DomainTemplate: "{{.App}}.{{.Domain}}",
+		},
+	}
+
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(pc).Build()
+	r := &AppReconciler{Client: c}
+
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: "pj-myproject"},
+	}
+
+	got := r.autoDefaultDomain(context.Background(), app, "production")
+	want := "web.example.com"
+	if got != want {
+		t.Errorf("autoDefaultDomain with custom template = %q, want %q", got, want)
+	}
+}
+
+func TestAutoDefaultDomainMultiLevelTemplate(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = mortisev1alpha1.AddToScheme(scheme)
+
+	pc := &mortisev1alpha1.PlatformConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "platform"},
+		Spec: mortisev1alpha1.PlatformConfigSpec{
+			Domain:         "example.com",
+			DomainTemplate: "{{.App}}.{{.Project}}.{{.Domain}}",
+		},
+	}
+
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(pc).Build()
+	r := &AppReconciler{Client: c}
+
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "api", Namespace: "pj-team-a"},
+	}
+
+	got := r.autoDefaultDomain(context.Background(), app, "production")
+	want := "api.team-a.example.com"
+	if got != want {
+		t.Errorf("autoDefaultDomain with multi-level template = %q, want %q", got, want)
+	}
+}
+
+func TestRenderDomainTemplateInvalidSecondLabel(t *testing.T) {
+	got := renderDomainTemplate("{{.App}}.{{.Project}}.{{.Domain}}", "web", "bad_project", "production", "example.com")
+	if got != "" {
+		t.Errorf("expected empty domain for invalid second label, got %q", got)
 	}
 }
 

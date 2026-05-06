@@ -106,6 +106,15 @@ rules:
   - patch
   - update
 - apiGroups:
+  - mortise.mortise.dev
+  resources:
+  - projectmembers
+  verbs:
+  - create
+  - get
+  - list
+  - watch
+- apiGroups:
   - networking.k8s.io
   resources:
   - ingresses

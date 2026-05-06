@@ -53,6 +53,7 @@ mortise-core:
 # bundles Traefik, EKS may use ALB, etc.)
 traefik:
   enabled: true
+  namespaceOverride: mortise-deps
   # Values passed to the Traefik subchart. See:
   # https://github.com/traefik/traefik-helm-chart/blob/master/traefik/values.yaml
   logs:
@@ -124,7 +125,7 @@ metricsServer:
 # out by pointing PlatformConfig.spec.observability at your own adapter.
 observer:
   enabled: true
-  image: ghcr.io/mortise-org/mortise:0.1.1-observer
+  image: ghcr.io/mortise-org/mortise-observer:0.1.1
   storage: emptyDir
   storageSize: 2Gi
   retention:

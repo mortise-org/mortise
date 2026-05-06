@@ -116,6 +116,26 @@ If you disable components, you'll configure Mortise to point at your
 external ones via `PlatformConfig`. See
 [Configuring your platform](./configuration.md).
 
+> **BYO Traefik + observer traffic metrics:** If you bring your own Traefik
+> and enable the observer (`observer.enableTraffic: true`), Traefik must have
+> **JSON-formatted access logs** enabled. The observer parses JSON fields
+> (`ServiceName`, `OriginStatus`, `Duration`) — Traefik's default Common Log
+> Format is silently dropped. Add this to your Traefik Helm values:
+>
+> ```yaml
+> logs:
+>   access:
+>     enabled: true
+>     format: json
+>     fields:
+>       headers:
+>         defaultMode: drop
+> ```
+>
+> Without this, `/v1/traffic` returns empty data. See
+> [Troubleshooting > Observer traffic empty with BYO Traefik](./troubleshooting.md#observer-traffic-empty-with-byo-traefik)
+> for details.
+
 ### Two charts
 
 | Chart | Contains | When to pick |

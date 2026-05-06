@@ -94,6 +94,13 @@ definitions:
       to:
         type: string
     type: object
+  api.cloneProjectEnvRequest:
+    properties:
+      displayOrder:
+        type: integer
+      name:
+        type: string
+    type: object
   api.createAppRequest:
     properties:
       name:
@@ -4109,6 +4116,58 @@ paths:
       security:
       - BearerAuth: []
       summary: Update a project environment
+      tags:
+      - environments
+  /projects/{project}/environments/{source}/clone:
+    post:
+      consumes:
+      - application/json
+      description: 'Creates a new environment pre-populated with the source''s config
+        (CRD overrides + Secret-level env vars) for every app. Retry-safe: returns
+        200 if the target already exists.'
+      parameters:
+      - description: Project name
+        in: path
+        name: project
+        required: true
+        type: string
+      - description: Source environment name
+        in: path
+        name: source
+        required: true
+        type: string
+      - description: Target environment name and display order
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/api.cloneProjectEnvRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: 'Retry: target env already existed'
+          schema:
+            $ref: '#/definitions/api.projectEnvResponse'
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/api.projectEnvResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.errorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/api.errorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.errorResponse'
+      security:
+      - BearerAuth: []
+      summary: Clone a project environment
       tags:
       - environments
   /projects/{project}/events:

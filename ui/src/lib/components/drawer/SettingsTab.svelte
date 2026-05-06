@@ -61,6 +61,7 @@
 	let srcBranch = $state('');
 	let srcPath = $state('');
 	let srcImage = $state('');
+	let srcPullSecretRef = $state('');
 
 	// --- Build ---
 	let buildMode = $state<'auto' | 'dockerfile' | 'railpack'>('auto');
@@ -77,6 +78,7 @@
 		srcBranch = app.spec.source.branch ?? '';
 		srcPath = app.spec.source.path ?? '';
 		srcImage = app.spec.source.image ?? '';
+		srcPullSecretRef = app.spec.source.pullSecretRef ?? '';
 		buildMode = app.spec.source.build?.mode ?? 'auto';
 		dockerfilePath = app.spec.source.build?.dockerfilePath ?? '';
 		buildContext = app.spec.source.build?.context ?? '';
@@ -223,6 +225,7 @@
 			spec.source.path = srcPath;
 		} else if (spec.source.type === 'image') {
 			spec.source.image = srcImage;
+			spec.source.pullSecretRef = srcPullSecretRef || undefined;
 		}
 
 		// Networking
@@ -603,6 +606,11 @@
 					<div>
 						<label class={labelCls} for="src-image">Image</label>
 						<input id="src-image" type="text" bind:value={srcImage} placeholder="registry.example.com/app:latest" class={inputCls} />
+					</div>
+					<div>
+						<label class={labelCls} for="src-pull-secret">Pull secret name <span class="text-gray-600">(optional)</span></label>
+						<input id="src-pull-secret" type="text" bind:value={srcPullSecretRef} placeholder="my-registry-secret" class={inputCls} />
+						<p class="mt-0.5 text-xs text-gray-500">Name of a k8s Secret in the project namespace for private registries.</p>
 					</div>
 				{/if}
 			</div>

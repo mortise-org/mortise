@@ -195,6 +195,10 @@ sequenceDiagram
   independently of the operator: the operator is not in the request path).
 - **Preview PRs** follow the same shape, plus the operator creates a
   `PreviewEnvironment` CR at PR-open and deletes it at PR-close.
+  The preview controller inherits configuration from the source
+  environment: per-app env vars from the `{app}-env` Secret, shared
+  vars from `shared-env`, and live-resolved bindings. Explicit
+  `pe.Spec.Env` overrides win over inherited values.
 - **External CI** skips everything down to "patch Deployment": the deploy
   webhook jumps straight there, providing a pre-built image digest.
 
@@ -376,6 +380,8 @@ when reading the code or debugging a specific interaction.
 | Operator | Ingress controller | `IngressProvider` iface | Pick ingress class, set provider-specific annotations |
 | Operator | AuthProvider | `AuthProvider` iface | Platform auth (UI/API login) |
 | Operator | PolicyEngine | `PolicyEngine` iface | Who can do what on which App |
+| REST API (clone) | Operator | HTTPS | Clone an environment: copies CRD overrides + Secret-level env vars (excluding binding-sourced) to a new env for every App in the project |
+| Preview controller | Source env namespace | envstore read | Inherit per-app and shared env vars from source env into preview namespace; `pe.Spec.Env` overrides win |
 
 ---
 
