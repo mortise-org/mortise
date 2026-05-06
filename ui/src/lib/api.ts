@@ -323,13 +323,13 @@ export const api = {
 		),
 
 	// --- build args ---
-	getBuildArgs: (project: string, app: string) =>
+	getBuildArgs: (project: string, app: string, env: string) =>
 		request<Array<{ name: string; value: string }>>(
-			`/projects/${enc(project)}/apps/${enc(app)}/build-args`
+			`/projects/${enc(project)}/apps/${enc(app)}/build-args?environment=${enc(env)}`
 		),
-	putBuildArgs: (project: string, app: string, args: Array<{ name: string; value: string }>) =>
+	putBuildArgs: (project: string, app: string, env: string, args: Array<{ name: string; value: string }>) =>
 		request<Array<{ name: string; value: string }>>(
-			`/projects/${enc(project)}/apps/${enc(app)}/build-args`,
+			`/projects/${enc(project)}/apps/${enc(app)}/build-args?environment=${enc(env)}`,
 			{ method: 'PUT', body: JSON.stringify(args) }
 		),
 

@@ -290,6 +290,12 @@ type Environment struct {
 	// Secret name.
 	// +optional
 	TLS *EnvTLSConfig `json:"tls,omitempty"`
+
+	// BuildArgs are per-environment build arguments passed to docker build.
+	// They are merged on top of the global spec.source.build.args, with
+	// per-environment values taking precedence.
+	// +optional
+	BuildArgs map[string]string `json:"buildArgs,omitempty"`
 }
 
 // SecretMount mounts an existing k8s Secret in the App's namespace as a
@@ -434,6 +440,16 @@ type EnvironmentStatus struct {
 	// redeploy has actually rolled out.
 	// +optional
 	LastProcessedRestartedAt string `json:"lastProcessedRestartedAt,omitempty"`
+
+	// LastBuiltSHA is the git revision that was last successfully built for
+	// this environment.
+	// +optional
+	LastBuiltSHA string `json:"lastBuiltSHA,omitempty"`
+
+	// LastBuiltImage is the OCI image produced by the last successful build
+	// for this environment.
+	// +optional
+	LastBuiltImage string `json:"lastBuiltImage,omitempty"`
 }
 
 // AppPhase represents the overall lifecycle phase.

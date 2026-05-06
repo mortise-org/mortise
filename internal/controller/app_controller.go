@@ -26,6 +26,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"text/template"
 	"time"
 
@@ -91,6 +92,10 @@ type AppReconciler struct {
 	// reconciles can check progress without blocking the worker. Lost on
 	// operator restart; the next reconcile re-launches (builds are idempotent).
 	Builds buildTrackerStore
+
+	// gitTokenCache holds the resolved git token for the current reconcile
+	// iteration so per-env builds don't re-resolve credentials. Keyed by app name.
+	gitTokenCache sync.Map
 }
 
 // +kubebuilder:rbac:groups=mortise.mortise.dev,resources=apps,verbs=get;list;watch;create;update;patch;delete
@@ -139,12 +144,14 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 
 	switch app.Spec.Source.Type {
 	case mortisev1alpha1.SourceTypeGit:
-		result, proceed, err := r.reconcileGitSource(ctx, &app)
-		if err != nil {
-			return ctrl.Result{}, err
-		}
-		if !proceed {
-			return result, nil
+		if r.BuildClient != nil && !r.allEnvBuildsCurrentForRevision(&app) {
+			result, proceed, err := r.prepareGitSource(ctx, &app)
+			if err != nil {
+				return ctrl.Result{}, err
+			}
+			if !proceed {
+				return result, nil
+			}
 		}
 	case mortisev1alpha1.SourceTypeImage:
 		// image path: nothing extra needed before reconciling workloads
@@ -175,6 +182,7 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	// reference them can resolve cross-ns (they can't). The controller owns
 	// each env ns via the Project controller, so existence is a given by the
 	// time we reach here — we just materialise the per-app objects inside.
+	needsRequeue := false
 	for i := range resolvedEnvs {
 		env := &resolvedEnvs[i]
 		envNs, err := appEnvNs(&app, env.Name)
@@ -198,10 +206,20 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 
 		autoRedeploy := project != nil && project.Spec.AutoRedeploy
 
+		// For git-source apps, trigger per-env build and get the image.
+		if app.Spec.Source.Type == mortisev1alpha1.SourceTypeGit && r.BuildClient != nil {
+			envImage, requeue := r.reconcileEnvBuild(ctx, &app, env.Name)
+			if requeue {
+				needsRequeue = true
+				continue
+			}
+			if envImage == "" {
+				continue
+			}
+			app.Spec.Source.Image = envImage
+		}
+
 		if app.Spec.Kind == mortisev1alpha1.AppKindCron {
-			// Cron envs without a schedule can't produce a valid CronJob.
-			// Auto-membership in a project env doesn't imply a schedule, so
-			// skip silently — users supply per-env schedules via overrides.
 			if env.Schedule == "" {
 				continue
 			}
@@ -258,8 +276,14 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		}
 	}
 
-	if err := r.updateStatus(ctx, &app, resolvedEnvs); err != nil {
-		return ctrl.Result{}, fmt.Errorf("update status: %w", err)
+	if !needsRequeue && app.Status.Phase != mortisev1alpha1.AppPhaseFailed {
+		if err := r.updateStatus(ctx, &app, resolvedEnvs); err != nil {
+			return ctrl.Result{}, fmt.Errorf("update status: %w", err)
+		}
+	}
+
+	if needsRequeue {
+		return ctrl.Result{RequeueAfter: buildPollInterval}, nil
 	}
 
 	// Requeue while not Ready so we can detect CrashLoopBackOff and other
@@ -286,7 +310,9 @@ const appFinalizer = "mortise.dev/app-finalizer"
 // The returned bool is true iff the caller should continue to Deployment
 // reconciliation; when false the caller should return the given ctrl.Result
 // immediately (a build is still in flight, or nothing to do).
-func (r *AppReconciler) reconcileGitSource(ctx context.Context, app *mortisev1alpha1.App) (ctrl.Result, bool, error) {
+// prepareGitSource validates that build infrastructure is available and resolves
+// git credentials. Returns the git token for per-env build use.
+func (r *AppReconciler) prepareGitSource(ctx context.Context, app *mortisev1alpha1.App) (ctrl.Result, bool, error) {
 	log := logf.FromContext(ctx)
 
 	if r.BuildClient == nil || r.GitClient == nil || r.RegistryBackend == nil {
@@ -294,64 +320,11 @@ func (r *AppReconciler) reconcileGitSource(ctx context.Context, app *mortisev1al
 		return ctrl.Result{}, true, nil
 	}
 
-	// Determine target revision from annotation (set by webhook) or fall back to branch name.
-	revision := app.Annotations["mortise.dev/revision"]
-	if revision == "" {
-		// No annotation means "tip of the configured branch". We use the branch
-		// name itself as a pseudo-revision so the short-circuit below still works
-		// on re-reconcile of the same branch state. A follow-up can call
-		// GitAPI.ResolveRef to get the actual tip SHA.
-		revision = app.Spec.Source.Branch
-	}
-	if revision == "" {
-		revision = "main"
-	}
-
-	// Short-circuit: skip rebuild if we already built this revision and have an image.
-	if app.Status.LastBuiltSHA == revision && app.Status.LastBuiltImage != "" {
-		app.Spec.Source.Image = app.Status.LastBuiltImage
-		return ctrl.Result{}, true, nil
-	}
-
-	// Don't retry a build that already failed for this revision. The user must
-	// push a new commit or manually clear the condition to trigger a rebuild.
+	// Don't retry builds that already failed for this revision.
 	if app.Status.Phase == mortisev1alpha1.AppPhaseFailed {
 		cond := meta.FindStatusCondition(app.Status.Conditions, "BuildSucceeded")
 		if cond != nil && cond.Status == metav1.ConditionFalse && cond.Reason == "BuildFailed" {
 			return ctrl.Result{}, false, nil
-		}
-	}
-
-	key := types.NamespacedName{Namespace: app.Namespace, Name: app.Name}
-
-	// Check for an existing tracker. If it matches the current revision, inspect
-	// its state; if it's for a stale revision, discard and fall through to launch.
-	if t := r.Builds.get(key); t != nil {
-		phase, trackedRev, image, digest, errMsg, detectedPort := t.snapshot()
-		if trackedRev != revision {
-			// Stale tracker from a previous revision — cancel and drop.
-			t.mu.Lock()
-			cancel := t.cancel
-			t.mu.Unlock()
-			if cancel != nil {
-				cancel()
-			}
-			r.Builds.delete(key)
-		} else {
-			switch phase {
-			case buildPhaseRunning:
-				return ctrl.Result{RequeueAfter: buildPollInterval}, false, nil
-			case buildPhaseSucceeded:
-				r.Builds.delete(key)
-				if err := r.applyBuildSuccess(ctx, app, revision, image, digest, detectedPort); err != nil {
-					return ctrl.Result{}, false, err
-				}
-				app.Spec.Source.Image = image
-				return ctrl.Result{}, true, nil
-			case buildPhaseFailed:
-				r.Builds.delete(key)
-				return ctrl.Result{}, false, r.setFailedCondition(ctx, app, "BuildFailed", errMsg)
-			}
 		}
 	}
 
@@ -375,7 +348,6 @@ func (r *AppReconciler) reconcileGitSource(ctx context.Context, app *mortisev1al
 		return ctrl.Result{}, false, r.setFailedCondition(ctx, app, "GitAuthFailed",
 			fmt.Sprintf("no valid git token found for any project member: %v", err))
 	}
-	token := tokenResult.Token
 
 	// Cache the working token owner so next reconcile skips the member search.
 	if tokenResult.Email != cachedOwner {
@@ -388,38 +360,96 @@ func (r *AppReconciler) reconcileGitSource(ctx context.Context, app *mortisev1al
 		}
 	}
 
-	// Register webhook on the repo if not already done. One webhook per repo
-	// — Mortise filters by watchPaths in the handler to decide which apps rebuild.
-	if err := r.ensureWebhook(ctx, app, &gp, token); err != nil {
+	// Register webhook on the repo if not already done.
+	if err := r.ensureWebhook(ctx, app, &gp, tokenResult.Token); err != nil {
 		log.Error(err, "webhook registration failed (non-fatal, builds still work manually)")
 	}
 
-	imageRef, err := r.RegistryBackend.PushTarget(app.Name, shortTag(revision))
-	if err != nil {
-		return ctrl.Result{}, false, r.setFailedCondition(ctx, app, "PushTargetFailed", err.Error())
+	// Stash the token transiently for per-env builds during this reconcile.
+	r.gitTokenCache.Store(app.Name, tokenResult.Token)
+
+	return ctrl.Result{}, true, nil
+}
+
+// reconcileEnvBuild handles per-environment builds for git-source apps. Returns
+// the image to use for this env's deployment, or "" if a build is still in
+// flight (caller should skip deployment and requeue).
+func (r *AppReconciler) reconcileEnvBuild(ctx context.Context, app *mortisev1alpha1.App, envName string) (image string, requeue bool) {
+	log := logf.FromContext(ctx)
+
+	revision := app.Annotations["mortise.dev/revision"]
+	if revision == "" {
+		revision = app.Spec.Source.Branch
 	}
-	pullRef, err := r.RegistryBackend.PullTarget(app.Name, shortTag(revision))
-	if err != nil {
-		return ctrl.Result{}, false, r.setFailedCondition(ctx, app, "PullTargetFailed", err.Error())
+	if revision == "" {
+		revision = "main"
 	}
 
-	// Mark building phase and record the start time so the UI can display
-	// an accurate elapsed timer.
+	// Short-circuit: skip rebuild if we already built this revision for this env.
+	es := envStatusFor(app, envName)
+	if es != nil && es.LastBuiltSHA == revision && es.LastBuiltImage != "" {
+		return es.LastBuiltImage, false
+	}
+	if app.Status.LastBuiltSHA == revision && app.Status.LastBuiltImage != "" {
+		return app.Status.LastBuiltImage, false
+	}
+
+	key := envBuildKey(app, envName)
+
+	// Check for an existing tracker for this env.
+	if t := r.Builds.get(key); t != nil {
+		phase, trackedRev, builtImage, digest, errMsg, detectedPort := t.snapshot()
+		if trackedRev != revision {
+			t.mu.Lock()
+			cancel := t.cancel
+			t.mu.Unlock()
+			if cancel != nil {
+				cancel()
+			}
+			r.Builds.delete(key)
+		} else {
+			switch phase {
+			case buildPhaseRunning:
+				return "", true
+			case buildPhaseSucceeded:
+				r.Builds.delete(key)
+				r.applyEnvBuildSuccess(ctx, app, envName, revision, builtImage, digest, detectedPort)
+				return builtImage, false
+			case buildPhaseFailed:
+				r.Builds.delete(key)
+				_ = r.setFailedCondition(ctx, app, "BuildFailed", errMsg)
+				return "", false
+			}
+		}
+	}
+
+	tokenVal, _ := r.gitTokenCache.Load(app.Name)
+	token, _ := tokenVal.(string)
+
+	imageRef, err := r.RegistryBackend.PushTarget(app.Name, envImageTag(revision, envName))
+	if err != nil {
+		log.Error(err, "push target failed", "env", envName)
+		return "", false
+	}
+	pullRef, err := r.RegistryBackend.PullTarget(app.Name, envImageTag(revision, envName))
+	if err != nil {
+		log.Error(err, "pull target failed", "env", envName)
+		return "", false
+	}
+
+	// Mark building phase.
 	app.Status.Phase = mortisev1alpha1.AppPhaseBuilding
 	meta.SetStatusCondition(&app.Status.Conditions, metav1.Condition{
 		Type:               "BuildStarted",
 		Status:             metav1.ConditionTrue,
 		Reason:             "BuildInProgress",
-		Message:            fmt.Sprintf("building revision %s", revision),
+		Message:            fmt.Sprintf("building revision %s for %s", revision, envName),
 		LastTransitionTime: metav1.NewTime(r.clock().Now()),
 	})
 	if err := r.Status().Update(ctx, app); err != nil {
 		log.Error(err, "update status to Building")
 	}
 
-	// Launch the background build. The goroutine is detached from the reconcile
-	// context so the worker can return immediately; its own context has the
-	// buildTimeout applied.
 	buildCtx, cancel := context.WithTimeout(context.Background(), buildTimeout)
 	tracker := &buildTracker{
 		revision: revision,
@@ -445,7 +475,7 @@ func (r *AppReconciler) reconcileGitSource(ctx context.Context, app *mortisev1al
 		token:        token,
 		path:         app.Spec.Source.Path,
 		dockerfile:   dockerfilePath(app),
-		buildArgs:    buildArgsOf(app),
+		buildArgs:    buildArgsForEnv(app, envName),
 		buildContext: buildContextOf(app),
 		noCache:      noCache,
 		imageRef:     imageRef,
@@ -458,7 +488,68 @@ func (r *AppReconciler) reconcileGitSource(ctx context.Context, app *mortisev1al
 		onDone:       func() { r.persistBuildLog(tracker, bp) },
 	})
 
-	return ctrl.Result{RequeueAfter: buildPollInterval}, false, nil
+	return "", true
+}
+
+// applyEnvBuildSuccess records the successful build for a specific environment.
+func (r *AppReconciler) applyEnvBuildSuccess(ctx context.Context, app *mortisev1alpha1.App, envName, revision, image, digest string, detectedPort int32) {
+	log := logf.FromContext(ctx)
+
+	// Update per-env status.
+	found := false
+	for i := range app.Status.Environments {
+		if app.Status.Environments[i].Name == envName {
+			app.Status.Environments[i].LastBuiltSHA = revision
+			app.Status.Environments[i].LastBuiltImage = image
+			found = true
+			break
+		}
+	}
+	if !found {
+		app.Status.Environments = append(app.Status.Environments, mortisev1alpha1.EnvironmentStatus{
+			Name:           envName,
+			LastBuiltSHA:   revision,
+			LastBuiltImage: image,
+		})
+	}
+
+	// Keep app-level fields updated for backward compat.
+	app.Status.LastBuiltSHA = revision
+	app.Status.LastBuiltImage = image
+	app.Status.DetectedPort = detectedPort
+	app.Status.Phase = mortisev1alpha1.AppPhaseDeploying
+	meta.SetStatusCondition(&app.Status.Conditions, metav1.Condition{
+		Type:               "BuildSucceeded",
+		Status:             metav1.ConditionTrue,
+		Reason:             "BuildComplete",
+		Message:            fmt.Sprintf("built %s digest=%s for %s", image, digest, envName),
+		LastTransitionTime: metav1.NewTime(r.clock().Now()),
+	})
+	if err := r.Status().Update(ctx, app); err != nil {
+		log.Error(err, "update status after env build", "env", envName)
+	}
+}
+
+// allEnvBuildsCurrentForRevision returns true if every environment's build is
+// already up-to-date with the current revision, meaning no git credentials are
+// needed for this reconcile cycle.
+func (r *AppReconciler) allEnvBuildsCurrentForRevision(app *mortisev1alpha1.App) bool {
+	revision := app.Annotations["mortise.dev/revision"]
+	if revision == "" {
+		revision = app.Spec.Source.Branch
+	}
+	if revision == "" {
+		revision = "main"
+	}
+	if app.Status.LastBuiltSHA == revision && app.Status.LastBuiltImage != "" {
+		return true
+	}
+	for _, es := range app.Status.Environments {
+		if es.LastBuiltSHA == revision && es.LastBuiltImage != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // buildParams bundles the inputs the background build goroutine needs. Keeping
@@ -596,6 +687,7 @@ func (r *AppReconciler) persistBuildLog(t *buildTracker, p buildParams) {
 }
 
 // applyBuildSuccess writes the successful build result onto the App status.
+// Kept for backward compat with any callers; new per-env code uses applyEnvBuildSuccess.
 func (r *AppReconciler) applyBuildSuccess(ctx context.Context, app *mortisev1alpha1.App, revision, image, digest string, detectedPort int32) error {
 	log := logf.FromContext(ctx)
 	app.Status.LastBuiltSHA = revision
@@ -659,6 +751,26 @@ func shortTag(revision string) string {
 	return revision
 }
 
+// envImageTag produces a per-environment image tag: "sha-envname".
+func envImageTag(revision, envName string) string {
+	return shortTag(revision) + "-" + envName
+}
+
+// envBuildKey returns a tracker key scoped to app + environment.
+func envBuildKey(app *mortisev1alpha1.App, envName string) types.NamespacedName {
+	return types.NamespacedName{Namespace: app.Namespace, Name: app.Name + "/" + envName}
+}
+
+// envStatusFor returns the EnvironmentStatus for envName, or nil.
+func envStatusFor(app *mortisev1alpha1.App, envName string) *mortisev1alpha1.EnvironmentStatus {
+	for i := range app.Status.Environments {
+		if app.Status.Environments[i].Name == envName {
+			return &app.Status.Environments[i]
+		}
+	}
+	return nil
+}
+
 // firstNonEmpty returns a if non-empty, else b.
 func firstNonEmpty(a, b string) string {
 	if a != "" {
@@ -675,10 +787,12 @@ func dockerfilePath(app *mortisev1alpha1.App) string {
 	return "Dockerfile"
 }
 
-// buildArgsOf returns the configured build args or nil.
-func buildArgsOf(app *mortisev1alpha1.App) map[string]string {
-	if app.Spec.Source.Build != nil {
-		return app.Spec.Source.Build.Args
+// buildArgsForEnv returns the per-environment build args, or nil if none are set.
+func buildArgsForEnv(app *mortisev1alpha1.App, envName string) map[string]string {
+	for _, env := range app.Spec.Environments {
+		if env.Name == envName {
+			return env.BuildArgs
+		}
 	}
 	return nil
 }
@@ -2001,10 +2115,12 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 			}
 		}
 
-		// Carry forward deploy history, restart tracking, and append if image changed.
+		// Carry forward deploy history, restart tracking, build info, and append if image changed.
 		if prev, ok := existingByName[env.Name]; ok {
 			es.DeployHistory = prev.DeployHistory
 			es.LastProcessedRestartedAt = prev.LastProcessedRestartedAt
+			es.LastBuiltSHA = prev.LastBuiltSHA
+			es.LastBuiltImage = prev.LastBuiltImage
 		}
 		if needsDeployRecord(es.CurrentImage, es.DeployHistory) {
 			record := mortisev1alpha1.DeployRecord{

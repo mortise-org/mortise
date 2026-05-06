@@ -16,18 +16,20 @@ type buildArgResponse struct {
 	Value string `json:"value"`
 }
 
-// GetBuildArgs returns the build args for an app.
+// GetBuildArgs returns the build args for an app's environment.
 //
-// GET /api/projects/{project}/apps/{app}/build-args
+// GET /api/projects/{project}/apps/{app}/build-args?environment=production
 //
-// @Summary Get build args for an app
-// @Description Returns all build arguments for an app (from spec.source.build.args)
+// @Summary Get build args for an app environment
+// @Description Returns all build arguments for a specific environment on an app
 // @Tags build-args
 // @Produce json
 // @Security BearerAuth
 // @Param project path string true "Project name"
 // @Param app path string true "App name"
+// @Param environment query string false "Environment name"
 // @Success 200 {array} buildArgResponse
+// @Failure 400 {object} errorResponse
 // @Failure 404 {object} errorResponse
 // @Router /projects/{project}/apps/{app}/build-args [get]
 func (s *Server) GetBuildArgs(w http.ResponseWriter, r *http.Request) {
@@ -35,27 +37,28 @@ func (s *Server) GetBuildArgs(w http.ResponseWriter, r *http.Request) {
 	if !s.authorize(w, r, authz.Resource{Kind: "app", Project: projectName}, authz.ActionRead) {
 		return
 	}
-	app, ok := s.resolveApp(w, r)
+	app, envName, ok := s.resolveAppEnv(w, r)
 	if !ok {
 		return
 	}
 
-	args := buildArgsFromApp(app)
+	args := buildArgsForEnv(app, envName)
 	writeJSON(w, http.StatusOK, args)
 }
 
-// PutBuildArgs replaces all build args for an app.
+// PutBuildArgs replaces all build args for an app's environment.
 //
-// PUT /api/projects/{project}/apps/{app}/build-args
+// PUT /api/projects/{project}/apps/{app}/build-args?environment=production
 //
-// @Summary Replace build args for an app
-// @Description Replaces all build arguments for an app (spec.source.build.args)
+// @Summary Replace build args for an app environment
+// @Description Replaces all build arguments for a specific environment on an app
 // @Tags build-args
 // @Accept json
 // @Produce json
 // @Security BearerAuth
 // @Param project path string true "Project name"
 // @Param app path string true "App name"
+// @Param environment query string false "Environment name"
 // @Param body body []buildArgResponse true "Build arguments"
 // @Success 200 {array} buildArgResponse
 // @Failure 400 {object} errorResponse
@@ -66,7 +69,7 @@ func (s *Server) PutBuildArgs(w http.ResponseWriter, r *http.Request) {
 	if !s.authorize(w, r, authz.Resource{Kind: "app", Project: projectName}, authz.ActionUpdate) {
 		return
 	}
-	app, ok := s.resolveApp(w, r)
+	app, envName, ok := s.resolveAppEnv(w, r)
 	if !ok {
 		return
 	}
@@ -85,29 +88,28 @@ func (s *Server) PutBuildArgs(w http.ResponseWriter, r *http.Request) {
 		args[v.Name] = v.Value
 	}
 
-	if app.Spec.Source.Build == nil {
-		app.Spec.Source.Build = &mortisev1alpha1.Build{}
-	}
-	app.Spec.Source.Build.Args = args
+	env := ensureEnvironment(app, envName)
+	env.BuildArgs = args
 
 	if err := s.client.Update(r.Context(), app); err != nil {
 		writeError(w, err)
 		return
 	}
 
-	s.recordActivity(r, projectName, "update", "app", app.Name, "Updated build args for "+app.Name, "")
+	s.recordActivity(r, projectName, "update", "app", app.Name, "Updated build args for "+app.Name+" in "+envName, "")
 
-	writeJSON(w, http.StatusOK, buildArgsFromApp(app))
+	writeJSON(w, http.StatusOK, buildArgsForEnv(app, envName))
 }
 
-
-func buildArgsFromApp(app *mortisev1alpha1.App) []buildArgResponse {
-	if app.Spec.Source.Build == nil || len(app.Spec.Source.Build.Args) == 0 {
-		return []buildArgResponse{}
+func buildArgsForEnv(app *mortisev1alpha1.App, envName string) []buildArgResponse {
+	for _, env := range app.Spec.Environments {
+		if env.Name == envName && len(env.BuildArgs) > 0 {
+			resp := make([]buildArgResponse, 0, len(env.BuildArgs))
+			for k, v := range env.BuildArgs {
+				resp = append(resp, buildArgResponse{Name: k, Value: v})
+			}
+			return resp
+		}
 	}
-	resp := make([]buildArgResponse, 0, len(app.Spec.Source.Build.Args))
-	for k, v := range app.Spec.Source.Build.Args {
-		resp = append(resp, buildArgResponse{Name: k, Value: v})
-	}
-	return resp
+	return []buildArgResponse{}
 }

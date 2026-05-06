@@ -150,6 +150,14 @@ spec:
                         - ref
                         type: object
                       type: array
+                    buildArgs:
+                      additionalProperties:
+                        type: string
+                      description: |-
+                        BuildArgs are per-environment build arguments passed to docker build.
+                        They are merged on top of the global spec.source.build.args, with
+                        per-environment values taking precedence.
+                      type: object
                     concurrencyPolicy:
                       default: Allow
                       description: |-
@@ -619,6 +627,16 @@ spec:
                         Domain is the resolved hostname for this environment. Computed by the
                         controller from spec or auto-generated from the platform domain. The
                         UI reads this to show "Your app is at {domain}".
+                      type: string
+                    lastBuiltImage:
+                      description: |-
+                        LastBuiltImage is the OCI image produced by the last successful build
+                        for this environment.
+                      type: string
+                    lastBuiltSHA:
+                      description: |-
+                        LastBuiltSHA is the git revision that was last successfully built for
+                        this environment.
                       type: string
                     lastProcessedRestartedAt:
                       description: |-

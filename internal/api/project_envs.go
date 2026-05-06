@@ -511,6 +511,12 @@ func (s *Server) cloneEnvToApp(ctx context.Context, ns, appName, sourceName, tar
 					cloned.Annotations[k] = v
 				}
 			}
+			if len(sourceEnv.BuildArgs) > 0 {
+				cloned.BuildArgs = make(map[string]string, len(sourceEnv.BuildArgs))
+				for k, v := range sourceEnv.BuildArgs {
+					cloned.BuildArgs[k] = v
+				}
+			}
 		}
 		if len(envMap) > 0 {
 			cloned.Env = make([]mortisev1alpha1.EnvVar, 0, len(envMap))

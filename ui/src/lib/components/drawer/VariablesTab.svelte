@@ -151,11 +151,11 @@
 	const isGitSource = $derived(app.spec.source.type === 'git');
 
 	async function loadBuildArgs() {
-		if (!isGitSource) return;
+		if (!isGitSource || !activeEnv) return;
 		buildSection.loading = true;
 		buildSection.error = '';
 		try {
-			const rows = await api.getBuildArgs(project, app.metadata.name);
+			const rows = await api.getBuildArgs(project, app.metadata.name, activeEnv);
 			const entries: EnvEntry[] = (rows ?? []).map(r => ({
 				name: r.name,
 				value: r.value ?? '',
@@ -191,7 +191,7 @@
 			const filtered = buildSection.entries
 				.filter(e => e.name.trim() !== '')
 				.map(e => ({ name: e.name, value: e.value }));
-			const result = await api.putBuildArgs(project, app.metadata.name, filtered);
+			const result = await api.putBuildArgs(project, app.metadata.name, activeEnv, filtered);
 			buildSection.entries = (result ?? []).map(r => ({
 				name: r.name, value: r.value ?? '', source: 'user', revealed: false
 			}));
