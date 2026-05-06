@@ -231,7 +231,17 @@ func (s *Server) UpdateProjectEnvironment(w http.ResponseWriter, r *http.Request
 		project.Spec.Environments[idx].Name = *req.Name
 	}
 	if req.DisplayOrder != nil {
-		project.Spec.Environments[idx].DisplayOrder = *req.DisplayOrder
+		oldOrder := project.Spec.Environments[idx].DisplayOrder
+		newOrder := *req.DisplayOrder
+		if oldOrder != newOrder {
+			for i := range project.Spec.Environments {
+				if i != idx && project.Spec.Environments[i].DisplayOrder == newOrder {
+					project.Spec.Environments[i].DisplayOrder = oldOrder
+					break
+				}
+			}
+			project.Spec.Environments[idx].DisplayOrder = newOrder
+		}
 	}
 	if req.Restricted != nil {
 		project.Spec.Environments[idx].Restricted = *req.Restricted

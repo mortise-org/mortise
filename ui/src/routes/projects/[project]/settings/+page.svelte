@@ -82,14 +82,12 @@
     const idx = envs.findIndex(e => e.name === name);
     const target = idx + delta;
     if (idx < 0 || target < 0 || target >= envs.length) return;
-    const swappedName = envs[target].name;
     const next = [...envs];
     [next[idx], next[target]] = [next[target], next[idx]];
     const prev = envs;
     envs = next.map((e, i) => ({ ...e, displayOrder: i }));
     try {
-      await api.updateProjectEnvironment(projectName, name, { displayOrder: target });
-      await api.updateProjectEnvironment(projectName, swappedName, { displayOrder: idx });
+      await api.updateProjectEnvironment(projectName, name, { displayOrder: envs.find(e => e.name === name)!.displayOrder });
       envs = await store.invalidateProjectEnvs(projectName);
     } catch (e) {
       envs = prev;
