@@ -884,8 +884,6 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 	// rollout triggers. The credentials hash forces a pod restart when the
 	// materialised {app}-credentials Secret changes — kubelet won't otherwise
 	// pick up Secret rotation for env-var mounts without a pod recreate.
-	app.Status.PendingEnvHash = envHash
-
 	podAnno := userAnno
 	if credentialsHash != "" {
 		podAnno = mergeAnnotations(podAnno, map[string]string{
@@ -933,14 +931,11 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 	var existing appsv1.Deployment
 	err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: envNs}, &existing)
 	if errors.IsNotFound(err) {
-		app.Status.DeployedEnvHash = envHash
 		return r.Create(ctx, desired)
 	}
 	if err != nil {
 		return err
 	}
-
-	app.Status.DeployedEnvHash = existing.Spec.Template.Annotations["mortise.dev/env-hash"]
 
 	// Preserve API-set annotations so the controller doesn't strip them.
 	if v, ok := existing.Spec.Template.Annotations["mortise.dev/restartedAt"]; ok {
@@ -1078,8 +1073,6 @@ func (r *AppReconciler) reconcileCronJob(ctx context.Context, app *mortisev1alph
 		containers[0].VolumeMounts = mounts
 	}
 
-	app.Status.PendingEnvHash = envHash
-
 	userAnno := mergeAnnotations(nil, env.Annotations)
 
 	podAnno := userAnno
@@ -1140,14 +1133,11 @@ func (r *AppReconciler) reconcileCronJob(ctx context.Context, app *mortisev1alph
 	var existing batchv1.CronJob
 	err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: envNs}, &existing)
 	if errors.IsNotFound(err) {
-		app.Status.DeployedEnvHash = envHash
 		return r.Create(ctx, desired)
 	}
 	if err != nil {
 		return err
 	}
-
-	app.Status.DeployedEnvHash = existing.Spec.JobTemplate.Spec.Template.Annotations["mortise.dev/env-hash"]
 
 	if v, ok := existing.Spec.JobTemplate.Spec.Template.Annotations["mortise.dev/restartedAt"]; ok {
 		if desired.Spec.JobTemplate.Spec.Template.Annotations == nil {
@@ -2059,9 +2049,18 @@ func healthRequeueAfter(app *mortisev1alpha1.App, clk clock.Clock) time.Duration
 // cleared rather than stale — callers have already logged the underlying
 // cause at fetch time.
 func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.App, resolvedEnvs []mortisev1alpha1.Environment) error {
-	// Index existing environment statuses by name for deploy history carryover.
-	existingByName := make(map[string]mortisev1alpha1.EnvironmentStatus, len(app.Status.Environments))
-	for _, es := range app.Status.Environments {
+	// Re-read the App first to get the latest resourceVersion and any
+	// status written by the API (e.g. Phase=Deploying from a manual
+	// redeploy). Building existingByName from the fresh copy means we
+	// carry forward deploy history and other per-env state that the API
+	// may have written between reconciles — preventing race-induced flicker.
+	var fresh mortisev1alpha1.App
+	if err := r.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: app.Namespace}, &fresh); err != nil {
+		return err
+	}
+
+	existingByName := make(map[string]mortisev1alpha1.EnvironmentStatus, len(fresh.Status.Environments))
+	for _, es := range fresh.Status.Environments {
 		existingByName[es.Name] = es
 	}
 
@@ -2074,7 +2073,6 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 	firstCrashMsg := ""
 
 	for _, env := range resolvedEnvs {
-		// Resolve the domain for status (same logic as reconcile).
 		domain := env.Domain
 		if domain == "" && app.Spec.Network.Public {
 			domain = r.autoDefaultDomain(ctx, app, env.Name)
@@ -2090,10 +2088,12 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 		}
 		rollingOut := false
 		restartedAt := ""
+		deployedHash := ""
 		if isCron {
 			var cj batchv1.CronJob
 			if err := r.Get(ctx, types.NamespacedName{Name: cronJobName(app.Name), Namespace: envNs}, &cj); err == nil {
 				es.ReadyReplicas = 1
+				deployedHash = cj.Spec.JobTemplate.Spec.Template.Annotations["mortise.dev/env-hash"]
 			}
 		} else {
 			name := deploymentName(app.Name)
@@ -2104,10 +2104,16 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 					rollingOut = true
 				}
 				restartedAt = dep.Spec.Template.Annotations["mortise.dev/restartedAt"]
+				deployedHash = dep.Spec.Template.Annotations["mortise.dev/env-hash"]
 			}
 		}
 
-		// Carry forward deploy history, restart tracking, build info, and append if image changed.
+		// Per-env hash tracking: PendingEnvHash is the live Secret state,
+		// DeployedEnvHash is what's on the running pod template.
+		es.PendingEnvHash = r.hashEnvSecretData(ctx, app.Name, envNs)
+		es.DeployedEnvHash = deployedHash
+
+		// Carry forward deploy history, restart tracking, and build info.
 		if prev, ok := existingByName[env.Name]; ok {
 			es.DeployHistory = prev.DeployHistory
 			es.LastProcessedRestartedAt = prev.LastProcessedRestartedAt
@@ -2125,19 +2131,30 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 			}
 		}
 
-		// Per-env phase: Ready if readyReplicas meets expectation; else check
-		// for CrashLooping; otherwise Deploying.
 		expectedReplicas := int32(1)
 		if !isCron && env.Replicas != nil {
 			expectedReplicas = *env.Replicas
 		}
 		ready := es.ReadyReplicas >= expectedReplicas && !rollingOut
 
-		if ready {
+		// Latch: a new restartedAt value means a user-triggered redeploy is
+		// in progress. Keep Phase=Deploying until the rollout actually
+		// completes, even if readyReplicas temporarily satisfies the check.
+		newRestart := restartedAt != "" && restartedAt != es.LastProcessedRestartedAt
+
+		if ready && !newRestart {
 			if restartedAt != "" {
 				es.LastProcessedRestartedAt = restartedAt
 			}
 			es.Phase = mortisev1alpha1.AppPhaseReady
+		} else if newRestart {
+			if ready {
+				es.LastProcessedRestartedAt = restartedAt
+				es.Phase = mortisev1alpha1.AppPhaseReady
+			} else {
+				es.Phase = mortisev1alpha1.AppPhaseDeploying
+				anyNotReady = true
+			}
 		} else {
 			es.Phase = mortisev1alpha1.AppPhaseDeploying
 			if !isCron {
@@ -2171,22 +2188,13 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 			ObservedGeneration: app.Generation,
 		})
 	} else {
-		// Clear the crash condition if pods recovered.
 		meta.RemoveStatusCondition(&app.Status.Conditions, "PodHealthy")
 	}
 
-	// Re-read the App to get the latest resourceVersion before updating status.
-	// This avoids conflict errors when multiple reconciles race.
-	var fresh mortisev1alpha1.App
-	if err := r.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: app.Namespace}, &fresh); err != nil {
-		return err
-	}
 	fresh.Status.Phase = phase
 	fresh.Status.Environments = envStatuses
 	fresh.Status.LastBuiltSHA = app.Status.LastBuiltSHA
 	fresh.Status.LastBuiltImage = app.Status.LastBuiltImage
-	fresh.Status.PendingEnvHash = app.Status.PendingEnvHash
-	fresh.Status.DeployedEnvHash = app.Status.DeployedEnvHash
 	fresh.Status.Conditions = app.Status.Conditions
 	return r.Status().Update(ctx, &fresh)
 }
@@ -2321,6 +2329,10 @@ func deploymentRollingOut(dep *appsv1.Deployment) bool {
 	want := int32(1)
 	if dep.Spec.Replicas != nil {
 		want = *dep.Spec.Replicas
+	}
+	// Old pods still terminating (industry standard: kubectl rollout status, ArgoCD).
+	if dep.Status.Replicas > dep.Status.UpdatedReplicas {
+		return true
 	}
 	if dep.Status.UpdatedReplicas < want || dep.Status.AvailableReplicas < want {
 		return true

@@ -30,7 +30,7 @@ type patchPlatformRequest struct {
 	Build          *patchPlatformBuild         `json:"build,omitempty"`
 	Defaults       *patchPlatformDefaults      `json:"defaults,omitempty"`
 	Observability  *patchPlatformObservability `json:"observability,omitempty"`
-	GitHub         *patchPlatformGitHub       `json:"github,omitempty"`
+	GitHub         *patchPlatformGitHub        `json:"github,omitempty"`
 }
 
 type patchPlatformDefaults struct {

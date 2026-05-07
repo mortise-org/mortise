@@ -878,11 +878,8 @@ func TestRedeploy(t *testing.T) {
 	if es.Phase != mortisev1alpha1.AppPhaseDeploying {
 		t.Errorf("expected env phase Deploying, got %s", es.Phase)
 	}
-	if len(es.DeployHistory) != 1 {
-		t.Fatalf("expected 1 deploy record, got %d", len(es.DeployHistory))
-	}
-	if es.DeployHistory[0].Image != "nginx:1.27" {
-		t.Errorf("expected deploy record image nginx:1.27, got %s", es.DeployHistory[0].Image)
+	if len(es.DeployHistory) != 0 {
+		t.Errorf("redeploy should not create deploy records (controller does that), got %d", len(es.DeployHistory))
 	}
 }
 
@@ -949,10 +946,10 @@ func TestRedeployHistoryCap(t *testing.T) {
 	}
 	es := app.Status.Environments[0]
 	if len(es.DeployHistory) != 20 {
-		t.Errorf("expected history capped at 20, got %d", len(es.DeployHistory))
+		t.Errorf("expected existing history preserved (20 records), got %d", len(es.DeployHistory))
 	}
-	if es.DeployHistory[0].Image != "nginx:1.27" {
-		t.Errorf("expected newest record first (nginx:1.27), got %s", es.DeployHistory[0].Image)
+	if es.DeployHistory[0].Image != "nginx:1.0" {
+		t.Errorf("expected existing first record unchanged (nginx:1.0), got %s", es.DeployHistory[0].Image)
 	}
 }
 

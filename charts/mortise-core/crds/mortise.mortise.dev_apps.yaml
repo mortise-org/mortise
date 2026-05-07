@@ -620,6 +620,12 @@ spec:
                         - timestamp
                         type: object
                       type: array
+                    deployedEnvHash:
+                      description: |-
+                        DeployedEnvHash is the env hash currently on the running pod template
+                        for this environment. When it differs from PendingEnvHash, the env has
+                        unapplied env-var changes.
+                      type: string
                     domain:
                       description: |-
                         Domain is the resolved hostname for this environment. Computed by the
@@ -646,6 +652,11 @@ spec:
                     message:
                       type: string
                     name:
+                      type: string
+                    pendingEnvHash:
+                      description: |-
+                        PendingEnvHash is the hash of the current env Secret data for this
+                        environment. Computed from the live Secret each reconcile.
                       type: string
                     phase:
                       description: AppPhase represents the overall lifecycle phase.

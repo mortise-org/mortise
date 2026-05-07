@@ -207,6 +207,9 @@ export const api = {
 	redeploy: (project: string, app: string, environment?: string) =>
 		request<{ status: string }>(`/projects/${enc(project)}/apps/${enc(app)}/redeploy${environment ? `?environment=${enc(environment)}` : ''}`, { method: 'POST' }),
 
+	redeployStale: (project: string, app: string) =>
+		request<{ restarted: string[] }>(`/projects/${enc(project)}/apps/${enc(app)}/redeploy-stale`, { method: 'POST' }),
+
 	// --- pods: lightweight list used by the Logs drawer pod picker ---
 	listPods: (project: string, app: string, env: string) =>
 		request<Pod[]>(`/projects/${enc(project)}/apps/${enc(app)}/pods?env=${enc(env)}`),

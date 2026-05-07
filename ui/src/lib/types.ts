@@ -125,6 +125,8 @@ export interface EnvironmentStatus {
 	currentDigest?: string;
 	domain?: string;
 	deployHistory?: DeployRecord[];
+	pendingEnvHash?: string;
+	deployedEnvHash?: string;
 }
 
 export type AppPhase = 'Pending' | 'Building' | 'Deploying' | 'Ready' | 'CrashLooping' | 'Failed';
@@ -156,11 +158,10 @@ export interface App {
 }
 
 export function appNeedsRedeploy(app: App): boolean {
-	return (
-		!!app.status?.pendingEnvHash &&
-		!!app.status?.deployedEnvHash &&
-		app.status.pendingEnvHash !== app.status.deployedEnvHash
-	);
+	return app.status?.environments?.some(env =>
+		!!env.pendingEnvHash && !!env.deployedEnvHash &&
+		env.pendingEnvHash !== env.deployedEnvHash
+	) ?? false;
 }
 
 export interface SecretResponse {

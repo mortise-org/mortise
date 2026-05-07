@@ -8,7 +8,6 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	appsv1 "k8s.io/api/apps/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -122,40 +121,22 @@ func (s *Server) Redeploy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := restartDeployment(r.Context(), s.client, envNs, appName, app.Status.PendingEnvHash); err != nil {
+	pendingHash := envStatusPendingHash(app.Status.Environments, env)
+	if err := restartDeployment(r.Context(), s.client, envNs, appName, pendingHash); err != nil {
 		writeError(w, err)
 		return
 	}
 
-	// Re-fetch so the status update uses the current resourceVersion. A
-	// controller reconcile between the restart and this point would bump the
-	// resourceVersion, causing a stale-object conflict otherwise.
 	if err := s.client.Get(r.Context(), types.NamespacedName{Name: appName, Namespace: ns}, &app); err != nil {
 		writeError(w, err)
 		return
 	}
 
 	app.Status.Phase = mortisev1alpha1.AppPhaseDeploying
-
-	var envStatus *mortisev1alpha1.EnvironmentStatus
 	for i := range app.Status.Environments {
 		if app.Status.Environments[i].Name == env {
-			envStatus = &app.Status.Environments[i]
+			app.Status.Environments[i].Phase = mortisev1alpha1.AppPhaseDeploying
 			break
-		}
-	}
-	if envStatus != nil {
-		envStatus.Phase = mortisev1alpha1.AppPhaseDeploying
-		if envStatus.CurrentImage != "" {
-			record := mortisev1alpha1.DeployRecord{
-				Image:     envStatus.CurrentImage,
-				Digest:    envStatus.CurrentDigest,
-				Timestamp: metav1.Now(),
-			}
-			envStatus.DeployHistory = append([]mortisev1alpha1.DeployRecord{record}, envStatus.DeployHistory...)
-			if len(envStatus.DeployHistory) > 20 {
-				envStatus.DeployHistory = envStatus.DeployHistory[:20]
-			}
 		}
 	}
 	if err := s.client.Status().Update(r.Context(), &app); err != nil {
@@ -166,6 +147,84 @@ func (s *Server) Redeploy(w http.ResponseWriter, r *http.Request) {
 	s.recordActivity(r, projectName, "deploy", "app", appName, "Triggered redeploy for "+appName+" in "+env, "")
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "restarting"})
+}
+
+// RedeployStale triggers a rolling restart for every environment on an app
+// that has unapplied env-var changes (PendingEnvHash != DeployedEnvHash).
+//
+// POST /api/projects/{project}/apps/{app}/redeploy-stale
+//
+// @Summary Redeploy all stale environments for an app
+// @Description Triggers a rolling restart for every environment where env vars have changed but haven't been deployed yet
+// @Tags deploy
+// @Produce json
+// @Security BearerAuth
+// @Param project path string true "Project name"
+// @Param app path string true "App name"
+// @Success 200 {object} map[string][]string
+// @Failure 404 {object} errorResponse
+// @Router /projects/{project}/apps/{app}/redeploy-stale [post]
+func (s *Server) RedeployStale(w http.ResponseWriter, r *http.Request) {
+	ns, projectName, ok := s.resolveProject(w, r)
+	if !ok {
+		return
+	}
+	if !s.authorize(w, r, authz.Resource{Kind: "app", Project: projectName}, authz.ActionUpdate) {
+		return
+	}
+	appName := chi.URLParam(r, "app")
+
+	var app mortisev1alpha1.App
+	if err := s.client.Get(r.Context(), types.NamespacedName{Name: appName, Namespace: ns}, &app); err != nil {
+		writeError(w, err)
+		return
+	}
+
+	var restarted []string
+	for _, es := range app.Status.Environments {
+		if es.PendingEnvHash == "" || es.DeployedEnvHash == "" || es.PendingEnvHash == es.DeployedEnvHash {
+			continue
+		}
+		envNs := constants.EnvNamespace(projectName, es.Name)
+		if err := restartDeployment(r.Context(), s.client, envNs, appName, es.PendingEnvHash); err != nil {
+			writeError(w, err)
+			return
+		}
+		restarted = append(restarted, es.Name)
+	}
+
+	if len(restarted) > 0 {
+		if err := s.client.Get(r.Context(), types.NamespacedName{Name: appName, Namespace: ns}, &app); err != nil {
+			writeError(w, err)
+			return
+		}
+		app.Status.Phase = mortisev1alpha1.AppPhaseDeploying
+		restartedSet := make(map[string]bool, len(restarted))
+		for _, name := range restarted {
+			restartedSet[name] = true
+		}
+		for i := range app.Status.Environments {
+			if restartedSet[app.Status.Environments[i].Name] {
+				app.Status.Environments[i].Phase = mortisev1alpha1.AppPhaseDeploying
+			}
+		}
+		if err := s.client.Status().Update(r.Context(), &app); err != nil {
+			writeError(w, err)
+			return
+		}
+		s.recordActivity(r, projectName, "deploy", "app", appName, fmt.Sprintf("Redeployed stale envs for %s: %v", appName, restarted), "")
+	}
+
+	writeJSON(w, http.StatusOK, map[string][]string{"restarted": restarted})
+}
+
+func envStatusPendingHash(envStatuses []mortisev1alpha1.EnvironmentStatus, envName string) string {
+	for _, es := range envStatuses {
+		if es.Name == envName {
+			return es.PendingEnvHash
+		}
+	}
+	return ""
 }
 
 func restartDeployment(ctx context.Context, c client.Client, namespace, appName, pendingEnvHash string) error {

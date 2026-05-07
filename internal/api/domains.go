@@ -238,8 +238,8 @@ func statusDomain(app *mortisev1alpha1.App, envName string) string {
 
 // domainValidateRequest is the JSON body for POST /api/domains/validate.
 type domainValidateRequest struct {
-	Domain     string `json:"domain"`
-	ExcludeApp string `json:"exclude_app,omitempty"`
+	Domain         string `json:"domain"`
+	ExcludeApp     string `json:"exclude_app,omitempty"`
 	ExcludeProject string `json:"exclude_project,omitempty"`
 }
 

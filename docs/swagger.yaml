@@ -94,6 +94,20 @@ definitions:
       to:
         type: string
     type: object
+  api.buildArgResponse:
+    properties:
+      name:
+        type: string
+      value:
+        type: string
+    type: object
+  api.changePasswordRequest:
+    properties:
+      current_password:
+        type: string
+      new_password:
+        type: string
+    type: object
   api.cloneProjectEnvRequest:
     properties:
       displayOrder:
@@ -224,8 +238,35 @@ definitions:
       status:
         type: string
     type: object
+  api.domainConflict:
+    properties:
+      app:
+        type: string
+      environment:
+        type: string
+      project:
+        type: string
+    type: object
+  api.domainValidateRequest:
+    properties:
+      domain:
+        type: string
+      exclude_app:
+        type: string
+      exclude_project:
+        type: string
+    type: object
+  api.domainValidateResponse:
+    properties:
+      conflict:
+        $ref: '#/definitions/api.domainConflict'
+      valid:
+        type: boolean
+    type: object
   api.domainsResponse:
     properties:
+      auto:
+        type: string
       custom:
         items:
           type: string
@@ -308,6 +349,18 @@ definitions:
       defaultPlatform:
         type: string
     type: object
+  api.patchPlatformDefaults:
+    properties:
+      cpu:
+        type: string
+      memory:
+        type: string
+    type: object
+  api.patchPlatformGitHub:
+    properties:
+      clientID:
+        type: string
+    type: object
   api.patchPlatformObservability:
     properties:
       logsAdapterEndpoint:
@@ -334,8 +387,16 @@ definitions:
     properties:
       build:
         $ref: '#/definitions/api.patchPlatformBuild'
+      defaults:
+        $ref: '#/definitions/api.patchPlatformDefaults'
       domain:
         type: string
+      domainTemplate:
+        type: string
+      externalDomain:
+        type: string
+      github:
+        $ref: '#/definitions/api.patchPlatformGitHub'
       observability:
         $ref: '#/definitions/api.patchPlatformObservability'
       registry:
@@ -361,6 +422,27 @@ definitions:
         type: integer
       name:
         type: string
+      restricted:
+        type: boolean
+    type: object
+  api.platformBuildResponse:
+    properties:
+      buildkitAddr:
+        type: string
+      defaultPlatform:
+        type: string
+    type: object
+  api.platformDefaultsResponse:
+    properties:
+      cpu:
+        type: string
+      memory:
+        type: string
+    type: object
+  api.platformGitHubResponse:
+    properties:
+      clientID:
+        type: string
     type: object
   api.platformObservabilityResponse:
     properties:
@@ -377,14 +459,33 @@ definitions:
       trafficAdapterEndpoint:
         type: string
     type: object
+  api.platformRegistryResponse:
+    properties:
+      namespace:
+        type: string
+      url:
+        type: string
+    type: object
   api.platformResponse:
     properties:
+      build:
+        $ref: '#/definitions/api.platformBuildResponse'
+      defaults:
+        $ref: '#/definitions/api.platformDefaultsResponse'
       domain:
         type: string
+      domainTemplate:
+        type: string
+      externalDomain:
+        type: string
+      github:
+        $ref: '#/definitions/api.platformGitHubResponse'
       observability:
         $ref: '#/definitions/api.platformObservabilityResponse'
       phase:
         $ref: '#/definitions/v1alpha1.PlatformConfigPhase'
+      registry:
+        $ref: '#/definitions/api.platformRegistryResponse'
       storage:
         $ref: '#/definitions/v1alpha1.StorageConfig'
       tls:
@@ -405,6 +506,28 @@ definitions:
       startedAt:
         type: string
     type: object
+  api.previewSummaryResponse:
+    properties:
+      appRef:
+        type: string
+      expiresAt:
+        type: string
+      name:
+        type: string
+      phase:
+        type: string
+      pr:
+        properties:
+          branch:
+            type: string
+          number:
+            type: integer
+          sha:
+            type: string
+        type: object
+      url:
+        type: string
+    type: object
   api.projectEnvResponse:
     properties:
       displayOrder:
@@ -413,6 +536,8 @@ definitions:
         $ref: '#/definitions/api.EnvHealth'
       name:
         type: string
+      restricted:
+        type: boolean
     type: object
   api.projectResponse:
     properties:
@@ -424,18 +549,27 @@ definitions:
         type: string
       description:
         type: string
+      health:
+        $ref: '#/definitions/api.EnvHealth'
       name:
         type: string
       namespace:
         type: string
       phase:
         $ref: '#/definitions/v1alpha1.ProjectPhase'
+      preview:
+        $ref: '#/definitions/v1alpha1.PreviewConfig'
     type: object
   api.promoteRequest:
     properties:
       from:
         type: string
       to:
+        type: string
+    type: object
+  api.resetPasswordRequest:
+    properties:
+      password:
         type: string
     type: object
   api.rollbackRequest:
@@ -505,12 +639,23 @@ definitions:
       role:
         type: string
     type: object
+  api.updateProjectPreview:
+    properties:
+      domainTemplate:
+        type: string
+      enabled:
+        type: boolean
+      ttl:
+        type: string
+    type: object
   api.updateProjectRequest:
     properties:
       autoRedeploy:
         type: boolean
       description:
         type: string
+      preview:
+        $ref: '#/definitions/api.updateProjectPreview'
     type: object
   api.updateUserRoleRequest:
     properties:
@@ -532,6 +677,9 @@ definitions:
         type: string
       id:
         type: string
+      passwordGen:
+        format: int64
+        type: integer
       role:
         $ref: '#/definitions/auth.Role'
     type: object
@@ -1325,6 +1473,13 @@ definitions:
         items:
           $ref: '#/definitions/v1alpha1.Binding'
         type: array
+      buildArgs:
+        additionalProperties:
+          type: string
+        description: |-
+          BuildArgs are per-environment build arguments passed to docker build.
+          +optional
+        type: object
       concurrencyPolicy:
         allOf:
         - $ref: '#/definitions/v1alpha1.ConcurrencyPolicy'
@@ -1405,6 +1560,13 @@ definitions:
         items:
           $ref: '#/definitions/v1alpha1.DeployRecord'
         type: array
+      deployedEnvHash:
+        description: |-
+          DeployedEnvHash is the env hash currently on the running pod template
+          for this environment. When it differs from PendingEnvHash, the env has
+          unapplied env-var changes.
+          +optional
+        type: string
       domain:
         description: |-
           Domain is the resolved hostname for this environment. Computed by the
@@ -1412,9 +1574,35 @@ definitions:
           UI reads this to show "Your app is at {domain}".
           +optional
         type: string
+      lastBuiltImage:
+        description: |-
+          LastBuiltImage is the OCI image produced by the last successful build
+          for this environment.
+          +optional
+        type: string
+      lastBuiltSHA:
+        description: |-
+          LastBuiltSHA is the git revision that was last successfully built for
+          this environment.
+          +optional
+        type: string
+      lastProcessedRestartedAt:
+        description: |-
+          LastProcessedRestartedAt stores the mortise.dev/restartedAt annotation
+          value from the Deployment once the rollout completes. Prevents the
+          controller from snapping the phase back to Ready before a user-triggered
+          redeploy has actually rolled out.
+          +optional
+        type: string
       message:
         type: string
       name:
+        type: string
+      pendingEnvHash:
+        description: |-
+          PendingEnvHash is the hash of the current env Secret data for this
+          environment. Computed from the live Secret each reconcile.
+          +optional
         type: string
       phase:
         $ref: '#/definitions/v1alpha1.AppPhase'
@@ -1505,6 +1693,38 @@ definitions:
     - PlatformConfigPhasePending
     - PlatformConfigPhaseReady
     - PlatformConfigPhaseFailed
+  v1alpha1.PreviewConfig:
+    properties:
+      botPR:
+        description: |-
+          BotPR, when true, lets PRs opened by bot accounts also spawn previews.
+          Defaults to false — previews only spawn for human-authored PRs.
+          +optional
+        type: boolean
+      domain:
+        description: |-
+          Domain is a template for preview hostnames. Supports {number} and {app}
+          placeholders (e.g. "pr-{number}-{app}.example.com"). If empty, the
+          controller falls back to a platform-domain-derived default.
+          +optional
+        type: string
+      enabled:
+        description: Enabled turns PR environments on for every App in the Project.
+        type: boolean
+      resources:
+        allOf:
+        - $ref: '#/definitions/v1alpha1.ResourceRequirements'
+        description: |-
+          Resources caps the CPU / memory each PR preview's Pod requests. Empty
+          fields inherit from the staging environment of the source App.
+          +optional
+      ttl:
+        description: |-
+          TTL is a Go duration string (e.g. "72h") after which an idle preview is
+          garbage-collected. Empty string means "use controller default".
+          +optional
+        type: string
+    type: object
   v1alpha1.ProbeConfig:
     properties:
       initialDelaySeconds:
@@ -1810,6 +2030,58 @@ paths:
       summary: Update a user's role
       tags:
       - users
+  /admin/users/{email}/password:
+    post:
+      consumes:
+      - application/json
+      description: Sets a new password for a user. Password must be provided by the
+        client. Admin-only.
+      parameters:
+      - description: User email
+        in: path
+        name: email
+        required: true
+        type: string
+      - description: New password
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/api.resetPasswordRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.errorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/api.errorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/api.errorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.errorResponse'
+        "501":
+          description: Not Implemented
+          schema:
+            $ref: '#/definitions/api.errorResponse'
+      security:
+      - BearerAuth: []
+      summary: Reset a user's password
+      tags:
+      - users
   /auth/git/{provider}/device:
     post:
       description: Requests a device code from the git forge to start OAuth device
@@ -2055,6 +2327,34 @@ paths:
       summary: Check setup status
       tags:
       - auth
+  /domains/validate:
+    post:
+      consumes:
+      - application/json
+      description: Checks if a domain is already assigned to any app across all projects.
+      parameters:
+      - description: Domain to validate
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/api.domainValidateRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.domainValidateResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.errorResponse'
+      security:
+      - BearerAuth: []
+      summary: Validate a domain for conflicts
+      tags:
+      - domains
   /gitproviders:
     get:
       description: Returns all GitProvider CRDs. Admin-only.
@@ -2169,6 +2469,45 @@ paths:
       summary: Get webhook secret for a git provider
       tags:
       - gitproviders
+  /me/password:
+    post:
+      consumes:
+      - application/json
+      description: Allows an authenticated user to change their own password. Requires
+        current password verification.
+      parameters:
+      - description: Current and new password
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/api.changePasswordRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.errorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/api.errorResponse'
+        "501":
+          description: Not Implemented
+          schema:
+            $ref: '#/definitions/api.errorResponse'
+      security:
+      - BearerAuth: []
+      summary: Change own password
+      tags:
+      - auth
   /platform:
     get:
       description: Returns the current PlatformConfig singleton
@@ -2640,6 +2979,97 @@ paths:
       summary: Update an app
       tags:
       - apps
+  /projects/{project}/apps/{app}/build-args:
+    get:
+      description: Returns all build arguments for a specific environment on an app
+      parameters:
+      - description: Project name
+        in: path
+        name: project
+        required: true
+        type: string
+      - description: App name
+        in: path
+        name: app
+        required: true
+        type: string
+      - description: Environment name
+        in: query
+        name: environment
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/api.buildArgResponse'
+            type: array
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.errorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.errorResponse'
+      security:
+      - BearerAuth: []
+      summary: Get build args for an app environment
+      tags:
+      - build-args
+    put:
+      consumes:
+      - application/json
+      description: Replaces all build arguments for a specific environment on an app
+      parameters:
+      - description: Project name
+        in: path
+        name: project
+        required: true
+        type: string
+      - description: App name
+        in: path
+        name: app
+        required: true
+        type: string
+      - description: Environment name
+        in: query
+        name: environment
+        required: true
+        type: string
+      - description: Build arguments
+        in: body
+        name: body
+        required: true
+        schema:
+          items:
+            $ref: '#/definitions/api.buildArgResponse'
+          type: array
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/api.buildArgResponse'
+            type: array
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.errorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.errorResponse'
+      security:
+      - BearerAuth: []
+      summary: Replace build args for an app environment
+      tags:
+      - build-args
   /projects/{project}/apps/{app}/build-logs:
     get:
       description: Returns build log lines from the in-memory tracker (if building)
@@ -2821,8 +3251,9 @@ paths:
     post:
       consumes:
       - application/json
-      description: Append a custom domain to an app's environment. Auto-creates the
-        environment override entry if it does not exist.
+      description: Append a custom domain to an app's environment. Validates cross-app
+        uniqueness and returns 409 on collision. Auto-creates the environment override
+        entry if it does not exist.
       parameters:
       - description: Project name
         in: path
@@ -3531,6 +3962,41 @@ paths:
       summary: Redeploy an app (rolling restart)
       tags:
       - deploy
+  /projects/{project}/apps/{app}/redeploy-stale:
+    post:
+      description: Triggers a rolling restart for every environment where env vars
+        have changed but haven't been deployed yet
+      parameters:
+      - description: Project name
+        in: path
+        name: project
+        required: true
+        type: string
+      - description: App name
+        in: path
+        name: app
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              items:
+                type: string
+              type: array
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.errorResponse'
+      security:
+      - BearerAuth: []
+      summary: Redeploy all stale environments for an app
+      tags:
+      - deploy
   /projects/{project}/apps/{app}/rollback:
     post:
       consumes:
@@ -4071,8 +4537,9 @@ paths:
     patch:
       consumes:
       - application/json
-      description: Edits the display order and/or renames an environment, cascading
-        to App overrides
+      description: Edits the display order and/or renames an environment. When displayOrder
+        changes, the displaced environment is automatically swapped. Renames cascade
+        to App overrides.
       parameters:
       - description: Project name
         in: path
@@ -4354,6 +4821,41 @@ paths:
       summary: Update a project member's role
       tags:
       - members
+  /projects/{project}/previews:
+    get:
+      description: Returns active preview environments for a project
+      parameters:
+      - description: Project name
+        in: path
+        name: project
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/api.previewSummaryResponse'
+            type: array
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/api.errorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/api.errorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.errorResponse'
+      security:
+      - BearerAuth: []
+      summary: List preview environments
+      tags:
+      - previews
   /projects/{project}/shared-vars:
     get:
       description: Returns all shared environment variables for a project

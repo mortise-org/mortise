@@ -505,4 +505,3 @@ func (f *fakeSolverImpl) Solve(ctx context.Context, _ *llb.Definition, _ bkclien
 	}
 	return f.resp, f.err
 }
-

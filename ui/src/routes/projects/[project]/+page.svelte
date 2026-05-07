@@ -156,7 +156,7 @@
 	async function redeployOne(appName: string) {
 		redeployingApps = new Set([...redeployingApps, appName]);
 		try {
-			await api.redeploy(projectName, appName, selectedEnv);
+			await api.redeployStale(projectName, appName);
 		} catch { /* error surfaces via SSE phase update */ }
 		finally {
 			const next = new Set(redeployingApps);

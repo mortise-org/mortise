@@ -53,15 +53,15 @@ type createProjectRequest struct {
 // stable subset of the CRD — callers shouldn't need to understand Kubernetes
 // metadata layout to read back a project.
 type projectResponse struct {
-	Name         string                          `json:"name"`
-	Description  string                          `json:"description,omitempty"`
-	Namespace    string                          `json:"namespace"`
-	Phase        mortisev1alpha1.ProjectPhase    `json:"phase,omitempty"`
-	AppCount     int32                           `json:"appCount"`
-	AutoRedeploy bool                            `json:"autoRedeploy"`
-	CreatedAt    string                          `json:"createdAt,omitempty"`
-	Preview      *mortisev1alpha1.PreviewConfig  `json:"preview,omitempty"`
-	Health       EnvHealth                       `json:"health,omitempty"`
+	Name         string                         `json:"name"`
+	Description  string                         `json:"description,omitempty"`
+	Namespace    string                         `json:"namespace"`
+	Phase        mortisev1alpha1.ProjectPhase   `json:"phase,omitempty"`
+	AppCount     int32                          `json:"appCount"`
+	AutoRedeploy bool                           `json:"autoRedeploy"`
+	CreatedAt    string                         `json:"createdAt,omitempty"`
+	Preview      *mortisev1alpha1.PreviewConfig `json:"preview,omitempty"`
+	Health       EnvHealth                      `json:"health,omitempty"`
 }
 
 func toProjectResponse(p *mortisev1alpha1.Project, apps []mortisev1alpha1.App) projectResponse {

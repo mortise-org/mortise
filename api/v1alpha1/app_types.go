@@ -448,6 +448,17 @@ type EnvironmentStatus struct {
 	// for this environment.
 	// +optional
 	LastBuiltImage string `json:"lastBuiltImage,omitempty"`
+
+	// PendingEnvHash is the hash of the current env Secret data for this
+	// environment. Computed from the live Secret each reconcile.
+	// +optional
+	PendingEnvHash string `json:"pendingEnvHash,omitempty"`
+
+	// DeployedEnvHash is the env hash currently on the running pod template
+	// for this environment. When it differs from PendingEnvHash, the env has
+	// unapplied env-var changes.
+	// +optional
+	DeployedEnvHash string `json:"deployedEnvHash,omitempty"`
 }
 
 // AppPhase represents the overall lifecycle phase.
