@@ -1355,6 +1355,262 @@ var _ = Describe("App Controller", func() {
 			// Newest first: most recent image should be at index 0.
 			Expect(app.Status.Environments[0].DeployHistory[0].Image).To(Equal("nginx:1.25"))
 		})
+
+		It("should create a new deploy record when env-hash changes but image stays the same", func() {
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: appName, Namespace: namespace}, app)).To(Succeed())
+			Expect(app.Status.Environments[0].DeployHistory).To(HaveLen(1))
+			initialHash := app.Status.Environments[0].DeployHistory[0].EnvHash
+
+			// Update the existing env Secret (created by reconcile) to change the env-hash.
+			var envSec corev1.Secret
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: envstore.AppEnvSecretName(appName), Namespace: envNsProduction,
+			}, &envSec)).To(Succeed())
+			if envSec.Data == nil {
+				envSec.Data = make(map[string][]byte)
+			}
+			envSec.Data["DB_URL"] = []byte("postgres://localhost/mydb")
+			Expect(k8sClient.Update(ctx, &envSec)).To(Succeed())
+
+			// Simulate a redeploy by annotating the Deployment with a new hash.
+			var dep appsv1.Deployment
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName, Namespace: envNsProduction,
+			}, &dep)).To(Succeed())
+			if dep.Spec.Template.Annotations == nil {
+				dep.Spec.Template.Annotations = make(map[string]string)
+			}
+			dep.Spec.Template.Annotations["mortise.dev/env-hash"] = "new-hash-value"
+			Expect(k8sClient.Update(ctx, &dep)).To(Succeed())
+
+			fakeClock.Step(time.Minute)
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: appName, Namespace: namespace}, app)).To(Succeed())
+			history := app.Status.Environments[0].DeployHistory
+			Expect(history).To(HaveLen(2))
+			Expect(history[0].Image).To(Equal("nginx:1.26"))
+			Expect(history[0].EnvHash).NotTo(Equal(initialHash))
+			Expect(history[0].EnvHash).To(Equal("new-hash-value"))
+		})
+	})
+
+	Context("deploymentRollingOut", func() {
+		It("returns true when Replicas > UpdatedReplicas (old pods still terminating)", func() {
+			dep := &appsv1.Deployment{
+				Spec: appsv1.DeploymentSpec{
+					Replicas: ptr.To[int32](3),
+				},
+				Status: appsv1.DeploymentStatus{
+					ObservedGeneration: 1,
+					Replicas:           4,
+					UpdatedReplicas:    3,
+					AvailableReplicas:  3,
+				},
+			}
+			dep.Generation = 1
+			Expect(deploymentRollingOut(dep)).To(BeTrue())
+		})
+
+		It("returns true when Generation > ObservedGeneration", func() {
+			dep := &appsv1.Deployment{
+				Spec: appsv1.DeploymentSpec{
+					Replicas: ptr.To[int32](1),
+				},
+				Status: appsv1.DeploymentStatus{
+					ObservedGeneration: 1,
+					Replicas:           1,
+					UpdatedReplicas:    1,
+					AvailableReplicas:  1,
+				},
+			}
+			dep.Generation = 2
+			Expect(deploymentRollingOut(dep)).To(BeTrue())
+		})
+
+		It("returns true when UpdatedReplicas < desired", func() {
+			dep := &appsv1.Deployment{
+				Spec: appsv1.DeploymentSpec{
+					Replicas: ptr.To[int32](3),
+				},
+				Status: appsv1.DeploymentStatus{
+					ObservedGeneration: 1,
+					Replicas:           3,
+					UpdatedReplicas:    2,
+					AvailableReplicas:  3,
+				},
+			}
+			dep.Generation = 1
+			Expect(deploymentRollingOut(dep)).To(BeTrue())
+		})
+
+		It("returns true when AvailableReplicas < desired", func() {
+			dep := &appsv1.Deployment{
+				Spec: appsv1.DeploymentSpec{
+					Replicas: ptr.To[int32](3),
+				},
+				Status: appsv1.DeploymentStatus{
+					ObservedGeneration: 1,
+					Replicas:           3,
+					UpdatedReplicas:    3,
+					AvailableReplicas:  2,
+				},
+			}
+			dep.Generation = 1
+			Expect(deploymentRollingOut(dep)).To(BeTrue())
+		})
+
+		It("returns false when all conditions are satisfied", func() {
+			dep := &appsv1.Deployment{
+				Spec: appsv1.DeploymentSpec{
+					Replicas: ptr.To[int32](3),
+				},
+				Status: appsv1.DeploymentStatus{
+					ObservedGeneration: 1,
+					Replicas:           3,
+					UpdatedReplicas:    3,
+					AvailableReplicas:  3,
+				},
+			}
+			dep.Generation = 1
+			Expect(deploymentRollingOut(dep)).To(BeFalse())
+		})
+
+		It("defaults to 1 replica when Spec.Replicas is nil", func() {
+			dep := &appsv1.Deployment{
+				Status: appsv1.DeploymentStatus{
+					ObservedGeneration: 1,
+					Replicas:           1,
+					UpdatedReplicas:    1,
+					AvailableReplicas:  1,
+				},
+			}
+			dep.Generation = 1
+			Expect(deploymentRollingOut(dep)).To(BeFalse())
+		})
+	})
+
+	Context("redeploy latch (LastProcessedRestartedAt)", func() {
+		const appName = "test-latch"
+		ctx := context.Background()
+
+		var (
+			app        *mortisev1alpha1.App
+			reconciler *AppReconciler
+			fakeClock  *clocktesting.FakeClock
+		)
+
+		BeforeEach(func() {
+			fakeClock = clocktesting.NewFakeClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+			reconciler = &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Clock: fakeClock}
+
+			app = &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      appName,
+					Namespace: namespace,
+				},
+				Spec: mortisev1alpha1.AppSpec{
+					Source: mortisev1alpha1.AppSource{
+						Type:  mortisev1alpha1.SourceTypeImage,
+						Image: testImageNginx,
+					},
+					Environments: []mortisev1alpha1.Environment{
+						{
+							Name:     "production",
+							Replicas: ptr.To[int32](1),
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+		})
+
+		AfterEach(func() {
+			Expect(k8sClient.Delete(ctx, app)).To(Succeed())
+		})
+
+		It("should keep Phase=Deploying while restartedAt is new and rollout incomplete", func() {
+			// Initial reconcile to get to Ready.
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Simulate Ready state by setting Deployment status.
+			var dep appsv1.Deployment
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName, Namespace: envNsProduction,
+			}, &dep)).To(Succeed())
+			dep.Status.ObservedGeneration = dep.Generation
+			dep.Status.Replicas = 1
+			dep.Status.ReadyReplicas = 1
+			dep.Status.UpdatedReplicas = 1
+			dep.Status.AvailableReplicas = 1
+			Expect(k8sClient.Status().Update(ctx, &dep)).To(Succeed())
+
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: appName, Namespace: namespace}, app)).To(Succeed())
+			Expect(app.Status.Environments[0].Phase).To(Equal(mortisev1alpha1.AppPhaseReady))
+
+			// Simulate a manual redeploy: annotate pod template with restartedAt.
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName, Namespace: envNsProduction,
+			}, &dep)).To(Succeed())
+			if dep.Spec.Template.Annotations == nil {
+				dep.Spec.Template.Annotations = make(map[string]string)
+			}
+			dep.Spec.Template.Annotations["mortise.dev/restartedAt"] = "1700000000000"
+			Expect(k8sClient.Update(ctx, &dep)).To(Succeed())
+
+			// Make the rollout incomplete: old pods still present.
+			dep.Status.Replicas = 2
+			dep.Status.ReadyReplicas = 1
+			dep.Status.UpdatedReplicas = 1
+			dep.Status.AvailableReplicas = 1
+			Expect(k8sClient.Status().Update(ctx, &dep)).To(Succeed())
+
+			fakeClock.Step(time.Second)
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: appName, Namespace: namespace}, app)).To(Succeed())
+			Expect(app.Status.Environments[0].Phase).To(Equal(mortisev1alpha1.AppPhaseDeploying))
+
+			// Complete the rollout.
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName, Namespace: envNsProduction,
+			}, &dep)).To(Succeed())
+			dep.Status.ObservedGeneration = dep.Generation
+			dep.Status.Replicas = 1
+			dep.Status.ReadyReplicas = 1
+			dep.Status.UpdatedReplicas = 1
+			dep.Status.AvailableReplicas = 1
+			Expect(k8sClient.Status().Update(ctx, &dep)).To(Succeed())
+
+			fakeClock.Step(time.Second)
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: appName, Namespace: namespace}, app)).To(Succeed())
+			Expect(app.Status.Environments[0].Phase).To(Equal(mortisev1alpha1.AppPhaseReady))
+			Expect(app.Status.Environments[0].LastProcessedRestartedAt).To(Equal("1700000000000"))
+		})
 	})
 
 	Context("rollback", func() {

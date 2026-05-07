@@ -279,7 +279,8 @@ domain" concept does not exist.
 | `POST /api/projects/{p}/stacks` | create multi-app stack |
 | `GET /api/templates` | list app templates |
 | **App operations** | |
-| `POST /api/projects/{p}/apps/{a}/redeploy` | restart deployment |
+| `POST /api/projects/{p}/apps/{a}/redeploy` | restart deployment (single env) |
+| `POST /api/projects/{p}/apps/{a}/redeploy-stale` | restart all envs with unapplied env-var changes |
 | `POST /api/projects/{p}/apps/{a}/rebuild` | rebuild from source |
 | `POST /api/projects/{p}/apps/{a}/rollback` | rollback to previous image |
 | `POST /api/projects/{p}/apps/{a}/promote` | promote env image to another env |
@@ -1012,8 +1013,22 @@ full `PUT` on the App CRD to change a variable.
 - `.env` import with diff preview.
 
 **Auto-redeploy:**
-- `mortise.dev/env-hash` annotation on the pod template. Any env change
-  through the API/CLI/UI recomputes the hash and triggers a rolling restart.
+- `mortise.dev/env-hash` annotation on the pod template. When
+  `project.spec.autoRedeploy` is true, any env change through the
+  API/CLI/UI recomputes the hash and triggers a rolling restart
+  automatically.
+- When `autoRedeploy` is false, the controller freezes the old env-hash
+  on the Deployment annotation, preventing automatic rolling updates.
+  The UI shows a "Redeploy to apply" banner per app and a global
+  stale-apps indicator. Users trigger `POST redeploy-stale` to apply
+  pending changes to all stale environments at once.
+- Per-environment hash tracking: `EnvironmentStatus.pendingEnvHash`
+  reflects the live Secret state; `deployedEnvHash` reflects the hash
+  on the running pod template. The controller computes both on every
+  reconcile. A mismatch means env vars changed but haven't been deployed.
+- Deploy records include an `envHash` field. A new record is created
+  when either the image or the env-hash changes, enabling rollback
+  awareness of which env-var configuration was active per deploy.
 
 **GitOps tradeoff (v1):**
 - UI/CLI is the canonical writer for env vars.

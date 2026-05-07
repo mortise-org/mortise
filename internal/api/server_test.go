@@ -953,6 +953,170 @@ func TestRedeployHistoryCap(t *testing.T) {
 	}
 }
 
+func TestRedeployStale(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+	ns := seedProject(t, k8sClient, "default", "production", "staging")
+
+	ctx := context.Background()
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "stale-app", Namespace: ns},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: "nginx:1.27"},
+			Environments: []mortisev1alpha1.Environment{
+				{Name: "production"},
+				{Name: "staging"},
+			},
+		},
+	}
+	if err := k8sClient.Create(ctx, app); err != nil {
+		t.Fatalf("create app: %v", err)
+	}
+
+	// Create Deployments in per-env namespaces.
+	for _, envName := range []string{"production", "staging"} {
+		envNs := constants.EnvNamespace("default", envName)
+		dep := &appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{Name: "stale-app", Namespace: envNs},
+			Spec: appsv1.DeploymentSpec{
+				Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "stale-app"}},
+				Template: corev1.PodTemplateSpec{
+					ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "stale-app"}},
+					Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "app", Image: "nginx:1.27"}}},
+				},
+			},
+		}
+		if err := k8sClient.Create(ctx, dep); err != nil {
+			t.Fatalf("create deployment %s: %v", envName, err)
+		}
+	}
+
+	// Set up status: production is stale (hashes differ), staging is current.
+	app.Status.Phase = mortisev1alpha1.AppPhaseReady
+	app.Status.Environments = []mortisev1alpha1.EnvironmentStatus{
+		{
+			Name:            "production",
+			Phase:           mortisev1alpha1.AppPhaseReady,
+			CurrentImage:    "nginx:1.27",
+			PendingEnvHash:  "abc123",
+			DeployedEnvHash: "old456",
+		},
+		{
+			Name:            "staging",
+			Phase:           mortisev1alpha1.AppPhaseReady,
+			CurrentImage:    "nginx:1.27",
+			PendingEnvHash:  "same",
+			DeployedEnvHash: "same",
+		},
+	}
+	if err := k8sClient.Status().Update(ctx, app); err != nil {
+		t.Fatalf("update status: %v", err)
+	}
+
+	w := doRequest(h, http.MethodPost, "/api/projects/default/apps/stale-app/redeploy-stale", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("redeploy-stale: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp struct {
+		Restarted []string `json:"restarted"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(resp.Restarted) != 1 || resp.Restarted[0] != "production" {
+		t.Errorf("expected [production] restarted, got %v", resp.Restarted)
+	}
+
+	// Verify only production Deployment was annotated.
+	var prodDep appsv1.Deployment
+	prodNs := constants.EnvNamespace("default", "production")
+	if err := k8sClient.Get(ctx, types.NamespacedName{Name: "stale-app", Namespace: prodNs}, &prodDep); err != nil {
+		t.Fatalf("get production deployment: %v", err)
+	}
+	if prodDep.Spec.Template.Annotations["mortise.dev/restartedAt"] == "" {
+		t.Error("expected restartedAt annotation on production deployment")
+	}
+	if prodDep.Spec.Template.Annotations["mortise.dev/env-hash"] != "abc123" {
+		t.Errorf("expected env-hash abc123 on production deployment, got %s", prodDep.Spec.Template.Annotations["mortise.dev/env-hash"])
+	}
+
+	// Staging should NOT have been touched.
+	var stagingDep appsv1.Deployment
+	stagingNs := constants.EnvNamespace("default", "staging")
+	if err := k8sClient.Get(ctx, types.NamespacedName{Name: "stale-app", Namespace: stagingNs}, &stagingDep); err != nil {
+		t.Fatalf("get staging deployment: %v", err)
+	}
+	if stagingDep.Spec.Template.Annotations["mortise.dev/restartedAt"] != "" {
+		t.Error("staging deployment should not have restartedAt annotation")
+	}
+
+	// Verify app status was updated.
+	if err := k8sClient.Get(ctx, types.NamespacedName{Name: "stale-app", Namespace: ns}, app); err != nil {
+		t.Fatalf("get app: %v", err)
+	}
+	if app.Status.Phase != mortisev1alpha1.AppPhaseDeploying {
+		t.Errorf("expected top-level phase Deploying, got %s", app.Status.Phase)
+	}
+	for _, es := range app.Status.Environments {
+		if es.Name == "production" && es.Phase != mortisev1alpha1.AppPhaseDeploying {
+			t.Errorf("expected production env phase Deploying, got %s", es.Phase)
+		}
+		if es.Name == "staging" && es.Phase != mortisev1alpha1.AppPhaseReady {
+			t.Errorf("expected staging env phase unchanged (Ready), got %s", es.Phase)
+		}
+	}
+}
+
+func TestRedeployStaleNoStaleEnvs(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+	ns := seedProject(t, k8sClient, "default")
+
+	ctx := context.Background()
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "not-stale", Namespace: ns},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: "nginx:1.27"},
+			Environments: []mortisev1alpha1.Environment{
+				{Name: "production"},
+			},
+		},
+	}
+	if err := k8sClient.Create(ctx, app); err != nil {
+		t.Fatalf("create app: %v", err)
+	}
+
+	app.Status.Environments = []mortisev1alpha1.EnvironmentStatus{
+		{
+			Name:            "production",
+			Phase:           mortisev1alpha1.AppPhaseReady,
+			PendingEnvHash:  "same",
+			DeployedEnvHash: "same",
+		},
+	}
+	if err := k8sClient.Status().Update(ctx, app); err != nil {
+		t.Fatalf("update status: %v", err)
+	}
+
+	w := doRequest(h, http.MethodPost, "/api/projects/default/apps/not-stale/redeploy-stale", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp struct {
+		Restarted []string `json:"restarted"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Restarted != nil && len(resp.Restarted) != 0 {
+		t.Errorf("expected no envs restarted, got %v", resp.Restarted)
+	}
+}
+
 func TestPromote(t *testing.T) {
 	k8sClient := setupEnvtest(t)
 	srv := newAdminServer(t, k8sClient)
