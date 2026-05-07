@@ -67,7 +67,7 @@ func TestPreviewEnvironmentInheritsSourceEnvVars(t *testing.T) {
 	// The app is already deployed (image source), so this doesn't affect
 	// the running workload — it just lets us test env var inheritance
 	// without needing full Gitea + BuildKit infrastructure.
-	err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		var latest mortisev1alpha1.App
 		if err := k8sClient.Get(context.Background(), types.NamespacedName{
 			Namespace: ns, Name: app.Name,
