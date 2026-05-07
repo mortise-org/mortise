@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -81,6 +82,79 @@ func TestNormalizeRepoURL(t *testing.T) {
 			got := tc.s.normalizeRepoURL(context.Background(), "pj-test", tc.providerRef, tc.repo)
 			if got != tc.want {
 				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestCreateAppRequestUnmarshalJSON(t *testing.T) {
+	cases := []struct {
+		name       string
+		input      string
+		wantName   string
+		wantType   mortisev1alpha1.SourceType
+		wantImage  string
+		wantRepo   string
+		wantEnvLen int
+	}{
+		{
+			name:      "wrapped format with image source",
+			input:     `{"name":"my-app","spec":{"source":{"type":"image","image":"nginx:1.27"},"environments":[{"name":"production"}]}}`,
+			wantName:  "my-app",
+			wantType:  mortisev1alpha1.SourceTypeImage,
+			wantImage: "nginx:1.27",
+		},
+		{
+			name:     "wrapped format with git source",
+			input:    `{"name":"my-app","spec":{"source":{"type":"git","repo":"https://github.com/org/repo.git"},"environments":[{"name":"production"}]}}`,
+			wantName: "my-app",
+			wantType: mortisev1alpha1.SourceTypeGit,
+			wantRepo: "https://github.com/org/repo.git",
+		},
+		{
+			name:      "flat format with image source",
+			input:     `{"name":"my-app","source":{"type":"image","image":"nginx:1.27"},"environments":[{"name":"production"}]}`,
+			wantName:  "my-app",
+			wantType:  mortisev1alpha1.SourceTypeImage,
+			wantImage: "nginx:1.27",
+		},
+		{
+			name:     "flat format with git source",
+			input:    `{"name":"my-app","source":{"type":"git","repo":"https://github.com/org/repo.git"},"environments":[{"name":"staging"}]}`,
+			wantName: "my-app",
+			wantType: mortisev1alpha1.SourceTypeGit,
+			wantRepo: "https://github.com/org/repo.git",
+		},
+		{
+			name:       "flat format preserves environments",
+			input:      `{"name":"my-app","source":{"type":"image","image":"nginx:1.27"},"environments":[{"name":"production"},{"name":"staging"}]}`,
+			wantName:   "my-app",
+			wantType:   mortisev1alpha1.SourceTypeImage,
+			wantImage:  "nginx:1.27",
+			wantEnvLen: 2,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var req createAppRequest
+			if err := json.Unmarshal([]byte(tc.input), &req); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if req.Name != tc.wantName {
+				t.Errorf("name: got %q, want %q", req.Name, tc.wantName)
+			}
+			if req.Spec.Source.Type != tc.wantType {
+				t.Errorf("source.type: got %q, want %q", req.Spec.Source.Type, tc.wantType)
+			}
+			if tc.wantImage != "" && req.Spec.Source.Image != tc.wantImage {
+				t.Errorf("source.image: got %q, want %q", req.Spec.Source.Image, tc.wantImage)
+			}
+			if tc.wantRepo != "" && req.Spec.Source.Repo != tc.wantRepo {
+				t.Errorf("source.repo: got %q, want %q", req.Spec.Source.Repo, tc.wantRepo)
+			}
+			if tc.wantEnvLen > 0 && len(req.Spec.Environments) != tc.wantEnvLen {
+				t.Errorf("environments length: got %d, want %d", len(req.Spec.Environments), tc.wantEnvLen)
 			}
 		})
 	}

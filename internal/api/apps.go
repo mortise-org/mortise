@@ -60,9 +60,41 @@ const maxEnvNameLen = 63
 
 // createAppRequest is the JSON body for POST /api/projects/{project}/apps.
 // Namespace is NOT caller-specified — it's always the project's namespace.
+// Accepts both wrapped ({"name":"…","spec":{…}}) and flat ({"name":"…","source":{…}})
+// formats — see UnmarshalJSON.
 type createAppRequest struct {
 	Name string                  `json:"name"`
 	Spec mortisev1alpha1.AppSpec `json:"spec"`
+}
+
+func (r *createAppRequest) UnmarshalJSON(data []byte) error {
+	// Try wrapped format first: {"name":"…","spec":{…}}.
+	type wrapped createAppRequest
+	var w wrapped
+	if err := json.Unmarshal(data, &w); err != nil {
+		return err
+	}
+	// If spec.source.type is populated, the caller used the wrapped format.
+	if w.Spec.Source.Type != "" {
+		*r = createAppRequest(w)
+		return nil
+	}
+	// Fall back to flat format: top-level fields map directly to AppSpec.
+	var flat struct {
+		Name string                  `json:"name"`
+		Spec mortisev1alpha1.AppSpec `json:"spec"`
+		mortisev1alpha1.AppSpec
+	}
+	if err := json.Unmarshal(data, &flat); err != nil {
+		return err
+	}
+	r.Name = flat.Name
+	if flat.AppSpec.Source.Type != "" {
+		r.Spec = flat.AppSpec
+	} else {
+		r.Spec = flat.Spec
+	}
+	return nil
 }
 
 // @Summary Create an app

@@ -46,6 +46,11 @@ const (
 	AnnotationBindingKeys   = "mortise.dev/binding-keys"
 	AnnotationGeneratedKeys = "mortise.dev/generated-keys"
 	AnnotationSharedKeys    = "mortise.dev/shared-keys"
+
+	// AnnotationLastSpecEnv stores the JSON-encoded CRD spec env vars that
+	// were last applied by the controller. Used to detect CRD spec changes
+	// vs out-of-band user edits to the Secret.
+	AnnotationLastSpecEnv = "mortise.dev/last-spec-env"
 )
 
 // AppEnvSecretName returns the Secret name for an app's env vars.

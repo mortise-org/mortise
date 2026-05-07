@@ -20,6 +20,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -1589,40 +1590,52 @@ func (r *AppReconciler) reconcileEnvSecret(ctx context.Context, app *mortisev1al
 		return fmt.Errorf("materialize shared-env: %w", err)
 	}
 
-	// Check if the {app}-env Secret has been seeded by testing whether
-	// the Secret object exists — not whether it has data. This lets us
-	// distinguish "first deploy" (no Secret) from "user cleared all vars"
-	// (empty Secret).
-	// Seed spec-defined env vars that aren't already in the Secret.
-	// This replaces the old SecretExists gate which had a race: if
-	// ReplaceSource or EnsureExists created the Secret before Set ran,
-	// the existence check returned true and seeding was skipped forever.
-	// By merging only missing keys, we handle the race without overwriting
-	// values the user may have changed via the UI.
+	// Sync CRD spec env vars into the {app}-env Secret. Uses a last-applied
+	// annotation to distinguish CRD spec changes from out-of-band user edits:
+	// - Missing keys are seeded from the spec.
+	// - Keys whose Secret value matches the last-applied spec value are updated
+	//   when the CRD spec changes (no user override detected).
+	// - Keys whose Secret value differs from last-applied are preserved (the
+	//   user or UI changed them out-of-band).
 	existing, err := store.Get(ctx, envNs, app.Name)
 	if err != nil {
 		return fmt.Errorf("read existing env vars: %w", err)
 	}
-	existingKeys := make(map[string]bool, len(existing))
+	existingByName := make(map[string]string, len(existing))
 	for _, e := range existing {
-		existingKeys[e.Name] = true
+		existingByName[e.Name] = e.Value
 	}
-	var missing []envstore.Env
+
+	lastSpec := r.readLastSpecEnv(ctx, envNs, app.Name)
+
+	var toMerge []envstore.Env
 	for _, ev := range env.Env {
-		if !existingKeys[ev.Name] {
-			missing = append(missing, envstore.Env{Name: ev.Name, Value: ev.Value, Source: "user"})
+		existingVal, exists := existingByName[ev.Name]
+		if !exists {
+			toMerge = append(toMerge, envstore.Env{Name: ev.Name, Value: ev.Value, Source: "user"})
+			continue
+		}
+		if ev.Value == existingVal {
+			continue
+		}
+		// Key exists with a different value. Update only if the user hasn't
+		// overridden it (Secret value still matches what the spec last set).
+		if lastVal, tracked := lastSpec[ev.Name]; tracked && existingVal == lastVal {
+			toMerge = append(toMerge, envstore.Env{Name: ev.Name, Value: ev.Value, Source: "user"})
 		}
 	}
 	for _, sv := range app.Spec.SharedVars {
-		if !existingKeys[sv.Name] {
-			missing = append(missing, envstore.Env{Name: sv.Name, Value: sv.Value, Source: "shared"})
+		if _, exists := existingByName[sv.Name]; !exists {
+			toMerge = append(toMerge, envstore.Env{Name: sv.Name, Value: sv.Value, Source: "shared"})
 		}
 	}
-	if len(missing) > 0 {
-		if err := store.Merge(ctx, envNs, app.Name, missing, labels); err != nil {
+	if len(toMerge) > 0 {
+		if err := store.Merge(ctx, envNs, app.Name, toMerge, labels); err != nil {
 			return fmt.Errorf("seed env secret: %w", err)
 		}
 	}
+
+	r.writeLastSpecEnv(ctx, envNs, app.Name, env.Env)
 
 	var bindingEnvs []envstore.Env
 	if len(env.Bindings) > 0 {
@@ -1640,6 +1653,51 @@ func (r *AppReconciler) reconcileEnvSecret(ctx context.Context, app *mortisev1al
 		}
 	}
 	return store.ReplaceSource(ctx, envNs, app.Name, "binding", bindingEnvs, labels)
+}
+
+func (r *AppReconciler) readLastSpecEnv(ctx context.Context, ns, appName string) map[string]string {
+	var sec corev1.Secret
+	if err := r.Client.Get(ctx, types.NamespacedName{
+		Name:      envstore.AppEnvSecretName(appName),
+		Namespace: ns,
+	}, &sec); err != nil {
+		return nil
+	}
+	raw := sec.Annotations[envstore.AnnotationLastSpecEnv]
+	if raw == "" {
+		return nil
+	}
+	var m map[string]string
+	if err := json.Unmarshal([]byte(raw), &m); err != nil {
+		return nil
+	}
+	return m
+}
+
+func (r *AppReconciler) writeLastSpecEnv(ctx context.Context, ns, appName string, envVars []mortisev1alpha1.EnvVar) {
+	var sec corev1.Secret
+	if err := r.Client.Get(ctx, types.NamespacedName{
+		Name:      envstore.AppEnvSecretName(appName),
+		Namespace: ns,
+	}, &sec); err != nil {
+		return
+	}
+	m := make(map[string]string, len(envVars))
+	for _, ev := range envVars {
+		m[ev.Name] = ev.Value
+	}
+	data, err := json.Marshal(m)
+	if err != nil {
+		return
+	}
+	if sec.Annotations == nil {
+		sec.Annotations = make(map[string]string)
+	}
+	if sec.Annotations[envstore.AnnotationLastSpecEnv] == string(data) {
+		return
+	}
+	sec.Annotations[envstore.AnnotationLastSpecEnv] = string(data)
+	_ = r.Client.Update(ctx, &sec)
 }
 
 // credentialsSecretName is the name of the {app}-credentials Secret this
