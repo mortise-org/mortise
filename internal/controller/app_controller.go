@@ -2657,6 +2657,7 @@ func toVolumesAndMounts(app *mortisev1alpha1.App) ([]corev1.Volume, []corev1.Vol
 			VolumeSource: corev1.VolumeSource{
 				ConfigMap: &corev1.ConfigMapVolumeSource{
 					LocalObjectReference: corev1.LocalObjectReference{Name: cmName},
+					DefaultMode:          ptr.To(int32(0644)),
 				},
 			},
 		})
@@ -2701,8 +2702,9 @@ func toSecretVolumesAndMounts(mounts []mortisev1alpha1.SecretMount) ([]corev1.Vo
 			Name: m.Name,
 			VolumeSource: corev1.VolumeSource{
 				Secret: &corev1.SecretVolumeSource{
-					SecretName: m.Secret,
-					Items:      items,
+					SecretName:  m.Secret,
+					Items:       items,
+					DefaultMode: ptr.To(int32(0644)),
 				},
 			},
 		})
