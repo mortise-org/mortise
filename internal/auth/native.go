@@ -186,6 +186,7 @@ func (n *NativeAuthProvider) CreateUser(ctx context.Context, email, password str
 			"email":         []byte(email),
 			"password_hash": hash,
 			"role":          []byte(role),
+			"password_gen":  []byte("0"),
 		},
 	}
 

@@ -19,6 +19,8 @@ const (
 	jwtSecretKey  = "signing-key"
 	namespace     = "mortise-system"
 	tokenExpiry   = 24 * time.Hour
+	jwtIssuer     = "mortise"
+	jwtAudience   = "mortise-api"
 )
 
 type JWTHelper struct {
@@ -78,6 +80,8 @@ func (h *JWTHelper) GenerateToken(ctx context.Context, p Principal) (string, err
 		"email":   p.Email,
 		"role":    string(p.Role),
 		"pwd_gen": p.PasswordGen,
+		"iss":     jwtIssuer,
+		"aud":     jwtAudience,
 		"iat":     now.Unix(),
 		"exp":     now.Add(tokenExpiry).Unix(),
 	}
@@ -97,7 +101,7 @@ func (h *JWTHelper) ValidateToken(ctx context.Context, tokenString string) (Prin
 			return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
 		}
 		return key, nil
-	})
+	}, jwt.WithIssuer(jwtIssuer), jwt.WithAudience(jwtAudience))
 	if err != nil {
 		return Principal{}, 0, fmt.Errorf("invalid token: %w", err)
 	}
