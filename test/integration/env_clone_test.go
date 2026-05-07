@@ -16,6 +16,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/retry"
 
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
 	"github.com/mortise-org/mortise/internal/constants"
@@ -66,16 +67,19 @@ func TestPreviewEnvironmentInheritsSourceEnvVars(t *testing.T) {
 	// The app is already deployed (image source), so this doesn't affect
 	// the running workload — it just lets us test env var inheritance
 	// without needing full Gitea + BuildKit infrastructure.
-	var latest mortisev1alpha1.App
-	if err := k8sClient.Get(context.Background(), types.NamespacedName{
-		Namespace: ns, Name: app.Name,
-	}, &latest); err != nil {
-		t.Fatalf("get app for patch: %v", err)
-	}
-	latest.Spec.Source.Type = mortisev1alpha1.SourceTypeGit
-	latest.Spec.Source.Repo = "http://fake/repo.git"
-	latest.Spec.Source.Branch = "main"
-	if err := k8sClient.Update(context.Background(), &latest); err != nil {
+	err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var latest mortisev1alpha1.App
+		if err := k8sClient.Get(context.Background(), types.NamespacedName{
+			Namespace: ns, Name: app.Name,
+		}, &latest); err != nil {
+			return err
+		}
+		latest.Spec.Source.Type = mortisev1alpha1.SourceTypeGit
+		latest.Spec.Source.Repo = "http://fake/repo.git"
+		latest.Spec.Source.Branch = "main"
+		return k8sClient.Update(context.Background(), &latest)
+	})
+	if err != nil {
 		t.Fatalf("patch app source type: %v", err)
 	}
 

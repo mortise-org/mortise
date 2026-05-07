@@ -79,6 +79,12 @@ func (s *Server) Setup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	native, ok := s.auth.(*auth.NativeAuthProvider)
+	if !ok {
+		writeJSON(w, http.StatusNotImplemented, errorResponse{"setup requires native auth provider"})
+		return
+	}
+
 	// Atomic setup claim: create a sentinel ConfigMap. If it already exists,
 	// another request won the race and setup is complete.
 	sentinel := &corev1.ConfigMap{
@@ -96,12 +102,8 @@ func (s *Server) Setup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	native, ok := s.auth.(*auth.NativeAuthProvider)
-	if !ok {
-		writeJSON(w, http.StatusNotImplemented, errorResponse{"setup requires native auth provider"})
-		return
-	}
 	if err := native.CreateUser(r.Context(), req.Email, req.Password, auth.RoleAdmin); err != nil {
+		_ = s.client.Delete(r.Context(), sentinel)
 		writeJSON(w, http.StatusInternalServerError, errorResponse{err.Error()})
 		return
 	}
