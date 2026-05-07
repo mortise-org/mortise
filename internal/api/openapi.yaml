@@ -1554,6 +1554,12 @@ definitions:
     type: object
   v1alpha1.EnvironmentStatus:
     properties:
+      autoDomain:
+        description: |-
+          AutoDomain is the platform-generated domain for this environment,
+          always computed regardless of whether a custom primary domain is set.
+          +optional
+        type: string
       currentDigest:
         type: string
       currentImage:

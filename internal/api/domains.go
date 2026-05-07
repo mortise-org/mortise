@@ -135,7 +135,7 @@ func (s *Server) AddDomain(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		for _, se := range other.Status.Environments {
-			if se.Domain == req.Domain {
+			if se.Domain == req.Domain || se.AutoDomain == req.Domain {
 				writeJSON(w, http.StatusConflict, errorResponse{
 					fmt.Sprintf("domain %s is already used by %s in %s (%s)", req.Domain, other.Name, otherProject, se.Name),
 				})
@@ -329,7 +329,7 @@ func (s *Server) ValidateDomain(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		for _, se := range app.Status.Environments {
-			if se.Domain == req.Domain {
+			if se.Domain == req.Domain || se.AutoDomain == req.Domain {
 				writeJSON(w, http.StatusOK, domainValidateResponse{
 					Valid: false,
 					Conflict: &domainConflict{
