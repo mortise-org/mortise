@@ -57,14 +57,14 @@ func (s *Server) ListDomains(w http.ResponseWriter, r *http.Request) {
 
 	env := findEnvironment(app, envName)
 	if env == nil {
-		writeJSON(w, http.StatusOK, domainsResponse{Auto: statusDomain(app, envName)})
+		writeJSON(w, http.StatusOK, domainsResponse{Auto: statusAutoDomain(app, envName)})
 		return
 	}
 
 	writeJSON(w, http.StatusOK, domainsResponse{
 		Primary: env.Domain,
 		Custom:  env.CustomDomains,
-		Auto:    statusDomain(app, envName),
+		Auto:    statusAutoDomain(app, envName),
 	})
 }
 
@@ -155,7 +155,7 @@ func (s *Server) AddDomain(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, domainsResponse{
 		Primary: env.Domain,
 		Custom:  env.CustomDomains,
-		Auto:    statusDomain(app, envName),
+		Auto:    statusAutoDomain(app, envName),
 	})
 }
 
@@ -209,7 +209,7 @@ func (s *Server) RemoveDomain(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, domainsResponse{
 		Primary: env.Domain,
 		Custom:  env.CustomDomains,
-		Auto:    statusDomain(app, envName),
+		Auto:    statusAutoDomain(app, envName),
 	})
 }
 
@@ -225,12 +225,12 @@ func findEnvironment(app *mortisev1alpha1.App, name string) *mortisev1alpha1.Env
 	return nil
 }
 
-// statusDomain returns the auto-generated domain from the app's status for
+// statusAutoDomain returns the auto-generated domain from the app's status for
 // the given environment, or empty if none exists.
-func statusDomain(app *mortisev1alpha1.App, envName string) string {
+func statusAutoDomain(app *mortisev1alpha1.App, envName string) string {
 	for _, se := range app.Status.Environments {
 		if se.Name == envName {
-			return se.Domain
+			return se.AutoDomain
 		}
 	}
 	return ""

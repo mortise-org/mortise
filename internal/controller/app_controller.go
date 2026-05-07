@@ -2073,14 +2073,19 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 	firstCrashMsg := ""
 
 	for _, env := range resolvedEnvs {
+		autoDomain := ""
+		if app.Spec.Network.Public {
+			autoDomain = r.autoDefaultDomain(ctx, app, env.Name)
+		}
 		domain := env.Domain
-		if domain == "" && app.Spec.Network.Public {
-			domain = r.autoDefaultDomain(ctx, app, env.Name)
+		if domain == "" {
+			domain = autoDomain
 		}
 		es := mortisev1alpha1.EnvironmentStatus{
 			Name:         env.Name,
 			CurrentImage: r.currentImageForEnv(app, env.Name),
 			Domain:       domain,
+			AutoDomain:   autoDomain,
 		}
 		envNs, nsErr := appEnvNs(app, env.Name)
 		if nsErr != nil {
