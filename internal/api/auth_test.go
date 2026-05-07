@@ -132,6 +132,37 @@ func TestLoginInvalidCredentials(t *testing.T) {
 	}
 }
 
+// TestSetupRejectsShortPassword verifies setup returns 400 for passwords under 8 chars.
+func TestSetupRejectsShortPassword(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	ctx := context.Background()
+	_ = k8sClient.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "mortise-system"}})
+
+	authProvider := auth.NewNativeAuthProvider(k8sClient)
+	jwtHelper := auth.NewJWTHelper(k8sClient)
+	srv := api.NewServer(k8sClient, fake.NewClientset(), nil, nil, authProvider, jwtHelper, nil, authz.NewNativePolicyEngine(k8sClient))
+	h := srv.Handler()
+
+	body := map[string]any{"email": "admin@example.com", "password": "short"}
+	w := doRequestWithToken(h, http.MethodPost, "/api/auth/setup", body, "")
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for short password, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestCreateUserRejectsShortPassword verifies CreateUser rejects passwords under 8 chars.
+func TestCreateUserRejectsShortPassword(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	ctx := context.Background()
+	_ = k8sClient.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "mortise-system"}})
+
+	authProvider := auth.NewNativeAuthProvider(k8sClient)
+	err := authProvider.CreateUser(ctx, "user@example.com", "short", auth.RoleMember)
+	if err == nil {
+		t.Fatal("expected error for short password")
+	}
+}
+
 // TestProtectedRouteRequiresToken verifies /api/projects requires auth.
 func TestProtectedRouteRequiresToken(t *testing.T) {
 	k8sClient := setupEnvtest(t)
