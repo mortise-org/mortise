@@ -1112,7 +1112,7 @@ func TestRedeployStaleNoStaleEnvs(t *testing.T) {
 	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if resp.Restarted != nil && len(resp.Restarted) != 0 {
+	if len(resp.Restarted) != 0 {
 		t.Errorf("expected no envs restarted, got %v", resp.Restarted)
 	}
 }
