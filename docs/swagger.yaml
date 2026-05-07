@@ -1281,12 +1281,6 @@ definitions:
         items:
           $ref: '#/definitions/v1.Condition'
         type: array
-      deployedEnvHash:
-        description: |-
-          DeployedEnvHash is the env hash currently on the running pod template.
-          When it differs from PendingEnvHash, the app has unapplied env changes.
-          +optional
-        type: string
       detectedPort:
         description: |-
           DetectedPort is the container port auto-detected from EXPOSE directives
@@ -1308,11 +1302,6 @@ definitions:
         description: |-
           LastBuiltSHA is the git commit SHA of the most recently completed build.
           The reconciler uses this to short-circuit rebuilds when the revision hasn't changed.
-          +optional
-        type: string
-      pendingEnvHash:
-        description: |-
-          PendingEnvHash is the hash of the current env Secret state.
           +optional
         type: string
       phase:
@@ -1449,6 +1438,10 @@ definitions:
   v1alpha1.EnvVar:
     properties:
       name:
+        description: |-
+          +kubebuilder:validation:Required
+          +kubebuilder:validation:Pattern=`^[a-zA-Z_][a-zA-Z0-9_]*$`
+          +kubebuilder:validation:MaxLength=253
         type: string
       value:
         type: string

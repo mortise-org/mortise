@@ -369,7 +369,11 @@ func (r *PreviewEnvironmentReconciler) reconcilePreviewDeployment(ctx context.Co
 	}
 
 	if pe.Spec.Resources.CPU != "" || pe.Spec.Resources.Memory != "" {
-		containers[0].Resources = toResourceRequirements(pe.Spec.Resources)
+		resources, err := toResourceRequirements(pe.Spec.Resources)
+		if err != nil {
+			return fmt.Errorf("resources: %w", err)
+		}
+		containers[0].Resources = resources
 	}
 
 	labels := previewLabels(pe)

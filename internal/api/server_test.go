@@ -605,7 +605,7 @@ func TestRollback(t *testing.T) {
 	// in the per-env namespace.
 	envNs := constants.EnvNamespace("default", "production")
 	dep := &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{Name: "rollback-app-production", Namespace: envNs},
+		ObjectMeta: metav1.ObjectMeta{Name: "rollback-app", Namespace: envNs},
 		Spec: appsv1.DeploymentSpec{
 			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "rollback-app"}},
 			Template: corev1.PodTemplateSpec{
@@ -649,7 +649,7 @@ func TestRollback(t *testing.T) {
 	}
 
 	// Verify Deployment was patched.
-	if err := k8sClient.Get(ctx, types.NamespacedName{Name: "rollback-app-production", Namespace: envNs}, dep); err != nil {
+	if err := k8sClient.Get(ctx, types.NamespacedName{Name: "rollback-app", Namespace: envNs}, dep); err != nil {
 		t.Fatalf("get deployment: %v", err)
 	}
 	if dep.Spec.Template.Spec.Containers[0].Image != "nginx:1.26" {
@@ -1139,10 +1139,11 @@ func TestPromote(t *testing.T) {
 	}
 
 	// Create Deployments for both envs in their per-env workload namespaces.
+	// The controller names Deployments as just appName (not appName-envName).
 	for _, envName := range []string{"staging", "production"} {
 		depNs := constants.EnvNamespace("default", envName)
 		dep := &appsv1.Deployment{
-			ObjectMeta: metav1.ObjectMeta{Name: "promote-app-" + envName, Namespace: depNs},
+			ObjectMeta: metav1.ObjectMeta{Name: "promote-app", Namespace: depNs},
 			Spec: appsv1.DeploymentSpec{
 				Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "promote-app", "env": envName}},
 				Template: corev1.PodTemplateSpec{
@@ -1176,7 +1177,7 @@ func TestPromote(t *testing.T) {
 	// Verify production Deployment has the staging image.
 	prodNs := constants.EnvNamespace("default", "production")
 	var dep appsv1.Deployment
-	if err := k8sClient.Get(ctx, types.NamespacedName{Name: "promote-app-production", Namespace: prodNs}, &dep); err != nil {
+	if err := k8sClient.Get(ctx, types.NamespacedName{Name: "promote-app", Namespace: prodNs}, &dep); err != nil {
 		t.Fatalf("get production deployment: %v", err)
 	}
 	if dep.Spec.Template.Spec.Containers[0].Image != "sha256:abc123" {
