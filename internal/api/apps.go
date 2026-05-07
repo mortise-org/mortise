@@ -287,22 +287,6 @@ func (s *Server) DeleteApp(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
-// resolveApp fetches the App CRD by project and app URL params.
-func (s *Server) resolveApp(w http.ResponseWriter, r *http.Request) (*mortisev1alpha1.App, bool) {
-	project, ok := s.getProject(w, r)
-	if !ok {
-		return nil, false
-	}
-	appName := chi.URLParam(r, "app")
-
-	var app mortisev1alpha1.App
-	if err := s.client.Get(r.Context(), client.ObjectKey{Name: appName, Namespace: projectNs(project)}, &app); err != nil {
-		writeError(w, err)
-		return nil, false
-	}
-	return &app, true
-}
-
 // writeError maps k8s API errors to HTTP status codes.
 func writeError(w http.ResponseWriter, err error) {
 	if errors.IsNotFound(err) {

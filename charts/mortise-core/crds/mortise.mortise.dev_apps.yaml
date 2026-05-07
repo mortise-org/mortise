@@ -153,10 +153,8 @@ spec:
                     buildArgs:
                       additionalProperties:
                         type: string
-                      description: |-
-                        BuildArgs are per-environment build arguments passed to docker build.
-                        They are merged on top of the global spec.source.build.args, with
-                        per-environment values taking precedence.
+                      description: BuildArgs are per-environment build arguments passed
+                        to docker build.
                       type: object
                     concurrencyPolicy:
                       default: Allow

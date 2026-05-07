@@ -292,8 +292,6 @@ type Environment struct {
 	TLS *EnvTLSConfig `json:"tls,omitempty"`
 
 	// BuildArgs are per-environment build arguments passed to docker build.
-	// They are merged on top of the global spec.source.build.args, with
-	// per-environment values taking precedence.
 	// +optional
 	BuildArgs map[string]string `json:"buildArgs,omitempty"`
 }

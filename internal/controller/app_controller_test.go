@@ -19,6 +19,8 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strings"
+	"sync"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -2105,9 +2107,16 @@ var _ = Describe("renderDomainTemplate", func() {
 type fakeBuildClient struct {
 	digest string
 	err    string // if non-empty, Submit returns an EventFailure with this error
+
+	mu       sync.Mutex
+	requests []build.BuildRequest
 }
 
-func (f *fakeBuildClient) Submit(_ context.Context, _ build.BuildRequest) (<-chan build.BuildEvent, error) {
+func (f *fakeBuildClient) Submit(_ context.Context, req build.BuildRequest) (<-chan build.BuildEvent, error) {
+	f.mu.Lock()
+	f.requests = append(f.requests, req)
+	f.mu.Unlock()
+
 	ch := make(chan build.BuildEvent, 2)
 	if f.err != "" {
 		ch <- build.BuildEvent{Type: build.EventFailure, Error: f.err}
@@ -2525,9 +2534,16 @@ var _ = Describe("App Controller — git source", func() {
 			Expect(k8sClient.Create(ctx, app)).To(Succeed())
 			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
 
-			// Simulate a prior successful build by presetting the status.
+			// Simulate a prior successful build by presetting per-env status.
 			app.Status.LastBuiltSHA = "same-sha"
 			app.Status.LastBuiltImage = "registry.example.com/mortise/git-shortcircuit:same-sha"
+			app.Status.Environments = []mortisev1alpha1.EnvironmentStatus{
+				{
+					Name:           "production",
+					LastBuiltSHA:   "same-sha",
+					LastBuiltImage: "registry.example.com/mortise/git-shortcircuit:same-sha",
+				},
+			}
 			Expect(k8sClient.Status().Update(ctx, app)).To(Succeed())
 
 			r := gitSourceReconciler(
@@ -4606,6 +4622,86 @@ var _ = Describe("App Controller — git source", func() {
 
 			// Clean up the shared vars source so it doesn't bleed into other tests.
 			_ = store.SetSharedSource(ctx, namespace, nil, nil)
+		})
+	})
+
+	Context("per-environment build args", func() {
+		It("passes per-environment build args to the build client", func() {
+			ctx := context.Background()
+			withStagingEnv(ctx)
+			defer withoutStagingEnv(ctx)
+
+			gp := &mortisev1alpha1.GitProvider{
+				ObjectMeta: metav1.ObjectMeta{Name: "gh-buildargs"},
+				Spec: mortisev1alpha1.GitProviderSpec{
+					Type:     mortisev1alpha1.GitProviderTypeGitHub,
+					Host:     "https://github.com",
+					ClientID: "test-client-id",
+				},
+			}
+			Expect(k8sClient.Create(ctx, gp)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, gp)).To(Succeed()) }()
+
+			_ = k8sClient.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "mortise-system"}})
+			tokenSecret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "user-gh-buildargs-token-74657374406578616d706c652e636f6d",
+					Namespace: "mortise-system",
+				},
+				Data: map[string][]byte{"token": []byte("tok")},
+			}
+			Expect(k8sClient.Create(ctx, tokenSecret)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, tokenSecret)).To(Succeed()) }()
+
+			bc := &fakeBuildClient{digest: "sha256:envbuildargs"}
+			r := gitSourceReconciler(bc, &fakeGitClient{}, &fakeRegistryBackend{})
+
+			app := makeGitSourceApp("buildargs-app", namespace, "gh-buildargs")
+			app.Annotations["mortise.dev/revision"] = "abc123"
+			app.Spec.Environments = []mortisev1alpha1.Environment{
+				{
+					Name:      "production",
+					Replicas:  ptr.To[int32](1),
+					BuildArgs: map[string]string{"ENV": "prod", "DEBUG": "false"},
+				},
+				{
+					Name:      "staging",
+					Replicas:  ptr.To[int32](1),
+					BuildArgs: map[string]string{"ENV": "staging", "DEBUG": "true"},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+
+			// Create the staging env namespace (production env ns is created in BeforeEach).
+			stagingNs := namespace + "-staging"
+			_ = k8sClient.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: stagingNs}})
+
+			req := reconcile.Request{NamespacedName: client.ObjectKeyFromObject(app)}
+			_, err := reconcileUntilBuildDone(r, ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			bc.mu.Lock()
+			defer bc.mu.Unlock()
+			Expect(bc.requests).To(HaveLen(2))
+
+			argsByTag := map[string]map[string]string{}
+			for _, r := range bc.requests {
+				argsByTag[r.PushTarget] = r.BuildArgs
+			}
+
+			// The push targets use envImageTag which appends "-{envName}" to the short SHA.
+			var prodArgs, stagingArgs map[string]string
+			for target, args := range argsByTag {
+				if strings.Contains(target, "-production") {
+					prodArgs = args
+				} else if strings.Contains(target, "-staging") {
+					stagingArgs = args
+				}
+			}
+
+			Expect(prodArgs).To(Equal(map[string]string{"ENV": "prod", "DEBUG": "false"}))
+			Expect(stagingArgs).To(Equal(map[string]string{"ENV": "staging", "DEBUG": "true"}))
 		})
 	})
 })

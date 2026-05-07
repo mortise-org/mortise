@@ -22,7 +22,7 @@ const platformConfigName = "platform"
 // All fields are optional; only non-zero fields overwrite the existing value.
 type patchPlatformRequest struct {
 	Domain         string                      `json:"domain,omitempty"`
-	ExternalDomain string                      `json:"externalDomain,omitempty"`
+	ExternalDomain *string                     `json:"externalDomain,omitempty"`
 	DomainTemplate string                      `json:"domainTemplate,omitempty"`
 	TLS            *patchPlatformTLS           `json:"tls,omitempty"`
 	Storage        *patchPlatformStorage       `json:"storage,omitempty"`
@@ -330,8 +330,8 @@ func buildPlatformSpec(base mortisev1alpha1.PlatformConfigSpec, req *patchPlatfo
 	if req.Domain != "" {
 		base.Domain = req.Domain
 	}
-	if req.ExternalDomain != "" {
-		base.ExternalDomain = req.ExternalDomain
+	if req.ExternalDomain != nil {
+		base.ExternalDomain = *req.ExternalDomain
 	}
 	if req.DomainTemplate != "" {
 		base.DomainTemplate = req.DomainTemplate

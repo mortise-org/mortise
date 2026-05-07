@@ -27,7 +27,7 @@ type buildArgResponse struct {
 // @Security BearerAuth
 // @Param project path string true "Project name"
 // @Param app path string true "App name"
-// @Param environment query string false "Environment name"
+// @Param environment query string true "Environment name"
 // @Success 200 {array} buildArgResponse
 // @Failure 400 {object} errorResponse
 // @Failure 404 {object} errorResponse
@@ -58,7 +58,7 @@ func (s *Server) GetBuildArgs(w http.ResponseWriter, r *http.Request) {
 // @Security BearerAuth
 // @Param project path string true "Project name"
 // @Param app path string true "App name"
-// @Param environment query string false "Environment name"
+// @Param environment query string true "Environment name"
 // @Param body body []buildArgResponse true "Build arguments"
 // @Success 200 {array} buildArgResponse
 // @Failure 400 {object} errorResponse

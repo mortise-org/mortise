@@ -3,7 +3,6 @@ package api
 import (
 	"encoding/base64"
 	"encoding/json"
-	"fmt"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -37,14 +36,31 @@ func pullSecretName(appName string) string {
 	return appName + "-pull-secret"
 }
 
+type dockerConfigJSON struct {
+	Auths map[string]dockerConfigAuth `json:"auths"`
+}
+
+type dockerConfigAuth struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+	Auth     string `json:"auth"`
+}
+
 // buildDockerConfigJSON builds the `.dockerconfigjson` payload for a
 // kubernetes.io/dockerconfigjson Secret.
 func buildDockerConfigJSON(registry, username, password string) []byte {
 	auth := base64.StdEncoding.EncodeToString([]byte(username + ":" + password))
-	return []byte(fmt.Sprintf(
-		`{"auths":{%q:{"username":%q,"password":%q,"auth":%q}}}`,
-		registry, username, password, auth,
-	))
+	cfg := dockerConfigJSON{
+		Auths: map[string]dockerConfigAuth{
+			registry: {
+				Username: username,
+				Password: password,
+				Auth:     auth,
+			},
+		},
+	}
+	b, _ := json.Marshal(cfg)
+	return b
 }
 
 // SetPullCredentials creates or updates a dockerconfigjson Secret in every env

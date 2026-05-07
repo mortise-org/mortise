@@ -206,7 +206,8 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 
 		autoRedeploy := project != nil && project.Spec.AutoRedeploy
 
-		// For git-source apps, trigger per-env build and get the image.
+		// Resolve the container image for this env.
+		var image string
 		if app.Spec.Source.Type == mortisev1alpha1.SourceTypeGit && r.BuildClient != nil {
 			envImage, requeue := r.reconcileEnvBuild(ctx, &app, env.Name)
 			if requeue {
@@ -216,20 +217,22 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 			if envImage == "" {
 				continue
 			}
-			app.Spec.Source.Image = envImage
+			image = envImage
+		} else {
+			image = app.Spec.Source.Image
 		}
 
 		if app.Spec.Kind == mortisev1alpha1.AppKindCron {
 			if env.Schedule == "" {
 				continue
 			}
-			if err := r.reconcileCronJob(ctx, &app, env, envNs, credentialsHash, autoRedeploy); err != nil {
+			if err := r.reconcileCronJob(ctx, &app, env, envNs, image, credentialsHash, autoRedeploy); err != nil {
 				return ctrl.Result{}, fmt.Errorf("reconcile cronjob for env %s: %w", env.Name, err)
 			}
 			continue
 		}
 
-		if err := r.reconcileDeployment(ctx, &app, env, envNs, credentialsHash, autoRedeploy); err != nil {
+		if err := r.reconcileDeployment(ctx, &app, env, envNs, image, credentialsHash, autoRedeploy); err != nil {
 			return ctrl.Result{}, fmt.Errorf("reconcile deployment for env %s: %w", env.Name, err)
 		}
 
@@ -390,9 +393,6 @@ func (r *AppReconciler) reconcileEnvBuild(ctx context.Context, app *mortisev1alp
 	if es != nil && es.LastBuiltSHA == revision && es.LastBuiltImage != "" {
 		return es.LastBuiltImage, false
 	}
-	if app.Status.LastBuiltSHA == revision && app.Status.LastBuiltImage != "" {
-		return app.Status.LastBuiltImage, false
-	}
 
 	key := envBuildKey(app, envName)
 
@@ -530,28 +530,6 @@ func (r *AppReconciler) applyEnvBuildSuccess(ctx context.Context, app *mortisev1
 	}
 }
 
-// allEnvBuildsCurrentForRevision returns true if every environment's build is
-// already up-to-date with the current revision, meaning no git credentials are
-// needed for this reconcile cycle.
-func (r *AppReconciler) allEnvBuildsCurrentForRevision(app *mortisev1alpha1.App) bool {
-	revision := app.Annotations["mortise.dev/revision"]
-	if revision == "" {
-		revision = app.Spec.Source.Branch
-	}
-	if revision == "" {
-		revision = "main"
-	}
-	if app.Status.LastBuiltSHA == revision && app.Status.LastBuiltImage != "" {
-		return true
-	}
-	for _, es := range app.Status.Environments {
-		if es.LastBuiltSHA == revision && es.LastBuiltImage != "" {
-			return true
-		}
-	}
-	return false
-}
-
 // buildParams bundles the inputs the background build goroutine needs. Keeping
 // it a value struct avoids the goroutine holding onto the live *App.
 type buildParams struct {
@@ -686,28 +664,6 @@ func (r *AppReconciler) persistBuildLog(t *buildTracker, p buildParams) {
 	}
 }
 
-// applyBuildSuccess writes the successful build result onto the App status.
-// Kept for backward compat with any callers; new per-env code uses applyEnvBuildSuccess.
-func (r *AppReconciler) applyBuildSuccess(ctx context.Context, app *mortisev1alpha1.App, revision, image, digest string, detectedPort int32) error {
-	log := logf.FromContext(ctx)
-	app.Status.LastBuiltSHA = revision
-	app.Status.LastBuiltImage = image
-	app.Status.DetectedPort = detectedPort
-	app.Status.Phase = mortisev1alpha1.AppPhaseDeploying
-	meta.SetStatusCondition(&app.Status.Conditions, metav1.Condition{
-		Type:               "BuildSucceeded",
-		Status:             metav1.ConditionTrue,
-		Reason:             "BuildComplete",
-		Message:            fmt.Sprintf("built %s digest=%s", image, digest),
-		LastTransitionTime: metav1.NewTime(r.clock().Now()),
-	})
-	if err := r.Status().Update(ctx, app); err != nil {
-		log.Error(err, "update status after build")
-		return err
-	}
-	return nil
-}
-
 // resolveSourceDir returns the build context directory inside cloneDir,
 // honoring the App's source.path (monorepo subdirectory). An empty path means
 // the repo root. Rejects absolute paths and any segment equal to ".." to
@@ -771,6 +727,42 @@ func envStatusFor(app *mortisev1alpha1.App, envName string) *mortisev1alpha1.Env
 	return nil
 }
 
+// currentImageForEnv returns the image currently deployed for the given
+// environment — the per-env built image if one exists, otherwise the
+// spec-level image (for image-source apps or pre-migration data).
+func (r *AppReconciler) currentImageForEnv(app *mortisev1alpha1.App, envName string) string {
+	for _, es := range app.Status.Environments {
+		if es.Name == envName && es.LastBuiltImage != "" {
+			return es.LastBuiltImage
+		}
+	}
+	return app.Spec.Source.Image
+}
+
+// allEnvBuildsCurrentForRevision returns true only when every environment
+// listed in the app spec already has a per-env build matching the current
+// revision. Used to skip prepareGitSource (auth + clone) when no new builds
+// are needed.
+func (r *AppReconciler) allEnvBuildsCurrentForRevision(app *mortisev1alpha1.App) bool {
+	revision := app.Annotations["mortise.dev/revision"]
+	if revision == "" {
+		revision = app.Spec.Source.Branch
+	}
+	if revision == "" {
+		revision = "main"
+	}
+	if len(app.Spec.Environments) == 0 {
+		return false
+	}
+	for _, env := range app.Spec.Environments {
+		es := envStatusFor(app, env.Name)
+		if es == nil || es.LastBuiltSHA != revision || es.LastBuiltImage == "" {
+			return false
+		}
+	}
+	return true
+}
+
 // firstNonEmpty returns a if non-empty, else b.
 func firstNonEmpty(a, b string) string {
 	if a != "" {
@@ -824,7 +816,7 @@ func (r *AppReconciler) setFailedCondition(ctx context.Context, app *mortisev1al
 	return fmt.Errorf("%s: %s", reason, msg)
 }
 
-func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1alpha1.App, env *mortisev1alpha1.Environment, envNs, credentialsHash string, autoRedeploy bool) error {
+func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1alpha1.App, env *mortisev1alpha1.Environment, envNs, image, credentialsHash string, autoRedeploy bool) error {
 	name := deploymentName(app.Name)
 	replicas := int32(1)
 	if env.Replicas != nil {
@@ -850,7 +842,7 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 	containers := []corev1.Container{
 		{
 			Name:    app.Name,
-			Image:   app.Spec.Source.Image,
+			Image:   image,
 			Env:     portEnv,
 			EnvFrom: envstore.EnvFromSources(app.Name),
 			Ports: []corev1.ContainerPort{
@@ -1057,7 +1049,7 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 	return nil
 }
 
-func (r *AppReconciler) reconcileCronJob(ctx context.Context, app *mortisev1alpha1.App, env *mortisev1alpha1.Environment, envNs, credentialsHash string, autoRedeploy bool) error {
+func (r *AppReconciler) reconcileCronJob(ctx context.Context, app *mortisev1alpha1.App, env *mortisev1alpha1.Environment, envNs, image, credentialsHash string, autoRedeploy bool) error {
 	name := cronJobName(app.Name)
 
 	// Reconcile env Secret — same as Deployment path.
@@ -1069,7 +1061,7 @@ func (r *AppReconciler) reconcileCronJob(ctx context.Context, app *mortisev1alph
 	containers := []corev1.Container{
 		{
 			Name:    app.Name,
-			Image:   app.Spec.Source.Image,
+			Image:   image,
 			EnvFrom: envstore.EnvFromSources(app.Name),
 		},
 	}
@@ -2089,7 +2081,7 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 		}
 		es := mortisev1alpha1.EnvironmentStatus{
 			Name:         env.Name,
-			CurrentImage: app.Spec.Source.Image,
+			CurrentImage: r.currentImageForEnv(app, env.Name),
 			Domain:       domain,
 		}
 		envNs, nsErr := appEnvNs(app, env.Name)
