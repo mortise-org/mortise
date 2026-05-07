@@ -1427,6 +1427,10 @@ func TestRepoMatches(t *testing.T) {
 		{"org/repo", "org/repo", true},
 		// Different repo — no match.
 		{"https://github.com/org/repo", "org/other", false},
+		// Different owner, same repo name — no match (prevents cross-owner spoofing).
+		{"https://github.com/org/repo", "attacker/repo", false},
+		// Bare repo name without owner — no match.
+		{"https://github.com/org/repo", "repo", false},
 	}
 	for _, tc := range tests {
 		got := repoMatches(tc.a, tc.b)

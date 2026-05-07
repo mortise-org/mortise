@@ -162,10 +162,10 @@ func TestProtectedRouteAcceptsValidToken(t *testing.T) {
 
 	authProvider := auth.NewNativeAuthProvider(k8sClient)
 	jwtHelper := auth.NewJWTHelper(k8sClient)
-	if err := authProvider.CreateUser(ctx, "user@example.com", "pass123", auth.RoleAdmin); err != nil {
+	if err := authProvider.CreateUser(ctx, "user@example.com", "pass1234", auth.RoleAdmin); err != nil {
 		t.Fatalf("create user: %v", err)
 	}
-	principal, _ := authProvider.Authenticate(ctx, auth.Credentials{Email: "user@example.com", Password: "pass123"})
+	principal, _ := authProvider.Authenticate(ctx, auth.Credentials{Email: "user@example.com", Password: "pass1234"})
 	token, _ := jwtHelper.GenerateToken(ctx, principal)
 
 	srv := api.NewServer(k8sClient, fake.NewClientset(), nil, nil, authProvider, jwtHelper, nil, authz.NewNativePolicyEngine(k8sClient))

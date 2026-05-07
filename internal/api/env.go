@@ -208,10 +208,17 @@ func (s *Server) PatchEnv(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Apply unsets.
+	// Apply unsets — reject non-user sources.
 	unsetMap := make(map[string]bool, len(req.Unset))
 	for _, k := range req.Unset {
 		unsetMap[k] = true
+	}
+	for _, e := range existing {
+		if unsetMap[e.Name] && e.Source != "" && e.Source != "user" {
+			writeJSON(w, http.StatusConflict, errorResponse{fmt.Sprintf(
+				"cannot unset %q: managed by %s (only user-set vars can be removed)", e.Name, e.Source)})
+			return
+		}
 	}
 	var result []envstore.Env
 	for _, e := range existing {
@@ -220,7 +227,18 @@ func (s *Server) PatchEnv(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Apply sets.
+	// Apply sets — reject overwrites of non-user sources.
+	existingSource := make(map[string]string, len(result))
+	for _, e := range result {
+		existingSource[e.Name] = e.Source
+	}
+	for k := range req.Set {
+		if src, ok := existingSource[k]; ok && src != "" && src != "user" {
+			writeJSON(w, http.StatusConflict, errorResponse{fmt.Sprintf(
+				"cannot overwrite %q: managed by %s (only user-set vars can be modified)", k, src)})
+			return
+		}
+	}
 	for k, v := range req.Set {
 		found := false
 		for i := range result {
