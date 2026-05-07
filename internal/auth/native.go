@@ -169,6 +169,9 @@ func (n *NativeAuthProvider) RevokeUser(ctx context.Context, userID string) erro
 
 // CreateUser stores a new user in a k8s Secret. Used during invite acceptance.
 func (n *NativeAuthProvider) CreateUser(ctx context.Context, email, password string, role Role) error {
+	if len(password) < 8 {
+		return fmt.Errorf("password must be at least 8 characters")
+	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
 		return fmt.Errorf("hashing password: %w", err)

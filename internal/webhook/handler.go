@@ -389,20 +389,25 @@ func branchFromRef(ref string) string {
 }
 
 // repoMatches returns true if the App's configured repo URL and the webhook
-// event's repo identifier refer to the same repository.
+// event's repo identifier refer to the same repository. Both sides must
+// resolve to the same owner/repo pair after normalization.
 func repoMatches(appRepo, eventRepo string) bool {
 	if appRepo == "" || eventRepo == "" {
 		return false
 	}
 	a := normalizeRepo(appRepo)
 	b := normalizeRepo(eventRepo)
-	if a == b {
-		return true
+	return ownerRepo(a) == ownerRepo(b)
+}
+
+// ownerRepo extracts the "owner/repo" suffix from a normalized repo string,
+// requiring both components to be present for a valid match.
+func ownerRepo(normalized string) string {
+	parts := strings.Split(normalized, "/")
+	if len(parts) < 2 {
+		return ""
 	}
-	if strings.HasSuffix(a, "/"+b) || strings.HasSuffix(b, "/"+a) {
-		return true
-	}
-	return false
+	return parts[len(parts)-2] + "/" + parts[len(parts)-1]
 }
 
 // normalizeRepo returns a canonical lowercased string for comparison.

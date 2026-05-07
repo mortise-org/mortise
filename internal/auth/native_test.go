@@ -32,11 +32,11 @@ func setup(t *testing.T) (*NativeAuthProvider, context.Context) {
 func TestCreateAndAuthenticate(t *testing.T) {
 	provider, ctx := setup(t)
 
-	if err := provider.CreateUser(ctx, "alice@example.com", "s3cret", RoleAdmin); err != nil {
+	if err := provider.CreateUser(ctx, "alice@example.com", "s3cret12", RoleAdmin); err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
 
-	p, err := provider.Authenticate(ctx, Credentials{Email: "alice@example.com", Password: "s3cret"})
+	p, err := provider.Authenticate(ctx, Credentials{Email: "alice@example.com", Password: "s3cret12"})
 	if err != nil {
 		t.Fatalf("Authenticate: %v", err)
 	}
@@ -51,11 +51,11 @@ func TestCreateAndAuthenticate(t *testing.T) {
 func TestAuthenticateWrongPassword(t *testing.T) {
 	provider, ctx := setup(t)
 
-	if err := provider.CreateUser(ctx, "bob@example.com", "correct", RoleMember); err != nil {
+	if err := provider.CreateUser(ctx, "bob@example.com", "correct1", RoleMember); err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
 
-	_, err := provider.Authenticate(ctx, Credentials{Email: "bob@example.com", Password: "wrong"})
+	_, err := provider.Authenticate(ctx, Credentials{Email: "bob@example.com", Password: "wrongpwd"})
 	if err == nil {
 		t.Fatal("expected error for wrong password")
 	}
@@ -92,7 +92,7 @@ func TestListUsers(t *testing.T) {
 	provider, ctx := setup(t)
 
 	for _, email := range []string{"a@example.com", "b@example.com"} {
-		if err := provider.CreateUser(ctx, email, "pass", RoleMember); err != nil {
+		if err := provider.CreateUser(ctx, email, "pass1234", RoleMember); err != nil {
 			t.Fatalf("CreateUser(%s): %v", email, err)
 		}
 	}
@@ -124,7 +124,7 @@ func TestInviteUser(t *testing.T) {
 func TestRevokeUser(t *testing.T) {
 	provider, ctx := setup(t)
 
-	if err := provider.CreateUser(ctx, "doomed@example.com", "pass", RoleMember); err != nil {
+	if err := provider.CreateUser(ctx, "doomed@example.com", "pass1234", RoleMember); err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
 
@@ -132,7 +132,7 @@ func TestRevokeUser(t *testing.T) {
 		t.Fatalf("RevokeUser: %v", err)
 	}
 
-	_, err := provider.Authenticate(ctx, Credentials{Email: "doomed@example.com", Password: "pass"})
+	_, err := provider.Authenticate(ctx, Credentials{Email: "doomed@example.com", Password: "pass1234"})
 	if err == nil {
 		t.Fatal("expected error after revocation")
 	}
