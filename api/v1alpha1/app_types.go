@@ -164,6 +164,7 @@ type ConfigFile struct {
 }
 
 type EnvVar struct {
+	// Name is the environment variable name.
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:Pattern=`^[a-zA-Z_][a-zA-Z0-9_]*$`
 	// +kubebuilder:validation:MaxLength=253

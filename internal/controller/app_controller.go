@@ -2356,8 +2356,8 @@ func deploymentRollingOut(dep *appsv1.Deployment) bool {
 	return false
 }
 
-func deploymentName(appName string) string { return appName }
-func cronJobName(appName string) string    { return appName }
+func deploymentName(appName string) string { return constants.DeploymentName(appName) }
+func cronJobName(appName string) string    { return constants.CronJobName(appName) }
 func serviceName(appName string) string    { return appName }
 func ingressName(appName string) string    { return appName }
 

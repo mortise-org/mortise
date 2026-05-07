@@ -82,6 +82,7 @@ spec:
                 items:
                   properties:
                     name:
+                      description: Name is the environment variable name.
                       maxLength: 253
                       pattern: ^[a-zA-Z_][a-zA-Z0-9_]*$
                       type: string

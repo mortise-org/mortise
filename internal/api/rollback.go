@@ -88,7 +88,7 @@ func (s *Server) Rollback(w http.ResponseWriter, r *http.Request) {
 		rollbackImage = target.Digest
 	}
 
-	depName := deploymentName(appName)
+	depName := constants.DeploymentName(appName)
 	var dep appsv1.Deployment
 	if err := s.client.Get(r.Context(), types.NamespacedName{Name: depName, Namespace: envNs}, &dep); err != nil {
 		writeError(w, err)
@@ -199,7 +199,7 @@ func (s *Server) Promote(w http.ResponseWriter, r *http.Request) {
 		promoteImage = fromStatus.CurrentDigest
 	}
 
-	depName := deploymentName(appName)
+	depName := constants.DeploymentName(appName)
 	toEnvNs := constants.EnvNamespace(projectName, req.To)
 	var dep appsv1.Deployment
 	if err := s.client.Get(r.Context(), types.NamespacedName{Name: depName, Namespace: toEnvNs}, &dep); err != nil {
@@ -256,5 +256,3 @@ func (s *Server) Promote(w http.ResponseWriter, r *http.Request) {
 		"image":  promoteImage,
 	})
 }
-
-func deploymentName(appName string) string { return appName }

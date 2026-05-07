@@ -1139,7 +1139,6 @@ func TestPromote(t *testing.T) {
 	}
 
 	// Create Deployments for both envs in their per-env workload namespaces.
-	// The controller names Deployments as just appName (not appName-envName).
 	for _, envName := range []string{"staging", "production"} {
 		depNs := constants.EnvNamespace("default", envName)
 		dep := &appsv1.Deployment{
