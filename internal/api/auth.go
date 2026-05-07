@@ -4,6 +4,10 @@ import (
 	"encoding/json"
 	"net/http"
 
+	corev1 "k8s.io/api/core/v1"
+	k8serrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	"github.com/mortise-org/mortise/internal/auth"
 )
 
@@ -70,14 +74,8 @@ func (s *Server) Setup(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errorResponse{"email and password required"})
 		return
 	}
-
-	users, err := s.auth.ListUsers(r.Context())
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorResponse{err.Error()})
-		return
-	}
-	if len(users) > 0 {
-		writeJSON(w, http.StatusConflict, errorResponse{"setup already complete"})
+	if len(req.Password) < 8 {
+		writeJSON(w, http.StatusBadRequest, errorResponse{"password must be at least 8 characters"})
 		return
 	}
 
@@ -86,7 +84,26 @@ func (s *Server) Setup(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotImplemented, errorResponse{"setup requires native auth provider"})
 		return
 	}
+
+	// Atomic setup claim: create a sentinel ConfigMap. If it already exists,
+	// another request won the race and setup is complete.
+	sentinel := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "mortise-setup-complete",
+			Namespace: "mortise-system",
+		},
+	}
+	if err := s.client.Create(r.Context(), sentinel); err != nil {
+		if k8serrors.IsAlreadyExists(err) {
+			writeJSON(w, http.StatusConflict, errorResponse{"setup already complete"})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, errorResponse{err.Error()})
+		return
+	}
+
 	if err := native.CreateUser(r.Context(), req.Email, req.Password, auth.RoleAdmin); err != nil {
+		_ = s.client.Delete(r.Context(), sentinel)
 		writeJSON(w, http.StatusInternalServerError, errorResponse{err.Error()})
 		return
 	}
