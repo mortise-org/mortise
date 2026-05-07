@@ -148,7 +148,9 @@
 
 	const selectedEnv = $derived(store.currentEnv(projectName) || 'production');
 
-	const staleApps = $derived(apps.filter(a => appNeedsRedeploy(a)));
+	const staleApps = $derived(
+		project?.autoRedeploy ? [] : apps.filter(a => appNeedsRedeploy(a))
+	);
 
 	let redeployingApps = $state<Set<string>>(new Set());
 	let redeployAllRunning = $state(false);
@@ -427,6 +429,7 @@
 		<AppDrawer
 			project={projectName}
 			appName={selectedApp}
+			autoRedeploy={project?.autoRedeploy ?? false}
 			liveApp={drawerApp}
 			liveBuildLogs={buildLogs.get(selectedApp ?? '') ?? null}
 			livePods={podUpdates.get((selectedApp ?? '') + ':' + (store.currentEnv(projectName) ?? '')) ?? null}

@@ -413,6 +413,7 @@ type DeployRecord struct {
 	Image     string      `json:"image"`
 	Digest    string      `json:"digest,omitempty"`
 	GitSHA    string      `json:"gitSHA,omitempty"`
+	EnvHash   string      `json:"envHash,omitempty"`
 	Timestamp metav1.Time `json:"timestamp"`
 }
 

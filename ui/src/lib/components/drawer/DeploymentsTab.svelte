@@ -8,11 +8,13 @@
 	let {
 		project,
 		app,
+		autoRedeploy = false,
 		phase: phaseProp = null,
 		onOptimisticPhase
 	}: {
 		project: string;
 		app: App;
+		autoRedeploy?: boolean;
 		phase?: string | null;
 		onOptimisticPhase?: (phase: string) => void;
 	} = $props();
@@ -29,7 +31,7 @@
 
 	const phase = $derived(phaseProp ?? app.status?.phase ?? 'Pending');
 
-	const needsRedeploy = $derived(appNeedsRedeploy(app));
+	const needsRedeploy = $derived(!autoRedeploy && appNeedsRedeploy(app));
 
 	async function doRedeploy() {
 		errorMsg = '';

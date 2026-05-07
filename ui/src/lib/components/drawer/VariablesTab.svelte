@@ -8,10 +8,12 @@
 
 	let {
 		project,
-		app
+		app,
+		autoRedeploy = false
 	}: {
 		project: string;
 		app: App;
+		autoRedeploy?: boolean;
 	} = $props();
 
 	type EnvEntry = {
@@ -45,7 +47,7 @@
 	let redeploying = $state(false);
 
 	function markStale() {
-		localStale = true;
+		if (!autoRedeploy) localStale = true;
 	}
 
 	async function handleRedeploy() {

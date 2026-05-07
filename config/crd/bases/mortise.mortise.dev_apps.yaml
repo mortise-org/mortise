@@ -608,6 +608,8 @@ spec:
                         properties:
                           digest:
                             type: string
+                          envHash:
+                            type: string
                           gitSHA:
                             type: string
                           image:

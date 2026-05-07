@@ -113,6 +113,7 @@ export interface DeployRecord {
 	image: string;
 	digest?: string;
 	gitSHA?: string;
+	envHash?: string;
 	timestamp: string;
 }
 

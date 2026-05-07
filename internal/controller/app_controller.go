@@ -2120,9 +2120,10 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 			es.LastBuiltSHA = prev.LastBuiltSHA
 			es.LastBuiltImage = prev.LastBuiltImage
 		}
-		if needsDeployRecord(es.CurrentImage, es.DeployHistory) {
+		if needsDeployRecord(es.CurrentImage, es.DeployedEnvHash, es.DeployHistory) {
 			record := mortisev1alpha1.DeployRecord{
 				Image:     es.CurrentImage,
+				EnvHash:   es.DeployedEnvHash,
 				Timestamp: metav1.NewTime(r.clock().Now()),
 			}
 			es.DeployHistory = append([]mortisev1alpha1.DeployRecord{record}, es.DeployHistory...)
@@ -2199,10 +2200,13 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 	return r.Status().Update(ctx, &fresh)
 }
 
-// needsDeployRecord returns true if a new deploy record should be created —
-// either the history is empty or the current image differs from the most recent entry.
-func needsDeployRecord(currentImage string, history []mortisev1alpha1.DeployRecord) bool {
-	return len(history) == 0 || history[0].Image != currentImage
+// needsDeployRecord returns true when a new deploy record should be created:
+// empty history, image change, or env-hash change.
+func needsDeployRecord(currentImage, currentEnvHash string, history []mortisev1alpha1.DeployRecord) bool {
+	if len(history) == 0 {
+		return true
+	}
+	return history[0].Image != currentImage || history[0].EnvHash != currentEnvHash
 }
 
 // RollbackDeployment patches the Deployment for the given App + environment back

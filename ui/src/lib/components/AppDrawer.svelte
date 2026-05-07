@@ -13,6 +13,7 @@
 	let {
 		project,
 		appName,
+		autoRedeploy = false,
 		liveApp = null,
 		liveBuildLogs = null,
 		livePods = null,
@@ -20,6 +21,7 @@
 	}: {
 		project: string;
 		appName: string;
+		autoRedeploy?: boolean;
 		liveApp?: App | null;
 		liveBuildLogs?: BuildLogsResponse | null;
 		livePods?: Pod[] | null;
@@ -283,11 +285,12 @@
 				<DeploymentsTab
 					{project}
 					app={liveApp}
+					{autoRedeploy}
 					phase={effectivePhase}
 					onOptimisticPhase={applyOptimisticPhase}
 				/>
 			{:else if store.drawerTab === 'variables'}
-				<VariablesTab {project} app={liveApp} />
+				<VariablesTab {project} app={liveApp} {autoRedeploy} />
 			{:else if store.drawerTab === 'deployLogs'}
 				<DeployLogsTab {project} app={liveApp} {livePods} />
 			{:else if store.drawerTab === 'buildLogs'}
