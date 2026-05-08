@@ -270,6 +270,15 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		}
 	}
 
+	// Flush build status accumulated during the env loop in a single write.
+	// applyEnvBuildSuccess mutates app.Status in-memory per env; batching
+	// avoids resourceVersion conflicts from per-env Status().Update() calls.
+	if app.Spec.Source.Type == mortisev1alpha1.SourceTypeGit && r.BuildClient != nil {
+		if err := r.Status().Update(ctx, &app); err != nil {
+			log.Error(err, "flush build status after env loop")
+		}
+	}
+
 	// GC resources for envs this App opts out of (`Enabled: false`). When the
 	// project removes an env entirely the namespace deletion cascades, so no
 	// explicit GC is needed there. This only handles opt-out — the env ns
@@ -493,9 +502,7 @@ func (r *AppReconciler) reconcileEnvBuild(ctx context.Context, app *mortisev1alp
 }
 
 // applyEnvBuildSuccess records the successful build for a specific environment.
-func (r *AppReconciler) applyEnvBuildSuccess(ctx context.Context, app *mortisev1alpha1.App, envName, revision, image, digest string, detectedPort int32) {
-	log := logf.FromContext(ctx)
-
+func (r *AppReconciler) applyEnvBuildSuccess(_ context.Context, app *mortisev1alpha1.App, envName, revision, image, digest string, detectedPort int32) {
 	// Update per-env status.
 	found := false
 	for i := range app.Status.Environments {
@@ -526,9 +533,6 @@ func (r *AppReconciler) applyEnvBuildSuccess(ctx context.Context, app *mortisev1
 		Message:            fmt.Sprintf("built %s digest=%s for %s", image, digest, envName),
 		LastTransitionTime: metav1.NewTime(r.clock().Now()),
 	})
-	if err := r.Status().Update(ctx, app); err != nil {
-		log.Error(err, "update status after env build", "env", envName)
-	}
 }
 
 // buildParams bundles the inputs the background build goroutine needs. Keeping
