@@ -77,11 +77,17 @@ type appProxyEntry struct {
 	listener net.Listener
 }
 
+const proxyBindAddress = "127.0.0.1"
+
 // appProxyManager manages per-app reverse proxy listeners. Each app gets its
 // own port — no path prefix, no asset rewriting issues.
 type appProxyManager struct {
 	mu      sync.Mutex
-	proxies map[string]*appProxyEntry // key: "project/app"
+	proxies map[string]*appProxyEntry // key: "project/app/env"
+}
+
+func proxyKey(project, app, env string) string {
+	return project + "/" + app + "/" + env
 }
 
 func newAppProxyManager() *appProxyManager {
@@ -117,10 +123,9 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	appName := chi.URLParam(r, "app")
-	key := projectName + "/" + appName
-
 	env := envFromQuery(r)
 	envNs := constants.EnvNamespace(projectName, env)
+	key := proxyKey(projectName, appName, env)
 
 	// If already proxying, return the existing URL.
 	s.proxies.mu.Lock()
@@ -151,7 +156,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Allocate a random port and start listening.
-	listener, err := net.Listen("tcp", "0.0.0.0:0")
+	listener, err := net.Listen("tcp", proxyBindAddress+":0")
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, errorResponse{"failed to allocate port: " + err.Error()})
 		return
@@ -210,7 +215,8 @@ func (s *Server) handleDisconnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	appName := chi.URLParam(r, "app")
-	key := projectName + "/" + appName
+	env := envFromQuery(r)
+	key := proxyKey(projectName, appName, env)
 
 	s.proxies.mu.Lock()
 	entry, exists := s.proxies.proxies[key]

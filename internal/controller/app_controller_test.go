@@ -4476,6 +4476,168 @@ var _ = Describe("App Controller — git source", func() {
 			Expect(envData).To(HaveKeyWithValue("PORT", "4000"), "second reconcile should not overwrite user-edited value")
 		})
 
+		It("propagates CRD spec env var changes to the Secret when user has not overridden", func() {
+			appName := "spec-change-test"
+			app := &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{Name: appName, Namespace: namespace},
+				Spec: mortisev1alpha1.AppSpec{
+					Source: mortisev1alpha1.AppSource{
+						Type:  mortisev1alpha1.SourceTypeImage,
+						Image: testImageNginx,
+					},
+					Network: mortisev1alpha1.NetworkConfig{Public: true},
+					Environments: []mortisev1alpha1.Environment{{
+						Name:   "production",
+						Domain: "specchange.example.com",
+						Env: []mortisev1alpha1.EnvVar{
+							{Name: "R2_BUCKET_NAME", Value: "old-value"},
+							{Name: "STATIC_VAR", Value: "unchanged"},
+						},
+					}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			envData := readAppEnvSecret(ctx, appName, envNsProduction)
+			Expect(envData).To(HaveKeyWithValue("R2_BUCKET_NAME", "old-value"))
+			Expect(envData).To(HaveKeyWithValue("STATIC_VAR", "unchanged"))
+
+			// Patch the CRD spec to change R2_BUCKET_NAME.
+			var fetchedApp mortisev1alpha1.App
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: appName, Namespace: namespace}, &fetchedApp)).To(Succeed())
+			fetchedApp.Spec.Environments[0].Env[0].Value = "new-value"
+			Expect(k8sClient.Update(ctx, &fetchedApp)).To(Succeed())
+
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			envData = readAppEnvSecret(ctx, appName, envNsProduction)
+			Expect(envData).To(HaveKeyWithValue("R2_BUCKET_NAME", "new-value"), "CRD spec change should propagate to Secret")
+			Expect(envData).To(HaveKeyWithValue("STATIC_VAR", "unchanged"))
+
+			// Verify the last-applied annotation was written.
+			var sec corev1.Secret
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      envstore.AppEnvSecretName(appName),
+				Namespace: envNsProduction,
+			}, &sec)).To(Succeed())
+			Expect(sec.Annotations).To(HaveKey(envstore.AnnotationLastSpecEnv))
+		})
+
+		It("preserves user-overridden values even when CRD spec changes", func() {
+			appName := "user-override-test"
+			app := &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{Name: appName, Namespace: namespace},
+				Spec: mortisev1alpha1.AppSpec{
+					Source: mortisev1alpha1.AppSource{
+						Type:  mortisev1alpha1.SourceTypeImage,
+						Image: testImageNginx,
+					},
+					Network: mortisev1alpha1.NetworkConfig{Public: true},
+					Environments: []mortisev1alpha1.Environment{{
+						Name:   "production",
+						Domain: "override.example.com",
+						Env: []mortisev1alpha1.EnvVar{
+							{Name: "PORT", Value: "3000"},
+						},
+					}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// User edits the Secret directly (simulating UI edit).
+			var sec corev1.Secret
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      envstore.AppEnvSecretName(appName),
+				Namespace: envNsProduction,
+			}, &sec)).To(Succeed())
+			sec.Data["PORT"] = []byte("5000")
+			Expect(k8sClient.Update(ctx, &sec)).To(Succeed())
+
+			// Now change the CRD spec to a DIFFERENT value.
+			var fetchedApp mortisev1alpha1.App
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: appName, Namespace: namespace}, &fetchedApp)).To(Succeed())
+			fetchedApp.Spec.Environments[0].Env[0].Value = "4000"
+			Expect(k8sClient.Update(ctx, &fetchedApp)).To(Succeed())
+
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			envData := readAppEnvSecret(ctx, appName, envNsProduction)
+			Expect(envData).To(HaveKeyWithValue("PORT", "5000"), "user-overridden value should be preserved even when CRD changes")
+		})
+
+		It("retains removed CRD spec env var keys in the Secret", func() {
+			appName := "key-removal-test"
+			app := &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{Name: appName, Namespace: namespace},
+				Spec: mortisev1alpha1.AppSpec{
+					Source: mortisev1alpha1.AppSource{
+						Type:  mortisev1alpha1.SourceTypeImage,
+						Image: testImageNginx,
+					},
+					Network: mortisev1alpha1.NetworkConfig{Public: true},
+					Environments: []mortisev1alpha1.Environment{{
+						Name:   "production",
+						Domain: "keyremoval.example.com",
+						Env: []mortisev1alpha1.EnvVar{
+							{Name: "KEEP_ME", Value: "yes"},
+							{Name: "DROP_ME", Value: "initially"},
+						},
+					}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			envData := readAppEnvSecret(ctx, appName, envNsProduction)
+			Expect(envData).To(HaveKeyWithValue("KEEP_ME", "yes"))
+			Expect(envData).To(HaveKeyWithValue("DROP_ME", "initially"))
+
+			// Remove DROP_ME from the CRD spec.
+			var fetchedApp mortisev1alpha1.App
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: appName, Namespace: namespace}, &fetchedApp)).To(Succeed())
+			fetchedApp.Spec.Environments[0].Env = []mortisev1alpha1.EnvVar{
+				{Name: "KEEP_ME", Value: "yes"},
+			}
+			Expect(k8sClient.Update(ctx, &fetchedApp)).To(Succeed())
+
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Key removal from CRD does NOT delete from Secret — user may
+			// have set it via UI. The key remains with its last value.
+			envData = readAppEnvSecret(ctx, appName, envNsProduction)
+			Expect(envData).To(HaveKeyWithValue("KEEP_ME", "yes"))
+			Expect(envData).To(HaveKey("DROP_ME"), "removed CRD key should remain in Secret")
+		})
+
 		It("adds binding vars on first binding, clears them when binding is removed", func() {
 			dbName := "seed-db"
 			apiName := "seed-api"
