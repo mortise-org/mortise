@@ -142,9 +142,24 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		}
 	}
 
+	// Environments are project-scoped: an App auto-exists in every
+	// `Project.Spec.Environments` entry, and `App.Spec.Environments[]`
+	// carries only per-env overrides. If the parent project isn't resolvable
+	// yet (just-created, being deleted, label missing) there's nothing to
+	// reconcile — skip workloads but keep the status pass so the UI sees the
+	// app's current state.
+	project, err := r.fetchParentProject(ctx, &app)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("fetch parent project: %w", err)
+	}
+	var resolvedEnvs []mortisev1alpha1.Environment
+	if project != nil {
+		resolvedEnvs = resolveEnvs(project, &app)
+	}
+
 	switch app.Spec.Source.Type {
 	case mortisev1alpha1.SourceTypeGit:
-		if r.BuildClient != nil && !r.allEnvBuildsCurrentForRevision(&app) {
+		if r.BuildClient != nil && !r.allEnvBuildsCurrentForRevision(&app, resolvedEnvs) {
 			result, proceed, err := r.prepareGitSource(ctx, &app)
 			if err != nil {
 				return ctrl.Result{}, err
@@ -160,21 +175,6 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	default:
 		log.Info("skipping unsupported source type", "type", app.Spec.Source.Type)
 		return ctrl.Result{}, nil
-	}
-
-	// Environments are project-scoped: an App auto-exists in every
-	// `Project.Spec.Environments` entry, and `App.Spec.Environments[]`
-	// carries only per-env overrides. If the parent project isn't resolvable
-	// yet (just-created, being deleted, label missing) there's nothing to
-	// reconcile — skip workloads but keep the status pass so the UI sees the
-	// app's current state.
-	project, err := r.fetchParentProject(ctx, &app)
-	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("fetch parent project: %w", err)
-	}
-	var resolvedEnvs []mortisev1alpha1.Environment
-	if project != nil {
-		resolvedEnvs = resolveEnvs(project, &app)
 	}
 
 	// Each env gets its own namespace; per-app resources (SA, credentials
@@ -369,7 +369,7 @@ func (r *AppReconciler) prepareGitSource(ctx context.Context, app *mortisev1alph
 	}
 
 	// Stash the token transiently for per-env builds during this reconcile.
-	r.gitTokenCache.Store(app.Name, tokenResult.Token)
+	r.gitTokenCache.Store(app.Namespace+"/"+app.Name, tokenResult.Token)
 
 	return ctrl.Result{}, true, nil
 }
@@ -423,7 +423,7 @@ func (r *AppReconciler) reconcileEnvBuild(ctx context.Context, app *mortisev1alp
 		}
 	}
 
-	tokenVal, _ := r.gitTokenCache.Load(app.Name)
+	tokenVal, _ := r.gitTokenCache.Load(app.Namespace + "/" + app.Name)
 	token, _ := tokenVal.(string)
 
 	imageRef, err := r.RegistryBackend.PushTarget(app.Name, envImageTag(revision, envName))
@@ -739,11 +739,10 @@ func (r *AppReconciler) currentImageForEnv(app *mortisev1alpha1.App, envName str
 	return app.Spec.Source.Image
 }
 
-// allEnvBuildsCurrentForRevision returns true only when every environment
-// listed in the app spec already has a per-env build matching the current
-// revision. Used to skip prepareGitSource (auth + clone) when no new builds
-// are needed.
-func (r *AppReconciler) allEnvBuildsCurrentForRevision(app *mortisev1alpha1.App) bool {
+// allEnvBuildsCurrentForRevision returns true only when every resolved
+// environment already has a per-env build matching the current revision.
+// Used to skip prepareGitSource (auth + clone) when no new builds are needed.
+func (r *AppReconciler) allEnvBuildsCurrentForRevision(app *mortisev1alpha1.App, envs []mortisev1alpha1.Environment) bool {
 	revision := app.Annotations["mortise.dev/revision"]
 	if revision == "" {
 		revision = app.Spec.Source.Branch
@@ -751,10 +750,10 @@ func (r *AppReconciler) allEnvBuildsCurrentForRevision(app *mortisev1alpha1.App)
 	if revision == "" {
 		revision = "main"
 	}
-	if len(app.Spec.Environments) == 0 {
+	if len(envs) == 0 {
 		return false
 	}
-	for _, env := range app.Spec.Environments {
+	for _, env := range envs {
 		es := envStatusFor(app, env.Name)
 		if es == nil || es.LastBuiltSHA != revision || es.LastBuiltImage == "" {
 			return false
@@ -2085,14 +2084,19 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 	firstCrashMsg := ""
 
 	for _, env := range resolvedEnvs {
+		autoDomain := ""
+		if app.Spec.Network.Public {
+			autoDomain = r.autoDefaultDomain(ctx, app, env.Name)
+		}
 		domain := env.Domain
-		if domain == "" && app.Spec.Network.Public {
-			domain = r.autoDefaultDomain(ctx, app, env.Name)
+		if domain == "" {
+			domain = autoDomain
 		}
 		es := mortisev1alpha1.EnvironmentStatus{
 			Name:         env.Name,
 			CurrentImage: r.currentImageForEnv(app, env.Name),
 			Domain:       domain,
+			AutoDomain:   autoDomain,
 		}
 		envNs, nsErr := appEnvNs(app, env.Name)
 		if nsErr != nil {

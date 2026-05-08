@@ -437,6 +437,11 @@ type EnvironmentStatus struct {
 	// +optional
 	Domain string `json:"domain,omitempty"`
 
+	// AutoDomain is the platform-generated domain for this environment,
+	// always computed regardless of whether a custom primary domain is set.
+	// +optional
+	AutoDomain string `json:"autoDomain,omitempty"`
+
 	// LastProcessedRestartedAt stores the mortise.dev/restartedAt annotation
 	// value from the Deployment once the rollout completes. Prevents the
 	// controller from snapping the phase back to Ready before a user-triggered

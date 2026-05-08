@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/fstest"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -1318,5 +1319,61 @@ func TestMemberCanCRUDSecrets(t *testing.T) {
 	w = doRequest(h, http.MethodDelete, "/api/projects/default/apps/sec-app/secrets/db-pass", nil)
 	if w.Code != http.StatusOK {
 		t.Fatalf("delete secret: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestOGImageEscapesHostHeader(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+
+	authProvider := auth.NewNativeAuthProvider(k8sClient)
+	jwtHelper := auth.NewJWTHelper(k8sClient)
+
+	mockUI := fstest.MapFS{
+		"index.html": &fstest.MapFile{
+			Data: []byte(`<html><head><meta property="og:image" content="/og-image.png"></head><body></body></html>`),
+		},
+	}
+
+	srv := api.NewServer(k8sClient, fake.NewClientset(), nil, nil, authProvider, jwtHelper, mockUI, authz.NewNativePolicyEngine(k8sClient))
+	h := srv.Handler()
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Host = `evil.com"><script>alert(1)</script><img src="`
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	body := w.Body.String()
+	if strings.Contains(body, "<script>") {
+		t.Fatal("Host header was not escaped — XSS payload present in response body")
+	}
+	if !strings.Contains(body, "&lt;script&gt;") && !strings.Contains(body, "&#") {
+		t.Log("body:", body)
+	}
+}
+
+func TestOGImageRejectsInvalidProto(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+
+	authProvider := auth.NewNativeAuthProvider(k8sClient)
+	jwtHelper := auth.NewJWTHelper(k8sClient)
+
+	mockUI := fstest.MapFS{
+		"index.html": &fstest.MapFile{
+			Data: []byte(`<html><head><meta property="og:image" content="/og-image.png"></head><body></body></html>`),
+		},
+	}
+
+	srv := api.NewServer(k8sClient, fake.NewClientset(), nil, nil, authProvider, jwtHelper, mockUI, authz.NewNativePolicyEngine(k8sClient))
+	h := srv.Handler()
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Host = "example.com"
+	req.Header.Set("X-Forwarded-Proto", "javascript")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	body := w.Body.String()
+	if strings.Contains(body, "javascript://") {
+		t.Fatal("invalid X-Forwarded-Proto was not rejected — 'javascript' scheme in response")
 	}
 }

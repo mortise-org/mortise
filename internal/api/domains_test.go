@@ -547,3 +547,129 @@ func TestAddDomain_RejectsStatusDomainCollision(t *testing.T) {
 		t.Errorf("expected 409, got %d: %s", w.Code, w.Body.String())
 	}
 }
+
+func TestListDomains_AutoDomainFromStatus(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+	ns := seedProject(t, k8sClient, "default")
+
+	ctx := context.Background()
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "webapp", Namespace: ns},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{Type: "image", Image: "nginx:1.25.0"},
+			Environments: []mortisev1alpha1.Environment{
+				{Name: "production", Domain: "custom.example.com"},
+			},
+		},
+	}
+	if err := k8sClient.Create(ctx, app); err != nil {
+		t.Fatalf("create app: %v", err)
+	}
+	app.Status.Environments = []mortisev1alpha1.EnvironmentStatus{
+		{Name: "production", Domain: "custom.example.com", AutoDomain: "webapp-default.apps.example.com"},
+	}
+	if err := k8sClient.Status().Update(ctx, app); err != nil {
+		t.Fatalf("update status: %v", err)
+	}
+
+	w := doRequest(h, http.MethodGet, "/api/projects/default/apps/webapp/domains?environment=production", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]any
+	_ = json.NewDecoder(w.Body).Decode(&resp)
+	if resp["auto"] != "webapp-default.apps.example.com" {
+		t.Errorf("auto: expected webapp-default.apps.example.com, got %v", resp["auto"])
+	}
+	if resp["primary"] != "custom.example.com" {
+		t.Errorf("primary: expected custom.example.com, got %v", resp["primary"])
+	}
+}
+
+func TestAddDomain_RejectsAutoDomainCollision(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+	ns := seedProject(t, k8sClient, "default")
+
+	ctx := context.Background()
+	other := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "other-app", Namespace: ns},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{Type: "image", Image: "nginx:1.25.0"},
+		},
+	}
+	if err := k8sClient.Create(ctx, other); err != nil {
+		t.Fatalf("create other app: %v", err)
+	}
+	other.Status.Environments = []mortisev1alpha1.EnvironmentStatus{
+		{Name: "production", Domain: "primary.example.com", AutoDomain: "other-auto.apps.example.com"},
+	}
+	if err := k8sClient.Status().Update(ctx, other); err != nil {
+		t.Fatalf("update other status: %v", err)
+	}
+
+	target := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "target-app", Namespace: ns},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{Type: "image", Image: "nginx:1.25.0"},
+			Environments: []mortisev1alpha1.Environment{
+				{Name: "production"},
+			},
+		},
+	}
+	if err := k8sClient.Create(ctx, target); err != nil {
+		t.Fatalf("create target app: %v", err)
+	}
+
+	w := doRequest(h, http.MethodPost, "/api/projects/default/apps/target-app/domains?environment=production", map[string]string{
+		"domain": "other-auto.apps.example.com",
+	})
+	if w.Code != http.StatusConflict {
+		t.Errorf("expected 409 for AutoDomain collision, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestValidateDomain_ConflictAutoDomain(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+	ns := seedProject(t, k8sClient, "default")
+
+	ctx := context.Background()
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "autogen", Namespace: ns},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{Type: "image", Image: "nginx:1.25.0"},
+		},
+	}
+	if err := k8sClient.Create(ctx, app); err != nil {
+		t.Fatalf("create app: %v", err)
+	}
+	app.Status.Environments = []mortisev1alpha1.EnvironmentStatus{
+		{Name: "production", Domain: "primary.example.com", AutoDomain: "autogen-auto.apps.example.com"},
+	}
+	if err := k8sClient.Status().Update(ctx, app); err != nil {
+		t.Fatalf("update status: %v", err)
+	}
+
+	w := doRequest(h, http.MethodPost, "/api/domains/validate", map[string]string{
+		"domain": "autogen-auto.apps.example.com",
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]any
+	_ = json.NewDecoder(w.Body).Decode(&resp)
+	if resp["valid"] != false {
+		t.Errorf("expected valid=false for AutoDomain collision, got %v", resp["valid"])
+	}
+	conflict := resp["conflict"].(map[string]any)
+	if conflict["app"] != "autogen" {
+		t.Errorf("expected app=autogen, got %v", conflict["app"])
+	}
+}

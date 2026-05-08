@@ -125,6 +125,7 @@ export interface EnvironmentStatus {
 	currentImage?: string;
 	currentDigest?: string;
 	domain?: string;
+	autoDomain?: string;
 	deployHistory?: DeployRecord[];
 	pendingEnvHash?: string;
 	deployedEnvHash?: string;
