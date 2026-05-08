@@ -13,6 +13,9 @@
 	// must start and end with an alphanumeric; max 63 chars.
 	const DNS_LABEL = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
 
+	let debounceTimer: ReturnType<typeof setTimeout> | undefined;
+	let checkSeq = 0; // monotonic counter to discard stale responses
+
 	async function checkNameAvailability() {
 		const trimmed = name.trim();
 		if (!trimmed || !DNS_LABEL.test(trimmed)) {
@@ -20,12 +23,25 @@
 			return;
 		}
 		nameStatus = 'checking';
+		const seq = ++checkSeq;
 		try {
 			const result = await api.checkProjectNameAvailable(trimmed);
+			if (seq !== checkSeq) return; // stale response; discard
 			nameStatus = result.available ? 'available' : 'taken';
 		} catch {
+			if (seq !== checkSeq) return;
 			nameStatus = 'idle';
 		}
+	}
+
+	function debouncedCheck() {
+		clearTimeout(debounceTimer);
+		const trimmed = name.trim();
+		if (!trimmed || !DNS_LABEL.test(trimmed)) {
+			nameStatus = 'idle';
+			return;
+		}
+		debounceTimer = setTimeout(checkNameAvailability, 300);
 	}
 
 	async function handleCreate() {
@@ -68,7 +84,7 @@
 				<label for="name" class="block text-sm text-gray-400">Project name <span class="text-danger">*</span></label>
 				<input id="name" type="text" bind:value={name}
 					onblur={checkNameAvailability}
-					oninput={() => { nameStatus = 'idle'; }}
+					oninput={debouncedCheck}
 					placeholder="my-project"
 					pattern="[a-z0-9][a-z0-9-]*[a-z0-9]"
 					maxlength="63"
