@@ -107,6 +107,11 @@
 		scaleMemory = env?.resources?.memory ?? '';
 	});
 
+	// --- Certificate status (for active env) ---
+	const certEnvStatus = $derived(
+		app.status?.environments?.find(e => e.name === selectedEnv)
+	);
+
 	// --- Domains (for active env) ---
 	let domains = $state<DomainsResponse | null>(null);
 	let newDomain = $state('');
@@ -982,6 +987,20 @@
 	{#if sectionVisible('domains')}
 		<div class={sectionCls}>
 			<h3 class={headingCls}>Domains</h3>
+
+			{#if certEnvStatus?.certificateStatus === 'Pending'}
+				<div class="rounded-md border border-warning/30 bg-warning/5 px-3 py-2 text-xs text-warning">
+					Certificate pending{certEnvStatus.certificateMessage ? ` — ${certEnvStatus.certificateMessage}` : ''}
+				</div>
+			{:else if certEnvStatus?.certificateStatus === 'Failed'}
+				<div class="rounded-md border border-danger/30 bg-danger/5 px-3 py-2 text-xs text-danger">
+					Certificate failed{certEnvStatus.certificateMessage ? ` — ${certEnvStatus.certificateMessage}` : ''}
+				</div>
+			{:else if certEnvStatus?.certificateStatus === 'Ready'}
+				<div class="rounded-md border border-success/30 bg-success/5 px-3 py-2 text-xs text-success">
+					TLS certificate active
+				</div>
+			{/if}
 
 			{#if !domains?.primary && !domains?.auto && (!domains?.custom || domains.custom.length === 0)}
 				<p class="text-xs text-gray-500">No domains configured. Add a domain to make this app reachable.</p>

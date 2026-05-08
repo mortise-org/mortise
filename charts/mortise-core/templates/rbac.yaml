@@ -42,6 +42,10 @@ rules:
   - apiGroups: ["batch"]
     resources: ["cronjobs"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # cert-manager Certificates: read-only for status surfacing
+  - apiGroups: ["cert-manager.io"]
+    resources: ["certificates"]
+    verbs: ["get", "list", "watch"]
   # Pod logs for SSE streaming
   - apiGroups: [""]
     resources: ["pods", "pods/log"]

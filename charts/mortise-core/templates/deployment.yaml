@@ -58,6 +58,10 @@ metadata:
   labels:
     app.kubernetes.io/name: mortise
     app.kubernetes.io/managed-by: {{ .Release.Service }}
+  {{- if .Values.ingress.certManagerClusterIssuer }}
+  annotations:
+    cert-manager.io/cluster-issuer: {{ .Values.ingress.certManagerClusterIssuer | quote }}
+  {{- end }}
 spec:
   {{- if .Values.ingress.className }}
   ingressClassName: {{ .Values.ingress.className }}
@@ -73,4 +77,10 @@ spec:
                 name: mortise
                 port:
                   number: {{ .Values.service.port }}
+  {{- if .Values.ingress.certManagerClusterIssuer }}
+  tls:
+    - hosts:
+        - {{ .Values.ingress.host }}
+      secretName: mortise-tls
+  {{- end }}
 {{- end }}

@@ -40,7 +40,9 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/clock"
@@ -110,6 +112,7 @@ type AppReconciler struct {
 // +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=cert-manager.io,resources=certificates,verbs=get;list;watch
 
 func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
@@ -1327,6 +1330,51 @@ func (r *AppReconciler) reconcileIngress(ctx context.Context, app *mortisev1alph
 	return r.Update(ctx, &existing)
 }
 
+var certGVR = schema.GroupVersionKind{Group: "cert-manager.io", Version: "v1", Kind: "Certificate"}
+
+// checkCertificateStatus reads the cert-manager Certificate resource for an
+// environment's TLS secret and returns (status, message). Returns ("", "")
+// when cert-manager is not in use or the Certificate doesn't exist yet.
+func (r *AppReconciler) checkCertificateStatus(ctx context.Context, secretName, namespace string) (string, string) {
+	cert := &unstructured.Unstructured{}
+	cert.SetGroupVersionKind(certGVR)
+	err := r.Get(ctx, types.NamespacedName{Name: secretName, Namespace: namespace}, cert)
+	if err != nil {
+		return "", ""
+	}
+
+	conditions, found, err := unstructured.NestedSlice(cert.Object, "status", "conditions")
+	if err != nil || !found {
+		return "Pending", "Certificate exists but has no status yet"
+	}
+
+	for _, c := range conditions {
+		cond, ok := c.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		condType, _, _ := unstructured.NestedString(cond, "type")
+		if condType != "Ready" {
+			continue
+		}
+		status, _, _ := unstructured.NestedString(cond, "status")
+		message, _, _ := unstructured.NestedString(cond, "message")
+		if status == "True" {
+			return "Ready", ""
+		}
+		reason, _, _ := unstructured.NestedString(cond, "reason")
+		if reason != "" && message != "" {
+			return "Failed", fmt.Sprintf("%s: %s", reason, message)
+		}
+		if message != "" {
+			return "Pending", message
+		}
+		return "Pending", ""
+	}
+
+	return "Pending", "Certificate is being issued"
+}
+
 func (r *AppReconciler) reconcileServiceAccount(ctx context.Context, app *mortisev1alpha1.App, envNs, envName string) error {
 	var imagePullSecrets []corev1.LocalObjectReference
 	seen := map[string]bool{}
@@ -2251,6 +2299,16 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 				}
 			}
 			anyNotReady = true
+		}
+
+		if app.Spec.Network.Public && es.Domain != "" {
+			tlsSecret := fmt.Sprintf("%s-tls", app.Name)
+			if env.TLS != nil && env.TLS.SecretName != "" {
+				tlsSecret = ""
+			}
+			if tlsSecret != "" {
+				es.CertificateStatus, es.CertificateMessage = r.checkCertificateStatus(ctx, tlsSecret, envNs)
+			}
 		}
 
 		envStatuses = append(envStatuses, es)

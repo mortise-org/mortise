@@ -129,6 +129,8 @@ export interface EnvironmentStatus {
 	deployHistory?: DeployRecord[];
 	pendingEnvHash?: string;
 	deployedEnvHash?: string;
+	certificateStatus?: string;
+	certificateMessage?: string;
 }
 
 export type AppPhase = 'Pending' | 'Building' | 'Deploying' | 'Ready' | 'CrashLooping' | 'Failed';
