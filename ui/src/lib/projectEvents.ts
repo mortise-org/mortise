@@ -1,3 +1,4 @@
+import { api } from './api';
 import type { App, BuildLogsResponse, Pod } from '$lib/types';
 
 export interface ProjectEventsCallbacks {
@@ -7,13 +8,13 @@ export interface ProjectEventsCallbacks {
 	onBuildLog: (app: string, resp: BuildLogsResponse) => void;
 }
 
-export function connectProjectEvents(
+export async function connectProjectEvents(
 	project: string,
 	callbacks: ProjectEventsCallbacks
-): { close: () => void } {
-	const token = localStorage.getItem('mortise_token') ?? '';
+): Promise<{ close: () => void }> {
+	const sseToken = await api.fetchSSEToken();
 	const params = new URLSearchParams();
-	if (token) params.set('token', token);
+	if (sseToken) params.set('token', sseToken);
 	const url = `/api/projects/${encodeURIComponent(project)}/events?${params.toString()}`;
 
 	const es = new EventSource(url);

@@ -46,6 +46,7 @@ type Server struct {
 	proxies       *appProxyManager
 	activityStore activity.Store
 	Clock         kclock.Clock
+	sseTokens     *sseTokenStore
 }
 
 // RESTConfig returns the rest.Config the server was built with. Exposed for
@@ -79,7 +80,7 @@ func NewServer(c client.Client, cs kubernetes.Interface, dc dynamic.Interface, r
 	kr := webhook.NewK8sReader(c)
 	wh := webhook.New(kr)
 	df := newDeviceFlowHandler(c)
-	return &Server{
+	srv := &Server{
 		client:        c,
 		clientset:     cs,
 		dynamicClient: dc,
@@ -93,6 +94,8 @@ func NewServer(c client.Client, cs kubernetes.Interface, dc dynamic.Interface, r
 		proxies:       newAppProxyManager(),
 		activityStore: activity.NewConfigMapStore(c),
 	}
+	srv.sseTokens = newSSETokenStore(srv.clock())
+	return srv
 }
 
 // authorize checks whether the authenticated principal is allowed to perform
@@ -168,6 +171,9 @@ func (s *Server) Handler() http.Handler {
 		r.Use(maxBytesMiddleware(1 << 20)) // 1 MB body limit
 		r.Group(func(r chi.Router) {
 			r.Use(s.jwtAuthMiddleware)
+
+			r.Post("/auth/sse-token", s.IssueSSEToken)
+			r.Post("/auth/refresh", s.RefreshToken)
 
 			// Device flow: provider-parameterized routes for per-user git auth.
 			r.Post("/auth/git/{provider}/device", s.deviceFlow.RequestCode)
@@ -289,11 +295,11 @@ func (s *Server) Handler() http.Handler {
 			r.Post("/projects/{project}/apps/{app}/deploy", s.Deploy)
 		})
 
-		// SSE endpoints: JWT may come via `?token=` query param as an EventSource
-		// workaround. sseTokenQueryParamMiddleware runs before jwtAuthMiddleware
-		// and promotes the query param onto the Authorization header.
+		// SSE endpoints: authenticated via short-lived SSE token (?token=msse_...)
+		// or JWT query param (legacy fallback). sseAuthMiddleware handles both,
+		// then jwtAuthMiddleware runs for JWT-based paths.
 		r.Group(func(r chi.Router) {
-			r.Use(sseTokenQueryParamMiddleware)
+			r.Use(s.sseAuthMiddleware)
 			r.Use(s.jwtAuthMiddleware)
 			r.Get("/projects/{project}/apps/{app}/logs", s.handleLogs)
 			r.Get("/projects/{project}/events", s.handleProjectEvents)
