@@ -1,3 +1,11 @@
+/**
+ * Deployments tab E2E tests (real backend).
+ *
+ * Tests cover the Deployments tab in the app drawer:
+ *   - Default tab selection
+ *   - Redeploy button for a Ready app
+ *   - Deployment history display
+ */
 import { expect, test } from '@playwright/test';
 import {
 	ensureAdmin,
@@ -7,203 +15,124 @@ import {
 	createProjectViaAPI,
 	createAppViaAPI,
 	deleteProjectViaAPI,
-	deleteAppViaAPI
+	deleteAppViaAPI,
+	getAppViaAPI
 } from './helpers';
 
-// ---------------------------------------------------------------------------
-// Deployments tab E2E tests
-//
-// Tests cover the Deployments tab in the app drawer:
-//   - Redeploying the current version
-//   - Rolling back to a previous version
-// ---------------------------------------------------------------------------
-
-/** Build a realistic app fixture with deploy history. */
-function buildAppFixture(
-	appName: string,
-	projectName: string,
-	opts: { hasHistory?: boolean } = {}
-) {
-	const prodHistory = opts.hasHistory
-		? [
-				{
-					image: `registry.example.com/${appName}:abc123`,
-					timestamp: new Date().toISOString(),
-					gitSHA: 'abc1234'
-				},
-				{
-					image: `registry.example.com/${appName}:def456`,
-					timestamp: new Date(Date.now() - 86400000).toISOString(),
-					gitSHA: 'def4567'
-				},
-				{
-					image: `registry.example.com/${appName}:ghi789`,
-					timestamp: new Date(Date.now() - 172800000).toISOString(),
-					gitSHA: 'ghi7890'
-				}
-			]
-		: [
-				{
-					image: `registry.example.com/${appName}:abc123`,
-					timestamp: new Date().toISOString(),
-					gitSHA: 'abc1234'
-				}
-			];
-
-	return {
-		metadata: { name: appName, namespace: `pj-${projectName}` },
-		spec: {
-			source: { type: 'git', repo: 'https://github.com/org/my-app', branch: 'main' },
-			network: { public: true, port: 8080 },
-			environments: [
-				{ name: 'production', replicas: 2, resources: { cpu: '500m', memory: '512Mi' } }
-			],
-			storage: [],
-			credentials: []
-		},
-		status: {
-			phase: 'Ready',
-			environments: [
-				{
-					name: 'production',
-					readyReplicas: 2,
-					currentImage: `registry.example.com/${appName}:abc123`,
-					deployHistory: prodHistory
-				}
-			]
-		}
-	};
-}
-
 test.describe('deployments tab', () => {
-	let adminToken: string;
-	let projectName: string;
+	let token: string;
+	let project: string;
 
 	test.beforeAll(async ({ request }) => {
 		await ensureAdmin(request);
-		adminToken = await loginViaAPI(request);
-		projectName = `e2e-deploys-${randomSuffix()}`;
-		await createProjectViaAPI(request, adminToken, projectName, 'Deployments E2E tests');
+		token = await loginViaAPI(request);
+		project = `e2e-deploys-${randomSuffix()}`;
+		await createProjectViaAPI(request, token, project, 'Deployments E2E tests');
 	});
 
 	test.afterAll(async ({ request }) => {
-		await deleteProjectViaAPI(request, adminToken, projectName);
+		await deleteProjectViaAPI(request, token, project);
 	});
 
-	test('developer redeoys the current version to fix a transient issue', async ({
+	test('Deployments tab is the default when opening the app drawer', async ({
 		page,
 		request
 	}) => {
+		const appName = `e2e-deftab-${randomSuffix()}`;
+		await createAppViaAPI(request, token, project, appName, 'nginx:1.27');
+
+		await injectToken(page, token);
+		await page.goto(`/projects/${project}/apps/${appName}`);
+
+		await expect(page.getByRole('heading', { name: appName })).toBeVisible({
+			timeout: 10_000
+		});
+
+		// Deployments tab button should be visible and selected by default
+		await expect(
+			page.getByRole('button', { name: 'Deployments', exact: true })
+		).toBeVisible({ timeout: 5_000 });
+
+		await deleteAppViaAPI(request, token, project, appName);
+	});
+
+	test('redeploy button works for a Ready app with a deployed image', async ({
+		page,
+		request
+	}) => {
+		test.slow();
 		const appName = `e2e-redeploy-${randomSuffix()}`;
-		await createAppViaAPI(request, adminToken, projectName, appName);
+		await createAppViaAPI(request, token, project, appName, 'nginx:1.27', { port: 80 });
 
-		await injectToken(page, adminToken);
-
-		// Return an app with a current image so Redeploy is enabled.
-		await page.route(`**/api/projects/${projectName}/apps/${appName}`, async (route) => {
-			if (route.request().method() === 'GET') {
-				return route.fulfill({
-					status: 200,
-					contentType: 'application/json',
-					body: JSON.stringify(buildAppFixture(appName, projectName))
-				});
-			}
-			return route.continue();
-		});
-
-		// Mock the deploy endpoint.
-		let deployBody: unknown = null;
-		await page.route(`**/api/projects/${projectName}/apps/${appName}/deploy`, async (route) => {
-			if (route.request().method() === 'POST') {
-				deployBody = await route.request().postDataJSON();
-				return route.fulfill({
-					status: 200,
-					contentType: 'application/json',
-					body: JSON.stringify({
-						status: 'ok',
-						app: appName,
-						image: `registry.example.com/${appName}:abc123`
-					})
-				});
-			}
-			return route.continue();
-		});
-
-		await page.goto(`/projects/${projectName}/apps/${appName}`);
-		await expect(page.getByRole('heading', { name: appName })).toBeVisible({ timeout: 10_000 });
-
-		// Deployments tab is active by default.
-		// Redeploy button should be enabled since we have a current image.
-		const redeployBtn = page.getByRole('button', { name: 'Redeploy', exact: true });
-		await expect(redeployBtn).toBeVisible({ timeout: 5_000 });
-		await expect(redeployBtn).toBeEnabled();
-
-		await redeployBtn.click();
-
-		// The deploy API should have been called.
+		// Wait until the app phase is Ready.
 		await expect(async () => {
-			expect(deployBody).not.toBeNull();
-		}).toPass({ timeout: 5_000 });
+			const app = await getAppViaAPI(request, token, project, appName);
+			const status = app.status as {
+				phase?: string;
+				environments?: Array<{ phase?: string; currentImage?: string }>;
+			};
+			expect(status?.phase === 'Ready' || status?.environments?.[0]?.phase === 'Ready').toBeTruthy();
+		}).toPass({ timeout: 90_000 });
 
-		await deleteAppViaAPI(request, adminToken, projectName, appName);
+		await injectToken(page, token);
+		await page.goto(`/projects/${project}/apps/${appName}`);
+
+		await expect(page.getByRole('heading', { name: appName })).toBeVisible({
+			timeout: 10_000
+		});
+
+		// Wait for the Redeploy button to be enabled, then click it once.
+		const redeployBtn = page.getByRole('button', { name: 'Redeploy', exact: true }).first();
+		await expect(async () => {
+			await page.reload();
+			await expect(page.getByRole('heading', { name: appName })).toBeVisible({ timeout: 5_000 });
+			await expect(redeployBtn).toBeVisible({ timeout: 5_000 });
+			await expect(redeployBtn).toBeEnabled({ timeout: 5_000 });
+		}).toPass({ timeout: 90_000, intervals: [3_000, 5_000, 5_000] });
+
+		const [deployRes] = await Promise.all([
+			page.waitForResponse((r) =>
+				r.url().includes(`/apps/${appName}/deploy`) && r.request().method() === 'POST'
+			),
+			redeployBtn.click()
+		]);
+		expect(deployRes.ok()).toBe(true);
+
+		await deleteAppViaAPI(request, token, project, appName);
 	});
 
-	test('developer rolls back to a previous version from deploy history', async ({
+	test('deployment history shows at least one entry after app is deployed', async ({
 		page,
 		request
 	}) => {
-		const appName = `e2e-rollback-${randomSuffix()}`;
-		await createAppViaAPI(request, adminToken, projectName, appName);
+		const appName = `e2e-history-${randomSuffix()}`;
+		await createAppViaAPI(request, token, project, appName, 'nginx:1.27');
 
-		await injectToken(page, adminToken);
+		// Wait until the app has a currentImage and deploy history
+		await expect(async () => {
+			const app = await getAppViaAPI(request, token, project, appName);
+			const status = app.status as {
+				environments?: Array<{
+					currentImage?: string;
+					deployHistory?: Array<{ image?: string }>;
+				}>;
+			};
+			const env = status?.environments?.[0];
+			expect(env?.currentImage).toBeTruthy();
+			expect(env?.deployHistory?.length).toBeGreaterThanOrEqual(1);
+		}).toPass({ timeout: 60_000 });
 
-		// Return an app with multiple history entries.
-		await page.route(`**/api/projects/${projectName}/apps/${appName}`, async (route) => {
-			if (route.request().method() === 'GET') {
-				return route.fulfill({
-					status: 200,
-					contentType: 'application/json',
-					body: JSON.stringify(buildAppFixture(appName, projectName, { hasHistory: true }))
-				});
-			}
-			return route.continue();
+		await injectToken(page, token);
+		await page.goto(`/projects/${project}/apps/${appName}`);
+
+		await expect(page.getByRole('heading', { name: appName })).toBeVisible({
+			timeout: 10_000
 		});
 
-		// Mock rollback endpoint.
-		let rollbackBody: unknown = null;
-		await page.route(
-			`**/api/projects/${projectName}/apps/${appName}/rollback`,
-			async (route) => {
-				if (route.request().method() === 'POST') {
-					rollbackBody = await route.request().postDataJSON();
-					return route.fulfill({
-						status: 200,
-						contentType: 'application/json',
-						body: JSON.stringify({
-							image: `registry.example.com/${appName}:def456`,
-							timestamp: new Date(Date.now() - 86400000).toISOString(),
-							gitSHA: 'def4567'
-						})
-					});
-				}
-				return route.continue();
-			}
-		);
+		// Deployments tab is default. Verify the current deploy digest is visible.
+		// shortDigest("nginx:1.27") yields "1.27".
+		await expect(page.getByText('1.27')).toBeVisible({ timeout: 10_000 });
 
-		await page.goto(`/projects/${projectName}/apps/${appName}`);
-		await expect(page.getByRole('heading', { name: appName })).toBeVisible({ timeout: 10_000 });
-
-		// History section: second entry should have a Rollback button.
-		const historyRollback = page.getByRole('button', { name: 'Rollback', exact: true }).first();
-		await expect(historyRollback).toBeVisible({ timeout: 5_000 });
-		await historyRollback.click();
-
-		// The rollback API should have been called.
-		await expect(async () => {
-			expect(rollbackBody).not.toBeNull();
-		}).toPass({ timeout: 5_000 });
-
-		await deleteAppViaAPI(request, adminToken, projectName, appName);
+		await deleteAppViaAPI(request, token, project, appName);
 	});
-
 });

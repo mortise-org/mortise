@@ -1,608 +1,616 @@
-import { test, expect, type Page } from '@playwright/test';
+/**
+ * VariablesTab E2E tests (real backend, no mocks).
+ *
+ * Tests cover the full VariablesTab surface: per-env sections, add/edit/delete
+ * variables, raw/import mode, shared variables (project-scoped), and env
+ * switching.
+ *
+ * All API calls hit the real backend. Auth is injected via injectToken().
+ */
+import { expect, test } from '@playwright/test';
+import {
+  randomSuffix,
+  ensureAdmin,
+  loginViaAPI,
+  injectToken,
+  createProjectViaAPI,
+  deleteProjectViaAPI,
+  getEnvViaAPI,
+  getAppViaAPI
+} from './helpers';
 
 // ---------------------------------------------------------------------------
-// VariablesTab E2E tests (mocked backend — no live cluster required)
-//
-// All API calls are intercepted with page.route(). Auth is injected directly
-// into localStorage. Tests cover the full VariablesTab surface: per-env
-// section, project variables section, add/edit/delete, raw/import mode.
-//
-// Layout: per-env section (active env), then a "Project" variables section
-// (project-scoped, shared across all apps and environments).
+// Helper: create a staging environment via API.
 // ---------------------------------------------------------------------------
-
-const mockProject = {
-  name: 'my-project',
-  namespace: 'project-my-project',
-  phase: 'Ready' as const,
-  appCount: 1,
-  description: ''
-};
-
-const mockApp = {
-  metadata: { name: 'web-app', namespace: 'project-my-project' },
-  spec: {
-    source: { type: 'image' as const, image: 'nginx:1.27' },
-    network: { public: true, port: 8080 },
-    environments: [
-      { name: 'production', replicas: 1 },
-      { name: 'staging', replicas: 1 }
-    ],
-    sharedVars: [
-      { name: 'SHARED_KEY', value: 'shared-value' }
-    ],
-    storage: [],
-    credentials: []
-  },
-  status: {
-    phase: 'Ready' as const,
-    environments: [
-      { name: 'production', readyReplicas: 1, currentImage: 'nginx:1.27', deployHistory: [] }
-    ]
+async function createEnvViaAPI(
+  request: import('@playwright/test').APIRequestContext,
+  token: string,
+  project: string,
+  name: string
+): Promise<void> {
+  const res = await request.post(`/api/projects/${encodeURIComponent(project)}/environments`, {
+    headers: { Authorization: `Bearer ${token}` },
+    data: { name, displayOrder: 1 }
+  });
+  if (!res.ok()) {
+    const body = await res.text().catch(() => '');
+    throw new Error(`create env failed: HTTP ${res.status()} ${body}`);
   }
-};
-
-async function injectAuth(page: Page) {
-  // Use addInitScript so localStorage is set BEFORE any page script runs.
-  // Navigating to '/' first would hit the real /api/projects (unmocked at that
-  // point), receive 401, auto-redirect to /login, and clear localStorage —
-  // breaking any subsequent navigation.
-  await page.addInitScript(() => {
-    window.localStorage.setItem('mortise_token', 'test-token');
-    window.localStorage.setItem(
-      'mortise_user',
-      JSON.stringify({ email: 'admin@example.com', role: 'admin' })
-    );
-  });
-}
-
-async function setupCommonMocks(page: Page, appOverride = mockApp) {
-  await page.route('**/api/auth/status', (r) => r.fulfill({ json: { setupRequired: false } }));
-  await page.route('**/api/projects', (r) => r.fulfill({ json: [mockProject] }));
-  await page.route('**/api/projects/my-project', (r) => r.fulfill({ json: mockProject }));
-  await page.route('**/api/projects/my-project/apps', (r) => r.fulfill({ json: [appOverride] }));
-  await page.route('**/api/projects/my-project/apps/web-app', (r) => r.fulfill({ json: appOverride }));
-  await page.route('**/api/projects/my-project/activity', (r) => r.fulfill({ json: [] }));
-  await page.route('**/api/projects/my-project/apps/web-app/domains*', (r) =>
-    r.fulfill({ json: { primary: 'web-app.example.com', custom: [] } })
-  );
-  await page.route('**/api/projects/my-project/apps/web-app/tokens', (r) =>
-    r.fulfill({ json: [] })
-  );
-  await page.route('**/api/projects/my-project/apps/web-app/secrets', (r) =>
-    r.fulfill({ json: [] })
-  );
-}
-
-async function goToVariablesTab(page: Page, appOverride = mockApp) {
-  await injectAuth(page);
-  await setupCommonMocks(page, appOverride);
-  await page.route('**/api/projects/my-project/apps/web-app/env*', (r) =>
-    r.fulfill({ json: [] })
-  );
-  await page.goto('/projects/my-project/apps/web-app');
-  await expect(page.getByRole('button', { name: 'Deployments', exact: true })).toBeVisible({ timeout: 8_000 });
-  await page.getByRole('button', { name: 'Variables', exact: true }).click();
 }
 
 // ---------------------------------------------------------------------------
-// Test 1: Variables tab shows env section and project variables section
+// Helper: create an app with sharedVars and multi-env support.
 // ---------------------------------------------------------------------------
-test('variables tab shows env section and project variables section', async ({ page }) => {
-  await injectAuth(page);
-  await setupCommonMocks(page);
-
-  await page.route('**/api/projects/my-project/apps/web-app/env*', (r) =>
-    r.fulfill({ json: [] })
+async function getSharedVarsViaAPI(
+  request: import('@playwright/test').APIRequestContext,
+  token: string,
+  project: string
+): Promise<Array<{ name: string; value: string }>> {
+  const res = await request.get(
+    `/api/projects/${encodeURIComponent(project)}/shared-vars`,
+    { headers: { Authorization: `Bearer ${token}` } }
   );
+  if (!res.ok()) return [];
+  return (await res.json()) ?? [];
+}
 
-  await page.goto('/projects/my-project/apps/web-app');
-  await expect(page.getByRole('button', { name: 'Deployments', exact: true })).toBeVisible({ timeout: 8_000 });
-  await page.getByRole('button', { name: 'Variables', exact: true }).click();
-
-  // "Project" section header with scope label.
-  await expect(page.getByText('Project')).toBeVisible({ timeout: 8_000 });
-  await expect(page.getByText('all apps & environments')).toBeVisible();
-});
-
-// ---------------------------------------------------------------------------
-// Test 2: Variables tab loads existing variables from GET /env/production
-// ---------------------------------------------------------------------------
-test('variables tab shows existing variables loaded from env/production', async ({ page }) => {
-  await injectAuth(page);
-  await setupCommonMocks(page);
-
-  await page.route('**/api/projects/my-project/apps/web-app/env?environment=production', (r) =>
-    r.fulfill({ json: [{ name: 'APP_ENV', value: 'production' }, { name: 'DEBUG', value: 'false' }] })
-  );
-  await page.route('**/api/projects/my-project/apps/web-app/env?environment=staging', (r) =>
-    r.fulfill({ json: [] })
-  );
-
-  await page.goto('/projects/my-project/apps/web-app');
-  await expect(page.getByRole('button', { name: 'Deployments', exact: true })).toBeVisible({ timeout: 8_000 });
-  await page.getByRole('button', { name: 'Variables', exact: true }).click();
-
-  // Both variable keys must be visible in the production section (expanded by default).
-  await expect(page.getByText('APP_ENV')).toBeVisible({ timeout: 8_000 });
-  await expect(page.getByText('DEBUG')).toBeVisible();
-});
-
-// ---------------------------------------------------------------------------
-// Test 3: Add a new variable via form → PUT called with new key
-// ---------------------------------------------------------------------------
-test('add new variable via form calls PUT with the new key', async ({ page }) => {
-  let capturedBody: unknown;
-
-  await injectAuth(page);
-  await setupCommonMocks(page);
-
-  await page.route('**/api/projects/my-project/apps/web-app/env*', async (route) => {
-    if (route.request().method() === 'PUT') {
-      capturedBody = JSON.parse(route.request().postData() ?? '[]');
-      return route.fulfill({ status: 204 });
-    }
-    // GET: return one existing var
-    return route.fulfill({ json: [{ name: 'APP_ENV', value: 'production' }] });
-  });
-
-  await page.goto('/projects/my-project/apps/web-app');
-  await expect(page.getByRole('button', { name: 'Deployments', exact: true })).toBeVisible({ timeout: 8_000 });
-  await page.getByRole('button', { name: 'Variables', exact: true }).click();
-
-  // Wait for production section to be expanded and show New variable button.
-  await expect(page.getByText('APP_ENV')).toBeVisible({ timeout: 8_000 });
-
-  // Click the New variable button in the production section (first one).
-  await page.getByRole('button', { name: 'New variable', exact: true }).first().click();
-
-  // Fill key and value.
-  await page.getByPlaceholder('VARIABLE_NAME').first().fill('MY_NEW_VAR');
-  await page.getByPlaceholder('value or binding ref').first().fill('hello-world');
-
-  // Click Add to save.
-  await page.getByRole('button', { name: 'Add' }).first().click();
-
-  // Wait for the PUT to be captured.
-  await expect(async () => {
-    expect(capturedBody).toBeDefined();
-    const body = capturedBody as Array<{ name: string; value: string }>;
-    const keys = body.map(v => v.name);
-    expect(keys).toContain('APP_ENV');
-    expect(keys).toContain('MY_NEW_VAR');
-    const myVar = body.find(v => v.name === 'MY_NEW_VAR');
-    expect(myVar?.value).toBe('hello-world');
-  }).toPass({ timeout: 5_000 });
-});
-
-// ---------------------------------------------------------------------------
-// Test 4: Delete a variable (Trash button) → PUT called without that key
-// ---------------------------------------------------------------------------
-test('delete a variable calls PUT without the deleted key', async ({ page }) => {
-  let capturedBody: unknown;
-
-  await injectAuth(page);
-  await setupCommonMocks(page);
-
-  await page.route('**/api/projects/my-project/apps/web-app/env*', async (route) => {
-    if (route.request().method() === 'PUT') {
-      capturedBody = JSON.parse(route.request().postData() ?? '[]');
-      return route.fulfill({ status: 204 });
-    }
-    return route.fulfill({ json: [{ name: 'KEEP_ME', value: 'yes' }, { name: 'DELETE_ME', value: 'bye' }] });
-  });
-
-  await page.goto('/projects/my-project/apps/web-app');
-  await expect(page.getByRole('button', { name: 'Deployments', exact: true })).toBeVisible({ timeout: 8_000 });
-  await page.getByRole('button', { name: 'Variables', exact: true }).click();
-
-  // Wait for variables to appear.
-  await expect(page.getByText('DELETE_ME')).toBeVisible({ timeout: 8_000 });
-
-  // The trash button is only visible on hover. Hover the row then click.
-  const row = page.locator('div.group').filter({ hasText: 'DELETE_ME' });
-  await row.hover();
-  await row.getByRole('button').click();
-
-  await expect(async () => {
-    expect(capturedBody).toBeDefined();
-    const body = capturedBody as Array<{ name: string; value: string }>;
-    const names = body.map(v => v.name);
-    expect(names).toContain('KEEP_ME');
-    expect(names).not.toContain('DELETE_ME');
-  }).toPass({ timeout: 5_000 });
-});
-
-// ---------------------------------------------------------------------------
-// Test 5: Inline edit a value → "Save 1 changes" button → PUT with updated value
-// ---------------------------------------------------------------------------
-test('inline edit calls PUT with updated value via Save changes button', async ({ page }) => {
-  let capturedBody: unknown;
-
-  await injectAuth(page);
-  await setupCommonMocks(page);
-
-  await page.route('**/api/projects/my-project/apps/web-app/env*', async (route) => {
-    if (route.request().method() === 'PUT') {
-      capturedBody = JSON.parse(route.request().postData() ?? '[]');
-      return route.fulfill({ status: 204 });
-    }
-    return route.fulfill({ json: [{ name: 'APP_ENV', value: 'old-value' }] });
-  });
-
-  await page.goto('/projects/my-project/apps/web-app');
-  await expect(page.getByRole('button', { name: 'Deployments', exact: true })).toBeVisible({ timeout: 8_000 });
-  await page.getByRole('button', { name: 'Variables', exact: true }).click();
-
-  // Wait for the value input to appear.
-  await expect(page.getByText('APP_ENV')).toBeVisible({ timeout: 8_000 });
-
-  // The value input is the text input within the var row.
-  const valueInput = page.locator('input[placeholder="(empty)"]').first();
-  await valueInput.fill('new-value');
-
-  // The "Save 1 changes" button should now appear.
-  const saveBtn = page.getByRole('button', { name: /Save \d+ change/ });
-  await expect(saveBtn).toBeVisible({ timeout: 3_000 });
-  await saveBtn.click();
-
-  await expect(async () => {
-    expect(capturedBody).toBeDefined();
-    const body = capturedBody as Array<{ name: string; value: string }>;
-    const envVar = body.find(v => v.name === 'APP_ENV');
-    expect(envVar?.value).toBe('new-value');
-  }).toPass({ timeout: 5_000 });
-});
-
-// ---------------------------------------------------------------------------
-// Test 6: Switch to "Raw / Import" mode → textarea appears (per-section)
-// ---------------------------------------------------------------------------
-test('switching to Raw mode in a section shows the textarea', async ({ page }) => {
-  await injectAuth(page);
-  await setupCommonMocks(page);
-
-  await page.route('**/api/projects/my-project/apps/web-app/env*', (r) =>
-    r.fulfill({ json: [] })
-  );
-
-  await page.goto('/projects/my-project/apps/web-app');
-  await expect(page.getByRole('button', { name: 'Deployments', exact: true })).toBeVisible({ timeout: 8_000 });
-  await page.getByRole('button', { name: 'Variables', exact: true }).click();
-
-  // Wait for production section to be visible.
-  await expect(page.getByRole('button', { name: 'production', exact: true })).toBeVisible({ timeout: 8_000 });
-
-  // Click the "Raw" mode button in the production section (first Raw button).
-  await page.getByRole('button', { name: 'Raw', exact: true }).first().click();
-
-  // Textarea with the dotenv placeholder should appear.
-  const textarea = page.getByPlaceholder(/DATABASE_URL/);
-  await expect(textarea).toBeVisible({ timeout: 5_000 });
-
-  // The Import button should also appear.
-  await expect(page.getByRole('button', { name: 'Import', exact: true })).toBeVisible();
-});
-
-// ---------------------------------------------------------------------------
-// Test 7: Raw import calls PUT /env with merged body
-// ---------------------------------------------------------------------------
-test('raw import calls PUT env with correct body', async ({ page }) => {
-  let capturedBody: unknown;
-
-  await injectAuth(page);
-  await setupCommonMocks(page);
-
-  await page.route('**/api/projects/my-project/apps/web-app/env*', async (route) => {
-    if (route.request().method() === 'PUT') {
-      capturedBody = JSON.parse(route.request().postData() ?? '[]');
-      return route.fulfill({ status: 204 });
-    }
-    return route.fulfill({ json: [] });
-  });
-
-  await page.goto('/projects/my-project/apps/web-app');
-  await expect(page.getByRole('button', { name: 'Deployments', exact: true })).toBeVisible({ timeout: 8_000 });
-  await page.getByRole('button', { name: 'Variables', exact: true }).click();
-
-  // Switch to raw mode in production section.
-  await expect(page.getByRole('button', { name: 'production', exact: true })).toBeVisible({ timeout: 8_000 });
-  await page.getByRole('button', { name: 'Raw', exact: true }).first().click();
-
-  const textarea = page.getByPlaceholder(/DATABASE_URL/);
-  await expect(textarea).toBeVisible({ timeout: 5_000 });
-  await textarea.fill('KEY=value\nFOO=bar');
-
-  await page.getByRole('button', { name: 'Import', exact: true }).click();
-
-  await expect(async () => {
-    expect(capturedBody).toBeDefined();
-    const body = capturedBody as Array<{ name: string; value: string }>;
-    const names = body.map(v => v.name);
-    expect(names).toContain('KEY');
-    expect(names).toContain('FOO');
-    const keyVar = body.find(v => v.name === 'KEY');
-    expect(keyVar?.value).toBe('value');
-  }).toPass({ timeout: 5_000 });
-});
-
-// ---------------------------------------------------------------------------
-// Test 8: Shared variables section shows vars from app.spec.sharedVars
-// ---------------------------------------------------------------------------
-test('shared variables section renders vars from app.spec.sharedVars', async ({ page }) => {
-  await injectAuth(page);
-  await setupCommonMocks(page); // mockApp has sharedVars: [{ name: 'SHARED_KEY', value: 'shared-value' }]
-
-  await page.route('**/api/projects/my-project/apps/web-app/env*', (r) =>
-    r.fulfill({ json: [] })
-  );
-
-  await page.goto('/projects/my-project/apps/web-app');
-  await expect(page.getByRole('button', { name: 'Deployments', exact: true })).toBeVisible({ timeout: 8_000 });
-  await page.getByRole('button', { name: 'Variables', exact: true }).click();
-
-  // Shared vars section header is always visible.
-  await expect(page.getByText('Shared variables')).toBeVisible({ timeout: 8_000 });
-
-  // SHARED_KEY from spec.sharedVars should be rendered without any API fetch.
-  await expect(page.getByText('SHARED_KEY')).toBeVisible({ timeout: 5_000 });
-});
-
-// ---------------------------------------------------------------------------
-// Test 9: Adding a shared variable calls updateApp (PUT /apps/:a) with sharedVars
-// ---------------------------------------------------------------------------
-test('adding a shared variable calls updateApp with sharedVars in spec', async ({ page }) => {
-  let capturedAppBody: unknown;
-
-  const appWithNoSharedVars = {
-    ...mockApp,
-    spec: { ...mockApp.spec, sharedVars: [] }
-  };
-
-  await injectAuth(page);
-  await setupCommonMocks(page, appWithNoSharedVars);
-
-  await page.route('**/api/projects/my-project/apps/web-app/env*', (r) =>
-    r.fulfill({ json: [] })
-  );
-
-  // updateApp is PUT /api/projects/:p/apps/:a (no trailing path).
-  await page.route('**/api/projects/my-project/apps/web-app', async (route) => {
-    if (route.request().method() === 'PUT') {
-      capturedAppBody = JSON.parse(route.request().postData() ?? '{}');
-      return route.fulfill({ json: { ...appWithNoSharedVars, spec: JSON.parse(route.request().postData() ?? '{}') } });
-    }
-    return route.fulfill({ json: appWithNoSharedVars });
-  });
-
-  await page.goto('/projects/my-project/apps/web-app');
-  await expect(page.getByRole('button', { name: 'Deployments', exact: true })).toBeVisible({ timeout: 8_000 });
-  await page.getByRole('button', { name: 'Variables', exact: true }).click();
-
-  // Wait for shared variables section to appear.
-  await expect(page.getByText('Shared variables')).toBeVisible({ timeout: 8_000 });
-
-  // Click the New shared variable button in the shared section.
-  await page.getByRole('button', { name: 'New shared variable', exact: true }).click();
-
-  // Fill in key and value in the shared section's input fields (last pair).
-  await page.getByPlaceholder('VARIABLE_NAME').last().fill('GLOBAL_FLAG');
-  await page.getByPlaceholder('value or binding ref').last().fill('true');
-  await page.getByRole('button', { name: 'Add' }).last().click();
-
-  await expect(async () => {
-    expect(capturedAppBody).toBeDefined();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const body = capturedAppBody as any;
-    expect(body.sharedVars).toBeDefined();
-    const sharedVar = (body.sharedVars as Array<{ name: string; value: string }>).find(
-      v => v.name === 'GLOBAL_FLAG'
+async function setSharedVarsViaAPI(
+  request: import('@playwright/test').APIRequestContext,
+  token: string,
+  project: string,
+  vars: Array<{ name: string; value: string }>
+): Promise<void> {
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    const res = await request.put(
+      `/api/projects/${encodeURIComponent(project)}/shared-vars`,
+      { headers: { Authorization: `Bearer ${token}` }, data: vars }
     );
-    expect(sharedVar?.value).toBe('true');
-  }).toPass({ timeout: 5_000 });
-});
-
-// ---------------------------------------------------------------------------
-// Test 10: Collapsing an env section hides its variables
-// ---------------------------------------------------------------------------
-test('collapsing an env section hides its variables', async ({ page }) => {
-  await injectAuth(page);
-  await setupCommonMocks(page);
-
-  await page.route('**/api/projects/my-project/apps/web-app/env?environment=production', (r) =>
-    r.fulfill({ json: [{ name: 'PROD_VAR', value: 'yes' }] })
-  );
-  await page.route('**/api/projects/my-project/apps/web-app/env?environment=staging', (r) =>
-    r.fulfill({ json: [] })
-  );
-
-  await page.goto('/projects/my-project/apps/web-app');
-  await expect(page.getByRole('button', { name: 'Deployments', exact: true })).toBeVisible({ timeout: 8_000 });
-  await page.getByRole('button', { name: 'Variables', exact: true }).click();
-
-  // Production is expanded by default — variable should be visible.
-  await expect(page.getByText('PROD_VAR')).toBeVisible({ timeout: 8_000 });
-
-  // Click the production section header button to collapse it.
-  await page.getByRole('button', { name: 'production', exact: true }).click();
-
-  // Variable should no longer be visible.
-  await expect(page.getByText('PROD_VAR')).not.toBeVisible({ timeout: 3_000 });
-});
-
-// ---------------------------------------------------------------------------
-// Test 11: Staging section is collapsed by default, expands on click
-// ---------------------------------------------------------------------------
-test('staging section is collapsed by default and expands on click', async ({ page }) => {
-  await injectAuth(page);
-  await setupCommonMocks(page);
-
-  await page.route('**/api/projects/my-project/apps/web-app/env?environment=production', (r) =>
-    r.fulfill({ json: [] })
-  );
-  await page.route('**/api/projects/my-project/apps/web-app/env?environment=staging', (r) =>
-    r.fulfill({ json: [{ name: 'STAGE_VAR', value: 'maybe' }] })
-  );
-
-  await page.goto('/projects/my-project/apps/web-app');
-  await expect(page.getByRole('button', { name: 'Deployments', exact: true })).toBeVisible({ timeout: 8_000 });
-  await page.getByRole('button', { name: 'Variables', exact: true }).click();
-
-  // STAGE_VAR is in staging which is collapsed — should not be visible yet.
-  await expect(page.getByRole('button', { name: 'staging', exact: true })).toBeVisible({ timeout: 8_000 });
-  await expect(page.getByText('STAGE_VAR')).not.toBeVisible();
-
-  // Click to expand staging section.
-  await page.getByRole('button', { name: 'staging', exact: true }).click();
-
-  // Staging vars should now be visible.
-  await expect(page.getByText('STAGE_VAR')).toBeVisible({ timeout: 5_000 });
-});
-
-// ---------------------------------------------------------------------------
-// Test 12: Edit an existing shared variable → Save → updateApp called with updated value
-// ---------------------------------------------------------------------------
-test('inline edit of shared variable calls updateApp with updated value', async ({ page }) => {
-  let capturedAppBody: unknown;
-
-  await injectAuth(page);
-  await setupCommonMocks(page); // mockApp has sharedVars: [{ name: 'SHARED_KEY', value: 'shared-value' }]
-
-  await page.route('**/api/projects/my-project/apps/web-app/env*', (r) =>
-    r.fulfill({ json: [] })
-  );
-
-  await page.route('**/api/projects/my-project/apps/web-app', async (route) => {
-    if (route.request().method() === 'PUT') {
-      capturedAppBody = JSON.parse(route.request().postData() ?? '{}');
-      return route.fulfill({ json: { ...mockApp, spec: JSON.parse(route.request().postData() ?? '{}') } });
+    if (res.ok()) return;
+    if (res.status() === 500) {
+      const body = await res.text().catch(() => '');
+      if (body.includes('has been modified')) {
+        await new Promise(r => setTimeout(r, 500));
+        continue;
+      }
+      throw new Error(`setSharedVars failed: HTTP ${res.status()} ${body}`);
     }
-    return route.fulfill({ json: mockApp });
+    const body = await res.text().catch(() => '');
+    throw new Error(`setSharedVars failed: HTTP ${res.status()} ${body}`);
+  }
+  throw new Error('setSharedVars: timed out retrying resource conflicts');
+}
+
+async function createAppWithSharedVars(
+  request: import('@playwright/test').APIRequestContext,
+  token: string,
+  project: string,
+  appName: string,
+  sharedVars: Array<{ name: string; value: string }> = []
+): Promise<void> {
+  const res = await request.post(`/api/projects/${encodeURIComponent(project)}/apps`, {
+    headers: { Authorization: `Bearer ${token}` },
+    data: {
+      name: appName,
+      spec: {
+        source: { type: 'image', image: 'nginx:1.27' },
+        network: { public: true },
+        environments: [
+          { name: 'production', replicas: 1 },
+          { name: 'staging', replicas: 1 }
+        ]
+      }
+    }
   });
+  if (!res.ok()) {
+    const body = await res.text().catch(() => '');
+    throw new Error(`create app with sharedVars failed: HTTP ${res.status()} ${body}`);
+  }
+  if (sharedVars.length > 0) {
+    await setSharedVarsViaAPI(request, token, project, sharedVars);
+  }
+}
 
-  await page.goto('/projects/my-project/apps/web-app');
-  await expect(page.getByRole('button', { name: 'Deployments', exact: true })).toBeVisible({ timeout: 8_000 });
-  await page.getByRole('button', { name: 'Variables', exact: true }).click();
-
-  // Wait for SHARED_KEY to appear in the shared section.
-  await expect(page.getByText('SHARED_KEY')).toBeVisible({ timeout: 8_000 });
-
-  // Find the value input for SHARED_KEY — it's the last input[placeholder="(empty)"] on the page
-  // (shared section is rendered after all env sections).
-  const valueInput = page.locator('input[placeholder="(empty)"]').last();
-  await valueInput.fill('updated-value');
-
-  // The "Save 1 changes" button should appear in the shared section.
-  const saveBtn = page.getByRole('button', { name: /Save \d+ change/ });
-  await expect(saveBtn).toBeVisible({ timeout: 3_000 });
-  await saveBtn.click();
-
-  await expect(async () => {
-    expect(capturedAppBody).toBeDefined();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const body = capturedAppBody as any;
-    expect(body.sharedVars).toBeDefined();
-    const sharedVar = (body.sharedVars as Array<{ name: string; value: string }>).find(
-      v => v.name === 'SHARED_KEY'
+// ---------------------------------------------------------------------------
+// Helper: seed env vars via PUT.
+// ---------------------------------------------------------------------------
+async function putEnvVars(
+  request: import('@playwright/test').APIRequestContext,
+  token: string,
+  project: string,
+  appName: string,
+  environment: string,
+  vars: Array<{ name: string; value: string }>
+): Promise<void> {
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    const res = await request.put(
+      `/api/projects/${encodeURIComponent(project)}/apps/${encodeURIComponent(appName)}/env?environment=${encodeURIComponent(environment)}`,
+      {
+        headers: { Authorization: `Bearer ${token}` },
+        data: vars
+      }
     );
-    expect(sharedVar?.value).toBe('updated-value');
-  }).toPass({ timeout: 5_000 });
+    if (res.ok()) return;
+    const body = await res.text().catch(() => '');
+    if (res.status() === 500 && body.includes('has been modified')) {
+      await new Promise(r => setTimeout(r, 500));
+      continue;
+    }
+    if (res.status() === 404 && body.includes('not found')) {
+      await new Promise(r => setTimeout(r, 500));
+      continue;
+    }
+    throw new Error(`putEnvVars failed: HTTP ${res.status()} ${body}`);
+  }
+  throw new Error('putEnvVars: timed out retrying resource conflicts');
+}
+
+// ---------------------------------------------------------------------------
+// Helper: navigate to the Variables tab of an app.
+// ---------------------------------------------------------------------------
+async function goToVariablesTab(
+  page: import('@playwright/test').Page,
+  project: string,
+  appName: string
+): Promise<void> {
+  await page.goto(`/projects/${project}/apps/${appName}`);
+  await expect(page.getByRole('button', { name: 'Deployments', exact: true })).toBeVisible({ timeout: 15_000 });
+  await page.getByRole('button', { name: 'Variables', exact: true }).click();
+}
+
+// ---------------------------------------------------------------------------
+// Helper: click the + (add) button in a section identified by its heading text.
+// The Runtime section contains "Runtime - {env}", the Project section contains
+// "all apps & environments". We find the section's rounded-lg container and
+// click the last button that contains an SVG (the Plus icon button).
+// ---------------------------------------------------------------------------
+async function clickPlusButton(
+  page: import('@playwright/test').Page,
+  sectionText: string
+): Promise<void> {
+  const section = page.locator('.rounded-lg.border').filter({ hasText: sectionText }).first();
+  // The + button is the last button in the header row that contains an SVG icon
+  const header = section.locator('.flex.items-center.justify-between').first();
+  await header.locator('button:has(svg)').last().click();
+}
+
+// ---------------------------------------------------------------------------
+// Tests 1-7, 10: single-env app (production only)
+// ---------------------------------------------------------------------------
+test.describe('variables tab - env vars (production)', () => {
+  let token: string;
+  let project: string;
+  let appName: string;
+
+  test.beforeAll(async ({ request }) => {
+    await ensureAdmin(request);
+    token = await loginViaAPI(request);
+    project = `e2e-vars-${randomSuffix()}`;
+    appName = `vars-app-${randomSuffix()}`;
+    await createProjectViaAPI(request, token, project);
+    await createAppWithSharedVars(request, token, project, appName);
+  });
+
+  test.afterAll(async ({ request }) => {
+    await deleteProjectViaAPI(request, token, project);
+  });
+
+  // -------------------------------------------------------------------------
+  // Test 1: Variables tab shows env section and project variables section
+  // -------------------------------------------------------------------------
+  test('variables tab shows env section and project variables section', async ({ page }) => {
+    await injectToken(page, token);
+    await goToVariablesTab(page, project, appName);
+
+    // The Runtime section heading shows "Runtime - production"
+    await expect(page.getByText('Runtime - production')).toBeVisible({ timeout: 8_000 });
+    // The Project section has the subtitle "all apps & environments"
+    await expect(page.getByText('all apps & environments')).toBeVisible();
+  });
+
+  // -------------------------------------------------------------------------
+  // Test 2: Variables tab loads existing variables
+  // -------------------------------------------------------------------------
+  test('variables tab shows existing variables loaded from env/production', async ({ page, request }) => {
+    // Seed vars via API first.
+    await putEnvVars(request, token, project, appName, 'production', [
+      { name: 'APP_ENV', value: 'production' },
+      { name: 'DEBUG', value: 'false' }
+    ]);
+
+    await injectToken(page, token);
+    await goToVariablesTab(page, project, appName);
+
+    await expect(page.getByText('APP_ENV')).toBeVisible({ timeout: 8_000 });
+    await expect(page.getByText('DEBUG')).toBeVisible();
+
+    // Cleanup: remove seeded vars so other tests start clean.
+    await putEnvVars(request, token, project, appName, 'production', []);
+  });
+
+  // -------------------------------------------------------------------------
+  // Test 3: Add a new variable via form, verify via API
+  // -------------------------------------------------------------------------
+  test('add new variable via form persists to backend', async ({ page, request }) => {
+    // Seed one existing var so the section is expanded.
+    await putEnvVars(request, token, project, appName, 'production', [
+      { name: 'APP_ENV', value: 'production' }
+    ]);
+
+    await injectToken(page, token);
+    await goToVariablesTab(page, project, appName);
+
+    await expect(page.getByText('APP_ENV')).toBeVisible({ timeout: 8_000 });
+
+    // Click the + button in the Runtime section to show the new variable row.
+    await clickPlusButton(page, 'Runtime - production');
+
+    await page.getByPlaceholder('VARIABLE_NAME').first().fill('MY_NEW_VAR');
+    await page.getByPlaceholder('value', { exact: true }).first().fill('hello-world');
+
+    await page.getByRole('button', { name: 'Add', exact: true }).first().click();
+
+    // Verify via API.
+    await expect(async () => {
+      const envVars = await getEnvViaAPI(request, token, project, appName, 'production');
+      const names = envVars.map(v => v.name);
+      expect(names).toContain('APP_ENV');
+      expect(names).toContain('MY_NEW_VAR');
+      const myVar = envVars.find(v => v.name === 'MY_NEW_VAR');
+      expect(myVar?.value).toBe('hello-world');
+    }).toPass({ timeout: 10_000 });
+
+    // Cleanup.
+    await putEnvVars(request, token, project, appName, 'production', []);
+  });
+
+  // -------------------------------------------------------------------------
+  // Test 4: Delete a variable, verify via API
+  // -------------------------------------------------------------------------
+  test('delete a variable removes it from backend', async ({ page, request }) => {
+    await putEnvVars(request, token, project, appName, 'production', [
+      { name: 'KEEP_ME', value: 'yes' },
+      { name: 'DELETE_ME', value: 'bye' }
+    ]);
+
+    await injectToken(page, token);
+    await goToVariablesTab(page, project, appName);
+
+    await expect(page.getByText('DELETE_ME')).toBeVisible({ timeout: 8_000 });
+
+    // Hover the row and click the trash button (last button in the row).
+    const row = page.locator('div.group').filter({ hasText: 'DELETE_ME' });
+    await row.hover();
+    await row.getByRole('button').last().click();
+
+    // Verify via API.
+    await expect(async () => {
+      const envVars = await getEnvViaAPI(request, token, project, appName, 'production');
+      const names = envVars.map(v => v.name);
+      expect(names).toContain('KEEP_ME');
+      expect(names).not.toContain('DELETE_ME');
+    }).toPass({ timeout: 10_000 });
+
+    // Cleanup.
+    await putEnvVars(request, token, project, appName, 'production', []);
+  });
+
+  // -------------------------------------------------------------------------
+  // Test 5: Inline edit a value, verify via API
+  // -------------------------------------------------------------------------
+  test('inline edit calls PUT with updated value via Save changes button', async ({ page, request }) => {
+    await putEnvVars(request, token, project, appName, 'production', [
+      { name: 'APP_ENV', value: 'old-value' }
+    ]);
+
+    await injectToken(page, token);
+    await goToVariablesTab(page, project, appName);
+
+    await expect(page.getByText('APP_ENV')).toBeVisible({ timeout: 8_000 });
+
+    // Values are hidden by default. Click the reveal (eye) button to show the
+    // value input, then edit it. The row is div.group containing "APP_ENV".
+    const row = page.locator('div.group').filter({ hasText: 'APP_ENV' });
+    // Click the eye button (titled "Reveal") to reveal the value input.
+    await row.getByTitle('Reveal').click();
+
+    // Now the value input is visible. Fill with the new value.
+    const valueInput = row.locator('input[type="text"]');
+    await valueInput.fill('new-value');
+
+    const saveBtn = page.getByRole('button', { name: /Save \d+ change/ });
+    await expect(saveBtn).toBeVisible({ timeout: 3_000 });
+    await saveBtn.click();
+
+    // Verify via API.
+    await expect(async () => {
+      const envVars = await getEnvViaAPI(request, token, project, appName, 'production');
+      const envVar = envVars.find(v => v.name === 'APP_ENV');
+      expect(envVar?.value).toBe('new-value');
+    }).toPass({ timeout: 10_000 });
+
+    // Cleanup.
+    await putEnvVars(request, token, project, appName, 'production', []);
+  });
+
+  // -------------------------------------------------------------------------
+  // Test 6: Switch to Raw mode shows textarea
+  // -------------------------------------------------------------------------
+  test('switching to Raw mode in a section shows the textarea', async ({ page }) => {
+    await injectToken(page, token);
+    await goToVariablesTab(page, project, appName);
+
+    // Wait for the Runtime section to be visible.
+    await expect(page.getByText('Runtime - production')).toBeVisible({ timeout: 8_000 });
+
+    // Click the "Raw" toggle button in the Runtime section.
+    const runtimeSection = page.locator('.rounded-lg.border').filter({ hasText: 'Runtime - production' }).first();
+    await runtimeSection.getByText('Raw', { exact: true }).click();
+
+    const textarea = page.getByPlaceholder(/DATABASE_URL/);
+    await expect(textarea).toBeVisible({ timeout: 5_000 });
+
+    // The save button in raw mode is labeled "Save" (not "Import").
+    await expect(runtimeSection.getByRole('button', { name: 'Save', exact: true })).toBeVisible();
+  });
+
+  // -------------------------------------------------------------------------
+  // Test 7: Raw import persists (verify via API)
+  // -------------------------------------------------------------------------
+  test('raw import persists variables to backend', async ({ page, request }) => {
+    // Start clean.
+    await putEnvVars(request, token, project, appName, 'production', []);
+
+    await injectToken(page, token);
+    await goToVariablesTab(page, project, appName);
+
+    // Wait for the Runtime section to be visible.
+    await expect(page.getByText('Runtime - production')).toBeVisible({ timeout: 8_000 });
+
+    // Click the "Raw" toggle button in the Runtime section.
+    const runtimeSection = page.locator('.rounded-lg.border').filter({ hasText: 'Runtime - production' }).first();
+    await runtimeSection.getByText('Raw', { exact: true }).click();
+
+    const textarea = page.getByPlaceholder(/DATABASE_URL/);
+    await expect(textarea).toBeVisible({ timeout: 5_000 });
+    await textarea.fill('KEY=value\nFOO=bar');
+
+    // The save button in raw mode is labeled "Save" (not "Import").
+    await runtimeSection.getByRole('button', { name: 'Save', exact: true }).click();
+
+    // Verify via API.
+    await expect(async () => {
+      const envVars = await getEnvViaAPI(request, token, project, appName, 'production');
+      const names = envVars.map(v => v.name);
+      expect(names).toContain('KEY');
+      expect(names).toContain('FOO');
+      const keyVar = envVars.find(v => v.name === 'KEY');
+      expect(keyVar?.value).toBe('value');
+    }).toPass({ timeout: 10_000 });
+
+    // Cleanup.
+    await putEnvVars(request, token, project, appName, 'production', []);
+  });
 });
 
 // ---------------------------------------------------------------------------
-// Test 13: Delete an existing shared variable → updateApp called without that key
+// Test 11: Staging env via env switcher (multi-env)
 // ---------------------------------------------------------------------------
-test('deleting a shared variable calls updateApp without the deleted key', async ({ page }) => {
-  let capturedAppBody: unknown;
+test.describe('variables tab - staging env via switcher', () => {
+  let token: string;
+  let project: string;
+  let appName: string;
 
-  await injectAuth(page);
-  await setupCommonMocks(page); // mockApp has sharedVars: [{ name: 'SHARED_KEY', value: 'shared-value' }]
-
-  await page.route('**/api/projects/my-project/apps/web-app/env*', (r) =>
-    r.fulfill({ json: [] })
-  );
-
-  await page.route('**/api/projects/my-project/apps/web-app', async (route) => {
-    if (route.request().method() === 'PUT') {
-      capturedAppBody = JSON.parse(route.request().postData() ?? '{}');
-      return route.fulfill({ json: { ...mockApp, spec: JSON.parse(route.request().postData() ?? '{}') } });
-    }
-    return route.fulfill({ json: mockApp });
+  test.beforeAll(async ({ request }) => {
+    await ensureAdmin(request);
+    token = await loginViaAPI(request);
+    project = `e2e-vstage-${randomSuffix()}`;
+    appName = `vstg-app-${randomSuffix()}`;
+    await createProjectViaAPI(request, token, project);
+    await createEnvViaAPI(request, token, project, 'staging');
+    await createAppWithSharedVars(request, token, project, appName);
   });
 
-  await page.goto('/projects/my-project/apps/web-app');
-  await expect(page.getByRole('button', { name: 'Deployments', exact: true })).toBeVisible({ timeout: 8_000 });
-  await page.getByRole('button', { name: 'Variables', exact: true }).click();
+  test.afterAll(async ({ request }) => {
+    await deleteProjectViaAPI(request, token, project);
+  });
 
-  // Wait for SHARED_KEY to appear.
-  await expect(page.getByText('SHARED_KEY')).toBeVisible({ timeout: 8_000 });
+  test('switching to staging env via navbar shows staging variables', async ({ page, request }) => {
+    // Seed a staging var.
+    await putEnvVars(request, token, project, appName, 'staging', [
+      { name: 'STAGE_VAR', value: 'maybe' }
+    ]);
 
-  // Hover the shared var row and click the trash button.
-  const row = page.locator('div.group').filter({ hasText: 'SHARED_KEY' });
-  await row.hover();
-  await row.getByRole('button').click();
+    await injectToken(page, token);
+    await goToVariablesTab(page, project, appName);
 
-  await expect(async () => {
-    expect(capturedAppBody).toBeDefined();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const body = capturedAppBody as any;
-    expect(body.sharedVars).toBeDefined();
-    const names = (body.sharedVars as Array<{ name: string; value: string }>).map(v => v.name);
-    expect(names).not.toContain('SHARED_KEY');
-  }).toPass({ timeout: 5_000 });
+    // Default env is production; staging vars should not be visible.
+    await expect(page.getByText('Runtime - production')).toBeVisible({ timeout: 8_000 });
+    await expect(page.getByText('STAGE_VAR')).not.toBeVisible();
+
+    // Switch to staging via the env switcher in the navbar.
+    // The env switcher button has aria-label "Switch environment: production".
+    const envSwitcher = page.getByLabel(/Switch environment/);
+    await envSwitcher.click();
+
+    // Click the "staging" option in the dropdown.
+    await page.getByRole('button', { name: 'staging' }).click();
+
+    // Now the Runtime section should show "Runtime - staging" and the var.
+    await expect(page.getByText('Runtime - staging')).toBeVisible({ timeout: 8_000 });
+    await expect(page.getByText('STAGE_VAR')).toBeVisible({ timeout: 5_000 });
+
+    // Cleanup.
+    await putEnvVars(request, token, project, appName, 'staging', []);
+  });
 });
 
 // ---------------------------------------------------------------------------
-// Test 14: Shared vars raw import → updateApp called with imported vars
+// Tests 8, 9, 12, 13, 14: shared variables (project-scoped)
 // ---------------------------------------------------------------------------
-test('raw import of shared variables calls updateApp with merged vars', async ({ page }) => {
-  let capturedAppBody: unknown;
+test.describe('variables tab - project variables', () => {
+  let token: string;
+  let project: string;
+  let appName: string;
 
-  const appWithNoSharedVars = {
-    ...mockApp,
-    spec: { ...mockApp.spec, sharedVars: [] }
-  };
-
-  await injectAuth(page);
-  await setupCommonMocks(page, appWithNoSharedVars);
-
-  await page.route('**/api/projects/my-project/apps/web-app/env*', (r) =>
-    r.fulfill({ json: [] })
-  );
-
-  await page.route('**/api/projects/my-project/apps/web-app', async (route) => {
-    if (route.request().method() === 'PUT') {
-      capturedAppBody = JSON.parse(route.request().postData() ?? '{}');
-      return route.fulfill({ json: { ...appWithNoSharedVars, spec: JSON.parse(route.request().postData() ?? '{}') } });
-    }
-    return route.fulfill({ json: appWithNoSharedVars });
+  test.beforeAll(async ({ request }) => {
+    await ensureAdmin(request);
+    token = await loginViaAPI(request);
+    project = `e2e-vshare-${randomSuffix()}`;
+    appName = `vsh-app-${randomSuffix()}`;
+    await createProjectViaAPI(request, token, project);
   });
 
-  await page.goto('/projects/my-project/apps/web-app');
-  await expect(page.getByRole('button', { name: 'Deployments', exact: true })).toBeVisible({ timeout: 8_000 });
-  await page.getByRole('button', { name: 'Variables', exact: true }).click();
+  test.afterAll(async ({ request }) => {
+    await deleteProjectViaAPI(request, token, project);
+  });
 
-  // Wait for shared variables section to appear.
-  await expect(page.getByText('Shared variables')).toBeVisible({ timeout: 8_000 });
+  // -------------------------------------------------------------------------
+  // Test 8: Project variables section shows vars from app spec
+  // -------------------------------------------------------------------------
+  test('project variables section renders vars from shared vars', async ({ page, request }) => {
+    const app = `vsh-render-${randomSuffix()}`;
+    await createAppWithSharedVars(request, token, project, app, [
+      { name: 'SHARED_KEY', value: 'shared-value' }
+    ]);
 
-  // Click the Raw button in the shared section — shared section is last, so use .last().
-  await page.getByRole('button', { name: 'Raw', exact: true }).last().click();
+    await injectToken(page, token);
+    await goToVariablesTab(page, project, app);
 
-  // Fill the textarea with dotenv content.
-  const textarea = page.getByPlaceholder(/DATABASE_URL/).last();
-  await expect(textarea).toBeVisible({ timeout: 5_000 });
-  await textarea.fill('SHARED_IMPORT=abc');
+    // The Project section has the subtitle "all apps & environments".
+    await expect(page.getByText('all apps & environments')).toBeVisible({ timeout: 8_000 });
+    await expect(page.getByText('SHARED_KEY')).toBeVisible({ timeout: 5_000 });
+  });
 
-  // Click Import — shared section Import is last.
-  await page.getByRole('button', { name: 'Import', exact: true }).last().click();
+  // -------------------------------------------------------------------------
+  // Test 9: Adding a project variable updates app spec
+  // -------------------------------------------------------------------------
+  test('adding a project variable persists to app spec', async ({ page, request }) => {
+    const app = `vsh-add-${randomSuffix()}`;
+    await createAppWithSharedVars(request, token, project, app);
 
-  await expect(async () => {
-    expect(capturedAppBody).toBeDefined();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const body = capturedAppBody as any;
-    expect(body.sharedVars).toBeDefined();
-    const sharedVar = (body.sharedVars as Array<{ name: string; value: string }>).find(
-      v => v.name === 'SHARED_IMPORT'
-    );
-    expect(sharedVar?.value).toBe('abc');
-  }).toPass({ timeout: 5_000 });
+    await injectToken(page, token);
+    await goToVariablesTab(page, project, app);
+
+    // Wait for the Project section to be visible.
+    await expect(page.getByText('all apps & environments')).toBeVisible({ timeout: 8_000 });
+
+    // Click the + button in the Project section.
+    await clickPlusButton(page, 'all apps & environments');
+
+    await page.getByPlaceholder('VARIABLE_NAME').last().fill('GLOBAL_FLAG');
+    await page.getByPlaceholder('value', { exact: true }).last().fill('true');
+    await page.getByRole('button', { name: 'Add', exact: true }).last().click();
+
+    // Verify via project shared vars API.
+    await expect(async () => {
+      const vars = await getSharedVarsViaAPI(request, token, project);
+      const sharedVar = vars.find(v => v.name === 'GLOBAL_FLAG');
+      expect(sharedVar).toBeDefined();
+      expect(sharedVar?.value).toBe('true');
+    }).toPass({ timeout: 10_000 });
+
+    await setSharedVarsViaAPI(request, token, project, []);
+  });
+
+  // -------------------------------------------------------------------------
+  // Test 12: Edit project variable
+  // -------------------------------------------------------------------------
+  test('inline edit of project variable persists updated value', async ({ page, request }) => {
+    const app = `vsh-edit-${randomSuffix()}`;
+    await createAppWithSharedVars(request, token, project, app, [
+      { name: 'SHARED_KEY', value: 'shared-value' }
+    ]);
+
+    await injectToken(page, token);
+    await goToVariablesTab(page, project, app);
+
+    await expect(page.getByText('SHARED_KEY')).toBeVisible({ timeout: 8_000 });
+
+    // Values are hidden by default. Click the masked value to reveal it.
+    // The SHARED_KEY row is in the Project section (last div.group with that text).
+    const row = page.locator('div.group').filter({ hasText: 'SHARED_KEY' }).last();
+    // Click the asterisk-masked value button to reveal the input.
+    await row.locator('button', { hasText: /^\*+$/ }).click();
+
+    // Now edit the revealed value input.
+    const valueInput = row.locator('input[type="text"]');
+    await valueInput.fill('updated-value');
+
+    const saveBtn = page.getByRole('button', { name: /Save \d+/ });
+    await expect(saveBtn).toBeVisible({ timeout: 3_000 });
+    await saveBtn.click();
+
+    // Verify via project shared vars API.
+    await expect(async () => {
+      const vars = await getSharedVarsViaAPI(request, token, project);
+      const sharedVar = vars.find(v => v.name === 'SHARED_KEY');
+      expect(sharedVar).toBeDefined();
+      expect(sharedVar?.value).toBe('updated-value');
+    }).toPass({ timeout: 10_000 });
+  });
+
+  // -------------------------------------------------------------------------
+  // Test 13: Delete project variable
+  // -------------------------------------------------------------------------
+  test('deleting a project variable removes it from app spec', async ({ page, request }) => {
+    const app = `vsh-del-${randomSuffix()}`;
+    await createAppWithSharedVars(request, token, project, app, [
+      { name: 'SHARED_KEY', value: 'shared-value' }
+    ]);
+
+    await injectToken(page, token);
+    await goToVariablesTab(page, project, app);
+
+    await expect(page.getByText('SHARED_KEY')).toBeVisible({ timeout: 8_000 });
+
+    // Hover the shared var row and click the trash button (last button in the row).
+    const row = page.locator('div.group').filter({ hasText: 'SHARED_KEY' });
+    await row.hover();
+    await row.getByRole('button').last().click();
+
+    // Verify via project shared vars API.
+    await expect(async () => {
+      const vars = await getSharedVarsViaAPI(request, token, project);
+      const names = vars.map(v => v.name);
+      expect(names).not.toContain('SHARED_KEY');
+    }).toPass({ timeout: 10_000 });
+  });
+
+  // -------------------------------------------------------------------------
+  // Test 14: Project vars raw import
+  // -------------------------------------------------------------------------
+  test('raw import of project variables persists to app spec', async ({ page, request }) => {
+    const app = `vsh-raw-${randomSuffix()}`;
+    await createAppWithSharedVars(request, token, project, app);
+
+    await injectToken(page, token);
+    await goToVariablesTab(page, project, app);
+
+    // Wait for the Project section to be visible.
+    await expect(page.getByText('all apps & environments')).toBeVisible({ timeout: 8_000 });
+
+    // Click the Raw button in the Project section (last Raw button on the page).
+    const projectSection = page.locator('.rounded-lg.border').filter({ hasText: 'all apps & environments' }).first();
+    await projectSection.getByText('Raw', { exact: true }).click();
+
+    // The shared/project raw textarea has placeholder containing "JWT_SECRET".
+    const textarea = page.getByPlaceholder(/JWT_SECRET/).last();
+    await expect(textarea).toBeVisible({ timeout: 5_000 });
+    await textarea.fill('SHARED_IMPORT=abc');
+
+    // The save button in raw mode is labeled "Save" (not "Import").
+    await projectSection.getByRole('button', { name: 'Save', exact: true }).click();
+
+    // Verify via project shared vars API.
+    await expect(async () => {
+      const vars = await getSharedVarsViaAPI(request, token, project);
+      const sharedVar = vars.find(v => v.name === 'SHARED_IMPORT');
+      expect(sharedVar).toBeDefined();
+      expect(sharedVar?.value).toBe('abc');
+    }).toPass({ timeout: 10_000 });
+
+    await setSharedVarsViaAPI(request, token, project, []);
+  });
 });

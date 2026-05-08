@@ -294,8 +294,8 @@ export interface DeployToken {
 
 export interface SecretMount {
 	name: string;
-	secretName: string;
-	mountPath: string;
+	secret: string;
+	path: string;
 	readOnly?: boolean;
 	items?: { key: string; path: string }[];
 }

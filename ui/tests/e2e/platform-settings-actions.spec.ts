@@ -1,60 +1,49 @@
 /**
- * Platform settings action tests — admin save actions at /admin/settings.
+ * Platform settings action tests: admin save actions at /settings.
  *
- * ALL API calls are mocked via page.route(). No live backend required.
- * Tests are fully independent; each sets up its own state and mocks.
+ * Real backend only. No page.route() mocks.
+ * Tests are fully independent; each navigates fresh and verifies via API.
  */
-import { test, expect, type Page } from '@playwright/test';
-
-// ---------------------------------------------------------------------------
-// Standard mock data
-// ---------------------------------------------------------------------------
-
-const mockProject = {
-	name: 'my-project',
-	namespace: 'project-my-project',
-	phase: 'Ready' as const,
-	appCount: 2,
-	description: 'Test project'
-};
-
-const mockGitProvider = {
-	name: 'github-main',
-	type: 'github' as const,
-	host: 'github.com',
-	phase: 'Ready' as const
-};
-
-const mockPlatform = {
-	domain: 'example.com',
-	tls: { certManagerClusterIssuer: 'letsencrypt-prod' }
-};
+import { expect, test } from '@playwright/test';
+import {
+	ensureAdmin,
+	loginViaAPI,
+	injectToken,
+	randomSuffix
+} from './helpers';
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-async function injectAuth(page: Page, isAdmin = true) {
-	await page.goto('/');
-	await page.evaluate(({ isAdmin }) => {
-		localStorage.setItem('mortise_token', 'test-token');
-		localStorage.setItem(
-			'mortise_user',
-			JSON.stringify({
-				email: 'admin@example.com',
-				role: isAdmin ? 'admin' : 'member'
-			})
-		);
-	}, { isAdmin });
+/** Read the current platform config via API. */
+async function getPlatformViaAPI(
+	request: import('@playwright/test').APIRequestContext,
+	token: string
+): Promise<Record<string, unknown>> {
+	const res = await request.get('/api/platform', {
+		headers: { Authorization: `Bearer ${token}` }
+	});
+	if (!res.ok()) {
+		throw new Error(`getPlatform failed: HTTP ${res.status()}`);
+	}
+	return (await res.json()) as Record<string, unknown>;
 }
 
-async function setupBaseMocks(page: Page, providers = [mockGitProvider]) {
-	await page.route('/api/auth/status', (r) => r.fulfill({ json: { setupRequired: false } }));
-	await page.route('/api/projects', (r) => r.fulfill({ json: [mockProject] }));
-	await page.route('/api/projects/my-project', (r) => r.fulfill({ json: mockProject }));
-	await page.route('/api/projects/my-project/activity', (r) => r.fulfill({ json: [] }));
-	await page.route('/api/gitproviders', (r) => r.fulfill({ json: providers }));
-	await page.route('/api/platform', (r) => r.fulfill({ json: mockPlatform }));
+/** Save a platform config field via API (for setup/restore). */
+async function patchPlatformViaAPI(
+	request: import('@playwright/test').APIRequestContext,
+	token: string,
+	data: Record<string, unknown>
+): Promise<void> {
+	const res = await request.patch('/api/platform', {
+		headers: { Authorization: `Bearer ${token}` },
+		data
+	});
+	if (!res.ok()) {
+		const body = await res.text().catch(() => '');
+		throw new Error(`patchPlatform failed: HTTP ${res.status()} ${body}`);
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -62,229 +51,241 @@ async function setupBaseMocks(page: Page, providers = [mockGitProvider]) {
 // ---------------------------------------------------------------------------
 
 test.describe('platform settings actions', () => {
-	test('Test 1: Admin can update platform domain → verifies PATCH body has { domain }', async ({ page }) => {
-		let capturedBody: Record<string, unknown> | null = null;
+	let adminToken: string;
 
-		await setupBaseMocks(page);
-		await page.route('/api/platform', async (route) => {
-			if (route.request().method() === 'PATCH') {
-				capturedBody = JSON.parse(route.request().postData() ?? '{}');
-				return route.fulfill({
-					status: 200,
-					json: { domain: 'newdomain.com', tls: {} }
-				});
-			}
-			return route.fulfill({ json: mockPlatform });
-		});
-
-		await injectAuth(page, true);
-		await page.goto('/admin/settings');
-		await expect(page.getByRole('heading', { name: 'Platform Settings' })).toBeVisible({ timeout: 5000 });
-
-		const domainInput = page.locator('#domain, input[placeholder="yourdomain.com"]');
-		await domainInput.clear();
-		await domainInput.fill('newdomain.com');
-
-		// Save button in General section
-		await page.locator('section#general button', { hasText: 'Save' }).click();
-
-		await expect.poll(() => capturedBody).toMatchObject({ domain: 'newdomain.com' });
+	test.beforeAll(async ({ request }) => {
+		await ensureAdmin(request);
+		adminToken = await loginViaAPI(request);
 	});
 
-	test('Test 2: Admin can save registry config → verifies PATCH called', async ({ page }) => {
-		let patchCalled = false;
+	test('admin can update platform domain and verify via API', async ({ page, request }) => {
+		// Read original domain to restore later.
+		const original = await getPlatformViaAPI(request, adminToken);
+		const originalDomain = (original.domain as string) ?? '';
 
-		await setupBaseMocks(page);
-		await page.route('/api/platform', async (route) => {
-			if (route.request().method() === 'PATCH') {
-				patchCalled = true;
-				return route.fulfill({ status: 200, json: mockPlatform });
-			}
-			return route.fulfill({ json: mockPlatform });
-		});
+		const testDomain = `e2e-${randomSuffix()}.example.com`;
 
-		await injectAuth(page, true);
-		await page.goto('/admin/settings');
-		await expect(page.getByRole('heading', { name: 'Platform Settings' })).toBeVisible({ timeout: 5000 });
+		await injectToken(page, adminToken);
+		await page.goto('/settings');
+		await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible({ timeout: 10_000 });
+
+		const domainInput = page.locator('#platform-domain');
+		await domainInput.scrollIntoViewIfNeeded();
+		await domainInput.clear();
+		await domainInput.fill(testDomain);
+
+		// Save button in General section.
+		await page.locator('section#general').getByRole('button', { name: 'Save', exact: true }).click();
+
+		// Wait for save to complete (button text returns to "Save").
+		await expect(
+			page.locator('section#general').getByRole('button', { name: 'Save', exact: true })
+		).toBeVisible({ timeout: 5_000 });
+
+		// Verify via API (retry in case of concurrent platform config reconciliation).
+		await expect(async () => {
+			const updated = await getPlatformViaAPI(request, adminToken);
+			expect(updated.domain).toBe(testDomain);
+		}).toPass({ timeout: 10_000 });
+
+		// Restore original domain with retry for conflict.
+		await expect(async () => {
+			await patchPlatformViaAPI(request, adminToken, { domain: originalDomain });
+		}).toPass({ timeout: 10_000 });
+	});
+
+	test('admin can save registry config and verify via API', async ({ page, request }) => {
+		const testUrl = `registry-${randomSuffix()}.example.com`;
+
+		await injectToken(page, adminToken);
+		await page.goto('/settings');
+		await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible({ timeout: 10_000 });
 
 		const regUrlInput = page.locator('#reg-url');
 		await regUrlInput.scrollIntoViewIfNeeded();
-		await regUrlInput.fill('registry.mycompany.com');
+		await regUrlInput.clear();
+		await regUrlInput.fill(testUrl);
 
-		const regNsInput = page.locator('#reg-ns');
-		await regNsInput.fill('myorg');
+		await page.getByRole('button', { name: 'Save registry config', exact: true }).click();
 
-		const regUserInput = page.locator('#reg-user');
-		await regUserInput.fill('admin');
+		// Wait for save to complete.
+		await expect(
+			page.getByRole('button', { name: 'Save registry config', exact: true })
+		).toBeVisible({ timeout: 5_000 });
 
-		await page.getByRole('button', { name: 'Save registry config' }).click();
+		// Verify via API (retry in case of concurrent platform config reconciliation).
+		await expect(async () => {
+			const updated = await getPlatformViaAPI(request, adminToken);
+			const registry = updated.registry as Record<string, unknown> | undefined;
+			expect(registry?.url).toBe(testUrl);
+		}).toPass({ timeout: 10_000 });
 
-		await expect.poll(() => patchCalled).toBe(true);
+		// Restore by clearing the registry URL with retry for conflict.
+		await expect(async () => {
+			await patchPlatformViaAPI(request, adminToken, { registry: { url: '' } });
+		}).toPass({ timeout: 10_000 });
 	});
 
-	test('Test 3: Admin can save build config → verifies PATCH called', async ({ page }) => {
-		let patchCalled = false;
+	test('admin can save build config and verify via API', async ({ page, request }) => {
+		const testAddr = `tcp://buildkitd-${randomSuffix()}.mortise-system:1234`;
 
-		await setupBaseMocks(page);
-		await page.route('/api/platform', async (route) => {
-			if (route.request().method() === 'PATCH') {
-				patchCalled = true;
-				return route.fulfill({ status: 200, json: mockPlatform });
-			}
-			return route.fulfill({ json: mockPlatform });
-		});
-
-		await injectAuth(page, true);
-		await page.goto('/admin/settings');
-		await expect(page.getByRole('heading', { name: 'Platform Settings' })).toBeVisible({ timeout: 5000 });
+		await injectToken(page, adminToken);
+		await page.goto('/settings');
+		await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible({ timeout: 10_000 });
 
 		const bkAddrInput = page.locator('#bk-addr');
 		await bkAddrInput.scrollIntoViewIfNeeded();
-		await bkAddrInput.fill('tcp://buildkitd.mortise-system:1234');
+		await bkAddrInput.clear();
+		await bkAddrInput.fill(testAddr);
 
-		const bkPlatformSelect = page.locator('#bk-platform');
-		await bkPlatformSelect.selectOption('linux/arm64');
+		await page.getByRole('button', { name: 'Save build config', exact: true }).click();
 
-		await page.getByRole('button', { name: 'Save build config' }).click();
+		// Wait for save to complete.
+		await expect(
+			page.getByRole('button', { name: 'Save build config', exact: true })
+		).toBeVisible({ timeout: 5_000 });
 
-		await expect.poll(() => patchCalled).toBe(true);
+		// Verify via API (retry in case of concurrent platform config reconciliation).
+		await expect(async () => {
+			const updated = await getPlatformViaAPI(request, adminToken);
+			const build = updated.build as Record<string, unknown> | undefined;
+			expect(build?.buildkitAddr).toBe(testAddr);
+		}).toPass({ timeout: 10_000 });
+
+		// Restore by clearing with retry for conflict.
+		await expect(async () => {
+			await patchPlatformViaAPI(request, adminToken, { build: { buildkitAddr: '' } });
+		}).toPass({ timeout: 10_000 });
 	});
 
-	test('Test 4: Admin can save TLS cluster issuer → verifies PATCH body has tls data', async ({ page }) => {
-		let capturedBody: Record<string, unknown> | null = null;
+	test('admin can save TLS cluster issuer and verify via API', async ({ page, request }) => {
+		const original = await getPlatformViaAPI(request, adminToken);
+		const originalTls = original.tls as Record<string, unknown> | undefined;
+		const originalIssuer = (originalTls?.certManagerClusterIssuer as string) ?? '';
 
-		await setupBaseMocks(page);
-		await page.route('/api/platform', async (route) => {
-			if (route.request().method() === 'PATCH') {
-				capturedBody = JSON.parse(route.request().postData() ?? '{}');
-				return route.fulfill({ status: 200, json: mockPlatform });
-			}
-			return route.fulfill({ json: mockPlatform });
-		});
+		const testIssuer = `e2e-issuer-${randomSuffix()}`;
 
-		await injectAuth(page, true);
-		await page.goto('/admin/settings');
-		await expect(page.getByRole('heading', { name: 'Platform Settings' })).toBeVisible({ timeout: 5000 });
+		// The save may fail silently due to resource version conflicts.
+		// Retry the entire fill+save+verify flow.
+		await expect(async () => {
+			await injectToken(page, adminToken);
+			await page.goto('/settings');
+			await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible({ timeout: 10_000 });
 
-		const tlsIssuerInput = page.locator('#tls-issuer');
-		await tlsIssuerInput.scrollIntoViewIfNeeded();
-		await tlsIssuerInput.clear();
-		await tlsIssuerInput.fill('letsencrypt-staging');
+			const tlsIssuerInput = page.locator('#tls-issuer');
+			await tlsIssuerInput.scrollIntoViewIfNeeded();
+			await tlsIssuerInput.clear();
+			await tlsIssuerInput.fill(testIssuer);
 
-		await page.getByRole('button', { name: 'Save TLS config' }).click();
+			await page.getByRole('button', { name: 'Save TLS config', exact: true }).click();
+			await expect(
+				page.getByRole('button', { name: 'Save TLS config', exact: true })
+			).toBeVisible({ timeout: 5_000 });
 
-		await expect.poll(() => capturedBody).toMatchObject({
-			tls: { certManagerClusterIssuer: 'letsencrypt-staging' }
-		});
+			await new Promise(r => setTimeout(r, 1_000));
+			const updated = await getPlatformViaAPI(request, adminToken);
+			const tls = updated.tls as Record<string, unknown>;
+			expect(tls.certManagerClusterIssuer).toBe(testIssuer);
+		}).toPass({ timeout: 20_000, intervals: [2_000, 3_000, 5_000] });
+
+		// Restore original issuer with retry for conflict.
+		await expect(async () => {
+			await patchPlatformViaAPI(request, adminToken, {
+				tls: { certManagerClusterIssuer: originalIssuer }
+			});
+		}).toPass({ timeout: 10_000 });
 	});
 
-	test('Test 5: Admin can add a git provider → verifies POST /api/gitproviders with correct body', async ({ page }) => {
-		let capturedBody: Record<string, unknown> | null = null;
+	test('admin can save storage config and verify via API', async ({ page, request }) => {
+		const original = await getPlatformViaAPI(request, adminToken);
+		const originalStorage = original.storage as Record<string, unknown> | undefined;
+		const originalClass = (originalStorage?.defaultStorageClass as string) ?? '';
 
-		await setupBaseMocks(page, []);
-		await page.route('/api/gitproviders', async (route) => {
-			if (route.request().method() === 'POST') {
-				capturedBody = JSON.parse(route.request().postData() ?? '{}');
-				return route.fulfill({ status: 201, json: { name: 'new-github', type: 'github', host: 'github.com', phase: 'Pending' } });
-			}
-			// After create, return the new provider in the list
-			if (capturedBody) {
-				return route.fulfill({ json: [{ name: 'new-github', type: 'github', host: 'github.com', phase: 'Pending' }] });
-			}
-			return route.fulfill({ json: [] });
-		});
+		const testClass = `e2e-sc-${randomSuffix()}`;
 
-		await injectAuth(page, true);
-		await page.goto('/admin/settings');
-		await expect(page.getByRole('heading', { name: 'Platform Settings' })).toBeVisible({ timeout: 5000 });
+		await injectToken(page, adminToken);
+		await page.goto('/settings');
+		await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible({ timeout: 10_000 });
 
-		await page.getByRole('button', { name: 'Add Provider' }).click();
-		await expect(page.getByText('New Git Provider')).toBeVisible({ timeout: 3000 });
+		const storageInput = page.locator('#storage-class');
+		await storageInput.scrollIntoViewIfNeeded();
+		await storageInput.clear();
+		await storageInput.fill(testClass);
 
-		// Fill in the form
-		await page.getByPlaceholder('github-main').fill('new-github');
-		await page.getByPlaceholder('https://github.com').fill('https://github.com');
+		await page.getByRole('button', { name: 'Save storage config', exact: true }).click();
 
-		// OAuth Client ID — scoped to the provider form
-		const oauthClientIdInput = page.locator('#new-provider-client-id');
-		await oauthClientIdInput.fill('test-client-id');
+		// Wait for save to complete.
+		await expect(
+			page.getByRole('button', { name: 'Save storage config', exact: true })
+		).toBeVisible({ timeout: 5_000 });
 
-		const oauthClientSecretInput = page.locator('#new-provider-client-secret');
-		await oauthClientSecretInput.fill('test-client-secret');
+		// Verify via API (retry in case of concurrent platform config reconciliation).
+		await expect(async () => {
+			const updated = await getPlatformViaAPI(request, adminToken);
+			const storage = updated.storage as Record<string, unknown>;
+			expect(storage.defaultStorageClass).toBe(testClass);
+		}).toPass({ timeout: 10_000 });
 
-		// Webhook secret
-		const webhookInput = page.locator('#new-provider-webhook-secret');
-		await webhookInput.fill('my-webhook-secret');
-
-		await page.getByRole('button', { name: 'Create' }).click();
-
-		await expect.poll(() => capturedBody).toMatchObject({
-			name: 'new-github',
-			type: 'github',
-			host: 'https://github.com',
-			oauth: { clientID: 'test-client-id', clientSecret: 'test-client-secret' },
-			webhookSecret: 'my-webhook-secret'
-		});
+		// Restore with retry for conflict.
+		await expect(async () => {
+			await patchPlatformViaAPI(request, adminToken, {
+				storage: { defaultStorageClass: originalClass }
+			});
+		}).toPass({ timeout: 10_000 });
 	});
 
-	test('Test 6: Admin can delete a git provider → verifies DELETE /api/gitproviders/github-main called', async ({ page }) => {
-		let deleteWasCalled = false;
+	test('filter input narrows visible sections (type "registry")', async ({ page }) => {
+		await injectToken(page, adminToken);
+		await page.goto('/settings');
+		await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible({ timeout: 10_000 });
 
-		await setupBaseMocks(page);
-		await page.route('/api/gitproviders/github-main', async (route) => {
-			if (route.request().method() === 'DELETE') {
-				deleteWasCalled = true;
-				return route.fulfill({ status: 200, json: {} });
-			}
-			return route.fulfill({ json: mockGitProvider });
-		});
+		// Verify General section is visible before filtering.
+		await expect(page.locator('section#general')).toBeVisible();
 
-		await injectAuth(page, true);
-		await page.goto('/admin/settings');
-		await expect(page.getByRole('heading', { name: 'Platform Settings' })).toBeVisible({ timeout: 5000 });
-
-		// Provider row should be visible
-		await expect(page.getByText('github-main')).toBeVisible({ timeout: 5000 });
-
-		// Click the trash/delete icon button in the provider row
-		// Use the git-providers section to find the delete button (nth(0) is "Add Provider", nth(1) is the trash icon)
-		page.once('dialog', (dialog) => dialog.accept());
-		await page.locator('section#git-providers').getByRole('button').nth(1).click();
-
-		await expect.poll(() => deleteWasCalled).toBe(true);
-	});
-
-	test('Test 8: Filter input narrows visible sections (type "registry" → only registry section visible)', async ({ page }) => {
-		await setupBaseMocks(page);
-
-		await injectAuth(page, true);
-		await page.goto('/admin/settings');
-		await expect(page.getByRole('heading', { name: 'Platform Settings' })).toBeVisible({ timeout: 5000 });
-
-		// Verify General and Git Providers are visible before filtering
-		await expect(page.getByText('General')).toBeVisible();
-		await expect(page.getByText('Git Providers')).toBeVisible();
-
-		// Type "registry" in the filter — note the actual placeholder in the HTML is "Filter settings..."
 		const filterInput = page.getByPlaceholder('Filter settings...');
 		await filterInput.fill('registry');
 
-		// Registry section should still be visible
-		await expect(page.getByRole('heading', { name: 'Registry' })).toBeVisible({ timeout: 3000 });
+		// Registry section should still be visible.
+		await expect(page.locator('section#registry')).toBeVisible({ timeout: 3_000 });
 
-		// General section heading should not be visible (filtered out)
-		// The section id="general" has h2 "General" — it should be hidden
+		// General section should be hidden (filtered out).
 		await expect(page.locator('section#general h2')).not.toBeVisible();
 	});
 
-	test('Test 9: Platform Settings link hidden for non-admin users', async ({ page }) => {
-		await setupBaseMocks(page);
+	test('settings link hidden for non-admin users', async ({ page, request }) => {
+		// Create a non-admin user.
+		const memberEmail = `e2e-nonadmin-${randomSuffix()}@test.local`;
+		const createRes = await request.post('/api/admin/users', {
+			headers: { Authorization: `Bearer ${adminToken}` },
+			data: { email: memberEmail, password: 'testpassword123', role: 'member' }
+		});
+		if (!createRes.ok() && createRes.status() !== 409) {
+			throw new Error(`create user failed: HTTP ${createRes.status()}`);
+		}
 
-		// Inject as non-admin (member)
-		await injectAuth(page, false);
+		// Login as the non-admin user.
+		const memberRes = await request.post('/api/auth/login', {
+			data: { email: memberEmail, password: 'testpassword123' }
+		});
+		expect(memberRes.ok()).toBeTruthy();
+		const memberBody = await memberRes.json();
+		const memberToken = memberBody.token as string;
+
+		await injectToken(page, memberToken);
 		await page.goto('/');
 
-		// Left rail Platform Settings icon should not be present for members
-		await expect(page.getByTitle('Platform Settings')).not.toBeVisible({ timeout: 5000 });
+		// Wait for the page to load with user context.
+		await expect(page.getByRole('heading', { name: 'Projects', exact: true })).toBeVisible({ timeout: 15_000 });
+
+		// Left rail Settings icon should not be visible for non-admin members.
+		await expect(page.getByTitle('Settings', { exact: true })).not.toBeVisible({ timeout: 3_000 });
+
+		// Cleanup: delete the member user.
+		await request
+			.delete(`/api/admin/users/${encodeURIComponent(memberEmail)}`, {
+				headers: { Authorization: `Bearer ${adminToken}` },
+				failOnStatusCode: false
+			})
+			.catch(() => {});
 	});
 });

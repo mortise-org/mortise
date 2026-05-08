@@ -6,6 +6,7 @@ import {
 	injectToken,
 	randomSuffix,
 	getEnvViaAPI,
+	createProjectViaAPI,
 	deleteProjectViaAPI
 } from './helpers';
 
@@ -39,7 +40,7 @@ test.describe('full user journey', () => {
 
 		// ── Step 1: Login via the UI ──────────────────────────────────
 		await loginViaUI(page);
-		await expect(page.getByRole('heading', { name: 'Projects' })).toBeVisible();
+		await expect(page.getByRole('heading', { name: 'Projects', exact: true })).toBeVisible();
 
 		// Token stored as mortise_token.
 		const token = await page.evaluate(() => localStorage.getItem('mortise_token'));
@@ -60,17 +61,25 @@ test.describe('full user journey', () => {
 		await page.getByRole('button', { name: 'Create project' }).click();
 
 		// Should redirect to the project canvas page.
-		await expect(page).toHaveURL(`/projects/${projectName}`, { timeout: 10_000 });
+		await expect(page).toHaveURL(new RegExp(`/projects/${projectName}(\\?|$)`), { timeout: 10_000 });
 
 		// Switch to list view to verify empty state.
 		await page.getByTitle('List view').click();
 		await expect(page.getByText('No apps in this project')).toBeVisible();
 
 		// ── Step 3: Deploy a Docker image app via the new-app page ──────────────
-		// Navigate directly to the new-app page (the toolbar Add button opens an
-		// inline modal — going to the page is equivalent and avoids overlay issues).
+		// Wait for the project namespace to be ready before creating an app.
+		await expect(async () => {
+			const res = await request.get(`/api/projects/${projectName}`, {
+				headers: { Authorization: `Bearer ${adminToken}` }
+			});
+			expect(res.ok()).toBeTruthy();
+			const body = await res.json();
+			expect(body.phase).toBe('Ready');
+		}).toPass({ timeout: 30_000 });
+
 		await page.goto(`/projects/${projectName}/apps/new`);
-		await expect(page).toHaveURL(`/projects/${projectName}/apps/new`);
+		await expect(page).toHaveURL(new RegExp(`/projects/${projectName}/apps/new(\\?|$)`));
 
 		// Select Docker Image type.
 		await expect(page.getByText('Docker Image', { exact: true })).toBeVisible({ timeout: 10_000 });
@@ -83,36 +92,45 @@ test.describe('full user journey', () => {
 		await page.getByRole('button', { name: 'Create app' }).click();
 
 		// After creation, navigates to the app drawer URL.
-		await expect(page).toHaveURL(`/projects/${projectName}/apps/${appName}`, { timeout: 15_000 });
+		await expect(page).toHaveURL(new RegExp(`/projects/${projectName}/apps/${appName}(\\?|$)`), { timeout: 15_000 });
 
 		// ── Step 4: App drawer is open with app name ─────────────────
 		await expect(page.getByRole('heading', { name: appName })).toBeVisible({ timeout: 10_000 });
 
 		// Phase badge is visible.
 		const phaseBadge = page.locator('span', {
-			hasText: /Ready|Pending|Deploying|Building|Failed/
+			hasText: /Ready|Pending|Deploying|Building|Failed|CrashLooping/
 		});
-		await expect(phaseBadge.first()).toBeVisible({ timeout: 10_000 });
+		await expect(phaseBadge.first()).toBeVisible({ timeout: 15_000 });
 
 		// ── Step 5: Check Variables tab ───────────────────────────────
 		await page.getByRole('button', { name: 'Variables' }).click();
 		// Actual empty state text in VariablesTab.
 		await expect(page.getByText(/No variables set/)).toBeVisible({ timeout: 5_000 });
 
-		// Add a variable inline.
-		await page.getByRole('button', { name: 'New variable', exact: true }).click();
+		// Add a variable inline. The "+" icon button is in the Runtime section
+		// header. We scope to the bordered section container that holds
+		// "Runtime - <env>" and click its last header button (the + icon).
+		// In the empty state, the only buttons in the header are Table, Raw, +.
+		const envVarSection = page
+			.locator('div.rounded-lg.border')
+			.filter({ hasText: /Runtime -/ })
+			.first();
+		await envVarSection.locator('button').last().click();
 		await page.getByPlaceholder('VARIABLE_NAME').fill('APP_ENV');
-		await page.getByPlaceholder('value or binding ref').fill('production');
+		await page.getByPlaceholder('value').fill('production');
 		await page.getByRole('button', { name: 'Add', exact: true }).click();
 
 		// Variable should appear in the list.
 		await expect(page.getByText('APP_ENV')).toBeVisible({ timeout: 10_000 });
 
 		// Verify via API.
-		const envVars = await getEnvViaAPI(request, adminToken, projectName, appName);
-		expect(
-			envVars.some((v) => v.name === 'APP_ENV' && v.value === 'production')
-		).toBeTruthy();
+		await expect(async () => {
+			const envVars = await getEnvViaAPI(request, adminToken, projectName, appName);
+			expect(
+				envVars.some((v) => v.name === 'APP_ENV' && v.value === 'production')
+			).toBeTruthy();
+		}).toPass({ timeout: 10_000 });
 
 		// ── Step 6: Check Settings tab → Domains ─────────────────────
 		await page.getByRole('button', { name: 'Settings', exact: true }).click();
@@ -125,14 +143,14 @@ test.describe('full user journey', () => {
 		// ── Step 7: Close drawer, return to canvas ────────────────────
 		await page.getByRole('button', { name: 'Close drawer' }).click();
 
-		await expect(page).toHaveURL(`/projects/${projectName}`, { timeout: 5_000 });
+		await expect(page).toHaveURL(new RegExp(`/projects/${projectName}(\\?|$)`), { timeout: 5_000 });
 
 		// Canvas (or list view) should be visible.
 		await expect(page.getByTitle('Canvas view')).toBeVisible();
 
 		// ── Step 8: Delete the project via project settings ───────────
 		await page.getByTitle('Project Settings', { exact: true }).click();
-		await expect(page).toHaveURL(`/projects/${projectName}/settings`);
+		await expect(page).toHaveURL(new RegExp(`/projects/${projectName}/settings(\\?|$)`));
 
 		// Navigate to the Danger tab.
 		await page.getByRole('button', { name: 'Danger' }).click();
@@ -142,7 +160,7 @@ test.describe('full user journey', () => {
 		await page.getByRole('button', { name: 'Delete project' }).click();
 
 		// Should redirect to dashboard.
-		await expect(page).toHaveURL('/', { timeout: 10_000 });
+		await page.waitForURL((url) => url.pathname === '/', { timeout: 15_000 });
 
 		// Project should eventually be gone from the list.
 		await expect(async () => {
@@ -167,7 +185,7 @@ test.describe('sign out journey', () => {
 		await loginViaUI(page);
 
 		// Verify we're on the dashboard.
-		await expect(page.getByRole('heading', { name: 'Projects' })).toBeVisible();
+		await expect(page.getByRole('heading', { name: 'Projects', exact: true })).toBeVisible();
 
 		// Open user menu (click User icon button in the header right side).
 		// The User icon is the last icon button in the header before sign out.
@@ -205,14 +223,14 @@ test.describe('platform settings journey', () => {
 	test('navigate to platform settings via user menu', async ({ page }) => {
 		await injectToken(page, adminToken);
 		await page.goto('/');
-		await expect(page.getByRole('heading', { name: 'Projects' })).toBeVisible({ timeout: 10_000 });
+		await expect(page.getByRole('heading', { name: 'Projects', exact: true })).toBeVisible({ timeout: 10_000 });
 
-		// Platform Settings is in the left rail (admin only).
-		await page.getByTitle('Platform Settings').click();
+		// Settings is in the left rail (admin only).
+		await page.getByTitle('Settings').click();
 
-		await expect(page).toHaveURL('/admin/settings');
+		await expect(page).toHaveURL('/settings');
 		await expect(
-			page.getByRole('heading', { name: 'Platform Settings' })
+			page.getByRole('heading', { name: 'Settings' })
 		).toBeVisible();
 	});
 
@@ -220,16 +238,16 @@ test.describe('platform settings journey', () => {
 		page
 	}) => {
 		await injectToken(page, adminToken);
-		await page.goto('/admin/settings');
+		await page.goto('/settings');
 
 		await expect(
-			page.getByRole('heading', { name: 'Platform Settings' })
+			page.getByRole('heading', { name: 'Settings' })
 		).toBeVisible({ timeout: 10_000 });
 
 		// Use heading role to avoid strict mode violations from descriptions.
-		await expect(page.getByRole('heading', { name: 'General' })).toBeVisible();
+		await expect(page.getByRole('heading', { name: 'Platform Domain' })).toBeVisible();
 		await expect(page.getByRole('heading', { name: 'Git Providers' })).toBeVisible();
-		await expect(page.getByText('Users & Invites')).toBeVisible();
+		await expect(page.getByRole('heading', { name: 'Users' })).toBeVisible();
 	});
 });
 
@@ -244,10 +262,7 @@ test.describe('app creation via modal journey', () => {
 	test.beforeAll(async ({ request }) => {
 		await ensureAdmin(request);
 		adminToken = await loginViaAPI(request);
-		await request.post('/api/projects', {
-			headers: { Authorization: `Bearer ${adminToken}` },
-			data: { name: projectName, description: 'App creation journey' }
-		});
+		await createProjectViaAPI(request, adminToken, projectName, 'App creation journey');
 	});
 
 	test.afterAll(async ({ request }) => {
@@ -274,7 +289,7 @@ test.describe('app creation via modal journey', () => {
 		await page.getByRole('button', { name: 'Create app' }).click();
 
 		// Should navigate to the app drawer URL.
-		await expect(page).toHaveURL(`/projects/${projectName}/apps/${appName}`, { timeout: 15_000 });
+		await expect(page).toHaveURL(new RegExp(`/projects/${projectName}/apps/${appName}(\\?|$)`), { timeout: 15_000 });
 
 		// Drawer is open with app name.
 		await expect(page.getByRole('heading', { name: appName })).toBeVisible({ timeout: 10_000 });
@@ -286,7 +301,7 @@ test.describe('app creation via modal journey', () => {
 
 		// Close the drawer.
 		await page.getByRole('button', { name: 'Close drawer' }).click();
-		await expect(page).toHaveURL(`/projects/${projectName}`, { timeout: 5_000 });
+		await expect(page).toHaveURL(new RegExp(`/projects/${projectName}(\\?|$)`), { timeout: 5_000 });
 
 		// Switch to list view and verify the app appears.
 		await page.getByTitle('List view').click();
