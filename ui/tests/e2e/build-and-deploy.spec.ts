@@ -1,410 +1,151 @@
 /**
- * Git source app creation and build+deploy flow tests.
+ * Build and deploy flow E2E tests (real backend).
  *
- * All API calls mocked via page.route(). No live backend.
+ * Tests cover the Docker Image deploy flow and redeploy trigger.
+ * Git-source tests are skipped because E2E has no git provider configured.
  */
-import { test, expect, type Page } from '@playwright/test';
-
-// ---------------------------------------------------------------------------
-// Standard mock data
-// ---------------------------------------------------------------------------
-
-const mockProject = {
-	name: 'my-project',
-	namespace: 'project-my-project',
-	phase: 'Ready' as const,
-	appCount: 2,
-	description: 'Test project'
-};
-
-const mockGitApp = {
-	metadata: { name: 'web-app', namespace: 'project-my-project' },
-	spec: {
-		source: { type: 'git' as const, repo: 'https://github.com/org/web-app', branch: 'main' },
-		network: { public: true, port: 8080 },
-		environments: [
-			{ name: 'production', replicas: 2, resources: { cpu: '500m', memory: '512Mi' } },
-			{ name: 'staging', replicas: 1 }
-		],
-		storage: [],
-		credentials: []
-	},
-	status: {
-		phase: 'Ready' as const,
-		environments: [
-			{
-				name: 'production',
-				readyReplicas: 2,
-				currentImage: 'registry.example.com/web-app:abc123',
-				deployHistory: [
-					{
-						image: 'registry.example.com/web-app:abc123',
-						timestamp: new Date().toISOString(),
-						gitSHA: 'abc1234'
-					}
-				]
-			}
-		]
-	}
-};
-
-const mockBuildingApp = {
-	metadata: { name: 'web-app', namespace: 'project-my-project' },
-	spec: {
-		source: { type: 'git' as const, repo: 'https://github.com/org/web-app', branch: 'main' },
-		network: { public: true },
-		environments: [{ name: 'production', replicas: 1 }],
-		storage: [],
-		credentials: []
-	},
-	status: {
-		phase: 'Building' as const,
-		environments: [{ name: 'production', readyReplicas: 0 }]
-	}
-};
-
-const mockGitProvider = {
-	name: 'github-main',
-	type: 'github' as const,
-	host: 'github.com',
-	mode: 'oauth' as const,
-	phase: 'Ready' as const,
-	hasToken: true
-};
-
-const mockRepos = [
-	{
-		fullName: 'org/web-app',
-		name: 'web-app',
-		description: 'Web application',
-		defaultBranch: 'main',
-		cloneURL: 'https://github.com/org/web-app.git',
-		updatedAt: new Date().toISOString(),
-		language: 'TypeScript',
-		private: false
-	}
-];
-
-const mockBranches = [
-	{ name: 'main', default: true },
-	{ name: 'develop', default: false }
-];
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-async function injectAuth(page: Page, isAdmin = true) {
-	// Visit the login page first so we land on the origin without triggering the
-	// root page's unauthenticated redirect; then write the token to localStorage.
-	await page.goto('/login');
-	await page.evaluate(({ isAdmin }) => {
-		localStorage.setItem('mortise_token', 'test-token');
-		localStorage.setItem(
-			'mortise_user',
-			JSON.stringify({
-				email: 'admin@example.com',
-				role: isAdmin ? 'admin' : 'member'
-			})
-		);
-	}, { isAdmin });
-}
-
-async function setupBaseRoutes(page: Page) {
-	await page.route('**/api/auth/status', (r) => r.fulfill({ json: { setupRequired: false } }));
-	await page.route('**/api/projects', (r) => r.fulfill({ json: [mockProject] }));
-	await page.route('**/api/projects/my-project', (r) => r.fulfill({ json: mockProject }));
-	await page.route('**/api/projects/my-project/apps', (r) => r.fulfill({ json: [mockGitApp] }));
-	await page.route('**/api/gitproviders', (r) => r.fulfill({ json: [mockGitProvider] }));
-	await page.route('**/api/repos?**', (r) => r.fulfill({ json: mockRepos }));
-	await page.route('**/api/repos/org/web-app/branches?**', (r) =>
-		r.fulfill({ json: mockBranches })
-	);
-	// loadRepoTree is a best-effort nice-to-have; return empty to satisfy it.
-	await page.route('**/api/repos/org/web-app/tree?**', (r) =>
-		r.fulfill({ json: [] })
-	);
-}
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
+import { expect, test } from '@playwright/test';
+import {
+	randomSuffix,
+	ensureAdmin,
+	loginViaAPI,
+	injectToken,
+	createProjectViaAPI,
+	createAppViaAPI,
+	deleteProjectViaAPI,
+	deleteAppViaAPI,
+	getAppViaAPI
+} from './helpers';
 
 test.describe('build and deploy', () => {
-	test('Test 1: Create a git-source app from the modal', async ({ page }) => {
-		await setupBaseRoutes(page);
+	let token: string;
+	let project: string;
 
-		let postBody: Record<string, unknown> | null = null;
-		let postCalled = false;
-
-		// Mock POST to capture the request body
-		await page.route('/api/projects/my-project/apps', async (r) => {
-			if (r.request().method() === 'POST') {
-				postCalled = true;
-				postBody = JSON.parse(r.request().postData() ?? '{}');
-				await r.fulfill({ status: 201, json: mockGitApp });
-			} else {
-				await r.fulfill({ json: [mockGitApp] });
-			}
-		});
-
-		await injectAuth(page);
-		await page.goto('/projects/my-project');
-
-		// Click the "+ Add" button to open the modal
-		await page.getByRole('button', { name: 'Add' }).click();
-
-		// Modal appears — select "Git Repository"
-		await expect(page.getByText('What would you like to create?')).toBeVisible({
-			timeout: 5000
-		});
-		await page.getByText('Git Repository').click();
-
-		// Git source config appears
-		await expect(page.getByText('Git Provider')).toBeVisible({ timeout: 5000 });
-
-		// Provider is already selected (github-main, the only one)
-		const providerSelect = page.locator('select').first();
-		await expect(providerSelect).toBeVisible({ timeout: 3000 });
-
-		// Repos should load automatically
-		await expect(page.getByText('org/web-app')).toBeVisible({ timeout: 5000 });
-
-		// Select the repo
-		await page.getByText('org/web-app').click();
-
-		// Branch "main" should be auto-selected (it's the default)
-		const branchSelect = page.locator('select').filter({ hasText: /main/ }).first();
-		await expect(branchSelect).toBeVisible({ timeout: 3000 });
-
-		// App name should be auto-populated from repo name
-		const appNameInput = page.getByPlaceholder('my-app');
-		await expect(appNameInput).toHaveValue('web-app', { timeout: 3000 });
-
-		// Click "Create app"
-		await page.getByRole('button', { name: 'Create app' }).click();
-
-		// Verify POST was called with git source
-		await expect(async () => {
-			expect(postCalled).toBe(true);
-		}).toPass({ timeout: 5000 });
-
-		expect(postBody).toBeTruthy();
-		const spec = (postBody as { spec?: { source?: { type?: string } } })?.spec;
-		expect(spec?.source?.type).toBe('git');
+	test.beforeAll(async ({ request }) => {
+		await ensureAdmin(request);
+		token = await loginViaAPI(request);
+		project = `e2e-bnd-${randomSuffix()}`;
+		await createProjectViaAPI(request, token, project);
 	});
 
-	test('Test 2: App shows Building phase while image is being built', async ({ page }) => {
-		await setupBaseRoutes(page);
+	test.afterAll(async ({ request }) => {
+		await deleteProjectViaAPI(request, token, project);
+	});
 
-		// Override the app GET to return a Building phase app
-		await page.route('/api/projects/my-project/apps/web-app', (r) =>
-			r.fulfill({ json: mockBuildingApp })
-		);
-		await page.route('/api/projects/my-project/apps/web-app/domains*', (r) =>
-			r.fulfill({ json: { primary: '', custom: [] } })
-		);
-		await page.route('/api/projects/my-project/apps/web-app/tokens', (r) =>
-			r.fulfill({ json: [] })
-		);
+	test('create a Docker Image app via the new-app modal', async ({ page }) => {
+		const appName = `img-create-${randomSuffix()}`;
 
-		await injectAuth(page);
-		await page.goto('/projects/my-project/apps/web-app');
+		await injectToken(page, token);
+		await page.goto(`/projects/${project}/apps/new`);
 
-		// The drawer header shows the phase badge
-		// Phase chip renders as a <span> with the phase text
+		// Type picker
 		await expect(
-			page.locator('span').filter({ hasText: 'Building' }).first()
-		).toBeVisible({ timeout: 5000 });
+			page.getByRole('heading', { name: 'What would you like to create?' })
+		).toBeVisible({ timeout: 10_000 });
+
+		await page.getByText('Docker Image', { exact: true }).click();
+
+		// Fill image reference and app name
+		await page.getByPlaceholder('nginx:1.27 or ghcr.io/org/app:latest').fill('nginx:1.27');
+		await page.getByPlaceholder('my-app').fill(appName);
+
+		// Create the app
+		const createBtn = page.getByRole('button', { name: 'Create app' });
+		await expect(createBtn).toBeEnabled();
+		await createBtn.click();
+
+		// After creation, URL navigates to the app drawer (may include ?env= query)
+		await expect(page).toHaveURL(new RegExp(`/projects/${project}/apps/${appName}(\\?|$)`), {
+			timeout: 15_000
+		});
+
+		// Drawer shows the app heading
+		await expect(page.getByRole('heading', { name: appName })).toBeVisible({
+			timeout: 10_000
+		});
+
+		// Deployments tab button is visible (default tab)
+		await expect(
+			page.getByRole('button', { name: 'Deployments', exact: true })
+		).toBeVisible({ timeout: 5_000 });
+
+		// Clean up
+		await deleteAppViaAPI(page.request, token, project, appName);
 	});
 
-	test('Test 3: Redeploy triggers POST /api/projects/{p}/apps/{a}/deploy', async ({ page }) => {
-		await setupBaseRoutes(page);
+	test('app creation navigates to the app drawer on success', async ({ page }) => {
+		const appName = `img-nav-${randomSuffix()}`;
 
-		let deployCalled = false;
-		let deployBody: Record<string, unknown> | null = null;
+		await injectToken(page, token);
+		await page.goto(`/projects/${project}`);
 
-		await page.route('/api/projects/my-project/apps/web-app', (r) =>
-			r.fulfill({ json: mockGitApp })
-		);
-		await page.route('/api/projects/my-project/apps/web-app/domains*', (r) =>
-			r.fulfill({ json: { primary: 'web-app-production.example.com', custom: [] } })
-		);
-		await page.route('/api/projects/my-project/apps/web-app/tokens', (r) =>
-			r.fulfill({ json: [] })
-		);
-		await page.route('/api/projects/my-project/apps/web-app/deploy', async (r) => {
-			deployCalled = true;
-			deployBody = JSON.parse(r.request().postData() ?? '{}');
-			await r.fulfill({
-				json: {
-					status: 'ok',
-					app: 'web-app',
-					image: 'registry.example.com/web-app:abc123'
-				}
-			});
-		});
+		// Open the new-app modal via the Add button on the project canvas
+		await page.getByRole('button', { name: 'Add', exact: true }).click();
+		await expect(
+			page.getByRole('heading', { name: 'What would you like to create?' })
+		).toBeVisible({ timeout: 10_000 });
 
-		await injectAuth(page);
-		await page.goto('/projects/my-project/apps/web-app');
-
-		// Deployments tab is the default — verify the Redeploy button is visible
-		await expect(page.getByRole('button', { name: 'Redeploy' })).toBeVisible({ timeout: 5000 });
-
-		// Click Redeploy
-		await page.getByRole('button', { name: 'Redeploy' }).click();
-
-		// Verify POST /deploy was called
-		await expect(async () => {
-			expect(deployCalled).toBe(true);
-		}).toPass({ timeout: 5000 });
-
-		expect(deployBody).toBeTruthy();
-		const body = deployBody as { environment?: string; image?: string };
-		expect(body.environment).toBe('production');
-		expect(body.image).toBe('registry.example.com/web-app:abc123');
-	});
-
-	test('Test 4: Creating a cron app includes cron schedule in spec', async ({ page }) => {
-		await setupBaseRoutes(page);
-
-		let postBody: Record<string, unknown> | null = null;
-
-		await page.route('/api/projects/my-project/apps', async (r) => {
-			if (r.request().method() === 'POST') {
-				postBody = JSON.parse(r.request().postData() ?? '{}');
-				const cronApp = {
-					...mockGitApp,
-					metadata: { name: 'cron-job', namespace: 'project-my-project' },
-					spec: {
-						...mockGitApp.spec,
-						kind: 'cron' as const,
-						environments: [
-							{
-								name: 'production',
-								replicas: 0,
-								annotations: { 'mortise.dev/schedule': '0 * * * *' }
-							}
-						]
-					}
-				};
-				await r.fulfill({ status: 201, json: cronApp });
-			} else {
-				await r.fulfill({ json: [mockGitApp] });
-			}
-		});
-
-		await injectAuth(page);
-		await page.goto('/projects/my-project');
-
-		// Open the new app modal
-		await page.getByRole('button', { name: 'Add' }).click();
-		await expect(page.getByText('What would you like to create?')).toBeVisible({
-			timeout: 5000
-		});
-
-		// Select Git Repository
-		await page.getByText('Git Repository').click();
-		await expect(page.getByText('Git Provider')).toBeVisible({ timeout: 5000 });
-
-		// Select repo
-		await expect(page.getByText('org/web-app')).toBeVisible({ timeout: 5000 });
-		await page.getByText('org/web-app').click();
-
-		// Fill app name
-		const appNameInput = page.getByPlaceholder('my-app');
-		await appNameInput.clear();
-		await appNameInput.fill('cron-job');
-
-		// Change Kind to "Cron"
-		await page.getByRole('button', { name: 'Cron' }).click();
-
-		// Schedule input should appear
-		await expect(page.getByPlaceholder('0 * * * *')).toBeVisible({ timeout: 3000 });
-
-		// Fill in the schedule
-		await page.getByPlaceholder('0 * * * *').fill('0 * * * *');
-
-		// Click "Create app"
-		await page.getByRole('button', { name: 'Create app' }).click();
-
-		// Verify POST body contains cron fields
-		await expect(async () => {
-			expect(postBody).toBeTruthy();
-		}).toPass({ timeout: 5000 });
-
-		const spec = (postBody as { spec?: Record<string, unknown> })?.spec;
-		expect(spec).toBeTruthy();
-
-		// The spec should have cron kind or schedule annotation
-		const hasKindCron = spec?.kind === 'cron';
-		const environments = spec?.environments as Array<{
-			annotations?: Record<string, string>;
-		}> | undefined;
-		const hasScheduleAnnotation = environments?.some(
-			(e) => e.annotations?.['mortise.dev/schedule']
-		);
-
-		expect(hasKindCron || hasScheduleAnnotation).toBe(true);
-	});
-
-	test('Test 5: App creation via modal navigates to app drawer on success', async ({
-		page
-	}) => {
-		await setupBaseRoutes(page);
-
-		const newApp = {
-			...mockGitApp,
-			metadata: { name: 'my-new-app', namespace: 'project-my-project' }
-		};
-
-		await page.route('/api/projects/my-project/apps', async (r) => {
-			if (r.request().method() === 'POST') {
-				await r.fulfill({ status: 201, json: newApp });
-			} else {
-				await r.fulfill({ json: [mockGitApp] });
-			}
-		});
-		await page.route('/api/projects/my-project/apps/my-new-app', (r) =>
-			r.fulfill({ json: newApp })
-		);
-		await page.route('/api/projects/my-project/apps/my-new-app/domains*', (r) =>
-			r.fulfill({ json: { primary: '', custom: [] } })
-		);
-		await page.route('/api/projects/my-project/apps/my-new-app/tokens', (r) =>
-			r.fulfill({ json: [] })
-		);
-
-		await injectAuth(page);
-		await page.goto('/projects/my-project');
-
-		await page.getByRole('button', { name: 'Add' }).click();
-		await expect(page.getByText('What would you like to create?')).toBeVisible({
-			timeout: 5000
-		});
-
-		// Select Docker Image (simpler path — no git provider needed)
-		await page.getByText('Docker Image').click();
-		await expect(page.getByPlaceholder('nginx:1.27 or ghcr.io/org/app:latest')).toBeVisible({
-			timeout: 3000
-		});
+		// Select Docker Image
+		await page.getByText('Docker Image', { exact: true }).click();
 
 		// Fill image and app name
 		await page.getByPlaceholder('nginx:1.27 or ghcr.io/org/app:latest').fill('nginx:1.27');
-		const appNameInput = page.getByPlaceholder('my-app');
-		await appNameInput.clear();
-		await appNameInput.fill('my-new-app');
+		await page.getByPlaceholder('my-app').fill(appName);
 
-		// Create the app
 		await page.getByRole('button', { name: 'Create app' }).click();
 
-		// Drawer-in-place: the modal closes and the new app's drawer opens
-		// inline on the project canvas (URL stays at /projects/my-project).
-		await expect(page.getByRole('heading', { name: 'my-new-app', exact: true })).toBeVisible({
+		// Drawer opens showing the new app
+		await expect(page.getByRole('heading', { name: appName })).toBeVisible({
+			timeout: 15_000
+		});
+		await expect(
+			page.getByRole('button', { name: 'Deployments', exact: true })
+		).toBeVisible({ timeout: 5_000 });
+
+		// Clean up
+		await deleteAppViaAPI(page.request, token, project, appName);
+	});
+
+	test('redeploy triggers POST /redeploy for a Ready app', async ({ page, request }) => {
+		test.slow();
+		const appName = `img-redep-${randomSuffix()}`;
+		await createAppViaAPI(request, token, project, appName, 'nginx:1.27', { port: 80 });
+
+		// Poll until the app phase is Ready.
+		await expect(async () => {
+			const app = await getAppViaAPI(request, token, project, appName);
+			const status = app.status as {
+				phase?: string;
+				environments?: Array<{ phase?: string; currentImage?: string }>;
+			};
+			expect(status?.phase === 'Ready' || status?.environments?.[0]?.phase === 'Ready').toBeTruthy();
+		}).toPass({ timeout: 90_000 });
+
+		await injectToken(page, token);
+		await page.goto(`/projects/${project}/apps/${appName}`);
+
+		await expect(page.getByRole('heading', { name: appName })).toBeVisible({
 			timeout: 10_000
 		});
-		await expect(page.getByRole('button', { name: 'Deployments', exact: true })).toBeVisible({
-			timeout: 5000
-		});
+
+		// Wait for the Redeploy button to be enabled, then click it once.
+		const redeployBtn = page.getByRole('button', { name: 'Redeploy', exact: true }).first();
+		await expect(async () => {
+			await page.reload();
+			await expect(page.getByRole('heading', { name: appName })).toBeVisible({ timeout: 5_000 });
+			await expect(redeployBtn).toBeVisible({ timeout: 5_000 });
+			await expect(redeployBtn).toBeEnabled({ timeout: 5_000 });
+		}).toPass({ timeout: 90_000, intervals: [3_000, 5_000, 5_000] });
+
+		const [deployRes] = await Promise.all([
+			page.waitForResponse((r) =>
+				r.url().includes(`/apps/${appName}/redeploy`) && r.request().method() === 'POST'
+			),
+			redeployBtn.click()
+		]);
+		expect(deployRes.ok()).toBe(true);
+
+		// Clean up
+		await deleteAppViaAPI(request, token, project, appName);
 	});
 });

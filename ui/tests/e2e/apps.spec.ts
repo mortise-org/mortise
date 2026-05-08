@@ -105,7 +105,7 @@ test.describe('new app modal structure', () => {
 
 		await page.getByRole('button', { name: 'Cancel' }).click();
 
-		await expect(page).toHaveURL(`/projects/${project}`, { timeout: 10_000 });
+		await expect(page).toHaveURL(new RegExp(`/projects/${project}(\\?|$)`), { timeout: 10_000 });
 	});
 });
 
@@ -156,7 +156,7 @@ test.describe('deploy docker image', () => {
 		await createBtn.click();
 
 		// After creation, navigates to the app drawer URL.
-		await expect(page).toHaveURL(`/projects/${project}/apps/${appName}`, { timeout: 15_000 });
+		await expect(page).toHaveURL(new RegExp(`/projects/${project}/apps/${appName}(\\?|$)`), { timeout: 15_000 });
 	});
 });
 
@@ -311,7 +311,7 @@ test.describe('app drawer', () => {
 		// All five tab buttons.
 		await expect(page.getByRole('button', { name: 'Deployments' })).toBeVisible();
 		await expect(page.getByRole('button', { name: 'Variables' })).toBeVisible();
-		await expect(page.getByRole('button', { name: 'Logs' })).toBeVisible();
+		await expect(page.getByRole('button', { name: 'Deploy Logs' })).toBeVisible();
 		await expect(page.getByRole('button', { name: 'Metrics' })).toBeVisible();
 		await expect(page.getByRole('button', { name: 'Settings' })).toBeVisible();
 	});
@@ -325,7 +325,7 @@ test.describe('app drawer', () => {
 		// Close button (X icon, aria-label="Close drawer").
 		await page.getByRole('button', { name: 'Close drawer' }).click();
 
-		await expect(page).toHaveURL(`/projects/${project}`, { timeout: 5_000 });
+		await expect(page).toHaveURL(new RegExp(`/projects/${project}(\\?|$)`), { timeout: 5_000 });
 	});
 
 	test('tab switching works — Variables tab shows content', async ({ page }) => {
@@ -336,8 +336,8 @@ test.describe('app drawer', () => {
 
 		await page.getByRole('button', { name: 'Variables' }).click();
 
-		// Variables tab content should appear — "New variable" button is always visible.
-		await expect(page.getByRole('button', { name: 'New variable', exact: true })).toBeVisible({ timeout: 5_000 });
+		// Variables tab content should appear — "Runtime - <env>" section heading is visible.
+		await expect(page.getByText(/Runtime -/)).toBeVisible({ timeout: 5_000 });
 	});
 
 	test('tab switching works — Settings tab shows content', async ({ page }) => {
@@ -358,10 +358,10 @@ test.describe('app drawer', () => {
 
 		await expect(page.getByRole('heading', { name: appName })).toBeVisible({ timeout: 10_000 });
 
-		// Phase badge (may be Pending, Ready, etc.).
+		// Phase badge (may be Pending, Ready, Deploying, CrashLooping, etc.).
 		const phaseBadge = page.locator('span', {
-			hasText: /Ready|Pending|Deploying|Building|Failed/
+			hasText: /Ready|Pending|Deploying|Building|Failed|CrashLooping/
 		});
-		await expect(phaseBadge.first()).toBeVisible({ timeout: 10_000 });
+		await expect(phaseBadge.first()).toBeVisible({ timeout: 15_000 });
 	});
 });

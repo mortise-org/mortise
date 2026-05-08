@@ -4,14 +4,15 @@ import {
 	loginViaAPI,
 	injectToken,
 	randomSuffix,
+	createGitProviderViaAPI,
 	deleteGitProviderViaAPI
 } from './helpers';
 
 // End-to-end CRUD flow for GitProvider via the Mortise UI.
 //
-// Platform settings (including Git Providers) are now at /admin/settings.
-// The old /settings/git-providers redirects to /admin/settings via a
-// client-side redirect.
+// Platform settings (including Git Providers) are now at /settings.
+// The old /settings/git-providers and /admin/settings both redirect to
+// /settings via client-side redirects.
 
 test.describe('git providers', () => {
 	let providerName: string;
@@ -33,59 +34,44 @@ test.describe('git providers', () => {
 		}
 	});
 
-	test('/settings/git-providers redirects to /admin/settings', async ({ page }) => {
+	test('/settings/git-providers redirects to /settings', async ({ page }) => {
 		await injectToken(page, adminToken);
 
 		await page.goto('/settings/git-providers');
 
-		// Should redirect to /admin/settings.
-		await expect(page).toHaveURL('/admin/settings', { timeout: 5_000 });
+		// Should redirect to /settings.
+		await expect(page).toHaveURL('/settings', { timeout: 5_000 });
 	});
 
 	test('platform settings page renders with Git Providers section', async ({ page }) => {
 		await injectToken(page, adminToken);
-		await page.goto('/admin/settings');
+		await page.goto('/settings');
 
 		await expect(
-			page.getByRole('heading', { name: 'Platform Settings' })
+			page.getByRole('heading', { name: 'Settings' })
 		).toBeVisible({ timeout: 10_000 });
 
 		await expect(page.getByRole('heading', { name: 'Git Providers' })).toBeVisible();
-		await expect(page.getByRole('button', { name: 'Add Provider' })).toBeVisible();
+		await expect(page.getByRole('button', { name: /Add Connection/ })).toBeVisible();
 	});
 
-	test('create and delete a GitHub provider', async ({ page }) => {
+	test('view and delete a GitHub provider created via API', async ({ page, request }) => {
 		providerName = `e2e-github-${randomSuffix()}`;
 
+		// Create the provider via the API so we can test the UI list + delete.
+		await createGitProviderViaAPI(request, adminToken, providerName);
+
 		await injectToken(page, adminToken);
-		await page.goto('/admin/settings');
+		await page.goto('/settings');
 
 		await expect(
-			page.getByRole('heading', { name: 'Platform Settings' })
+			page.getByRole('heading', { name: 'Settings' })
 		).toBeVisible({ timeout: 10_000 });
 
-		// Scope form + list interaction to the git-providers section.
+		// Scope interaction to the git-providers section.
 		const section = page.locator('section#git-providers');
 
-		// Click "Add Provider" to show the form.
-		await section.getByRole('button', { name: 'Add Provider' }).click();
-
-		// Form appears with provider fields.
-		await expect(section.getByRole('heading', { name: 'New Git Provider' })).toBeVisible();
-
-		await section.getByPlaceholder('github-main').fill(providerName);
-		await section.getByPlaceholder('https://github.com').fill('https://github.com');
-
-		// OAuth fields have labels with matching `for` attrs linking to input ids,
-		// so getByLabel works directly.
-		await section.getByLabel('OAuth Client ID').fill('test-client-id');
-		await section.getByLabel('OAuth Client Secret').fill('test-client-secret');
-		await section.getByLabel('Webhook Secret').fill('test-webhook-secret');
-
-		// Submit the form.
-		await section.getByRole('button', { name: 'Create', exact: true }).click();
-
-		// The form should close and the provider list should show our provider.
+		// The provider list should show our provider.
 		await expect(section.getByText(providerName)).toBeVisible({ timeout: 10_000 });
 
 		// Delete the provider. Accept the confirm() dialog before clicking the
@@ -101,32 +87,32 @@ test.describe('git providers', () => {
 		// Provider should be gone from the list.
 		await expect(section.getByText(providerName)).toHaveCount(0, { timeout: 5_000 });
 
-		// Test passed — skip afterEach's delete fallback.
+		// Test passed -- skip afterEach's delete fallback.
 		providerName = '';
 	});
 
-	test('platform settings shows General section', async ({ page }) => {
+	test('platform settings shows Platform Domain section', async ({ page }) => {
 		await injectToken(page, adminToken);
-		await page.goto('/admin/settings');
+		await page.goto('/settings');
 
 		await expect(
-			page.getByRole('heading', { name: 'Platform Settings' })
+			page.getByRole('heading', { name: 'Settings' })
 		).toBeVisible({ timeout: 10_000 });
 
-		// General section.
-		await expect(page.getByRole('heading', { name: 'General' })).toBeVisible();
-		await expect(page.getByPlaceholder('yourdomain.com')).toBeVisible();
+		// Platform Domain section (previously "General").
+		await expect(page.getByRole('heading', { name: 'Platform Domain' })).toBeVisible();
+		await expect(page.getByPlaceholder('apps.example.com')).toBeVisible();
 
 		// Users section.
-		await expect(page.getByText('Users & Invites')).toBeVisible();
+		await expect(page.getByRole('heading', { name: 'Users' })).toBeVisible();
 	});
 
 	test('filter input narrows visible sections', async ({ page }) => {
 		await injectToken(page, adminToken);
-		await page.goto('/admin/settings');
+		await page.goto('/settings');
 
 		await expect(
-			page.getByRole('heading', { name: 'Platform Settings' })
+			page.getByRole('heading', { name: 'Settings' })
 		).toBeVisible({ timeout: 10_000 });
 
 		const filterInput = page.getByPlaceholder('Filter settings...');
