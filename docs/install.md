@@ -208,8 +208,8 @@ spec:
 If you need a non-default IngressClass for App Ingresses, set it on the
 operator (`mortise-core.operator.ingressClassName`), not in PlatformConfig.
 
-A step-by-step BYO walkthrough is
-[tracked in #86](https://github.com/mortise-org/mortise/issues/86).
+For a step-by-step BYO walkthrough with copy-pasteable commands, see
+[Bring Your Own Infrastructure](./byo.md).
 
 ### What Helm creates
 

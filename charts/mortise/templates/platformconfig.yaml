@@ -10,19 +10,37 @@ spec:
   {{- if .Values.platformConfig.externalDomain }}
   externalDomain: {{ .Values.platformConfig.externalDomain | quote }}
   {{- end }}
-  {{- if .Values.registry.enabled }}
+  {{- if or .Values.platformConfig.registry.url .Values.registry.enabled }}
   registry:
+    {{- if .Values.platformConfig.registry.url }}
+    url: {{ .Values.platformConfig.registry.url | quote }}
+    {{- else }}
     url: http://{{ include "mortise.registryAddr" . }}
     pullURL: http://{{ include "mortise.registryPullAddr" . }}
-    namespace: mortise
     insecureSkipTLSVerify: true
+    {{- end }}
+    namespace: {{ .Values.platformConfig.registry.namespace | default "mortise" }}
+    {{- if .Values.platformConfig.registry.insecureSkipTLSVerify }}
+    insecureSkipTLSVerify: true
+    {{- end }}
+    {{- if .Values.platformConfig.registry.pullSecretRef }}
+    pullSecretName: {{ .Values.platformConfig.registry.pullSecretRef | quote }}
+    {{- end }}
   {{- end }}
-  {{- if .Values.buildkit.enabled }}
+  {{- if or .Values.platformConfig.build.buildkitAddr .Values.buildkit.enabled }}
   build:
+    {{- if .Values.platformConfig.build.buildkitAddr }}
+    buildkitAddr: {{ .Values.platformConfig.build.buildkitAddr | quote }}
+    {{- else }}
     buildkitAddr: {{ include "mortise.buildkitAddr" . }}
+    {{- end }}
     {{- if .Values.platformConfig.buildPlatform }}
     defaultPlatform: {{ .Values.platformConfig.buildPlatform }}
     {{- end }}
+  {{- end }}
+  {{- if .Values.platformConfig.tls.clusterIssuer }}
+  tls:
+    certManagerClusterIssuer: {{ .Values.platformConfig.tls.clusterIssuer | quote }}
   {{- end }}
   {{- if .Values.observer.enabled }}
   observability:

@@ -77,6 +77,9 @@ helm install mortise mortise/mortise-core \
   --create-namespace
 ```
 
+See the **[BYO guide](docs/byo.md)** for step-by-step scenarios with external
+registries, ingress controllers, and cert-manager.
+
 </details>
 
 After installing, follow the **[Quickstart](docs/quickstart.md)** to create an admin account and deploy your first app.
@@ -145,6 +148,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for full system diagrams.
 |-----|---------|
 | [Quickstart](docs/quickstart.md) | Zero to deployed app in 10 minutes |
 | [Install](docs/install.md) | Helm install, values reference, upgrade, uninstall |
+| [BYO install](docs/byo.md) | Bring your own ingress, registry, cert-manager, BuildKit |
 | [Cluster setup](docs/cluster-setup.md) | Getting a cluster running (k3d, k3s, EKS, GKE, AKS) |
 | [Configuration](docs/configuration.md) | Domain, git providers, HTTPS, storage, environments |
 | [API quickstart](docs/api-quickstart.md) | End-to-end API workflow with curl |

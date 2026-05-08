@@ -1,3 +1,6 @@
+crds:
+  install: true
+
 image:
   repository: ghcr.io/mortise-org/mortise
   tag: 0.1.1

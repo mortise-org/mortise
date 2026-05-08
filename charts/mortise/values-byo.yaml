@@ -1,0 +1,61 @@
+# values-byo.yaml — Example values for BYO (Bring Your Own) installs.
+#
+# Use this as a starting point when you already have some or all of the
+# infrastructure Mortise normally bundles. Uncomment and set the values
+# that match your setup.
+#
+# Usage:
+#   helm install mortise mortise/mortise \
+#     --namespace mortise-system --create-namespace \
+#     -f values-byo.yaml
+
+# ---------------------------------------------------------------------------
+# Disable bundled components you already have
+# ---------------------------------------------------------------------------
+# Uncomment each line to disable a bundled component.
+
+# traefik:
+#   enabled: false
+
+# cert-manager:
+#   enabled: false
+
+# registry:
+#   enabled: false
+
+# buildkit:
+#   enabled: false
+
+# ---------------------------------------------------------------------------
+# Operator settings
+# ---------------------------------------------------------------------------
+mortise-core:
+  operator:
+    # Set this to match your existing ingress controller's class.
+    ingressClassName: ""    # e.g. nginx, traefik, alb
+
+# ---------------------------------------------------------------------------
+# PlatformConfig — BYO endpoints
+# ---------------------------------------------------------------------------
+platformConfig:
+  enabled: true
+  domain: ""                # e.g. apps.example.com
+
+  # Optional: where the Mortise API is publicly reachable (for webhooks).
+  # Falls back to domain when unset.
+  externalDomain: ""        # e.g. mortise.example.com
+
+  # -- External registry (set when registry.enabled=false) --
+  registry:
+    url: ""                 # e.g. https://ghcr.io/my-org, https://123456.dkr.ecr.us-east-1.amazonaws.com
+    namespace: ""           # e.g. mortise (registry namespace / project for images)
+    insecureSkipTLSVerify: false
+    pullSecretRef: ""       # name of an existing docker-registry Secret
+
+  # -- External BuildKit (set when buildkit.enabled=false) --
+  build:
+    buildkitAddr: ""        # e.g. tcp://buildkit.build-infra.svc:1234
+
+  # -- TLS (set when using your own cert-manager) --
+  tls:
+    clusterIssuer: ""       # e.g. letsencrypt-prod
