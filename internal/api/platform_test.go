@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
@@ -169,5 +171,80 @@ func TestPatchPlatformClearableFields(t *testing.T) {
 	// Domain should NOT have been cleared (stays as string, not *string).
 	if pc.Spec.Domain != "example.com" {
 		t.Errorf("domain: expected example.com, got %q", pc.Spec.Domain)
+	}
+}
+
+func TestPatchPlatformClearableObservabilityTokens(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+
+	w := doRequest(h, http.MethodPatch, "/api/platform", map[string]any{
+		"observability": map[string]any{
+			"logsAdapterToken":    "logs-token",
+			"metricsAdapterToken": "metrics-token",
+			"trafficAdapterToken": "traffic-token",
+		},
+	})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create: expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var secret corev1.Secret
+	secretKey := types.NamespacedName{Namespace: "mortise-system", Name: "observer-adapter-tokens"}
+	if err := k8sClient.Get(context.Background(), secretKey, &secret); err != nil {
+		t.Fatalf("get secret after create: %v", err)
+	}
+	if got := string(secret.Data["logs"]); got != "logs-token" {
+		t.Fatalf("logs token: expected logs-token, got %q", got)
+	}
+
+	w = doRequest(h, http.MethodPatch, "/api/platform", map[string]any{
+		"observability": map[string]any{
+			"logsAdapterToken":    "",
+			"metricsAdapterToken": "",
+			"trafficAdapterToken": "",
+		},
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("clear: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	if err := k8sClient.Get(context.Background(), secretKey, &secret); !errors.IsNotFound(err) {
+		t.Fatalf("expected token secret deletion after clear, got err=%v", err)
+	}
+}
+
+func TestPatchPlatformClearableObservabilityTokensDoesNotCreateEmptySecret(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+
+	w := doRequest(h, http.MethodPatch, "/api/platform", map[string]any{
+		"domain": "example.com",
+		"observability": map[string]any{
+			"logsAdapterToken":    "",
+			"metricsAdapterToken": "",
+			"trafficAdapterToken": "",
+		},
+	})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create with clear request: expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var secret corev1.Secret
+	secretKey := types.NamespacedName{Namespace: "mortise-system", Name: "observer-adapter-tokens"}
+	if err := k8sClient.Get(context.Background(), secretKey, &secret); !errors.IsNotFound(err) {
+		t.Fatalf("expected no empty token secret to be created, got err=%v", err)
+	}
+
+	var pc mortisev1alpha1.PlatformConfig
+	if err := k8sClient.Get(context.Background(), types.NamespacedName{Name: "platform"}, &pc); err != nil {
+		t.Fatalf("get platform after clear-only create: %v", err)
+	}
+	if pc.Spec.Observability.LogsAdapterTokenSecretRef != nil ||
+		pc.Spec.Observability.MetricsAdapterTokenSecretRef != nil ||
+		pc.Spec.Observability.TrafficAdapterTokenSecretRef != nil {
+		t.Fatalf("expected no observability token refs, got %+v", pc.Spec.Observability)
 	}
 }

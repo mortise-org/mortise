@@ -240,6 +240,9 @@ func (s *Server) upsertAdapterTokens(ctx context.Context, obs *patchPlatformObse
 	err := s.client.Get(ctx, key, &secret)
 
 	if errors.IsNotFound(err) {
+		if shouldDeleteAllAdapterTokens(obs) {
+			return nil
+		}
 		secret = corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      adapterTokensSecretName,
@@ -292,6 +295,12 @@ func (s *Server) upsertAdapterTokens(ctx context.Context, obs *patchPlatformObse
 		return s.client.Delete(ctx, &secret)
 	}
 	return s.client.Update(ctx, &secret)
+}
+
+func shouldDeleteAllAdapterTokens(obs *patchPlatformObservability) bool {
+	return obs.LogsAdapterToken != nil && *obs.LogsAdapterToken == "" &&
+		obs.MetricsAdapterToken != nil && *obs.MetricsAdapterToken == "" &&
+		obs.TrafficAdapterToken != nil && *obs.TrafficAdapterToken == ""
 }
 
 func adapterTokenSecretRef(key string) *mortisev1alpha1.SecretRef {
