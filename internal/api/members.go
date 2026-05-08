@@ -1,7 +1,6 @@
 package api
 
 import (
-	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
@@ -38,16 +37,10 @@ type updateMemberRequest struct {
 	Role string `json:"role"`
 }
 
-// memberCRDName returns the deterministic ProjectMember CRD name for an email.
-// Uses hex encoding for short emails (backward-compatible) and falls back to
-// SHA-256 for long emails that would exceed the 253-char k8s name limit.
+// memberCRDName delegates to constants.MemberCRDName for the deterministic
+// ProjectMember CRD name derivation.
 func memberCRDName(email string) string {
-	encoded := hex.EncodeToString([]byte(email))
-	if len("member-")+len(encoded) <= 253 {
-		return "member-" + encoded
-	}
-	hash := sha256.Sum256([]byte(email))
-	return "member-" + hex.EncodeToString(hash[:])
+	return constants.MemberCRDName(email)
 }
 
 // validProjectRole returns true if role is a valid ProjectRole value.
