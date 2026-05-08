@@ -23,6 +23,7 @@ import (
 	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -98,12 +99,24 @@ func asNamespaceResolveError(err error) (*namespaceResolveError, bool) {
 	return nil, false
 }
 
+const (
+	// NsClusterRoleName is the ClusterRole defining namespace-scoped permissions.
+	// Bound per-namespace via RoleBinding so the operator only has access in
+	// namespaces it manages (pj-*).
+	NsClusterRoleName = "mortise-controller-ns"
+
+	// nsRoleBindingName is the RoleBinding created in each managed namespace.
+	nsRoleBindingName = "mortise-controller"
+)
+
 // ProjectReconciler reconciles a Project: provisions the control namespace
 // plus one workload namespace per declared environment, tears them down on
 // delete, and propagates env-set changes to owned Apps.
 type ProjectReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme             *runtime.Scheme
+	OperatorNamespace  string
+	ServiceAccountName string
 }
 
 // +kubebuilder:rbac:groups=mortise.mortise.dev,resources=projects,verbs=get;list;watch;create;update;patch;delete
@@ -112,6 +125,7 @@ type ProjectReconciler struct {
 // +kubebuilder:rbac:groups=mortise.mortise.dev,resources=apps,verbs=get;list;watch;patch;update
 // +kubebuilder:rbac:groups=mortise.mortise.dev,resources=projectmembers,verbs=get;list;watch;create
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=rolebindings,verbs=get;list;watch;create;update;patch;delete
 
 func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
@@ -184,6 +198,10 @@ func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, err
 	}
 
+	if err := r.ensureNamespaceRBAC(ctx, controlNs); err != nil {
+		return ctrl.Result{}, fmt.Errorf("ensure RBAC in control namespace %q: %w", controlNs, err)
+	}
+
 	// Auto-create an owner ProjectMember for the project creator.
 	if err := r.ensureOwnerMember(ctx, &project, controlNs); err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensure owner member: %w", err)
@@ -201,6 +219,9 @@ func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 				return ctrl.Result{}, r.markFailed(ctx, &project, controlNs, nsErr.Reason, nsErr.Message)
 			}
 			return ctrl.Result{}, fmt.Errorf("ensure env namespace %q: %w", ns, err)
+		}
+		if err := r.ensureNamespaceRBAC(ctx, ns); err != nil {
+			return ctrl.Result{}, fmt.Errorf("ensure RBAC in env namespace %q: %w", ns, err)
 		}
 		envNsMap[env.Name] = ns
 	}
@@ -340,6 +361,62 @@ func (r *ProjectReconciler) ensureNamespace(ctx context.Context, project *mortis
 		Reason:  ReasonNamespaceAlreadyExists,
 		Message: fmt.Sprintf("namespace %q already exists and is not managed by mortise; delete it or pick a different project/env name", nsName),
 	}
+}
+
+// ensureNamespaceRBAC creates a RoleBinding in the given namespace that grants
+// the operator's SA the namespace-scoped ClusterRole. Idempotent: updates the
+// binding if it already exists with stale subjects/roleRef.
+func (r *ProjectReconciler) ensureNamespaceRBAC(ctx context.Context, nsName string) error {
+	if r.ServiceAccountName == "" || r.OperatorNamespace == "" {
+		return nil
+	}
+
+	desired := &rbacv1.RoleBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      nsRoleBindingName,
+			Namespace: nsName,
+			Labels: map[string]string{
+				"app.kubernetes.io/managed-by": "mortise",
+			},
+		},
+		RoleRef: rbacv1.RoleRef{
+			APIGroup: rbacv1.GroupName,
+			Kind:     "ClusterRole",
+			Name:     NsClusterRoleName,
+		},
+		Subjects: []rbacv1.Subject{{
+			Kind:      rbacv1.ServiceAccountKind,
+			Name:      r.ServiceAccountName,
+			Namespace: r.OperatorNamespace,
+		}},
+	}
+
+	var existing rbacv1.RoleBinding
+	err := r.Get(ctx, types.NamespacedName{Name: nsRoleBindingName, Namespace: nsName}, &existing)
+	if errors.IsNotFound(err) {
+		return r.Create(ctx, desired)
+	}
+	if err != nil {
+		return fmt.Errorf("get rolebinding: %w", err)
+	}
+
+	// RoleRef is immutable in k8s — if it changed, delete and recreate.
+	if existing.RoleRef != desired.RoleRef {
+		if err := r.Delete(ctx, &existing); err != nil {
+			return fmt.Errorf("delete stale rolebinding: %w", err)
+		}
+		return r.Create(ctx, desired)
+	}
+
+	if len(existing.Subjects) == 1 &&
+		existing.Subjects[0].Kind == desired.Subjects[0].Kind &&
+		existing.Subjects[0].Name == desired.Subjects[0].Name &&
+		existing.Subjects[0].Namespace == desired.Subjects[0].Namespace {
+		return nil
+	}
+
+	existing.Subjects = desired.Subjects
+	return r.Update(ctx, &existing)
 }
 
 // namespaceLabels returns the management labels stamped on a project-owned ns.

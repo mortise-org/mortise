@@ -23,6 +23,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -377,6 +378,81 @@ var _ = Describe("Project Controller", func() {
 			var members mortisev1alpha1.ProjectMemberList
 			Expect(k8sClient.List(ctx, &members, client.InNamespace(nsName))).To(Succeed())
 			Expect(members.Items).To(BeEmpty())
+		})
+	})
+
+	Context("namespace-scoped RBAC", func() {
+		const (
+			projectName = "rbac-test"
+			saName      = "mortise-controller"
+			saNamespace = "mortise-system"
+		)
+		nsName := ProjectNamespace(projectName)
+
+		AfterEach(func() {
+			proj := &mortisev1alpha1.Project{}
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: projectName}, proj); err == nil {
+				proj.Finalizers = nil
+				_ = k8sClient.Update(ctx, proj)
+				_ = k8sClient.Delete(ctx, proj)
+			}
+			_ = k8sClient.Delete(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: nsName}})
+		})
+
+		It("creates a RoleBinding in each managed namespace", func() {
+			project := &mortisev1alpha1.Project{
+				ObjectMeta: metav1.ObjectMeta{Name: projectName},
+				Spec:       mortisev1alpha1.ProjectSpec{Description: "rbac test"},
+			}
+			Expect(k8sClient.Create(ctx, project)).To(Succeed())
+
+			r := &ProjectReconciler{
+				Client:             k8sClient,
+				Scheme:             k8sClient.Scheme(),
+				OperatorNamespace:  saNamespace,
+				ServiceAccountName: saName,
+			}
+			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: projectName}})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: projectName}})
+			Expect(err).NotTo(HaveOccurred())
+
+			var rb rbacv1.RoleBinding
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      "mortise-controller",
+				Namespace: nsName,
+			}, &rb)).To(Succeed())
+
+			Expect(rb.RoleRef.Kind).To(Equal("ClusterRole"))
+			Expect(rb.RoleRef.Name).To(Equal(NsClusterRoleName))
+			Expect(rb.Subjects).To(HaveLen(1))
+			Expect(rb.Subjects[0].Kind).To(Equal("ServiceAccount"))
+			Expect(rb.Subjects[0].Name).To(Equal(saName))
+			Expect(rb.Subjects[0].Namespace).To(Equal(saNamespace))
+		})
+
+		It("skips RoleBinding creation when SA fields are empty", func() {
+			project := &mortisev1alpha1.Project{
+				ObjectMeta: metav1.ObjectMeta{Name: projectName},
+				Spec:       mortisev1alpha1.ProjectSpec{Description: "no sa"},
+			}
+			Expect(k8sClient.Create(ctx, project)).To(Succeed())
+
+			r := &ProjectReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: projectName}})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: projectName}})
+			Expect(err).NotTo(HaveOccurred())
+
+			var rb rbacv1.RoleBinding
+			err = k8sClient.Get(ctx, types.NamespacedName{
+				Name:      "mortise-controller",
+				Namespace: nsName,
+			}, &rb)
+			Expect(errors.IsNotFound(err)).To(BeTrue())
 		})
 	})
 

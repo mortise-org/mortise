@@ -375,8 +375,10 @@ func main() {
 	}
 
 	if err := (&controller.ProjectReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:             mgr.GetClient(),
+		Scheme:             mgr.GetScheme(),
+		OperatorNamespace:  os.Getenv("MORTISE_OPERATOR_NAMESPACE"),
+		ServiceAccountName: os.Getenv("MORTISE_SERVICE_ACCOUNT"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "Project")
 		os.Exit(1)

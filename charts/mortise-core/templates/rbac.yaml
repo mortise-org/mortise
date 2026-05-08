@@ -1,13 +1,14 @@
+# Cluster-scoped ClusterRole: only permissions that genuinely require
+# cluster-wide access (CRDs are cluster-scoped, namespace lifecycle).
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
   name: mortise-controller
 rules:
-  # Project CRD (cluster-scoped; operator creates/deletes the backing namespace)
+  # Mortise CRDs (cluster-scoped resources)
   - apiGroups: ["mortise.mortise.dev"]
     resources: ["projects", "projects/status", "projects/finalizers"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  # App CRDs
   - apiGroups: ["mortise.mortise.dev"]
     resources: ["apps", "apps/status", "apps/finalizers"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
@@ -17,28 +18,37 @@ rules:
   - apiGroups: ["mortise.mortise.dev"]
     resources: ["platformconfigs/status", "gitproviders/status", "previewenvironments/status", "previewenvironments/finalizers", "projectmembers/status"]
     verbs: ["get", "update", "patch"]
-  # Namespaces: Project controller creates + deletes one per Project.
+  # Namespaces: the Project controller creates/deletes one per Project + env.
   - apiGroups: [""]
     resources: ["namespaces"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  # Core resources the App controller creates
+  # RBAC bootstrapping: the Project controller creates a RoleBinding in each
+  # managed namespace to grant the operator namespace-scoped permissions.
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["rolebindings"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+# Namespace-scoped ClusterRole: defines permissions the operator needs inside
+# each managed namespace (pj-*). Bound per-namespace via RoleBinding, NOT via
+# ClusterRoleBinding — the operator only gets these permissions in namespaces
+# it explicitly manages.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: mortise-controller-ns
+rules:
   - apiGroups: ["apps"]
     resources: ["deployments"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: [""]
     resources: ["services", "secrets", "persistentvolumeclaims", "serviceaccounts"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  # ConfigMaps: per-project Activity event store (§5.11) and App configFiles
-  # (one CM per configFiles entry, named {app}-config-{i}). Delete verb is
-  # required so reconcileConfigMaps can prune orphans when a configFiles
-  # entry is removed.
   - apiGroups: [""]
     resources: ["configmaps"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: ["networking.k8s.io"]
     resources: ["ingresses"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  # CronJobs for cron-type Apps
   - apiGroups: ["batch"]
     resources: ["cronjobs"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]

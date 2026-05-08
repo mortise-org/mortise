@@ -17,10 +17,22 @@ spec:
         app.kubernetes.io/name: mortise
     spec:
       serviceAccountName: {{ .Values.serviceAccount.name }}
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: mortise
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            capabilities:
+              drop:
+                - ALL
           ports:
             - name: api
               containerPort: {{ .Values.api.port }}
@@ -28,12 +40,21 @@ spec:
           args:
             - --api-bind-address=:{{ .Values.api.port }}
           env:
+            - name: MORTISE_OPERATOR_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: MORTISE_SERVICE_ACCOUNT
+              value: {{ .Values.serviceAccount.name | quote }}
             - name: MORTISE_GITHUB_CLIENT_ID
               value: {{ .Values.github.clientID | quote }}
             {{- if .Values.operator.ingressClassName }}
             - name: MORTISE_INGRESS_CLASS
               value: {{ .Values.operator.ingressClassName | quote }}
             {{- end }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           livenessProbe:
@@ -48,6 +69,9 @@ spec:
               port: 8081
             initialDelaySeconds: 5
             periodSeconds: 10
+      volumes:
+        - name: tmp
+          emptyDir: {}
 ---
 {{- if .Values.ingress.enabled }}
 apiVersion: networking.k8s.io/v1
