@@ -34,47 +34,59 @@ import type {
 const BASE = '/api';
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-	const token = localStorage.getItem('mortise_token');
-	const headers: Record<string, string> = {
-		'Content-Type': 'application/json',
-		...(init?.headers as Record<string, string>)
-	};
-	if (token) {
-		headers['Authorization'] = `Bearer ${token}`;
-	}
+	const method = init?.method?.toUpperCase();
+	const retryable = method === 'PUT' || method === 'PATCH';
+	const maxRetries = retryable ? 3 : 0;
 
-	const res = await fetch(`${BASE}${path}`, { ...init, headers });
+	for (let attempt = 0; ; attempt++) {
+		const token = localStorage.getItem('mortise_token');
+		const headers: Record<string, string> = {
+			'Content-Type': 'application/json',
+			...(init?.headers as Record<string, string>)
+		};
+		if (token) {
+			headers['Authorization'] = `Bearer ${token}`;
+		}
 
-	if (res.status === 401) {
-		localStorage.removeItem('mortise_token');
-		goto('/login');
-		throw new Error('Unauthorized');
-	}
+		const res = await fetch(`${BASE}${path}`, { ...init, headers });
 
-	if (res.status === 403) {
-		const body = await res.json().catch(() => ({ error: 'forbidden' }));
-		const serverMsg = body.error || 'forbidden';
-		throw new Error(
-			serverMsg === 'forbidden'
-				? 'You do not have permission to perform this action. Contact a project or platform admin.'
-				: serverMsg
-		);
-	}
+		if (res.status === 401) {
+			localStorage.removeItem('mortise_token');
+			goto('/login');
+			throw new Error('Unauthorized');
+		}
 
-	if (!res.ok) {
-		const body = await res.json().catch(() => ({ error: res.statusText }));
-		throw new Error(body.error || res.statusText);
-	}
+		if (res.status === 403) {
+			const body = await res.json().catch(() => ({ error: 'forbidden' }));
+			const serverMsg = body.error || 'forbidden';
+			throw new Error(
+				serverMsg === 'forbidden'
+					? 'You do not have permission to perform this action. Contact a project or platform admin.'
+					: serverMsg
+			);
+		}
 
-	// 204s and empty bodies - return undefined as T.
-	if (res.status === 204) {
-		return undefined as T;
+		if (!res.ok) {
+			const body = await res.json().catch(() => ({ error: res.statusText }));
+			const msg = body.error || res.statusText;
+
+			if (attempt < maxRetries && res.status === 409) {
+				await new Promise((r) => setTimeout(r, 250 * (attempt + 1)));
+				continue;
+			}
+
+			throw new Error(msg);
+		}
+
+		if (res.status === 204) {
+			return undefined as T;
+		}
+		const text = await res.text();
+		if (!text) {
+			return undefined as T;
+		}
+		return JSON.parse(text) as T;
 	}
-	const text = await res.text();
-	if (!text) {
-		return undefined as T;
-	}
-	return JSON.parse(text) as T;
 }
 
 function enc(s: string): string {

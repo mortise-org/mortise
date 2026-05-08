@@ -153,34 +153,58 @@
 		project?.autoRedeploy ? [] : apps.filter(a => appNeedsRedeploy(a))
 	);
 
+	/** Memoized stale env names per app — avoids redundant recomputation per render. */
+	const staleEnvMap = $derived(
+		new Map(apps.map(a => [a.metadata.name, staleEnvironments(a)]))
+	);
+
+	let redeployingApps = $state<Set<string>>(new Set());
 	let redeployingEnvs = $state<Set<string>>(new Set());
 	let redeployAllRunning = $state(false);
+	let redeployErrors = $state<Map<string, string>>(new Map());
 
-	function isAppRedeploying(appName: string) {
-		return [...redeployingEnvs].some(key => key.startsWith(appName + ':'));
+	const hasRedeployErrors = $derived(redeployErrors.size > 0);
+
+	async function redeployOne(appName: string) {
+		redeployingApps = new Set([...redeployingApps, appName]);
+		const errMap = new Map(redeployErrors);
+		errMap.delete(appName);
+		redeployErrors = errMap;
+		try {
+			await api.redeployStale(projectName, appName);
+		} catch (e) {
+			const msg = e instanceof Error ? e.message : `Redeploy failed for ${appName}`;
+			redeployErrors = new Map(redeployErrors).set(appName, msg);
+		} finally {
+			const next = new Set(redeployingApps);
+			next.delete(appName);
+			redeployingApps = next;
+		}
 	}
 
-	async function redeployEnv(appName: string, envName: string) {
+	/** Redeploy a single environment for one app. */
+	async function redeployOneEnv(appName: string, envName: string) {
 		const key = `${appName}:${envName}`;
 		redeployingEnvs = new Set([...redeployingEnvs, key]);
+		const errMap = new Map(redeployErrors);
+		errMap.delete(key);
+		redeployErrors = errMap;
 		try {
 			await api.redeploy(projectName, appName, envName);
-		} catch { /* error surfaces via SSE phase update */ }
-		finally {
+		} catch (e) {
+			const msg = e instanceof Error ? e.message : `Redeploy failed for ${appName}/${envName}`;
+			redeployErrors = new Map(redeployErrors).set(key, msg);
+		} finally {
 			const next = new Set(redeployingEnvs);
 			next.delete(key);
 			redeployingEnvs = next;
 		}
 	}
 
-	async function redeployApp(appName: string) {
-		const envs = staleEnvironments(apps.find(a => a.metadata.name === appName)!);
-		await Promise.allSettled(envs.map(env => redeployEnv(appName, env)));
-	}
-
 	async function redeployAllStale() {
 		redeployAllRunning = true;
-		await Promise.allSettled(staleApps.map(a => redeployApp(a.metadata.name)));
+		const names = staleApps.map(a => a.metadata.name);
+		await Promise.allSettled(names.map(n => redeployOne(n)));
 		redeployAllRunning = false;
 	}
 
@@ -313,52 +337,64 @@
 					}}
 				/>
 
-				{#if staleApps.length > 0}
-					<div class="absolute bottom-4 left-1/2 -translate-x-1/2 z-10 flex items-center gap-3 rounded-lg border border-warning/30 bg-surface-800/95 backdrop-blur px-4 py-2.5 shadow-lg">
+				{#if staleApps.length > 0 || hasRedeployErrors}
+					<div class="absolute bottom-4 left-1/2 -translate-x-1/2 z-10 flex flex-col items-center gap-1.5">
+					{#if hasRedeployErrors}
+						{#each [...redeployErrors.values()] as errMsg}
+							<div class="rounded-md border border-danger/30 bg-surface-800/95 backdrop-blur px-3 py-1.5 text-xs text-danger shadow-lg">{errMsg}</div>
+						{/each}
+					{/if}
+					{#if staleApps.length > 0}
+					<div class="flex items-center gap-3 rounded-lg border border-warning/30 bg-surface-800/95 backdrop-blur px-4 py-2.5 shadow-lg">
 						<RotateCw class="h-4 w-4 shrink-0 text-warning" />
 						<div class="flex items-center gap-2 text-xs">
 							{#each staleApps as app}
-								{@const envs = staleEnvironments(app)}
-								{#if envs.length <= 1}
-									<button
-										type="button"
-										onclick={() => redeployApp(app.metadata.name)}
-										disabled={isAppRedeploying(app.metadata.name)}
-										class="rounded-md border border-surface-600 bg-surface-700 px-2 py-1 font-medium text-white hover:bg-surface-600 disabled:opacity-50 transition-colors"
-									>
-										{#if isAppRedeploying(app.metadata.name)}
-											<Loader2 class="inline h-3 w-3 animate-spin mr-1" />
-										{/if}
-										{app.metadata.name}
-									</button>
-								{:else}
-									<div class="flex items-center gap-1">
-										<span class="font-medium text-gray-300 px-1">{app.metadata.name}</span>
-										{#each envs as env}
-											<button
-												type="button"
-												onclick={() => redeployEnv(app.metadata.name, env)}
-												disabled={redeployingEnvs.has(`${app.metadata.name}:${env}`)}
-												class="rounded border border-surface-600 bg-surface-700 px-1.5 py-0.5 text-white hover:bg-surface-600 disabled:opacity-50 transition-colors"
-											>
-												{#if redeployingEnvs.has(`${app.metadata.name}:${env}`)}
-													<Loader2 class="inline h-3 w-3 animate-spin mr-0.5" />
-												{/if}
-												{env}
-											</button>
-										{/each}
-									</div>
-								{/if}
+								{@const envs = staleEnvMap.get(app.metadata.name) ?? []}
+								<div class="flex items-center gap-1 rounded-md border border-surface-600 bg-surface-700 px-2 py-1">
+									<span class="font-medium text-white mr-1">{app.metadata.name}</span>
+									{#each envs as envName}
+										<button
+											type="button"
+											onclick={() => redeployOneEnv(app.metadata.name, envName)}
+											disabled={redeployingEnvs.has(`${app.metadata.name}:${envName}`) || redeployingApps.has(app.metadata.name)}
+											class="rounded bg-warning/20 px-1.5 py-0.5 text-[10px] font-medium text-warning hover:bg-warning/30 disabled:opacity-50 transition-colors"
+											title="Redeploy {app.metadata.name} in {envName}"
+										>
+											{#if redeployingEnvs.has(`${app.metadata.name}:${envName}`)}
+												<Loader2 class="inline h-2.5 w-2.5 animate-spin mr-0.5" />
+											{/if}
+											{envName}
+										</button>
+									{/each}
+									{#if envs.length > 1}
+										<button
+											type="button"
+											onclick={() => redeployOne(app.metadata.name)}
+											disabled={redeployingApps.has(app.metadata.name)}
+											class="rounded bg-surface-600 px-1.5 py-0.5 text-[10px] font-medium text-gray-300 hover:bg-surface-500 disabled:opacity-50 transition-colors"
+											title="Redeploy all stale envs for {app.metadata.name}"
+										>
+											{#if redeployingApps.has(app.metadata.name)}
+												<Loader2 class="inline h-2.5 w-2.5 animate-spin mr-0.5" />
+											{/if}
+											all
+										</button>
+									{/if}
+								</div>
 							{/each}
 						</div>
-						<button
-							type="button"
-							onclick={redeployAllStale}
-							disabled={redeployAllRunning}
-							class="rounded-md bg-warning/20 px-3 py-1 text-xs font-medium text-warning hover:bg-warning/30 disabled:opacity-50 transition-colors"
-						>
-							{redeployAllRunning ? 'Redeploying...' : `Redeploy all (${staleApps.length})`}
-						</button>
+						{#if staleApps.length > 1}
+							<button
+								type="button"
+								onclick={redeployAllStale}
+								disabled={redeployAllRunning}
+								class="rounded-md bg-warning/20 px-3 py-1 text-xs font-medium text-warning hover:bg-warning/30 disabled:opacity-50 transition-colors"
+							>
+								{redeployAllRunning ? 'Redeploying...' : `Redeploy all (${staleApps.length})`}
+							</button>
+						{/if}
+					</div>
+					{/if}
 					</div>
 				{/if}
 			</div>
@@ -376,6 +412,11 @@
 						<Plus class="h-4 w-4" /> Add
 					</button>
 				</div>
+				{#if hasRedeployErrors}
+					{#each [...redeployErrors.values()] as errMsg}
+						<div class="mb-3 rounded-md border border-danger/30 bg-danger/10 px-3 py-1.5 text-xs text-danger">{errMsg}</div>
+					{/each}
+				{/if}
 				{#if apps.length === 0}
 					<div class="rounded-lg border border-dashed border-surface-600 bg-surface-800/60 p-12 text-center">
 						<div class="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-surface-800 text-white" aria-hidden="true">
@@ -433,14 +474,30 @@
 										{(app as { kind?: string }).kind ?? 'web'}
 									</td>
 									<td class="py-3 pr-4">
-										{#if phase}
-											<span class="inline-flex items-center gap-1.5 text-xs font-medium {style?.text ?? 'text-gray-400'}">
-												<span class="h-1.5 w-1.5 rounded-full {style?.dot ?? 'bg-gray-500'}"></span>
-												{phase}
-											</span>
-										{:else}
-											<span class="text-gray-500">-</span>
-										{/if}
+										<div class="flex items-center gap-2 flex-wrap">
+											{#if phase}
+												<span class="inline-flex items-center gap-1.5 text-xs font-medium {style?.text ?? 'text-gray-400'}">
+													<span class="h-1.5 w-1.5 rounded-full {style?.dot ?? 'bg-gray-500'}"></span>
+													{phase}
+												</span>
+											{:else}
+												<span class="text-gray-500">-</span>
+											{/if}
+											{#each (staleEnvMap.get(app.metadata.name) ?? []) as envName}
+												<button
+													type="button"
+													onclick={(e) => { e.stopPropagation(); redeployOneEnv(app.metadata.name, envName); }}
+													disabled={redeployingEnvs.has(`${app.metadata.name}:${envName}`)}
+													class="rounded bg-warning/20 px-1.5 py-0.5 text-[10px] font-medium text-warning hover:bg-warning/30 disabled:opacity-50 transition-colors"
+													title="Redeploy {app.metadata.name} in {envName}"
+												>
+													{#if redeployingEnvs.has(`${app.metadata.name}:${envName}`)}
+														<Loader2 class="inline h-2.5 w-2.5 animate-spin mr-0.5" />
+													{/if}
+													{envName}
+												</button>
+											{/each}
+										</div>
 									</td>
 									<td class="py-3 pr-4 font-mono text-xs text-gray-500">
 										{#if app.spec.network?.public === false}
