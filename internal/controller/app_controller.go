@@ -1151,24 +1151,38 @@ func (r *AppReconciler) reconcileCronJob(ctx context.Context, app *mortisev1alph
 		return err
 	}
 
-	if v, ok := existing.Spec.JobTemplate.Spec.Template.Annotations["mortise.dev/restartedAt"]; ok {
-		if desired.Spec.JobTemplate.Spec.Template.Annotations == nil {
-			desired.Spec.JobTemplate.Spec.Template.Annotations = make(map[string]string)
-		}
-		desired.Spec.JobTemplate.Spec.Template.Annotations["mortise.dev/restartedAt"] = v
-	}
-	if !autoRedeploy {
-		if v, ok := existing.Spec.JobTemplate.Spec.Template.Annotations["mortise.dev/env-hash"]; ok {
+	const maxConflictRetries = 3
+	for attempt := 0; attempt < maxConflictRetries; attempt++ {
+		if v, ok := existing.Spec.JobTemplate.Spec.Template.Annotations["mortise.dev/restartedAt"]; ok {
 			if desired.Spec.JobTemplate.Spec.Template.Annotations == nil {
 				desired.Spec.JobTemplate.Spec.Template.Annotations = make(map[string]string)
 			}
-			desired.Spec.JobTemplate.Spec.Template.Annotations["mortise.dev/env-hash"] = v
+			desired.Spec.JobTemplate.Spec.Template.Annotations["mortise.dev/restartedAt"] = v
+		}
+		if !autoRedeploy {
+			if v, ok := existing.Spec.JobTemplate.Spec.Template.Annotations["mortise.dev/env-hash"]; ok {
+				if desired.Spec.JobTemplate.Spec.Template.Annotations == nil {
+					desired.Spec.JobTemplate.Spec.Template.Annotations = make(map[string]string)
+				}
+				desired.Spec.JobTemplate.Spec.Template.Annotations["mortise.dev/env-hash"] = v
+			}
+		}
+
+		existing.Annotations = desired.Annotations
+		existing.Spec = desired.Spec
+		updateErr := r.Update(ctx, &existing)
+		if updateErr == nil {
+			return nil
+		}
+		if !errors.IsConflict(updateErr) || attempt == maxConflictRetries-1 {
+			return updateErr
+		}
+
+		if getErr := r.Get(ctx, types.NamespacedName{Name: name, Namespace: envNs}, &existing); getErr != nil {
+			return getErr
 		}
 	}
-
-	existing.Annotations = desired.Annotations
-	existing.Spec = desired.Spec
-	return r.Update(ctx, &existing)
+	return nil
 }
 
 func (r *AppReconciler) reconcileService(ctx context.Context, app *mortisev1alpha1.App, env *mortisev1alpha1.Environment, envNs string) error {

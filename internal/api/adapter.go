@@ -19,6 +19,14 @@ func (s *Server) proxyToAdapter(w http.ResponseWriter, r *http.Request, adapterU
 		})
 		return
 	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"available": true,
+			"error":     "invalid adapter endpoint",
+			"detail":    "adapter URL scheme must be http or https",
+		})
+		return
+	}
 	u.RawQuery = query.Encode()
 
 	req, err := http.NewRequestWithContext(r.Context(), "GET", u.String(), nil)
