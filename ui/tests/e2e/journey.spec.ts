@@ -22,10 +22,15 @@ import {
 
 test.describe('full user journey', () => {
 	let adminToken: string;
+	const projectName = `e2e-journey-${randomSuffix()}`;
 
 	test.beforeAll(async ({ request }) => {
 		await ensureAdmin(request);
 		adminToken = await loginViaAPI(request);
+	});
+
+	test.afterAll(async ({ request }) => {
+		await deleteProjectViaAPI(request, adminToken, projectName);
 	});
 
 	test('login → project → deploy app → manage in drawer → sign out — full lifecycle', async ({
@@ -35,7 +40,6 @@ test.describe('full user journey', () => {
 		// Increase timeout for this long journey test.
 		test.setTimeout(120_000);
 
-		const projectName = `e2e-journey-${randomSuffix()}`;
 		const appName = `journey-app-${randomSuffix()}`;
 
 		// ── Step 1: Login via the UI ──────────────────────────────────

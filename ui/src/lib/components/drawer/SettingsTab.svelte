@@ -129,11 +129,15 @@
 	let tlsSecretName = $state('');
 	let savingTls = $state(false);
 	$effect(() => {
-		const env = app.spec.environments?.find(e => e.name === selectedEnv) as
-			| { tls?: { clusterIssuer?: string; secretName?: string } }
-			| undefined;
-		tlsClusterIssuer = env?.tls?.clusterIssuer ?? '';
-		tlsSecretName = env?.tls?.secretName ?? '';
+		const envName = selectedEnv;
+		untrack(() => {
+			const spec = specOverride ?? app.spec;
+			const env = spec.environments?.find((e: { name: string }) => e.name === envName) as
+				| { tls?: { clusterIssuer?: string; secretName?: string } }
+				| undefined;
+			tlsClusterIssuer = env?.tls?.clusterIssuer ?? '';
+			tlsSecretName = env?.tls?.secretName ?? '';
+		});
 	});
 
 	// --- Deploy tokens ---
@@ -153,10 +157,14 @@
 	let newMount = $state<{ secretName: string; mountPath: string }>({ secretName: '', mountPath: '' });
 	let savingMounts = $state(false);
 	$effect(() => {
-		// eslint-disable-next-line @typescript-eslint/no-explicit-any
-		const env = (app.spec.environments?.find(e => e.name === selectedEnv) as any) ?? {};
-		annotations = Object.fromEntries(Object.entries((env.annotations ?? {}) as Record<string, string>));
-		secretMounts = (env.secretMounts ?? []) as SecretMount[];
+		const envName = selectedEnv;
+		untrack(() => {
+			const spec = specOverride ?? app.spec;
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
+			const env = (spec.environments?.find((e: { name: string }) => e.name === envName) as any) ?? {};
+			annotations = Object.fromEntries(Object.entries((env.annotations ?? {}) as Record<string, string>));
+			secretMounts = (env.secretMounts ?? []) as SecretMount[];
+		});
 	});
 
 	// --- Danger ---

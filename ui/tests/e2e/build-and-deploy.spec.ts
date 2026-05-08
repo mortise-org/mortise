@@ -106,7 +106,7 @@ test.describe('build and deploy', () => {
 		await deleteAppViaAPI(page.request, token, project, appName);
 	});
 
-	test('redeploy triggers POST /deploy for a Ready app', async ({ page, request }) => {
+	test('redeploy triggers POST /redeploy for a Ready app', async ({ page, request }) => {
 		test.slow();
 		const appName = `img-redep-${randomSuffix()}`;
 		await createAppViaAPI(request, token, project, appName, 'nginx:1.27', { port: 80 });

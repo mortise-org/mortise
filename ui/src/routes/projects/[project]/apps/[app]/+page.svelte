@@ -16,6 +16,7 @@
 	let apps = $state<App[]>([]);
 	let loading = $state(true);
 	let eventStream: ReturnType<typeof connectProjectEvents> | null = null;
+	let destroyed = false;
 
 	onMount(async () => {
 		if (!localStorage.getItem('mortise_token')) {
@@ -26,6 +27,7 @@
 		if (envQ) store.setEnv(projectName, envQ);
 		try {
 			apps = await api.listApps(projectName);
+			if (destroyed) return;
 			eventStream = connectProjectEvents(projectName, {
 				onAppUpdated: (app) => {
 					const idx = apps.findIndex(a => a.metadata.name === app.metadata.name);
@@ -50,6 +52,7 @@
 	});
 
 	onDestroy(() => {
+		destroyed = true;
 		eventStream?.close();
 	});
 
