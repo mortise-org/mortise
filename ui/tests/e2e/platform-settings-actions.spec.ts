@@ -88,10 +88,8 @@ test.describe('platform settings actions', () => {
 			expect(updated.domain).toBe(testDomain);
 		}).toPass({ timeout: 10_000 });
 
-		// Restore original domain with retry for conflict.
-		await expect(async () => {
-			await patchPlatformViaAPI(request, adminToken, { domain: originalDomain });
-		}).toPass({ timeout: 10_000 });
+		// Restore original domain.
+		await patchPlatformViaAPI(request, adminToken, { domain: originalDomain });
 	});
 
 	test('admin can save registry config and verify via API', async ({ page, request }) => {
@@ -120,10 +118,8 @@ test.describe('platform settings actions', () => {
 			expect(registry?.url).toBe(testUrl);
 		}).toPass({ timeout: 10_000 });
 
-		// Restore by clearing the registry URL with retry for conflict.
-		await expect(async () => {
-			await patchPlatformViaAPI(request, adminToken, { registry: { url: '' } });
-		}).toPass({ timeout: 10_000 });
+		// Restore by clearing the registry URL.
+		await patchPlatformViaAPI(request, adminToken, { registry: { url: '' } });
 	});
 
 	test('admin can save build config and verify via API', async ({ page, request }) => {
@@ -152,10 +148,8 @@ test.describe('platform settings actions', () => {
 			expect(build?.buildkitAddr).toBe(testAddr);
 		}).toPass({ timeout: 10_000 });
 
-		// Restore by clearing with retry for conflict.
-		await expect(async () => {
-			await patchPlatformViaAPI(request, adminToken, { build: { buildkitAddr: '' } });
-		}).toPass({ timeout: 10_000 });
+		// Restore by clearing.
+		await patchPlatformViaAPI(request, adminToken, { build: { buildkitAddr: '' } });
 	});
 
 	test('admin can save TLS cluster issuer and verify via API', async ({ page, request }) => {
@@ -165,35 +159,30 @@ test.describe('platform settings actions', () => {
 
 		const testIssuer = `e2e-issuer-${randomSuffix()}`;
 
-		// The save may fail silently due to resource version conflicts.
-		// Retry the entire fill+save+verify flow.
+		await injectToken(page, adminToken);
+		await page.goto('/settings');
+		await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible({ timeout: 10_000 });
+
+		const tlsIssuerInput = page.locator('#tls-issuer');
+		await tlsIssuerInput.scrollIntoViewIfNeeded();
+		await tlsIssuerInput.clear();
+		await tlsIssuerInput.fill(testIssuer);
+
+		await page.getByRole('button', { name: 'Save TLS config', exact: true }).click();
+		await expect(
+			page.getByRole('button', { name: 'Save TLS config', exact: true })
+		).toBeVisible({ timeout: 5_000 });
+
 		await expect(async () => {
-			await injectToken(page, adminToken);
-			await page.goto('/settings');
-			await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible({ timeout: 10_000 });
-
-			const tlsIssuerInput = page.locator('#tls-issuer');
-			await tlsIssuerInput.scrollIntoViewIfNeeded();
-			await tlsIssuerInput.clear();
-			await tlsIssuerInput.fill(testIssuer);
-
-			await page.getByRole('button', { name: 'Save TLS config', exact: true }).click();
-			await expect(
-				page.getByRole('button', { name: 'Save TLS config', exact: true })
-			).toBeVisible({ timeout: 5_000 });
-
-			await new Promise(r => setTimeout(r, 1_000));
 			const updated = await getPlatformViaAPI(request, adminToken);
 			const tls = updated.tls as Record<string, unknown>;
 			expect(tls.certManagerClusterIssuer).toBe(testIssuer);
-		}).toPass({ timeout: 20_000, intervals: [2_000, 3_000, 5_000] });
-
-		// Restore original issuer with retry for conflict.
-		await expect(async () => {
-			await patchPlatformViaAPI(request, adminToken, {
-				tls: { certManagerClusterIssuer: originalIssuer }
-			});
 		}).toPass({ timeout: 10_000 });
+
+		// Restore original issuer.
+		await patchPlatformViaAPI(request, adminToken, {
+			tls: { certManagerClusterIssuer: originalIssuer }
+		});
 	});
 
 	test('admin can save storage config and verify via API', async ({ page, request }) => {
@@ -226,12 +215,10 @@ test.describe('platform settings actions', () => {
 			expect(storage.defaultStorageClass).toBe(testClass);
 		}).toPass({ timeout: 10_000 });
 
-		// Restore with retry for conflict.
-		await expect(async () => {
-			await patchPlatformViaAPI(request, adminToken, {
-				storage: { defaultStorageClass: originalClass }
-			});
-		}).toPass({ timeout: 10_000 });
+		// Restore original storage class.
+		await patchPlatformViaAPI(request, adminToken, {
+			storage: { defaultStorageClass: originalClass }
+		});
 	});
 
 	test('filter input narrows visible sections (type "registry")', async ({ page }) => {

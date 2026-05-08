@@ -196,28 +196,25 @@ test.describe('app drawer settings tab sections', () => {
 	});
 
 	test('Test 7: Add annotation, verify via API', async ({ page, request }) => {
-		// The save may fail silently due to resource version conflicts from the
-		// controller reconciling concurrently. Retry the entire fill+save flow.
+		await navigateToSettingsTab(page);
+
+		await page.getByPlaceholder('Filter settings…').fill('advanced');
+
+		const advancedBtn = page.getByRole('button', { name: 'Advanced', exact: true });
+		await advancedBtn.scrollIntoViewIfNeeded();
+		await advancedBtn.click();
+
+		await page.getByText('Add annotation').click();
+
+		const annotationKeyInput = page.getByPlaceholder('annotation.example.com/key');
+		await annotationKeyInput.fill('linkerd.io/inject');
+
+		const annotationValueInput = page.getByPlaceholder('value');
+		await annotationValueInput.fill('enabled');
+
+		await page.getByRole('button', { name: 'Save annotations', exact: true }).click();
+
 		await expect(async () => {
-			await navigateToSettingsTab(page);
-
-			await page.getByPlaceholder('Filter settings…').fill('advanced');
-
-			const advancedBtn = page.getByRole('button', { name: 'Advanced', exact: true });
-			await advancedBtn.scrollIntoViewIfNeeded();
-			await advancedBtn.click();
-
-			await page.getByText('Add annotation').click();
-
-			const annotationKeyInput = page.getByPlaceholder('annotation.example.com/key');
-			await annotationKeyInput.fill('linkerd.io/inject');
-
-			const annotationValueInput = page.getByPlaceholder('value');
-			await annotationValueInput.fill('enabled');
-
-			await page.getByRole('button', { name: 'Save annotations', exact: true }).click();
-
-			await new Promise(r => setTimeout(r, 1_000));
 			const app = await getAppViaAPI(request, token, project, appName);
 			const spec = app.spec as {
 				environments: Array<{
@@ -227,7 +224,7 @@ test.describe('app drawer settings tab sections', () => {
 			};
 			const env = spec.environments?.find(e => e.name === 'production');
 			expect(env?.annotations?.['linkerd.io/inject']).toBe('enabled');
-		}).toPass({ timeout: 20_000, intervals: [2_000, 3_000, 5_000] });
+		}).toPass({ timeout: 10_000 });
 	});
 
 	test('Test 8: Add secret mount, verify via API', async ({ page, request }) => {
@@ -292,25 +289,22 @@ test.describe('app drawer settings tab sections', () => {
 	});
 
 	test('Test 10: Save TLS override, verify via API', async ({ page, request }) => {
-		// The save may fail silently due to resource version conflicts from the
-		// controller reconciling concurrently. Retry the entire fill+save flow.
+		await navigateToSettingsTab(page);
+
+		await page.getByPlaceholder('Filter settings…').fill('domains');
+		await expect(page.getByRole('heading', { name: 'Domains' })).toBeVisible({ timeout: 3_000 });
+
+		const tlsSummary = page.getByText('TLS overrides (advanced)');
+		await tlsSummary.scrollIntoViewIfNeeded();
+		await tlsSummary.click();
+
+		const tlsIssuerInput = page.locator('#tls-issuer-ovr');
+		await expect(tlsIssuerInput).toBeVisible({ timeout: 3_000 });
+		await tlsIssuerInput.fill('letsencrypt-staging');
+
+		await page.getByRole('button', { name: 'Save TLS overrides', exact: true }).click();
+
 		await expect(async () => {
-			await navigateToSettingsTab(page);
-
-			await page.getByPlaceholder('Filter settings…').fill('domains');
-			await expect(page.getByRole('heading', { name: 'Domains' })).toBeVisible({ timeout: 3_000 });
-
-			const tlsSummary = page.getByText('TLS overrides (advanced)');
-			await tlsSummary.scrollIntoViewIfNeeded();
-			await tlsSummary.click();
-
-			const tlsIssuerInput = page.locator('#tls-issuer-ovr');
-			await expect(tlsIssuerInput).toBeVisible({ timeout: 3_000 });
-			await tlsIssuerInput.fill('letsencrypt-staging');
-
-			await page.getByRole('button', { name: 'Save TLS overrides', exact: true }).click();
-
-			await new Promise(r => setTimeout(r, 1_000));
 			const app = await getAppViaAPI(request, token, project, appName);
 			const spec = app.spec as {
 				environments: Array<{
@@ -320,7 +314,7 @@ test.describe('app drawer settings tab sections', () => {
 			};
 			const env = spec.environments?.find(e => e.name === 'production');
 			expect(env?.tls?.clusterIssuer).toBe('letsencrypt-staging');
-		}).toPass({ timeout: 20_000, intervals: [2_000, 3_000, 5_000] });
+		}).toPass({ timeout: 10_000 });
 	});
 
 	test('Test 12: Credentials section - add a credential, verify via API', async ({ page, request }) => {
