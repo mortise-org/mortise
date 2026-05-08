@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { onMount, untrack } from 'svelte';
 	import { api } from '$lib/api';
 	import { store } from '$lib/store.svelte';
 	import type { App, AppSpec, BindingEdge, DeployToken, DomainsResponse, SecretMount } from '$lib/types';
@@ -87,16 +87,20 @@
 	let netPort = $state('');
 
 	$effect(() => {
-		srcRepo = app.spec.source.repo ?? '';
-		srcBranch = app.spec.source.branch ?? '';
-		srcPath = app.spec.source.path ?? '';
-		srcImage = app.spec.source.image ?? '';
-		srcPullSecretRef = app.spec.source.pullSecretRef ?? '';
-		buildMode = app.spec.source.build?.mode ?? 'auto';
-		dockerfilePath = app.spec.source.build?.dockerfilePath ?? '';
-		buildContext = app.spec.source.build?.context ?? '';
-		netPublic = app.spec.network?.public ?? true;
-		netPort = String(app.spec.network?.port ?? '');
+		void selectedEnv;
+		untrack(() => {
+			const spec = specOverride ?? app.spec;
+			srcRepo = spec.source.repo ?? '';
+			srcBranch = spec.source.branch ?? '';
+			srcPath = spec.source.path ?? '';
+			srcImage = spec.source.image ?? '';
+			srcPullSecretRef = spec.source.pullSecretRef ?? '';
+			buildMode = spec.source.build?.mode ?? 'auto';
+			dockerfilePath = spec.source.build?.dockerfilePath ?? '';
+			buildContext = spec.source.build?.context ?? '';
+			netPublic = spec.network?.public ?? true;
+			netPort = String(spec.network?.port ?? '');
+		});
 	});
 
 	// --- Scale (for active env) ---
@@ -104,10 +108,14 @@
 	let scaleCpu = $state('');
 	let scaleMemory = $state('');
 	$effect(() => {
-		const env = app.spec.environments?.find(e => e.name === selectedEnv);
-		scaleReplicas = String(env?.replicas ?? 1);
-		scaleCpu = env?.resources?.cpu ?? '';
-		scaleMemory = env?.resources?.memory ?? '';
+		const envName = selectedEnv;
+		untrack(() => {
+			const spec = specOverride ?? app.spec;
+			const env = spec.environments?.find((e: { name: string }) => e.name === envName);
+			scaleReplicas = String(env?.replicas ?? 1);
+			scaleCpu = env?.resources?.cpu ?? '';
+			scaleMemory = env?.resources?.memory ?? '';
+		});
 	});
 
 	// --- Certificate status (for active env) ---
@@ -129,11 +137,15 @@
 	let tlsSecretName = $state('');
 	let savingTls = $state(false);
 	$effect(() => {
-		const env = app.spec.environments?.find(e => e.name === selectedEnv) as
-			| { tls?: { clusterIssuer?: string; secretName?: string } }
-			| undefined;
-		tlsClusterIssuer = env?.tls?.clusterIssuer ?? '';
-		tlsSecretName = env?.tls?.secretName ?? '';
+		const envName = selectedEnv;
+		untrack(() => {
+			const spec = specOverride ?? app.spec;
+			const env = spec.environments?.find((e: { name: string }) => e.name === envName) as
+				| { tls?: { clusterIssuer?: string; secretName?: string } }
+				| undefined;
+			tlsClusterIssuer = env?.tls?.clusterIssuer ?? '';
+			tlsSecretName = env?.tls?.secretName ?? '';
+		});
 	});
 
 	// --- Deploy tokens ---
@@ -153,10 +165,14 @@
 	let newMount = $state<{ secretName: string; mountPath: string }>({ secretName: '', mountPath: '' });
 	let savingMounts = $state(false);
 	$effect(() => {
-		// eslint-disable-next-line @typescript-eslint/no-explicit-any
-		const env = (app.spec.environments?.find(e => e.name === selectedEnv) as any) ?? {};
-		annotations = Object.fromEntries(Object.entries((env.annotations ?? {}) as Record<string, string>));
-		secretMounts = (env.secretMounts ?? []) as SecretMount[];
+		const envName = selectedEnv;
+		untrack(() => {
+			const spec = specOverride ?? app.spec;
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
+			const env = (spec.environments?.find((e: { name: string }) => e.name === envName) as any) ?? {};
+			annotations = Object.fromEntries(Object.entries((env.annotations ?? {}) as Record<string, string>));
+			secretMounts = (env.secretMounts ?? []) as SecretMount[];
+		});
 	});
 
 	// --- Danger ---
@@ -575,7 +591,7 @@
 
 	function addSecretMount() {
 		if (!newMount.secretName || !newMount.mountPath) return;
-		secretMounts = [...secretMounts, { name: newMount.secretName, secretName: newMount.secretName, mountPath: newMount.mountPath }];
+		secretMounts = [...secretMounts, { name: newMount.secretName, secret: newMount.secretName, path: newMount.mountPath }];
 		newMount = { secretName: '', mountPath: '' };
 		showAddMount = false;
 		void saveSecretMounts();
@@ -1296,11 +1312,11 @@
 					{#each secretMounts as mount, i}
 						<div class="mb-2 rounded-md border border-surface-600 bg-surface-700 p-2 text-xs space-y-1.5">
 							<div class="flex justify-between">
-								<span class="font-mono text-gray-300">{mount.mountPath}</span>
+								<span class="font-mono text-gray-300">{mount.path}</span>
 								<button type="button" onclick={() => removeSecretMount(i)}
 									class="text-gray-500 hover:text-danger"><Trash2 class="h-3 w-3" /></button>
 							</div>
-							<p class="text-gray-500">Secret: <span class="font-mono">{mount.secretName}</span></p>
+							<p class="text-gray-500">Secret: <span class="font-mono">{mount.secret}</span></p>
 						</div>
 					{/each}
 					{#if showAddMount}

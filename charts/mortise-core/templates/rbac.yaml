@@ -1,56 +1,139 @@
+# -----------------------------------------------------------------------------
+# ClusterRole: mortise-controller
+#
+# This role grants the minimum permissions the Mortise operator needs.
+# Where possible, permissions are scoped by apiGroup, resource, and verb.
+#
+# RBAC SCOPING NOTES (see #226):
+#
+#   Secrets  — The operator creates per-App Secrets (image pull, env) in
+#              dynamically-created pj-* namespaces AND reads its own GitHub
+#              OAuth secret in mortise-system.  K8s RBAC cannot filter by
+#              namespace name pattern, so cluster-wide access is still
+#              required.  RISK: a bug in the operator could read/write
+#              Secrets in any namespace.  Mitigate with OPA/Kyverno
+#              policies that restrict Secret access to pj-* + mortise-system.
+#
+#   Namespaces — The Project controller creates/deletes one namespace per
+#              Project CRD.  Namespace names are dynamic (pj-{project}), so
+#              resourceNames cannot be used.  Cluster-wide is required.
+#
+#   Pods/exec — Used by the /api/projects/{project}/apps/{app}/exec
+#              endpoint to exec into user pods.  These pods only exist in
+#              pj-* namespaces.  Cluster-wide is granted because K8s RBAC
+#              cannot scope to a namespace name pattern.  Mitigate with
+#              OPA/Kyverno policies restricting exec to pj-* namespaces.
+# -----------------------------------------------------------------------------
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
   name: mortise-controller
 rules:
-  # Project CRD (cluster-scoped; operator creates/deletes the backing namespace)
+  # ---------------------------------------------------------------------------
+  # Mortise CRDs — full lifecycle management
+  # The operator is the sole controller for all Mortise custom resources.
+  # ---------------------------------------------------------------------------
+
+  # Project CRD: cluster-scoped; operator creates/deletes the backing namespace.
   - apiGroups: ["mortise.mortise.dev"]
     resources: ["projects", "projects/status", "projects/finalizers"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  # App CRDs
+
+  # App CRD: namespaced inside pj-* namespaces.
   - apiGroups: ["mortise.mortise.dev"]
     resources: ["apps", "apps/status", "apps/finalizers"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # Supporting CRDs: PlatformConfig, GitProvider, PreviewEnvironment, ProjectMember.
   - apiGroups: ["mortise.mortise.dev"]
     resources: ["platformconfigs", "gitproviders", "previewenvironments", "projectmembers"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: ["mortise.mortise.dev"]
     resources: ["platformconfigs/status", "gitproviders/status", "previewenvironments/status", "previewenvironments/finalizers", "projectmembers/status"]
     verbs: ["get", "update", "patch"]
-  # Namespaces: Project controller creates + deletes one per Project.
+
+  # ---------------------------------------------------------------------------
+  # Namespaces (cluster-wide — see scoping note above)
+  # Project controller creates one namespace per Project CRD (pj-{name}).
+  # Cannot use resourceNames because namespace names are dynamic.
+  # ---------------------------------------------------------------------------
   - apiGroups: [""]
     resources: ["namespaces"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  # Core resources the App controller creates
+
+  # ---------------------------------------------------------------------------
+  # Core workload resources — created by App controller in pj-* namespaces
+  # ---------------------------------------------------------------------------
+
+  # Deployments: one per App for long-running services.
   - apiGroups: ["apps"]
     resources: ["deployments"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # Services: one per App for internal routing.
   - apiGroups: [""]
-    resources: ["services", "secrets", "persistentvolumeclaims", "serviceaccounts"]
+    resources: ["services"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  # ConfigMaps: per-project Activity event store (§5.11) and App configFiles
-  # (one CM per configFiles entry, named {app}-config-{i}). Delete verb is
-  # required so reconcileConfigMaps can prune orphans when a configFiles
-  # entry is removed.
+
+  # PVCs: one per App with persistent storage configured.
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # ServiceAccounts: one per App if the App needs its own identity.
+  - apiGroups: [""]
+    resources: ["serviceaccounts"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # ---------------------------------------------------------------------------
+  # Secrets (cluster-wide — see scoping note above)
+  # Used for: per-App image pull secrets, per-App env secrets, and the
+  # operator's own GitHub OAuth client secret in mortise-system.
+  # Cannot scope to pj-* + mortise-system because K8s RBAC lacks namespace
+  # name pattern matching.  Mitigate with admission policies.
+  # ---------------------------------------------------------------------------
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # ---------------------------------------------------------------------------
+  # ConfigMaps: per-project Activity event store (section 5.11) and App
+  # configFiles (one CM per configFiles entry, named {app}-config-{i}).
+  # Delete is required so reconcileConfigMaps can prune orphans.
+  # ---------------------------------------------------------------------------
   - apiGroups: [""]
     resources: ["configmaps"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # Ingresses: one per App with an external route configured.
   - apiGroups: ["networking.k8s.io"]
     resources: ["ingresses"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  # CronJobs for cron-type Apps
+
+  # CronJobs: one per cron-type App.
   - apiGroups: ["batch"]
     resources: ["cronjobs"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  # cert-manager Certificates: read-only for status surfacing
+
+  # cert-manager Certificates: read-only for TLS status surfacing.
   - apiGroups: ["cert-manager.io"]
     resources: ["certificates"]
     verbs: ["get", "list", "watch"]
-  # Pod logs for SSE streaming
+
+  # ---------------------------------------------------------------------------
+  # Pod observability — read-only
+  # Used for SSE streaming of pod logs to the Mortise UI.
+  # ---------------------------------------------------------------------------
   - apiGroups: [""]
     resources: ["pods", "pods/log"]
     verbs: ["get", "list", "watch"]
-  # Pod exec for /api/projects/{project}/apps/{app}/exec
+
+  # ---------------------------------------------------------------------------
+  # Pod exec (cluster-wide — see scoping note above)
+  # Used by /api/projects/{project}/apps/{app}/exec to exec into user pods.
+  # Pods only exist in pj-* namespaces, but RBAC cannot scope by namespace
+  # name pattern.  Mitigate with admission policies restricting exec to pj-*.
+  # ---------------------------------------------------------------------------
   - apiGroups: [""]
     resources: ["pods/exec"]
     verbs: ["create"]

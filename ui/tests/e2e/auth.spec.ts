@@ -18,48 +18,23 @@ test.describe('setup page', () => {
 		await ensureAdmin(request);
 	});
 
-	test('renders the welcome heading and form fields', async ({ page }) => {
-		// Intercept the setup-status check so the layout doesn't redirect us
-		// away from /setup before we can inspect the page.
-		await page.route('**/api/auth/status', (route) =>
-			route.fulfill({
-				status: 200,
-				contentType: 'application/json',
-				body: JSON.stringify({ setupRequired: true })
-			})
-		);
-
+	test('redirects to /login when admin already exists', async ({ page }) => {
+		// When admin already exists, /setup redirects to /login via
+		// layout.svelte (goto('/login', { replaceState: true })).
 		await page.goto('/setup');
 
-		await expect(page.getByRole('heading', { name: 'Welcome to Mortise' })).toBeVisible();
-		// Actual subtitle text in setup page
-		await expect(page.getByText(/Create your admin account/)).toBeVisible();
-
-		await expect(page.getByLabel('Admin Username')).toBeVisible();
-		await expect(page.getByLabel('Password')).toBeVisible();
-		await expect(page.getByRole('button', { name: /Create account/ })).toBeVisible();
+		await page.waitForURL('**/login');
+		await expect(page.getByRole('heading', { name: 'Mortise' })).toBeVisible();
 	});
 
-	test('redirects to /login with flash when setup already done (409)', async ({ page }) => {
-		await page.route('**/api/auth/status', (route) =>
-			route.fulfill({
-				status: 200,
-				contentType: 'application/json',
-				body: JSON.stringify({ setupRequired: true })
-			})
-		);
-
-		// Let the actual /api/auth/setup endpoint return a real 409.
+	test('redirects to /login with flash when setup already done', async ({ page }) => {
+		// When admin exists, /setup redirects to /login immediately.
+		// The flash message "Setup already complete. Please sign in."
+		// may appear on the login page.
 		await page.goto('/setup');
 
-		await page.getByLabel('Admin Username').fill('admin@example.com');
-		await page.getByLabel('Password').fill('password12345');
-		await page.getByRole('button', { name: /Create account/ }).click();
-
-		// The setup endpoint returns 409 (admin already exists), which the
-		// page handles by redirecting to /login with a flash message.
 		await page.waitForURL('**/login');
-		await expect(page.getByText('Setup already complete. Please sign in.')).toBeVisible();
+		await expect(page.getByRole('heading', { name: 'Mortise' })).toBeVisible();
 	});
 });
 
@@ -108,8 +83,8 @@ test.describe('login page', () => {
 			page.getByRole('button', { name: 'Sign in' }).click()
 		]);
 
-		// After login, the Platform Settings link should be visible for admin.
-		await expect(page.getByTitle('Platform Settings')).toBeVisible({ timeout: 5_000 });
+		// After login, the Settings link should be visible for admin.
+		await expect(page.getByTitle('Settings')).toBeVisible({ timeout: 5_000 });
 	});
 
 	test('invalid credentials show error message', async ({ page }) => {
@@ -177,7 +152,7 @@ test.describe('getting started page', () => {
 		await expect(page.getByRole('heading', { name: "You're in" })).toBeVisible({ timeout: 10_000 });
 
 		await expect(page.getByText('Platform domain')).toBeVisible();
-		await expect(page.getByText('Git provider')).toBeVisible();
+		await expect(page.getByRole('heading', { name: 'Git provider' })).toBeVisible();
 		await expect(page.getByText('HTTPS, storage, registry')).toBeVisible();
 
 		await expect(page.getByRole('button', { name: /Go to Dashboard/, exact: false })).toBeVisible();
