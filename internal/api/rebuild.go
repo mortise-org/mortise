@@ -181,20 +181,25 @@ func (s *Server) RedeployStale(w http.ResponseWriter, r *http.Request) {
 	}
 
 	p := PrincipalFromContext(r.Context())
+	if p == nil {
+		writeJSON(w, http.StatusUnauthorized, errorResponse{"authentication required"})
+		return
+	}
+
 	var restarted []string
+	var skipped []string
 	for _, es := range app.Status.Environments {
 		if es.PendingEnvHash == "" || es.DeployedEnvHash == "" || es.PendingEnvHash == es.DeployedEnvHash {
 			continue
 		}
-		if p != nil {
-			allowed, err := s.authz.Authorize(r.Context(), *p, authz.Resource{Kind: "app", Project: projectName, Environment: es.Name}, authz.ActionUpdate)
-			if err != nil {
-				writeError(w, err)
-				return
-			}
-			if !allowed {
-				continue
-			}
+		allowed, err := s.authz.Authorize(r.Context(), *p, authz.Resource{Kind: "app", Project: projectName, Environment: es.Name}, authz.ActionUpdate)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		if !allowed {
+			skipped = append(skipped, es.Name)
+			continue
 		}
 		envNs := constants.EnvNamespace(projectName, es.Name)
 		if err := restartDeployment(r.Context(), s.client, envNs, appName, es.PendingEnvHash, s.clock().Now()); err != nil {
@@ -226,7 +231,11 @@ func (s *Server) RedeployStale(w http.ResponseWriter, r *http.Request) {
 		s.recordActivity(r, projectName, "deploy", "app", appName, fmt.Sprintf("Redeployed stale envs for %s: %v", appName, restarted), "")
 	}
 
-	writeJSON(w, http.StatusOK, map[string][]string{"restarted": restarted})
+	resp := map[string][]string{"restarted": restarted}
+	if len(skipped) > 0 {
+		resp["skipped"] = skipped
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func envStatusPendingHash(envStatuses []mortisev1alpha1.EnvironmentStatus, envName string) string {
