@@ -150,6 +150,17 @@ func (r *PreviewEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.R
 		return ctrl.Result{}, err
 	}
 
+	// Ensure the PE has an owner reference to the parent App so App deletion
+	// garbage-collects orphan PEs.
+	if !hasOwnerRef(&pe, app.UID) {
+		if err := controllerutil.SetControllerReference(&app, &pe, r.Scheme); err != nil {
+			return ctrl.Result{}, fmt.Errorf("set owner reference on PE: %w", err)
+		}
+		if err := r.Update(ctx, &pe); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+
 	// Preview only works for git-source apps with preview enabled on the parent Project.
 	if app.Spec.Source.Type != mortisev1alpha1.SourceTypeGit {
 		return ctrl.Result{}, r.setPreviewFailed(ctx, &pe, "NotGitSource", "previews only work for git source apps")
@@ -243,10 +254,12 @@ func (r *PreviewEnvironmentReconciler) reconcilePreviewBuild(ctx context.Context
 		return ctrl.Result{}, false, r.setPreviewFailed(ctx, pe, "MissingSHA", "pullRequest.sha is empty")
 	}
 
-	// Short-circuit: already built this SHA.
+	// Short-circuit: already built this SHA — skip the build but proceed
+	// with Deployment/Service/Ingress reconciliation so spec changes
+	// (replicas, resources, env vars, domain) are picked up.
 	if pe.Status.Image != "" && pe.Status.Phase == mortisev1alpha1.PreviewPhaseReady {
 		if strings.Contains(pe.Status.Image, shortTag(revision)) {
-			return ctrl.Result{}, false, nil
+			return ctrl.Result{}, true, nil
 		}
 	}
 
@@ -434,6 +447,7 @@ func (r *PreviewEnvironmentReconciler) reconcilePreviewEnvSecret(ctx context.Con
 		constants.ProjectLabel:         projectName,
 		"app.kubernetes.io/managed-by": "mortise",
 		"app.kubernetes.io/component":  "preview",
+		"mortise.dev/pr-number":        fmt.Sprintf("%d", pe.Spec.PullRequest.Number),
 	}
 
 	// Copy shared-env from source env namespace into the preview namespace.
@@ -787,6 +801,12 @@ func (r *PreviewEnvironmentReconciler) gcPreviewResources(ctx context.Context, p
 			_ = r.Delete(ctx, &ings.Items[i])
 		}
 	}
+	var secrets corev1.SecretList
+	if err := r.List(ctx, &secrets, selector, inNs); err == nil {
+		for i := range secrets.Items {
+			_ = r.Delete(ctx, &secrets.Items[i])
+		}
+	}
 	return nil
 }
 
@@ -803,6 +823,15 @@ func previewLabels(pe *mortisev1alpha1.PreviewEnvironment) map[string]string {
 		"mortise.dev/pr-number":        fmt.Sprintf("%d", pe.Spec.PullRequest.Number),
 		constants.ProjectLabel:         projectName,
 	}
+}
+
+func hasOwnerRef(pe *mortisev1alpha1.PreviewEnvironment, uid types.UID) bool {
+	for _, ref := range pe.OwnerReferences {
+		if ref.UID == uid {
+			return true
+		}
+	}
+	return false
 }
 
 func previewDockerfilePath(app *mortisev1alpha1.App) string {
