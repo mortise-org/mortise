@@ -941,24 +941,6 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 		return err
 	}
 
-	// Preserve API-set annotations so the controller doesn't strip them.
-	if v, ok := existing.Spec.Template.Annotations["mortise.dev/restartedAt"]; ok {
-		if desired.Spec.Template.Annotations == nil {
-			desired.Spec.Template.Annotations = make(map[string]string)
-		}
-		desired.Spec.Template.Annotations["mortise.dev/restartedAt"] = v
-	}
-	// When autoRedeploy is off, freeze the deployed env-hash so the new
-	// hash doesn't trigger a rolling update. Users redeploy manually.
-	if !autoRedeploy {
-		if v, ok := existing.Spec.Template.Annotations["mortise.dev/env-hash"]; ok {
-			if desired.Spec.Template.Annotations == nil {
-				desired.Spec.Template.Annotations = make(map[string]string)
-			}
-			desired.Spec.Template.Annotations["mortise.dev/env-hash"] = v
-		}
-	}
-
 	desiredContainer := desired.Spec.Template.Spec.Containers[0]
 
 	// Retry loop handles optimistic-locking conflicts: another writer (e.g.
@@ -967,6 +949,25 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 	// surfacing the error and requeuing.
 	const maxConflictRetries = 3
 	for attempt := 0; attempt < maxConflictRetries; attempt++ {
+		// Re-derive desired annotations from the (possibly re-fetched) existing
+		// Deployment so stale values from a prior iteration don't persist.
+		if v, ok := existing.Spec.Template.Annotations["mortise.dev/restartedAt"]; ok {
+			if desired.Spec.Template.Annotations == nil {
+				desired.Spec.Template.Annotations = make(map[string]string)
+			}
+			desired.Spec.Template.Annotations["mortise.dev/restartedAt"] = v
+		}
+		// When autoRedeploy is off, freeze the deployed env-hash so the new
+		// hash doesn't trigger a rolling update. Users redeploy manually.
+		if !autoRedeploy {
+			if v, ok := existing.Spec.Template.Annotations["mortise.dev/env-hash"]; ok {
+				if desired.Spec.Template.Annotations == nil {
+					desired.Spec.Template.Annotations = make(map[string]string)
+				}
+				desired.Spec.Template.Annotations["mortise.dev/env-hash"] = v
+			}
+		}
+
 		// Only update if the fields we manage actually changed. Comparing the
 		// full spec/template doesn't work because k8s adds dozens of default
 		// fields (securityContext, serviceAccount, terminationMessagePolicy, etc.)
