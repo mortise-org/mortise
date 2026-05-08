@@ -5163,3 +5163,35 @@ func readAppEnvSecret(ctx context.Context, appName, namespace string) map[string
 	}
 	return result
 }
+
+var _ = Describe("toResourceRequirements", func() {
+	It("should parse valid CPU and memory", func() {
+		r := mortisev1alpha1.ResourceRequirements{CPU: "500m", Memory: "256Mi"}
+		req, err := toResourceRequirements(r)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(req.Requests.Cpu().String()).To(Equal("500m"))
+		Expect(req.Requests.Memory().String()).To(Equal("256Mi"))
+	})
+
+	It("should return error for invalid CPU", func() {
+		r := mortisev1alpha1.ResourceRequirements{CPU: "banana", Memory: "256Mi"}
+		_, err := toResourceRequirements(r)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("invalid cpu"))
+	})
+
+	It("should return error for invalid memory", func() {
+		r := mortisev1alpha1.ResourceRequirements{CPU: "500m", Memory: "notamemory"}
+		_, err := toResourceRequirements(r)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("invalid memory"))
+	})
+
+	It("should handle empty values without error", func() {
+		r := mortisev1alpha1.ResourceRequirements{}
+		req, err := toResourceRequirements(r)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(req.Requests).To(BeEmpty())
+		Expect(req.Limits).To(BeEmpty())
+	})
+})

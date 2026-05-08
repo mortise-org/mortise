@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/fstest"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -605,7 +606,7 @@ func TestRollback(t *testing.T) {
 	// in the per-env namespace.
 	envNs := constants.EnvNamespace("default", "production")
 	dep := &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{Name: "rollback-app-production", Namespace: envNs},
+		ObjectMeta: metav1.ObjectMeta{Name: "rollback-app", Namespace: envNs},
 		Spec: appsv1.DeploymentSpec{
 			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "rollback-app"}},
 			Template: corev1.PodTemplateSpec{
@@ -649,7 +650,7 @@ func TestRollback(t *testing.T) {
 	}
 
 	// Verify Deployment was patched.
-	if err := k8sClient.Get(ctx, types.NamespacedName{Name: "rollback-app-production", Namespace: envNs}, dep); err != nil {
+	if err := k8sClient.Get(ctx, types.NamespacedName{Name: "rollback-app", Namespace: envNs}, dep); err != nil {
 		t.Fatalf("get deployment: %v", err)
 	}
 	if dep.Spec.Template.Spec.Containers[0].Image != "nginx:1.26" {
@@ -1112,7 +1113,7 @@ func TestRedeployStaleNoStaleEnvs(t *testing.T) {
 	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if resp.Restarted != nil && len(resp.Restarted) != 0 {
+	if len(resp.Restarted) != 0 {
 		t.Errorf("expected no envs restarted, got %v", resp.Restarted)
 	}
 }
@@ -1142,7 +1143,7 @@ func TestPromote(t *testing.T) {
 	for _, envName := range []string{"staging", "production"} {
 		depNs := constants.EnvNamespace("default", envName)
 		dep := &appsv1.Deployment{
-			ObjectMeta: metav1.ObjectMeta{Name: "promote-app-" + envName, Namespace: depNs},
+			ObjectMeta: metav1.ObjectMeta{Name: "promote-app", Namespace: depNs},
 			Spec: appsv1.DeploymentSpec{
 				Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "promote-app", "env": envName}},
 				Template: corev1.PodTemplateSpec{
@@ -1176,7 +1177,7 @@ func TestPromote(t *testing.T) {
 	// Verify production Deployment has the staging image.
 	prodNs := constants.EnvNamespace("default", "production")
 	var dep appsv1.Deployment
-	if err := k8sClient.Get(ctx, types.NamespacedName{Name: "promote-app-production", Namespace: prodNs}, &dep); err != nil {
+	if err := k8sClient.Get(ctx, types.NamespacedName{Name: "promote-app", Namespace: prodNs}, &dep); err != nil {
 		t.Fatalf("get production deployment: %v", err)
 	}
 	if dep.Spec.Template.Spec.Containers[0].Image != "sha256:abc123" {
@@ -1318,5 +1319,61 @@ func TestMemberCanCRUDSecrets(t *testing.T) {
 	w = doRequest(h, http.MethodDelete, "/api/projects/default/apps/sec-app/secrets/db-pass", nil)
 	if w.Code != http.StatusOK {
 		t.Fatalf("delete secret: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestOGImageEscapesHostHeader(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+
+	authProvider := auth.NewNativeAuthProvider(k8sClient)
+	jwtHelper := auth.NewJWTHelper(k8sClient)
+
+	mockUI := fstest.MapFS{
+		"index.html": &fstest.MapFile{
+			Data: []byte(`<html><head><meta property="og:image" content="/og-image.png"></head><body></body></html>`),
+		},
+	}
+
+	srv := api.NewServer(k8sClient, fake.NewClientset(), nil, nil, authProvider, jwtHelper, mockUI, authz.NewNativePolicyEngine(k8sClient))
+	h := srv.Handler()
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Host = `evil.com"><script>alert(1)</script><img src="`
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	body := w.Body.String()
+	if strings.Contains(body, "<script>") {
+		t.Fatal("Host header was not escaped — XSS payload present in response body")
+	}
+	if !strings.Contains(body, "&lt;script&gt;") && !strings.Contains(body, "&#") {
+		t.Log("body:", body)
+	}
+}
+
+func TestOGImageRejectsInvalidProto(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+
+	authProvider := auth.NewNativeAuthProvider(k8sClient)
+	jwtHelper := auth.NewJWTHelper(k8sClient)
+
+	mockUI := fstest.MapFS{
+		"index.html": &fstest.MapFile{
+			Data: []byte(`<html><head><meta property="og:image" content="/og-image.png"></head><body></body></html>`),
+		},
+	}
+
+	srv := api.NewServer(k8sClient, fake.NewClientset(), nil, nil, authProvider, jwtHelper, mockUI, authz.NewNativePolicyEngine(k8sClient))
+	h := srv.Handler()
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Host = "example.com"
+	req.Header.Set("X-Forwarded-Proto", "javascript")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	body := w.Body.String()
+	if strings.Contains(body, "javascript://") {
+		t.Fatal("invalid X-Forwarded-Proto was not rejected — 'javascript' scheme in response")
 	}
 }

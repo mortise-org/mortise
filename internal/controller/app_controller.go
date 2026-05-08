@@ -143,9 +143,24 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		}
 	}
 
+	// Environments are project-scoped: an App auto-exists in every
+	// `Project.Spec.Environments` entry, and `App.Spec.Environments[]`
+	// carries only per-env overrides. If the parent project isn't resolvable
+	// yet (just-created, being deleted, label missing) there's nothing to
+	// reconcile — skip workloads but keep the status pass so the UI sees the
+	// app's current state.
+	project, err := r.fetchParentProject(ctx, &app)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("fetch parent project: %w", err)
+	}
+	var resolvedEnvs []mortisev1alpha1.Environment
+	if project != nil {
+		resolvedEnvs = resolveEnvs(project, &app)
+	}
+
 	switch app.Spec.Source.Type {
 	case mortisev1alpha1.SourceTypeGit:
-		if r.BuildClient != nil && !r.allEnvBuildsCurrentForRevision(&app) {
+		if r.BuildClient != nil && !r.allEnvBuildsCurrentForRevision(&app, resolvedEnvs) {
 			result, proceed, err := r.prepareGitSource(ctx, &app)
 			if err != nil {
 				return ctrl.Result{}, err
@@ -161,21 +176,6 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	default:
 		log.Info("skipping unsupported source type", "type", app.Spec.Source.Type)
 		return ctrl.Result{}, nil
-	}
-
-	// Environments are project-scoped: an App auto-exists in every
-	// `Project.Spec.Environments` entry, and `App.Spec.Environments[]`
-	// carries only per-env overrides. If the parent project isn't resolvable
-	// yet (just-created, being deleted, label missing) there's nothing to
-	// reconcile — skip workloads but keep the status pass so the UI sees the
-	// app's current state.
-	project, err := r.fetchParentProject(ctx, &app)
-	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("fetch parent project: %w", err)
-	}
-	var resolvedEnvs []mortisev1alpha1.Environment
-	if project != nil {
-		resolvedEnvs = resolveEnvs(project, &app)
 	}
 
 	// Each env gets its own namespace; per-app resources (SA, credentials
@@ -370,7 +370,7 @@ func (r *AppReconciler) prepareGitSource(ctx context.Context, app *mortisev1alph
 	}
 
 	// Stash the token transiently for per-env builds during this reconcile.
-	r.gitTokenCache.Store(app.Name, tokenResult.Token)
+	r.gitTokenCache.Store(app.Namespace+"/"+app.Name, tokenResult.Token)
 
 	return ctrl.Result{}, true, nil
 }
@@ -424,7 +424,7 @@ func (r *AppReconciler) reconcileEnvBuild(ctx context.Context, app *mortisev1alp
 		}
 	}
 
-	tokenVal, _ := r.gitTokenCache.Load(app.Name)
+	tokenVal, _ := r.gitTokenCache.Load(app.Namespace + "/" + app.Name)
 	token, _ := tokenVal.(string)
 
 	imageRef, err := r.RegistryBackend.PushTarget(app.Name, envImageTag(revision, envName))
@@ -740,11 +740,10 @@ func (r *AppReconciler) currentImageForEnv(app *mortisev1alpha1.App, envName str
 	return app.Spec.Source.Image
 }
 
-// allEnvBuildsCurrentForRevision returns true only when every environment
-// listed in the app spec already has a per-env build matching the current
-// revision. Used to skip prepareGitSource (auth + clone) when no new builds
-// are needed.
-func (r *AppReconciler) allEnvBuildsCurrentForRevision(app *mortisev1alpha1.App) bool {
+// allEnvBuildsCurrentForRevision returns true only when every resolved
+// environment already has a per-env build matching the current revision.
+// Used to skip prepareGitSource (auth + clone) when no new builds are needed.
+func (r *AppReconciler) allEnvBuildsCurrentForRevision(app *mortisev1alpha1.App, envs []mortisev1alpha1.Environment) bool {
 	revision := app.Annotations["mortise.dev/revision"]
 	if revision == "" {
 		revision = app.Spec.Source.Branch
@@ -752,10 +751,10 @@ func (r *AppReconciler) allEnvBuildsCurrentForRevision(app *mortisev1alpha1.App)
 	if revision == "" {
 		revision = "main"
 	}
-	if len(app.Spec.Environments) == 0 {
+	if len(envs) == 0 {
 		return false
 	}
-	for _, env := range app.Spec.Environments {
+	for _, env := range envs {
 		es := envStatusFor(app, env.Name)
 		if es == nil || es.LastBuiltSHA != revision || es.LastBuiltImage == "" {
 			return false
@@ -856,7 +855,11 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 		},
 	}
 
-	containers[0].Resources = toResourceRequirements(r.effectiveResources(ctx, env))
+	resources, err := toResourceRequirements(r.effectiveResources(ctx, env))
+	if err != nil {
+		return fmt.Errorf("resources: %w", err)
+	}
+	containers[0].Resources = resources
 
 	port := appPort(app)
 	containers[0].LivenessProbe = buildProbe(env.LivenessProbe, port)
@@ -930,7 +933,7 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 	// don't cascade cross-ns; the App's finalizer handles cleanup by label.
 
 	var existing appsv1.Deployment
-	err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: envNs}, &existing)
+	err = r.Get(ctx, types.NamespacedName{Name: name, Namespace: envNs}, &existing)
 	if errors.IsNotFound(err) {
 		return r.Create(ctx, desired)
 	}
@@ -987,6 +990,9 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 		if !equality.Semantic.DeepEqual(existingContainer.VolumeMounts, desiredContainer.VolumeMounts) {
 			needsUpdate = true
 		}
+		if !equality.Semantic.DeepEqual(existing.Spec.Template.Spec.Volumes, desired.Spec.Template.Spec.Volumes) {
+			needsUpdate = true
+		}
 		if !equality.Semantic.DeepEqual(existingContainer.Resources, desiredContainer.Resources) {
 			needsUpdate = true
 		}
@@ -1021,6 +1027,7 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 		existing.Spec.Template.Spec.Containers[0].EnvFrom = desiredContainer.EnvFrom
 		existing.Spec.Template.Spec.Containers[0].Ports = desiredContainer.Ports
 		existing.Spec.Template.Spec.Containers[0].VolumeMounts = desiredContainer.VolumeMounts
+		existing.Spec.Template.Spec.Volumes = desired.Spec.Template.Spec.Volumes
 		existing.Spec.Template.Spec.Containers[0].Resources = desiredContainer.Resources
 		existing.Spec.Template.Spec.Containers[0].LivenessProbe = desiredContainer.LivenessProbe
 		existing.Spec.Template.Spec.Containers[0].ReadinessProbe = desiredContainer.ReadinessProbe
@@ -1062,7 +1069,11 @@ func (r *AppReconciler) reconcileCronJob(ctx context.Context, app *mortisev1alph
 		},
 	}
 
-	containers[0].Resources = toResourceRequirements(r.effectiveResources(ctx, env))
+	resources, err := toResourceRequirements(r.effectiveResources(ctx, env))
+	if err != nil {
+		return fmt.Errorf("resources: %w", err)
+	}
+	containers[0].Resources = resources
 
 	volumes, mounts := toVolumesAndMounts(app)
 
@@ -1132,7 +1143,7 @@ func (r *AppReconciler) reconcileCronJob(ctx context.Context, app *mortisev1alph
 	// Cross-namespace: no controller ref; finalizer-based GC on App delete.
 
 	var existing batchv1.CronJob
-	err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: envNs}, &existing)
+	err = r.Get(ctx, types.NamespacedName{Name: name, Namespace: envNs}, &existing)
 	if errors.IsNotFound(err) {
 		return r.Create(ctx, desired)
 	}
@@ -2139,14 +2150,19 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 	firstCrashMsg := ""
 
 	for _, env := range resolvedEnvs {
+		autoDomain := ""
+		if app.Spec.Network.Public {
+			autoDomain = r.autoDefaultDomain(ctx, app, env.Name)
+		}
 		domain := env.Domain
-		if domain == "" && app.Spec.Network.Public {
-			domain = r.autoDefaultDomain(ctx, app, env.Name)
+		if domain == "" {
+			domain = autoDomain
 		}
 		es := mortisev1alpha1.EnvironmentStatus{
 			Name:         env.Name,
 			CurrentImage: r.currentImageForEnv(app, env.Name),
 			Domain:       domain,
+			AutoDomain:   autoDomain,
 		}
 		envNs, nsErr := appEnvNs(app, env.Name)
 		if nsErr != nil {
@@ -2410,8 +2426,8 @@ func deploymentRollingOut(dep *appsv1.Deployment) bool {
 	return false
 }
 
-func deploymentName(appName string) string { return appName }
-func cronJobName(appName string) string    { return appName }
+func deploymentName(appName string) string { return constants.DeploymentName(appName) }
+func cronJobName(appName string) string    { return constants.CronJobName(appName) }
 func serviceName(appName string) string    { return appName }
 func ingressName(appName string) string    { return appName }
 
@@ -2655,22 +2671,28 @@ func (r *AppReconciler) effectiveResources(ctx context.Context, env *mortisev1al
 	return res
 }
 
-func toResourceRequirements(r mortisev1alpha1.ResourceRequirements) corev1.ResourceRequirements {
+func toResourceRequirements(r mortisev1alpha1.ResourceRequirements) (corev1.ResourceRequirements, error) {
 	req := corev1.ResourceRequirements{
 		Requests: corev1.ResourceList{},
 		Limits:   corev1.ResourceList{},
 	}
 	if r.CPU != "" {
-		q := resource.MustParse(r.CPU)
+		q, err := resource.ParseQuantity(r.CPU)
+		if err != nil {
+			return req, fmt.Errorf("invalid cpu %q: %w", r.CPU, err)
+		}
 		req.Requests[corev1.ResourceCPU] = q
 		req.Limits[corev1.ResourceCPU] = q
 	}
 	if r.Memory != "" {
-		q := resource.MustParse(r.Memory)
+		q, err := resource.ParseQuantity(r.Memory)
+		if err != nil {
+			return req, fmt.Errorf("invalid memory %q: %w", r.Memory, err)
+		}
 		req.Requests[corev1.ResourceMemory] = q
 		req.Limits[corev1.ResourceMemory] = q
 	}
-	return req
+	return req, nil
 }
 
 func toVolumesAndMounts(app *mortisev1alpha1.App) ([]corev1.Volume, []corev1.VolumeMount) {
@@ -2705,6 +2727,7 @@ func toVolumesAndMounts(app *mortisev1alpha1.App) ([]corev1.Volume, []corev1.Vol
 			VolumeSource: corev1.VolumeSource{
 				ConfigMap: &corev1.ConfigMapVolumeSource{
 					LocalObjectReference: corev1.LocalObjectReference{Name: cmName},
+					DefaultMode:          ptr.To(int32(0644)),
 				},
 			},
 		})
@@ -2749,8 +2772,9 @@ func toSecretVolumesAndMounts(mounts []mortisev1alpha1.SecretMount) ([]corev1.Vo
 			Name: m.Name,
 			VolumeSource: corev1.VolumeSource{
 				Secret: &corev1.SecretVolumeSource{
-					SecretName: m.Secret,
-					Items:      items,
+					SecretName:  m.Secret,
+					Items:       items,
+					DefaultMode: ptr.To(int32(0644)),
 				},
 			},
 		})

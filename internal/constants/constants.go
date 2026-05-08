@@ -66,6 +66,12 @@ func ProjectFromControlNs(ns string) (string, bool) {
 	return ns[len(ControlNamespacePrefix):], true
 }
 
+// DeploymentName returns the Deployment name for an App in any env namespace.
+func DeploymentName(appName string) string { return appName }
+
+// CronJobName returns the CronJob name for an App in any env namespace.
+func CronJobName(appName string) string { return appName }
+
 // Namespace role label values — stamped on every namespace the Project
 // controller owns so callers can distinguish control / env / preview.
 const (

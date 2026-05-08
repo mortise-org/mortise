@@ -125,6 +125,7 @@ export interface EnvironmentStatus {
 	currentImage?: string;
 	currentDigest?: string;
 	domain?: string;
+	autoDomain?: string;
 	deployHistory?: DeployRecord[];
 	pendingEnvHash?: string;
 	deployedEnvHash?: string;
@@ -143,8 +144,6 @@ export interface Condition {
 export interface AppStatus {
 	phase?: AppPhase;
 	environments?: EnvironmentStatus[];
-	pendingEnvHash?: string;
-	deployedEnvHash?: string;
 	conditions?: Condition[];
 }
 
