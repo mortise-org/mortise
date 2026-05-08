@@ -12,6 +12,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
@@ -254,12 +255,6 @@ func (s *Server) UpdateApp(w http.ResponseWriter, r *http.Request) {
 	}
 	name := chi.URLParam(r, "app")
 
-	var app mortisev1alpha1.App
-	if err := s.client.Get(r.Context(), types.NamespacedName{Name: name, Namespace: ns}, &app); err != nil {
-		writeError(w, r, err)
-		return
-	}
-
 	var spec mortisev1alpha1.AppSpec
 	if err := json.NewDecoder(r.Body).Decode(&spec); err != nil {
 		writeJSON(w, http.StatusBadRequest, errorResponse{"invalid JSON: " + err.Error()})
@@ -278,8 +273,15 @@ func (s *Server) UpdateApp(w http.ResponseWriter, r *http.Request) {
 		spec.Source.Repo = s.normalizeRepoURL(r.Context(), ns, spec.Source.ProviderRef, spec.Source.Repo)
 	}
 
-	app.Spec = spec
-	if err := s.client.Update(r.Context(), &app); err != nil {
+	var app mortisev1alpha1.App
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		if err := s.client.Get(r.Context(), types.NamespacedName{Name: name, Namespace: ns}, &app); err != nil {
+			return err
+		}
+		app.Spec = spec
+		return s.client.Update(r.Context(), &app)
+	})
+	if err != nil {
 		writeError(w, r, err)
 		return
 	}
@@ -331,6 +333,10 @@ func (s *Server) DeleteApp(w http.ResponseWriter, r *http.Request) {
 func writeError(w http.ResponseWriter, r *http.Request, err error) {
 	if errors.IsNotFound(err) {
 		writeJSON(w, http.StatusNotFound, errorResponse{err.Error()})
+		return
+	}
+	if errors.IsConflict(err) {
+		writeJSON(w, http.StatusConflict, errorResponse{err.Error()})
 		return
 	}
 	if errors.IsAlreadyExists(err) {

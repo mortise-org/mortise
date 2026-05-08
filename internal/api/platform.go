@@ -10,6 +10,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/retry"
 
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
 	"github.com/mortise-org/mortise/internal/authz"
@@ -200,7 +201,6 @@ func (s *Server) PatchPlatform(w http.ResponseWriter, r *http.Request) {
 	err := s.client.Get(r.Context(), types.NamespacedName{Name: platformConfigName}, &pc)
 
 	if errors.IsNotFound(err) {
-		// Create.
 		spec := buildPlatformSpec(mortisev1alpha1.PlatformConfigSpec{}, &req)
 		pc = mortisev1alpha1.PlatformConfig{
 			ObjectMeta: metav1.ObjectMeta{Name: platformConfigName},
@@ -219,8 +219,14 @@ func (s *Server) PatchPlatform(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Update — merge onto existing spec (preserves build, registry, etc.).
-	pc.Spec = buildPlatformSpec(pc.Spec, &req)
-	if err := s.client.Update(r.Context(), &pc); err != nil {
+	err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		if err := s.client.Get(r.Context(), types.NamespacedName{Name: platformConfigName}, &pc); err != nil {
+			return err
+		}
+		pc.Spec = buildPlatformSpec(pc.Spec, &req)
+		return s.client.Update(r.Context(), &pc)
+	})
+	if err != nil {
 		writeError(w, r, err)
 		return
 	}
