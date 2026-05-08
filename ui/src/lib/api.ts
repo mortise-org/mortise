@@ -39,7 +39,8 @@ function tokenExpiresAt(): number | null {
 	const token = localStorage.getItem('mortise_token');
 	if (!token) return null;
 	try {
-		const payload = JSON.parse(atob(token.split('.')[1]));
+		const b64url = token.split('.')[1];
+		const payload = JSON.parse(atob(b64url.replace(/-/g, '+').replace(/_/g, '/')));
 		return typeof payload.exp === 'number' ? payload.exp * 1000 : null;
 	} catch {
 		return null;
