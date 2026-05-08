@@ -33,6 +33,8 @@ import type {
 
 const BASE = '/api';
 
+let refreshPromise: Promise<boolean> | null = null;
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
 	const token = localStorage.getItem('mortise_token');
 	const headers: Record<string, string> = {
@@ -46,7 +48,12 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 	const res = await fetch(`${BASE}${path}`, { ...init, headers });
 
 	if (res.status === 401 && token) {
-		const refreshed = await tryRefreshToken();
+		if (!refreshPromise) {
+			refreshPromise = tryRefreshToken().finally(() => {
+				refreshPromise = null;
+			});
+		}
+		const refreshed = await refreshPromise;
 		if (refreshed) {
 			headers['Authorization'] = `Bearer ${localStorage.getItem('mortise_token')}`;
 			const retry = await fetch(`${BASE}${path}`, { ...init, headers });
