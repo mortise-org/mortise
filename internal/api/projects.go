@@ -166,6 +166,14 @@ func (s *Server) CreateProject(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.client.Create(r.Context(), project); err != nil {
+		if errors.IsAlreadyExists(err) {
+			writeJSON(w, http.StatusConflict, errorResponse{fmt.Sprintf(
+				"A project named %q already exists. Project names must be unique across the platform. "+
+					"If you need access to the existing project, ask a project owner or platform admin to add you as a member.",
+				req.Name,
+			)})
+			return
+		}
 		writeError(w, err)
 		return
 	}
@@ -173,6 +181,38 @@ func (s *Server) CreateProject(w http.ResponseWriter, r *http.Request) {
 	s.recordActivity(r, project.Name, "create", "project", project.Name, "Created project "+project.Name, "")
 
 	writeJSON(w, http.StatusCreated, toProjectResponse(project, nil))
+}
+
+// @Summary Check project name availability
+// @Description Returns whether a project name is available. Any authenticated user can call this.
+// @Tags projects
+// @Produce json
+// @Security BearerAuth
+// @Param name path string true "Project name to check"
+// @Success 200 {object} map[string]bool
+// @Failure 400 {object} errorResponse
+// @Failure 401 {object} errorResponse
+// @Router /projects/{name}/available [get]
+//
+// CheckProjectNameAvailable returns whether a project name is available for use.
+func (s *Server) CheckProjectNameAvailable(w http.ResponseWriter, r *http.Request) {
+	name := chi.URLParam(r, "name")
+	if msg := validateProjectName(name); msg != "" {
+		writeJSON(w, http.StatusBadRequest, errorResponse{msg})
+		return
+	}
+
+	var project mortisev1alpha1.Project
+	err := s.client.Get(r.Context(), types.NamespacedName{Name: name}, &project)
+	if errors.IsNotFound(err) {
+		writeJSON(w, http.StatusOK, map[string]bool{"available": true})
+		return
+	}
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"available": false})
 }
 
 // @Summary List projects

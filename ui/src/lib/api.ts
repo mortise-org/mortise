@@ -80,6 +80,8 @@ export const api = {
 			body: JSON.stringify({ name, description })
 		}),
 	getProject: (name: string) => request<Project>(`/projects/${enc(name)}`),
+	checkProjectNameAvailable: (name: string) =>
+		request<{ available: boolean }>(`/projects/${enc(name)}/available`),
 	deleteProject: (name: string) =>
 		request<{ status: string; project: string }>(`/projects/${enc(name)}`, {
 			method: 'DELETE'
