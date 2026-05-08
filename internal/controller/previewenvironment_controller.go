@@ -165,7 +165,8 @@ func (r *PreviewEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.R
 		if err := r.Update(ctx, &pe); err != nil {
 			return ctrl.Result{}, err
 		}
-	}	project, err := r.getProjectForApp(ctx, &app)
+	}
+	project, err := r.getProjectForApp(ctx, &app)
 	if err != nil {
 		return ctrl.Result{}, r.setPreviewFailed(ctx, &pe, "ProjectNotFound", err.Error())
 	}
