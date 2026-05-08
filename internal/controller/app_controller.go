@@ -2197,7 +2197,7 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 	}
 	if anyCrash {
 		phase = mortisev1alpha1.AppPhaseCrashLooping
-		meta.SetStatusCondition(&app.Status.Conditions, metav1.Condition{
+		meta.SetStatusCondition(&fresh.Status.Conditions, metav1.Condition{
 			Type:               "PodHealthy",
 			Status:             metav1.ConditionFalse,
 			Reason:             "CrashLoopBackOff",
@@ -2205,14 +2205,11 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 			ObservedGeneration: app.Generation,
 		})
 	} else {
-		meta.RemoveStatusCondition(&app.Status.Conditions, "PodHealthy")
+		meta.RemoveStatusCondition(&fresh.Status.Conditions, "PodHealthy")
 	}
 
 	fresh.Status.Phase = phase
 	fresh.Status.Environments = envStatuses
-	fresh.Status.LastBuiltSHA = app.Status.LastBuiltSHA
-	fresh.Status.LastBuiltImage = app.Status.LastBuiltImage
-	fresh.Status.Conditions = app.Status.Conditions
 	return r.Status().Update(ctx, &fresh)
 }
 
