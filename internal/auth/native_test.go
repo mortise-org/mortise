@@ -338,3 +338,33 @@ func TestJWTRejectsTokenWithWrongIssuer(t *testing.T) {
 		t.Fatal("token with wrong issuer should be rejected")
 	}
 }
+
+func TestJWTRejectsTokenWithWrongAudience(t *testing.T) {
+	provider, ctx := setup(t)
+
+	key, err := provider.jwt.signingKey(ctx)
+	if err != nil {
+		t.Fatalf("signingKey: %v", err)
+	}
+
+	claims := jwt.MapClaims{
+		"sub":     "alice@example.com",
+		"email":   "alice@example.com",
+		"role":    "admin",
+		"pwd_gen": float64(0),
+		"iss":     "mortise",
+		"aud":     "other-api",
+		"iat":     time.Now().Unix(),
+		"exp":     time.Now().Add(time.Hour).Unix(),
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	tokenString, err := token.SignedString(key)
+	if err != nil {
+		t.Fatalf("signing token: %v", err)
+	}
+
+	_, _, err = provider.jwt.ValidateToken(ctx, tokenString)
+	if err == nil {
+		t.Fatal("token with wrong audience should be rejected")
+	}
+}
