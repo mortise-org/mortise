@@ -58,6 +58,34 @@ const mockApp = {
 	}
 };
 
+function buildStaleApp(
+	name: string,
+	staleEnvs: string[],
+	allEnvs: string[] = ['production', 'staging']
+) {
+	return {
+		metadata: { name, namespace: 'project-my-project' },
+		spec: {
+			source: { type: 'image' as const, image: 'nginx:1.27' },
+			network: { public: true, port: 8080 },
+			environments: allEnvs.map((env) => ({ name: env, replicas: 1 })),
+			storage: [],
+			credentials: []
+		},
+		status: {
+			phase: 'Ready' as const,
+			environments: allEnvs.map((env) => ({
+				name: env,
+				readyReplicas: 1,
+				currentImage: 'nginx:1.27',
+				deployHistory: [],
+				pendingEnvHash: staleEnvs.includes(env) ? `pending-${env}` : `hash-${env}`,
+				deployedEnvHash: `hash-${env}`
+			}))
+		}
+	};
+}
+
 const mockActivity = [
 	{
 		ts: new Date().toISOString(),
@@ -428,5 +456,66 @@ test.describe('canvas interactions', () => {
 
 		await expect(page.getByText('No apps in this project')).toBeVisible({ timeout: 10_000 });
 		await expect(page.getByRole('button', { name: 'Deploy an app' })).toBeVisible();
+	});
+
+	test('stale env controls call the per-env and per-app redeploy endpoints', async ({ page }) => {
+		let envRedeploys: string[] = [];
+		let staleRedeploys: string[] = [];
+		const staleApps = [
+			buildStaleApp('web-app', ['production', 'staging']),
+			buildStaleApp('worker-app', ['production'], ['production'])
+		];
+
+		await setupCommonMocks(page);
+		await page.route('/api/projects/my-project/apps', (r) => r.fulfill({ json: staleApps }));
+		await page.route('**/api/projects/my-project/apps/*/redeploy?*', async (r) => {
+			envRedeploys.push(r.request().url());
+			await r.fulfill({ json: { status: 'ok' } });
+		});
+		await page.route('**/api/projects/my-project/apps/*/redeploy-stale', async (r) => {
+			staleRedeploys.push(r.request().url());
+			await r.fulfill({ json: { restarted: ['production', 'staging'] } });
+		});
+
+		await injectAuth(page);
+		await page.goto('/projects/my-project');
+
+		await page.getByTitle('Redeploy web-app in production').click();
+		await page.getByRole('button', { name: 'all', exact: true }).click();
+		await page.getByRole('button', { name: 'Redeploy all (2)' }).click();
+
+		await expect(async () => {
+			expect(envRedeploys).toEqual([
+				expect.stringContaining('/apps/web-app/redeploy?environment=production')
+			]);
+			expect(staleRedeploys).toEqual([
+				expect.stringContaining('/apps/web-app/redeploy-stale'),
+				expect.stringContaining('/apps/web-app/redeploy-stale'),
+				expect.stringContaining('/apps/worker-app/redeploy-stale')
+			]);
+		}).toPass({ timeout: 5_000 });
+	});
+
+	test('list view stale env button stops row navigation and surfaces request errors', async ({ page }) => {
+		const staleApps = [buildStaleApp('web-app', ['production'])];
+
+		await setupCommonMocks(page);
+		await page.route('/api/projects/my-project/apps', (r) => r.fulfill({ json: staleApps }));
+		await page.route('**/api/projects/my-project/apps/web-app/redeploy?*', async (r) => {
+			await r.fulfill({
+				status: 500,
+				contentType: 'application/json',
+				body: JSON.stringify({ error: 'redeploy failed for production' })
+			});
+		});
+
+		await injectAuth(page);
+		await page.goto('/projects/my-project');
+		await page.getByTitle('List view').click();
+
+		await page.getByTitle('Redeploy web-app in production').click();
+
+		await expect(page).toHaveURL('/projects/my-project');
+		await expect(page.getByText('redeploy failed for production')).toBeVisible({ timeout: 5_000 });
 	});
 });
