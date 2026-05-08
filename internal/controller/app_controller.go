@@ -279,7 +279,7 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	// avoids resourceVersion conflicts from per-env Status().Update() calls.
 	if buildStatusDirty {
 		if err := r.Status().Update(ctx, &app); err != nil {
-			log.Error(err, "flush build status after env loop")
+			return ctrl.Result{}, fmt.Errorf("flush build status after env loop: %w", err)
 		}
 	}
 

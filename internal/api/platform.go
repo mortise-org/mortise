@@ -287,6 +287,10 @@ func (s *Server) upsertAdapterTokens(ctx context.Context, obs *patchPlatformObse
 			delete(secret.Data, "traffic")
 		}
 	}
+	// If all token keys have been removed, delete the orphan Secret entirely.
+	if len(secret.Data) == 0 {
+		return s.client.Delete(ctx, &secret)
+	}
 	return s.client.Update(ctx, &secret)
 }
 
