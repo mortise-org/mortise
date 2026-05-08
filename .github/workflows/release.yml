@@ -12,13 +12,16 @@ env:
 permissions:
   contents: write
   packages: write
-  id-token: write
-  attestations: write
 
 jobs:
   image:
     name: Build + push image
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
     outputs:
       version: ${{ steps.meta.outputs.version }}
     steps:
@@ -34,7 +37,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - uses: sigstore/cosign-installer@v3
+      - uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1
 
       - id: meta
         uses: docker/metadata-action@v5
@@ -71,6 +74,13 @@ jobs:
       - name: Sign operator image
         run: cosign sign --yes ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build-operator.outputs.digest }}
 
+      - name: Verify operator image signature
+        run: |
+          cosign verify \
+            --certificate-identity-regexp "https://github.com/${{ github.repository }}/" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build-operator.outputs.digest }}
+
       - id: build-observer
         uses: docker/build-push-action@v5
         with:
@@ -87,6 +97,13 @@ jobs:
 
       - name: Sign observer image
         run: cosign sign --yes ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-observer@${{ steps.build-observer.outputs.digest }}
+
+      - name: Verify observer image signature
+        run: |
+          cosign verify \
+            --certificate-identity-regexp "https://github.com/${{ github.repository }}/" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-observer@${{ steps.build-observer.outputs.digest }}
 
   cli:
     name: Build CLI binaries
