@@ -54,7 +54,7 @@ func (s *Server) handleTrafficHistory(w http.ResponseWriter, r *http.Request) {
 
 	var app mortisev1alpha1.App
 	if err := s.client.Get(r.Context(), types.NamespacedName{Name: name, Namespace: ns}, &app); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -115,7 +115,7 @@ func (s *Server) handleTrafficCurrent(w http.ResponseWriter, r *http.Request) {
 
 	var app mortisev1alpha1.App
 	if err := s.client.Get(r.Context(), types.NamespacedName{Name: name, Namespace: ns}, &app); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 

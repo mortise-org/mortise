@@ -78,7 +78,7 @@ func (s *Server) ListMembers(w http.ResponseWriter, r *http.Request) {
 		client.InNamespace(ns),
 		client.MatchingLabels{"mortise.dev/member": "true"},
 	); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -144,7 +144,7 @@ func (s *Server) AddMember(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, errorResponse{"user not found: " + req.Email})
 			return
 		}
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -175,7 +175,7 @@ func (s *Server) AddMember(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.client.Create(r.Context(), member); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -242,13 +242,13 @@ func (s *Server) UpdateMember(w http.ResponseWriter, r *http.Request) {
 	name := memberCRDName(email)
 	var member mortisev1alpha1.ProjectMember
 	if err := s.client.Get(r.Context(), types.NamespacedName{Name: name, Namespace: ns}, &member); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
 	member.Spec.Role = mortisev1alpha1.ProjectRole(req.Role)
 	if err := s.client.Update(r.Context(), &member); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -295,7 +295,7 @@ func (s *Server) RemoveMember(w http.ResponseWriter, r *http.Request) {
 
 	var member mortisev1alpha1.ProjectMember
 	if err := s.client.Get(r.Context(), types.NamespacedName{Name: name, Namespace: ns}, &member); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -306,7 +306,7 @@ func (s *Server) RemoveMember(w http.ResponseWriter, r *http.Request) {
 			client.InNamespace(ns),
 			client.MatchingLabels{"mortise.dev/member": "true"},
 		); err != nil {
-			writeError(w, err)
+			writeError(w, r, err)
 			return
 		}
 		ownerCount := 0
@@ -322,7 +322,7 @@ func (s *Server) RemoveMember(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.client.Delete(r.Context(), &member); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 

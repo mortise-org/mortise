@@ -163,7 +163,7 @@ func (s *Server) CreateStack(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if err := s.client.Create(r.Context(), app); err != nil {
-			writeError(w, err)
+			writeError(w, r, err)
 			return
 		}
 		created = append(created, as.Name)

@@ -166,7 +166,7 @@ func (s *Server) CreateProject(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.client.Create(r.Context(), project); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -194,7 +194,7 @@ func (s *Server) ListProjects(w http.ResponseWriter, r *http.Request) {
 	}
 	var list mortisev1alpha1.ProjectList
 	if err := s.client.List(r.Context(), &list); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -205,7 +205,7 @@ func (s *Server) ListProjects(w http.ResponseWriter, r *http.Request) {
 	// Load all apps once for production health aggregation.
 	var allApps mortisev1alpha1.AppList
 	if err := s.client.List(r.Context(), &allApps); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -226,7 +226,7 @@ func (s *Server) ListProjects(w http.ResponseWriter, r *http.Request) {
 	if err := s.client.List(r.Context(), &allMembers,
 		client.MatchingLabels{"mortise.dev/member": "true"},
 	); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 	memberProjects := make(map[string]bool, len(allMembers.Items))
@@ -269,7 +269,7 @@ func (s *Server) GetProject(w http.ResponseWriter, r *http.Request) {
 
 	var project mortisev1alpha1.Project
 	if err := s.client.Get(r.Context(), types.NamespacedName{Name: name}, &project); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 	ns := project.Status.Namespace
@@ -278,7 +278,7 @@ func (s *Server) GetProject(w http.ResponseWriter, r *http.Request) {
 	}
 	var apps mortisev1alpha1.AppList
 	if err := s.client.List(r.Context(), &apps, client.InNamespace(ns)); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, toProjectResponse(&project, apps.Items))
@@ -309,12 +309,12 @@ func (s *Server) DeleteProject(w http.ResponseWriter, r *http.Request) {
 
 	var project mortisev1alpha1.Project
 	if err := s.client.Get(r.Context(), types.NamespacedName{Name: name}, &project); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
 	if err := s.client.Delete(r.Context(), &project); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -363,7 +363,7 @@ func (s *Server) UpdateProject(w http.ResponseWriter, r *http.Request) {
 
 	var project mortisev1alpha1.Project
 	if err := s.client.Get(r.Context(), types.NamespacedName{Name: projectName}, &project); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -389,7 +389,7 @@ func (s *Server) UpdateProject(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.client.Update(r.Context(), &project); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -399,7 +399,7 @@ func (s *Server) UpdateProject(w http.ResponseWriter, r *http.Request) {
 	}
 	var apps mortisev1alpha1.AppList
 	if err := s.client.List(r.Context(), &apps, client.InNamespace(ns)); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, toProjectResponse(&project, apps.Items))
@@ -429,7 +429,7 @@ func (s *Server) resolveProject(w http.ResponseWriter, r *http.Request) (namespa
 		return "", "", false
 	}
 	if err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return "", "", false
 	}
 

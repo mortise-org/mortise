@@ -140,7 +140,7 @@ func (s *Server) GetPlatform(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -191,7 +191,7 @@ func (s *Server) PatchPlatform(w http.ResponseWriter, r *http.Request) {
 
 	if req.Observability != nil {
 		if err := s.upsertAdapterTokens(r.Context(), req.Observability); err != nil {
-			writeError(w, err)
+			writeError(w, r, err)
 			return
 		}
 	}
@@ -207,21 +207,21 @@ func (s *Server) PatchPlatform(w http.ResponseWriter, r *http.Request) {
 			Spec:       spec,
 		}
 		if err := s.client.Create(r.Context(), &pc); err != nil {
-			writeError(w, err)
+			writeError(w, r, err)
 			return
 		}
 		writeJSON(w, http.StatusCreated, newPlatformResponse(&pc))
 		return
 	}
 	if err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
 	// Update — merge onto existing spec (preserves build, registry, etc.).
 	pc.Spec = buildPlatformSpec(pc.Spec, &req)
 	if err := s.client.Update(r.Context(), &pc); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, newPlatformResponse(&pc))

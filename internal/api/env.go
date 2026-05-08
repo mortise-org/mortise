@@ -66,7 +66,7 @@ func (s *Server) GetEnv(w http.ResponseWriter, r *http.Request) {
 	store := &envstore.Store{Client: s.client}
 	envs, err := store.Get(r.Context(), envNs, app.Name)
 	if err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -120,7 +120,7 @@ func (s *Server) PutEnv(w http.ResponseWriter, r *http.Request) {
 	// Read existing vars so we can preserve non-user sources (binding, generated, shared).
 	existing, err := store.Get(r.Context(), envNs, app.Name)
 	if err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -147,12 +147,12 @@ func (s *Server) PutEnv(w http.ResponseWriter, r *http.Request) {
 		constants.AppNameLabel:     app.Name,
 	}
 	if err := store.Set(r.Context(), envNs, app.Name, merged, labels); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
 	if err := pokeAppForReconcile(r.Context(), s.client, app, s.clock().Now()); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -204,7 +204,7 @@ func (s *Server) PatchEnv(w http.ResponseWriter, r *http.Request) {
 	// Read existing vars from Secret.
 	existing, err := store.Get(r.Context(), envNs, app.Name)
 	if err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -265,12 +265,12 @@ func (s *Server) PatchEnv(w http.ResponseWriter, r *http.Request) {
 		constants.AppNameLabel:     app.Name,
 	}
 	if err := store.Set(r.Context(), envNs, app.Name, result, labels); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
 	if err := pokeAppForReconcile(r.Context(), s.client, app, s.clock().Now()); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -336,12 +336,12 @@ func (s *Server) ImportEnv(w http.ResponseWriter, r *http.Request) {
 		constants.AppNameLabel:     app.Name,
 	}
 	if err := store.Merge(r.Context(), envNs, app.Name, vars, labels); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
 	if err := pokeAppForReconcile(r.Context(), s.client, app, s.clock().Now()); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -377,7 +377,7 @@ func (s *Server) GetSharedVars(w http.ResponseWriter, r *http.Request) {
 	store := &envstore.Store{Client: s.client}
 	envs, err := store.GetSharedSource(r.Context(), controlNs)
 	if err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -433,7 +433,7 @@ func (s *Server) PutSharedVars(w http.ResponseWriter, r *http.Request) {
 		constants.ProjectLabel: project.Name,
 	}
 	if err := store.SetSharedSource(r.Context(), controlNs, envVars, labels); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -441,12 +441,12 @@ func (s *Server) PutSharedVars(w http.ResponseWriter, r *http.Request) {
 	// materializes the updated shared vars into each env namespace.
 	var apps mortisev1alpha1.AppList
 	if err := s.client.List(r.Context(), &apps, client.InNamespace(controlNs)); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 	for i := range apps.Items {
 		if err := pokeAppForReconcile(r.Context(), s.client, &apps.Items[i], s.clock().Now()); err != nil {
-			writeError(w, err)
+			writeError(w, r, err)
 			return
 		}
 	}
@@ -486,7 +486,7 @@ func (s *Server) resolveAppEnv(w http.ResponseWriter, r *http.Request) (*mortise
 
 	var app mortisev1alpha1.App
 	if err := s.client.Get(r.Context(), types.NamespacedName{Name: appName, Namespace: projectNs(project)}, &app); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return nil, "", false
 	}
 	return &app, env, true

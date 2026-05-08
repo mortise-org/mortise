@@ -160,7 +160,7 @@ func (s *Server) CreateApp(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.client.Create(r.Context(), app); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -191,7 +191,7 @@ func (s *Server) ListApps(w http.ResponseWriter, r *http.Request) {
 
 	var list mortisev1alpha1.AppList
 	if err := s.client.List(r.Context(), &list, client.InNamespace(ns)); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -222,7 +222,7 @@ func (s *Server) GetApp(w http.ResponseWriter, r *http.Request) {
 
 	var app mortisev1alpha1.App
 	if err := s.client.Get(r.Context(), types.NamespacedName{Name: name, Namespace: ns}, &app); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -256,7 +256,7 @@ func (s *Server) UpdateApp(w http.ResponseWriter, r *http.Request) {
 
 	var app mortisev1alpha1.App
 	if err := s.client.Get(r.Context(), types.NamespacedName{Name: name, Namespace: ns}, &app); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -280,7 +280,7 @@ func (s *Server) UpdateApp(w http.ResponseWriter, r *http.Request) {
 
 	app.Spec = spec
 	if err := s.client.Update(r.Context(), &app); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -313,12 +313,12 @@ func (s *Server) DeleteApp(w http.ResponseWriter, r *http.Request) {
 
 	var app mortisev1alpha1.App
 	if err := s.client.Get(r.Context(), types.NamespacedName{Name: name, Namespace: ns}, &app); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
 	if err := s.client.Delete(r.Context(), &app); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -328,7 +328,7 @@ func (s *Server) DeleteApp(w http.ResponseWriter, r *http.Request) {
 }
 
 // writeError maps k8s API errors to HTTP status codes.
-func writeError(w http.ResponseWriter, err error) {
+func writeError(w http.ResponseWriter, r *http.Request, err error) {
 	if errors.IsNotFound(err) {
 		writeJSON(w, http.StatusNotFound, errorResponse{err.Error()})
 		return
@@ -341,6 +341,6 @@ func writeError(w http.ResponseWriter, err error) {
 		writeJSON(w, http.StatusUnprocessableEntity, errorResponse{err.Error()})
 		return
 	}
-	slog.Error("internal API error", "error", err)
+	slog.Error("internal API error", "error", err, "method", r.Method, "path", r.URL.Path, "request_id", r.Header.Get("X-Request-ID"))
 	writeJSON(w, http.StatusInternalServerError, errorResponse{"internal server error"})
 }

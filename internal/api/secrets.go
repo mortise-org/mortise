@@ -97,7 +97,7 @@ func (s *Server) CreateSecret(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.client.Create(r.Context(), secret); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -136,7 +136,7 @@ func (s *Server) ListSecrets(w http.ResponseWriter, r *http.Request) {
 			"app.kubernetes.io/managed-by": "mortise",
 		},
 	); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -176,7 +176,7 @@ func (s *Server) DeleteSecret(w http.ResponseWriter, r *http.Request) {
 
 	var secret corev1.Secret
 	if err := s.client.Get(r.Context(), types.NamespacedName{Name: secretName, Namespace: envNs}, &secret); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -197,7 +197,7 @@ func (s *Server) DeleteSecret(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusNotFound, errorResponse{err.Error()})
 			return
 		}
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 

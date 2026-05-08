@@ -58,7 +58,7 @@ func (s *Server) ListBindings(w http.ResponseWriter, r *http.Request) {
 
 	var apps mortisev1alpha1.AppList
 	if err := s.client.List(r.Context(), &apps, client.InNamespace(projectNs(project))); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 

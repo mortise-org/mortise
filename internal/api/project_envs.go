@@ -85,7 +85,7 @@ func (s *Server) ListProjectEnvironments(w http.ResponseWriter, r *http.Request)
 	ns := projectNs(project)
 	var apps mortisev1alpha1.AppList
 	if err := s.client.List(r.Context(), &apps, client.InNamespace(ns)); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -154,7 +154,7 @@ func (s *Server) CreateProjectEnvironment(w http.ResponseWriter, r *http.Request
 		DisplayOrder: req.DisplayOrder,
 	})
 	if err := s.client.Update(r.Context(), project); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -225,7 +225,7 @@ func (s *Server) UpdateProjectEnvironment(w http.ResponseWriter, r *http.Request
 		// the project update when its post-state includes an env name that
 		// disappeared from overrides.
 		if err := s.renameAppOverrides(r.Context(), projectNs(project), envName, *req.Name); err != nil {
-			writeError(w, err)
+			writeError(w, r, err)
 			return
 		}
 		project.Spec.Environments[idx].Name = *req.Name
@@ -248,7 +248,7 @@ func (s *Server) UpdateProjectEnvironment(w http.ResponseWriter, r *http.Request
 	}
 
 	if err := s.client.Update(r.Context(), project); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -312,7 +312,7 @@ func (s *Server) DeleteProjectEnvironment(w http.ResponseWriter, r *http.Request
 			writeJSON(w, http.StatusConflict, errorResponse{err.Error()})
 			return
 		}
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -398,14 +398,14 @@ func (s *Server) CloneProjectEnvironment(w http.ResponseWriter, r *http.Request)
 			DisplayOrder: req.DisplayOrder,
 		})
 		if err := s.client.Update(r.Context(), project); err != nil {
-			writeError(w, err)
+			writeError(w, r, err)
 			return
 		}
 	}
 
 	// Clone env overrides (CRD + Secret-level) from source to target for every App.
 	if err := s.cloneAppOverrides(r.Context(), projectName, projectNs(project), sourceName, req.Name); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -554,7 +554,7 @@ func (s *Server) getProject(w http.ResponseWriter, r *http.Request) (*mortisev1a
 		return nil, false
 	}
 	if err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return nil, false
 	}
 	return &project, true

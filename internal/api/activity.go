@@ -62,7 +62,7 @@ func (s *Server) ListActivity(w http.ResponseWriter, r *http.Request) {
 
 	events, err := s.activityStore.List(r.Context(), projectName, limit)
 	if err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, events)
@@ -103,7 +103,7 @@ func (s *Server) ListPlatformActivity(w http.ResponseWriter, r *http.Request) {
 
 	projects, err := s.readableProjects(r)
 	if err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -115,7 +115,7 @@ func (s *Server) ListPlatformActivity(w http.ResponseWriter, r *http.Request) {
 	for _, project := range projects {
 		events, err := s.activityStore.List(r.Context(), project, perProject)
 		if err != nil {
-			writeError(w, err)
+			writeError(w, r, err)
 			return
 		}
 		merged = append(merged, events...)
