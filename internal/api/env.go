@@ -151,7 +151,7 @@ func (s *Server) PutEnv(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := pokeAppForReconcile(r.Context(), s.client, app); err != nil {
+	if err := pokeAppForReconcile(r.Context(), s.client, app, s.clock().Now()); err != nil {
 		writeError(w, err)
 		return
 	}
@@ -269,7 +269,7 @@ func (s *Server) PatchEnv(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := pokeAppForReconcile(r.Context(), s.client, app); err != nil {
+	if err := pokeAppForReconcile(r.Context(), s.client, app, s.clock().Now()); err != nil {
 		writeError(w, err)
 		return
 	}
@@ -340,7 +340,7 @@ func (s *Server) ImportEnv(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := pokeAppForReconcile(r.Context(), s.client, app); err != nil {
+	if err := pokeAppForReconcile(r.Context(), s.client, app, s.clock().Now()); err != nil {
 		writeError(w, err)
 		return
 	}
@@ -445,7 +445,7 @@ func (s *Server) PutSharedVars(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for i := range apps.Items {
-		if err := pokeAppForReconcile(r.Context(), s.client, &apps.Items[i]); err != nil {
+		if err := pokeAppForReconcile(r.Context(), s.client, &apps.Items[i], s.clock().Now()); err != nil {
 			writeError(w, err)
 			return
 		}
@@ -507,11 +507,11 @@ func ensureEnvironment(app *mortisev1alpha1.App, name string) *mortisev1alpha1.E
 // pokeAppForReconcile stamps a timestamp annotation on the App CRD so the
 // controller re-reconciles (picking up the latest Secret contents). The
 // Secret is the source of truth — we never sync env vars back to the CRD spec.
-func pokeAppForReconcile(ctx context.Context, k8s client.Client, app *mortisev1alpha1.App) error {
+func pokeAppForReconcile(ctx context.Context, k8s client.Client, app *mortisev1alpha1.App, now time.Time) error {
 	if app.Annotations == nil {
 		app.Annotations = make(map[string]string)
 	}
-	app.Annotations["mortise.dev/env-updated"] = fmt.Sprintf("%d", time.Now().UnixMilli())
+	app.Annotations["mortise.dev/env-updated"] = fmt.Sprintf("%d", now.UnixMilli())
 	return k8s.Update(ctx, app)
 }
 

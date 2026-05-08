@@ -4,7 +4,6 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
-	"time"
 
 	"github.com/go-chi/chi/v5"
 	"k8s.io/apimachinery/pkg/types"
@@ -36,12 +35,11 @@ import (
 // @Failure 404 {object} errorResponse
 // @Router /projects/{project}/apps/{app}/traffic [get]
 func (s *Server) handleTrafficHistory(w http.ResponseWriter, r *http.Request) {
-	projectName := chi.URLParam(r, "project")
-	if !s.authorize(w, r, authz.Resource{Kind: "app", Project: projectName}, authz.ActionRead) {
-		return
-	}
 	ns, projectName, ok := s.resolveProject(w, r)
 	if !ok {
+		return
+	}
+	if !s.authorize(w, r, authz.Resource{Kind: "app", Namespace: ns, Project: projectName}, authz.ActionRead) {
 		return
 	}
 	name := chi.URLParam(r, "app")
@@ -105,12 +103,11 @@ func (s *Server) handleTrafficHistory(w http.ResponseWriter, r *http.Request) {
 // @Failure 404 {object} errorResponse
 // @Router /projects/{project}/apps/{app}/traffic/current [get]
 func (s *Server) handleTrafficCurrent(w http.ResponseWriter, r *http.Request) {
-	projectName := chi.URLParam(r, "project")
-	if !s.authorize(w, r, authz.Resource{Kind: "app", Project: projectName}, authz.ActionRead) {
-		return
-	}
 	ns, projectName, ok := s.resolveProject(w, r)
 	if !ok {
+		return
+	}
+	if !s.authorize(w, r, authz.Resource{Kind: "app", Namespace: ns, Project: projectName}, authz.ActionRead) {
 		return
 	}
 	name := chi.URLParam(r, "app")
@@ -132,7 +129,7 @@ func (s *Server) handleTrafficCurrent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	nowTs := time.Now().Unix()
+	nowTs := s.clock().Now().Unix()
 	now := strconv.FormatInt(nowTs, 10)
 	start := strconv.FormatInt(nowTs-300, 10)
 	envNs := constants.EnvNamespace(projectName, env)

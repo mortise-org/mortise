@@ -306,9 +306,6 @@ func (s *Server) validateProjectDeployToken(r *http.Request, ns, projectName str
 	for i := range list.Items {
 		sec := &list.Items[i]
 		stored := string(sec.Data["token-hash"])
-		if stored == "" {
-			stored = string(sec.Data["token_hash"])
-		}
 		if subtle.ConstantTimeCompare([]byte(stored), []byte(hashHex)) == 1 {
 			return true, sec.Name
 		}

@@ -180,7 +180,7 @@ func (s *Server) AddMember(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Set status fields via status subresource update.
-	member.Status.AddedAt = time.Now().UTC().Format(time.RFC3339)
+	member.Status.AddedAt = s.clock().Now().UTC().Format(time.RFC3339)
 	if principal != nil {
 		member.Status.AddedBy = principal.Email
 	}

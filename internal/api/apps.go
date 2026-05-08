@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -265,6 +266,13 @@ func (s *Server) UpdateApp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	for i, env := range spec.Environments {
+		if msg := validateDNSLabel(fmt.Sprintf("environments[%d].name", i), env.Name, maxEnvNameLen); msg != "" {
+			writeJSON(w, http.StatusBadRequest, errorResponse{msg})
+			return
+		}
+	}
+
 	// Normalize short-form repo URLs on update too.
 	if spec.Source.Type == mortisev1alpha1.SourceTypeGit {
 		spec.Source.Repo = s.normalizeRepoURL(r.Context(), ns, spec.Source.ProviderRef, spec.Source.Repo)
@@ -333,5 +341,6 @@ func writeError(w http.ResponseWriter, err error) {
 		writeJSON(w, http.StatusUnprocessableEntity, errorResponse{err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusInternalServerError, errorResponse{err.Error()})
+	slog.Error("internal API error", "error", err)
+	writeJSON(w, http.StatusInternalServerError, errorResponse{"internal server error"})
 }

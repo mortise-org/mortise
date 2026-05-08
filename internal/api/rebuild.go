@@ -122,7 +122,7 @@ func (s *Server) Redeploy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	pendingHash := envStatusPendingHash(app.Status.Environments, env)
-	if err := restartDeployment(r.Context(), s.client, envNs, appName, pendingHash); err != nil {
+	if err := restartDeployment(r.Context(), s.client, envNs, appName, pendingHash, s.clock().Now()); err != nil {
 		writeError(w, err)
 		return
 	}
@@ -186,7 +186,7 @@ func (s *Server) RedeployStale(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		envNs := constants.EnvNamespace(projectName, es.Name)
-		if err := restartDeployment(r.Context(), s.client, envNs, appName, es.PendingEnvHash); err != nil {
+		if err := restartDeployment(r.Context(), s.client, envNs, appName, es.PendingEnvHash, s.clock().Now()); err != nil {
 			writeError(w, err)
 			return
 		}
@@ -227,7 +227,7 @@ func envStatusPendingHash(envStatuses []mortisev1alpha1.EnvironmentStatus, envNa
 	return ""
 }
 
-func restartDeployment(ctx context.Context, c client.Client, namespace, appName, pendingEnvHash string) error {
+func restartDeployment(ctx context.Context, c client.Client, namespace, appName, pendingEnvHash string, now time.Time) error {
 	var dep appsv1.Deployment
 	if err := c.Get(ctx, types.NamespacedName{Name: appName, Namespace: namespace}, &dep); err != nil {
 		return err
@@ -236,7 +236,7 @@ func restartDeployment(ctx context.Context, c client.Client, namespace, appName,
 	if dep.Spec.Template.Annotations == nil {
 		dep.Spec.Template.Annotations = make(map[string]string)
 	}
-	dep.Spec.Template.Annotations["mortise.dev/restartedAt"] = fmt.Sprintf("%d", time.Now().UnixMilli())
+	dep.Spec.Template.Annotations["mortise.dev/restartedAt"] = fmt.Sprintf("%d", now.UnixMilli())
 	if pendingEnvHash != "" {
 		dep.Spec.Template.Annotations["mortise.dev/env-hash"] = pendingEnvHash
 	}

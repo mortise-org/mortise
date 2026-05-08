@@ -79,8 +79,8 @@ func (s *Server) CreateSecret(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errorResponse{"invalid JSON: " + err.Error()})
 		return
 	}
-	if req.Name == "" {
-		writeJSON(w, http.StatusBadRequest, errorResponse{"name is required"})
+	if msg := validateDNSLabel("name", req.Name, 253); msg != "" {
+		writeJSON(w, http.StatusBadRequest, errorResponse{msg})
 		return
 	}
 

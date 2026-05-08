@@ -12,6 +12,7 @@ import (
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+	kclock "k8s.io/utils/clock"
 	metricsv1beta1 "k8s.io/metrics/pkg/client/clientset/versioned/typed/metrics/v1beta1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -44,6 +45,7 @@ type Server struct {
 	metricsClient metricsv1beta1.MetricsV1beta1Interface
 	proxies       *appProxyManager
 	activityStore activity.Store
+	Clock         kclock.Clock
 }
 
 // RESTConfig returns the rest.Config the server was built with. Exposed for
@@ -61,6 +63,13 @@ func (s *Server) SetBuildLogProvider(p BuildLogProvider) {
 // Pass nil if metrics-server is not installed — the handler degrades gracefully.
 func (s *Server) SetMetricsClient(mc metricsv1beta1.MetricsV1beta1Interface) {
 	s.metricsClient = mc
+}
+
+func (s *Server) clock() kclock.Clock {
+	if s.Clock != nil {
+		return s.Clock
+	}
+	return kclock.RealClock{}
 }
 
 // NewServer creates a new API server.
