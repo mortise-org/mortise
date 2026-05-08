@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	stderrors "errors"
 	"fmt"
 	"strings"
 	"time"
@@ -772,6 +773,8 @@ func (r *PreviewEnvironmentReconciler) ensurePreviewNamespace(ctx context.Contex
 // coordinating "last PE out deletes the namespace" opens races we don't need
 // to solve: an empty preview namespace is cheap and gets reused on PR reopen.
 func (r *PreviewEnvironmentReconciler) gcPreviewResources(ctx context.Context, pe *mortisev1alpha1.PreviewEnvironment, previewNs string) error {
+	log := logf.FromContext(ctx)
+
 	projectName, ok := constants.ProjectFromControlNs(pe.Namespace)
 	if !ok {
 		return nil
@@ -783,29 +786,47 @@ func (r *PreviewEnvironmentReconciler) gcPreviewResources(ctx context.Context, p
 	}
 	inNs := client.InNamespace(previewNs)
 
+	var errs []error
+
 	var deploys appsv1.DeploymentList
 	if err := r.List(ctx, &deploys, selector, inNs); err == nil {
 		for i := range deploys.Items {
-			_ = r.Delete(ctx, &deploys.Items[i])
+			if err := r.Delete(ctx, &deploys.Items[i]); err != nil {
+				log.Error(err, "gc: failed to delete Deployment", "name", deploys.Items[i].Name, "namespace", previewNs)
+				errs = append(errs, fmt.Errorf("delete Deployment %s/%s: %w", previewNs, deploys.Items[i].Name, err))
+			}
 		}
 	}
 	var svcs corev1.ServiceList
 	if err := r.List(ctx, &svcs, selector, inNs); err == nil {
 		for i := range svcs.Items {
-			_ = r.Delete(ctx, &svcs.Items[i])
+			if err := r.Delete(ctx, &svcs.Items[i]); err != nil {
+				log.Error(err, "gc: failed to delete Service", "name", svcs.Items[i].Name, "namespace", previewNs)
+				errs = append(errs, fmt.Errorf("delete Service %s/%s: %w", previewNs, svcs.Items[i].Name, err))
+			}
 		}
 	}
 	var ings networkingv1.IngressList
 	if err := r.List(ctx, &ings, selector, inNs); err == nil {
 		for i := range ings.Items {
-			_ = r.Delete(ctx, &ings.Items[i])
+			if err := r.Delete(ctx, &ings.Items[i]); err != nil {
+				log.Error(err, "gc: failed to delete Ingress", "name", ings.Items[i].Name, "namespace", previewNs)
+				errs = append(errs, fmt.Errorf("delete Ingress %s/%s: %w", previewNs, ings.Items[i].Name, err))
+			}
 		}
 	}
 	var secrets corev1.SecretList
 	if err := r.List(ctx, &secrets, selector, inNs); err == nil {
 		for i := range secrets.Items {
-			_ = r.Delete(ctx, &secrets.Items[i])
+			if err := r.Delete(ctx, &secrets.Items[i]); err != nil {
+				log.Error(err, "gc: failed to delete Secret", "name", secrets.Items[i].Name, "namespace", previewNs)
+				errs = append(errs, fmt.Errorf("delete Secret %s/%s: %w", previewNs, secrets.Items[i].Name, err))
+			}
 		}
+	}
+
+	if len(errs) > 0 {
+		return fmt.Errorf("gc preview resources: %d deletion(s) failed: %w", len(errs), stderrors.Join(errs...))
 	}
 	return nil
 }
