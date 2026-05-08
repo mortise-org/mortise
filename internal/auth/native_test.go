@@ -3,7 +3,9 @@ package auth
 import (
 	"context"
 	"testing"
+	"time"
 
+	"github.com/golang-jwt/jwt/v5"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -45,6 +47,9 @@ func TestCreateAndAuthenticate(t *testing.T) {
 	}
 	if p.Role != RoleAdmin {
 		t.Errorf("expected role admin, got %s", p.Role)
+	}
+	if p.PasswordGen != 0 {
+		t.Errorf("expected password_gen 0 for new user, got %d", p.PasswordGen)
 	}
 }
 
@@ -272,5 +277,94 @@ func TestPasswordChangeInvalidatesToken(t *testing.T) {
 	}
 	if _, err := provider.Principal(ctx, newToken); err != nil {
 		t.Fatalf("new token should be valid: %v", err)
+	}
+}
+
+func TestJWTRejectsTokenWithoutIssuerAudience(t *testing.T) {
+	provider, ctx := setup(t)
+
+	// Manually craft a token without iss/aud claims.
+	key, err := provider.jwt.signingKey(ctx)
+	if err != nil {
+		t.Fatalf("signingKey: %v", err)
+	}
+
+	claims := jwt.MapClaims{
+		"sub":     "alice@example.com",
+		"email":   "alice@example.com",
+		"role":    "admin",
+		"pwd_gen": float64(0),
+		"iat":     time.Now().Unix(),
+		"exp":     time.Now().Add(time.Hour).Unix(),
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	tokenString, err := token.SignedString(key)
+	if err != nil {
+		t.Fatalf("signing token: %v", err)
+	}
+
+	_, _, err = provider.jwt.ValidateToken(ctx, tokenString)
+	if err == nil {
+		t.Fatal("token without iss/aud should be rejected")
+	}
+}
+
+func TestJWTRejectsTokenWithWrongIssuer(t *testing.T) {
+	provider, ctx := setup(t)
+
+	key, err := provider.jwt.signingKey(ctx)
+	if err != nil {
+		t.Fatalf("signingKey: %v", err)
+	}
+
+	claims := jwt.MapClaims{
+		"sub":     "alice@example.com",
+		"email":   "alice@example.com",
+		"role":    "admin",
+		"pwd_gen": float64(0),
+		"iss":     "other-service",
+		"aud":     "mortise-api",
+		"iat":     time.Now().Unix(),
+		"exp":     time.Now().Add(time.Hour).Unix(),
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	tokenString, err := token.SignedString(key)
+	if err != nil {
+		t.Fatalf("signing token: %v", err)
+	}
+
+	_, _, err = provider.jwt.ValidateToken(ctx, tokenString)
+	if err == nil {
+		t.Fatal("token with wrong issuer should be rejected")
+	}
+}
+
+func TestJWTRejectsTokenWithWrongAudience(t *testing.T) {
+	provider, ctx := setup(t)
+
+	key, err := provider.jwt.signingKey(ctx)
+	if err != nil {
+		t.Fatalf("signingKey: %v", err)
+	}
+
+	claims := jwt.MapClaims{
+		"sub":     "alice@example.com",
+		"email":   "alice@example.com",
+		"role":    "admin",
+		"pwd_gen": float64(0),
+		"iss":     "mortise",
+		"aud":     "other-api",
+		"iat":     time.Now().Unix(),
+		"exp":     time.Now().Add(time.Hour).Unix(),
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	tokenString, err := token.SignedString(key)
+	if err != nil {
+		t.Fatalf("signing token: %v", err)
+	}
+
+	_, _, err = provider.jwt.ValidateToken(ctx, tokenString)
+	if err == nil {
+		t.Fatal("token with wrong audience should be rejected")
 	}
 }

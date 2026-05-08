@@ -3,6 +3,7 @@ package api
 import (
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -253,7 +254,7 @@ func (s *Server) validateDeployToken(r *http.Request, ns, appName, env string) (
 	for i := range list.Items {
 		sec := &list.Items[i]
 		stored := string(sec.Data["token-hash"])
-		if stored == hashHex {
+		if subtle.ConstantTimeCompare([]byte(stored), []byte(hashHex)) == 1 {
 			name := sec.Labels["mortise.dev/token-name"]
 			if name == "" {
 				name = sec.Name
@@ -304,8 +305,11 @@ func (s *Server) validateProjectDeployToken(r *http.Request, ns, projectName str
 
 	for i := range list.Items {
 		sec := &list.Items[i]
-		stored := string(sec.Data["token_hash"])
-		if stored == hashHex {
+		stored := string(sec.Data["token-hash"])
+		if stored == "" {
+			stored = string(sec.Data["token_hash"])
+		}
+		if subtle.ConstantTimeCompare([]byte(stored), []byte(hashHex)) == 1 {
 			return true, sec.Name
 		}
 	}
@@ -371,7 +375,7 @@ func (s *Server) CreateProjectToken(w http.ResponseWriter, r *http.Request) {
 			},
 		},
 		StringData: map[string]string{
-			"token_hash":  hashHex,
+			"token-hash":  hashHex,
 			"description": req.Description,
 			"project":     projectName,
 		},
