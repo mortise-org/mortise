@@ -1016,10 +1016,7 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 		if !equality.Semantic.DeepEqual(existingContainer.StartupProbe, desiredContainer.StartupProbe) {
 			needsUpdate = true
 		}
-		if !equality.Semantic.DeepEqual(existingContainer.SecurityContext, desiredContainer.SecurityContext) {
-			needsUpdate = true
-		}
-		if !equality.Semantic.DeepEqual(existing.Spec.Template.Spec.SecurityContext, desired.Spec.Template.Spec.SecurityContext) {
+		if securityContextChanged(existing.Spec.Template.Spec.SecurityContext, desired.Spec.Template.Spec.SecurityContext, existingContainer.SecurityContext, desiredContainer.SecurityContext) {
 			needsUpdate = true
 		}
 		if existing.Spec.Replicas == nil || *existing.Spec.Replicas != *desired.Spec.Replicas {
@@ -1221,10 +1218,7 @@ func (r *AppReconciler) reconcileCronJob(ctx context.Context, app *mortisev1alph
 	if !equality.Semantic.DeepEqual(existingContainer.Resources, desiredContainer.Resources) {
 		needsUpdate = true
 	}
-	if !equality.Semantic.DeepEqual(existingContainer.SecurityContext, desiredContainer.SecurityContext) {
-		needsUpdate = true
-	}
-	if !equality.Semantic.DeepEqual(existingPodSpec.SecurityContext, desiredPodSpec.SecurityContext) {
+	if securityContextChanged(existingPodSpec.SecurityContext, desiredPodSpec.SecurityContext, existingContainer.SecurityContext, desiredContainer.SecurityContext) {
 		needsUpdate = true
 	}
 	if existing.Spec.Schedule != desired.Spec.Schedule {
@@ -2545,6 +2539,54 @@ func restrictedContainerSecurityContext() *corev1.SecurityContext {
 			Drop: []corev1.Capability{"ALL"},
 		},
 	}
+}
+
+// securityContextChanged reports whether the controller-managed security
+// context fields have drifted and need an update. The comparison normalises
+// nil vs empty structs (which the API server may default) to avoid an
+// infinite reconcile loop: the controller writes nil, the API server
+// defaults to &SecurityContext{}, the next reconcile sees a diff, updates
+// back to nil, and the cycle repeats.
+func securityContextChanged(existingPodSC, desiredPodSC *corev1.PodSecurityContext, existingContainerSC, desiredContainerSC *corev1.SecurityContext) bool {
+	if !containerSecurityContextEqual(existingContainerSC, desiredContainerSC) {
+		return true
+	}
+	if !podSecurityContextEqual(existingPodSC, desiredPodSC) {
+		return true
+	}
+	return false
+}
+
+// containerSecurityContextEqual returns true when two container SecurityContext
+// pointers are semantically equal, treating nil and a zero-value struct as the
+// same to avoid nil-vs-empty drift from API-server defaulting.
+func containerSecurityContextEqual(a, b *corev1.SecurityContext) bool {
+	if equality.Semantic.DeepEqual(a, b) {
+		return true
+	}
+	// Normalise: treat nil and zero-value as identical.
+	if a == nil {
+		a = &corev1.SecurityContext{}
+	}
+	if b == nil {
+		b = &corev1.SecurityContext{}
+	}
+	return equality.Semantic.DeepEqual(a, b)
+}
+
+// podSecurityContextEqual returns true when two PodSecurityContext pointers
+// are semantically equal, treating nil and a zero-value struct as the same.
+func podSecurityContextEqual(a, b *corev1.PodSecurityContext) bool {
+	if equality.Semantic.DeepEqual(a, b) {
+		return true
+	}
+	if a == nil {
+		a = &corev1.PodSecurityContext{}
+	}
+	if b == nil {
+		b = &corev1.PodSecurityContext{}
+	}
+	return equality.Semantic.DeepEqual(a, b)
 }
 
 // defaultDomainTemplate is the collision-safe default: {app}-{project}.{domain}
