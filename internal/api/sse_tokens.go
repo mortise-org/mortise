@@ -4,10 +4,12 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/mortise-org/mortise/internal/auth"
+	"k8s.io/utils/clock"
 )
 
 const (
@@ -27,12 +29,14 @@ type sseTokenStore struct {
 	tokens  map[string]sseTokenEntry
 	stopCh  chan struct{}
 	stopped bool
+	clock   clock.Clock
 }
 
-func newSSETokenStore() *sseTokenStore {
+func newSSETokenStore(clk clock.Clock) *sseTokenStore {
 	s := &sseTokenStore{
 		tokens: make(map[string]sseTokenEntry),
 		stopCh: make(chan struct{}),
+		clock:  clk,
 	}
 	go s.cleanup()
 	return s
@@ -48,7 +52,7 @@ func (s *sseTokenStore) Issue(p auth.Principal) (string, error) {
 	s.mu.Lock()
 	s.tokens[token] = sseTokenEntry{
 		principal: p,
-		expiresAt: time.Now().Add(sseTokenTTL),
+		expiresAt: s.clock.Now().Add(sseTokenTTL),
 	}
 	s.mu.Unlock()
 
@@ -66,7 +70,7 @@ func (s *sseTokenStore) Redeem(token string) (auth.Principal, bool) {
 	}
 	delete(s.tokens, token)
 
-	if time.Now().After(entry.expiresAt) {
+	if s.clock.Now().After(entry.expiresAt) {
 		return auth.Principal{}, false
 	}
 	return entry.principal, true
@@ -79,7 +83,7 @@ func (s *sseTokenStore) cleanup() {
 		select {
 		case <-ticker.C:
 			s.mu.Lock()
-			now := time.Now()
+			now := s.clock.Now()
 			for k, v := range s.tokens {
 				if now.After(v.expiresAt) {
 					delete(s.tokens, k)
@@ -130,11 +134,27 @@ type sseTokenResponse struct {
 
 // RefreshToken handles POST /api/auth/refresh. It returns a new JWT if the
 // current token is valid (the caller is already authenticated via middleware).
+// Re-validates user state from the auth provider before issuing a new token
+// to ensure the user has not been revoked or disabled since initial auth.
 func (s *Server) RefreshToken(w http.ResponseWriter, r *http.Request) {
 	p := PrincipalFromContext(r.Context())
 	if p == nil {
 		writeJSON(w, http.StatusUnauthorized, errorResponse{"authentication required"})
 		return
+	}
+
+	// Re-validate user state before issuing a fresh token. The middleware
+	// already validated the JWT, but the user may have been revoked or had
+	// their password changed between the middleware check and this handler.
+	header := r.Header.Get("Authorization")
+	if header != "" && strings.HasPrefix(header, "Bearer ") {
+		bearerToken := strings.TrimPrefix(header, "Bearer ")
+		freshPrincipal, err := s.auth.Principal(r.Context(), auth.SessionToken(bearerToken))
+		if err != nil {
+			writeJSON(w, http.StatusUnauthorized, errorResponse{"user session is no longer valid"})
+			return
+		}
+		p = &freshPrincipal
 	}
 
 	token, err := s.jwt.GenerateToken(r.Context(), *p)
