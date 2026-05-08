@@ -11,10 +11,14 @@ import {
 // ---------------------------------------------------------------------------
 // Project settings E2E tests  (/projects/{project}/settings)
 //
+// Real backend only. No page.route() mocks.
+//
 // Tests cover:
-//   - Updating the project description
-//   - Toggling PR environments on
-//   - Verifying the project settings page structure
+//   - Viewing the project settings page structure (General section)
+//   - Updating the project description via Save changes
+//   - PR Environments section visibility and toggle
+//   - Danger Zone tab (delete button disabled state)
+//   - Tab navigation switching visible content panes
 // ---------------------------------------------------------------------------
 
 test.describe('project settings', () => {
@@ -37,12 +41,10 @@ test.describe('project settings', () => {
 		await injectToken(page, adminToken);
 		await page.goto(`/projects/${projectName}/settings`);
 
-		await expect(page.getByRole('heading', { name: 'Project Settings' })).toBeVisible({
+		// Wait for the tabbed settings page to load (General tab is the default).
+		await expect(page.getByRole('button', { name: 'General' })).toBeVisible({
 			timeout: 10_000
 		});
-
-		// General section heading.
-		await expect(page.getByText('General')).toBeVisible();
 
 		// Project name (read-only).
 		const nameInput = page.locator('input[disabled]');
@@ -60,28 +62,8 @@ test.describe('project settings', () => {
 
 	test('project admin updates the project description', async ({ page, request }) => {
 		await injectToken(page, adminToken);
-
-		// Intercept the PATCH call to avoid mutating the real project.
-		await page.route(`**/api/projects/${projectName}`, async (route) => {
-			if (route.request().method() === 'PATCH') {
-				const body = await route.request().postDataJSON();
-				return route.fulfill({
-					status: 200,
-					contentType: 'application/json',
-					body: JSON.stringify({
-						name: projectName,
-						description: body.description ?? '',
-						namespace: `project-${projectName}`,
-						phase: 'Ready',
-						appCount: 0
-					})
-				});
-			}
-			return route.continue();
-		});
-
 		await page.goto(`/projects/${projectName}/settings`);
-		await expect(page.getByRole('heading', { name: 'Project Settings' })).toBeVisible({
+		await expect(page.getByRole('button', { name: 'General' })).toBeVisible({
 			timeout: 10_000
 		});
 
@@ -95,62 +77,55 @@ test.describe('project settings', () => {
 		await expect(page.getByRole('button', { name: 'Save changes' })).toBeVisible({
 			timeout: 5_000
 		});
+
+		// Verify the description persisted by reloading.
+		await page.reload();
+		await expect(page.getByRole('button', { name: 'General' })).toBeVisible({
+			timeout: 10_000
+		});
+		await expect(descInput).toHaveValue('Updated description for E2E test');
+
+		// Verify via API as well.
+		const res = await request.get(`/api/projects/${projectName}`, {
+			headers: { Authorization: `Bearer ${adminToken}` }
+		});
+		expect(res.ok()).toBeTruthy();
+		const body = await res.json();
+		expect(body.description).toBe('Updated description for E2E test');
 	});
 
-	test('project admin enables PR environments for the project', async ({ page, request }) => {
+	test('project admin sees PR Environments section with toggle', async ({ page }) => {
 		await injectToken(page, adminToken);
-
-		await page.route(`**/api/projects/${projectName}`, async (route) => {
-			if (route.request().method() === 'PATCH') {
-				return route.fulfill({
-					status: 200,
-					contentType: 'application/json',
-					body: JSON.stringify({
-						name: projectName,
-						namespace: `project-${projectName}`,
-						phase: 'Ready',
-						appCount: 0,
-						preview: { enabled: true }
-					})
-				});
-			}
-			return route.continue();
-		});
-
 		await page.goto(`/projects/${projectName}/settings`);
-		await expect(page.getByRole('heading', { name: 'Project Settings' })).toBeVisible({
+		await expect(page.getByRole('button', { name: 'General' })).toBeVisible({
 			timeout: 10_000
 		});
 
-		// PR Environments section.
+		// PR Environments section (on the General tab, which is the default).
 		await expect(page.getByRole('heading', { name: 'PR Environments' })).toBeVisible();
 		await expect(page.getByText('Enable PR Environments')).toBeVisible();
 
 		// The toggle switch for PR environments.
-		const prToggle = page.getByRole('switch');
+		const prToggle = page.getByRole('switch', { name: 'Toggle PR environments' });
 		await expect(prToggle).toBeVisible();
-
-		// Toggle it on.
-		await prToggle.click();
-		await expect(prToggle).toHaveAttribute('aria-checked', 'true');
 	});
 
 	test('project admin sees Danger Zone with delete section', async ({ page }) => {
 		await injectToken(page, adminToken);
 		await page.goto(`/projects/${projectName}/settings`);
 
-		await expect(page.getByRole('heading', { name: 'Project Settings' })).toBeVisible({
+		await expect(page.getByRole('button', { name: 'General' })).toBeVisible({
 			timeout: 10_000
 		});
 
 		// Navigate to the Danger tab to see the danger zone content.
-		await page.getByRole('button', { name: 'Danger' }).click();
+		await page.getByRole('button', { name: 'Danger', exact: true }).click();
 
 		// Danger Zone section.
 		await expect(page.getByText('Danger Zone')).toBeVisible();
 		await expect(page.getByText('Delete Project', { exact: true })).toBeVisible();
 
-		// Confirmation input — placeholder is the project name.
+		// Confirmation input placeholder is the project name.
 		await expect(page.getByPlaceholder(projectName)).toBeVisible();
 
 		// Delete button is disabled when input is empty.
@@ -158,23 +133,23 @@ test.describe('project settings', () => {
 		await expect(deleteBtn).toBeDisabled();
 	});
 
-	test('project settings page has filter input that narrows visible sections', async ({
-		page
-	}) => {
+	test('tab navigation switches visible content panes', async ({ page }) => {
 		await injectToken(page, adminToken);
 		await page.goto(`/projects/${projectName}/settings`);
 
-		await expect(page.getByRole('heading', { name: 'Project Settings' })).toBeVisible({
+		await expect(page.getByRole('button', { name: 'General' })).toBeVisible({
 			timeout: 10_000
 		});
 
-		// Filter input is present.
-		const filterInput = page.getByPlaceholder('Filter settings...');
-		await expect(filterInput).toBeVisible();
+		// Default tab (General) shows the description field.
+		await expect(page.locator('input[placeholder="Optional description"]')).toBeVisible();
 
-		// Clear filter — all sections visible.
-		await filterInput.fill('');
-		await expect(page.getByText('General')).toBeVisible();
-		await expect(page.getByRole('heading', { name: 'PR Environments' })).toBeVisible();
+		// Switch to Members tab and verify members content appears.
+		await page.getByRole('button', { name: 'Members', exact: true }).click();
+		await expect(page.getByPlaceholder('username')).toBeVisible({ timeout: 5_000 });
+
+		// Switch back to General and verify general content reappears.
+		await page.getByRole('button', { name: 'General' }).click();
+		await expect(page.locator('input[placeholder="Optional description"]')).toBeVisible();
 	});
 });

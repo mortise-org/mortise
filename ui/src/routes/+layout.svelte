@@ -416,6 +416,7 @@
 					>
 						<Puzzle class="h-5 w-5" />
 					</a>
+					{#if store.isAdmin}
 					<a
 						href="/settings"
 						class="{isActive('/settings') ? railIconActive : railIcon}"
@@ -423,6 +424,7 @@
 					>
 						<Settings class="h-5 w-5" />
 					</a>
+					{/if}
 					<a
 						href="/getting-started"
 						class="{isActive('/getting-started') ? railIconActive : railIcon}"
