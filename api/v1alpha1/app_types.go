@@ -164,6 +164,10 @@ type ConfigFile struct {
 }
 
 type EnvVar struct {
+	// Name is the environment variable name.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Pattern=`^[a-zA-Z_][a-zA-Z0-9_]*$`
+	// +kubebuilder:validation:MaxLength=253
 	Name      string        `json:"name"`
 	Value     string        `json:"value,omitempty"`
 	ValueFrom *EnvVarSource `json:"valueFrom,omitempty"`
@@ -500,15 +504,6 @@ type AppStatus struct {
 	// Zero means no port was detected.
 	// +optional
 	DetectedPort int32 `json:"detectedPort,omitempty"`
-
-	// PendingEnvHash is the hash of the current env Secret state.
-	// +optional
-	PendingEnvHash string `json:"pendingEnvHash,omitempty"`
-
-	// DeployedEnvHash is the env hash currently on the running pod template.
-	// When it differs from PendingEnvHash, the app has unapplied env changes.
-	// +optional
-	DeployedEnvHash string `json:"deployedEnvHash,omitempty"`
 
 	// +listType=map
 	// +listMapKey=type

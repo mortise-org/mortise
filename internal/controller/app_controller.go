@@ -854,7 +854,11 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 		},
 	}
 
-	containers[0].Resources = toResourceRequirements(r.effectiveResources(ctx, env))
+	resources, err := toResourceRequirements(r.effectiveResources(ctx, env))
+	if err != nil {
+		return fmt.Errorf("resources: %w", err)
+	}
+	containers[0].Resources = resources
 
 	port := appPort(app)
 	containers[0].LivenessProbe = buildProbe(env.LivenessProbe, port)
@@ -928,7 +932,7 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 	// don't cascade cross-ns; the App's finalizer handles cleanup by label.
 
 	var existing appsv1.Deployment
-	err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: envNs}, &existing)
+	err = r.Get(ctx, types.NamespacedName{Name: name, Namespace: envNs}, &existing)
 	if errors.IsNotFound(err) {
 		return r.Create(ctx, desired)
 	}
@@ -985,6 +989,9 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 		if !equality.Semantic.DeepEqual(existingContainer.VolumeMounts, desiredContainer.VolumeMounts) {
 			needsUpdate = true
 		}
+		if !equality.Semantic.DeepEqual(existing.Spec.Template.Spec.Volumes, desired.Spec.Template.Spec.Volumes) {
+			needsUpdate = true
+		}
 		if !equality.Semantic.DeepEqual(existingContainer.Resources, desiredContainer.Resources) {
 			needsUpdate = true
 		}
@@ -1019,6 +1026,7 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 		existing.Spec.Template.Spec.Containers[0].EnvFrom = desiredContainer.EnvFrom
 		existing.Spec.Template.Spec.Containers[0].Ports = desiredContainer.Ports
 		existing.Spec.Template.Spec.Containers[0].VolumeMounts = desiredContainer.VolumeMounts
+		existing.Spec.Template.Spec.Volumes = desired.Spec.Template.Spec.Volumes
 		existing.Spec.Template.Spec.Containers[0].Resources = desiredContainer.Resources
 		existing.Spec.Template.Spec.Containers[0].LivenessProbe = desiredContainer.LivenessProbe
 		existing.Spec.Template.Spec.Containers[0].ReadinessProbe = desiredContainer.ReadinessProbe
@@ -1060,7 +1068,11 @@ func (r *AppReconciler) reconcileCronJob(ctx context.Context, app *mortisev1alph
 		},
 	}
 
-	containers[0].Resources = toResourceRequirements(r.effectiveResources(ctx, env))
+	resources, err := toResourceRequirements(r.effectiveResources(ctx, env))
+	if err != nil {
+		return fmt.Errorf("resources: %w", err)
+	}
+	containers[0].Resources = resources
 
 	volumes, mounts := toVolumesAndMounts(app)
 
@@ -1130,7 +1142,7 @@ func (r *AppReconciler) reconcileCronJob(ctx context.Context, app *mortisev1alph
 	// Cross-namespace: no controller ref; finalizer-based GC on App delete.
 
 	var existing batchv1.CronJob
-	err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: envNs}, &existing)
+	err = r.Get(ctx, types.NamespacedName{Name: name, Namespace: envNs}, &existing)
 	if errors.IsNotFound(err) {
 		return r.Create(ctx, desired)
 	}
@@ -2348,8 +2360,8 @@ func deploymentRollingOut(dep *appsv1.Deployment) bool {
 	return false
 }
 
-func deploymentName(appName string) string { return appName }
-func cronJobName(appName string) string    { return appName }
+func deploymentName(appName string) string { return constants.DeploymentName(appName) }
+func cronJobName(appName string) string    { return constants.CronJobName(appName) }
 func serviceName(appName string) string    { return appName }
 func ingressName(appName string) string    { return appName }
 
@@ -2593,22 +2605,28 @@ func (r *AppReconciler) effectiveResources(ctx context.Context, env *mortisev1al
 	return res
 }
 
-func toResourceRequirements(r mortisev1alpha1.ResourceRequirements) corev1.ResourceRequirements {
+func toResourceRequirements(r mortisev1alpha1.ResourceRequirements) (corev1.ResourceRequirements, error) {
 	req := corev1.ResourceRequirements{
 		Requests: corev1.ResourceList{},
 		Limits:   corev1.ResourceList{},
 	}
 	if r.CPU != "" {
-		q := resource.MustParse(r.CPU)
+		q, err := resource.ParseQuantity(r.CPU)
+		if err != nil {
+			return req, fmt.Errorf("invalid cpu %q: %w", r.CPU, err)
+		}
 		req.Requests[corev1.ResourceCPU] = q
 		req.Limits[corev1.ResourceCPU] = q
 	}
 	if r.Memory != "" {
-		q := resource.MustParse(r.Memory)
+		q, err := resource.ParseQuantity(r.Memory)
+		if err != nil {
+			return req, fmt.Errorf("invalid memory %q: %w", r.Memory, err)
+		}
 		req.Requests[corev1.ResourceMemory] = q
 		req.Limits[corev1.ResourceMemory] = q
 	}
-	return req
+	return req, nil
 }
 
 func toVolumesAndMounts(app *mortisev1alpha1.App) ([]corev1.Volume, []corev1.VolumeMount) {
@@ -2643,6 +2661,7 @@ func toVolumesAndMounts(app *mortisev1alpha1.App) ([]corev1.Volume, []corev1.Vol
 			VolumeSource: corev1.VolumeSource{
 				ConfigMap: &corev1.ConfigMapVolumeSource{
 					LocalObjectReference: corev1.LocalObjectReference{Name: cmName},
+					DefaultMode:          ptr.To(int32(0644)),
 				},
 			},
 		})
@@ -2687,8 +2706,9 @@ func toSecretVolumesAndMounts(mounts []mortisev1alpha1.SecretMount) ([]corev1.Vo
 			Name: m.Name,
 			VolumeSource: corev1.VolumeSource{
 				Secret: &corev1.SecretVolumeSource{
-					SecretName: m.Secret,
-					Items:      items,
+					SecretName:  m.Secret,
+					Items:       items,
+					DefaultMode: ptr.To(int32(0644)),
 				},
 			},
 		})
