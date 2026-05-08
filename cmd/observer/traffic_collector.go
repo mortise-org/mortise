@@ -187,9 +187,7 @@ func (c *TrafficCollector) tailTraefikPod(ctx context.Context, podName string) {
 	key := c.ingressNs + "/" + podName
 	defer func() {
 		c.mu.Lock()
-		if _, exists := c.tailers[key]; exists {
-			delete(c.tailers, key)
-		}
+		delete(c.tailers, key)
 		c.mu.Unlock()
 	}()
 
