@@ -77,6 +77,9 @@ helm install mortise mortise/mortise-core \
   --create-namespace
 ```
 
+See the **[BYO install guide](docs/byo.md)** for step-by-step scenarios
+(managed k8s + external registry, on-prem with existing Traefik, bare operator).
+
 </details>
 
 After installing, follow the **[Quickstart](docs/quickstart.md)** to create an admin account and deploy your first app.

@@ -144,6 +144,18 @@ platformConfig:
   domain: ""
   externalDomain: ""
   buildPlatform: ""
+  # BYO overrides — set these when bringing your own registry, BuildKit, or
+  # cert-manager instead of the bundled components. When empty, in-cluster
+  # defaults are used (if the corresponding component toggle is true).
+  registry:
+    url: ""
+    namespace: ""
+    insecureSkipTLSVerify: false
+    pullSecretRef: ""
+  build:
+    buildkitAddr: ""
+  tls:
+    clusterIssuer: ""
   defaults:
     resources:
       cpu: "100m"
