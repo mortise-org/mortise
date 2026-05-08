@@ -496,6 +496,52 @@ func TestDeploy(t *testing.T) {
 	}
 }
 
+func TestDeployPerEnvironment(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+	seedProject(t, k8sClient, "default")
+
+	doRequest(h, http.MethodPost, "/api/projects/default/apps", map[string]any{
+		"name": "env-deploy-target",
+		"spec": map[string]any{
+			"source": map[string]any{"type": "image", "image": "nginx:1.25.0"},
+		},
+	})
+
+	// Deploy to staging only.
+	w := doRequest(h, http.MethodPost, "/api/projects/default/apps/env-deploy-target/deploy", map[string]any{
+		"image":       "nginx:1.26.0",
+		"environment": "staging",
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("deploy: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var app mortisev1alpha1.App
+	err := k8sClient.Get(context.Background(), types.NamespacedName{Name: "env-deploy-target", Namespace: "pj-default"}, &app)
+	if err != nil {
+		t.Fatalf("get app after deploy: %v", err)
+	}
+
+	// Spec-level image must NOT change.
+	if app.Spec.Source.Image != "nginx:1.25.0" {
+		t.Errorf("spec image changed: expected nginx:1.25.0, got %s", app.Spec.Source.Image)
+	}
+
+	// Per-env image must be set on the staging environment.
+	var stagingImage string
+	for _, env := range app.Spec.Environments {
+		if env.Name == "staging" {
+			stagingImage = env.Image
+			break
+		}
+	}
+	if stagingImage != "nginx:1.26.0" {
+		t.Errorf("expected staging image nginx:1.26.0, got %q", stagingImage)
+	}
+}
+
 func TestSecretsCRUD(t *testing.T) {
 	k8sClient := setupEnvtest(t)
 	srv := newAdminServer(t, k8sClient)

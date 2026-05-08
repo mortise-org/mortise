@@ -219,6 +219,8 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 				continue
 			}
 			image = envImage
+		} else if env.Image != "" {
+			image = env.Image
 		} else {
 			image = app.Spec.Source.Image
 		}
@@ -729,12 +731,17 @@ func envStatusFor(app *mortisev1alpha1.App, envName string) *mortisev1alpha1.Env
 }
 
 // currentImageForEnv returns the image currently deployed for the given
-// environment — the per-env built image if one exists, otherwise the
-// spec-level image (for image-source apps or pre-migration data).
+// environment. Precedence: per-env built image (status) > per-env spec
+// image override > spec-level image.
 func (r *AppReconciler) currentImageForEnv(app *mortisev1alpha1.App, envName string) string {
 	for _, es := range app.Status.Environments {
 		if es.Name == envName && es.LastBuiltImage != "" {
 			return es.LastBuiltImage
+		}
+	}
+	for _, env := range app.Spec.Environments {
+		if env.Name == envName && env.Image != "" {
+			return env.Image
 		}
 	}
 	return app.Spec.Source.Image

@@ -298,6 +298,11 @@ type Environment struct {
 	// BuildArgs are per-environment build arguments passed to docker build.
 	// +optional
 	BuildArgs map[string]string `json:"buildArgs,omitempty"`
+
+	// Image overrides the spec-level source image for this environment.
+	// Set by the deploy handler when a deploy targets a specific environment.
+	// +optional
+	Image string `json:"image,omitempty"`
 }
 
 // SecretMount mounts an existing k8s Secret in the App's namespace as a

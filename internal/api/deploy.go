@@ -102,7 +102,24 @@ func (s *Server) Deploy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	app.Spec.Source.Image = req.Image
+	if req.Environment != "" {
+		found := false
+		for i := range app.Spec.Environments {
+			if app.Spec.Environments[i].Name == req.Environment {
+				app.Spec.Environments[i].Image = req.Image
+				found = true
+				break
+			}
+		}
+		if !found {
+			app.Spec.Environments = append(app.Spec.Environments, mortisev1alpha1.Environment{
+				Name:  req.Environment,
+				Image: req.Image,
+			})
+		}
+	} else {
+		app.Spec.Source.Image = req.Image
+	}
 	if err := s.client.Update(r.Context(), &app); err != nil {
 		writeError(w, err)
 		return
