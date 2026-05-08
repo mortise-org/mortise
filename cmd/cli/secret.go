@@ -102,7 +102,10 @@ func newSecretDeleteCmd() *cobra.Command {
 			if !yes {
 				fmt.Printf("This will delete secret %q from app %q. Continue? [y/N]: ", args[1], args[0])
 				reader := bufio.NewReader(os.Stdin)
-				line, _ := reader.ReadString('\n')
+				line, readErr := reader.ReadString('\n')
+				if readErr != nil {
+					return fmt.Errorf("failed to read confirmation from stdin (if running non-interactively, use --yes to skip confirmation): %w", readErr)
+				}
 				if !strings.EqualFold(strings.TrimSpace(line), "y") {
 					fmt.Println("Aborted.")
 					return nil

@@ -153,7 +153,10 @@ func newAppDeleteCmd() *cobra.Command {
 			if !yes {
 				fmt.Printf("This will delete app %q and all its resources (deployments, services, ingresses, volumes). Continue? [y/N]: ", name)
 				reader := bufio.NewReader(os.Stdin)
-				line, _ := reader.ReadString('\n')
+				line, readErr := reader.ReadString('\n')
+				if readErr != nil {
+					return fmt.Errorf("failed to read confirmation from stdin (if running non-interactively, use --yes to skip confirmation): %w", readErr)
+				}
 				if !strings.EqualFold(strings.TrimSpace(line), "y") {
 					fmt.Println("Aborted.")
 					return nil
