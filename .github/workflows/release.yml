@@ -3,7 +3,6 @@ name: Release
 on:
   push:
     tags: ['v*']
-  workflow_dispatch:
 
 env:
   REGISTRY: ghcr.io
@@ -12,6 +11,8 @@ env:
 permissions:
   contents: write
   packages: write
+  id-token: write
+  attestations: write
 
 jobs:
   image:
@@ -32,6 +33,8 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - uses: sigstore/cosign-installer@v3
+
       - id: meta
         uses: docker/metadata-action@v5
         with:
@@ -50,7 +53,8 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
 
-      - uses: docker/build-push-action@v5
+      - id: build-operator
+        uses: docker/build-push-action@v5
         with:
           context: .
           target: operator
@@ -58,10 +62,16 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          provenance: mode=max
+          sbom: true
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - uses: docker/build-push-action@v5
+      - name: Sign operator image
+        run: cosign sign --yes ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build-operator.outputs.digest }}
+
+      - id: build-observer
+        uses: docker/build-push-action@v5
         with:
           context: .
           target: observer
@@ -69,8 +79,13 @@ jobs:
           push: true
           tags: ${{ steps.meta-observer.outputs.tags }}
           labels: ${{ steps.meta-observer.outputs.labels }}
+          provenance: mode=max
+          sbom: true
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Sign observer image
+        run: cosign sign --yes ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-observer@${{ steps.build-observer.outputs.digest }}
 
   cli:
     name: Build CLI binaries
