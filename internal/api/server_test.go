@@ -505,7 +505,8 @@ func TestDeployPerEnvironment(t *testing.T) {
 	doRequest(h, http.MethodPost, "/api/projects/default/apps", map[string]any{
 		"name": "env-deploy-target",
 		"spec": map[string]any{
-			"source": map[string]any{"type": "image", "image": "nginx:1.25.0"},
+			"source":       map[string]any{"type": "image", "image": "nginx:1.25.0"},
+			"environments": []map[string]any{{"name": "staging"}, {"name": "production"}},
 		},
 	})
 
