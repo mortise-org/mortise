@@ -1330,14 +1330,14 @@ func (r *AppReconciler) reconcileIngress(ctx context.Context, app *mortisev1alph
 	return r.Update(ctx, &existing)
 }
 
-var certGVR = schema.GroupVersionKind{Group: "cert-manager.io", Version: "v1", Kind: "Certificate"}
+var certGVK = schema.GroupVersionKind{Group: "cert-manager.io", Version: "v1", Kind: "Certificate"}
 
 // checkCertificateStatus reads the cert-manager Certificate resource for an
 // environment's TLS secret and returns (status, message). Returns ("", "")
 // when cert-manager is not in use or the Certificate doesn't exist yet.
 func (r *AppReconciler) checkCertificateStatus(ctx context.Context, secretName, namespace string) (string, string) {
 	cert := &unstructured.Unstructured{}
-	cert.SetGroupVersionKind(certGVR)
+	cert.SetGroupVersionKind(certGVK)
 	err := r.Get(ctx, types.NamespacedName{Name: secretName, Namespace: namespace}, cert)
 	if err != nil {
 		return "", ""
@@ -1363,13 +1363,20 @@ func (r *AppReconciler) checkCertificateStatus(ctx context.Context, secretName, 
 			return "Ready", ""
 		}
 		reason, _, _ := unstructured.NestedString(cond, "reason")
-		if reason != "" && message != "" {
-			return "Failed", fmt.Sprintf("%s: %s", reason, message)
+		// Transient cert-manager reasons indicate the certificate is still
+		// being issued or validated — not a terminal failure.
+		switch reason {
+		case "Issuing", "Pending", "InProgress", "":
+			if message != "" {
+				return "Pending", message
+			}
+			return "Pending", ""
+		default:
+			if message != "" {
+				return "Failed", fmt.Sprintf("%s: %s", reason, message)
+			}
+			return "Failed", reason
 		}
-		if message != "" {
-			return "Pending", message
-		}
-		return "Pending", ""
 	}
 
 	return "Pending", "Certificate is being issued"
