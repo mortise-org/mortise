@@ -184,6 +184,7 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	// each env ns via the Project controller, so existence is a given by the
 	// time we reach here — we just materialise the per-app objects inside.
 	needsRequeue := false
+	buildStatusDirty := false
 	for i := range resolvedEnvs {
 		env := &resolvedEnvs[i]
 		envNs, err := appEnvNs(&app, env.Name)
@@ -210,7 +211,10 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		// Resolve the container image for this env.
 		var image string
 		if app.Spec.Source.Type == mortisev1alpha1.SourceTypeGit && r.BuildClient != nil {
-			envImage, requeue := r.reconcileEnvBuild(ctx, &app, env.Name)
+			envImage, requeue, dirty := r.reconcileEnvBuild(ctx, &app, env.Name)
+			if dirty {
+				buildStatusDirty = true
+			}
 			if requeue {
 				needsRequeue = true
 				continue
@@ -273,7 +277,7 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	// Flush build status accumulated during the env loop in a single write.
 	// applyEnvBuildSuccess mutates app.Status in-memory per env; batching
 	// avoids resourceVersion conflicts from per-env Status().Update() calls.
-	if app.Spec.Source.Type == mortisev1alpha1.SourceTypeGit && r.BuildClient != nil {
+	if buildStatusDirty {
 		if err := r.Status().Update(ctx, &app); err != nil {
 			log.Error(err, "flush build status after env loop")
 		}
@@ -386,8 +390,9 @@ func (r *AppReconciler) prepareGitSource(ctx context.Context, app *mortisev1alph
 
 // reconcileEnvBuild handles per-environment builds for git-source apps. Returns
 // the image to use for this env's deployment, or "" if a build is still in
-// flight (caller should skip deployment and requeue).
-func (r *AppReconciler) reconcileEnvBuild(ctx context.Context, app *mortisev1alpha1.App, envName string) (image string, requeue bool) {
+// flight (caller should skip deployment and requeue). statusDirty is true when
+// applyEnvBuildSuccess mutated app.Status and the caller must flush.
+func (r *AppReconciler) reconcileEnvBuild(ctx context.Context, app *mortisev1alpha1.App, envName string) (image string, requeue bool, statusDirty bool) {
 	log := logf.FromContext(ctx)
 
 	revision := app.Annotations["mortise.dev/revision"]
@@ -401,7 +406,7 @@ func (r *AppReconciler) reconcileEnvBuild(ctx context.Context, app *mortisev1alp
 	// Short-circuit: skip rebuild if we already built this revision for this env.
 	es := envStatusFor(app, envName)
 	if es != nil && es.LastBuiltSHA == revision && es.LastBuiltImage != "" {
-		return es.LastBuiltImage, false
+		return es.LastBuiltImage, false, false
 	}
 
 	key := envBuildKey(app, envName)
@@ -420,15 +425,15 @@ func (r *AppReconciler) reconcileEnvBuild(ctx context.Context, app *mortisev1alp
 		} else {
 			switch phase {
 			case buildPhaseRunning:
-				return "", true
+				return "", true, false
 			case buildPhaseSucceeded:
 				r.Builds.delete(key)
 				r.applyEnvBuildSuccess(ctx, app, envName, revision, builtImage, digest, detectedPort)
-				return builtImage, false
+				return builtImage, false, true
 			case buildPhaseFailed:
 				r.Builds.delete(key)
 				_ = r.setFailedCondition(ctx, app, "BuildFailed", errMsg)
-				return "", false
+				return "", false, false
 			}
 		}
 	}
@@ -439,12 +444,12 @@ func (r *AppReconciler) reconcileEnvBuild(ctx context.Context, app *mortisev1alp
 	imageRef, err := r.RegistryBackend.PushTarget(app.Name, envImageTag(revision, envName))
 	if err != nil {
 		log.Error(err, "push target failed", "env", envName)
-		return "", false
+		return "", false, false
 	}
 	pullRef, err := r.RegistryBackend.PullTarget(app.Name, envImageTag(revision, envName))
 	if err != nil {
 		log.Error(err, "pull target failed", "env", envName)
-		return "", false
+		return "", false, false
 	}
 
 	// Mark building phase.
@@ -498,7 +503,7 @@ func (r *AppReconciler) reconcileEnvBuild(ctx context.Context, app *mortisev1alp
 		onDone:       func() { r.persistBuildLog(tracker, bp) },
 	})
 
-	return "", true
+	return "", true, false
 }
 
 // applyEnvBuildSuccess records the successful build for a specific environment.
