@@ -32,6 +32,12 @@ spec:
           args:
             - --api-bind-address=:{{ .Values.api.port }}
           env:
+            - name: MORTISE_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: MORTISE_SA_NAME
+              value: {{ .Values.serviceAccount.name | quote }}
             - name: MORTISE_GITHUB_CLIENT_ID
               value: {{ .Values.github.clientID | quote }}
             {{- if .Values.operator.ingressClassName }}

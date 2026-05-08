@@ -1,3 +1,5 @@
+# Cluster-scoped ClusterRole: CRDs, namespaces, and RBAC management.
+# Bound via ClusterRoleBinding (cluster-wide access to these resources).
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -21,6 +23,20 @@ rules:
   - apiGroups: [""]
     resources: ["namespaces"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # RoleBindings: Project controller creates per-namespace bindings for the
+  # namespace-scoped ClusterRole below.
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["rolebindings"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+# Namespace-scoped ClusterRole: workload resources the App controller manages.
+# NOT bound via ClusterRoleBinding. Instead, the Project controller creates a
+# RoleBinding in each project namespace (control + env) referencing this role.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: mortise-controller-ns
+rules:
   # Core resources the App controller creates
   - apiGroups: ["apps"]
     resources: ["deployments"]
@@ -29,9 +45,6 @@ rules:
     resources: ["services", "secrets", "persistentvolumeclaims", "serviceaccounts"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   # ConfigMaps: per-project Activity event store (§5.11) and App configFiles
-  # (one CM per configFiles entry, named {app}-config-{i}). Delete verb is
-  # required so reconcileConfigMaps can prune orphans when a configFiles
-  # entry is removed.
   - apiGroups: [""]
     resources: ["configmaps"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]

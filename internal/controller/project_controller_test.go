@@ -23,6 +23,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -57,7 +58,7 @@ var _ = Describe("Project Controller", func() {
 			}
 			Expect(k8sClient.Create(ctx, project)).To(Succeed())
 
-			r := &ProjectReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			r := &ProjectReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), ServiceAccountName: "mortise-controller", ServiceAccountNS: "default"}
 			// First reconcile: adds finalizer.
 			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: projectName}})
 			Expect(err).NotTo(HaveOccurred())
@@ -78,6 +79,44 @@ var _ = Describe("Project Controller", func() {
 			Expect(updated.Status.Phase).To(Equal(mortisev1alpha1.ProjectPhaseReady))
 			Expect(updated.Status.Namespace).To(Equal(nsName))
 			Expect(updated.Finalizers).To(ContainElement(projectFinalizer))
+		})
+	})
+
+	Context("namespace-scoped RoleBinding", func() {
+		const projectName = "rbac-test"
+		nsName := ProjectNamespace(projectName)
+
+		AfterEach(func() {
+			proj := &mortisev1alpha1.Project{}
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: projectName}, proj); err == nil {
+				proj.Finalizers = nil
+				_ = k8sClient.Update(ctx, proj)
+				_ = k8sClient.Delete(ctx, proj)
+			}
+			_ = k8sClient.Delete(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: nsName}})
+		})
+
+		It("creates a RoleBinding in the control namespace", func() {
+			project := &mortisev1alpha1.Project{
+				ObjectMeta: metav1.ObjectMeta{Name: projectName},
+				Spec:       mortisev1alpha1.ProjectSpec{Description: "rbac"},
+			}
+			Expect(k8sClient.Create(ctx, project)).To(Succeed())
+
+			r := &ProjectReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), ServiceAccountName: "mortise-controller", ServiceAccountNS: "default"}
+			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: projectName}})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: projectName}})
+			Expect(err).NotTo(HaveOccurred())
+
+			var rb rbacv1.RoleBinding
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "mortise-controller", Namespace: nsName}, &rb)).To(Succeed())
+			Expect(rb.RoleRef.Kind).To(Equal("ClusterRole"))
+			Expect(rb.RoleRef.Name).To(Equal(NamespacedClusterRole))
+			Expect(rb.Subjects).To(HaveLen(1))
+			Expect(rb.Subjects[0].Kind).To(Equal("ServiceAccount"))
+			Expect(rb.Subjects[0].Name).To(Equal("mortise-controller"))
+			Expect(rb.Subjects[0].Namespace).To(Equal("default"))
 		})
 	})
 
@@ -107,7 +146,7 @@ var _ = Describe("Project Controller", func() {
 			}
 			Expect(k8sClient.Create(ctx, project)).To(Succeed())
 
-			r := &ProjectReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			r := &ProjectReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), ServiceAccountName: "mortise-controller", ServiceAccountNS: "default"}
 			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: projectName}})
 			Expect(err).NotTo(HaveOccurred())
 			_, err = r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: projectName}})
@@ -153,7 +192,7 @@ var _ = Describe("Project Controller", func() {
 			}
 			Expect(k8sClient.Create(ctx, project)).To(Succeed())
 
-			r := &ProjectReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			r := &ProjectReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), ServiceAccountName: "mortise-controller", ServiceAccountNS: "default"}
 			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: projectName}})
 			Expect(err).NotTo(HaveOccurred())
 			_, err = r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: projectName}})
@@ -171,7 +210,7 @@ var _ = Describe("Project Controller", func() {
 
 	Context("when the Project is missing", func() {
 		It("returns nil without error", func() {
-			r := &ProjectReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			r := &ProjectReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), ServiceAccountName: "mortise-controller", ServiceAccountNS: "default"}
 			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: "does-not-exist"}})
 			Expect(err).NotTo(HaveOccurred())
 		})
@@ -206,7 +245,7 @@ var _ = Describe("Project Controller", func() {
 			}
 			Expect(k8sClient.Create(ctx, project)).To(Succeed())
 
-			r := &ProjectReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			r := &ProjectReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), ServiceAccountName: "mortise-controller", ServiceAccountNS: "default"}
 			// Add finalizer pass.
 			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: projectName}})
 			Expect(err).NotTo(HaveOccurred())
@@ -243,7 +282,7 @@ var _ = Describe("Project Controller", func() {
 			}
 			Expect(k8sClient.Create(ctx, project)).To(Succeed())
 
-			r := &ProjectReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			r := &ProjectReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), ServiceAccountName: "mortise-controller", ServiceAccountNS: "default"}
 			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: projectName}})
 			Expect(err).NotTo(HaveOccurred())
 			_, err = r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: projectName}})
@@ -310,7 +349,7 @@ var _ = Describe("Project Controller", func() {
 			}
 			Expect(k8sClient.Create(ctx, project)).To(Succeed())
 
-			r := &ProjectReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			r := &ProjectReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), ServiceAccountName: "mortise-controller", ServiceAccountNS: "default"}
 			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: projectName}})
 			Expect(err).NotTo(HaveOccurred())
 			_, err = r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: projectName}})
@@ -341,7 +380,7 @@ var _ = Describe("Project Controller", func() {
 			}
 			Expect(k8sClient.Create(ctx, project)).To(Succeed())
 
-			r := &ProjectReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			r := &ProjectReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), ServiceAccountName: "mortise-controller", ServiceAccountNS: "default"}
 			for i := 0; i < 3; i++ {
 				_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: projectName}})
 				Expect(err).NotTo(HaveOccurred())
@@ -368,7 +407,7 @@ var _ = Describe("Project Controller", func() {
 			}
 			Expect(k8sClient.Create(ctx, project)).To(Succeed())
 
-			r := &ProjectReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			r := &ProjectReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), ServiceAccountName: "mortise-controller", ServiceAccountNS: "default"}
 			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: projectName}})
 			Expect(err).NotTo(HaveOccurred())
 			_, err = r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: projectName}})
