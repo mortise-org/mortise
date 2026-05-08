@@ -150,6 +150,11 @@ func (r *PreviewEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.R
 		}
 		return ctrl.Result{}, err
 	}
+	// Validate source type before setting owner reference to avoid a wasted
+	// write on PEs that reference non-git apps.
+	if app.Spec.Source.Type != mortisev1alpha1.SourceTypeGit {
+		return ctrl.Result{}, r.setPreviewFailed(ctx, &pe, "NotGitSource", "previews only work for git source apps")
+	}
 
 	// Ensure the PE has an owner reference to the parent App so App deletion
 	// garbage-collects orphan PEs.
@@ -160,13 +165,7 @@ func (r *PreviewEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.R
 		if err := r.Update(ctx, &pe); err != nil {
 			return ctrl.Result{}, err
 		}
-	}
-
-	// Preview only works for git-source apps with preview enabled on the parent Project.
-	if app.Spec.Source.Type != mortisev1alpha1.SourceTypeGit {
-		return ctrl.Result{}, r.setPreviewFailed(ctx, &pe, "NotGitSource", "previews only work for git source apps")
-	}
-	project, err := r.getProjectForApp(ctx, &app)
+	}	project, err := r.getProjectForApp(ctx, &app)
 	if err != nil {
 		return ctrl.Result{}, r.setPreviewFailed(ctx, &pe, "ProjectNotFound", err.Error())
 	}
@@ -791,7 +790,7 @@ func (r *PreviewEnvironmentReconciler) gcPreviewResources(ctx context.Context, p
 	var deploys appsv1.DeploymentList
 	if err := r.List(ctx, &deploys, selector, inNs); err == nil {
 		for i := range deploys.Items {
-			if err := r.Delete(ctx, &deploys.Items[i]); err != nil {
+			if err := r.Delete(ctx, &deploys.Items[i]); err != nil && !errors.IsNotFound(err) {
 				log.Error(err, "gc: failed to delete Deployment", "name", deploys.Items[i].Name, "namespace", previewNs)
 				errs = append(errs, fmt.Errorf("delete Deployment %s/%s: %w", previewNs, deploys.Items[i].Name, err))
 			}
@@ -800,7 +799,7 @@ func (r *PreviewEnvironmentReconciler) gcPreviewResources(ctx context.Context, p
 	var svcs corev1.ServiceList
 	if err := r.List(ctx, &svcs, selector, inNs); err == nil {
 		for i := range svcs.Items {
-			if err := r.Delete(ctx, &svcs.Items[i]); err != nil {
+			if err := r.Delete(ctx, &svcs.Items[i]); err != nil && !errors.IsNotFound(err) {
 				log.Error(err, "gc: failed to delete Service", "name", svcs.Items[i].Name, "namespace", previewNs)
 				errs = append(errs, fmt.Errorf("delete Service %s/%s: %w", previewNs, svcs.Items[i].Name, err))
 			}
@@ -809,7 +808,7 @@ func (r *PreviewEnvironmentReconciler) gcPreviewResources(ctx context.Context, p
 	var ings networkingv1.IngressList
 	if err := r.List(ctx, &ings, selector, inNs); err == nil {
 		for i := range ings.Items {
-			if err := r.Delete(ctx, &ings.Items[i]); err != nil {
+			if err := r.Delete(ctx, &ings.Items[i]); err != nil && !errors.IsNotFound(err) {
 				log.Error(err, "gc: failed to delete Ingress", "name", ings.Items[i].Name, "namespace", previewNs)
 				errs = append(errs, fmt.Errorf("delete Ingress %s/%s: %w", previewNs, ings.Items[i].Name, err))
 			}
@@ -818,7 +817,7 @@ func (r *PreviewEnvironmentReconciler) gcPreviewResources(ctx context.Context, p
 	var secrets corev1.SecretList
 	if err := r.List(ctx, &secrets, selector, inNs); err == nil {
 		for i := range secrets.Items {
-			if err := r.Delete(ctx, &secrets.Items[i]); err != nil {
+			if err := r.Delete(ctx, &secrets.Items[i]); err != nil && !errors.IsNotFound(err) {
 				log.Error(err, "gc: failed to delete Secret", "name", secrets.Items[i].Name, "namespace", previewNs)
 				errs = append(errs, fmt.Errorf("delete Secret %s/%s: %w", previewNs, secrets.Items[i].Name, err))
 			}
