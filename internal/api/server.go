@@ -16,6 +16,8 @@ import (
 	metricsv1beta1 "k8s.io/metrics/pkg/client/clientset/versioned/typed/metrics/v1beta1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	"k8s.io/utils/clock"
+
 	"github.com/mortise-org/mortise/internal/activity"
 	"github.com/mortise-org/mortise/internal/auth"
 	"github.com/mortise-org/mortise/internal/authz"
@@ -93,6 +95,10 @@ func NewServer(c client.Client, cs kubernetes.Interface, dc dynamic.Interface, r
 		deviceFlow:    df,
 		proxies:       newAppProxyManager(),
 		activityStore: activity.NewConfigMapStore(c),
+<<<<<<< HEAD
+=======
+		sseTokens:     newSSETokenStore(clock.RealClock{}),
+>>>>>>> bfc09f6 (fix: inject clock into SSE token store, re-validate user on JWT refresh)
 	}
 	srv.sseTokens = newSSETokenStore(srv.clock())
 	return srv
