@@ -166,6 +166,12 @@ export function appNeedsRedeploy(app: App): boolean {
 	) ?? false;
 }
 
+export function staleEnvironments(app: App): string[] {
+	return (app.status?.environments ?? [])
+		.filter(env => !!env.pendingEnvHash && !!env.deployedEnvHash && env.pendingEnvHash !== env.deployedEnvHash)
+		.map(env => env.name);
+}
+
 export interface SecretResponse {
 	name: string;
 	keys: string[];
