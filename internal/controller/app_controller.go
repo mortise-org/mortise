@@ -1635,7 +1635,9 @@ func (r *AppReconciler) reconcileEnvSecret(ctx context.Context, app *mortisev1al
 		}
 	}
 
-	r.writeLastSpecEnv(ctx, envNs, app.Name, env.Env)
+	if err := r.writeLastSpecEnv(ctx, envNs, app.Name, env.Env); err != nil {
+		return fmt.Errorf("write last-spec-env: %w", err)
+	}
 
 	var bindingEnvs []envstore.Env
 	if len(env.Bindings) > 0 {
@@ -1674,13 +1676,16 @@ func (r *AppReconciler) readLastSpecEnv(ctx context.Context, ns, appName string)
 	return m
 }
 
-func (r *AppReconciler) writeLastSpecEnv(ctx context.Context, ns, appName string, envVars []mortisev1alpha1.EnvVar) {
+func (r *AppReconciler) writeLastSpecEnv(ctx context.Context, ns, appName string, envVars []mortisev1alpha1.EnvVar) error {
 	var sec corev1.Secret
 	if err := r.Client.Get(ctx, types.NamespacedName{
 		Name:      envstore.AppEnvSecretName(appName),
 		Namespace: ns,
 	}, &sec); err != nil {
-		return
+		if errors.IsNotFound(err) {
+			return nil
+		}
+		return fmt.Errorf("get env secret for last-spec annotation: %w", err)
 	}
 	m := make(map[string]string, len(envVars))
 	for _, ev := range envVars {
@@ -1688,16 +1693,19 @@ func (r *AppReconciler) writeLastSpecEnv(ctx context.Context, ns, appName string
 	}
 	data, err := json.Marshal(m)
 	if err != nil {
-		return
+		return fmt.Errorf("marshal last-spec env: %w", err)
 	}
 	if sec.Annotations == nil {
 		sec.Annotations = make(map[string]string)
 	}
 	if sec.Annotations[envstore.AnnotationLastSpecEnv] == string(data) {
-		return
+		return nil
 	}
 	sec.Annotations[envstore.AnnotationLastSpecEnv] = string(data)
-	_ = r.Client.Update(ctx, &sec)
+	if err := r.Client.Update(ctx, &sec); err != nil {
+		return fmt.Errorf("write last-spec-env annotation: %w", err)
+	}
+	return nil
 }
 
 // credentialsSecretName is the name of the {app}-credentials Secret this

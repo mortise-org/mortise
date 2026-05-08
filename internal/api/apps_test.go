@@ -159,3 +159,38 @@ func TestCreateAppRequestUnmarshalJSON(t *testing.T) {
 		})
 	}
 }
+
+func TestCreateAppRequestUnmarshalJSON_InvalidJSON(t *testing.T) {
+	var req createAppRequest
+	if err := json.Unmarshal([]byte(`{not json}`), &req); err == nil {
+		t.Error("expected error for invalid JSON")
+	}
+}
+
+func TestCreateAppRequestUnmarshalJSON_NoSource(t *testing.T) {
+	var req createAppRequest
+	if err := json.Unmarshal([]byte(`{"name":"x"}`), &req); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if req.Name != "x" {
+		t.Errorf("name: got %q, want %q", req.Name, "x")
+	}
+	if req.Spec.Source.Type != "" {
+		t.Errorf("source.type should be empty, got %q", req.Spec.Source.Type)
+	}
+}
+
+func TestCreateAppRequestUnmarshalJSON_WrappedTakesPrecedence(t *testing.T) {
+	// When both spec.source and top-level source are present, wrapped wins.
+	input := `{"name":"x","spec":{"source":{"type":"image","image":"nginx:1.27"}},"source":{"type":"git","repo":"https://github.com/o/r.git"}}`
+	var req createAppRequest
+	if err := json.Unmarshal([]byte(input), &req); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if req.Spec.Source.Type != mortisev1alpha1.SourceTypeImage {
+		t.Errorf("wrapped format should take precedence, got source.type %q", req.Spec.Source.Type)
+	}
+	if req.Spec.Source.Image != "nginx:1.27" {
+		t.Errorf("source.image: got %q, want %q", req.Spec.Source.Image, "nginx:1.27")
+	}
+}
