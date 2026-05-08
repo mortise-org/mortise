@@ -1,0 +1,71 @@
+# Example BYO values for the batteries-included mortise chart.
+#
+# Start here when your cluster already has some platform pieces. Copy this file,
+# uncomment the sections that match your cluster, then install with:
+#
+#   helm install mortise mortise/mortise \
+#     --namespace mortise-system --create-namespace \
+#     -f values-byo.yaml
+
+platformConfig:
+  enabled: true
+
+  # Base app domain. Apps receive hostnames under this domain, for example:
+  # web.apps.example.com.
+  domain: apps.example.com
+
+  # Optional public hostname for the Mortise API/UI, used for webhook callbacks.
+  externalDomain: mortise.example.com
+
+  # Optional build target platform, for example linux/amd64.
+  buildPlatform: ""
+
+  registry:
+    # External OCI registry used for git-source builds. Leave empty when using
+    # the bundled registry.
+    url: https://registry.example.com
+
+    # Repository namespace/prefix for built app images.
+    namespace: mortise
+
+    # Use only for private registries with an intentionally untrusted cert.
+    insecureSkipTLSVerify: false
+
+    # Name of an existing docker-registry Secret copied into app namespaces.
+    pullSecretRef: registry-pull
+
+  build:
+    # External BuildKit daemon. Leave empty when using bundled BuildKit.
+    buildkitAddr: ""
+
+  tls:
+    # Existing cert-manager ClusterIssuer used for App Ingress TLS.
+    clusterIssuer: letsencrypt-prod
+
+# Disable bundled components you already run elsewhere.
+traefik:
+  enabled: false
+
+cert-manager:
+  enabled: false
+
+registry:
+  enabled: false
+
+buildkit:
+  enabled: true
+
+# The observer stays useful in BYO installs. If you use your own Traefik,
+# configure JSON access logs there so traffic metrics are populated.
+observer:
+  enabled: true
+
+mortise-core:
+  operator:
+    # Set to your ingress class when the cluster default should not be used.
+    ingressClassName: nginx
+
+  ingress:
+    enabled: true
+    className: nginx
+    host: mortise.example.com

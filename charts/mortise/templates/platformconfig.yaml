@@ -1,4 +1,9 @@
 {{- if .Values.platformConfig.enabled }}
+{{- $registryURL := .Values.platformConfig.registry.url | default "" -}}
+{{- $registryNamespace := .Values.platformConfig.registry.namespace | default "" -}}
+{{- $registryPullSecret := .Values.platformConfig.registry.pullSecretRef | default "" -}}
+{{- $buildkitAddr := .Values.platformConfig.build.buildkitAddr | default "" -}}
+{{- $clusterIssuer := .Values.platformConfig.tls.clusterIssuer | default "" -}}
 apiVersion: mortise.mortise.dev/v1alpha1
 kind: PlatformConfig
 metadata:
@@ -10,19 +15,44 @@ spec:
   {{- if .Values.platformConfig.externalDomain }}
   externalDomain: {{ .Values.platformConfig.externalDomain | quote }}
   {{- end }}
-  {{- if .Values.registry.enabled }}
+  {{- if or .Values.registry.enabled $registryURL }}
   registry:
+    {{- if $registryURL }}
+    url: {{ $registryURL | quote }}
+    {{- else }}
     url: http://{{ include "mortise.registryAddr" . }}
     pullURL: http://{{ include "mortise.registryPullAddr" . }}
+    {{- end }}
+    {{- if $registryNamespace }}
+    namespace: {{ $registryNamespace | quote }}
+    {{- else if .Values.registry.enabled }}
     namespace: mortise
+    {{- end }}
+    {{- if $registryPullSecret }}
+    pullSecretName: {{ $registryPullSecret | quote }}
+    {{- end }}
+    {{- if $registryURL }}
+    {{- if .Values.platformConfig.registry.insecureSkipTLSVerify }}
     insecureSkipTLSVerify: true
+    {{- end }}
+    {{- else }}
+    insecureSkipTLSVerify: true
+    {{- end }}
   {{- end }}
-  {{- if .Values.buildkit.enabled }}
+  {{- if or .Values.buildkit.enabled $buildkitAddr }}
   build:
+    {{- if $buildkitAddr }}
+    buildkitAddr: {{ $buildkitAddr | quote }}
+    {{- else }}
     buildkitAddr: {{ include "mortise.buildkitAddr" . }}
+    {{- end }}
     {{- if .Values.platformConfig.buildPlatform }}
     defaultPlatform: {{ .Values.platformConfig.buildPlatform }}
     {{- end }}
+  {{- end }}
+  {{- if $clusterIssuer }}
+  tls:
+    certManagerClusterIssuer: {{ $clusterIssuer | quote }}
   {{- end }}
   {{- if .Values.observer.enabled }}
   observability:

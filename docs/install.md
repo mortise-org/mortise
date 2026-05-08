@@ -6,6 +6,7 @@ Two ways to install, depending on where you're starting from.
 |---|---|---|
 | **Quick** | You don't have a cluster yet, or you want a throwaway local one | [Quick install](#quick-install-one-command) |
 | **Helm** | You already have a Kubernetes cluster (EKS, GKE, AKS, Talos, k3s, etc.) | [Helm install](#helm-install-existing-cluster) |
+| **BYO** | You already run ingress, cert-manager, registry, or BuildKit | [BYO install scenarios](./byo.md) |
 
 Both end in the same place: operator running, UI reachable at `localhost:8090`.
 
@@ -112,9 +113,11 @@ You should also decide **before** running Helm:
 | Container registry | Chart deploys an in-cluster registry | Use ECR, GHCR, or Harbor. Set `--set registry.enabled=false` and set the URL in PlatformConfig. |
 | BuildKit | Chart deploys BuildKit | Use an existing BuildKit endpoint. Set `--set buildkit.enabled=false` and set the addr in PlatformConfig. |
 
-If you disable components, you'll configure Mortise to point at your
-external ones via `PlatformConfig`. See
-[Configuring your platform](./configuration.md).
+If you disable components, configure Mortise to point at your external
+ones with `platformConfig.registry`, `platformConfig.build`, and
+`platformConfig.tls` values. See [BYO install scenarios](./byo.md) for
+copy-pasteable examples and [Configuring your platform](./configuration.md)
+for the underlying API.
 
 > **BYO Traefik + observer traffic metrics:** If you bring your own Traefik
 > and enable the observer (`observer.enableTraffic: true`), Traefik must have
@@ -174,6 +177,10 @@ helm install mortise mortise/mortise \
   --set cert-manager.enabled=true
 ```
 
+For more involved clusters, start from the commented
+[`charts/mortise/values-byo.yaml`](../charts/mortise/values-byo.yaml)
+example or use one of the [BYO install scenarios](./byo.md).
+
 ### Install (operator-only)
 
 ```bash
@@ -184,9 +191,9 @@ helm install mortise mortise/mortise-core \
   --namespace mortise-system --create-namespace
 ```
 
-`mortise-core` ships **no PlatformConfig**. You must apply one yourself
-pointing at your registry, BuildKit, and TLS ClusterIssuer before any App
-will build:
+`mortise-core` ships **no PlatformConfig** and no infrastructure
+dependencies. You must apply a `PlatformConfig` yourself pointing at your
+registry, BuildKit, and TLS ClusterIssuer before git-source Apps will build:
 
 ```yaml
 apiVersion: mortise.mortise.dev/v1alpha1
@@ -208,8 +215,7 @@ spec:
 If you need a non-default IngressClass for App Ingresses, set it on the
 operator (`mortise-core.operator.ingressClassName`), not in PlatformConfig.
 
-A step-by-step BYO walkthrough is
-[tracked in #86](https://github.com/mortise-org/mortise/issues/86).
+For a complete operator-only walkthrough, see [BYO install scenarios](./byo.md).
 
 ### What Helm creates
 
@@ -362,9 +368,19 @@ helm upgrade mortise mortise/mortise -n mortise-system
 fields, re-apply them explicitly:
 
 ```bash
-helm pull mortise/mortise --untar
-kubectl apply -f mortise/charts/mortise-core/crds/
+helm template mortise-core mortise/mortise-core \
+  --namespace mortise-system \
+  --show-only templates/crds/mortise.mortise.dev_apps.yaml \
+  --show-only templates/crds/mortise.mortise.dev_gitproviders.yaml \
+  --show-only templates/crds/mortise.mortise.dev_platformconfigs.yaml \
+  --show-only templates/crds/mortise.mortise.dev_previewenvironments.yaml \
+  --show-only templates/crds/mortise.mortise.dev_projectmembers.yaml \
+  --show-only templates/crds/mortise.mortise.dev_projects.yaml \
+  | kubectl apply -f -
 ```
+
+GitOps users who manage CRDs separately can install the operator with
+`--set crds.install=false`.
 
 Release cadence and versioning are documented in
 [RELEASING.md](../RELEASING.md). Every `v*` git tag publishes an image +
@@ -399,6 +415,12 @@ All values are optional. A bare `helm install` with no overrides works.
 | `observer.retention.logs` | `48h` | How long to keep log history |
 | `platformConfig.enabled` | `true` | Auto-create default PlatformConfig |
 | `platformConfig.domain` | `""` | Platform domain for app URLs |
+| `platformConfig.registry.url` | `""` | External OCI registry URL; bundled registry is used when empty and `registry.enabled=true` |
+| `platformConfig.registry.namespace` | `""` | Registry namespace/prefix for built images |
+| `platformConfig.registry.insecureSkipTLSVerify` | `false` | Disable registry TLS verification for external registries |
+| `platformConfig.registry.pullSecretRef` | `""` | Existing docker-registry Secret name for app image pulls |
+| `platformConfig.build.buildkitAddr` | `""` | External BuildKit address; bundled BuildKit is used when empty and `buildkit.enabled=true` |
+| `platformConfig.tls.clusterIssuer` | `""` | cert-manager ClusterIssuer for App Ingress TLS |
 | `buildInfra.namespace` | `mortise-deps` | Namespace for BuildKit + registry |
 
 Operator values are nested under `mortise-core.`:
@@ -428,6 +450,7 @@ Operator values are nested under `mortise-core.`:
 | `ingress.host` | `""` | Hostname for the Ingress |
 | `operator.ingressClassName` | `""` | IngressClass for app Ingresses |
 | `github.clientID` | `""` | GitHub OAuth App client ID (optional) |
+| `crds.install` | `true` | Install Mortise CRDs with the chart |
 | `resources.requests.cpu` | `200m` | CPU request |
 | `resources.requests.memory` | `128Mi` | Memory request |
 | `resources.limits.cpu` | `2000m` | CPU limit |

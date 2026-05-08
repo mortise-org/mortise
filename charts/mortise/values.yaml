@@ -144,6 +144,22 @@ platformConfig:
   domain: ""
   externalDomain: ""
   buildPlatform: ""
+  # BYO registry settings. When registry.url is empty and registry.enabled=true,
+  # Mortise uses the bundled in-cluster registry. When registry.enabled=false,
+  # set registry.url to an external OCI registry for git-source builds.
+  registry:
+    url: ""
+    namespace: ""
+    insecureSkipTLSVerify: false
+    pullSecretRef: ""
+  # BYO BuildKit settings. When build.buildkitAddr is empty and
+  # buildkit.enabled=true, Mortise uses the bundled BuildKit service.
+  build:
+    buildkitAddr: ""
+  # BYO cert-manager settings. Set this when your cluster already has a
+  # ClusterIssuer that App Ingresses should use.
+  tls:
+    clusterIssuer: ""
   defaults:
     resources:
       cpu: "100m"

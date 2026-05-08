@@ -64,6 +64,9 @@ helm install mortise mortise/mortise \
 
 Full values reference, upgrade, and uninstall: **[docs/install.md](docs/install.md)**
 
+Already have ingress, cert-manager, a registry, or BuildKit? See the
+**[BYO install scenarios](docs/byo.md)**.
+
 </details>
 
 <details>
@@ -76,6 +79,9 @@ helm install mortise mortise/mortise-core \
   --namespace mortise-system \
   --create-namespace
 ```
+
+`mortise-core` does not create a `PlatformConfig`; see
+**[BYO install scenarios](docs/byo.md)** for the required manifest.
 
 </details>
 
