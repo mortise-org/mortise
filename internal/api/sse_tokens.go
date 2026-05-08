@@ -134,6 +134,8 @@ type sseTokenResponse struct {
 
 // RefreshToken handles POST /api/auth/refresh. It returns a new JWT if the
 // current token is valid (the caller is already authenticated via middleware).
+// Re-validates user state from the auth provider before issuing a new token
+// to ensure the user has not been revoked or disabled since initial auth.
 func (s *Server) RefreshToken(w http.ResponseWriter, r *http.Request) {
 	p := PrincipalFromContext(r.Context())
 	if p == nil {
