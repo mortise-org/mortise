@@ -194,7 +194,7 @@ func (s *Server) RedeployStale(w http.ResponseWriter, r *http.Request) {
 		}
 		allowed, err := s.authz.Authorize(r.Context(), *p, authz.Resource{Kind: "app", Project: projectName, Environment: es.Name}, authz.ActionUpdate)
 		if err != nil {
-			writeError(w, err)
+			writeError(w, r, err)
 			return
 		}
 		if !allowed {
@@ -202,7 +202,7 @@ func (s *Server) RedeployStale(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		envNs := constants.EnvNamespace(projectName, es.Name)
-		if err := restartDeployment(r.Context(), s.client, envNs, appName, es.PendingEnvHash, s.clock().Now()); err != nil {
+	if err := restartDeployment(r.Context(), s.client, envNs, appName, es.PendingEnvHash, s.clock().Now()); err != nil {
 			writeError(w, r, err)
 			return
 		}

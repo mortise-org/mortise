@@ -279,6 +279,27 @@ func TestViewerWithProjectMembership(t *testing.T) {
 	}
 }
 
+func TestViewerMembershipDoesNotGrantWrite(t *testing.T) {
+	const email = "viewer@example.com"
+	const project = "my-project"
+
+	c := fake.NewClientBuilder().
+		WithScheme(authzScheme(t)).
+		WithObjects(memberForProject(email, project, mortisev1alpha1.ProjectRoleDeveloper)).
+		Build()
+	engine := NewNativePolicyEngine(c)
+	ctx := context.Background()
+	viewer := auth.Principal{ID: email, Email: email, Role: auth.RoleViewer}
+
+	ok, err := engine.Authorize(ctx, viewer, Resource{Kind: "app", Project: project}, ActionUpdate)
+	if err != nil {
+		t.Fatalf("Authorize(app, update): %v", err)
+	}
+	if ok {
+		t.Error("platform viewer should remain read-only even with developer project membership")
+	}
+}
+
 func TestDeveloperRestrictedEnv(t *testing.T) {
 	const email = "dev@example.com"
 	const project = "my-project"
