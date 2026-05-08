@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { api } from '$lib/api';
 	import { store } from '$lib/store.svelte';
 	import type { App, AppSpec } from '$lib/types';
 
@@ -55,7 +56,6 @@
 			spec.environments.push({ name: selectedEnv, enabled: next });
 		}
 		try {
-			const { api } = await import('$lib/api');
 			const result = await api.updateApp(project, app.metadata.name, spec);
 			specOverride = result.spec;
 		} catch (e) {
