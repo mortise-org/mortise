@@ -103,6 +103,10 @@ func (s *Server) Deploy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.Environment != "" {
+		if msg := validateDNSLabel("environment", req.Environment, 63); msg != "" {
+			writeJSON(w, http.StatusBadRequest, errorResponse{msg})
+			return
+		}
 		found := false
 		for i := range app.Spec.Environments {
 			if app.Spec.Environments[i].Name == req.Environment {
@@ -112,10 +116,8 @@ func (s *Server) Deploy(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if !found {
-			app.Spec.Environments = append(app.Spec.Environments, mortisev1alpha1.Environment{
-				Name:  req.Environment,
-				Image: req.Image,
-			})
+			writeJSON(w, http.StatusNotFound, errorResponse{fmt.Sprintf("environment %q not found in app spec", req.Environment)})
+			return
 		}
 	} else {
 		app.Spec.Source.Image = req.Image
