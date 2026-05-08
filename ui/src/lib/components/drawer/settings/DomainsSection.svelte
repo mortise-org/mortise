@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { untrack } from 'svelte';
 	import { api } from '$lib/api';
 	import type { App, AppSpec, DomainsResponse } from '$lib/types';
 	import { inputCls, labelCls, sectionCls, headingCls, btnPrimary } from './styles';
@@ -36,11 +37,16 @@
 	});
 
 	$effect(() => {
-		const env = app.spec.environments?.find(e => e.name === selectedEnv) as
-			| { tls?: { clusterIssuer?: string; secretName?: string } }
-			| undefined;
-		tlsClusterIssuer = env?.tls?.clusterIssuer ?? '';
-		tlsSecretName = env?.tls?.secretName ?? '';
+		const envName = selectedEnv;
+		void app.metadata.name;
+		untrack(() => {
+			const spec = cloneSpec();
+			const env = spec.environments?.find((e: { name: string }) => e.name === envName) as
+				| { tls?: { clusterIssuer?: string; secretName?: string } }
+				| undefined;
+			tlsClusterIssuer = env?.tls?.clusterIssuer ?? '';
+			tlsSecretName = env?.tls?.secretName ?? '';
+		});
 	});
 
 	async function loadDomains() {

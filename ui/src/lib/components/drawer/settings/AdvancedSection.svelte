@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { untrack } from 'svelte';
 	import { api } from '$lib/api';
 	import type { App, AppSpec, SecretMount } from '$lib/types';
 	import { Plus, Trash2, ChevronDown } from 'lucide-svelte';
@@ -29,10 +30,15 @@
 	let savingMounts = $state(false);
 
 	$effect(() => {
-		// eslint-disable-next-line @typescript-eslint/no-explicit-any
-		const env = (app.spec.environments?.find(e => e.name === selectedEnv) as any) ?? {};
-		annotations = Object.fromEntries(Object.entries((env.annotations ?? {}) as Record<string, string>));
-		secretMounts = (env.secretMounts ?? []) as SecretMount[];
+		const envName = selectedEnv;
+		void app.metadata.name;
+		untrack(() => {
+			const spec = cloneSpec();
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
+			const env = (spec.environments?.find((e: { name: string }) => e.name === envName) as any) ?? {};
+			annotations = Object.fromEntries(Object.entries((env.annotations ?? {}) as Record<string, string>));
+			secretMounts = (env.secretMounts ?? []) as SecretMount[];
+		});
 	});
 
 	function addAnnotation() {
@@ -77,7 +83,7 @@
 
 	function addSecretMount() {
 		if (!newMount.secretName || !newMount.mountPath) return;
-		secretMounts = [...secretMounts, { name: newMount.secretName, secretName: newMount.secretName, mountPath: newMount.mountPath }];
+		secretMounts = [...secretMounts, { name: newMount.secretName, secret: newMount.secretName, path: newMount.mountPath }];
 		newMount = { secretName: '', mountPath: '' };
 		showAddMount = false;
 		void saveSecretMounts();
@@ -158,11 +164,11 @@
 			{#each secretMounts as mount, i}
 				<div class="mb-2 rounded-md border border-surface-600 bg-surface-700 p-2 text-xs space-y-1.5">
 					<div class="flex justify-between">
-						<span class="font-mono text-gray-300">{mount.mountPath}</span>
+						<span class="font-mono text-gray-300">{mount.path}</span>
 						<button type="button" onclick={() => removeSecretMount(i)}
 							class="text-gray-500 hover:text-danger"><Trash2 class="h-3 w-3" /></button>
 					</div>
-					<p class="text-gray-500">Secret: <span class="font-mono">{mount.secretName}</span></p>
+					<p class="text-gray-500">Secret: <span class="font-mono">{mount.secret}</span></p>
 				</div>
 			{/each}
 			{#if showAddMount}

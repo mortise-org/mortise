@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { onMount, untrack } from 'svelte';
 	import { api } from '$lib/api';
 	import type { App, AppSpec } from '$lib/types';
 	import { ChevronDown } from 'lucide-svelte';
@@ -35,14 +36,17 @@
 	let showAdvancedPull = $state(false);
 
 	$effect(() => {
-		srcRepo = app.spec.source.repo ?? '';
-		srcBranch = app.spec.source.branch ?? '';
-		srcPath = app.spec.source.path ?? '';
-		srcImage = app.spec.source.image ?? '';
-		srcPullSecretRef = app.spec.source.pullSecretRef ?? '';
+		void app.metadata.name;
+		untrack(() => {
+			const spec = cloneSpec();
+			srcRepo = spec.source.repo ?? '';
+			srcBranch = spec.source.branch ?? '';
+			srcPath = spec.source.path ?? '';
+			srcImage = spec.source.image ?? '';
+			srcPullSecretRef = spec.source.pullSecretRef ?? '';
+		});
 	});
 
-	import { onMount } from 'svelte';
 	onMount(async () => {
 		await loadPullCredentials();
 	});

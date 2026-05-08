@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { untrack } from 'svelte';
 	import { api } from '$lib/api';
 	import type { App, AppSpec } from '$lib/types';
 	import { inputCls, labelCls, sectionCls, headingCls, btnPrimary } from './styles';
@@ -23,9 +24,13 @@
 	let savingBuild = $state(false);
 
 	$effect(() => {
-		buildMode = app.spec.source.build?.mode ?? 'auto';
-		dockerfilePath = app.spec.source.build?.dockerfilePath ?? '';
-		buildContext = app.spec.source.build?.context ?? '';
+		void app.metadata.name;
+		untrack(() => {
+			const spec = cloneSpec();
+			buildMode = spec.source.build?.mode ?? 'auto';
+			dockerfilePath = spec.source.build?.dockerfilePath ?? '';
+			buildContext = spec.source.build?.context ?? '';
+		});
 	});
 
 	const srcPath = $derived(app.spec.source.path ?? '');

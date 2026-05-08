@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { untrack } from 'svelte';
 	import { api } from '$lib/api';
 	import type { App, AppSpec } from '$lib/types';
 	import { inputCls, labelCls, sectionCls, headingCls, btnPrimary } from './styles';
@@ -22,8 +23,12 @@
 	let saving = $state(false);
 
 	$effect(() => {
-		netPublic = app.spec.network?.public ?? true;
-		netPort = String(app.spec.network?.port ?? '');
+		void app.metadata.name;
+		untrack(() => {
+			const spec = cloneSpec();
+			netPublic = spec.network?.public ?? true;
+			netPort = String(spec.network?.port ?? '');
+		});
 	});
 
 	async function saveNetworking() {
