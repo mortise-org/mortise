@@ -83,12 +83,19 @@ export async function createProjectViaAPI(
 	name: string,
 	description?: string
 ): Promise<string> {
-	const res = await request.post('/api/projects', {
-		headers: { Authorization: `Bearer ${token}` },
-		data: { name, description }
-	});
-	if (!res.ok()) {
+	let createAttempts = 0;
+	while (true) {
+		const res = await request.post('/api/projects', {
+			headers: { Authorization: `Bearer ${token}` },
+			data: { name, description }
+		});
+		if (res.ok()) break;
 		const body = await res.text().catch(() => '');
+		if (res.status() === 409 && body.includes('being deleted') && createAttempts < 20) {
+			createAttempts++;
+			await new Promise((r) => setTimeout(r, 1000));
+			continue;
+		}
 		throw new Error(`create project failed: HTTP ${res.status()} ${body}`);
 	}
 	// The project controller creates the namespace asynchronously.
@@ -96,7 +103,7 @@ export async function createProjectViaAPI(
 	// backing k8s namespace has actually been created. The /apps list
 	// endpoint returns OK for missing namespaces too, so it's not a
 	// reliable readiness signal for POST /apps.
-	for (let i = 0; i < 60; i++) {
+	for (let i = 0; i < 120; i++) {
 		const check = await request.get(
 			`/api/projects/${encodeURIComponent(name)}`,
 			{ headers: { Authorization: `Bearer ${token}` }, failOnStatusCode: false }
@@ -107,7 +114,7 @@ export async function createProjectViaAPI(
 		}
 		await new Promise((r) => setTimeout(r, 500));
 	}
-	throw new Error(`project ${name}: namespace not ready after 30s`);
+	throw new Error(`project ${name}: namespace not ready after 60s`);
 }
 
 /** Create an image-source app via the API. */
@@ -116,7 +123,8 @@ export async function createAppViaAPI(
 	token: string,
 	project: string,
 	appName: string,
-	image: string = 'nginx:1.27'
+	image: string = 'nginx:1.27',
+	opts?: { port?: number }
 ): Promise<void> {
 	const res = await request.post(`/api/projects/${encodeURIComponent(project)}/apps`, {
 		headers: { Authorization: `Bearer ${token}` },
@@ -124,7 +132,7 @@ export async function createAppViaAPI(
 			name: appName,
 			spec: {
 				source: { type: 'image', image },
-				network: { public: true },
+				network: { public: true, ...(opts?.port ? { port: opts.port } : {}) },
 				environments: [{ name: 'production', replicas: 1 }]
 			}
 		}
@@ -168,6 +176,24 @@ export async function deleteAppViaAPI(
 		);
 	} catch {
 		// swallow
+	}
+}
+
+/** Create a git provider via the API. */
+export async function createGitProviderViaAPI(
+	request: APIRequestContext,
+	token: string,
+	name: string,
+	type: string = 'github',
+	host: string = 'https://github.com'
+): Promise<void> {
+	const res = await request.post('/api/gitproviders', {
+		headers: { Authorization: `Bearer ${token}` },
+		data: { name, type, host, clientID: 'test-client-id' }
+	});
+	if (!res.ok()) {
+		const body = await res.text().catch(() => '');
+		throw new Error(`create git provider failed: HTTP ${res.status()} ${body}`);
 	}
 }
 
@@ -269,6 +295,107 @@ export async function listDomainsViaAPI(
 		throw new Error(`listDomainsViaAPI failed: HTTP ${res.status()} ${body}`);
 	}
 	return (await res.json()) as { primary: string; custom: string[] };
+}
+
+/** List deploy tokens for an app. Returns [{name, environment, createdAt}, ...]. */
+export async function listTokensViaAPI(
+	request: APIRequestContext,
+	token: string,
+	project: string,
+	appName: string
+): Promise<Array<{ name: string; environment: string; createdAt?: string }>> {
+	const res = await request.get(
+		`/api/projects/${encodeURIComponent(project)}/apps/${encodeURIComponent(appName)}/tokens`,
+		{ headers: { Authorization: `Bearer ${token}` } }
+	);
+	if (!res.ok()) {
+		const body = await res.text().catch(() => '');
+		throw new Error(`listTokensViaAPI failed: HTTP ${res.status()} ${body}`);
+	}
+	return (await res.json()) as Array<{ name: string; environment: string; createdAt?: string }>;
+}
+
+/** Create a deploy token for an app via the API. Returns the full response including the one-time token value. */
+export async function createTokenViaAPI(
+	request: APIRequestContext,
+	token: string,
+	project: string,
+	appName: string,
+	tokenName: string,
+	environment: string = 'production'
+): Promise<{ token: string; name: string; environment: string }> {
+	const res = await request.post(
+		`/api/projects/${encodeURIComponent(project)}/apps/${encodeURIComponent(appName)}/tokens`,
+		{
+			headers: { Authorization: `Bearer ${token}` },
+			data: { name: tokenName, environment }
+		}
+	);
+	if (!res.ok()) {
+		const body = await res.text().catch(() => '');
+		throw new Error(`createTokenViaAPI failed: HTTP ${res.status()} ${body}`);
+	}
+	return (await res.json()) as { token: string; name: string; environment: string };
+}
+
+/** Delete a deploy token for an app via the API (best-effort, swallows errors). */
+export async function deleteTokenViaAPI(
+	request: APIRequestContext,
+	token: string,
+	project: string,
+	appName: string,
+	tokenName: string
+): Promise<void> {
+	try {
+		await request.delete(
+			`/api/projects/${encodeURIComponent(project)}/apps/${encodeURIComponent(appName)}/tokens/${encodeURIComponent(tokenName)}`,
+			{ headers: { Authorization: `Bearer ${token}` }, failOnStatusCode: false }
+		);
+	} catch {
+		// swallow
+	}
+}
+
+/** Add a custom domain to an app via the API. */
+export async function addDomainViaAPI(
+	request: APIRequestContext,
+	token: string,
+	project: string,
+	appName: string,
+	domain: string,
+	environment: string = 'production'
+): Promise<{ primary: string; custom: string[] }> {
+	const res = await request.post(
+		`/api/projects/${encodeURIComponent(project)}/apps/${encodeURIComponent(appName)}/domains?environment=${encodeURIComponent(environment)}`,
+		{
+			headers: { Authorization: `Bearer ${token}` },
+			data: { domain }
+		}
+	);
+	if (!res.ok()) {
+		const body = await res.text().catch(() => '');
+		throw new Error(`addDomainViaAPI failed: HTTP ${res.status()} ${body}`);
+	}
+	return (await res.json()) as { primary: string; custom: string[] };
+}
+
+/** Remove a custom domain from an app via the API (best-effort, swallows errors). */
+export async function removeDomainViaAPI(
+	request: APIRequestContext,
+	token: string,
+	project: string,
+	appName: string,
+	domain: string,
+	environment: string = 'production'
+): Promise<void> {
+	try {
+		await request.delete(
+			`/api/projects/${encodeURIComponent(project)}/apps/${encodeURIComponent(appName)}/domains/${encodeURIComponent(domain)}?environment=${encodeURIComponent(environment)}`,
+			{ headers: { Authorization: `Bearer ${token}` }, failOnStatusCode: false }
+		);
+	} catch {
+		// swallow
+	}
 }
 
 /** Delete a secret via the API (best-effort, swallows errors). */

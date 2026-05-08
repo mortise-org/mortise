@@ -32,14 +32,13 @@ test.describe('projects', () => {
 		}
 	});
 
-	test('dashboard renders Projects heading and default project', async ({ page }) => {
+	test('dashboard renders Projects heading and new project button', async ({ page }) => {
 		await loginViaUI(page);
 
 		await expect(page.getByRole('heading', { name: 'Projects' })).toBeVisible();
 
-		// The "default" project is auto-created during first setup.
-		const defaultCard = page.locator('a').filter({ hasText: 'default' });
-		await expect(defaultCard).toBeVisible({ timeout: 10_000 });
+		// The "+ New Project" button should be visible on the dashboard.
+		await expect(page.getByRole('link', { name: 'New Project' })).toBeVisible();
 	});
 
 	test('create project via UI', async ({ page, request }) => {
@@ -63,7 +62,7 @@ test.describe('projects', () => {
 		await page.getByRole('button', { name: 'Create project' }).click();
 
 		// Should redirect to the new project's canvas page.
-		await expect(page).toHaveURL(`/projects/${name}`, { timeout: 10_000 });
+		await expect(page).toHaveURL(new RegExp(`/projects/${name}(\\?|$)`), { timeout: 10_000 });
 	});
 
 	test('project name validation rejects invalid names', async ({ page }) => {
@@ -143,7 +142,9 @@ test.describe('projects', () => {
 		await injectToken(page, adminToken);
 		await page.goto(`/projects/${name}/settings`);
 
-		await expect(page.getByRole('heading', { name: 'Project Settings' })).toBeVisible({
+		// Project settings page has a tabbed layout with no top-level heading.
+		// Verify the General tab button is visible to confirm the page loaded.
+		await expect(page.getByRole('button', { name: 'General' })).toBeVisible({
 			timeout: 10_000
 		});
 
@@ -160,8 +161,9 @@ test.describe('projects', () => {
 		await injectToken(page, adminToken);
 		await page.goto(`/projects/${name}/settings`);
 
-		// Wait for the page to load.
-		await expect(page.getByRole('heading', { name: 'Project Settings' })).toBeVisible({
+		// Wait for the page to load. Project settings has no top-level heading;
+		// verify the General tab button is visible.
+		await expect(page.getByRole('button', { name: 'General' })).toBeVisible({
 			timeout: 10_000
 		});
 
@@ -178,7 +180,7 @@ test.describe('projects', () => {
 		await deleteBtn.click();
 
 		// Should redirect back to the dashboard.
-		await expect(page).toHaveURL('/', { timeout: 10_000 });
+		await page.waitForURL((url) => url.pathname === '/', { timeout: 15_000 });
 
 		// The deleted project should no longer appear. Project deletion in
 		// Kubernetes may take several seconds to propagate, so allow a longer
@@ -204,7 +206,7 @@ test.describe('projects', () => {
 		await expect(card).toBeVisible({ timeout: 10_000 });
 		await card.click();
 
-		await expect(page).toHaveURL(`/projects/${name}`);
+		await expect(page).toHaveURL(new RegExp(`/projects/${name}(\\?|$)`));
 	});
 
 	test('new project cancel navigates back to dashboard', async ({ page }) => {

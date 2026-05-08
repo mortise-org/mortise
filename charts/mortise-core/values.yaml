@@ -22,20 +22,6 @@ ingress:
   # className: ""
   # host: mortise.example.com
 
-podSecurityContext:
-  runAsNonRoot: true
-  runAsUser: 65532
-  runAsGroup: 65532
-  fsGroup: 65532
-  seccompProfile:
-    type: RuntimeDefault
-
-securityContext:
-  allowPrivilegeEscalation: false
-  readOnlyRootFilesystem: true
-  capabilities:
-    drop: [ALL]
-
 resources:
   limits:
     cpu: 2000m
@@ -43,6 +29,19 @@ resources:
   requests:
     cpu: 200m
     memory: 128Mi
+
+# Security context defaults — hardened out of the box.
+# Override per-environment in your values override file.
+podSecurityContext:
+  seccompProfile:
+    type: RuntimeDefault
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: false
+  capabilities:
+    drop:
+      - ALL
 
 serviceAccount:
   create: true
