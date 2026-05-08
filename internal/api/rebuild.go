@@ -107,11 +107,11 @@ func (s *Server) Redeploy(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if !s.authorize(w, r, authz.Resource{Kind: "app", Project: projectName}, authz.ActionUpdate) {
-		return
-	}
 	appName := chi.URLParam(r, "app")
 	env := envFromQuery(r)
+	if !s.authorize(w, r, authz.Resource{Kind: "app", Project: projectName, Environment: env}, authz.ActionUpdate) {
+		return
+	}
 
 	envNs := constants.EnvNamespace(projectName, env)
 
@@ -180,10 +180,21 @@ func (s *Server) RedeployStale(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	p := PrincipalFromContext(r.Context())
 	var restarted []string
 	for _, es := range app.Status.Environments {
 		if es.PendingEnvHash == "" || es.DeployedEnvHash == "" || es.PendingEnvHash == es.DeployedEnvHash {
 			continue
+		}
+		if p != nil {
+			allowed, err := s.authz.Authorize(r.Context(), *p, authz.Resource{Kind: "app", Project: projectName, Environment: es.Name}, authz.ActionUpdate)
+			if err != nil {
+				writeError(w, err)
+				return
+			}
+			if !allowed {
+				continue
+			}
 		}
 		envNs := constants.EnvNamespace(projectName, es.Name)
 		if err := restartDeployment(r.Context(), s.client, envNs, appName, es.PendingEnvHash, s.clock().Now()); err != nil {

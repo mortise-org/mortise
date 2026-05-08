@@ -67,7 +67,7 @@ func (s *Server) CreateSecret(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if !s.authorize(w, r, authz.Resource{Kind: "secret", Project: projectName}, authz.ActionCreate) {
+	if !s.authorize(w, r, authz.Resource{Kind: "secret", Project: projectName, Environment: envFromQuery(r)}, authz.ActionCreate) {
 		return
 	}
 	appName := chi.URLParam(r, "app")
@@ -166,7 +166,7 @@ func (s *Server) DeleteSecret(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if !s.authorize(w, r, authz.Resource{Kind: "secret", Project: projectName}, authz.ActionDelete) {
+	if !s.authorize(w, r, authz.Resource{Kind: "secret", Project: projectName, Environment: envFromQuery(r)}, authz.ActionDelete) {
 		return
 	}
 	appName := chi.URLParam(r, "app")

@@ -43,9 +43,6 @@ func (s *Server) Rollback(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if !s.authorize(w, r, authz.Resource{Kind: "app", Namespace: ns, Project: projectName}, authz.ActionUpdate) {
-		return
-	}
 	appName := chi.URLParam(r, "app")
 
 	var req rollbackRequest
@@ -55,6 +52,9 @@ func (s *Server) Rollback(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Environment == "" {
 		writeJSON(w, http.StatusBadRequest, errorResponse{"environment is required"})
+		return
+	}
+	if !s.authorize(w, r, authz.Resource{Kind: "app", Namespace: ns, Project: projectName, Environment: req.Environment}, authz.ActionUpdate) {
 		return
 	}
 
@@ -138,9 +138,6 @@ func (s *Server) Promote(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if !s.authorize(w, r, authz.Resource{Kind: "app", Namespace: ns, Project: projectName}, authz.ActionUpdate) {
-		return
-	}
 	appName := chi.URLParam(r, "app")
 
 	var req promoteRequest
@@ -154,6 +151,9 @@ func (s *Server) Promote(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.From == req.To {
 		writeJSON(w, http.StatusBadRequest, errorResponse{"from and to must be different environments"})
+		return
+	}
+	if !s.authorize(w, r, authz.Resource{Kind: "app", Namespace: ns, Project: projectName, Environment: req.To}, authz.ActionUpdate) {
 		return
 	}
 
