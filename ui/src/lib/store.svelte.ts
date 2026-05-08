@@ -1,6 +1,8 @@
 import { browser } from '$app/environment';
 import { api } from './api';
-import type { App, AppSpec, PreviewSummary, Project, ProjectEnvironment } from './types';
+import type { App, AppSpec, PreviewSummary, Project, ProjectEnvironment, ProjectMember } from './types';
+
+export type ProjectRole = 'owner' | 'developer' | 'viewer';
 
 interface StagedChange {
 	appName: string;
@@ -32,6 +34,9 @@ class MortiseStore {
 
 	// Preview environments keyed by project name.
 	previewEnvs = $state<Record<string, PreviewSummary[]>>({});
+
+	// Project-level role for the current user, keyed by project name.
+	projectRoles = $state<Record<string, ProjectRole | null>>({});
 
 	// Staged changes (client-side only, in-memory)
 	stagedChanges = $state<Map<string, StagedChange>>(new Map());
@@ -146,6 +151,41 @@ class MortiseStore {
 		} catch {
 			return [];
 		}
+	}
+
+	async loadProjectRole(project: string): Promise<ProjectRole | null> {
+		if (!this.user) return null;
+		if (this.isAdmin) {
+			this.projectRoles = { ...this.projectRoles, [project]: 'owner' };
+			return 'owner';
+		}
+		try {
+			const members = await api.listMembers(project);
+			const me = members.find((m: ProjectMember) => m.email === this.user?.email);
+			const role = me?.role ?? null;
+			this.projectRoles = { ...this.projectRoles, [project]: role };
+			return role;
+		} catch {
+			return null;
+		}
+	}
+
+	projectRole(project: string | null): ProjectRole | null {
+		if (!project) return null;
+		if (this.isAdmin) return 'owner';
+		return this.projectRoles[project] ?? null;
+	}
+
+	canManageMembers(project: string | null): boolean {
+		if (!project) return false;
+		if (this.isAdmin) return true;
+		return this.projectRole(project) === 'owner';
+	}
+
+	canDeleteInProject(project: string | null): boolean {
+		if (!project) return false;
+		if (this.isAdmin) return true;
+		return this.projectRole(project) === 'owner';
 	}
 
 	stageChange(appName: string, original: AppSpec, dirty: AppSpec) {

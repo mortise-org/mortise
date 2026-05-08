@@ -125,7 +125,8 @@
 		try {
 			[project, apps] = await Promise.all([
 				api.getProject(projectName),
-				api.listApps(projectName)
+				api.listApps(projectName),
+				store.loadProjectRole(projectName),
 			]);
 			store.setProject(projectName);
 			connectSSE();

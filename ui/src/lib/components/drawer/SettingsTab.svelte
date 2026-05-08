@@ -1140,7 +1140,7 @@
 	{/if}
 
 	<!-- Deploy Tokens -->
-	{#if sectionVisible('deploy tokens')}
+	{#if sectionVisible('deploy tokens') && store.canManageMembers(project)}
 		<div class={sectionCls}>
 			<h3 class={headingCls}>Deploy Tokens</h3>
 
@@ -1320,7 +1320,7 @@
 	{/if}
 
 	<!-- Danger Zone -->
-	{#if sectionVisible('danger delete')}
+	{#if sectionVisible('danger delete') && store.canDeleteInProject(project)}
 		<div class="rounded-md border border-danger/30 bg-danger/5 p-4">
 			<h3 class="mb-3 text-sm font-medium text-danger">Danger Zone</h3>
 			{#if confirmDelete}

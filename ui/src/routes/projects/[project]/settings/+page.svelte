@@ -186,9 +186,16 @@
   let deletingApp = $state('');
   let appDeleteError = $state('');
 
+  const canManage = $derived(store.canManageMembers(projectName));
+  const canDelete = $derived(store.canDeleteInProject(projectName));
+
   onMount(async () => {
     try {
-      project = await api.getProject(projectName);
+      const [proj] = await Promise.all([
+        api.getProject(projectName),
+        store.loadProjectRole(projectName),
+      ]);
+      project = proj;
       editDesc = project.description ?? '';
       if (project.preview) {
         prEnabled = project.preview.enabled;
@@ -582,25 +589,27 @@ if (tab === 'danger' && projectApps.length === 0 && !loadingApps) await loadApps
 
     {:else if activeTab === 'members'}
       <div class="max-w-lg">
-        <!-- Add member form -->
-        <div class="mb-5 rounded-md border border-surface-600 bg-surface-800 p-4 space-y-3">
-          <h2 class="text-sm font-medium text-white">Add member</h2>
-          <p class="text-xs text-gray-500">Add an existing platform user to this project. Users must be created first in platform Settings.</p>
-          <div class="flex gap-2">
-            <input type="text" bind:value={addMemberEmail} placeholder="username"
-              class="flex-1 rounded-md border border-surface-600 bg-surface-900 px-3 py-2 text-sm text-white placeholder-gray-500 outline-none focus:border-accent" />
-            <select bind:value={memberRole}
-              class="rounded-md border border-surface-600 bg-surface-900 px-3 py-2 text-sm text-white outline-none focus:border-accent">
-              <option value="owner">Owner</option>
-              <option value="developer">Developer</option>
-              <option value="viewer">Viewer</option>
-            </select>
+        {#if canManage}
+          <!-- Add member form -->
+          <div class="mb-5 rounded-md border border-surface-600 bg-surface-800 p-4 space-y-3">
+            <h2 class="text-sm font-medium text-white">Add member</h2>
+            <p class="text-xs text-gray-500">Add an existing platform user to this project. Users must be created first in platform Settings.</p>
+            <div class="flex gap-2">
+              <input type="text" bind:value={addMemberEmail} placeholder="username"
+                class="flex-1 rounded-md border border-surface-600 bg-surface-900 px-3 py-2 text-sm text-white placeholder-gray-500 outline-none focus:border-accent" />
+              <select bind:value={memberRole}
+                class="rounded-md border border-surface-600 bg-surface-900 px-3 py-2 text-sm text-white outline-none focus:border-accent">
+                <option value="owner">Owner</option>
+                <option value="developer">Developer</option>
+                <option value="viewer">Viewer</option>
+              </select>
+            </div>
+            {#if membersError}<p class="text-xs text-danger">{membersError}</p>{/if}
+            <button type="button" onclick={handleAddMember} disabled={addingMember || !addMemberEmail.trim()} class={btnPrimary}>
+              {addingMember ? 'Adding...' : 'Add member'}
+            </button>
           </div>
-          {#if membersError}<p class="text-xs text-danger">{membersError}</p>{/if}
-          <button type="button" onclick={handleAddMember} disabled={addingMember || !addMemberEmail.trim()} class={btnPrimary}>
-            {addingMember ? 'Adding...' : 'Add member'}
-          </button>
-        </div>
+        {/if}
 
         <!-- Members list -->
         {#if loadingMembers}
@@ -620,39 +629,52 @@ if (tab === 'danger' && projectApps.length === 0 && !loadingApps) await loadApps
                   {/if}
                 </div>
                 <div class="flex items-center gap-3">
-                  <select
-                    value={member.role}
-                    onchange={(e) => handleUpdateMemberRole(member.email, (e.target as HTMLSelectElement).value as 'owner' | 'developer' | 'viewer')}
-                    class="rounded-md border border-surface-600 bg-surface-900 px-2 py-1 text-xs text-white outline-none focus:border-accent"
-                  >
-                    <option value="owner">Owner</option>
-                    <option value="developer">Developer</option>
-                    <option value="viewer">Viewer</option>
-                  </select>
-                  <button type="button" onclick={() => handleRemoveMember(member.email)}
-                    class="flex items-center gap-1 text-xs text-gray-500 hover:text-danger">
-                    <Trash2 class="h-3.5 w-3.5" /> Remove
-                  </button>
+                  {#if canManage}
+                    <select
+                      value={member.role}
+                      onchange={(e) => handleUpdateMemberRole(member.email, (e.target as HTMLSelectElement).value as 'owner' | 'developer' | 'viewer')}
+                      class="rounded-md border border-surface-600 bg-surface-900 px-2 py-1 text-xs text-white outline-none focus:border-accent"
+                    >
+                      <option value="owner">Owner</option>
+                      <option value="developer">Developer</option>
+                      <option value="viewer">Viewer</option>
+                    </select>
+                    <button type="button" onclick={() => handleRemoveMember(member.email)}
+                      class="flex items-center gap-1 text-xs text-gray-500 hover:text-danger">
+                      <Trash2 class="h-3.5 w-3.5" /> Remove
+                    </button>
+                  {:else}
+                    <span class="rounded-full bg-surface-700 px-2 py-0.5 text-xs text-gray-400">{member.role}</span>
+                  {/if}
                 </div>
               </div>
             {/each}
           </div>
         {/if}
+        {#if !canManage}
+          <p class="mt-4 text-xs text-gray-500">Member management requires the project owner or platform admin role.</p>
+        {/if}
       </div>
 
     {:else if activeTab === 'tokens'}
       <div class="max-w-lg">
-        <div class="mb-4">
-          <h2 class="text-sm font-medium text-white">Deploy Tokens</h2>
-          <p class="text-xs text-gray-500 mt-1">Project-level deploy tokens provide CI access to all apps in this project. App-specific tokens can be managed per-app in App Settings → Deploy Tokens.</p>
-        </div>
-        <div class="rounded-md border border-surface-600 bg-surface-800/50 p-5">
-          <p class="text-sm text-gray-400">Per-app deploy tokens are managed in each app's Settings tab.</p>
-          <a href="/projects/{projectName}" class="mt-2 inline-block text-xs text-accent hover:underline">Go to project canvas →</a>
-        </div>
-        <div class="mt-4 rounded-md border border-info/20 bg-info/5 p-3 text-xs text-info">
-          CI snippet: <code class="font-mono">curl -X POST https://your-domain/api/projects/{projectName}/apps/APP_NAME/deploy -H "Authorization: Bearer TOKEN" -d '&#123;"environment":"production","image":"IMAGE"&#125;'</code>
-        </div>
+        {#if canManage}
+          <div class="mb-4">
+            <h2 class="text-sm font-medium text-white">Deploy Tokens</h2>
+            <p class="text-xs text-gray-500 mt-1">Project-level deploy tokens provide CI access to all apps in this project. App-specific tokens can be managed per-app in App Settings → Deploy Tokens.</p>
+          </div>
+          <div class="rounded-md border border-surface-600 bg-surface-800/50 p-5">
+            <p class="text-sm text-gray-400">Per-app deploy tokens are managed in each app's Settings tab.</p>
+            <a href="/projects/{projectName}" class="mt-2 inline-block text-xs text-accent hover:underline">Go to project canvas →</a>
+          </div>
+          <div class="mt-4 rounded-md border border-info/20 bg-info/5 p-3 text-xs text-info">
+            CI snippet: <code class="font-mono">curl -X POST https://your-domain/api/projects/{projectName}/apps/APP_NAME/deploy -H "Authorization: Bearer TOKEN" -d '&#123;"environment":"production","image":"IMAGE"&#125;'</code>
+          </div>
+        {:else}
+          <div class="rounded-md border border-surface-600 bg-surface-800/50 p-5 text-center">
+            <p class="text-sm text-gray-400">Managing deploy tokens requires the project owner or platform admin role.</p>
+          </div>
+        {/if}
       </div>
 
     {:else if activeTab === 'webhooks'}
@@ -688,56 +710,62 @@ if (tab === 'danger' && projectApps.length === 0 && !loadingApps) await loadApps
 
     {:else if activeTab === 'danger'}
       <div class="max-w-lg">
-        <!-- Manage Apps -->
-        <div class="mb-5 rounded-md border border-surface-600 bg-surface-800/50 p-4">
-          <h3 class="mb-3 text-sm font-medium text-white">Manage Apps</h3>
-          {#if appDeleteError}
-            <div class="mb-2 rounded bg-danger/10 px-3 py-2 text-xs text-danger">{appDeleteError}</div>
-          {/if}
-          {#if loadingApps}
-            <div class="space-y-2">
-              {#each Array(3) as _}
-                <div class="h-10 animate-pulse rounded bg-surface-700"></div>
-              {/each}
-            </div>
-          {:else if projectApps.length === 0}
-            <p class="text-xs text-gray-500">No apps in this project.</p>
-          {:else}
-            <div class="space-y-1.5">
-              {#each projectApps as app}
-                <div class="flex items-center justify-between rounded-md border border-surface-600 bg-surface-900 px-3 py-2">
-                  <span class="text-sm text-white">{app.name}</span>
-                  <button type="button"
-                    onclick={() => removeApp(app.name)}
-                    disabled={deletingApp === app.name}
-                    class="text-xs text-gray-500 hover:text-danger disabled:opacity-50">
-                    {deletingApp === app.name ? 'Removing…' : 'Remove'}
-                  </button>
-                </div>
-              {/each}
-            </div>
-          {/if}
-        </div>
+        {#if canDelete}
+          <!-- Manage Apps -->
+          <div class="mb-5 rounded-md border border-surface-600 bg-surface-800/50 p-4">
+            <h3 class="mb-3 text-sm font-medium text-white">Manage Apps</h3>
+            {#if appDeleteError}
+              <div class="mb-2 rounded bg-danger/10 px-3 py-2 text-xs text-danger">{appDeleteError}</div>
+            {/if}
+            {#if loadingApps}
+              <div class="space-y-2">
+                {#each Array(3) as _}
+                  <div class="h-10 animate-pulse rounded bg-surface-700"></div>
+                {/each}
+              </div>
+            {:else if projectApps.length === 0}
+              <p class="text-xs text-gray-500">No apps in this project.</p>
+            {:else}
+              <div class="space-y-1.5">
+                {#each projectApps as app}
+                  <div class="flex items-center justify-between rounded-md border border-surface-600 bg-surface-900 px-3 py-2">
+                    <span class="text-sm text-white">{app.name}</span>
+                    <button type="button"
+                      onclick={() => removeApp(app.name)}
+                      disabled={deletingApp === app.name}
+                      class="text-xs text-gray-500 hover:text-danger disabled:opacity-50">
+                      {deletingApp === app.name ? 'Removing…' : 'Remove'}
+                    </button>
+                  </div>
+                {/each}
+              </div>
+            {/if}
+          </div>
 
-        <div class="rounded-md border border-danger/30 bg-danger/5 p-5 space-y-4">
-          <h2 class="text-sm font-medium text-danger">Danger Zone</h2>
-          <div>
-            <p class="text-sm font-medium text-white">Delete Project</p>
-            <p class="mt-1 text-xs text-gray-500">
-              Permanently deletes all apps, volumes, and secrets in this project. Cannot be undone.
-            </p>
+          <div class="rounded-md border border-danger/30 bg-danger/5 p-5 space-y-4">
+            <h2 class="text-sm font-medium text-danger">Danger Zone</h2>
+            <div>
+              <p class="text-sm font-medium text-white">Delete Project</p>
+              <p class="mt-1 text-xs text-gray-500">
+                Permanently deletes all apps, volumes, and secrets in this project. Cannot be undone.
+              </p>
+            </div>
+            <div class="space-y-2">
+              <label class={labelCls} for="del-confirm">Type <strong class="text-white">{projectName}</strong> to confirm</label>
+              <input id="del-confirm" type="text" bind:value={confirmDeleteText} placeholder={projectName}
+                class="w-full rounded-md border border-danger/50 bg-surface-800 px-3 py-2 text-sm text-white placeholder-gray-600 outline-none focus:border-danger" />
+              <button type="button" onclick={deleteProject}
+                disabled={confirmDeleteText !== projectName || deleting}
+                class="rounded-md bg-danger px-4 py-2 text-sm font-medium text-white hover:bg-danger/80 disabled:cursor-not-allowed disabled:opacity-50">
+                {deleting ? 'Deleting…' : 'Delete project'}
+              </button>
+            </div>
           </div>
-          <div class="space-y-2">
-            <label class={labelCls} for="del-confirm">Type <strong class="text-white">{projectName}</strong> to confirm</label>
-            <input id="del-confirm" type="text" bind:value={confirmDeleteText} placeholder={projectName}
-              class="w-full rounded-md border border-danger/50 bg-surface-800 px-3 py-2 text-sm text-white placeholder-gray-600 outline-none focus:border-danger" />
-            <button type="button" onclick={deleteProject}
-              disabled={confirmDeleteText !== projectName || deleting}
-              class="rounded-md bg-danger px-4 py-2 text-sm font-medium text-white hover:bg-danger/80 disabled:cursor-not-allowed disabled:opacity-50">
-              {deleting ? 'Deleting…' : 'Delete project'}
-            </button>
+        {:else}
+          <div class="rounded-md border border-surface-600 bg-surface-800/50 p-5 text-center">
+            <p class="text-sm text-gray-400">Deleting apps and projects requires the project owner or platform admin role.</p>
           </div>
-        </div>
+        {/if}
       </div>
     {/if}
   </div>
