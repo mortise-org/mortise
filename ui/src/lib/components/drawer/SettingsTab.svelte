@@ -281,10 +281,10 @@
 		}
 	}
 
-	function buildUpdatedSpec(): AppSpec {
+	async function saveSource() {
+		savingSource = true;
+		errorMsg = '';
 		const spec = cloneSpec();
-
-		// Source
 		if (spec.source.type === 'git') {
 			spec.source.repo = srcRepo;
 			spec.source.branch = srcBranch;
@@ -293,21 +293,8 @@
 			spec.source.image = srcImage;
 			spec.source.pullSecretRef = srcPullSecretRef || undefined;
 		}
-
-		// Networking
-		spec.network = spec.network ?? {};
-		spec.network.public = netPublic;
-		if (netPort) spec.network.port = parseInt(netPort, 10);
-
-		return spec;
-	}
-
-	async function saveSource() {
-		savingSource = true;
-		errorMsg = '';
-		const optimisticSpec = buildUpdatedSpec();
 		try {
-			const result = await api.updateApp(project, app.metadata.name, optimisticSpec);
+			const result = await api.updateApp(project, app.metadata.name, spec);
 			specOverride = result.spec;
 		} catch (e) {
 			errorMsg = e instanceof Error ? e.message : 'Failed to save';
@@ -341,9 +328,12 @@
 	async function saveNetworking() {
 		savingNetworking = true;
 		errorMsg = '';
-		const optimisticSpec = buildUpdatedSpec();
+		const spec = cloneSpec();
+		spec.network = spec.network ?? {};
+		spec.network.public = netPublic;
+		if (netPort) spec.network.port = parseInt(netPort, 10);
 		try {
-			const result = await api.updateApp(project, app.metadata.name, optimisticSpec);
+			const result = await api.updateApp(project, app.metadata.name, spec);
 			specOverride = result.spec;
 		} catch (e) {
 			errorMsg = e instanceof Error ? e.message : 'Failed to save';
