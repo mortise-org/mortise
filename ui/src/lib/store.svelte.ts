@@ -38,6 +38,9 @@ class MortiseStore {
 	// Project-level role for the current user, keyed by project name.
 	projectRoles = $state<Record<string, ProjectRole | null>>({});
 
+	// Warnings when role loading fails (network errors, etc.).
+	roleLoadWarnings = $state<Record<string, string>>({});
+
 	// Staged changes (client-side only, in-memory)
 	stagedChanges = $state<Map<string, StagedChange>>(new Map());
 	get stagedChangeCount(): number { return this.stagedChanges.size; }
@@ -164,9 +167,18 @@ class MortiseStore {
 			const me = members.find((m: ProjectMember) => m.email === this.user?.email);
 			const role = me?.role ?? null;
 			this.projectRoles = { ...this.projectRoles, [project]: role };
+			this.roleLoadWarnings = { ...this.roleLoadWarnings };
+			delete this.roleLoadWarnings[project];
 			return role;
 		} catch {
-			return null;
+			// Don't restrict the UI on network/server errors — the server
+			// enforces 403 anyway. Show a warning instead of silently
+			// locking the user out.
+			this.roleLoadWarnings = {
+				...this.roleLoadWarnings,
+				[project]: 'Could not verify your project permissions. Some actions may fail.'
+			};
+			return this.projectRoles[project] ?? null;
 		}
 	}
 
@@ -174,6 +186,11 @@ class MortiseStore {
 		if (!project) return null;
 		if (this.isAdmin) return 'owner';
 		return this.projectRoles[project] ?? null;
+	}
+
+	roleLoadWarning(project: string | null): string | null {
+		if (!project) return null;
+		return this.roleLoadWarnings[project] ?? null;
 	}
 
 	canManageMembers(project: string | null): boolean {

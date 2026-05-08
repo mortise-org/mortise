@@ -11,7 +11,7 @@
 	import NewAppModal from '$lib/components/NewAppModal.svelte';
 	import AppDrawer from '$lib/components/AppDrawer.svelte';
 	import ViewModeToggle from '$lib/components/ViewModeToggle.svelte';
-	import { Plus, GitBranch, Container, Cloud, Clock, RotateCw, Loader2 } from 'lucide-svelte';
+	import { Plus, GitBranch, Container, Cloud, Clock, RotateCw, Loader2, AlertTriangle } from 'lucide-svelte';
 
 	const projectName = $derived(page.params.project ?? '');
 	// App name from URL (e.g. /projects/foo/apps/bar → 'bar')
@@ -261,6 +261,12 @@
 	{:else if project}
 		{#if error}
 			<div class="mx-4 mt-4 rounded-md bg-danger/10 px-3 py-2 text-sm text-danger">{error}</div>
+		{/if}
+		{#if store.roleLoadWarning(projectName)}
+			<div class="mx-4 mt-2 flex items-center gap-2 rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning">
+				<AlertTriangle class="h-4 w-4 shrink-0" />
+				{store.roleLoadWarning(projectName)}
+			</div>
 		{/if}
 
 		{#if store.viewMode === 'canvas'}

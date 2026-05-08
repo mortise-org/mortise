@@ -5,7 +5,7 @@
   import { api } from '$lib/api';
   import { store } from '$lib/store.svelte';
   import type { Project, ProjectMember, ProjectEnvironment, App, EnvHealth } from '$lib/types';
-  import { Plus, Trash2, Check, ArrowUp, ArrowDown, Copy } from 'lucide-svelte';
+  import { Plus, Trash2, Check, ArrowUp, ArrowDown, Copy, AlertTriangle } from 'lucide-svelte';
 
   const projectName = $derived(page.params.project ?? '');
   let project = $state<Project | null>(null);
@@ -348,6 +348,13 @@ if (tab === 'danger' && projectApps.length === 0 && !loadingApps) await loadApps
     <button type="button" class={tabCls('integrations')} onclick={() => switchTab('integrations')}>Integrations</button>
     <button type="button" class={tabCls('danger')} onclick={() => switchTab('danger')}>Danger</button>
   </nav>
+
+  {#if store.roleLoadWarning(projectName)}
+    <div class="mx-6 mt-4 flex items-center gap-2 rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning">
+      <AlertTriangle class="h-4 w-4 shrink-0" />
+      {store.roleLoadWarning(projectName)}
+    </div>
+  {/if}
 
   <!-- Tab content -->
   <div class="flex-1 overflow-auto p-6">
