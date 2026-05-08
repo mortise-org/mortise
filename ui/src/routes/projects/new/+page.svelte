@@ -102,7 +102,7 @@
 					<p class="mt-1 text-xs text-green-500">Name available</p>
 				{:else}
 					<p class="mt-1 text-xs text-gray-500">
-						Lowercase letters, numbers, and hyphens only. Apps run in namespace <span class="font-mono">project-{name || '<name>'}</span>.
+						Lowercase letters, numbers, and hyphens only. Apps run in namespace <span class="font-mono">pj-{name || '<name>'}</span>.
 					</p>
 				{/if}
 			</div>
