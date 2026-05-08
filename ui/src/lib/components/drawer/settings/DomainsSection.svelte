@@ -7,12 +7,14 @@
 		project,
 		app,
 		selectedEnv,
+		cloneSpec,
 		onSpecUpdate,
 		onError
 	}: {
 		project: string;
 		app: App;
 		selectedEnv: string;
+		cloneSpec: () => AppSpec;
 		onSpecUpdate: (spec: AppSpec) => void;
 		onError: (msg: string) => void;
 	} = $props();
@@ -120,14 +122,15 @@
 
 		savingPrimary = true;
 		try {
-			const envs = [...(app.spec.environments ?? [])];
-			const idx = envs.findIndex(e => e.name === selectedEnv);
+			const spec = cloneSpec();
+			spec.environments = spec.environments ?? [];
+			const idx = spec.environments.findIndex((e: { name: string }) => e.name === selectedEnv);
 			if (idx >= 0) {
-				envs[idx] = { ...envs[idx], domain };
+				spec.environments[idx] = { ...spec.environments[idx], domain };
 			} else {
-				envs.push({ name: selectedEnv, domain });
+				spec.environments.push({ name: selectedEnv, domain });
 			}
-			const result = await api.updateApp(project, app.metadata.name, { ...app.spec, environments: envs });
+			const result = await api.updateApp(project, app.metadata.name, spec);
 			onSpecUpdate(result.spec);
 			domains = domains ? { ...domains, primary: domain } : { primary: domain, custom: [] };
 			editingPrimary = false;
@@ -142,12 +145,13 @@
 		if (!selectedEnv) return;
 		savingPrimary = true;
 		try {
-			const envs = [...(app.spec.environments ?? [])];
-			const idx = envs.findIndex(e => e.name === selectedEnv);
+			const spec = cloneSpec();
+			spec.environments = spec.environments ?? [];
+			const idx = spec.environments.findIndex((e: { name: string }) => e.name === selectedEnv);
 			if (idx >= 0) {
-				envs[idx] = { ...envs[idx], domain: '' };
+				spec.environments[idx] = { ...spec.environments[idx], domain: '' };
 			}
-			const result = await api.updateApp(project, app.metadata.name, { ...app.spec, environments: envs });
+			const result = await api.updateApp(project, app.metadata.name, spec);
 			onSpecUpdate(result.spec);
 			domains = domains ? { ...domains, primary: '' } : { primary: '', custom: [] };
 		} catch (e) {
@@ -161,7 +165,7 @@
 		if (!selectedEnv) return;
 		savingTls = true;
 		try {
-			const spec = JSON.parse(JSON.stringify(app.spec)) as AppSpec;
+			const spec = cloneSpec();
 			spec.environments = spec.environments ?? [];
 			let envIdx = spec.environments.findIndex((e: { name: string }) => e.name === selectedEnv);
 			if (envIdx < 0) {

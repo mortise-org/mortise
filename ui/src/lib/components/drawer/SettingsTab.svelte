@@ -138,7 +138,7 @@
 	{/if}
 
 	{#if sectionVisible('domains')}
-		<DomainsSection {project} {app} {selectedEnv} onSpecUpdate={handleSpecUpdate} onError={handleError} />
+		<DomainsSection {project} {app} {selectedEnv} {cloneSpec} onSpecUpdate={handleSpecUpdate} onError={handleError} />
 	{/if}
 
 	{#if sectionVisible('deploy tokens')}
