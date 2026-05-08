@@ -17,10 +17,14 @@ spec:
         app.kubernetes.io/name: mortise
     spec:
       serviceAccountName: {{ .Values.serviceAccount.name }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
         - name: mortise
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
           ports:
             - name: api
               containerPort: {{ .Values.api.port }}
@@ -36,6 +40,9 @@ spec:
             {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
           livenessProbe:
             httpGet:
               path: /healthz
@@ -48,6 +55,9 @@ spec:
               port: 8081
             initialDelaySeconds: 5
             periodSeconds: 10
+      volumes:
+        - name: tmp
+          emptyDir: {}
 ---
 {{- if .Values.ingress.enabled }}
 apiVersion: networking.k8s.io/v1
