@@ -33,7 +33,59 @@ import type {
 
 const BASE = '/api';
 
+const REFRESH_WINDOW_MS = 4 * 60 * 60 * 1000; // refresh when <4h remaining
+
+function tokenExpiresAt(): number | null {
+	const token = localStorage.getItem('mortise_token');
+	if (!token) return null;
+	try {
+		const payload = JSON.parse(atob(token.split('.')[1]));
+		return typeof payload.exp === 'number' ? payload.exp * 1000 : null;
+	} catch {
+		return null;
+	}
+}
+
+let refreshPromise: Promise<void> | null = null;
+
+async function maybeRefreshToken(): Promise<void> {
+	const exp = tokenExpiresAt();
+	if (!exp) return;
+	if (exp - Date.now() > REFRESH_WINDOW_MS) return;
+	if (refreshPromise) return refreshPromise;
+
+	refreshPromise = (async () => {
+		try {
+			const token = localStorage.getItem('mortise_token');
+			if (!token) return;
+			const res = await fetch(`${BASE}/auth/refresh`, {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+					Authorization: `Bearer ${token}`
+				}
+			});
+			if (res.ok) {
+				const data = await res.json();
+				if (data.token) {
+					localStorage.setItem('mortise_token', data.token);
+					if (data.user) {
+						localStorage.setItem('mortise_user', JSON.stringify(data.user));
+					}
+				}
+			}
+		} catch {
+			// refresh is best-effort; 401 handling below will redirect to login
+		} finally {
+			refreshPromise = null;
+		}
+	})();
+	return refreshPromise;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+	await maybeRefreshToken();
+
 	const token = localStorage.getItem('mortise_token');
 	const headers: Record<string, string> = {
 		'Content-Type': 'application/json',
@@ -65,6 +117,27 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 		return undefined as T;
 	}
 	return JSON.parse(text) as T;
+}
+
+async function fetchSSEToken(): Promise<string> {
+	const token = localStorage.getItem('mortise_token');
+	if (!token) return '';
+	try {
+		const res = await fetch(`${BASE}/auth/sse-token`, {
+			method: 'POST',
+			headers: {
+				'Content-Type': 'application/json',
+				Authorization: `Bearer ${token}`
+			}
+		});
+		if (res.ok) {
+			const data = await res.json();
+			return data.token ?? '';
+		}
+	} catch {
+		// fall through
+	}
+	return '';
 }
 
 function enc(s: string): string {
@@ -214,8 +287,8 @@ export const api = {
 	listPods: (project: string, app: string, env: string) =>
 		request<Pod[]>(`/projects/${enc(project)}/apps/${enc(app)}/pods?env=${enc(env)}`),
 
-	// --- logs: returns a ready-to-use SSE URL including the JWT ---
-	logsURL: (
+	// --- logs: returns a ready-to-use SSE URL with a short-lived SSE token ---
+	logsURL: async (
 		project: string,
 		app: string,
 		opts: {
@@ -227,8 +300,8 @@ export const api = {
 			sinceSeconds?: number;
 			sinceTime?: string;
 		}
-	): string => {
-		const token = localStorage.getItem('mortise_token') ?? '';
+	): Promise<string> => {
+		const sseToken = await fetchSSEToken();
 		const params = new URLSearchParams({ env: opts.env });
 		if (opts.follow) params.set('follow', 'true');
 		if (opts.tail !== undefined) params.set('tail', String(opts.tail));
@@ -236,9 +309,11 @@ export const api = {
 		if (opts.previous) params.set('previous', 'true');
 		if (opts.sinceSeconds !== undefined) params.set('sinceSeconds', String(opts.sinceSeconds));
 		if (opts.sinceTime) params.set('sinceTime', opts.sinceTime);
-		if (token) params.set('token', token);
+		if (sseToken) params.set('token', sseToken);
 		return `/api/projects/${enc(project)}/apps/${enc(app)}/logs?${params.toString()}`;
 	},
+
+	fetchSSEToken,
 
 	getBuildLogs: (project: string, app: string) =>
 		request<BuildLogsResponse>(`/projects/${enc(project)}/apps/${enc(app)}/build-logs`),

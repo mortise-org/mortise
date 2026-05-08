@@ -35,7 +35,7 @@
 		selectedApp ? apps.find(a => a.metadata.name === selectedApp) ?? null : null
 	);
 
-	let eventStream: ReturnType<typeof connectProjectEvents> | null = null;
+	let eventStream: Awaited<ReturnType<typeof connectProjectEvents>> | null = null;
 
 	onMount(async () => {
 		if (!localStorage.getItem('mortise_token')) {
@@ -81,9 +81,9 @@
 		}
 	});
 
-	function connectSSE() {
+	async function connectSSE() {
 		eventStream?.close();
-		eventStream = connectProjectEvents(projectName, {
+		eventStream = await connectProjectEvents(projectName, {
 			onAppUpdated: (app) => {
 				const idx = apps.findIndex(a => a.metadata.name === app.metadata.name);
 				if (idx >= 0) {

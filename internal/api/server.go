@@ -44,6 +44,7 @@ type Server struct {
 	metricsClient metricsv1beta1.MetricsV1beta1Interface
 	proxies       *appProxyManager
 	activityStore activity.Store
+	sseTokens     *sseTokenStore
 }
 
 // RESTConfig returns the rest.Config the server was built with. Exposed for
@@ -83,6 +84,7 @@ func NewServer(c client.Client, cs kubernetes.Interface, dc dynamic.Interface, r
 		deviceFlow:    df,
 		proxies:       newAppProxyManager(),
 		activityStore: activity.NewConfigMapStore(c),
+		sseTokens:     newSSETokenStore(),
 	}
 }
 
@@ -159,6 +161,9 @@ func (s *Server) Handler() http.Handler {
 		r.Use(maxBytesMiddleware(1 << 20)) // 1 MB body limit
 		r.Group(func(r chi.Router) {
 			r.Use(s.jwtAuthMiddleware)
+
+			r.Post("/auth/sse-token", s.IssueSSEToken)
+			r.Post("/auth/refresh", s.RefreshToken)
 
 			// Device flow: provider-parameterized routes for per-user git auth.
 			r.Post("/auth/git/{provider}/device", s.deviceFlow.RequestCode)
@@ -279,11 +284,11 @@ func (s *Server) Handler() http.Handler {
 			r.Post("/projects/{project}/apps/{app}/deploy", s.Deploy)
 		})
 
-		// SSE endpoints: JWT may come via `?token=` query param as an EventSource
-		// workaround. sseTokenQueryParamMiddleware runs before jwtAuthMiddleware
-		// and promotes the query param onto the Authorization header.
+		// SSE endpoints: authenticated via short-lived SSE token (?token=msse_...)
+		// or JWT query param (legacy fallback). sseAuthMiddleware handles both,
+		// then jwtAuthMiddleware runs for JWT-based paths.
 		r.Group(func(r chi.Router) {
-			r.Use(sseTokenQueryParamMiddleware)
+			r.Use(s.sseAuthMiddleware)
 			r.Use(s.jwtAuthMiddleware)
 			r.Get("/projects/{project}/apps/{app}/logs", s.handleLogs)
 			r.Get("/projects/{project}/events", s.handleProjectEvents)

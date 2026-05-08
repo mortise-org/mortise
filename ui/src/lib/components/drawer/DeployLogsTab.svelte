@@ -143,7 +143,7 @@
 		return { pod: '', ts: '', line: data, stream: undefined };
 	}
 
-	function connectLive(fresh = false) {
+	async function connectLive(fresh = false) {
 		if (isBuilding || pods.length === 0) {
 			closeStream(true);
 			return;
@@ -162,7 +162,7 @@
 			events = [];
 		}
 
-		const url = api.logsURL(project, app.metadata.name, {
+		const url = await api.logsURL(project, app.metadata.name, {
 			env: selectedEnv,
 			follow: true,
 			tail: 200,
