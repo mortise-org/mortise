@@ -40,12 +40,12 @@
 
 	const podList = $derived(Array.from(pods).sort());
 
-	function connect() {
+	async function connect() {
 		if (source) {
 			source.close();
 			source = null;
 		}
-		const url = api.logsURL(project, appName, { env, follow: true, tail });
+		const url = await api.logsURL(project, appName, { env, follow: true, tail });
 		errored = false;
 		source = new EventSource(url);
 
