@@ -7,7 +7,8 @@ import {
 	createProjectViaAPI,
 	createAppViaAPI,
 	deleteProjectViaAPI,
-	deleteAppViaAPI
+	deleteAppViaAPI,
+	getAppViaAPI
 } from './helpers';
 
 // ---------------------------------------------------------------------------
@@ -40,86 +41,43 @@ test.describe('bindings', () => {
 	}) => {
 		const webAppName = `web-${randomSuffix()}`;
 		const pgAppName = `postgres-${randomSuffix()}`;
+
+		// Create web app (standard image app)
 		await createAppViaAPI(request, adminToken, projectName, webAppName);
-		await createAppViaAPI(request, adminToken, projectName, pgAppName);
+
+		// Create postgres app with credentials in its spec
+		const pgRes = await request.post(`/api/projects/${projectName}/apps`, {
+			headers: { Authorization: `Bearer ${adminToken}` },
+			data: {
+				name: pgAppName,
+				spec: {
+					source: { type: 'image', image: 'postgres:16' },
+					network: { public: false, port: 5432 },
+					environments: [{ name: 'production', replicas: 1 }],
+					credentials: [{ name: 'DATABASE_URL' }, { name: 'PGHOST' }, { name: 'PGPORT' }]
+				}
+			}
+		});
+		if (!pgRes.ok()) {
+			const body = await pgRes.text().catch(() => '');
+			throw new Error(`create postgres app failed: HTTP ${pgRes.status()} ${body}`);
+		}
 
 		await injectToken(page, adminToken);
-
-		// Mock listApps so the bindings picker can see the postgres app (with credentials).
-		await page.route(`**/api/projects/${projectName}/apps`, async (route) => {
-			if (route.request().method() === 'GET') {
-				return route.fulfill({
-					status: 200,
-					contentType: 'application/json',
-					body: JSON.stringify([
-						{
-							metadata: { name: webAppName, namespace: `project-${projectName}` },
-							spec: {
-								source: { type: 'image', image: 'nginx:1.27' },
-								network: { public: true },
-								environments: [{ name: 'production', replicas: 1 }],
-								storage: [],
-								credentials: []
-							},
-							status: { phase: 'Ready' }
-						},
-						{
-							metadata: { name: pgAppName, namespace: `project-${projectName}` },
-							spec: {
-								source: { type: 'image', image: 'postgres:16' },
-								network: { public: false },
-								environments: [{ name: 'production', replicas: 1 }],
-								storage: [{ name: 'pgdata', mountPath: '/var/lib/postgresql/data', size: '10Gi' }],
-								credentials: [{ name: 'DATABASE_URL' }, { name: 'PGHOST' }, { name: 'PGPORT' }]
-							},
-							status: { phase: 'Ready' }
-						}
-					])
-				});
-			}
-			return route.continue();
-		});
-
-		// Mock PUT to return the web app with the binding added.
-		await page.route(`**/api/projects/${projectName}/apps/${webAppName}`, async (route) => {
-			if (route.request().method() === 'PUT') {
-				return route.fulfill({
-					status: 200,
-					contentType: 'application/json',
-					body: JSON.stringify({
-						metadata: { name: webAppName, namespace: `project-${projectName}` },
-						spec: {
-							source: { type: 'image', image: 'nginx:1.27' },
-							network: { public: true },
-							environments: [
-								{
-									name: 'production',
-									replicas: 1,
-									bindings: [{ ref: pgAppName }]
-								}
-							],
-							storage: [],
-							credentials: []
-						},
-						status: { phase: 'Ready' }
-					})
-				});
-			}
-			return route.continue();
-		});
-
 		await page.goto(`/projects/${projectName}/apps/${webAppName}`);
 		await expect(page.getByRole('heading', { name: webAppName })).toBeVisible({ timeout: 10_000 });
 
-		// Open Variables tab → Bindings section.
-		await page.getByRole('button', { name: 'Variables' }).click();
-		await expect(page.getByText('Bindings')).toBeVisible({ timeout: 5_000 });
+		// Open Variables tab -> Bindings section.
+		await page.getByRole('button', { name: 'Variables', exact: true }).click();
+
+		// The Bindings section header is a div[role="button"].
+		const bindingsHeader = page.locator('div[role="button"]').filter({ has: page.locator('span', { hasText: 'Bindings' }) }).first();
+		await expect(bindingsHeader).toBeVisible({ timeout: 5_000 });
 
 		// No bindings yet.
 		await expect(page.getByText('No bindings')).toBeVisible();
 
 		// Click the + button in the Bindings section header.
-		const bindingsHeader = page.locator('div[role="button"]').filter({ hasText: 'Bindings' });
 		await bindingsHeader.locator('button').click();
 
 		// Select the postgres app from the dropdown.
@@ -152,14 +110,15 @@ test.describe('bindings', () => {
 		await expect(page.getByRole('heading', { name: appName })).toBeVisible({ timeout: 10_000 });
 
 		// Open Variables tab.
-		await page.getByRole('button', { name: 'Variables' }).click();
+		await page.getByRole('button', { name: 'Variables', exact: true }).click();
 
-		// Click "New variable".
-		await page.getByRole('button', { name: 'New variable', exact: true }).click();
+		// Click the + button in the Runtime env section to add a new variable.
+		const runtimeSection = page.locator('.rounded-lg.border').filter({ hasText: /^Runtime/ });
+		await runtimeSection.locator('button').filter({ has: page.locator('svg') }).last().click();
 
 		// Fill the key and the reference value.
 		await page.getByPlaceholder('VARIABLE_NAME').fill('DATABASE_URL');
-		await page.getByPlaceholder('value or binding ref').fill('${{bindings.postgres.DATABASE_URL}}');
+		await page.getByPlaceholder('value').first().fill('${{bindings.postgres.DATABASE_URL}}');
 
 		// The Add button should be visible.
 		const addBtn = page.getByRole('button', { name: 'Add' }).first();
@@ -175,61 +134,44 @@ test.describe('bindings', () => {
 	test('developer removes a binding they no longer need', async ({ page, request }) => {
 		const webAppName = `web-rmb-${randomSuffix()}`;
 		const pgAppName = `pg-rmb-${randomSuffix()}`;
+
+		// Create both apps
 		await createAppViaAPI(request, adminToken, projectName, webAppName);
-		await createAppViaAPI(request, adminToken, projectName, pgAppName);
-
-		await injectToken(page, adminToken);
-
-		// Intercept GET to return the web app with a binding pre-populated.
-		await page.route(`**/api/projects/${projectName}/apps/${webAppName}`, async (route) => {
-			if (route.request().method() === 'GET') {
-				return route.fulfill({
-					status: 200,
-					contentType: 'application/json',
-					body: JSON.stringify({
-						metadata: { name: webAppName, namespace: `project-${projectName}` },
-						spec: {
-							source: { type: 'image', image: 'nginx:1.27' },
-							network: { public: true },
-							environments: [
-								{
-									name: 'production',
-									replicas: 1,
-									bindings: [{ ref: pgAppName }]
-								}
-							],
-							storage: [],
-							credentials: []
-						},
-						status: { phase: 'Ready' }
-					})
-				});
+		const pgRes = await request.post(`/api/projects/${projectName}/apps`, {
+			headers: { Authorization: `Bearer ${adminToken}` },
+			data: {
+				name: pgAppName,
+				spec: {
+					source: { type: 'image', image: 'postgres:16' },
+					network: { public: false, port: 5432 },
+					environments: [{ name: 'production', replicas: 1 }],
+					credentials: [{ name: 'DATABASE_URL' }, { name: 'PGHOST' }, { name: 'PGPORT' }]
+				}
 			}
-			if (route.request().method() === 'PUT') {
-				return route.fulfill({
-					status: 200,
-					contentType: 'application/json',
-					body: JSON.stringify({
-						metadata: { name: webAppName, namespace: `project-${projectName}` },
-						spec: {
-							source: { type: 'image', image: 'nginx:1.27' },
-							network: { public: true },
-							environments: [{ name: 'production', replicas: 1, bindings: [] }],
-							storage: [],
-							credentials: []
-						},
-						status: { phase: 'Ready' }
-					})
-				});
+		});
+		if (!pgRes.ok()) {
+			const body = await pgRes.text().catch(() => '');
+			throw new Error(`create postgres app failed: HTTP ${pgRes.status()} ${body}`);
+		}
+
+		// Add a binding to the web app via API so it starts pre-populated
+		const app = await getAppViaAPI(request, adminToken, projectName, webAppName);
+		const appSpec = app.spec as Record<string, unknown>;
+		await request.put(`/api/projects/${projectName}/apps/${webAppName}`, {
+			headers: { Authorization: `Bearer ${adminToken}` },
+			data: {
+				...appSpec,
+				environments: [{ name: 'production', replicas: 1, bindings: [{ ref: pgAppName }] }]
 			}
-			return route.continue();
 		});
 
+		await injectToken(page, adminToken);
 		await page.goto(`/projects/${projectName}/apps/${webAppName}`);
 		await expect(page.getByRole('heading', { name: webAppName })).toBeVisible({ timeout: 10_000 });
 
-		await page.getByRole('button', { name: 'Variables' }).click();
-		await expect(page.getByText('Bindings')).toBeVisible({ timeout: 5_000 });
+		await page.getByRole('button', { name: 'Variables', exact: true }).click();
+		const bindingsHeader2 = page.locator('div[role="button"]').filter({ has: page.locator('span', { hasText: 'Bindings' }) }).first();
+		await expect(bindingsHeader2).toBeVisible({ timeout: 5_000 });
 
 		// The existing binding should be visible.
 		await expect(page.getByText(pgAppName).first()).toBeVisible({ timeout: 5_000 });
@@ -239,8 +181,10 @@ test.describe('bindings', () => {
 		await bindingRow.hover();
 		await bindingRow.locator('button').click();
 
-		// After removal the binding row should be gone.
-		await expect(page.getByText(pgAppName)).not.toBeVisible({ timeout: 5_000 });
+		// After removal the binding row should be gone from the Bindings section.
+		// (The canvas AppNode still shows pgAppName, so we scope to the bindings panel.)
+		const bindingsSection = page.locator('.rounded-lg.border').filter({ hasText: 'Bindings' }).first();
+		await expect(bindingsSection.getByText(pgAppName)).not.toBeVisible({ timeout: 5_000 });
 		await expect(page.getByText('No bindings')).toBeVisible();
 
 		await deleteAppViaAPI(request, adminToken, projectName, webAppName);
