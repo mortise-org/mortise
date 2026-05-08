@@ -855,6 +855,10 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 		},
 	}
 
+	if !disableDefaultSecurityContext(app) {
+		containers[0].SecurityContext = restrictedContainerSecurityContext()
+	}
+
 	resources, err := toResourceRequirements(r.effectiveResources(ctx, env))
 	if err != nil {
 		return fmt.Errorf("resources: %w", err)
@@ -919,6 +923,7 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 				},
 				Spec: corev1.PodSpec{
 					ServiceAccountName: app.Name,
+					SecurityContext:    restrictedPodSecurityContext(app),
 					Containers:         containers,
 					Volumes:            volumes,
 				},
@@ -1005,6 +1010,12 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 		if !equality.Semantic.DeepEqual(existingContainer.StartupProbe, desiredContainer.StartupProbe) {
 			needsUpdate = true
 		}
+		if !equality.Semantic.DeepEqual(existingContainer.SecurityContext, desiredContainer.SecurityContext) {
+			needsUpdate = true
+		}
+		if !equality.Semantic.DeepEqual(existing.Spec.Template.Spec.SecurityContext, desired.Spec.Template.Spec.SecurityContext) {
+			needsUpdate = true
+		}
 		if existing.Spec.Replicas == nil || *existing.Spec.Replicas != *desired.Spec.Replicas {
 			needsUpdate = true
 		}
@@ -1032,6 +1043,8 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 		existing.Spec.Template.Spec.Containers[0].LivenessProbe = desiredContainer.LivenessProbe
 		existing.Spec.Template.Spec.Containers[0].ReadinessProbe = desiredContainer.ReadinessProbe
 		existing.Spec.Template.Spec.Containers[0].StartupProbe = desiredContainer.StartupProbe
+		existing.Spec.Template.Spec.Containers[0].SecurityContext = desiredContainer.SecurityContext
+		existing.Spec.Template.Spec.SecurityContext = desired.Spec.Template.Spec.SecurityContext
 		existing.Spec.Template.ObjectMeta.Annotations = desired.Spec.Template.ObjectMeta.Annotations
 		existing.Spec.Template.ObjectMeta.Labels = desired.Spec.Template.ObjectMeta.Labels
 		existing.Annotations = desired.Annotations
@@ -1067,6 +1080,10 @@ func (r *AppReconciler) reconcileCronJob(ctx context.Context, app *mortisev1alph
 			Image:   image,
 			EnvFrom: envstore.EnvFromSources(app.Name),
 		},
+	}
+
+	if !disableDefaultSecurityContext(app) {
+		containers[0].SecurityContext = restrictedContainerSecurityContext()
 	}
 
 	resources, err := toResourceRequirements(r.effectiveResources(ctx, env))
@@ -1130,6 +1147,7 @@ func (r *AppReconciler) reconcileCronJob(ctx context.Context, app *mortisev1alph
 						},
 						Spec: corev1.PodSpec{
 							ServiceAccountName: app.Name,
+							SecurityContext:    restrictedPodSecurityContext(app),
 							RestartPolicy:      corev1.RestartPolicyOnFailure,
 							Containers:         containers,
 							Volumes:            volumes,
@@ -2427,6 +2445,31 @@ func deploymentName(appName string) string { return constants.DeploymentName(app
 func cronJobName(appName string) string    { return constants.CronJobName(appName) }
 func serviceName(appName string) string    { return appName }
 func ingressName(appName string) string    { return appName }
+
+func disableDefaultSecurityContext(app *mortisev1alpha1.App) bool {
+	return app.Annotations["mortise.dev/disable-default-security-context"] == "true"
+}
+
+func restrictedPodSecurityContext(app *mortisev1alpha1.App) *corev1.PodSecurityContext {
+	if disableDefaultSecurityContext(app) {
+		return nil
+	}
+	return &corev1.PodSecurityContext{
+		RunAsNonRoot: ptr.To(true),
+		SeccompProfile: &corev1.SeccompProfile{
+			Type: corev1.SeccompProfileTypeRuntimeDefault,
+		},
+	}
+}
+
+func restrictedContainerSecurityContext() *corev1.SecurityContext {
+	return &corev1.SecurityContext{
+		AllowPrivilegeEscalation: ptr.To(false),
+		Capabilities: &corev1.Capabilities{
+			Drop: []corev1.Capability{"ALL"},
+		},
+	}
+}
 
 // defaultDomainTemplate is the collision-safe default: {app}-{project}.{domain}
 // for production, {app}-{project}-{env}.{domain} for other environments.
