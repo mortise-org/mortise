@@ -193,16 +193,22 @@ class MortiseStore {
 		return this.roleLoadWarnings[project] ?? null;
 	}
 
-	canManageMembers(project: string | null): boolean {
+	/** True when the user is a platform admin or project owner. */
+	private isOwnerOrAdmin(project: string | null): boolean {
 		if (!project) return false;
 		if (this.isAdmin) return true;
 		return this.projectRole(project) === 'owner';
 	}
 
+	canManageMembers(project: string | null): boolean {
+		return this.isOwnerOrAdmin(project);
+	}
+
+	// Separate from canManageMembers so the two can diverge when
+	// finer-grained RBAC is introduced (e.g. "editor" may delete apps
+	// but not manage members).
 	canDeleteInProject(project: string | null): boolean {
-		if (!project) return false;
-		if (this.isAdmin) return true;
-		return this.projectRole(project) === 'owner';
+		return this.isOwnerOrAdmin(project);
 	}
 
 	stageChange(appName: string, original: AppSpec, dirty: AppSpec) {
