@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { onMount, untrack } from 'svelte';
 	import { api } from '$lib/api';
 	import { store } from '$lib/store.svelte';
 	import type { App, AppSpec, BindingEdge, DeployToken, DomainsResponse, SecretMount } from '$lib/types';
@@ -84,16 +84,20 @@
 	let netPort = $state('');
 
 	$effect(() => {
-		srcRepo = app.spec.source.repo ?? '';
-		srcBranch = app.spec.source.branch ?? '';
-		srcPath = app.spec.source.path ?? '';
-		srcImage = app.spec.source.image ?? '';
-		srcPullSecretRef = app.spec.source.pullSecretRef ?? '';
-		buildMode = app.spec.source.build?.mode ?? 'auto';
-		dockerfilePath = app.spec.source.build?.dockerfilePath ?? '';
-		buildContext = app.spec.source.build?.context ?? '';
-		netPublic = app.spec.network?.public ?? true;
-		netPort = String(app.spec.network?.port ?? '');
+		void selectedEnv;
+		untrack(() => {
+			const spec = specOverride ?? app.spec;
+			srcRepo = spec.source.repo ?? '';
+			srcBranch = spec.source.branch ?? '';
+			srcPath = spec.source.path ?? '';
+			srcImage = spec.source.image ?? '';
+			srcPullSecretRef = spec.source.pullSecretRef ?? '';
+			buildMode = spec.source.build?.mode ?? 'auto';
+			dockerfilePath = spec.source.build?.dockerfilePath ?? '';
+			buildContext = spec.source.build?.context ?? '';
+			netPublic = spec.network?.public ?? true;
+			netPort = String(spec.network?.port ?? '');
+		});
 	});
 
 	// --- Scale (for active env) ---
@@ -101,10 +105,14 @@
 	let scaleCpu = $state('');
 	let scaleMemory = $state('');
 	$effect(() => {
-		const env = app.spec.environments?.find(e => e.name === selectedEnv);
-		scaleReplicas = String(env?.replicas ?? 1);
-		scaleCpu = env?.resources?.cpu ?? '';
-		scaleMemory = env?.resources?.memory ?? '';
+		const envName = selectedEnv;
+		untrack(() => {
+			const spec = specOverride ?? app.spec;
+			const env = spec.environments?.find((e: { name: string }) => e.name === envName);
+			scaleReplicas = String(env?.replicas ?? 1);
+			scaleCpu = env?.resources?.cpu ?? '';
+			scaleMemory = env?.resources?.memory ?? '';
+		});
 	});
 
 	// --- Domains (for active env) ---

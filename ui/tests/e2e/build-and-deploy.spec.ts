@@ -139,7 +139,7 @@ test.describe('build and deploy', () => {
 
 		const [deployRes] = await Promise.all([
 			page.waitForResponse((r) =>
-				r.url().includes(`/apps/${appName}/deploy`) && r.request().method() === 'POST'
+				r.url().includes(`/apps/${appName}/redeploy`) && r.request().method() === 'POST'
 			),
 			redeployBtn.click()
 		]);

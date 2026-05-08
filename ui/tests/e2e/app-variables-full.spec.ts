@@ -67,15 +67,11 @@ async function setSharedVarsViaAPI(
       { headers: { Authorization: `Bearer ${token}` }, data: vars }
     );
     if (res.ok()) return;
-    if (res.status() === 500) {
-      const body = await res.text().catch(() => '');
-      if (body.includes('has been modified')) {
-        await new Promise(r => setTimeout(r, 500));
-        continue;
-      }
-      throw new Error(`setSharedVars failed: HTTP ${res.status()} ${body}`);
-    }
     const body = await res.text().catch(() => '');
+    if (res.status() === 409 || (res.status() === 500 && body.includes('has been modified'))) {
+      await new Promise(r => setTimeout(r, 500));
+      continue;
+    }
     throw new Error(`setSharedVars failed: HTTP ${res.status()} ${body}`);
   }
   throw new Error('setSharedVars: timed out retrying resource conflicts');
@@ -133,7 +129,7 @@ async function putEnvVars(
     );
     if (res.ok()) return;
     const body = await res.text().catch(() => '');
-    if (res.status() === 500 && body.includes('has been modified')) {
+    if (res.status() === 409 || (res.status() === 500 && body.includes('has been modified'))) {
       await new Promise(r => setTimeout(r, 500));
       continue;
     }
