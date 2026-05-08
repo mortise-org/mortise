@@ -208,8 +208,8 @@ spec:
 If you need a non-default IngressClass for App Ingresses, set it on the
 operator (`mortise-core.operator.ingressClassName`), not in PlatformConfig.
 
-A step-by-step BYO walkthrough is
-[tracked in #86](https://github.com/mortise-org/mortise/issues/86).
+For a step-by-step BYO walkthrough with copy-pasteable commands, see
+[Bring Your Own Infrastructure](./byo.md).
 
 ### What Helm creates
 
@@ -399,6 +399,12 @@ All values are optional. A bare `helm install` with no overrides works.
 | `observer.retention.logs` | `48h` | How long to keep log history |
 | `platformConfig.enabled` | `true` | Auto-create default PlatformConfig |
 | `platformConfig.domain` | `""` | Platform domain for app URLs |
+| `platformConfig.registry.url` | `""` | BYO registry URL (overrides bundled registry) |
+| `platformConfig.registry.namespace` | `""` | BYO registry namespace (default: `mortise`) |
+| `platformConfig.registry.insecureSkipTLSVerify` | `false` | Skip TLS verify for BYO registry |
+| `platformConfig.registry.pullSecretRef` | `""` | Name of existing docker-registry Secret |
+| `platformConfig.build.buildkitAddr` | `""` | BYO BuildKit address (overrides bundled) |
+| `platformConfig.tls.clusterIssuer` | `""` | cert-manager ClusterIssuer name |
 | `buildInfra.namespace` | `mortise-deps` | Namespace for BuildKit + registry |
 
 Operator values are nested under `mortise-core.`:

@@ -1,0 +1,75 @@
+# ============================================================================
+# Mortise — BYO (Bring Your Own) example values
+# ============================================================================
+# Use this file as a starting point when you bring your own ingress controller,
+# cert-manager, registry, or BuildKit instead of the bundled components.
+#
+#   helm install mortise mortise/mortise \
+#     --namespace mortise-system --create-namespace \
+#     -f values-byo.yaml
+#
+# Uncomment the sections that match your setup. See docs/byo.md for
+# step-by-step scenarios.
+
+# ---------------------------------------------------------------------------
+# Operator settings
+# ---------------------------------------------------------------------------
+mortise-core:
+  operator:
+    # Set this to match your existing ingress controller's IngressClass.
+    ingressClassName: nginx
+
+  ingress:
+    enabled: true
+    # className: nginx
+    # host: mortise.example.com
+
+  # If you manage CRDs out-of-band (Argo CD, Flux), pass --skip-crds to
+  # the helm install command.
+
+# ---------------------------------------------------------------------------
+# Disable bundled components you already have
+# ---------------------------------------------------------------------------
+
+# Bring your own ingress controller (nginx, HAProxy, ALB, etc.)
+traefik:
+  enabled: false
+
+# Bring your own cert-manager (already installed in cluster)
+cert-manager:
+  enabled: false
+
+# Bring your own container registry (ECR, GHCR, Harbor, etc.)
+# registry:
+#   enabled: false
+
+# Bring your own BuildKit endpoint
+# buildkit:
+#   enabled: false
+
+# Bring your own metrics-server (already installed in cluster)
+# metricsServer:
+#   enabled: false
+
+# ---------------------------------------------------------------------------
+# PlatformConfig — point Mortise at your external infrastructure
+# ---------------------------------------------------------------------------
+platformConfig:
+  enabled: true
+  domain: apps.example.com
+  # externalDomain: mortise.example.com
+
+  # External registry — set when registry.enabled=false
+  # registry:
+  #   url: https://registry.example.com
+  #   namespace: mortise
+  #   insecureSkipTLSVerify: false
+  #   pullSecretRef: my-registry-pull-secret
+
+  # External BuildKit — set when buildkit.enabled=false
+  # build:
+  #   buildkitAddr: tcp://buildkit.example.com:1234
+
+  # TLS via your existing cert-manager ClusterIssuer
+  tls:
+    clusterIssuer: letsencrypt-prod
