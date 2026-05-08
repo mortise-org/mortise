@@ -855,7 +855,7 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 		},
 	}
 
-	if !disableDefaultSecurityContext(app) {
+	if !disableDefaultSecurityContext(app) && len(containers) > 0 {
 		containers[0].SecurityContext = restrictedContainerSecurityContext()
 	}
 
@@ -1088,7 +1088,7 @@ func (r *AppReconciler) reconcileCronJob(ctx context.Context, app *mortisev1alph
 		},
 	}
 
-	if !disableDefaultSecurityContext(app) {
+	if !disableDefaultSecurityContext(app) && len(containers) > 0 {
 		containers[0].SecurityContext = restrictedContainerSecurityContext()
 	}
 
