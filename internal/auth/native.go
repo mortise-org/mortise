@@ -167,6 +167,32 @@ func (n *NativeAuthProvider) RevokeUser(ctx context.Context, userID string) erro
 	return nil
 }
 
+// CheckPasswordGen verifies that the token's password generation matches the
+// current value for the user. Returns an error if the password was changed
+// after the token was issued.
+func (n *NativeAuthProvider) CheckPasswordGen(ctx context.Context, email string, tokenGen int64) error {
+	var secret corev1.Secret
+	err := n.client.Get(ctx, types.NamespacedName{
+		Name:      userSecretName(email),
+		Namespace: namespace,
+	}, &secret)
+	if err != nil {
+		if errors.IsNotFound(err) {
+			return fmt.Errorf("user not found")
+		}
+		return fmt.Errorf("reading user secret: %w", err)
+	}
+
+	if raw, ok := secret.Data["password_gen"]; ok {
+		var currentGen int64
+		fmt.Sscanf(string(raw), "%d", &currentGen)
+		if tokenGen < currentGen {
+			return fmt.Errorf("session invalidated by password change")
+		}
+	}
+	return nil
+}
+
 // CreateUser stores a new user in a k8s Secret. Used during invite acceptance.
 func (n *NativeAuthProvider) CreateUser(ctx context.Context, email, password string, role Role) error {
 	if len(password) < 8 {

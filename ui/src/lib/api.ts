@@ -45,7 +45,25 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 	const res = await fetch(`${BASE}${path}`, { ...init, headers });
 
-	if (res.status === 401) {
+	if (res.status === 401 && token) {
+		const refreshed = await tryRefreshToken();
+		if (refreshed) {
+			headers['Authorization'] = `Bearer ${localStorage.getItem('mortise_token')}`;
+			const retry = await fetch(`${BASE}${path}`, { ...init, headers });
+			if (!retry.ok) {
+				if (retry.status === 401) {
+					localStorage.removeItem('mortise_token');
+					goto('/login');
+					throw new Error('Unauthorized');
+				}
+				const body = await retry.json().catch(() => ({ error: retry.statusText }));
+				throw new Error(body.error || retry.statusText);
+			}
+			if (retry.status === 204) return undefined as T;
+			const text = await retry.text();
+			if (!text) return undefined as T;
+			return JSON.parse(text) as T;
+		}
 		localStorage.removeItem('mortise_token');
 		goto('/login');
 		throw new Error('Unauthorized');
@@ -65,6 +83,26 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 		return undefined as T;
 	}
 	return JSON.parse(text) as T;
+}
+
+async function tryRefreshToken(): Promise<boolean> {
+	const token = localStorage.getItem('mortise_token');
+	if (!token) return false;
+	try {
+		const res = await fetch(`${BASE}/auth/refresh`, {
+			method: 'POST',
+			headers: { 'Authorization': `Bearer ${token}` }
+		});
+		if (!res.ok) return false;
+		const data = await res.json();
+		if (data.token) {
+			localStorage.setItem('mortise_token', data.token);
+			return true;
+		}
+	} catch {
+		// refresh failed — fall through to login redirect
+	}
+	return false;
 }
 
 function enc(s: string): string {

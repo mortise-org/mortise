@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
@@ -125,6 +126,53 @@ func (s *Server) Setup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusCreated, authResponse{Token: token, User: principal})
+}
+
+// @Summary Refresh JWT token
+// @Description Issues a new JWT from an existing token (valid or expired within 7 days)
+// @Tags auth
+// @Produce json
+// @Security BearerAuth
+// @Success 200 {object} authResponse
+// @Failure 401 {object} errorResponse
+// @Failure 500 {object} errorResponse
+// @Router /auth/refresh [post]
+//
+// Refresh issues a new JWT from a valid or recently-expired token. The token
+// may be expired for up to 7 days and still be eligible for refresh.
+func (s *Server) Refresh(w http.ResponseWriter, r *http.Request) {
+	header := r.Header.Get("Authorization")
+	if header == "" || !strings.HasPrefix(header, "Bearer ") {
+		writeJSON(w, http.StatusUnauthorized, errorResponse{"missing or invalid Authorization header"})
+		return
+	}
+	token := strings.TrimPrefix(header, "Bearer ")
+	if token == "" {
+		writeJSON(w, http.StatusUnauthorized, errorResponse{"empty bearer token"})
+		return
+	}
+
+	principal, tokenGen, err := s.jwt.ValidateTokenForRefresh(r.Context(), token)
+	if err != nil {
+		writeJSON(w, http.StatusUnauthorized, errorResponse{"token not eligible for refresh"})
+		return
+	}
+
+	native, ok := s.auth.(*auth.NativeAuthProvider)
+	if ok {
+		if err := native.CheckPasswordGen(r.Context(), principal.Email, tokenGen); err != nil {
+			writeJSON(w, http.StatusUnauthorized, errorResponse{"session invalidated by password change"})
+			return
+		}
+	}
+
+	newToken, err := s.jwt.GenerateToken(r.Context(), principal)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorResponse{err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, authResponse{Token: newToken, User: principal})
 }
 
 // @Summary Log in
