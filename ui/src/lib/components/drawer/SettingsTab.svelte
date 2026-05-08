@@ -54,7 +54,10 @@
 
 	let filterText = $state('');
 	let errorMsg = $state('');
-	let saving = $state(false);
+	let savingSource = $state(false);
+	let savingNetworking = $state(false);
+	let savingScale = $state(false);
+	let savingToken = $state(false);
 
 	// --- Source ---
 	let srcRepo = $state('');
@@ -294,10 +297,10 @@
 		}
 	}
 
-	function buildUpdatedSpec(): AppSpec {
+	async function saveSource() {
+		savingSource = true;
+		errorMsg = '';
 		const spec = cloneSpec();
-
-		// Source
 		if (spec.source.type === 'git') {
 			spec.source.repo = srcRepo;
 			spec.source.branch = srcBranch;
@@ -306,26 +309,13 @@
 			spec.source.image = srcImage;
 			spec.source.pullSecretRef = srcPullSecretRef || undefined;
 		}
-
-		// Networking
-		spec.network = spec.network ?? {};
-		spec.network.public = netPublic;
-		if (netPort) spec.network.port = parseInt(netPort, 10);
-
-		return spec;
-	}
-
-	async function saveSource() {
-		saving = true;
-		errorMsg = '';
-		const optimisticSpec = buildUpdatedSpec();
 		try {
-			const result = await api.updateApp(project, app.metadata.name, optimisticSpec);
+			const result = await api.updateApp(project, app.metadata.name, spec);
 			specOverride = result.spec;
 		} catch (e) {
 			errorMsg = e instanceof Error ? e.message : 'Failed to save';
 		} finally {
-			saving = false;
+			savingSource = false;
 		}
 	}
 
@@ -352,22 +342,25 @@
 	}
 
 	async function saveNetworking() {
-		saving = true;
+		savingNetworking = true;
 		errorMsg = '';
-		const optimisticSpec = buildUpdatedSpec();
+		const spec = cloneSpec();
+		spec.network = spec.network ?? {};
+		spec.network.public = netPublic;
+		if (netPort) spec.network.port = parseInt(netPort, 10);
 		try {
-			const result = await api.updateApp(project, app.metadata.name, optimisticSpec);
+			const result = await api.updateApp(project, app.metadata.name, spec);
 			specOverride = result.spec;
 		} catch (e) {
 			errorMsg = e instanceof Error ? e.message : 'Failed to save';
 		} finally {
-			saving = false;
+			savingNetworking = false;
 		}
 	}
 
 	async function saveScale() {
 		if (!selectedEnv) return;
-		saving = true;
+		savingScale = true;
 		errorMsg = '';
 		const optimisticSpec = cloneSpec();
 		optimisticSpec.environments = optimisticSpec.environments ?? [];
@@ -387,7 +380,7 @@
 		} catch (e) {
 			errorMsg = e instanceof Error ? e.message : 'Failed to save';
 		} finally {
-			saving = false;
+			savingScale = false;
 		}
 	}
 
@@ -461,14 +454,15 @@
 
 		savingPrimary = true;
 		try {
-			const envs = [...(app.spec.environments ?? [])];
-			const idx = envs.findIndex(e => e.name === selectedEnv);
+			const spec = cloneSpec();
+			spec.environments = spec.environments ?? [];
+			const idx = spec.environments.findIndex((e: { name: string }) => e.name === selectedEnv);
 			if (idx >= 0) {
-				envs[idx] = { ...envs[idx], domain };
+				spec.environments[idx] = { ...spec.environments[idx], domain };
 			} else {
-				envs.push({ name: selectedEnv, domain });
+				spec.environments.push({ name: selectedEnv, domain });
 			}
-			const result = await api.updateApp(project, app.metadata.name, { ...app.spec, environments: envs });
+			const result = await api.updateApp(project, app.metadata.name, spec);
 			specOverride = result.spec;
 			domains = domains ? { ...domains, primary: domain } : { primary: domain, custom: [] };
 			editingPrimary = false;
@@ -483,12 +477,13 @@
 		if (!selectedEnv) return;
 		savingPrimary = true;
 		try {
-			const envs = [...(app.spec.environments ?? [])];
-			const idx = envs.findIndex(e => e.name === selectedEnv);
+			const spec = cloneSpec();
+			spec.environments = spec.environments ?? [];
+			const idx = spec.environments.findIndex((e: { name: string }) => e.name === selectedEnv);
 			if (idx >= 0) {
-				envs[idx] = { ...envs[idx], domain: '' };
+				spec.environments[idx] = { ...spec.environments[idx], domain: '' };
 			}
-			const result = await api.updateApp(project, app.metadata.name, { ...app.spec, environments: envs });
+			const result = await api.updateApp(project, app.metadata.name, spec);
 			specOverride = result.spec;
 			domains = domains ? { ...domains, primary: '' } : { primary: '', custom: [] };
 		} catch (e) {
@@ -524,7 +519,7 @@
 
 	async function createToken() {
 		if (!newTokenName.trim() || !selectedEnv) return;
-		saving = true;
+		savingToken = true;
 		try {
 			const tok = await api.createToken(project, app.metadata.name, newTokenName.trim(), selectedEnv);
 			tokens = [...tokens, tok];
@@ -534,7 +529,7 @@
 		} catch (e) {
 			errorMsg = e instanceof Error ? e.message : 'Failed to create token';
 		} finally {
-			saving = false;
+			savingToken = false;
 		}
 	}
 
@@ -786,8 +781,8 @@
 				{/if}
 			</div>
 			<div class="flex justify-end pt-1">
-				<button type="button" onclick={saveSource} disabled={saving} class={btnPrimary}>
-					{saving ? 'Saving…' : 'Update'}
+				<button type="button" onclick={saveSource} disabled={savingSource} class={btnPrimary}>
+					{savingSource ? 'Saving…' : 'Update'}
 				</button>
 			</div>
 		</div>
@@ -864,8 +859,8 @@
 				</div>
 			</div>
 			<div class="flex justify-end pt-1">
-				<button type="button" onclick={saveNetworking} disabled={saving} class={btnPrimary}>
-					{saving ? 'Saving…' : 'Update'}
+				<button type="button" onclick={saveNetworking} disabled={savingNetworking} class={btnPrimary}>
+					{savingNetworking ? 'Saving…' : 'Update'}
 				</button>
 			</div>
 		</div>
@@ -918,8 +913,8 @@
 				</div>
 			</div>
 			<div class="flex justify-end pt-1">
-				<button type="button" onclick={saveScale} disabled={saving} class={btnPrimary}>
-					{saving ? 'Saving…' : 'Update'}
+				<button type="button" onclick={saveScale} disabled={savingScale} class={btnPrimary}>
+					{savingScale ? 'Saving…' : 'Update'}
 				</button>
 			</div>
 		</div>
@@ -1220,7 +1215,7 @@
 					</div>
 					<div class="flex justify-end gap-2">
 						<button type="button" onclick={() => (showTokenForm = false)} class={btnSecondary}>Cancel</button>
-						<button type="button" onclick={createToken} disabled={saving || !newTokenName.trim() || !selectedEnv} class={btnPrimary}>
+						<button type="button" onclick={createToken} disabled={savingToken || !newTokenName.trim() || !selectedEnv} class={btnPrimary}>
 							Create
 						</button>
 					</div>
