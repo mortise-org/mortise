@@ -1261,9 +1261,9 @@ func (r *AppReconciler) reconcileIngress(ctx context.Context, app *mortisev1alph
 	}
 
 	// TLS Secret reference: BYO or auto-generated.
-	tlsSecretName := fmt.Sprintf("%s-tls", name)
+	tlsName := tlsSecretName(app.Name)
 	if env.TLS != nil && env.TLS.SecretName != "" {
-		tlsSecretName = env.TLS.SecretName
+		tlsName = env.TLS.SecretName
 	}
 
 	// Base annotations from IngressProvider (ExternalDNS hostname,
@@ -1302,7 +1302,7 @@ func (r *AppReconciler) reconcileIngress(ctx context.Context, app *mortisev1alph
 			TLS: []networkingv1.IngressTLS{
 				{
 					Hosts:      allHosts,
-					SecretName: tlsSecretName,
+					SecretName: tlsName,
 				},
 			},
 		},
@@ -1373,6 +1373,19 @@ func (r *AppReconciler) checkCertificateStatus(ctx context.Context, secretName, 
 	}
 
 	return "Pending", "Certificate is being issued"
+}
+
+// checkCustomTLSSecret verifies that a user-supplied TLS secret exists and
+// contains tls.crt + tls.key. Returns (status, message).
+func (r *AppReconciler) checkCustomTLSSecret(ctx context.Context, secretName, namespace string) (string, string) {
+	var sec corev1.Secret
+	if err := r.Get(ctx, types.NamespacedName{Name: secretName, Namespace: namespace}, &sec); err != nil {
+		return "Failed", fmt.Sprintf("custom TLS secret %q not found", secretName)
+	}
+	if sec.Data == nil || len(sec.Data["tls.crt"]) == 0 || len(sec.Data["tls.key"]) == 0 {
+		return "Failed", fmt.Sprintf("custom TLS secret %q missing tls.crt or tls.key", secretName)
+	}
+	return "Ready", ""
 }
 
 func (r *AppReconciler) reconcileServiceAccount(ctx context.Context, app *mortisev1alpha1.App, envNs, envName string) error {
@@ -2302,12 +2315,10 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 		}
 
 		if app.Spec.Network.Public && es.Domain != "" {
-			tlsSecret := fmt.Sprintf("%s-tls", app.Name)
 			if env.TLS != nil && env.TLS.SecretName != "" {
-				tlsSecret = ""
-			}
-			if tlsSecret != "" {
-				es.CertificateStatus, es.CertificateMessage = r.checkCertificateStatus(ctx, tlsSecret, envNs)
+				es.CertificateStatus, es.CertificateMessage = r.checkCustomTLSSecret(ctx, env.TLS.SecretName, envNs)
+			} else {
+				es.CertificateStatus, es.CertificateMessage = r.checkCertificateStatus(ctx, tlsSecretName(app.Name), envNs)
 			}
 		}
 
@@ -2485,6 +2496,7 @@ func deploymentName(appName string) string { return constants.DeploymentName(app
 func cronJobName(appName string) string    { return constants.CronJobName(appName) }
 func serviceName(appName string) string    { return appName }
 func ingressName(appName string) string    { return appName }
+func tlsSecretName(appName string) string  { return fmt.Sprintf("%s-tls", ingressName(appName)) }
 
 // defaultDomainTemplate is the collision-safe default: {app}-{project}.{domain}
 // for production, {app}-{project}-{env}.{domain} for other environments.
