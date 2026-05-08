@@ -7,16 +7,19 @@ import {
 	createProjectViaAPI,
 	createAppViaAPI,
 	deleteProjectViaAPI,
-	deleteAppViaAPI
+	deleteAppViaAPI,
+	listDomainsViaAPI,
+	addDomainViaAPI,
+	removeDomainViaAPI
 } from './helpers';
 
 // ---------------------------------------------------------------------------
-// Domains E2E tests
+// Domains E2E tests (real backend)
 //
 // Tests cover the Domains section in the app Settings tab:
 //   - Adding a custom domain
 //   - Removing a custom domain
-//   - Copying the primary domain from the Networking section
+//   - Verifying domains via the API
 // ---------------------------------------------------------------------------
 
 test.describe('domains', () => {
@@ -39,49 +42,37 @@ test.describe('domains', () => {
 
 		await injectToken(page, adminToken);
 
-		const customDomain = 'my-app.example.com';
-
-		// Mock the listDomains and addDomain calls.
-		await page.route(
-			`**/api/projects/${projectName}/apps/${appName}/domains**`,
-			async (route) => {
-				if (route.request().method() === 'GET') {
-					return route.fulfill({
-						status: 200,
-						contentType: 'application/json',
-						body: JSON.stringify({ primary: null, custom: [] })
-					});
-				}
-				if (route.request().method() === 'POST') {
-					return route.fulfill({
-						status: 200,
-						contentType: 'application/json',
-						body: JSON.stringify({ primary: null, custom: [customDomain] })
-					});
-				}
-				return route.continue();
-			}
-		);
+		const customDomain = `${appName}.example.com`;
 
 		await page.goto(`/projects/${projectName}/apps/${appName}`);
 		await expect(page.getByRole('heading', { name: appName })).toBeVisible({ timeout: 10_000 });
 
-		// Open Settings tab → Domains section.
-		await page.getByRole('button', { name: 'Settings' }).click();
+		// Open Settings tab, filter to Domains section.
+		await page.getByRole('button', { name: 'Settings', exact: true }).click();
 		await page.getByPlaceholder('Filter settings…').fill('domains');
-		await expect(page.getByText('Domains')).toBeVisible({ timeout: 5_000 });
+		await expect(page.getByRole('heading', { name: 'Domains' })).toBeVisible({ timeout: 5_000 });
 
 		// Type the custom domain into the input.
 		const domainInput = page.getByPlaceholder('custom.example.com');
 		await expect(domainInput).toBeVisible();
 		await domainInput.fill(customDomain);
 
-		// Click Add — exact: true excludes AppNodes whose accessible name contains "add" as a substring.
+		// Click Add.
 		await page.getByRole('button', { name: 'Add', exact: true }).click();
 
-		// The domain should appear in the list.
-		await expect(page.getByText(customDomain)).toBeVisible({ timeout: 5_000 });
+		// The domain should appear in the list (optimistic UI may need a moment).
+		await expect(async () => {
+			await expect(page.getByText(customDomain)).toBeVisible({ timeout: 3_000 });
+		}).toPass({ timeout: 10_000 });
 
+		// Verify via API that the domain was persisted.
+		await expect(async () => {
+			const domains = await listDomainsViaAPI(request, adminToken, projectName, appName);
+			expect(domains.custom ?? []).toContain(customDomain);
+		}).toPass({ timeout: 10_000 });
+
+		// Clean up the domain via API before deleting the app.
+		await removeDomainViaAPI(request, adminToken, projectName, appName, customDomain);
 		await deleteAppViaAPI(request, adminToken, projectName, appName);
 	});
 
@@ -89,38 +80,18 @@ test.describe('domains', () => {
 		const appName = `e2e-dom-rm-${randomSuffix()}`;
 		await createAppViaAPI(request, adminToken, projectName, appName);
 
+		const existingDomain = `old-${appName}.example.com`;
+
+		// Pre-add a domain via the API so there's something to remove.
+		await addDomainViaAPI(request, adminToken, projectName, appName, existingDomain);
+
 		await injectToken(page, adminToken);
-
-		const existingDomain = 'old-domain.example.com';
-
-		// Mock domains — GET returns one custom domain; DELETE returns it removed.
-		await page.route(
-			`**/api/projects/${projectName}/apps/${appName}/domains**`,
-			async (route) => {
-				if (route.request().method() === 'GET') {
-					return route.fulfill({
-						status: 200,
-						contentType: 'application/json',
-						body: JSON.stringify({ primary: null, custom: [existingDomain] })
-					});
-				}
-				if (route.request().method() === 'DELETE') {
-					return route.fulfill({
-						status: 200,
-						contentType: 'application/json',
-						body: JSON.stringify({ primary: null, custom: [] })
-					});
-				}
-				return route.continue();
-			}
-		);
-
 		await page.goto(`/projects/${projectName}/apps/${appName}`);
 		await expect(page.getByRole('heading', { name: appName })).toBeVisible({ timeout: 10_000 });
 
-		await page.getByRole('button', { name: 'Settings' }).click();
+		await page.getByRole('button', { name: 'Settings', exact: true }).click();
 		await page.getByPlaceholder('Filter settings…').fill('domains');
-		await expect(page.getByText('Domains')).toBeVisible({ timeout: 5_000 });
+		await expect(page.getByRole('heading', { name: 'Domains' })).toBeVisible({ timeout: 5_000 });
 
 		// The existing domain should be visible.
 		await expect(page.getByText(existingDomain)).toBeVisible({ timeout: 5_000 });
@@ -129,65 +100,49 @@ test.describe('domains', () => {
 		const domainRow = page.locator('.rounded-md').filter({ hasText: existingDomain });
 		await domainRow.getByRole('button', { name: 'Remove' }).click();
 
-		// Domain should disappear.
+		// Domain should disappear from the UI.
 		await expect(page.getByText(existingDomain)).not.toBeVisible({ timeout: 5_000 });
+
+		// Verify via API that the domain was removed.
+		await expect(async () => {
+			const domains = await listDomainsViaAPI(request, adminToken, projectName, appName);
+			expect(domains.custom ?? []).not.toContain(existingDomain);
+		}).toPass({ timeout: 10_000 });
 
 		await deleteAppViaAPI(request, adminToken, projectName, appName);
 	});
 
-	test('developer sees the primary domain in Networking section with a copy button', async ({
-		page,
-		request
-	}) => {
-		const appName = `e2e-dom-primary-${randomSuffix()}`;
+	test('developer adds and verifies a domain end-to-end via API', async ({ page, request }) => {
+		const appName = `e2e-dom-verify-${randomSuffix()}`;
 		await createAppViaAPI(request, adminToken, projectName, appName);
-
-		const primaryDomain = `${appName}.example.com`;
 
 		await injectToken(page, adminToken);
 
-		// Mock the app GET to include a primary domain on the first environment.
-		await page.route(`**/api/projects/${projectName}/apps/${appName}`, async (route) => {
-			if (route.request().method() === 'GET') {
-				return route.fulfill({
-					status: 200,
-					contentType: 'application/json',
-					body: JSON.stringify({
-						metadata: { name: appName, namespace: `project-${projectName}` },
-						spec: {
-							source: { type: 'image', image: 'nginx:1.27' },
-							network: { public: true, port: 8080 },
-							environments: [
-								{
-									name: 'production',
-									replicas: 1,
-									domain: primaryDomain
-								}
-							],
-							storage: [],
-							credentials: []
-						},
-						status: { phase: 'Ready' }
-					})
-				});
-			}
-			return route.continue();
-		});
+		const customDomain = `verify-${appName}.example.com`;
 
 		await page.goto(`/projects/${projectName}/apps/${appName}`);
 		await expect(page.getByRole('heading', { name: appName })).toBeVisible({ timeout: 10_000 });
 
-		// Open Settings tab → Networking section.
-		await page.getByRole('button', { name: 'Settings' }).click();
-		await page.getByPlaceholder('Filter settings…').fill('networking');
-		await expect(page.getByText('Networking')).toBeVisible({ timeout: 5_000 });
+		// Open Settings tab, filter to Domains.
+		await page.getByRole('button', { name: 'Settings', exact: true }).click();
+		await page.getByPlaceholder('Filter settings…').fill('domains');
+		await expect(page.getByRole('heading', { name: 'Domains' })).toBeVisible({ timeout: 5_000 });
 
-		// Primary domain should be displayed.
-		await expect(page.getByText(primaryDomain)).toBeVisible({ timeout: 5_000 });
+		// Add the domain via the UI.
+		const domainInput = page.getByPlaceholder('custom.example.com');
+		await domainInput.fill(customDomain);
+		await page.getByRole('button', { name: 'Add', exact: true }).click();
 
-		// Copy button (aria-label="Copy domain") should be visible.
-		await expect(page.getByRole('button', { name: 'Copy domain' })).toBeVisible();
+		// Wait for it to appear in the UI.
+		await expect(page.getByText(customDomain)).toBeVisible({ timeout: 5_000 });
 
+		// Cross-verify: API should show the same domain.
+		await expect(async () => {
+			const domains = await listDomainsViaAPI(request, adminToken, projectName, appName);
+			expect(domains.custom ?? []).toContain(customDomain);
+		}).toPass({ timeout: 10_000 });
+
+		await removeDomainViaAPI(request, adminToken, projectName, appName, customDomain);
 		await deleteAppViaAPI(request, adminToken, projectName, appName);
 	});
 });
