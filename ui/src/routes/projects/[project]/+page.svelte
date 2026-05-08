@@ -4,7 +4,7 @@
 	import { goto } from '$app/navigation';
 	import { api } from '$lib/api';
 	import { store } from '$lib/store.svelte';
-	import { appNeedsRedeploy } from '$lib/types';
+	import { appNeedsRedeploy, staleEnvironments } from '$lib/types';
 	import type { App, AppPhase, Project, BuildLogsResponse, Pod } from '$lib/types';
 	import { connectProjectEvents } from '$lib/projectEvents';
 	import ProjectCanvas from '$lib/components/ProjectCanvas.svelte';
@@ -152,25 +152,34 @@
 		project?.autoRedeploy ? [] : apps.filter(a => appNeedsRedeploy(a))
 	);
 
-	let redeployingApps = $state<Set<string>>(new Set());
+	let redeployingEnvs = $state<Set<string>>(new Set());
 	let redeployAllRunning = $state(false);
 
-	async function redeployOne(appName: string) {
-		redeployingApps = new Set([...redeployingApps, appName]);
+	function isAppRedeploying(appName: string) {
+		return [...redeployingEnvs].some(key => key.startsWith(appName + ':'));
+	}
+
+	async function redeployEnv(appName: string, envName: string) {
+		const key = `${appName}:${envName}`;
+		redeployingEnvs = new Set([...redeployingEnvs, key]);
 		try {
-			await api.redeployStale(projectName, appName);
+			await api.redeploy(projectName, appName, envName);
 		} catch { /* error surfaces via SSE phase update */ }
 		finally {
-			const next = new Set(redeployingApps);
-			next.delete(appName);
-			redeployingApps = next;
+			const next = new Set(redeployingEnvs);
+			next.delete(key);
+			redeployingEnvs = next;
 		}
+	}
+
+	async function redeployApp(appName: string) {
+		const envs = staleEnvironments(apps.find(a => a.metadata.name === appName)!);
+		await Promise.allSettled(envs.map(env => redeployEnv(appName, env)));
 	}
 
 	async function redeployAllStale() {
 		redeployAllRunning = true;
-		const names = staleApps.map(a => a.metadata.name);
-		await Promise.allSettled(names.map(n => redeployOne(n)));
+		await Promise.allSettled(staleApps.map(a => redeployApp(a.metadata.name)));
 		redeployAllRunning = false;
 	}
 
@@ -302,17 +311,37 @@
 						<RotateCw class="h-4 w-4 shrink-0 text-warning" />
 						<div class="flex items-center gap-2 text-xs">
 							{#each staleApps as app}
-								<button
-									type="button"
-									onclick={() => redeployOne(app.metadata.name)}
-									disabled={redeployingApps.has(app.metadata.name)}
-									class="rounded-md border border-surface-600 bg-surface-700 px-2 py-1 font-medium text-white hover:bg-surface-600 disabled:opacity-50 transition-colors"
-								>
-									{#if redeployingApps.has(app.metadata.name)}
-										<Loader2 class="inline h-3 w-3 animate-spin mr-1" />
-									{/if}
-									{app.metadata.name}
-								</button>
+								{@const envs = staleEnvironments(app)}
+								{#if envs.length <= 1}
+									<button
+										type="button"
+										onclick={() => redeployApp(app.metadata.name)}
+										disabled={isAppRedeploying(app.metadata.name)}
+										class="rounded-md border border-surface-600 bg-surface-700 px-2 py-1 font-medium text-white hover:bg-surface-600 disabled:opacity-50 transition-colors"
+									>
+										{#if isAppRedeploying(app.metadata.name)}
+											<Loader2 class="inline h-3 w-3 animate-spin mr-1" />
+										{/if}
+										{app.metadata.name}
+									</button>
+								{:else}
+									<div class="flex items-center gap-1">
+										<span class="font-medium text-gray-300 px-1">{app.metadata.name}</span>
+										{#each envs as env}
+											<button
+												type="button"
+												onclick={() => redeployEnv(app.metadata.name, env)}
+												disabled={redeployingEnvs.has(`${app.metadata.name}:${env}`)}
+												class="rounded border border-surface-600 bg-surface-700 px-1.5 py-0.5 text-white hover:bg-surface-600 disabled:opacity-50 transition-colors"
+											>
+												{#if redeployingEnvs.has(`${app.metadata.name}:${env}`)}
+													<Loader2 class="inline h-3 w-3 animate-spin mr-0.5" />
+												{/if}
+												{env}
+											</button>
+										{/each}
+									</div>
+								{/if}
 							{/each}
 						</div>
 						<button
