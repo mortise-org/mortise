@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"math"
+	"math/rand/v2"
 	"sort"
 	"strings"
 	"sync"
@@ -30,15 +31,18 @@ type appEnvKey struct {
 	env       string
 }
 
+const maxLatencySamples = 1024
+
 type trafficBucket struct {
-	requests  int64
-	status2xx int64
-	status3xx int64
-	status4xx int64
-	status5xx int64
-	latencies []float64
-	bytesIn   int64
-	bytesOut  int64
+	requests     int64
+	status2xx    int64
+	status3xx    int64
+	status4xx    int64
+	status5xx    int64
+	latencies    []float64
+	latencyCount int64
+	bytesIn      int64
+	bytesOut     int64
 }
 
 type TrafficCollector struct {
@@ -55,6 +59,7 @@ type TrafficCollector struct {
 
 	accMu       sync.Mutex
 	accumulator map[accKey]*trafficBucket
+	rng         *rand.Rand
 
 	svcMu    sync.RWMutex
 	svcCache map[string]appEnvKey // "{namespace}/{serviceName}" -> appEnvKey
@@ -76,6 +81,7 @@ func NewTrafficCollector(cs kubernetes.Interface, store *Store, liveCache *LiveT
 		log:          log,
 		tailers:      make(map[string]context.CancelFunc),
 		accumulator:  make(map[accKey]*trafficBucket),
+		rng:          rand.New(rand.NewPCG(rand.Uint64(), rand.Uint64())),
 		svcCache:     make(map[string]appEnvKey),
 	}
 }
@@ -178,6 +184,15 @@ func (c *TrafficCollector) syncTailers(ctx context.Context) {
 }
 
 func (c *TrafficCollector) tailTraefikPod(ctx context.Context, podName string) {
+	key := c.ingressNs + "/" + podName
+	defer func() {
+		c.mu.Lock()
+		if _, exists := c.tailers[key]; exists {
+			delete(c.tailers, key)
+		}
+		c.mu.Unlock()
+	}()
+
 	tail := int64(10)
 	opts := &corev1.PodLogOptions{
 		Follow:    true,
@@ -193,9 +208,15 @@ func (c *TrafficCollector) tailTraefikPod(ctx context.Context, podName string) {
 	}
 	defer stream.Close()
 
+	done := make(chan struct{})
+	defer close(done)
+
 	go func() {
-		<-ctx.Done()
-		stream.Close()
+		select {
+		case <-ctx.Done():
+			stream.Close()
+		case <-done:
+		}
 	}()
 
 	scanner := bufio.NewScanner(stream)
@@ -253,7 +274,15 @@ func (c *TrafficCollector) processLine(line []byte) {
 	case entry.OriginStatus >= 200:
 		b.status2xx++
 	}
-	b.latencies = append(b.latencies, latencyMs)
+	b.latencyCount++
+	if len(b.latencies) < maxLatencySamples {
+		b.latencies = append(b.latencies, latencyMs)
+	} else {
+		// Reservoir sampling: uniform probability of replacing any existing sample
+		if j := c.rng.IntN(int(b.latencyCount)); j < maxLatencySamples {
+			b.latencies[j] = latencyMs
+		}
+	}
 	b.bytesIn += entry.RequestContentSize
 	b.bytesOut += entry.DownstreamContentSize
 	c.accMu.Unlock()
@@ -298,6 +327,7 @@ func (c *TrafficCollector) flush() {
 	}
 
 	c.liveCache.Add(entries)
+	c.liveCache.Sweep()
 	if err := c.store.InsertTraffic(entries); err != nil {
 		c.log.Error("traffic: failed to insert", "count", len(entries), "error", err)
 	} else {
