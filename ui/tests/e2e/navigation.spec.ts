@@ -16,7 +16,7 @@ import {
 //   - No flat header nav links (Extensions, Settings, Sign out are gone from header)
 //   - Left rail (<nav>) has icon-only links with title= attributes
 //   - "Sign out" is in a user menu dropdown (click User icon → Sign out)
-//   - "Platform Settings" is in the user menu (admin only) → /admin/settings
+//   - "Settings" is in the left rail (admin only) → /settings
 //   - Project switcher is a button showing the current project name (inside project)
 
 test.describe('left rail navigation', () => {
@@ -38,11 +38,11 @@ test.describe('left rail navigation', () => {
 	test('left rail visible when authenticated (dashboard scope)', async ({ page }) => {
 		await loginViaUI(page);
 
-		// Dashboard scope nav: Projects, Extensions, Platform Settings
+		// Dashboard scope nav: Projects, Extensions, Settings
 		await expect(page.getByTitle('Projects')).toBeVisible();
 		await expect(page.getByTitle('Extensions')).toBeVisible();
-		// Platform Settings link is admin-only
-		await expect(page.getByTitle('Platform Settings')).toBeVisible();
+		// Settings link is admin-only
+		await expect(page.getByTitle('Settings')).toBeVisible();
 	});
 
 	test('left rail not visible on login page', async ({ page }) => {
@@ -71,12 +71,12 @@ test.describe('left rail navigation', () => {
 		await expect(page.getByRole('heading', { name: 'Extensions' })).toBeVisible();
 	});
 
-	test('Platform Settings nav link navigates to /admin/settings', async ({ page }) => {
+	test('Settings nav link navigates to /settings', async ({ page }) => {
 		await loginViaUI(page);
 
-		await page.getByTitle('Platform Settings').click();
+		await page.getByTitle('Settings').click();
 
-		await expect(page).toHaveURL('/admin/settings');
+		await expect(page).toHaveURL('/settings');
 	});
 
 	test('Projects nav link navigates to /', async ({ page }) => {
@@ -132,10 +132,7 @@ test.describe('project scope left rail', () => {
 		await injectToken(page, adminToken);
 		await page.goto(`/projects/${name}`);
 
-		// Wait for page to load.
-		await page.waitForLoadState('networkidle');
-
-		// Project scope: Canvas + Project Settings (no Projects/Extensions/Platform Settings)
+		// Project scope: Canvas + Project Settings (no Projects/Extensions/Settings)
 		// Use exact title to avoid matching "Canvas view" toolbar button.
 		await expect(page.getByTitle('Canvas', { exact: true })).toBeVisible({ timeout: 10_000 });
 		await expect(page.getByTitle('Project Settings', { exact: true })).toBeVisible();
@@ -151,7 +148,6 @@ test.describe('project scope left rail', () => {
 
 		await injectToken(page, adminToken);
 		await page.goto(`/projects/${name}`);
-		await page.waitForLoadState('networkidle');
 
 		// The Canvas nav link (exact title to avoid matching "Canvas view" toolbar button).
 		const canvasLink = page.getByTitle('Canvas', { exact: true });
@@ -169,8 +165,9 @@ test.describe('project scope left rail', () => {
 
 		await page.getByTitle('Project Settings').click();
 
-		await expect(page).toHaveURL(`/projects/${name}/settings`);
-		await expect(page.getByRole('heading', { name: 'Project Settings' })).toBeVisible();
+		await expect(page).toHaveURL(new RegExp(`/projects/${name}/settings(\\?|$)`));
+		// Project settings page has no top-level heading; verify the General tab button.
+		await expect(page.getByRole('button', { name: 'General' })).toBeVisible();
 	});
 });
 
@@ -197,7 +194,6 @@ test.describe('project switcher', () => {
 
 		await injectToken(page, adminToken);
 		await page.goto(`/projects/${name}`);
-		await page.waitForLoadState('networkidle');
 
 		// The project switcher button shows the project name.
 		const switcher = page.locator('header').getByRole('button').filter({ hasText: name });
@@ -211,7 +207,6 @@ test.describe('project switcher', () => {
 
 		await injectToken(page, adminToken);
 		await page.goto(`/projects/${name}`);
-		await page.waitForLoadState('networkidle');
 
 		const switcher = page.locator('header').getByRole('button').filter({ hasText: name });
 		await expect(switcher).toBeVisible({ timeout: 10_000 });
@@ -232,7 +227,6 @@ test.describe('project switcher', () => {
 
 		await injectToken(page, adminToken);
 		await page.goto(`/projects/${name1}`);
-		await page.waitForLoadState('networkidle');
 
 		const switcher = page.locator('header').getByRole('button').filter({ hasText: name1 });
 		await expect(switcher).toBeVisible({ timeout: 10_000 });
@@ -242,7 +236,7 @@ test.describe('project switcher', () => {
 		await expect(dropdown).toBeVisible();
 		await dropdown.getByText(name2, { exact: false }).click();
 
-		await expect(page).toHaveURL(`/projects/${name2}`, { timeout: 5_000 });
+		await expect(page).toHaveURL(new RegExp(`/projects/${name2}(\\?|$)`), { timeout: 5_000 });
 	});
 
 	test('switcher "+ New project" navigates to /projects/new', async ({ page, request }) => {
@@ -252,7 +246,6 @@ test.describe('project switcher', () => {
 
 		await injectToken(page, adminToken);
 		await page.goto(`/projects/${name}`);
-		await page.waitForLoadState('networkidle');
 
 		const switcher = page.locator('header').getByRole('button').filter({ hasText: name });
 		await expect(switcher).toBeVisible({ timeout: 10_000 });
@@ -262,7 +255,7 @@ test.describe('project switcher', () => {
 		await expect(dropdown).toBeVisible();
 		await dropdown.getByText('+ New project').click();
 
-		await expect(page).toHaveURL('/projects/new', { timeout: 5_000 });
+		await expect(page).toHaveURL(/\/projects\/new(\?|$)/, { timeout: 5_000 });
 	});
 });
 
