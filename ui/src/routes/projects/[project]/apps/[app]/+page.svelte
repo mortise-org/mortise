@@ -1,9 +1,10 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
-	import { onMount } from 'svelte';
+	import { onMount, onDestroy } from 'svelte';
 	import { api } from '$lib/api';
 	import { store } from '$lib/store.svelte';
+	import { connectProjectEvents } from '$lib/projectEvents';
 	import AppDrawer from '$lib/components/AppDrawer.svelte';
 	import ProjectCanvas from '$lib/components/ProjectCanvas.svelte';
 	import ViewModeToggle from '$lib/components/ViewModeToggle.svelte';
@@ -14,6 +15,8 @@
 
 	let apps = $state<App[]>([]);
 	let loading = $state(true);
+	let eventStream: ReturnType<typeof connectProjectEvents> | null = null;
+	let destroyed = false;
 
 	onMount(async () => {
 		if (!localStorage.getItem('mortise_token')) {
@@ -24,11 +27,33 @@
 		if (envQ) store.setEnv(projectName, envQ);
 		try {
 			apps = await api.listApps(projectName);
+			if (destroyed) return;
+			eventStream = connectProjectEvents(projectName, {
+				onAppUpdated: (app) => {
+					const idx = apps.findIndex(a => a.metadata.name === app.metadata.name);
+					if (idx >= 0) {
+						apps[idx] = app;
+						apps = apps;
+					} else {
+						apps = [...apps, app];
+					}
+				},
+				onAppDeleted: (name) => {
+					apps = apps.filter(a => a.metadata.name !== name);
+				},
+				onPods: () => {},
+				onBuildLog: () => {}
+			});
 		} catch {
 			apps = [];
 		} finally {
 			loading = false;
 		}
+	});
+
+	onDestroy(() => {
+		destroyed = true;
+		eventStream?.close();
 	});
 
 	function closeDrawer() {
