@@ -277,7 +277,11 @@ func (c *TrafficCollector) processLine(line []byte) {
 		b.latencies = append(b.latencies, latencyMs)
 	} else {
 		// Reservoir sampling: uniform probability of replacing any existing sample
-		if j := c.rng.IntN(int(b.latencyCount)); j < maxLatencySamples {
+		n := b.latencyCount
+		if n > math.MaxInt {
+			n = math.MaxInt
+		}
+		if j := c.rng.IntN(int(n)); j < maxLatencySamples {
 			b.latencies[j] = latencyMs
 		}
 	}
