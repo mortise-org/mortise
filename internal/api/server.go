@@ -95,10 +95,6 @@ func NewServer(c client.Client, cs kubernetes.Interface, dc dynamic.Interface, r
 		deviceFlow:    df,
 		proxies:       newAppProxyManager(),
 		activityStore: activity.NewConfigMapStore(c),
-<<<<<<< HEAD
-=======
-		sseTokens:     newSSETokenStore(clock.RealClock{}),
->>>>>>> bfc09f6 (fix: inject clock into SSE token store, re-validate user on JWT refresh)
 	}
 	srv.sseTokens = newSSETokenStore(srv.clock())
 	return srv
