@@ -216,7 +216,7 @@ test.describe('projects', () => {
 		await page.getByRole('link', { name: 'Cancel' }).click();
 
 		await expect(page).toHaveURL('/');
-		await expect(page.getByRole('heading', { name: 'Projects' })).toBeVisible();
+		await expect(page.getByRole('heading', { name: 'Projects', exact: true })).toBeVisible();
 	});
 
 	test('back to projects link on new project page', async ({ page }) => {

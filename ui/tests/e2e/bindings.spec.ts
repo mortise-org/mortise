@@ -70,29 +70,32 @@ test.describe('bindings', () => {
 		// Open Variables tab -> Bindings section.
 		await page.getByRole('button', { name: 'Variables', exact: true }).click();
 
-		// The Bindings section header is a div[role="button"].
-		const bindingsHeader = page.locator('div[role="button"]').filter({ has: page.locator('span', { hasText: 'Bindings' }) }).first();
+		const bindingsSection = page
+			.locator('.rounded-lg.border')
+			.filter({ has: page.getByRole('button', { name: 'Bindings', exact: true }) })
+			.first();
+		const bindingsHeader = bindingsSection.locator('div[role="button"]').first();
 		await expect(bindingsHeader).toBeVisible({ timeout: 5_000 });
 
 		// No bindings yet.
-		await expect(page.getByText('No bindings')).toBeVisible();
+		await expect(bindingsSection.getByText('No bindings')).toBeVisible();
 
 		// Click the + button in the Bindings section header.
 		await bindingsHeader.locator('button').click();
 
 		// Select the postgres app from the dropdown.
-		const bindingSelect = page.locator('#binding-ref');
+		const bindingSelect = bindingsSection.locator('#binding-ref');
 		await expect(bindingSelect).toBeVisible({ timeout: 5_000 });
 		await bindingSelect.selectOption(pgAppName);
 
 		// The credentials preview should appear.
-		await expect(page.getByText('DATABASE_URL')).toBeVisible({ timeout: 3_000 });
+		await expect(bindingsSection.getByText('DATABASE_URL')).toBeVisible({ timeout: 3_000 });
 
 		// Click Add.
-		await page.getByRole('button', { name: 'Add', exact: true }).click();
+		await bindingsSection.getByRole('button', { name: 'Add', exact: true }).click();
 
 		// Binding should appear in the list.
-		await expect(page.getByText(pgAppName).first()).toBeVisible({ timeout: 5_000 });
+		await expect(bindingsSection.getByText(pgAppName).first()).toBeVisible({ timeout: 5_000 });
 
 		await deleteAppViaAPI(request, adminToken, projectName, webAppName);
 		await deleteAppViaAPI(request, adminToken, projectName, pgAppName);

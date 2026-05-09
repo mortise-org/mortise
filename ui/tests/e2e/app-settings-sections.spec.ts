@@ -394,11 +394,15 @@ test.describe('app settings - bindings', () => {
 		await page.getByRole('button', { name: 'Variables', exact: true }).click();
 
 		// Expand bindings section and click + to add
-		const bindingsHeader = page.locator('div[role="button"]').filter({ hasText: 'Bindings' });
+		const bindingsSection = page
+			.locator('.rounded-lg.border')
+			.filter({ has: page.getByRole('button', { name: 'Bindings', exact: true }) })
+			.first();
+		const bindingsHeader = bindingsSection.locator('div[role="button"]').first();
 		await expect(bindingsHeader).toBeVisible({ timeout: 5_000 });
 		await bindingsHeader.locator('button').click();
 
-		const bindingSelect = page.locator('#binding-ref');
+		const bindingSelect = bindingsSection.locator('#binding-ref');
 		await expect(bindingSelect).toBeVisible({ timeout: 5_000 });
 
 		// The postgres app should appear in the dropdown
