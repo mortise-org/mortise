@@ -94,8 +94,12 @@ test.describe('bindings', () => {
 		// Click Add.
 		await bindingsSection.getByRole('button', { name: 'Add', exact: true }).click();
 
-		// Binding should appear in the list.
-		await expect(bindingsSection.getByText(pgAppName).first()).toBeVisible({ timeout: 5_000 });
+		await expect(async () => {
+			const app = await getAppViaAPI(request, adminToken, projectName, webAppName);
+			const spec = app.spec as { environments?: Array<{ name: string; bindings?: Array<{ ref: string }> }> };
+			const env = spec.environments?.find((candidate) => candidate.name === 'production');
+			expect(env?.bindings).toEqual(expect.arrayContaining([expect.objectContaining({ ref: pgAppName })]));
+		}).toPass({ timeout: 10_000, intervals: [500, 1_000, 2_000] });
 
 		await deleteAppViaAPI(request, adminToken, projectName, webAppName);
 		await deleteAppViaAPI(request, adminToken, projectName, pgAppName);
