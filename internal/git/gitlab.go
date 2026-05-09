@@ -158,6 +158,44 @@ func (g *GitLabAPI) ListBranches(ctx context.Context, repo string) ([]Branch, er
 	return result, nil
 }
 
+func (g *GitLabAPI) ResolveBranchHead(ctx context.Context, repo, branch string) (string, error) {
+	b, _, err := g.client.Branches.GetBranch(repo, branch)
+	if err != nil {
+		return "", fmt.Errorf("get gitlab branch: %w", err)
+	}
+	if b.Commit == nil {
+		return "", fmt.Errorf("gitlab branch %q has no commit", branch)
+	}
+	return b.Commit.ID, nil
+}
+
+func (g *GitLabAPI) ListOpenPullRequests(ctx context.Context, repo string) ([]PullRequestSnapshot, error) {
+	state := "opened"
+	prs, _, err := g.client.MergeRequests.ListProjectMergeRequests(repo, &gogitlab.ListProjectMergeRequestsOptions{
+		State: gogitlab.Ptr(state),
+		ListOptions: gogitlab.ListOptions{
+			PerPage: 100,
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list gitlab merge requests: %w", err)
+	}
+	out := make([]PullRequestSnapshot, 0, len(prs))
+	for _, pr := range prs {
+		author := PullRequestAuthor{}
+		if pr.Author != nil {
+			author.Login = pr.Author.Username
+		}
+		out = append(out, PullRequestSnapshot{
+			Number: int(pr.IID),
+			Branch: pr.SourceBranch,
+			SHA:    pr.SHA,
+			Author: author,
+		})
+	}
+	return out, nil
+}
+
 func (g *GitLabAPI) ListTree(ctx context.Context, owner, repo, branch, path string) ([]TreeEntry, error) {
 	_ = ctx
 	projectPath := owner + "/" + repo

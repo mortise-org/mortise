@@ -1,5 +1,4 @@
 <script lang="ts">
-	import { untrack } from 'svelte';
 	import { api } from '$lib/api';
 	import type { App, AppSpec } from '$lib/types';
 	import { inputCls, labelCls, sectionCls, headingCls, btnPrimary } from './styles';
@@ -26,15 +25,10 @@
 	let saving = $state(false);
 
 	$effect(() => {
-		const envName = selectedEnv;
-		void app.metadata.name;
-		untrack(() => {
-			const spec = cloneSpec();
-			const env = spec.environments?.find((e: { name: string }) => e.name === envName);
-			scaleReplicas = String(env?.replicas ?? 1);
-			scaleCpu = env?.resources?.cpu ?? '';
-			scaleMemory = env?.resources?.memory ?? '';
-		});
+		const env = app.spec.environments?.find(e => e.name === selectedEnv);
+		scaleReplicas = String(env?.replicas ?? 1);
+		scaleCpu = env?.resources?.cpu ?? '';
+		scaleMemory = env?.resources?.memory ?? '';
 	});
 
 	async function saveScale() {

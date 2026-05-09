@@ -1,5 +1,4 @@
 <script lang="ts">
-	import { untrack } from 'svelte';
 	import { api } from '$lib/api';
 	import type { App, AppSpec, SecretMount } from '$lib/types';
 	import { Plus, Trash2, ChevronDown } from 'lucide-svelte';
@@ -30,15 +29,10 @@
 	let savingMounts = $state(false);
 
 	$effect(() => {
-		const envName = selectedEnv;
-		void app.metadata.name;
-		untrack(() => {
-			const spec = cloneSpec();
-			// eslint-disable-next-line @typescript-eslint/no-explicit-any
-			const env = (spec.environments?.find((e: { name: string }) => e.name === envName) as any) ?? {};
-			annotations = Object.fromEntries(Object.entries((env.annotations ?? {}) as Record<string, string>));
-			secretMounts = (env.secretMounts ?? []) as SecretMount[];
-		});
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		const env = (app.spec.environments?.find(e => e.name === selectedEnv) as any) ?? {};
+		annotations = Object.fromEntries(Object.entries((env.annotations ?? {}) as Record<string, string>));
+		secretMounts = (env.secretMounts ?? []) as SecretMount[];
 	});
 
 	function addAnnotation() {

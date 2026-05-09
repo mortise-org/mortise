@@ -69,6 +69,11 @@ const (
 // signal — the App reconciler doesn't read the value.
 const ProjectEnvsRevAnnotation = "mortise.dev/project-envs-rev"
 
+// ProjectPreviewRevAnnotation is the App annotation the Project controller
+// bumps when the Project spec changes so preview backfill can rerun on the
+// next App reconcile.
+const ProjectPreviewRevAnnotation = "mortise.dev/project-preview-rev"
+
 // ProjectNamespace returns the control namespace for a Project. Kept for
 // callers outside this package that used to rely on `project-{name}`.
 func ProjectNamespace(projectName string) string {
@@ -222,6 +227,9 @@ func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 			return ctrl.Result{}, fmt.Errorf("cascade env change: %w", err)
 		}
 	}
+	if err := r.cascadePreviewChange(ctx, &project, controlNs); err != nil {
+		return ctrl.Result{}, fmt.Errorf("cascade preview change: %w", err)
+	}
 
 	if err := r.markReady(ctx, &project, controlNs, appCount, envNsMap); err != nil {
 		return ctrl.Result{}, fmt.Errorf("update status: %w", err)
@@ -262,6 +270,29 @@ func (r *ProjectReconciler) cascadeEnvChange(ctx context.Context, project *morti
 			continue
 		}
 		app.Annotations[ProjectEnvsRevAnnotation] = rev
+		if err := r.Patch(ctx, app, patch); err != nil {
+			return fmt.Errorf("patch app %q: %w", app.Name, err)
+		}
+	}
+	return nil
+}
+
+func (r *ProjectReconciler) cascadePreviewChange(ctx context.Context, project *mortisev1alpha1.Project, controlNs string) error {
+	var apps mortisev1alpha1.AppList
+	if err := r.List(ctx, &apps, client.InNamespace(controlNs)); err != nil {
+		return fmt.Errorf("list apps: %w", err)
+	}
+	rev := fmt.Sprintf("%d", project.Generation)
+	for i := range apps.Items {
+		app := &apps.Items[i]
+		patch := client.MergeFrom(app.DeepCopy())
+		if app.Annotations == nil {
+			app.Annotations = map[string]string{}
+		}
+		if app.Annotations[ProjectPreviewRevAnnotation] == rev {
+			continue
+		}
+		app.Annotations[ProjectPreviewRevAnnotation] = rev
 		if err := r.Patch(ctx, app, patch); err != nil {
 			return fmt.Errorf("patch app %q: %w", app.Name, err)
 		}

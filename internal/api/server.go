@@ -12,13 +12,15 @@ import (
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
-	kclock "k8s.io/utils/clock"
 	metricsv1beta1 "k8s.io/metrics/pkg/client/clientset/versioned/typed/metrics/v1beta1"
+	kclock "k8s.io/utils/clock"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
 	"github.com/mortise-org/mortise/internal/activity"
 	"github.com/mortise-org/mortise/internal/auth"
 	"github.com/mortise-org/mortise/internal/authz"
+	"github.com/mortise-org/mortise/internal/git"
 	"github.com/mortise-org/mortise/internal/webhook"
 )
 
@@ -47,6 +49,7 @@ type Server struct {
 	activityStore activity.Store
 	Clock         kclock.Clock
 	sseTokens     *sseTokenStore
+	GitAPIFactory func(*mortisev1alpha1.GitProvider, string, string) (git.GitAPI, error)
 }
 
 // RESTConfig returns the rest.Config the server was built with. Exposed for
@@ -93,6 +96,7 @@ func NewServer(c client.Client, cs kubernetes.Interface, dc dynamic.Interface, r
 		deviceFlow:    df,
 		proxies:       newAppProxyManager(),
 		activityStore: activity.NewConfigMapStore(c),
+		GitAPIFactory: git.NewGitAPIFromProvider,
 	}
 	srv.sseTokens = newSSETokenStore(srv.clock())
 	return srv

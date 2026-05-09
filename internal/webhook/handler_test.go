@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
+	"github.com/mortise-org/mortise/internal/git"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -33,6 +34,8 @@ type fakeK8sReader struct {
 	createdPreviews []mortisev1alpha1.PreviewEnvironment
 	updatedPreviews []mortisev1alpha1.PreviewEnvironment
 	deletedPreviews []mortisev1alpha1.PreviewEnvironment
+
+	openPRs []git.PullRequestSnapshot
 }
 
 func (f *fakeK8sReader) getGitProvider(_ context.Context, name string) (*mortisev1alpha1.GitProvider, error) {
@@ -103,6 +106,48 @@ func (f *fakeK8sReader) updatePreviewEnvironment(_ context.Context, pe *mortisev
 func (f *fakeK8sReader) deletePreviewEnvironment(_ context.Context, pe *mortisev1alpha1.PreviewEnvironment) error {
 	f.deletedPreviews = append(f.deletedPreviews, *pe)
 	return nil
+}
+
+func (f *fakeK8sReader) resolveGitTokenForApp(_ context.Context, _, _, _, _ string) (git.TokenResult, error) {
+	return git.TokenResult{Token: "test-token", Email: "test@example.com"}, nil
+}
+
+func newTestHandler(kr *fakeK8sReader) *Handler {
+	h := New(kr)
+	h.gitAPIFromProvider = func(*mortisev1alpha1.GitProvider, string, string) (git.GitAPI, error) {
+		return &testGitAPI{openPRs: kr.openPRs}, nil
+	}
+	return h
+}
+
+type testGitAPI struct {
+	openPRs []git.PullRequestSnapshot
+}
+
+func (t *testGitAPI) RegisterWebhook(context.Context, string, git.WebhookConfig) error { return nil }
+func (t *testGitAPI) ListWebhooks(context.Context, string) ([]git.WebhookInfo, error) {
+	return nil, nil
+}
+func (t *testGitAPI) DeleteWebhook(context.Context, string, int64) error { return nil }
+func (t *testGitAPI) PostCommitStatus(context.Context, string, string, git.CommitStatus) error {
+	return nil
+}
+func (t *testGitAPI) VerifyWebhookSignature([]byte, http.Header) error { return nil }
+func (t *testGitAPI) ResolveCloneCredentials(context.Context, string) (git.GitCredentials, error) {
+	return git.GitCredentials{}, nil
+}
+func (t *testGitAPI) ListRepos(context.Context) ([]git.Repository, error) { return nil, nil }
+func (t *testGitAPI) ListBranches(context.Context, string) ([]git.Branch, error) {
+	return nil, nil
+}
+func (t *testGitAPI) ResolveBranchHead(context.Context, string, string) (string, error) {
+	return "", nil
+}
+func (t *testGitAPI) ListOpenPullRequests(context.Context, string) ([]git.PullRequestSnapshot, error) {
+	return t.openPRs, nil
+}
+func (t *testGitAPI) ListTree(context.Context, string, string, string, string) ([]git.TreeEntry, error) {
+	return nil, nil
 }
 
 func makeGitProvider(providerType mortisev1alpha1.GitProviderType, secretNS, secretName, secretKey string) *mortisev1alpha1.GitProvider {
@@ -385,7 +430,7 @@ func TestWebhook_DispatchMatrix(t *testing.T) {
 				},
 				apps: tc.apps,
 			}
-			h := New(kr)
+			h := newTestHandler(kr)
 
 			req := httptest.NewRequest(http.MethodPost, "/github-main", bytes.NewReader(body))
 			req.Header.Set("Content-Type", "application/json")
@@ -638,8 +683,9 @@ func TestGitHubPREvent_Opened_CreatesPreviewEnvironment(t *testing.T) {
 		secrets:  map[string]string{"mortise-system/wh-secret/value": secret},
 		apps:     []mortisev1alpha1.App{app},
 		projects: map[string]*mortisev1alpha1.Project{"default": proj},
+		openPRs:  []git.PullRequestSnapshot{{Number: 42, Branch: "feature/x", SHA: "shaopened"}},
 	}
-	h := New(kr)
+	h := newTestHandler(kr)
 
 	req := httptest.NewRequest(http.MethodPost, "/"+providerName, bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -696,8 +742,9 @@ func TestGiteaPREvent_Opened_CreatesPreviewEnvironment(t *testing.T) {
 		secrets:  map[string]string{"mortise-system/wh-secret/value": secret},
 		apps:     []mortisev1alpha1.App{app},
 		projects: map[string]*mortisev1alpha1.Project{"gitea": proj},
+		openPRs:  []git.PullRequestSnapshot{{Number: 7, Branch: "topic/feat", SHA: "gitasha"}},
 	}
-	h := New(kr)
+	h := newTestHandler(kr)
 
 	req := httptest.NewRequest(http.MethodPost, "/"+providerName, bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -740,8 +787,9 @@ func TestGitLabPREvent_Opened_CreatesPreviewEnvironment(t *testing.T) {
 		secrets:  map[string]string{"mortise-system/wh-secret/value": secret},
 		apps:     []mortisev1alpha1.App{app},
 		projects: map[string]*mortisev1alpha1.Project{"gl": proj},
+		openPRs:  []git.PullRequestSnapshot{{Number: 11, Branch: "feat/branch", SHA: "mrsha1"}},
 	}
-	h := New(kr)
+	h := newTestHandler(kr)
 
 	req := httptest.NewRequest(http.MethodPost, "/"+providerName, bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -783,7 +831,7 @@ func TestPREvent_ProjectPreviewDisabled_NoPECreated(t *testing.T) {
 		secrets:  map[string]string{"mortise-system/wh-secret/value": secret},
 		apps:     []mortisev1alpha1.App{app},
 	}
-	h := New(kr)
+	h := newTestHandler(kr)
 
 	req := httptest.NewRequest(http.MethodPost, "/"+providerName, bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -809,7 +857,7 @@ func TestPREvent_ProjectPreviewDisabled_NoPECreated(t *testing.T) {
 		apps:     []mortisev1alpha1.App{app2},
 		projects: map[string]*mortisev1alpha1.Project{"default": proj2},
 	}
-	h2 := New(kr2)
+	h2 := newTestHandler(kr2)
 
 	req2 := httptest.NewRequest(http.MethodPost, "/"+providerName, bytes.NewReader(body))
 	req2.Header.Set("Content-Type", "application/json")
@@ -840,8 +888,9 @@ func TestPREvent_DomainTemplate_Resolved(t *testing.T) {
 		secrets:  map[string]string{"mortise-system/wh-secret/value": secret},
 		apps:     []mortisev1alpha1.App{app},
 		projects: map[string]*mortisev1alpha1.Project{"default": proj},
+		openPRs:  []git.PullRequestSnapshot{{Number: 99, Branch: "br", SHA: "sha99"}},
 	}
-	h := New(kr)
+	h := newTestHandler(kr)
 
 	req := httptest.NewRequest(http.MethodPost, "/"+providerName, bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -894,8 +943,9 @@ func TestPREvent_StagingInheritance(t *testing.T) {
 		secrets:  map[string]string{"mortise-system/wh-secret/value": secret},
 		apps:     []mortisev1alpha1.App{app},
 		projects: map[string]*mortisev1alpha1.Project{"default": proj},
+		openPRs:  []git.PullRequestSnapshot{{Number: 8, Branch: "br", SHA: "sha8"}},
 	}
-	h := New(kr)
+	h := newTestHandler(kr)
 
 	req := httptest.NewRequest(http.MethodPost, "/"+providerName, bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -950,8 +1000,9 @@ func TestPREvent_PreviewResourcesOverride(t *testing.T) {
 		secrets:  map[string]string{"mortise-system/wh-secret/value": secret},
 		apps:     []mortisev1alpha1.App{app},
 		projects: map[string]*mortisev1alpha1.Project{"default": proj},
+		openPRs:  []git.PullRequestSnapshot{{Number: 3, Branch: "br", SHA: "sha3"}},
 	}
-	h := New(kr)
+	h := newTestHandler(kr)
 
 	req := httptest.NewRequest(http.MethodPost, "/"+providerName, bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -1004,8 +1055,9 @@ func TestGitHubPREvent_Synchronize_UpdatesExistingPE(t *testing.T) {
 		apps:        []mortisev1alpha1.App{app},
 		projects:    map[string]*mortisev1alpha1.Project{"default": proj},
 		previewEnvs: []mortisev1alpha1.PreviewEnvironment{existing},
+		openPRs:     []git.PullRequestSnapshot{{Number: 42, Branch: "feature/x", SHA: "newsha"}},
 	}
-	h := New(kr)
+	h := newTestHandler(kr)
 
 	req := httptest.NewRequest(http.MethodPost, "/"+providerName, bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -1043,8 +1095,9 @@ func TestGitHubPREvent_Synchronize_NoExistingPE_Creates(t *testing.T) {
 		apps:     []mortisev1alpha1.App{app},
 		projects: map[string]*mortisev1alpha1.Project{"default": proj},
 		// No existing PE.
+		openPRs: []git.PullRequestSnapshot{{Number: 42, Branch: "feature/x", SHA: "sync-sha"}},
 	}
-	h := New(kr)
+	h := newTestHandler(kr)
 
 	req := httptest.NewRequest(http.MethodPost, "/"+providerName, bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -1078,6 +1131,7 @@ func TestGitHubPREvent_Closed_DeletesPE(t *testing.T) {
 			Name:      "my-app-preview-pr-42",
 			Namespace: "pj-default",
 		},
+		Spec: mortisev1alpha1.PreviewEnvironmentSpec{AppRef: "my-app", PullRequest: mortisev1alpha1.PullRequestRef{Number: 42}},
 	}
 	kr := &fakeK8sReader{
 		provider:    gp,
@@ -1086,7 +1140,7 @@ func TestGitHubPREvent_Closed_DeletesPE(t *testing.T) {
 		projects:    map[string]*mortisev1alpha1.Project{"default": proj},
 		previewEnvs: []mortisev1alpha1.PreviewEnvironment{existing},
 	}
-	h := New(kr)
+	h := newTestHandler(kr)
 
 	req := httptest.NewRequest(http.MethodPost, "/"+providerName, bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -1107,6 +1161,57 @@ func TestGitHubPREvent_Closed_DeletesPE(t *testing.T) {
 	}
 }
 
+func TestGitHubPREvent_Closed_DeletesPE_WhenForgeStillListsPR(t *testing.T) {
+	const secret = "whsec"
+	body := githubPRPayloadJSON("closed", 42, "feature/x", "anysha", "org/repo")
+
+	gp := makeGitProvider(mortisev1alpha1.GitProviderTypeGitHub, "mortise-system", "wh-secret", "value")
+	app, project := makePreviewGitApp("preview-app", "pj-proj", "https://github.com/org/repo", "main", "pr-{number}.example.com", "24h")
+	app.Spec.Source.ProviderRef = gp.Name
+
+	kr := &fakeK8sReader{
+		provider: gp,
+		secrets: map[string]string{
+			"mortise-system/wh-secret/value": secret,
+		},
+		apps:     []mortisev1alpha1.App{app},
+		projects: map[string]*mortisev1alpha1.Project{"proj": project},
+		previewEnvs: []mortisev1alpha1.PreviewEnvironment{
+			{
+				ObjectMeta: metav1.ObjectMeta{Name: "preview-app-preview-pr-42", Namespace: "pj-proj"},
+				Spec: mortisev1alpha1.PreviewEnvironmentSpec{
+					AppRef:    app.Name,
+					SourceEnv: "staging",
+					PullRequest: mortisev1alpha1.PullRequestRef{
+						Number: 42,
+						Branch: "feature/x",
+						SHA:    "oldsha",
+					},
+				},
+			},
+		},
+		openPRs: []git.PullRequestSnapshot{
+			{Number: 42, Branch: "feature/x", SHA: "anysha"},
+		},
+	}
+	h := newTestHandler(kr)
+
+	req := httptest.NewRequest(http.MethodPost, "/github", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Hub-Signature-256", githubSignature(body, secret))
+	req.Header.Set("X-GitHub-Event", "pull_request")
+
+	rr := httptest.NewRecorder()
+	h.Routes().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if len(kr.deletedPreviews) != 1 {
+		t.Fatalf("expected preview delete on closed event, got %d", len(kr.deletedPreviews))
+	}
+}
+
 func TestGiteaPREvent_Closed_DeletesPE(t *testing.T) {
 	const secret = "giteaprsecret"
 	const providerName = "gitea-homelab"
@@ -1121,6 +1226,7 @@ func TestGiteaPREvent_Closed_DeletesPE(t *testing.T) {
 			Name:      "myrepo-app-preview-pr-9",
 			Namespace: "pj-gitea",
 		},
+		Spec: mortisev1alpha1.PreviewEnvironmentSpec{AppRef: "myrepo-app", PullRequest: mortisev1alpha1.PullRequestRef{Number: 9}},
 	}
 	kr := &fakeK8sReader{
 		provider:    gp,
@@ -1129,7 +1235,7 @@ func TestGiteaPREvent_Closed_DeletesPE(t *testing.T) {
 		projects:    map[string]*mortisev1alpha1.Project{"gitea": proj},
 		previewEnvs: []mortisev1alpha1.PreviewEnvironment{existing},
 	}
-	h := New(kr)
+	h := newTestHandler(kr)
 
 	req := httptest.NewRequest(http.MethodPost, "/"+providerName, bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -1172,6 +1278,7 @@ func TestGitLabPREvent_Closed_DeletesPE(t *testing.T) {
 					Name:      "gl-app-preview-pr-17",
 					Namespace: "pj-gl",
 				},
+				Spec: mortisev1alpha1.PreviewEnvironmentSpec{AppRef: "gl-app", PullRequest: mortisev1alpha1.PullRequestRef{Number: 17}},
 			}
 			kr := &fakeK8sReader{
 				provider:    gp,
@@ -1180,7 +1287,7 @@ func TestGitLabPREvent_Closed_DeletesPE(t *testing.T) {
 				projects:    map[string]*mortisev1alpha1.Project{"gl": proj},
 				previewEnvs: []mortisev1alpha1.PreviewEnvironment{existing},
 			}
-			h := New(kr)
+			h := newTestHandler(kr)
 
 			req := httptest.NewRequest(http.MethodPost, "/"+providerName, bytes.NewReader(body))
 			req.Header.Set("Content-Type", "application/json")
@@ -1215,7 +1322,7 @@ func TestPREvent_Closed_NoExistingPE_Idempotent(t *testing.T) {
 		projects: map[string]*mortisev1alpha1.Project{"default": proj},
 		// No existing PE.
 	}
-	h := New(kr)
+	h := newTestHandler(kr)
 
 	req := httptest.NewRequest(http.MethodPost, "/"+providerName, bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -1359,7 +1466,7 @@ func TestPREvent_ProjectOnlyProductionEnv_NoPECreated(t *testing.T) {
 		apps:     []mortisev1alpha1.App{app},
 		projects: map[string]*mortisev1alpha1.Project{"default": proj},
 	}
-	h := New(kr)
+	h := newTestHandler(kr)
 
 	req := httptest.NewRequest(http.MethodPost, "/"+providerName, bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -1391,7 +1498,7 @@ func TestPREvent_NoMatchingRepo_NoPECreated(t *testing.T) {
 		apps:     []mortisev1alpha1.App{app},
 		projects: map[string]*mortisev1alpha1.Project{"default": proj},
 	}
-	h := New(kr)
+	h := newTestHandler(kr)
 
 	req := httptest.NewRequest(http.MethodPost, "/"+providerName, bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")

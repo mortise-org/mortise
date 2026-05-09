@@ -66,6 +66,24 @@ type TreeEntry struct {
 	Path string `json:"path"`
 }
 
+// PullRequestAuthor carries normalized author metadata for forge PR/MR APIs.
+// IsBot is best-effort and may be false when the forge doesn't expose bot
+// identity cleanly in the listing response.
+type PullRequestAuthor struct {
+	Login string `json:"login"`
+	Type  string `json:"type,omitempty"`
+	IsBot bool   `json:"isBot,omitempty"`
+}
+
+// PullRequestSnapshot is the normalized open PR / MR shape used by preview
+// synchronization across all supported forges.
+type PullRequestSnapshot struct {
+	Number int               `json:"number"`
+	Branch string            `json:"branch"`
+	SHA    string            `json:"sha"`
+	Author PullRequestAuthor `json:"author,omitempty"`
+}
+
 // GitAPI handles forge-specific REST API calls. One implementation per forge.
 type GitAPI interface {
 	RegisterWebhook(ctx context.Context, repo string, cfg WebhookConfig) error
@@ -76,5 +94,7 @@ type GitAPI interface {
 	ResolveCloneCredentials(ctx context.Context, repo string) (GitCredentials, error)
 	ListRepos(ctx context.Context) ([]Repository, error)
 	ListBranches(ctx context.Context, repo string) ([]Branch, error)
+	ResolveBranchHead(ctx context.Context, repo, branch string) (string, error)
+	ListOpenPullRequests(ctx context.Context, repo string) ([]PullRequestSnapshot, error)
 	ListTree(ctx context.Context, owner, repo, branch, path string) ([]TreeEntry, error)
 }

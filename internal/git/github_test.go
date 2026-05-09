@@ -303,6 +303,72 @@ func TestGitHub_ListRepos(t *testing.T) {
 	}
 }
 
+func TestGitHub_ResolveBranchHead(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/api/v3/repos/octo/hello-world/branches/main" {
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]any{
+				"name": "main",
+				"commit": map[string]any{
+					"sha": "abc123def456",
+				},
+			})
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	api := newTestGitHubAPI(t, srv.URL)
+	sha, err := api.ResolveBranchHead(context.Background(), "octo/hello-world", "main")
+	if err != nil {
+		t.Fatalf("ResolveBranchHead: %v", err)
+	}
+	if sha != "abc123def456" {
+		t.Fatalf("expected branch head sha abc123def456, got %q", sha)
+	}
+}
+
+func TestGitHub_ListOpenPullRequests(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/api/v3/repos/octo/hello-world/pulls" {
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode([]map[string]any{
+				{
+					"number": 42,
+					"state":  "open",
+					"head": map[string]any{
+						"ref": "feature-x",
+						"sha": "deadbeef",
+					},
+					"user": map[string]any{
+						"login": "dependabot[bot]",
+						"type":  "Bot",
+					},
+				},
+			})
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	api := newTestGitHubAPI(t, srv.URL)
+	prs, err := api.ListOpenPullRequests(context.Background(), "octo/hello-world")
+	if err != nil {
+		t.Fatalf("ListOpenPullRequests: %v", err)
+	}
+	if len(prs) != 1 {
+		t.Fatalf("expected 1 pr, got %d", len(prs))
+	}
+	if prs[0].Number != 42 || prs[0].Branch != "feature-x" || prs[0].SHA != "deadbeef" {
+		t.Fatalf("unexpected pr snapshot: %+v", prs[0])
+	}
+	if !prs[0].Author.IsBot {
+		t.Fatalf("expected bot author, got %+v", prs[0].Author)
+	}
+}
+
 func TestGitHub_ListBranches(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {

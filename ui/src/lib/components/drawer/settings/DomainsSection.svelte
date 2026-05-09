@@ -1,5 +1,4 @@
 <script lang="ts">
-	import { untrack } from 'svelte';
 	import { api } from '$lib/api';
 	import type { App, AppSpec, DomainsResponse } from '$lib/types';
 	import { inputCls, labelCls, sectionCls, headingCls, btnPrimary } from './styles';
@@ -8,14 +7,12 @@
 		project,
 		app,
 		selectedEnv,
-		cloneSpec,
 		onSpecUpdate,
 		onError
 	}: {
 		project: string;
 		app: App;
 		selectedEnv: string;
-		cloneSpec: () => AppSpec;
 		onSpecUpdate: (spec: AppSpec) => void;
 		onError: (msg: string) => void;
 	} = $props();
@@ -31,23 +28,17 @@
 	let tlsClusterIssuer = $state('');
 	let tlsSecretName = $state('');
 	let savingTls = $state(false);
-	const certEnvStatus = $derived(app.status?.environments?.find(e => e.name === selectedEnv));
 
 	$effect(() => {
 		if (selectedEnv) void loadDomains();
 	});
 
 	$effect(() => {
-		const envName = selectedEnv;
-		void app.metadata.name;
-		untrack(() => {
-			const spec = cloneSpec();
-			const env = spec.environments?.find((e: { name: string }) => e.name === envName) as
-				| { tls?: { clusterIssuer?: string; secretName?: string } }
-				| undefined;
-			tlsClusterIssuer = env?.tls?.clusterIssuer ?? '';
-			tlsSecretName = env?.tls?.secretName ?? '';
-		});
+		const env = app.spec.environments?.find(e => e.name === selectedEnv) as
+			| { tls?: { clusterIssuer?: string; secretName?: string } }
+			| undefined;
+		tlsClusterIssuer = env?.tls?.clusterIssuer ?? '';
+		tlsSecretName = env?.tls?.secretName ?? '';
 	});
 
 	async function loadDomains() {
@@ -129,15 +120,14 @@
 
 		savingPrimary = true;
 		try {
-			const spec = cloneSpec();
-			spec.environments = spec.environments ?? [];
-			const idx = spec.environments.findIndex((e: { name: string }) => e.name === selectedEnv);
+			const envs = [...(app.spec.environments ?? [])];
+			const idx = envs.findIndex(e => e.name === selectedEnv);
 			if (idx >= 0) {
-				spec.environments[idx] = { ...spec.environments[idx], domain };
+				envs[idx] = { ...envs[idx], domain };
 			} else {
-				spec.environments.push({ name: selectedEnv, domain });
+				envs.push({ name: selectedEnv, domain });
 			}
-			const result = await api.updateApp(project, app.metadata.name, spec);
+			const result = await api.updateApp(project, app.metadata.name, { ...app.spec, environments: envs });
 			onSpecUpdate(result.spec);
 			domains = domains ? { ...domains, primary: domain } : { primary: domain, custom: [] };
 			editingPrimary = false;
@@ -152,13 +142,12 @@
 		if (!selectedEnv) return;
 		savingPrimary = true;
 		try {
-			const spec = cloneSpec();
-			spec.environments = spec.environments ?? [];
-			const idx = spec.environments.findIndex((e: { name: string }) => e.name === selectedEnv);
+			const envs = [...(app.spec.environments ?? [])];
+			const idx = envs.findIndex(e => e.name === selectedEnv);
 			if (idx >= 0) {
-				spec.environments[idx] = { ...spec.environments[idx], domain: '' };
+				envs[idx] = { ...envs[idx], domain: '' };
 			}
-			const result = await api.updateApp(project, app.metadata.name, spec);
+			const result = await api.updateApp(project, app.metadata.name, { ...app.spec, environments: envs });
 			onSpecUpdate(result.spec);
 			domains = domains ? { ...domains, primary: '' } : { primary: '', custom: [] };
 		} catch (e) {
@@ -172,7 +161,7 @@
 		if (!selectedEnv) return;
 		savingTls = true;
 		try {
-			const spec = cloneSpec();
+			const spec = JSON.parse(JSON.stringify(app.spec)) as AppSpec;
 			spec.environments = spec.environments ?? [];
 			let envIdx = spec.environments.findIndex((e: { name: string }) => e.name === selectedEnv);
 			if (envIdx < 0) {
@@ -195,20 +184,6 @@
 
 <div class={sectionCls}>
 	<h3 class={headingCls}>Domains</h3>
-
-	{#if certEnvStatus?.certificateStatus === 'Pending'}
-		<div class="rounded-md border border-warning/30 bg-warning/5 px-3 py-2 text-xs text-warning">
-			Certificate pending{certEnvStatus.certificateMessage ? ` — ${certEnvStatus.certificateMessage}` : ''}
-		</div>
-	{:else if certEnvStatus?.certificateStatus === 'Failed'}
-		<div class="rounded-md border border-danger/30 bg-danger/5 px-3 py-2 text-xs text-danger">
-			Certificate failed{certEnvStatus.certificateMessage ? ` — ${certEnvStatus.certificateMessage}` : ''}
-		</div>
-	{:else if certEnvStatus?.certificateStatus === 'Ready'}
-		<div class="rounded-md border border-success/30 bg-success/5 px-3 py-2 text-xs text-success">
-			TLS certificate active
-		</div>
-	{/if}
 
 	{#if !domains?.primary && !domains?.auto && (!domains?.custom || domains.custom.length === 0)}
 		<p class="text-xs text-gray-500">No domains configured. Add a domain to make this app reachable.</p>

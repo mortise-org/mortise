@@ -221,3 +221,64 @@ func TestGitea_ResolveCloneCredentials(t *testing.T) {
 		t.Errorf("expected token gitea-tok-123, got %q", creds.Token)
 	}
 }
+
+func TestGitea_ResolveBranchHead(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/api/v1/repos/octo/app/branches" {
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode([]map[string]any{
+				{"name": "main", "commit": map[string]any{"id": "abc999"}},
+			})
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	api, err := NewGiteaAPI(srv.URL, "test-token", "test-secret")
+	if err != nil {
+		t.Fatalf("NewGiteaAPI: %v", err)
+	}
+
+	sha, err := api.ResolveBranchHead(context.Background(), "octo/app", "main")
+	if err != nil {
+		t.Fatalf("ResolveBranchHead: %v", err)
+	}
+	if sha != "abc999" {
+		t.Fatalf("expected abc999, got %q", sha)
+	}
+}
+
+func TestGitea_ListOpenPullRequests(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/api/v1/repos/octo/app/pulls" {
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode([]map[string]any{
+				{
+					"number": 9,
+					"user":   map[string]any{"login": "carol"},
+					"head":   map[string]any{"ref": "branch-a", "sha": "123abc"},
+				},
+			})
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	api, err := NewGiteaAPI(srv.URL, "test-token", "test-secret")
+	if err != nil {
+		t.Fatalf("NewGiteaAPI: %v", err)
+	}
+
+	prs, err := api.ListOpenPullRequests(context.Background(), "octo/app")
+	if err != nil {
+		t.Fatalf("ListOpenPullRequests: %v", err)
+	}
+	if len(prs) != 1 {
+		t.Fatalf("expected 1 pr, got %d", len(prs))
+	}
+	if prs[0].Number != 9 || prs[0].Branch != "branch-a" || prs[0].SHA != "123abc" {
+		t.Fatalf("unexpected pr snapshot: %+v", prs[0])
+	}
+}

@@ -128,12 +128,13 @@ DEV_CLUSTER ?= mortise-dev
 DEV_IMG ?= mortise:dev
 DEV_OBSERVER_IMG ?= mortise-observer:dev
 GITHUB_CLIENT_ID ?= Ov23lizLTd25E32VrWwl
+K3D_RUNTIME_ULIMIT ?= nofile=1048576:1048576
 
 .PHONY: dev-up
 dev-up: build-ui ## Create k3d dev cluster with build infra, install Mortise, port-forward
 	@echo "==> Creating k3d cluster $(DEV_CLUSTER) (with registry mirror)..."
 	@k3d cluster list | grep -q $(DEV_CLUSTER) || k3d cluster create \
-		--config test/dev/k3d-config.yaml --wait
+		--config test/dev/k3d-config.yaml --runtime-ulimit $(K3D_RUNTIME_ULIMIT) --wait
 	@echo "==> Building Docker images..."
 	$(CONTAINER_TOOL) build --target operator -t $(DEV_IMG) .
 	$(CONTAINER_TOOL) build --target observer -t $(DEV_OBSERVER_IMG) .
@@ -210,7 +211,7 @@ test-integration: ## Create k3d cluster, install chart + test deps, run integrat
 	@echo "==> Creating k3d cluster $(INT_CLUSTER)..."
 	# --config wires the containerd mirror rule that makes
 	# registry.mortise-test-deps.svc:5000 pulls reachable from the node.
-	k3d cluster create --config test/integration/k3d-config.yaml --wait
+	k3d cluster create --config test/integration/k3d-config.yaml --runtime-ulimit $(K3D_RUNTIME_ULIMIT) --wait
 	@echo "==> Building Docker images..."
 	$(CONTAINER_TOOL) build --target operator -t $(INT_IMG) .
 	$(CONTAINER_TOOL) build --target observer -t $(INT_OBSERVER_IMG) .
