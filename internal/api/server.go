@@ -192,6 +192,7 @@ func (s *Server) Handler() http.Handler {
 
 			r.Post("/projects", s.CreateProject)
 			r.Get("/projects", s.ListProjects)
+			r.Get("/projects/{name}/available", s.CheckProjectNameAvailable)
 			r.Get("/projects/{project}", s.GetProject)
 			r.Patch("/projects/{project}", s.UpdateProject)
 			r.Delete("/projects/{project}", s.DeleteProject)
