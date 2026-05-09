@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"net/http"
@@ -18,6 +19,10 @@ const (
 	sseTokenPrefix = "msse_"
 	cleanupEvery   = 60 * time.Second
 )
+
+type refreshTokenProvider interface {
+	RefreshPrincipal(ctx context.Context, email string, tokenGen int64) (auth.Principal, error)
+}
 
 type sseTokenEntry struct {
 	principal auth.Principal
@@ -143,16 +148,23 @@ func (s *Server) RefreshToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if header := r.Header.Get("Authorization"); header != "" && strings.HasPrefix(header, "Bearer ") {
-		if native, ok := s.auth.(*auth.NativeAuthProvider); ok {
-			current, err := native.RefreshPrincipal(r.Context(), p.Email, p.PasswordGen)
-			if err != nil {
-				writeJSON(w, http.StatusUnauthorized, errorResponse{"user session is no longer valid"})
-				return
-			}
-			p = &current
-		}
+	if header := r.Header.Get("Authorization"); header == "" || !strings.HasPrefix(header, "Bearer ") {
+		writeJSON(w, http.StatusUnauthorized, errorResponse{"authentication required"})
+		return
 	}
+
+	refresher, ok := s.auth.(refreshTokenProvider)
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, errorResponse{"token refresh unavailable for this auth provider"})
+		return
+	}
+
+	current, err := refresher.RefreshPrincipal(r.Context(), p.Email, p.PasswordGen)
+	if err != nil {
+		writeJSON(w, http.StatusUnauthorized, errorResponse{"user session is no longer valid"})
+		return
+	}
+	p = &current
 
 	token, err := s.jwt.GenerateToken(r.Context(), *p)
 	if err != nil {

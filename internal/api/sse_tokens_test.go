@@ -3,6 +3,7 @@ package api_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
@@ -16,6 +17,30 @@ import (
 	"github.com/mortise-org/mortise/internal/auth"
 	"github.com/mortise-org/mortise/internal/authz"
 )
+
+type staticAuthProvider struct {
+	principal auth.Principal
+}
+
+func (s staticAuthProvider) Authenticate(ctx context.Context, creds auth.Credentials) (auth.Principal, error) {
+	return auth.Principal{}, fmt.Errorf("not implemented")
+}
+
+func (s staticAuthProvider) Principal(ctx context.Context, session auth.SessionToken) (auth.Principal, error) {
+	return s.principal, nil
+}
+
+func (s staticAuthProvider) ListUsers(ctx context.Context) ([]auth.User, error) {
+	return nil, nil
+}
+
+func (s staticAuthProvider) InviteUser(ctx context.Context, email string, role auth.Role) (auth.InviteLink, error) {
+	return auth.InviteLink{}, fmt.Errorf("not implemented")
+}
+
+func (s staticAuthProvider) RevokeUser(ctx context.Context, userID string) error {
+	return fmt.Errorf("not implemented")
+}
 
 func TestIssueSSEToken(t *testing.T) {
 	k8sClient := setupEnvtest(t)
@@ -172,5 +197,40 @@ func TestRefreshTokenRejectsRevokedUser(t *testing.T) {
 	w := doRequestWithToken(h, http.MethodPost, "/api/auth/refresh", nil, token)
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401 for revoked user refresh, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestRefreshTokenRejectsProviderWithoutRefreshPrincipal(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	ctx := context.Background()
+	_ = k8sClient.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "mortise-system"}})
+
+	jwtHelper := auth.NewJWTHelper(k8sClient)
+	principal := auth.Principal{
+		ID:          "user@example.com",
+		Email:       "user@example.com",
+		Role:        auth.RoleAdmin,
+		PasswordGen: 0,
+	}
+	token, err := jwtHelper.GenerateToken(ctx, principal)
+	if err != nil {
+		t.Fatalf("generate token: %v", err)
+	}
+
+	srv := api.NewServer(
+		k8sClient,
+		fake.NewClientset(),
+		nil,
+		nil,
+		staticAuthProvider{principal: principal},
+		jwtHelper,
+		nil,
+		authz.NewNativePolicyEngine(k8sClient),
+	)
+	h := srv.Handler()
+
+	w := doRequestWithToken(h, http.MethodPost, "/api/auth/refresh", nil, token)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 when provider cannot revalidate refresh, got %d: %s", w.Code, w.Body.String())
 	}
 }
