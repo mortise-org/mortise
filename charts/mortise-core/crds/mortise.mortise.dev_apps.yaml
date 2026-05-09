@@ -199,6 +199,11 @@ spec:
                         - name
                         type: object
                       type: array
+                    image:
+                      description: |-
+                        Image overrides the spec-level source image for this environment.
+                        Set by the deploy handler when a deploy targets a specific environment.
+                      type: string
                     livenessProbe:
                       properties:
                         initialDelaySeconds:
