@@ -21,6 +21,7 @@ ingress:
   enabled: false
   # className: ""
   # host: mortise.example.com
+  # certManagerClusterIssuer: letsencrypt-prod
 
 resources:
   limits:

@@ -298,6 +298,11 @@ type Environment struct {
 	// BuildArgs are per-environment build arguments passed to docker build.
 	// +optional
 	BuildArgs map[string]string `json:"buildArgs,omitempty"`
+
+	// Image overrides the spec-level source image for this environment.
+	// Set by the deploy handler when a deploy targets a specific environment.
+	// +optional
+	Image string `json:"image,omitempty"`
 }
 
 // SecretMount mounts an existing k8s Secret in the App's namespace as a
@@ -469,6 +474,17 @@ type EnvironmentStatus struct {
 	// unapplied env-var changes.
 	// +optional
 	DeployedEnvHash string `json:"deployedEnvHash,omitempty"`
+
+	// CertificateStatus is the readiness state of the TLS certificate for
+	// this environment. Empty when cert-manager is not in use. Possible
+	// values: "Ready", "Pending", "Failed".
+	// +optional
+	CertificateStatus string `json:"certificateStatus,omitempty"`
+
+	// CertificateMessage is a human-readable explanation of the certificate
+	// state (e.g. challenge failure reason, DNS guidance).
+	// +optional
+	CertificateMessage string `json:"certificateMessage,omitempty"`
 }
 
 // AppPhase represents the overall lifecycle phase.

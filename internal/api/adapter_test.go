@@ -84,3 +84,21 @@ func TestProxyToAdapter_Unreachable(t *testing.T) {
 		t.Errorf("error = %v, want 'adapter unreachable'", result["error"])
 	}
 }
+
+func TestProxyToAdapter_InvalidScheme(t *testing.T) {
+	s := &Server{}
+	w := httptest.NewRecorder()
+	s.proxyToAdapter(w, httptest.NewRequest("GET", "/", nil), "ftp://example.com/v1/metrics", "", url.Values{})
+
+	if w.Code != 200 {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	var result map[string]any
+	json.Unmarshal(w.Body.Bytes(), &result)
+	if result["error"] != "invalid adapter endpoint" {
+		t.Errorf("error = %v, want 'invalid adapter endpoint'", result["error"])
+	}
+	if result["detail"] != "adapter URL scheme must be http or https" {
+		t.Errorf("detail = %v, want 'adapter URL scheme must be http or https'", result["detail"])
+	}
+}
