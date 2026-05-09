@@ -3,8 +3,11 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"log/slog"
 	"math"
+	"net/http"
 	"path/filepath"
 	"testing"
 	"time"
@@ -14,6 +17,10 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/fake"
+	"k8s.io/client-go/kubernetes/scheme"
+	coreclientv1 "k8s.io/client-go/kubernetes/typed/core/v1"
+	rest "k8s.io/client-go/rest"
+	fakerest "k8s.io/client-go/rest/fake"
 	clienttesting "k8s.io/client-go/testing"
 	metricsv1beta1 "k8s.io/metrics/pkg/apis/metrics/v1beta1"
 	metricsfake "k8s.io/metrics/pkg/client/clientset/versioned/fake"
@@ -26,6 +33,54 @@ func discardLogger() *slog.Logger {
 type nopWriter struct{}
 
 func (nopWriter) Write(p []byte) (int, error) { return len(p), nil }
+
+type stableLogClientset struct {
+	*fake.Clientset
+	logBody func() io.ReadCloser
+}
+
+func (c *stableLogClientset) CoreV1() coreclientv1.CoreV1Interface {
+	return &stableLogCoreV1{
+		CoreV1Interface: c.Clientset.CoreV1(),
+		logBody:         c.logBody,
+	}
+}
+
+type stableLogCoreV1 struct {
+	coreclientv1.CoreV1Interface
+	logBody func() io.ReadCloser
+}
+
+func (c *stableLogCoreV1) Pods(namespace string) coreclientv1.PodInterface {
+	return &stableLogPods{
+		PodInterface: c.CoreV1Interface.Pods(namespace),
+		namespace:    namespace,
+		logBody:      c.logBody,
+	}
+}
+
+type stableLogPods struct {
+	coreclientv1.PodInterface
+	namespace string
+	logBody   func() io.ReadCloser
+}
+
+func (p *stableLogPods) GetLogs(name string, opts *corev1.PodLogOptions) *rest.Request {
+	_ = opts
+
+	fakeClient := &fakerest.RESTClient{
+		Client: fakerest.CreateHTTPClient(func(*http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       p.logBody(),
+			}, nil
+		}),
+		NegotiatedSerializer: scheme.Codecs.WithoutConversion(),
+		GroupVersion:         corev1.SchemeGroupVersion,
+		VersionedAPIPath:     fmt.Sprintf("/api/v1/namespaces/%s/pods/%s/log", p.namespace, name),
+	}
+	return fakeClient.Request()
+}
 
 // --- parseLogTimestamp ---
 
@@ -283,22 +338,30 @@ func TestMetricsCollectorMultiContainer(t *testing.T) {
 // --- LogCollector ---
 
 func TestLogCollectorSyncFindsEnvPods(t *testing.T) {
-	cs := fake.NewClientset(
-		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "pj-demo-prod"}},
-		&corev1.Pod{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "web-pod-1",
-				Namespace: "pj-demo-prod",
-				Labels: map[string]string{
-					"app.kubernetes.io/name":  "web",
-					"mortise.dev/environment": "prod",
+	logReader, logWriter := io.Pipe()
+	defer logWriter.Close()
+
+	cs := &stableLogClientset{
+		Clientset: fake.NewClientset(
+			&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "pj-demo-prod"}},
+			&corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "web-pod-1",
+					Namespace: "pj-demo-prod",
+					Labels: map[string]string{
+						"app.kubernetes.io/name":  "web",
+						"mortise.dev/environment": "prod",
+					},
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{Name: "app", Image: "nginx:1.25.0"}},
 				},
 			},
-			Spec: corev1.PodSpec{
-				Containers: []corev1.Container{{Name: "app", Image: "nginx:1.25.0"}},
-			},
+		),
+		logBody: func() io.ReadCloser {
+			return logReader
 		},
-	)
+	}
 
 	dir := t.TempDir()
 	store, err := NewStore(filepath.Join(dir, "test.db"))
