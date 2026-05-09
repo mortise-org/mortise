@@ -66,7 +66,7 @@ func (s *Server) GetBuildArgs(w http.ResponseWriter, r *http.Request) {
 // @Router /projects/{project}/apps/{app}/build-args [put]
 func (s *Server) PutBuildArgs(w http.ResponseWriter, r *http.Request) {
 	projectName := chi.URLParam(r, "project")
-	if !s.authorize(w, r, authz.Resource{Kind: "app", Project: projectName}, authz.ActionUpdate) {
+	if !s.authorize(w, r, authz.Resource{Kind: "app", Project: projectName, Environment: queryEnv(r)}, authz.ActionUpdate) {
 		return
 	}
 	app, envName, ok := s.resolveAppEnv(w, r)

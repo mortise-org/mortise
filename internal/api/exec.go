@@ -75,12 +75,11 @@ func (s *Server) ExecInApp(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if !s.authorize(w, r, authz.Resource{Kind: "app", Project: projectName}, authz.ActionUpdate) {
+	appName := chi.URLParam(r, "app")
+	env := envFromQuery(r)
+	if !s.authorize(w, r, authz.Resource{Kind: "app", Project: projectName, Environment: env}, authz.ActionUpdate) {
 		return
 	}
-	appName := chi.URLParam(r, "app")
-
-	env := envFromQuery(r)
 	envNs := constants.EnvNamespace(projectName, env)
 
 	var req execRequest
