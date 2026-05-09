@@ -164,7 +164,7 @@ func (s *Server) Refresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if native, ok := s.auth.(*auth.NativeAuthProvider); ok && s.clientset != nil {
+	if native, ok := s.auth.(*auth.NativeAuthProvider); ok && s.clientset != nil && s.restConfig != nil {
 		principal, err = native.CurrentPrincipalLive(r.Context(), s.clientset, principal.Email, tokenGen)
 	} else {
 		refresher, ok := s.auth.(refreshPrincipalProvider)
