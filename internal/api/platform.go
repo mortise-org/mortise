@@ -24,7 +24,7 @@ const platformConfigName = "platform"
 type patchPlatformRequest struct {
 	Domain         string                      `json:"domain,omitempty"`
 	ExternalDomain *string                     `json:"externalDomain,omitempty"`
-	DomainTemplate string                      `json:"domainTemplate,omitempty"`
+	DomainTemplate *string                     `json:"domainTemplate,omitempty"`
 	TLS            *patchPlatformTLS           `json:"tls,omitempty"`
 	Storage        *patchPlatformStorage       `json:"storage,omitempty"`
 	Registry       *patchPlatformRegistry      `json:"registry,omitempty"`
@@ -40,7 +40,7 @@ type patchPlatformDefaults struct {
 }
 
 type patchPlatformTLS struct {
-	CertManagerClusterIssuer string `json:"certManagerClusterIssuer,omitempty"`
+	CertManagerClusterIssuer *string `json:"certManagerClusterIssuer,omitempty"`
 }
 
 type patchPlatformStorage struct {
@@ -48,13 +48,13 @@ type patchPlatformStorage struct {
 }
 
 type patchPlatformRegistry struct {
-	URL       string `json:"url,omitempty"`
-	Namespace string `json:"namespace,omitempty"`
+	URL       *string `json:"url,omitempty"`
+	Namespace *string `json:"namespace,omitempty"`
 }
 
 type patchPlatformBuild struct {
-	BuildkitAddr    string `json:"buildkitAddr,omitempty"`
-	DefaultPlatform string `json:"defaultPlatform,omitempty"`
+	BuildkitAddr    *string `json:"buildkitAddr,omitempty"`
+	DefaultPlatform *string `json:"defaultPlatform,omitempty"`
 }
 
 type patchPlatformGitHub struct {
@@ -62,12 +62,12 @@ type patchPlatformGitHub struct {
 }
 
 type patchPlatformObservability struct {
-	LogsAdapterEndpoint    string `json:"logsAdapterEndpoint,omitempty"`
-	LogsAdapterToken       string `json:"logsAdapterToken,omitempty"`
-	MetricsAdapterEndpoint string `json:"metricsAdapterEndpoint,omitempty"`
-	MetricsAdapterToken    string `json:"metricsAdapterToken,omitempty"`
-	TrafficAdapterEndpoint string `json:"trafficAdapterEndpoint,omitempty"`
-	TrafficAdapterToken    string `json:"trafficAdapterToken,omitempty"`
+	LogsAdapterEndpoint    *string `json:"logsAdapterEndpoint,omitempty"`
+	LogsAdapterToken       *string `json:"logsAdapterToken,omitempty"`
+	MetricsAdapterEndpoint *string `json:"metricsAdapterEndpoint,omitempty"`
+	MetricsAdapterToken    *string `json:"metricsAdapterToken,omitempty"`
+	TrafficAdapterEndpoint *string `json:"trafficAdapterEndpoint,omitempty"`
+	TrafficAdapterToken    *string `json:"trafficAdapterToken,omitempty"`
 }
 
 type platformObservabilityResponse struct {
@@ -237,7 +237,7 @@ func (s *Server) PatchPlatform(w http.ResponseWriter, r *http.Request) {
 // and sets the corresponding SecretRefs on the observability request so that
 // buildPlatformSpec writes them into PlatformConfig.
 func (s *Server) upsertAdapterTokens(ctx context.Context, obs *patchPlatformObservability) error {
-	if obs.LogsAdapterToken == "" && obs.MetricsAdapterToken == "" && obs.TrafficAdapterToken == "" {
+	if obs.LogsAdapterToken == nil && obs.MetricsAdapterToken == nil && obs.TrafficAdapterToken == nil {
 		return nil
 	}
 
@@ -246,6 +246,9 @@ func (s *Server) upsertAdapterTokens(ctx context.Context, obs *patchPlatformObse
 	err := s.client.Get(ctx, key, &secret)
 
 	if errors.IsNotFound(err) {
+		if shouldDeleteAllAdapterTokens(obs) {
+			return nil
+		}
 		secret = corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      adapterTokensSecretName,
@@ -254,14 +257,14 @@ func (s *Server) upsertAdapterTokens(ctx context.Context, obs *patchPlatformObse
 			},
 			Data: map[string][]byte{},
 		}
-		if obs.LogsAdapterToken != "" {
-			secret.Data["logs"] = []byte(obs.LogsAdapterToken)
+		if obs.LogsAdapterToken != nil && *obs.LogsAdapterToken != "" {
+			secret.Data["logs"] = []byte(*obs.LogsAdapterToken)
 		}
-		if obs.MetricsAdapterToken != "" {
-			secret.Data["metrics"] = []byte(obs.MetricsAdapterToken)
+		if obs.MetricsAdapterToken != nil && *obs.MetricsAdapterToken != "" {
+			secret.Data["metrics"] = []byte(*obs.MetricsAdapterToken)
 		}
-		if obs.TrafficAdapterToken != "" {
-			secret.Data["traffic"] = []byte(obs.TrafficAdapterToken)
+		if obs.TrafficAdapterToken != nil && *obs.TrafficAdapterToken != "" {
+			secret.Data["traffic"] = []byte(*obs.TrafficAdapterToken)
 		}
 		return s.client.Create(ctx, &secret)
 	}
@@ -272,16 +275,38 @@ func (s *Server) upsertAdapterTokens(ctx context.Context, obs *patchPlatformObse
 	if secret.Data == nil {
 		secret.Data = map[string][]byte{}
 	}
-	if obs.LogsAdapterToken != "" {
-		secret.Data["logs"] = []byte(obs.LogsAdapterToken)
+	if obs.LogsAdapterToken != nil {
+		if *obs.LogsAdapterToken != "" {
+			secret.Data["logs"] = []byte(*obs.LogsAdapterToken)
+		} else {
+			delete(secret.Data, "logs")
+		}
 	}
-	if obs.MetricsAdapterToken != "" {
-		secret.Data["metrics"] = []byte(obs.MetricsAdapterToken)
+	if obs.MetricsAdapterToken != nil {
+		if *obs.MetricsAdapterToken != "" {
+			secret.Data["metrics"] = []byte(*obs.MetricsAdapterToken)
+		} else {
+			delete(secret.Data, "metrics")
+		}
 	}
-	if obs.TrafficAdapterToken != "" {
-		secret.Data["traffic"] = []byte(obs.TrafficAdapterToken)
+	if obs.TrafficAdapterToken != nil {
+		if *obs.TrafficAdapterToken != "" {
+			secret.Data["traffic"] = []byte(*obs.TrafficAdapterToken)
+		} else {
+			delete(secret.Data, "traffic")
+		}
+	}
+	// If all token keys have been removed, delete the orphan Secret entirely.
+	if len(secret.Data) == 0 {
+		return s.client.Delete(ctx, &secret)
 	}
 	return s.client.Update(ctx, &secret)
+}
+
+func shouldDeleteAllAdapterTokens(obs *patchPlatformObservability) bool {
+	return obs.LogsAdapterToken != nil && *obs.LogsAdapterToken == "" &&
+		obs.MetricsAdapterToken != nil && *obs.MetricsAdapterToken == "" &&
+		obs.TrafficAdapterToken != nil && *obs.TrafficAdapterToken == ""
 }
 
 func adapterTokenSecretRef(key string) *mortisev1alpha1.SecretRef {
@@ -339,8 +364,8 @@ func buildPlatformSpec(base mortisev1alpha1.PlatformConfigSpec, req *patchPlatfo
 	if req.ExternalDomain != nil {
 		base.ExternalDomain = *req.ExternalDomain
 	}
-	if req.DomainTemplate != "" {
-		base.DomainTemplate = req.DomainTemplate
+	if req.DomainTemplate != nil {
+		base.DomainTemplate = *req.DomainTemplate
 	}
 	if req.Defaults != nil {
 		if req.Defaults.CPU != "" {
@@ -350,46 +375,58 @@ func buildPlatformSpec(base mortisev1alpha1.PlatformConfigSpec, req *patchPlatfo
 			base.Defaults.Resources.Memory = req.Defaults.Memory
 		}
 	}
-	if req.TLS != nil && req.TLS.CertManagerClusterIssuer != "" {
-		base.TLS.CertManagerClusterIssuer = req.TLS.CertManagerClusterIssuer
+	if req.TLS != nil && req.TLS.CertManagerClusterIssuer != nil {
+		base.TLS.CertManagerClusterIssuer = *req.TLS.CertManagerClusterIssuer
 	}
 	if req.Storage != nil {
 		base.Storage.DefaultStorageClass = req.Storage.DefaultStorageClass
 	}
 	if req.Registry != nil {
-		if req.Registry.URL != "" {
-			base.Registry.URL = req.Registry.URL
+		if req.Registry.URL != nil {
+			base.Registry.URL = *req.Registry.URL
 		}
-		if req.Registry.Namespace != "" {
-			base.Registry.Namespace = req.Registry.Namespace
+		if req.Registry.Namespace != nil {
+			base.Registry.Namespace = *req.Registry.Namespace
 		}
 	}
 	if req.Build != nil {
-		if req.Build.BuildkitAddr != "" {
-			base.Build.BuildkitAddr = req.Build.BuildkitAddr
+		if req.Build.BuildkitAddr != nil {
+			base.Build.BuildkitAddr = *req.Build.BuildkitAddr
 		}
-		if req.Build.DefaultPlatform != "" {
-			base.Build.DefaultPlatform = req.Build.DefaultPlatform
+		if req.Build.DefaultPlatform != nil {
+			base.Build.DefaultPlatform = *req.Build.DefaultPlatform
 		}
 	}
 	if req.Observability != nil {
-		if req.Observability.LogsAdapterEndpoint != "" {
-			base.Observability.LogsAdapterEndpoint = req.Observability.LogsAdapterEndpoint
+		if req.Observability.LogsAdapterEndpoint != nil {
+			base.Observability.LogsAdapterEndpoint = *req.Observability.LogsAdapterEndpoint
 		}
-		if req.Observability.LogsAdapterToken != "" {
-			base.Observability.LogsAdapterTokenSecretRef = adapterTokenSecretRef("logs")
+		if req.Observability.LogsAdapterToken != nil {
+			if *req.Observability.LogsAdapterToken != "" {
+				base.Observability.LogsAdapterTokenSecretRef = adapterTokenSecretRef("logs")
+			} else {
+				base.Observability.LogsAdapterTokenSecretRef = nil
+			}
 		}
-		if req.Observability.MetricsAdapterEndpoint != "" {
-			base.Observability.MetricsAdapterEndpoint = req.Observability.MetricsAdapterEndpoint
+		if req.Observability.MetricsAdapterEndpoint != nil {
+			base.Observability.MetricsAdapterEndpoint = *req.Observability.MetricsAdapterEndpoint
 		}
-		if req.Observability.MetricsAdapterToken != "" {
-			base.Observability.MetricsAdapterTokenSecretRef = adapterTokenSecretRef("metrics")
+		if req.Observability.MetricsAdapterToken != nil {
+			if *req.Observability.MetricsAdapterToken != "" {
+				base.Observability.MetricsAdapterTokenSecretRef = adapterTokenSecretRef("metrics")
+			} else {
+				base.Observability.MetricsAdapterTokenSecretRef = nil
+			}
 		}
-		if req.Observability.TrafficAdapterEndpoint != "" {
-			base.Observability.TrafficAdapterEndpoint = req.Observability.TrafficAdapterEndpoint
+		if req.Observability.TrafficAdapterEndpoint != nil {
+			base.Observability.TrafficAdapterEndpoint = *req.Observability.TrafficAdapterEndpoint
 		}
-		if req.Observability.TrafficAdapterToken != "" {
-			base.Observability.TrafficAdapterTokenSecretRef = adapterTokenSecretRef("traffic")
+		if req.Observability.TrafficAdapterToken != nil {
+			if *req.Observability.TrafficAdapterToken != "" {
+				base.Observability.TrafficAdapterTokenSecretRef = adapterTokenSecretRef("traffic")
+			} else {
+				base.Observability.TrafficAdapterTokenSecretRef = nil
+			}
 		}
 	}
 	if req.GitHub != nil {
