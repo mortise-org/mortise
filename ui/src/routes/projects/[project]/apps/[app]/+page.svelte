@@ -15,7 +15,7 @@
 
 	let apps = $state<App[]>([]);
 	let loading = $state(true);
-	let eventStream: ReturnType<typeof connectProjectEvents> | null = null;
+	let eventStream: Awaited<ReturnType<typeof connectProjectEvents>> | null = null;
 	let destroyed = false;
 
 	onMount(async () => {

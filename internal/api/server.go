@@ -16,8 +16,6 @@ import (
 	metricsv1beta1 "k8s.io/metrics/pkg/client/clientset/versioned/typed/metrics/v1beta1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"k8s.io/utils/clock"
-
 	"github.com/mortise-org/mortise/internal/activity"
 	"github.com/mortise-org/mortise/internal/auth"
 	"github.com/mortise-org/mortise/internal/authz"
