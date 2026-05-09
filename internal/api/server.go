@@ -139,8 +139,12 @@ func (s *Server) authorize(w http.ResponseWriter, r *http.Request, resource auth
 //	/api/projects/{project}/apps/{app}/deploy                      deploy webhook
 //	/api/projects/{project}/apps/{app}/rollback                   rollback to previous deploy
 //	/api/projects/{project}/apps/{app}/promote                    promote image between envs
+//	/api/projects/{project}/apps/{app}/build-runs                 durable BuildRun list
+//	/api/projects/{project}/build-runs/{name}                     durable BuildRun detail
+//	/api/projects/{project}/build-runs/{name}/logs                durable BuildRun logs
 //	/api/activity                                                list activity across readable projects
 //	/api/projects/{project}/events                                 SSE project event stream
+//	/api/projects/{project}/apps/{app}/build-logs                  compatibility build-log adapter over BuildRun-backed logs
 //	/api/projects/{project}/apps/{app}/logs                        SSE log stream
 //	/api/projects/{project}/apps/{app}/logs/history                historical log query (adapter proxy)
 //	/api/projects/{project}/apps/{app}/pods                        list pod summaries
@@ -246,6 +250,16 @@ func (s *Server) Handler() http.Handler {
 			r.Post("/projects/{project}/apps/{app}/redeploy-stale", s.RedeployStale)
 			r.Post("/projects/{project}/apps/{app}/promote", s.Promote)
 			r.Get("/projects/{project}/apps/{app}/build-logs", s.handleBuildLogs)
+			r.Get("/projects/{project}/apps/{app}/build-runs", s.handleListBuildRuns)
+			r.Get("/projects/{project}/apps/{app}/build-runs/{run}", s.handleGetBuildRun)
+			r.Get("/projects/{project}/apps/{app}/build-runs/{run}/logs", s.handleBuildRunLogs)
+			r.Get("/projects/{project}/apps/{app}/buildruns", s.handleListBuildRuns)
+			r.Get("/projects/{project}/apps/{app}/buildruns/{run}", s.handleGetBuildRun)
+			r.Get("/projects/{project}/apps/{app}/buildruns/{run}/logs", s.handleBuildRunLogs)
+			r.Get("/projects/{project}/build-runs/{name}", s.handleGetBuildRun)
+			r.Get("/projects/{project}/build-runs/{name}/logs", s.handleBuildRunLogs)
+			r.Get("/projects/{project}/buildruns/{name}", s.handleGetBuildRun)
+			r.Get("/projects/{project}/buildruns/{name}/logs", s.handleBuildRunLogs)
 			r.Get("/projects/{project}/apps/{app}/pods", s.handleListPods)
 			r.Get("/projects/{project}/apps/{app}/metrics/current", s.handleMetricsCurrent)
 			r.Get("/projects/{project}/apps/{app}/metrics", s.handleMetricsHistory)

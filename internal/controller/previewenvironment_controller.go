@@ -68,7 +68,7 @@ type PreviewEnvironmentReconciler struct {
 	RegistryBackend registry.RegistryBackend
 	IngressProvider ingress.IngressProvider
 
-	builds buildTrackerStore
+	builds BuildTrackerStore
 }
 
 // +kubebuilder:rbac:groups=mortise.mortise.dev,resources=previewenvironments,verbs=get;list;watch;create;update;patch;delete
@@ -264,40 +264,6 @@ func (r *PreviewEnvironmentReconciler) reconcilePreviewBuild(ctx context.Context
 		}
 	}
 
-	key := types.NamespacedName{Namespace: pe.Namespace, Name: pe.Name}
-
-	// Check for an existing tracker.
-	if t := r.builds.get(key); t != nil {
-		phase, trackedRev, image, _, errMsg, _ := t.snapshot()
-		if trackedRev != revision {
-			t.mu.Lock()
-			cancel := t.cancel
-			t.mu.Unlock()
-			if cancel != nil {
-				cancel()
-			}
-			r.builds.delete(key)
-		} else {
-			switch phase {
-			case buildPhaseRunning:
-				return ctrl.Result{RequeueAfter: previewBuildPollInterval}, false, nil
-			case buildPhaseSucceeded:
-				r.builds.delete(key)
-				pe.Status.Image = image
-				pe.Status.Phase = mortisev1alpha1.PreviewPhaseBuilding
-				return ctrl.Result{}, true, nil
-			case buildPhaseFailed:
-				r.builds.delete(key)
-				return ctrl.Result{}, false, r.setPreviewFailed(ctx, pe, "BuildFailed", errMsg)
-			}
-		}
-	}
-
-	// Already built this revision and have a live image — skip rebuild.
-	if pe.Status.Image != "" && pe.Status.Phase == mortisev1alpha1.PreviewPhaseReady {
-		return ctrl.Result{}, true, nil
-	}
-
 	// Resolve git credentials via the parent app's owner token.
 	if app.Spec.Source.ProviderRef == "" {
 		return ctrl.Result{}, false, r.setPreviewFailed(ctx, pe, "MissingProviderRef", "parent App has no source.providerRef")
@@ -326,40 +292,27 @@ func (r *PreviewEnvironmentReconciler) reconcilePreviewBuild(ctx context.Context
 		return ctrl.Result{}, false, r.setPreviewFailed(ctx, pe, "PullTargetFailed", err.Error())
 	}
 
-	// Mark as Building.
-	pe.Status.Phase = mortisev1alpha1.PreviewPhaseBuilding
-	if err := r.Status().Update(ctx, pe); err != nil {
-		log.Error(err, "update status to Building")
+	run, err := r.ensurePreviewBuildRun(ctx, pe, app, token, revision, imageRef.Full, pullRef.Full, gp.Name)
+	if err != nil {
+		log.Error(err, "ensure preview buildrun failed")
+		return ctrl.Result{}, false, err
 	}
 
-	// Launch background build.
-	buildCtx, cancel := context.WithTimeout(context.Background(), previewBuildTimeout)
-	tracker := &buildTracker{
-		revision: revision,
-		phase:    buildPhaseRunning,
-		cancel:   cancel,
+	projectPreviewBuildRunStatus(pe, run)
+	switch run.Status.Phase {
+	case mortisev1alpha1.BuildRunPhaseSucceeded:
+		pe.Status.Image = run.Status.Image
+		pe.Status.Phase = mortisev1alpha1.PreviewPhaseBuilding
+		return ctrl.Result{}, true, nil
+	case mortisev1alpha1.BuildRunPhaseFailed:
+		return ctrl.Result{}, false, r.setPreviewFailed(ctx, pe, firstNonEmpty(run.Status.FailureReason, "BuildFailed"), run.Status.FailureMessage)
+	default:
+		pe.Status.Phase = mortisev1alpha1.PreviewPhaseBuilding
+		if err := r.Status().Update(ctx, pe); err != nil {
+			log.Error(err, "update status to Building")
+		}
+		return ctrl.Result{RequeueAfter: previewBuildPollInterval}, false, nil
 	}
-	r.builds.set(key, tracker)
-
-	go runBuild(buildCtx, cancel, tracker, buildParams{
-		appName:      pe.Spec.AppRef,
-		namespace:    pe.Namespace,
-		repo:         app.Spec.Source.Repo,
-		branch:       pe.Spec.PullRequest.Branch,
-		token:        token,
-		path:         app.Spec.Source.Path,
-		dockerfile:   previewDockerfilePath(app),
-		buildArgs:    previewBuildArgs(app),
-		buildContext: buildContextOf(app),
-		imageRef:     imageRef,
-		pullImageRef: pullRef,
-	}, r.GitClient, r.BuildClient, buildRunnerOptions{
-		logName:      "preview-build",
-		tmpDirPrefix: "mortise-preview-build-*",
-		appendLog:    false,
-	})
-
-	return ctrl.Result{RequeueAfter: previewBuildPollInterval}, false, nil
 }
 
 func (r *PreviewEnvironmentReconciler) reconcilePreviewDeployment(ctx context.Context, pe *mortisev1alpha1.PreviewEnvironment, app *mortisev1alpha1.App, previewNs string) error {

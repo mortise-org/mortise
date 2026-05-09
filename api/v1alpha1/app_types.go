@@ -464,6 +464,16 @@ type EnvironmentStatus struct {
 	// +optional
 	LastBuiltImage string `json:"lastBuiltImage,omitempty"`
 
+	// CurrentBuildRunRef points at the currently selected BuildRun for this
+	// environment, whether it is pending, running, failed, or succeeded.
+	// +optional
+	CurrentBuildRunRef *BuildRunReference `json:"currentBuildRunRef,omitempty"`
+
+	// LastSuccessfulBuildRunRef points at the most recent successful BuildRun
+	// for this environment.
+	// +optional
+	LastSuccessfulBuildRunRef *BuildRunReference `json:"lastSuccessfulBuildRunRef,omitempty"`
+
 	// PendingEnvHash is the hash of the current env Secret data for this
 	// environment. Computed from the live Secret each reconcile.
 	// +optional
@@ -504,6 +514,14 @@ const (
 type AppStatus struct {
 	Phase        AppPhase            `json:"phase,omitempty"`
 	Environments []EnvironmentStatus `json:"environments,omitempty"`
+
+	// CurrentBuildRunName is the active durable build execution for the app.
+	// +optional
+	CurrentBuildRunName string `json:"currentBuildRunName,omitempty"`
+
+	// LastBuildRunName is the most recent terminal durable build execution.
+	// +optional
+	LastBuildRunName string `json:"lastBuildRunName,omitempty"`
 
 	// LastBuiltSHA is the git commit SHA of the most recently completed build.
 	// The reconciler uses this to short-circuit rebuilds when the revision hasn't changed.

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 
@@ -16,7 +15,6 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/watch"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -348,8 +346,12 @@ func (s *Server) streamBuildLogs(ctx context.Context, ns string, w *sseWriter) {
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
-	wasBuilding := map[string]bool{}
-	offsets := map[string]int{}
+	type buildStreamState struct {
+		runName string
+		offset  int
+	}
+
+	wasBuilding := map[string]buildStreamState{}
 
 	for {
 		select {
@@ -361,80 +363,100 @@ func (s *Server) streamBuildLogs(ctx context.Context, ns string, w *sseWriter) {
 				continue
 			}
 
-			nowBuilding := map[string]bool{}
+			nowBuilding := map[string]buildStreamState{}
 			for i := range appList.Items {
 				app := &appList.Items[i]
 				if app.Status.Phase != mortisev1alpha1.AppPhaseBuilding {
-					if wasBuilding[app.Name] {
-						s.emitBuildLogDelta(w, ns, app.Name, false, offsets)
-						delete(offsets, app.Name)
+					if prev, ok := wasBuilding[app.Name]; ok {
+						s.emitBuildLogDelta(w, ns, app.Name, prev.runName, false, -1)
 					}
 					continue
 				}
-				nowBuilding[app.Name] = true
-				s.emitBuildLogDelta(w, ns, app.Name, true, offsets)
+				run, _, err := s.getBuildRunForApp(ctx, ns, app.Name)
+				if err != nil || run == nil {
+					continue
+				}
+				prev := wasBuilding[app.Name]
+				offset := prev.offset
+				if prev.runName != run.Name {
+					offset = -1
+				}
+				nextOffset, emitted := s.emitBuildLogDelta(w, ns, app.Name, run.Name, true, offset)
+				if emitted {
+					offset = nextOffset
+				}
+				nowBuilding[app.Name] = buildStreamState{runName: run.Name, offset: offset}
 			}
 			wasBuilding = nowBuilding
 		}
 	}
 }
 
-func (s *Server) emitBuildLogDelta(w *sseWriter, ns, appName string, building bool, offsets map[string]int) {
-	key := types.NamespacedName{Namespace: ns, Name: appName}
-
-	var lines []string
-	var offset int
-
+func (s *Server) emitBuildLogDelta(w *sseWriter, ns, appName, runName string, building bool, offset int) (int, bool) {
 	if !building {
-		// Final event: send full log from ConfigMap so the client has everything.
-		offset = 0
-		var cm corev1.ConfigMap
-		cmKey := types.NamespacedName{Namespace: ns, Name: "buildlogs-" + appName}
-		var timestamp, commitSHA, status, buildErr string
-		if err := s.client.Get(context.Background(), cmKey, &cm); err == nil {
-			timestamp = cm.Annotations["mortise.dev/build-timestamp"]
-			commitSHA = cm.Annotations["mortise.dev/build-commit"]
-			status = cm.Annotations["mortise.dev/build-status"]
-			if status == "Failed" {
-				buildErr = cm.Annotations["mortise.dev/build-error"]
-			}
-			if raw, ok := cm.Data["lines"]; ok && raw != "" {
-				lines = strings.Split(raw, "\n")
+		resp := buildRunLogsResponse{Lines: []string{}, Offset: 0, Building: false}
+		if run, err := s.getNamedBuildRun(context.Background(), ns, runName); err == nil && run != nil {
+			if runResp, ok, err := s.getBuildRunLogsResponse(context.Background(), run); err == nil && ok {
+				resp = runResp
 			}
 		}
-		if lines == nil {
-			lines = []string{}
+		if len(resp.Lines) == 0 && resp.Status == "" {
+			if cm, err := s.getLegacyBuildLogsConfigMap(context.Background(), ns, appName); err == nil && cm != nil {
+				resp = buildRunLogResponseFromConfigMap(cm, false)
+			}
 		}
 		w.writeNamedEvent("build.log", map[string]any{
 			"app":       appName,
-			"lines":     lines,
-			"offset":    offset,
+			"lines":     resp.Lines,
+			"offset":    0,
 			"building":  building,
-			"timestamp": timestamp,
-			"commitSHA": commitSHA,
-			"status":    status,
-			"error":     buildErr,
+			"timestamp": resp.Timestamp,
+			"commitSHA": resp.CommitSHA,
+			"status":    resp.Status,
+			"error":     resp.Error,
 		})
-		return
+		return 0, true
 	}
 
-	offset = offsets[appName]
-	newLines, total := s.buildLogs.GetBuildLogsSince(key, offset)
-	if newLines == nil {
-		newLines = []string{}
+	run, err := s.getNamedBuildRun(context.Background(), ns, runName)
+	if err != nil || run == nil {
+		return offset, false
 	}
-
-	if len(newLines) == 0 && offset > 0 {
-		return
+	key := buildRunTrackerKey(run)
+	effectiveOffset := offset
+	if effectiveOffset < 0 {
+		effectiveOffset = 0
+	}
+	newLines, total := s.buildLogs.GetBuildLogsSince(key, effectiveOffset)
+	if newLines != nil {
+		if len(newLines) == 0 {
+			if offset >= 0 {
+				return total, false
+			}
+			newLines = []string{}
+		}
+		w.writeNamedEvent("build.log", map[string]any{
+			"app":       appName,
+			"lines":     newLines,
+			"offset":    effectiveOffset,
+			"building":  true,
+			"commitSHA": run.Spec.Revision,
+			"status":    "Running",
+			"error":     "",
+		})
+		return total, true
 	}
 
 	w.writeNamedEvent("build.log", map[string]any{
-		"app":      appName,
-		"lines":    newLines,
-		"offset":   offset,
-		"building": building,
+		"app":       appName,
+		"lines":     []string{},
+		"offset":    0,
+		"building":  true,
+		"commitSHA": run.Spec.Revision,
+		"status":    "Running",
+		"error":     "",
 	})
-	offsets[appName] = total
+	return 0, true
 }
 
 func heartbeat(ctx context.Context, w *sseWriter) {

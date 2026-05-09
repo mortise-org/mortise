@@ -78,40 +78,37 @@ func (s *Server) handleBuildLogs(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "app")
 	key := types.NamespacedName{Namespace: ns, Name: name}
 
-	// In-flight build: serve from the in-memory tracker.
-	if s.buildLogs != nil {
-		if lines := s.buildLogs.GetBuildLogs(key); lines != nil {
-			writeJSON(w, http.StatusOK, map[string]any{"lines": lines, "offset": 0, "building": true})
-			return
+	var app mortisev1alpha1.App
+	if err := s.client.Get(r.Context(), key, &app); err == nil {
+		if app.Status.Phase != mortisev1alpha1.AppPhaseBuilding && app.Status.LastBuildRunName != "" {
+			if run, err := s.resolveLastAppBuildRun(r.Context(), ns, &app, app.Status.LastBuildRunName); err == nil && run != nil {
+				if resp, ok, err := s.getBuildRunLogsResponse(r.Context(), run); err == nil && ok {
+					writeJSON(w, http.StatusOK, resp)
+					return
+				}
+			}
+		}
+		if app.Status.Phase == mortisev1alpha1.AppPhaseBuilding || app.Status.CurrentBuildRunName != "" {
+			if run, err := s.resolveCurrentAppBuildRun(r.Context(), ns, &app); err == nil && run != nil {
+				if resp, ok, err := s.getBuildRunLogsResponse(r.Context(), run); err == nil && ok {
+					writeJSON(w, http.StatusOK, resp)
+					return
+				}
+			}
+		}
+		if run, err := s.resolveLastAppBuildRun(r.Context(), ns, &app, app.Status.CurrentBuildRunName); err == nil && run != nil {
+			if resp, ok, err := s.getBuildRunLogsResponse(r.Context(), run); err == nil && ok {
+				writeJSON(w, http.StatusOK, resp)
+				return
+			}
 		}
 	}
 
-	// Fallback: load the persisted ConfigMap from the last completed build.
-	var cm corev1.ConfigMap
-	cmKey := types.NamespacedName{Namespace: ns, Name: "buildlogs-" + name}
-	if err := s.client.Get(r.Context(), cmKey, &cm); err != nil {
-		writeJSON(w, http.StatusOK, map[string]any{"lines": []string{}, "offset": 0, "building": false})
+	if cm, err := s.getLegacyBuildLogsConfigMap(r.Context(), ns, name); err == nil && cm != nil {
+		writeJSON(w, http.StatusOK, buildRunLogResponseFromConfigMap(cm, false))
 		return
 	}
-
-	lines := []string{}
-	if raw, ok := cm.Data["lines"]; ok && raw != "" {
-		lines = strings.Split(raw, "\n")
-	}
-
-	resp := map[string]any{
-		"lines":     lines,
-		"offset":    0,
-		"building":  false,
-		"timestamp": cm.Annotations["mortise.dev/build-timestamp"],
-		"commitSHA": cm.Annotations["mortise.dev/build-commit"],
-		"status":    cm.Annotations["mortise.dev/build-status"],
-		"error":     "",
-	}
-	if cm.Annotations["mortise.dev/build-status"] == "Failed" {
-		resp["error"] = cm.Annotations["mortise.dev/build-error"]
-	}
-	writeJSON(w, http.StatusOK, resp)
+	writeJSON(w, http.StatusOK, buildRunLogsResponse{Lines: []string{}, Offset: 0, Building: false})
 }
 
 // handleLogs streams pod logs for an App environment via Server-Sent Events.
