@@ -28,7 +28,7 @@
 		try {
 			apps = await api.listApps(projectName);
 			if (destroyed) return;
-			eventStream = connectProjectEvents(projectName, {
+			eventStream = await connectProjectEvents(projectName, {
 				onAppUpdated: (app) => {
 					const idx = apps.findIndex(a => a.metadata.name === app.metadata.name);
 					if (idx >= 0) {
