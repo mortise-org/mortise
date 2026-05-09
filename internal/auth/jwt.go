@@ -19,6 +19,7 @@ const (
 	jwtSecretKey  = "signing-key"
 	namespace     = "mortise-system"
 	tokenExpiry   = 24 * time.Hour
+	refreshWindow = 7 * 24 * time.Hour
 	jwtIssuer     = "mortise"
 	jwtAudience   = "mortise-api"
 )
@@ -88,6 +89,42 @@ func (h *JWTHelper) GenerateToken(ctx context.Context, p Principal) (string, err
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	return token.SignedString(key)
+}
+
+// ValidateTokenForRefresh parses a JWT with a leeway of refreshWindow, allowing
+// tokens that expired up to 7 days ago to be used for refresh.
+func (h *JWTHelper) ValidateTokenForRefresh(ctx context.Context, tokenString string) (Principal, int64, error) {
+	key, err := h.signingKey(ctx)
+	if err != nil {
+		return Principal{}, 0, err
+	}
+
+	token, err := jwt.Parse(tokenString, func(t *jwt.Token) (any, error) {
+		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
+		}
+		return key, nil
+	}, jwt.WithIssuer(jwtIssuer), jwt.WithAudience(jwtAudience), jwt.WithLeeway(refreshWindow))
+	if err != nil {
+		return Principal{}, 0, fmt.Errorf("token not eligible for refresh: %w", err)
+	}
+
+	claims, ok := token.Claims.(jwt.MapClaims)
+	if !ok || !token.Valid {
+		return Principal{}, 0, fmt.Errorf("invalid token claims")
+	}
+
+	sub, _ := claims["sub"].(string)
+	email, _ := claims["email"].(string)
+	role, _ := claims["role"].(string)
+	pwdGen, _ := claims["pwd_gen"].(float64)
+
+	return Principal{
+		ID:          sub,
+		Email:       email,
+		Role:        Role(role),
+		PasswordGen: int64(pwdGen),
+	}, int64(pwdGen), nil
 }
 
 func (h *JWTHelper) ValidateToken(ctx context.Context, tokenString string) (Principal, int64, error) {

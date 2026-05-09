@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	stderrors "errors"
 	"testing"
 	"time"
 
@@ -9,6 +10,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	fakeclient "sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
@@ -97,6 +99,44 @@ func TestJWTRoundTrip(t *testing.T) {
 	}
 	if got.ID != original.ID || got.Email != original.Email || got.Role != original.Role {
 		t.Errorf("principal mismatch: got %+v, want %+v", got, original)
+	}
+}
+
+func TestPrincipalReflectsCurrentRole(t *testing.T) {
+	provider, ctx := setup(t)
+
+	if err := provider.CreateUser(ctx, "alice@example.com", "s3cret12", RoleMember); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	principal, err := provider.Authenticate(ctx, Credentials{Email: "alice@example.com", Password: "s3cret12"})
+	if err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
+
+	token, err := provider.GenerateSessionToken(ctx, principal)
+	if err != nil {
+		t.Fatalf("GenerateSessionToken: %v", err)
+	}
+
+	var secret corev1.Secret
+	if err := provider.client.Get(ctx, types.NamespacedName{
+		Name:      userSecretName("alice@example.com"),
+		Namespace: namespace,
+	}, &secret); err != nil {
+		t.Fatalf("Get user secret: %v", err)
+	}
+	secret.Data["role"] = []byte(RoleAdmin)
+	if err := provider.client.Update(ctx, &secret); err != nil {
+		t.Fatalf("Update user secret: %v", err)
+	}
+
+	got, err := provider.Principal(ctx, token)
+	if err != nil {
+		t.Fatalf("Principal: %v", err)
+	}
+	if got.Role != RoleAdmin {
+		t.Fatalf("expected refreshed principal role %q, got %q", RoleAdmin, got.Role)
 	}
 }
 
@@ -287,14 +327,47 @@ func TestPasswordChangeInvalidatesToken(t *testing.T) {
 	}
 }
 
-func TestRevokedUserInvalidatesExistingToken(t *testing.T) {
+func TestCurrentPrincipalReloadsCurrentRole(t *testing.T) {
 	provider, ctx := setup(t)
 
-	if err := provider.CreateUser(ctx, "revoked@example.com", "original1", RoleMember); err != nil {
+	if err := provider.CreateUser(ctx, "alice@example.com", "pass1234", RoleAdmin); err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
 
-	principal, err := provider.Authenticate(ctx, Credentials{Email: "revoked@example.com", Password: "original1"})
+	principal, err := provider.Authenticate(ctx, Credentials{Email: "alice@example.com", Password: "pass1234"})
+	if err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
+
+	var secret corev1.Secret
+	if err := provider.client.Get(ctx, types.NamespacedName{
+		Name:      userSecretName("alice@example.com"),
+		Namespace: namespace,
+	}, &secret); err != nil {
+		t.Fatalf("Get user secret: %v", err)
+	}
+	secret.Data["role"] = []byte(RoleMember)
+	if err := provider.client.Update(ctx, &secret); err != nil {
+		t.Fatalf("Update user secret: %v", err)
+	}
+
+	refreshed, err := provider.CurrentPrincipal(ctx, principal.Email, principal.PasswordGen)
+	if err != nil {
+		t.Fatalf("CurrentPrincipal: %v", err)
+	}
+	if refreshed.Role != RoleMember {
+		t.Fatalf("expected refreshed role %q, got %q", RoleMember, refreshed.Role)
+	}
+}
+
+func TestRevokedUserInvalidatesToken(t *testing.T) {
+	provider, ctx := setup(t)
+
+	if err := provider.CreateUser(ctx, "carol@example.com", "original1", RoleMember); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	principal, err := provider.Authenticate(ctx, Credentials{Email: "carol@example.com", Password: "original1"})
 	if err != nil {
 		t.Fatalf("Authenticate: %v", err)
 	}
@@ -302,17 +375,14 @@ func TestRevokedUserInvalidatesExistingToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateSessionToken: %v", err)
 	}
-
-	if _, err := provider.Principal(ctx, token); err != nil {
-		t.Fatalf("token should be valid before revocation: %v", err)
-	}
-
-	if err := provider.RevokeUser(ctx, "revoked@example.com"); err != nil {
+	if err := provider.RevokeUser(ctx, "carol@example.com"); err != nil {
 		t.Fatalf("RevokeUser: %v", err)
 	}
 
 	if _, err := provider.Principal(ctx, token); err == nil {
-		t.Fatal("token issued before revocation should be rejected")
+		t.Fatal("revoked user token should be rejected")
+	} else if !stderrors.Is(err, ErrUserNotFound) {
+		t.Fatalf("expected ErrUserNotFound, got %v", err)
 	}
 }
 

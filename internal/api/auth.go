@@ -1,8 +1,11 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
@@ -10,6 +13,10 @@ import (
 
 	"github.com/mortise-org/mortise/internal/auth"
 )
+
+type refreshPrincipalProvider interface {
+	CurrentPrincipal(ctx context.Context, email string, tokenGen int64) (auth.Principal, error)
+}
 
 type setupRequest struct {
 	Email    string `json:"email"`
@@ -125,6 +132,67 @@ func (s *Server) Setup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusCreated, authResponse{Token: token, User: principal})
+}
+
+// @Summary Refresh JWT token
+// @Description Issues a new JWT from an existing token (valid or expired within 7 days)
+// @Tags auth
+// @Produce json
+// @Security BearerAuth
+// @Success 200 {object} authResponse
+// @Failure 401 {object} errorResponse
+// @Failure 500 {object} errorResponse
+// @Router /auth/refresh [post]
+//
+// Refresh issues a new JWT from a valid or recently-expired token. The token
+// may be expired for up to 7 days and still be eligible for refresh.
+func (s *Server) Refresh(w http.ResponseWriter, r *http.Request) {
+	header := r.Header.Get("Authorization")
+	if header == "" || !strings.HasPrefix(header, "Bearer ") {
+		writeJSON(w, http.StatusUnauthorized, errorResponse{"missing or invalid Authorization header"})
+		return
+	}
+	token := strings.TrimPrefix(header, "Bearer ")
+	if token == "" {
+		writeJSON(w, http.StatusUnauthorized, errorResponse{"empty bearer token"})
+		return
+	}
+
+	principal, tokenGen, err := s.jwt.ValidateTokenForRefresh(r.Context(), token)
+	if err != nil {
+		writeJSON(w, http.StatusUnauthorized, errorResponse{"token not eligible for refresh"})
+		return
+	}
+
+	if native, ok := s.auth.(*auth.NativeAuthProvider); ok && s.clientset != nil && s.restConfig != nil {
+		principal, err = native.CurrentPrincipalLive(r.Context(), s.clientset, principal.Email, tokenGen)
+	} else {
+		refresher, ok := s.auth.(refreshPrincipalProvider)
+		if !ok {
+			writeJSON(w, http.StatusUnauthorized, errorResponse{"token refresh unavailable for this auth provider"})
+			return
+		}
+		principal, err = refresher.CurrentPrincipal(r.Context(), principal.Email, tokenGen)
+	}
+	if err != nil {
+		switch {
+		case errors.Is(err, auth.ErrPasswordChangeInvalidated):
+			writeJSON(w, http.StatusUnauthorized, errorResponse{"session invalidated by password change"})
+		case errors.Is(err, auth.ErrUserNotFound):
+			writeJSON(w, http.StatusUnauthorized, errorResponse{"user no longer exists"})
+		default:
+			writeJSON(w, http.StatusInternalServerError, errorResponse{err.Error()})
+		}
+		return
+	}
+
+	newToken, err := s.jwt.GenerateToken(r.Context(), principal)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorResponse{err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, authResponse{Token: newToken, User: principal})
 }
 
 // @Summary Log in

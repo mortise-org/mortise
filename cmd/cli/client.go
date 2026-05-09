@@ -101,15 +101,67 @@ func (c *Client) doJSON(method, fullURL string, body, dest any) error {
 	if err != nil {
 		return err
 	}
+	if resp.StatusCode == http.StatusUnauthorized && c.Token != "" {
+		_, _ = io.ReadAll(resp.Body) // drain before close
+		_ = resp.Body.Close()
+		if c.tryRefreshToken() {
+			retryResp, retryErr := c.do(method, fullURL, body)
+			if retryErr != nil {
+				return retryErr
+			}
+			defer func() { _ = retryResp.Body.Close() }()
+			if retryResp.StatusCode >= 400 {
+				b, _ := io.ReadAll(retryResp.Body)
+				if retryResp.StatusCode == http.StatusUnauthorized {
+					return fmt.Errorf("session expired — run 'mortise login' to re-authenticate")
+				}
+				return fmt.Errorf("API error %d: %s", retryResp.StatusCode, string(b))
+			}
+			if dest != nil {
+				return json.NewDecoder(retryResp.Body).Decode(dest)
+			}
+			return nil
+		}
+		// Refresh failed — return the original 401 context.
+		return fmt.Errorf("session expired — run 'mortise login' to re-authenticate")
+	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 400 {
 		b, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode == http.StatusUnauthorized {
+			return fmt.Errorf("session expired — run 'mortise login' to re-authenticate")
+		}
 		return fmt.Errorf("API error %d: %s", resp.StatusCode, string(b))
 	}
 	if dest != nil {
 		return json.NewDecoder(resp.Body).Decode(dest)
 	}
 	return nil
+}
+
+func (c *Client) tryRefreshToken() bool {
+	var resp struct {
+		Token string `json:"token"`
+	}
+	refreshURL := c.BaseURL + "/api/auth/refresh"
+	httpResp, err := c.do(http.MethodPost, refreshURL, nil)
+	if err != nil {
+		return false
+	}
+	defer func() { _ = httpResp.Body.Close() }()
+	if httpResp.StatusCode != http.StatusOK {
+		return false
+	}
+	if err := json.NewDecoder(httpResp.Body).Decode(&resp); err != nil || resp.Token == "" {
+		return false
+	}
+	c.Token = resp.Token
+	cfg, err := loadConfig()
+	if err == nil {
+		cfg.Token = resp.Token
+		_ = saveConfig(cfg)
+	}
+	return true
 }
 
 func (c *Client) doRaw(method, fullURL, contentType string, body io.Reader) (*http.Response, error) {

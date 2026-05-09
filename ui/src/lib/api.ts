@@ -51,7 +51,7 @@ function tokenExpiresAt(): number | null {
 	}
 }
 
-let refreshPromise: Promise<void> | null = null;
+let refreshPromise: Promise<boolean> | null = null;
 
 export class AuthRequiredError extends Error {
 	constructor(message = 'Unauthorized') {
@@ -70,16 +70,16 @@ function forceReauth(message = 'Unauthorized'): never {
 	throw new AuthRequiredError(message);
 }
 
-async function maybeRefreshToken(): Promise<void> {
+async function maybeRefreshToken(): Promise<boolean> {
 	const exp = tokenExpiresAt();
-	if (!exp) return;
-	if (exp - Date.now() > REFRESH_WINDOW_MS) return;
+	if (!exp) return false;
+	if (exp - Date.now() > REFRESH_WINDOW_MS) return false;
 	if (refreshPromise) return refreshPromise;
 
 	refreshPromise = (async () => {
 		try {
 			const token = localStorage.getItem('mortise_token');
-			if (!token) return;
+			if (!token) return false;
 			const res = await fetch(`${BASE}/auth/refresh`, {
 				method: 'POST',
 				headers: {
@@ -96,7 +96,9 @@ async function maybeRefreshToken(): Promise<void> {
 					localStorage.setItem('mortise_token', data.token);
 					if (data.user) {
 						localStorage.setItem('mortise_user', JSON.stringify(data.user));
+						window.dispatchEvent(new CustomEvent('mortise:user-updated', { detail: data.user }));
 					}
+					return true;
 				}
 			}
 		} catch (error) {
@@ -107,6 +109,7 @@ async function maybeRefreshToken(): Promise<void> {
 		} finally {
 			refreshPromise = null;
 		}
+		return false;
 	})();
 	return refreshPromise;
 }
@@ -115,7 +118,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 	const method = init?.method?.toUpperCase();
 	const retryable = method === 'PUT' || method === 'PATCH';
 	const maxRetries = retryable ? 3 : 0;
-	await maybeRefreshToken();
+	let refreshed = false;
+	refreshed = await maybeRefreshToken();
 
 	for (let attempt = 0; ; attempt++) {
 		const token = localStorage.getItem('mortise_token');
@@ -126,8 +130,19 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 		if (token) {
 			headers['Authorization'] = `Bearer ${token}`;
 		}
-
 		const res = await fetch(`${BASE}${path}`, { ...init, headers });
+
+		if (res.status === 401 && token) {
+			if (refreshed) {
+				forceReauth();
+			}
+			refreshed = await maybeRefreshToken();
+			if (refreshed) {
+				attempt--;
+				continue;
+			}
+			forceReauth();
+		}
 
 		if (res.status === 401) {
 			forceReauth();
@@ -165,7 +180,6 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 		return JSON.parse(text) as T;
 	}
 }
-
 async function fetchSSEToken(): Promise<string> {
 	await maybeRefreshToken();
 
