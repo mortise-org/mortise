@@ -131,6 +131,9 @@ async function tryRefreshToken(): Promise<boolean> {
 		const data = await res.json();
 		if (data.token) {
 			localStorage.setItem('mortise_token', data.token);
+			if (data.user) {
+				localStorage.setItem('mortise_user', JSON.stringify(data.user));
+			}
 			return true;
 		}
 	} catch {

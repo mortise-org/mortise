@@ -13,6 +13,10 @@ import (
 	"github.com/mortise-org/mortise/internal/auth"
 )
 
+type refreshPrincipalProvider interface {
+	CurrentPrincipal(ctx context.Context, email string, tokenGen int64) (auth.Principal, error)
+}
+
 type setupRequest struct {
 	Email    string `json:"email"`
 	Password string `json:"password"`
@@ -159,20 +163,23 @@ func (s *Server) Refresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	native, ok := s.auth.(*auth.NativeAuthProvider)
-	if ok {
-		principal, err = native.CurrentPrincipal(r.Context(), principal.Email, tokenGen)
-		if err != nil {
-			switch {
-			case errors.Is(err, auth.ErrPasswordChangeInvalidated):
-				writeJSON(w, http.StatusUnauthorized, errorResponse{"session invalidated by password change"})
-			case errors.Is(err, auth.ErrUserNotFound):
-				writeJSON(w, http.StatusUnauthorized, errorResponse{"user no longer exists"})
-			default:
-				writeJSON(w, http.StatusInternalServerError, errorResponse{err.Error()})
-			}
-			return
+	refresher, ok := s.auth.(refreshPrincipalProvider)
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, errorResponse{"token refresh unavailable for this auth provider"})
+		return
+	}
+
+	principal, err = refresher.CurrentPrincipal(r.Context(), principal.Email, tokenGen)
+	if err != nil {
+		switch {
+		case errors.Is(err, auth.ErrPasswordChangeInvalidated):
+			writeJSON(w, http.StatusUnauthorized, errorResponse{"session invalidated by password change"})
+		case errors.Is(err, auth.ErrUserNotFound):
+			writeJSON(w, http.StatusUnauthorized, errorResponse{"user no longer exists"})
+		default:
+			writeJSON(w, http.StatusInternalServerError, errorResponse{err.Error()})
 		}
+		return
 	}
 
 	newToken, err := s.jwt.GenerateToken(r.Context(), principal)
