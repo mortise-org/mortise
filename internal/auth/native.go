@@ -74,8 +74,11 @@ func (n *NativeAuthProvider) Principal(ctx context.Context, session SessionToken
 	if err != nil {
 		return Principal{}, err
 	}
-
 	return n.CurrentPrincipal(ctx, principal.Email, tokenGen)
+}
+
+func (n *NativeAuthProvider) RefreshPrincipal(ctx context.Context, email string, tokenGen int64) (Principal, error) {
+	return n.CurrentPrincipal(ctx, email, tokenGen)
 }
 
 func (n *NativeAuthProvider) ListUsers(ctx context.Context) ([]User, error) {

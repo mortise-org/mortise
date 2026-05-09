@@ -54,6 +54,9 @@ class MortiseStore {
 
 	constructor() {
 		if (browser) {
+			window.addEventListener('mortise:auth-required', () => {
+				this.logout();
+			});
 			this.token = localStorage.getItem('mortise_token');
 			this.currentProject = localStorage.getItem('mortise_project');
 			this.viewMode =
@@ -74,7 +77,8 @@ class MortiseStore {
 			if (savedUser) {
 				try { this.user = JSON.parse(savedUser); } catch { /* ignore */ }
 			}
-			// JWT decode fallback when token exists but no persisted user
+			// JWT decode fallback when token exists but no persisted user.
+			// The server still enforces authorization on every request.
 			if (!this.user && this.token) {
 				try {
 					const payload = JSON.parse(atob(this.token.split('.')[1]));

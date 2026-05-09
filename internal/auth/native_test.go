@@ -88,7 +88,6 @@ func TestJWTRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Authenticate: %v", err)
 	}
-
 	token, err := provider.GenerateSessionToken(ctx, original)
 	if err != nil {
 		t.Fatalf("GenerateSessionToken: %v", err)
@@ -372,12 +371,10 @@ func TestRevokedUserInvalidatesToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Authenticate: %v", err)
 	}
-
 	token, err := provider.GenerateSessionToken(ctx, principal)
 	if err != nil {
 		t.Fatalf("GenerateSessionToken: %v", err)
 	}
-
 	if err := provider.RevokeUser(ctx, "carol@example.com"); err != nil {
 		t.Fatalf("RevokeUser: %v", err)
 	}

@@ -1,6 +1,6 @@
 <script lang="ts">
-	import { onMount, onDestroy, tick } from 'svelte';
-	import { api } from '$lib/api';
+	import { onDestroy, tick } from 'svelte';
+	import { AuthRequiredError, api } from '$lib/api';
 	import { hashPodColor } from '$lib/pod-colors';
 
 	interface Props {
@@ -31,6 +31,7 @@
 	let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 	let scrollContainer: HTMLDivElement | null = $state(null);
 	let pausedBuffer = $state<LogEntry[]>([]);
+	let connectionID = 0;
 
 	const MAX_ENTRIES = 5000;
 
@@ -40,57 +41,99 @@
 
 	const podList = $derived(Array.from(pods).sort());
 
-	function connect() {
+	function clearReconnectTimer() {
+		if (reconnectTimer) {
+			clearTimeout(reconnectTimer);
+			reconnectTimer = null;
+		}
+	}
+
+	function closeSource(target?: EventSource) {
+		if (target) {
+			target.close();
+			if (source === target) {
+				source = null;
+			}
+			return;
+		}
 		if (source) {
 			source.close();
 			source = null;
 		}
-		const url = api.logsURL(project, appName, { env, follow: true, tail });
+	}
+
+	async function connect() {
+		const id = ++connectionID;
+		clearReconnectTimer();
+		closeSource();
+		connected = false;
 		errored = false;
-		source = new EventSource(url);
 
-		source.onopen = () => {
-			connected = true;
-			errored = false;
-		};
+		try {
+			const url = await api.logsURL(project, appName, { env, follow: true, tail });
+			if (id !== connectionID) return;
 
-		source.onmessage = (ev) => {
-			try {
-				const parsed = JSON.parse(ev.data);
-				if (!parsed || typeof parsed.line !== 'string' || typeof parsed.pod !== 'string') {
-					return;
-				}
-				const entry: LogEntry = {
-					pod: parsed.pod,
-					line: parsed.line,
-					stream: typeof parsed.stream === 'string' ? parsed.stream : undefined,
-					receivedAt: Date.now()
-				};
-				if (!pods.has(entry.pod)) {
-					pods = new Set([...pods, entry.pod]);
-				}
-				if (paused) {
-					pausedBuffer.push(entry);
-					if (pausedBuffer.length > MAX_ENTRIES) {
-						pausedBuffer = pausedBuffer.slice(-MAX_ENTRIES);
-					}
-					return;
-				}
-				appendEntry(entry);
-			} catch {
-				// Ignore malformed events.
+			const next = new EventSource(url);
+			if (id !== connectionID) {
+				next.close();
+				return;
 			}
-		};
+			source = next;
 
-		source.onerror = () => {
+			next.onopen = () => {
+				if (id !== connectionID || source !== next) {
+					next.close();
+					return;
+				}
+				connected = true;
+				errored = false;
+			};
+
+			next.onmessage = (ev) => {
+				if (id !== connectionID || source !== next) return;
+				try {
+					const parsed = JSON.parse(ev.data);
+					if (!parsed || typeof parsed.line !== 'string' || typeof parsed.pod !== 'string') {
+						return;
+					}
+					const entry: LogEntry = {
+						pod: parsed.pod,
+						line: parsed.line,
+						stream: typeof parsed.stream === 'string' ? parsed.stream : undefined,
+						receivedAt: Date.now()
+					};
+					if (!pods.has(entry.pod)) {
+						pods = new Set([...pods, entry.pod]);
+					}
+					if (paused) {
+						pausedBuffer.push(entry);
+						if (pausedBuffer.length > MAX_ENTRIES) {
+							pausedBuffer = pausedBuffer.slice(-MAX_ENTRIES);
+						}
+						return;
+					}
+					appendEntry(entry);
+				} catch {
+					// Ignore malformed events.
+				}
+			};
+
+			next.onerror = () => {
+				if (id !== connectionID || source !== next) return;
+				connected = false;
+				errored = true;
+				closeSource(next);
+				scheduleReconnect();
+			};
+		} catch (error) {
+			if (id !== connectionID) return;
 			connected = false;
 			errored = true;
-			if (source) {
-				source.close();
-				source = null;
+			if (error instanceof AuthRequiredError) {
+				return;
 			}
 			scheduleReconnect();
-		};
+		}
 	}
 
 	function appendEntry(entry: LogEntry) {
@@ -113,7 +156,7 @@
 		if (reconnectTimer) return;
 		reconnectTimer = setTimeout(() => {
 			reconnectTimer = null;
-			connect();
+			void connect();
 		}, 2000);
 	}
 
@@ -159,19 +202,10 @@
 		URL.revokeObjectURL(url);
 	}
 
-	onMount(() => {
-		connect();
-	});
-
 	onDestroy(() => {
-		if (source) {
-			source.close();
-			source = null;
-		}
-		if (reconnectTimer) {
-			clearTimeout(reconnectTimer);
-			reconnectTimer = null;
-		}
+		connectionID += 1;
+		closeSource();
+		clearReconnectTimer();
 	});
 
 	// Reconnect when project/appName/env changes.
@@ -179,11 +213,12 @@
 		void project;
 		void appName;
 		void env;
+		void tail;
 		entries = [];
 		pausedBuffer = [];
 		pods = new Set();
 		selectedPod = '';
-		connect();
+		void connect();
 	});
 </script>
 
