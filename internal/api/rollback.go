@@ -153,10 +153,6 @@ func (s *Server) Promote(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errorResponse{"from and to must be different environments"})
 		return
 	}
-	if !s.authorize(w, r, authz.Resource{Kind: "app", Namespace: ns, Project: projectName, Environment: req.To}, authz.ActionUpdate) {
-		return
-	}
-
 	// Authorize read on the source environment so developers cannot exfiltrate
 	// production state by promoting FROM a restricted env to a less-restricted one.
 	if !s.authorize(w, r, authz.Resource{Kind: "app", Namespace: ns, Project: projectName, Environment: req.From}, authz.ActionRead) {
