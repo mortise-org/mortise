@@ -609,6 +609,17 @@ spec:
                         AutoDomain is the platform-generated domain for this environment,
                         always computed regardless of whether a custom primary domain is set.
                       type: string
+                    certificateMessage:
+                      description: |-
+                        CertificateMessage is a human-readable explanation of the certificate
+                        state (e.g. challenge failure reason, DNS guidance).
+                      type: string
+                    certificateStatus:
+                      description: |-
+                        CertificateStatus is the readiness state of the TLS certificate for
+                        this environment. Empty when cert-manager is not in use. Possible
+                        values: "Ready", "Pending", "Failed".
+                      type: string
                     currentDigest:
                       type: string
                     currentImage:

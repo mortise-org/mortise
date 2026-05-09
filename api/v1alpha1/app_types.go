@@ -474,6 +474,17 @@ type EnvironmentStatus struct {
 	// unapplied env-var changes.
 	// +optional
 	DeployedEnvHash string `json:"deployedEnvHash,omitempty"`
+
+	// CertificateStatus is the readiness state of the TLS certificate for
+	// this environment. Empty when cert-manager is not in use. Possible
+	// values: "Ready", "Pending", "Failed".
+	// +optional
+	CertificateStatus string `json:"certificateStatus,omitempty"`
+
+	// CertificateMessage is a human-readable explanation of the certificate
+	// state (e.g. challenge failure reason, DNS guidance).
+	// +optional
+	CertificateMessage string `json:"certificateMessage,omitempty"`
 }
 
 // AppPhase represents the overall lifecycle phase.

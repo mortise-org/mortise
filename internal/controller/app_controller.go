@@ -40,7 +40,9 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/clock"
@@ -110,6 +112,7 @@ type AppReconciler struct {
 // +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=cert-manager.io,resources=certificates,verbs=get;list;watch
 
 func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
@@ -1368,9 +1371,9 @@ func (r *AppReconciler) reconcileIngress(ctx context.Context, app *mortisev1alph
 	}
 
 	// TLS Secret reference: BYO or auto-generated.
-	tlsSecretName := fmt.Sprintf("%s-tls", name)
+	tlsName := tlsSecretName(app.Name)
 	if env.TLS != nil && env.TLS.SecretName != "" {
-		tlsSecretName = env.TLS.SecretName
+		tlsName = env.TLS.SecretName
 	}
 
 	// Base annotations from IngressProvider (ExternalDNS hostname,
@@ -1409,7 +1412,7 @@ func (r *AppReconciler) reconcileIngress(ctx context.Context, app *mortisev1alph
 			TLS: []networkingv1.IngressTLS{
 				{
 					Hosts:      allHosts,
-					SecretName: tlsSecretName,
+					SecretName: tlsName,
 				},
 			},
 		},
@@ -1435,6 +1438,71 @@ func (r *AppReconciler) reconcileIngress(ctx context.Context, app *mortisev1alph
 	existing.Spec = desired.Spec
 	existing.Annotations = desired.Annotations
 	return r.Update(ctx, &existing)
+}
+
+var certGVK = schema.GroupVersionKind{Group: "cert-manager.io", Version: "v1", Kind: "Certificate"}
+
+// checkCertificateStatus reads the cert-manager Certificate resource for an
+// environment's TLS secret and returns (status, message). Returns ("", "")
+// when cert-manager is not in use or the Certificate doesn't exist yet.
+func (r *AppReconciler) checkCertificateStatus(ctx context.Context, secretName, namespace string) (string, string) {
+	cert := &unstructured.Unstructured{}
+	cert.SetGroupVersionKind(certGVK)
+	err := r.Get(ctx, types.NamespacedName{Name: secretName, Namespace: namespace}, cert)
+	if err != nil {
+		return "", ""
+	}
+
+	conditions, found, err := unstructured.NestedSlice(cert.Object, "status", "conditions")
+	if err != nil || !found {
+		return "Pending", "Certificate exists but has no status yet"
+	}
+
+	for _, c := range conditions {
+		cond, ok := c.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		condType, _, _ := unstructured.NestedString(cond, "type")
+		if condType != "Ready" {
+			continue
+		}
+		status, _, _ := unstructured.NestedString(cond, "status")
+		message, _, _ := unstructured.NestedString(cond, "message")
+		if status == "True" {
+			return "Ready", ""
+		}
+		reason, _, _ := unstructured.NestedString(cond, "reason")
+		// Transient cert-manager reasons indicate the certificate is still
+		// being issued or validated — not a terminal failure.
+		switch reason {
+		case "Issuing", "Pending", "InProgress", "":
+			if message != "" {
+				return "Pending", message
+			}
+			return "Pending", ""
+		default:
+			if message != "" {
+				return "Failed", fmt.Sprintf("%s: %s", reason, message)
+			}
+			return "Failed", reason
+		}
+	}
+
+	return "Pending", "Certificate is being issued"
+}
+
+// checkCustomTLSSecret verifies that a user-supplied TLS secret exists and
+// contains tls.crt + tls.key. Returns (status, message).
+func (r *AppReconciler) checkCustomTLSSecret(ctx context.Context, secretName, namespace string) (string, string) {
+	var sec corev1.Secret
+	if err := r.Get(ctx, types.NamespacedName{Name: secretName, Namespace: namespace}, &sec); err != nil {
+		return "Failed", fmt.Sprintf("custom TLS secret %q not found", secretName)
+	}
+	if sec.Data == nil || len(sec.Data["tls.crt"]) == 0 || len(sec.Data["tls.key"]) == 0 {
+		return "Failed", fmt.Sprintf("custom TLS secret %q missing tls.crt or tls.key", secretName)
+	}
+	return "Ready", ""
 }
 
 func (r *AppReconciler) reconcileServiceAccount(ctx context.Context, app *mortisev1alpha1.App, envNs, envName string) error {
@@ -2363,6 +2431,14 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 			anyNotReady = true
 		}
 
+		if app.Spec.Network.Public && es.Domain != "" {
+			if env.TLS != nil && env.TLS.SecretName != "" {
+				es.CertificateStatus, es.CertificateMessage = r.checkCustomTLSSecret(ctx, env.TLS.SecretName, envNs)
+			} else {
+				es.CertificateStatus, es.CertificateMessage = r.checkCertificateStatus(ctx, tlsSecretName(app.Name), envNs)
+			}
+		}
+
 		envStatuses = append(envStatuses, es)
 	}
 
@@ -2537,6 +2613,7 @@ func deploymentName(appName string) string { return constants.DeploymentName(app
 func cronJobName(appName string) string    { return constants.CronJobName(appName) }
 func serviceName(appName string) string    { return appName }
 func ingressName(appName string) string    { return appName }
+func tlsSecretName(appName string) string  { return fmt.Sprintf("%s-tls", ingressName(appName)) }
 
 func disableDefaultSecurityContext(app *mortisev1alpha1.App) bool {
 	return app.Annotations["mortise.dev/disable-default-security-context"] == "true"
