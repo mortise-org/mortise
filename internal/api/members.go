@@ -37,9 +37,10 @@ type updateMemberRequest struct {
 	Role string `json:"role"`
 }
 
-// memberCRDName returns the deterministic ProjectMember CRD name for an email.
+// memberCRDName delegates to constants.MemberCRDName for the deterministic
+// ProjectMember CRD name derivation.
 func memberCRDName(email string) string {
-	return "member-" + hex.EncodeToString([]byte(email))
+	return constants.MemberCRDName(email)
 }
 
 // validProjectRole returns true if role is a valid ProjectRole value.

@@ -946,24 +946,6 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 		return err
 	}
 
-	// Preserve API-set annotations so the controller doesn't strip them.
-	if v, ok := existing.Spec.Template.Annotations["mortise.dev/restartedAt"]; ok {
-		if desired.Spec.Template.Annotations == nil {
-			desired.Spec.Template.Annotations = make(map[string]string)
-		}
-		desired.Spec.Template.Annotations["mortise.dev/restartedAt"] = v
-	}
-	// When autoRedeploy is off, freeze the deployed env-hash so the new
-	// hash doesn't trigger a rolling update. Users redeploy manually.
-	if !autoRedeploy {
-		if v, ok := existing.Spec.Template.Annotations["mortise.dev/env-hash"]; ok {
-			if desired.Spec.Template.Annotations == nil {
-				desired.Spec.Template.Annotations = make(map[string]string)
-			}
-			desired.Spec.Template.Annotations["mortise.dev/env-hash"] = v
-		}
-	}
-
 	if len(desired.Spec.Template.Spec.Containers) == 0 {
 		return fmt.Errorf("desired Deployment %s/%s has no containers", envNs, name)
 	}
@@ -975,6 +957,25 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 	// surfacing the error and requeuing.
 	const maxConflictRetries = 3
 	for attempt := 0; attempt < maxConflictRetries; attempt++ {
+		// Re-derive desired annotations from the (possibly re-fetched) existing
+		// Deployment so stale values from a prior iteration don't persist.
+		if v, ok := existing.Spec.Template.Annotations["mortise.dev/restartedAt"]; ok {
+			if desired.Spec.Template.Annotations == nil {
+				desired.Spec.Template.Annotations = make(map[string]string)
+			}
+			desired.Spec.Template.Annotations["mortise.dev/restartedAt"] = v
+		}
+		// When autoRedeploy is off, freeze the deployed env-hash so the new
+		// hash doesn't trigger a rolling update. Users redeploy manually.
+		if !autoRedeploy {
+			if v, ok := existing.Spec.Template.Annotations["mortise.dev/env-hash"]; ok {
+				if desired.Spec.Template.Annotations == nil {
+					desired.Spec.Template.Annotations = make(map[string]string)
+				}
+				desired.Spec.Template.Annotations["mortise.dev/env-hash"] = v
+			}
+		}
+
 		// Only update if the fields we manage actually changed. Comparing the
 		// full spec/template doesn't work because k8s adds dozens of default
 		// fields (securityContext, serviceAccount, terminationMessagePolicy, etc.)
@@ -1172,91 +1173,105 @@ func (r *AppReconciler) reconcileCronJob(ctx context.Context, app *mortisev1alph
 		return err
 	}
 
-	if v, ok := existing.Spec.JobTemplate.Spec.Template.Annotations["mortise.dev/restartedAt"]; ok {
-		if desired.Spec.JobTemplate.Spec.Template.Annotations == nil {
-			desired.Spec.JobTemplate.Spec.Template.Annotations = make(map[string]string)
-		}
-		desired.Spec.JobTemplate.Spec.Template.Annotations["mortise.dev/restartedAt"] = v
-	}
-	if !autoRedeploy {
-		if v, ok := existing.Spec.JobTemplate.Spec.Template.Annotations["mortise.dev/env-hash"]; ok {
+	const maxConflictRetries = 3
+	for attempt := 0; attempt < maxConflictRetries; attempt++ {
+		if v, ok := existing.Spec.JobTemplate.Spec.Template.Annotations["mortise.dev/restartedAt"]; ok {
 			if desired.Spec.JobTemplate.Spec.Template.Annotations == nil {
 				desired.Spec.JobTemplate.Spec.Template.Annotations = make(map[string]string)
 			}
-			desired.Spec.JobTemplate.Spec.Template.Annotations["mortise.dev/env-hash"] = v
+			desired.Spec.JobTemplate.Spec.Template.Annotations["mortise.dev/restartedAt"] = v
+		}
+		if !autoRedeploy {
+			if v, ok := existing.Spec.JobTemplate.Spec.Template.Annotations["mortise.dev/env-hash"]; ok {
+				if desired.Spec.JobTemplate.Spec.Template.Annotations == nil {
+					desired.Spec.JobTemplate.Spec.Template.Annotations = make(map[string]string)
+				}
+				desired.Spec.JobTemplate.Spec.Template.Annotations["mortise.dev/env-hash"] = v
+			}
+		}
+
+		desiredPodSpec := desired.Spec.JobTemplate.Spec.Template.Spec
+		if len(desiredPodSpec.Containers) == 0 {
+			return fmt.Errorf("desired CronJob %s/%s has no containers", envNs, name)
+		}
+		desiredContainer := desiredPodSpec.Containers[0]
+
+		existingPodSpec := existing.Spec.JobTemplate.Spec.Template.Spec
+		if len(existingPodSpec.Containers) == 0 {
+			return fmt.Errorf("existing CronJob %s/%s has no containers", envNs, name)
+		}
+		existingContainer := existingPodSpec.Containers[0]
+
+		needsUpdate := false
+		if existingContainer.Image != desiredContainer.Image {
+			needsUpdate = true
+		}
+		if !equality.Semantic.DeepEqual(existingContainer.Env, desiredContainer.Env) {
+			needsUpdate = true
+		}
+		if !equality.Semantic.DeepEqual(existingContainer.EnvFrom, desiredContainer.EnvFrom) {
+			needsUpdate = true
+		}
+		if !equality.Semantic.DeepEqual(existingContainer.VolumeMounts, desiredContainer.VolumeMounts) {
+			needsUpdate = true
+		}
+		if !equality.Semantic.DeepEqual(existingPodSpec.Volumes, desiredPodSpec.Volumes) {
+			needsUpdate = true
+		}
+		if !equality.Semantic.DeepEqual(existingContainer.Resources, desiredContainer.Resources) {
+			needsUpdate = true
+		}
+		if securityContextChanged(existingPodSpec.SecurityContext, desiredPodSpec.SecurityContext, existingContainer.SecurityContext, desiredContainer.SecurityContext) {
+			needsUpdate = true
+		}
+		if existing.Spec.Schedule != desired.Spec.Schedule {
+			needsUpdate = true
+		}
+		if existing.Spec.ConcurrencyPolicy != desired.Spec.ConcurrencyPolicy {
+			needsUpdate = true
+		}
+		if !equality.Semantic.DeepEqual(existing.Spec.JobTemplate.Spec.Template.ObjectMeta.Annotations, desired.Spec.JobTemplate.Spec.Template.ObjectMeta.Annotations) {
+			needsUpdate = true
+		}
+		if !equality.Semantic.DeepEqual(existing.Annotations, desired.Annotations) {
+			needsUpdate = true
+		}
+
+		if !needsUpdate {
+			return nil
+		}
+
+		// Merge-patch sends only the delta, preserving k8s defaults while the
+		// retry loop handles optimistic-locking conflicts.
+		patch := client.MergeFrom(existing.DeepCopy())
+
+		existing.Annotations = desired.Annotations
+		existing.Spec.Schedule = desired.Spec.Schedule
+		existing.Spec.ConcurrencyPolicy = desired.Spec.ConcurrencyPolicy
+		existing.Spec.JobTemplate.Spec.Template.ObjectMeta.Annotations = desired.Spec.JobTemplate.Spec.Template.ObjectMeta.Annotations
+		existing.Spec.JobTemplate.Spec.Template.ObjectMeta.Labels = desired.Spec.JobTemplate.Spec.Template.ObjectMeta.Labels
+		existing.Spec.JobTemplate.Spec.Template.Spec.Containers[0].Image = desiredContainer.Image
+		existing.Spec.JobTemplate.Spec.Template.Spec.Containers[0].Env = desiredContainer.Env
+		existing.Spec.JobTemplate.Spec.Template.Spec.Containers[0].EnvFrom = desiredContainer.EnvFrom
+		existing.Spec.JobTemplate.Spec.Template.Spec.Containers[0].VolumeMounts = desiredContainer.VolumeMounts
+		existing.Spec.JobTemplate.Spec.Template.Spec.Volumes = desiredPodSpec.Volumes
+		existing.Spec.JobTemplate.Spec.Template.Spec.Containers[0].Resources = desiredContainer.Resources
+		existing.Spec.JobTemplate.Spec.Template.Spec.Containers[0].SecurityContext = desiredContainer.SecurityContext
+		existing.Spec.JobTemplate.Spec.Template.Spec.SecurityContext = desiredPodSpec.SecurityContext
+
+		patchErr := r.Patch(ctx, &existing, patch)
+		if patchErr == nil {
+			return nil
+		}
+		if !errors.IsConflict(patchErr) || attempt == maxConflictRetries-1 {
+			return patchErr
+		}
+
+		if getErr := r.Get(ctx, types.NamespacedName{Name: name, Namespace: envNs}, &existing); getErr != nil {
+			return getErr
 		}
 	}
-
-	desiredPodSpec := desired.Spec.JobTemplate.Spec.Template.Spec
-	if len(desiredPodSpec.Containers) == 0 {
-		return fmt.Errorf("desired CronJob %s/%s has no containers", envNs, name)
-	}
-	desiredContainer := desiredPodSpec.Containers[0]
-
-	existingPodSpec := existing.Spec.JobTemplate.Spec.Template.Spec
-	if len(existingPodSpec.Containers) == 0 {
-		return fmt.Errorf("existing CronJob %s/%s has no containers", envNs, name)
-	}
-	existingContainer := existingPodSpec.Containers[0]
-
-	needsUpdate := false
-	if existingContainer.Image != desiredContainer.Image {
-		needsUpdate = true
-	}
-	if !equality.Semantic.DeepEqual(existingContainer.Env, desiredContainer.Env) {
-		needsUpdate = true
-	}
-	if !equality.Semantic.DeepEqual(existingContainer.EnvFrom, desiredContainer.EnvFrom) {
-		needsUpdate = true
-	}
-	if !equality.Semantic.DeepEqual(existingContainer.VolumeMounts, desiredContainer.VolumeMounts) {
-		needsUpdate = true
-	}
-	if !equality.Semantic.DeepEqual(existingPodSpec.Volumes, desiredPodSpec.Volumes) {
-		needsUpdate = true
-	}
-	if !equality.Semantic.DeepEqual(existingContainer.Resources, desiredContainer.Resources) {
-		needsUpdate = true
-	}
-	if securityContextChanged(existingPodSpec.SecurityContext, desiredPodSpec.SecurityContext, existingContainer.SecurityContext, desiredContainer.SecurityContext) {
-		needsUpdate = true
-	}
-	if existing.Spec.Schedule != desired.Spec.Schedule {
-		needsUpdate = true
-	}
-	if existing.Spec.ConcurrencyPolicy != desired.Spec.ConcurrencyPolicy {
-		needsUpdate = true
-	}
-	if !equality.Semantic.DeepEqual(existing.Spec.JobTemplate.Spec.Template.ObjectMeta.Annotations, desired.Spec.JobTemplate.Spec.Template.ObjectMeta.Annotations) {
-		needsUpdate = true
-	}
-	if !equality.Semantic.DeepEqual(existing.Annotations, desired.Annotations) {
-		needsUpdate = true
-	}
-
-	if !needsUpdate {
-		return nil
-	}
-
-	// Merge-patch sends only the delta, avoiding optimistic-locking conflicts
-	// that a full Update would require a retry loop for.
-	patch := client.MergeFrom(existing.DeepCopy())
-
-	existing.Annotations = desired.Annotations
-	existing.Spec.Schedule = desired.Spec.Schedule
-	existing.Spec.ConcurrencyPolicy = desired.Spec.ConcurrencyPolicy
-	existing.Spec.JobTemplate.Spec.Template.ObjectMeta.Annotations = desired.Spec.JobTemplate.Spec.Template.ObjectMeta.Annotations
-	existing.Spec.JobTemplate.Spec.Template.ObjectMeta.Labels = desired.Spec.JobTemplate.Spec.Template.ObjectMeta.Labels
-	existing.Spec.JobTemplate.Spec.Template.Spec.Containers[0].Image = desiredContainer.Image
-	existing.Spec.JobTemplate.Spec.Template.Spec.Containers[0].Env = desiredContainer.Env
-	existing.Spec.JobTemplate.Spec.Template.Spec.Containers[0].EnvFrom = desiredContainer.EnvFrom
-	existing.Spec.JobTemplate.Spec.Template.Spec.Containers[0].VolumeMounts = desiredContainer.VolumeMounts
-	existing.Spec.JobTemplate.Spec.Template.Spec.Volumes = desiredPodSpec.Volumes
-	existing.Spec.JobTemplate.Spec.Template.Spec.Containers[0].Resources = desiredContainer.Resources
-	existing.Spec.JobTemplate.Spec.Template.Spec.Containers[0].SecurityContext = desiredContainer.SecurityContext
-	existing.Spec.JobTemplate.Spec.Template.Spec.SecurityContext = desiredPodSpec.SecurityContext
-
-	return r.Patch(ctx, &existing, patch)
+	return nil
 }
 
 func (r *AppReconciler) reconcileService(ctx context.Context, app *mortisev1alpha1.App, env *mortisev1alpha1.Environment, envNs string) error {
