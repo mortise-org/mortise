@@ -35,9 +35,11 @@ import (
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	clocktesting "k8s.io/utils/clock/testing"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -59,6 +61,66 @@ var (
 // testImageNginx is the pinned image used across App controller tests.
 // Hoisted to package scope so it is visible from multiple Describe blocks.
 const testImageNginx = "nginx:1.27"
+
+func TestUpdateStatusPreservesBuildRunRefs(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := mortisev1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add scheme: %v", err)
+	}
+
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "demo",
+			Namespace: "pj-default-project",
+		},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{
+				Type:  mortisev1alpha1.SourceTypeImage,
+				Image: "nginx:1.27",
+			},
+			Environments: []mortisev1alpha1.Environment{{Name: "production"}},
+		},
+		Status: mortisev1alpha1.AppStatus{
+			Environments: []mortisev1alpha1.EnvironmentStatus{{
+				Name: "production",
+				CurrentBuildRunRef: &mortisev1alpha1.BuildRunReference{
+					Name:  "buildrun-live",
+					Phase: mortisev1alpha1.BuildRunPhaseRunning,
+				},
+				LastSuccessfulBuildRunRef: &mortisev1alpha1.BuildRunReference{
+					Name:  "buildrun-last",
+					Phase: mortisev1alpha1.BuildRunPhaseSucceeded,
+				},
+			}},
+		},
+	}
+
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(app).
+		WithObjects(app).
+		Build()
+	r := &AppReconciler{Client: c, Scheme: scheme}
+
+	if err := r.updateStatus(context.Background(), app, []mortisev1alpha1.Environment{{Name: "production"}}); err != nil {
+		t.Fatalf("update status: %v", err)
+	}
+
+	var fresh mortisev1alpha1.App
+	if err := c.Get(context.Background(), types.NamespacedName{Name: app.Name, Namespace: app.Namespace}, &fresh); err != nil {
+		t.Fatalf("get app: %v", err)
+	}
+	if len(fresh.Status.Environments) != 1 {
+		t.Fatalf("expected 1 environment status, got %d", len(fresh.Status.Environments))
+	}
+	es := fresh.Status.Environments[0]
+	if es.CurrentBuildRunRef == nil || es.CurrentBuildRunRef.Name != "buildrun-live" {
+		t.Fatalf("current buildrun ref lost: %+v", es.CurrentBuildRunRef)
+	}
+	if es.LastSuccessfulBuildRunRef == nil || es.LastSuccessfulBuildRunRef.Name != "buildrun-last" {
+		t.Fatalf("last successful buildrun ref lost: %+v", es.LastSuccessfulBuildRunRef)
+	}
+}
 
 func TestPreviewSyncStateIncludesBackfillInputs(t *testing.T) {
 	app := &mortisev1alpha1.App{

@@ -148,6 +148,53 @@ var _ = Describe("PreviewEnvironment Controller", func() {
 		})
 	})
 
+	Context("when the PreviewEnvironment omits sourceEnv", func() {
+		It("should resolve the default preview source environment", func() {
+			ctx := context.Background()
+			project, ns := createPreviewTestProject(ctx, true)
+			project.Spec.Environments = []mortisev1alpha1.ProjectEnvironment{{Name: "staging"}}
+			Expect(k8sClient.Update(ctx, project)).To(Succeed())
+
+			staging := &mortisev1alpha1.Environment{Name: "staging"}
+			app := createPreviewApp(ctx, "sourceenv-app", ns, staging)
+			app.Spec.Source.Image = "registry.example.com/demo:preview"
+			Expect(k8sClient.Update(ctx, app)).To(Succeed())
+
+			pe := &mortisev1alpha1.PreviewEnvironment{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "sourceenv-app-preview-pr-7",
+					Namespace: ns,
+				},
+				Spec: mortisev1alpha1.PreviewEnvironmentSpec{
+					AppRef: "sourceenv-app",
+					PullRequest: mortisev1alpha1.PullRequestRef{
+						Number: 7,
+						Branch: "main",
+						SHA:    "deadbeef",
+					},
+					Domain: fmt.Sprintf("sourceenv-app-%s-pr-7.example.com", project.Name),
+					TTL:    metav1.Duration{Duration: 72 * time.Hour},
+				},
+			}
+			Expect(k8sClient.Create(ctx, pe)).To(Succeed())
+
+			reconciler := &PreviewEnvironmentReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+				Clock:  clocktesting.NewFakeClock(time.Now()),
+			}
+
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: pe.Name, Namespace: ns},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var updated mortisev1alpha1.PreviewEnvironment
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: pe.Name, Namespace: ns}, &updated)).To(Succeed())
+			Expect(updated.Spec.SourceEnv).To(Equal("staging"))
+		})
+	})
+
 	Context("when the parent App does not exist", func() {
 		It("should set the PreviewEnvironment to Failed", func() {
 			ctx := context.Background()

@@ -34,6 +34,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/client-go/util/retry"
 	"k8s.io/utils/clock"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -49,6 +50,7 @@ import (
 	"github.com/mortise-org/mortise/internal/envstore"
 	"github.com/mortise-org/mortise/internal/git"
 	"github.com/mortise-org/mortise/internal/ingress"
+	"github.com/mortise-org/mortise/internal/previewsync"
 	"github.com/mortise-org/mortise/internal/registry"
 )
 
@@ -173,6 +175,16 @@ func (r *PreviewEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.R
 	if project.Spec.Preview == nil || !project.Spec.Preview.Enabled {
 		return ctrl.Result{}, r.setPreviewFailed(ctx, &pe, "PreviewDisabledOnProject", fmt.Sprintf("Project %q does not have preview.enabled: true", project.Name))
 	}
+	if pe.Spec.SourceEnv == "" {
+		sourceEnv := previewsync.ResolveSourceEnv(project)
+		if sourceEnv == "" {
+			return ctrl.Result{}, r.setPreviewFailed(ctx, &pe, "MissingSourceEnv", "preview source environment is empty and no default preview source environment could be resolved")
+		}
+		pe.Spec.SourceEnv = sourceEnv
+		if err := r.Update(ctx, &pe); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
 
 	if err := r.ensurePreviewNamespace(ctx, project, &pe, previewNs); err != nil {
 		return ctrl.Result{}, r.setPreviewFailed(ctx, &pe, "NamespaceCreateFailed", err.Error())
@@ -227,7 +239,17 @@ func (r *PreviewEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.R
 		Message:            "preview environment is live",
 		LastTransitionTime: metav1.NewTime(r.clock().Now()),
 	})
-	if err := r.Status().Update(ctx, &pe); err != nil {
+	if err := r.updatePreviewStatus(ctx, &pe, func(status *mortisev1alpha1.PreviewEnvironmentStatus) {
+		status.ExpiresAt = pe.Status.ExpiresAt
+		status.Phase = pe.Status.Phase
+		status.Image = pe.Status.Image
+		status.URL = pe.Status.URL
+		status.CurrentBuildRunName = pe.Status.CurrentBuildRunName
+		status.LastBuildRunName = pe.Status.LastBuildRunName
+		status.CurrentBuildRunRef = pe.Status.CurrentBuildRunRef
+		status.LastSuccessfulBuildRunRef = pe.Status.LastSuccessfulBuildRunRef
+		status.Conditions = pe.Status.Conditions
+	}); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -308,7 +330,15 @@ func (r *PreviewEnvironmentReconciler) reconcilePreviewBuild(ctx context.Context
 		return ctrl.Result{}, false, r.setPreviewFailed(ctx, pe, firstNonEmpty(run.Status.FailureReason, "BuildFailed"), run.Status.FailureMessage)
 	default:
 		pe.Status.Phase = mortisev1alpha1.PreviewPhaseBuilding
-		if err := r.Status().Update(ctx, pe); err != nil {
+		if err := r.updatePreviewStatus(ctx, pe, func(status *mortisev1alpha1.PreviewEnvironmentStatus) {
+			status.ExpiresAt = pe.Status.ExpiresAt
+			status.Phase = pe.Status.Phase
+			status.Image = pe.Status.Image
+			status.CurrentBuildRunName = pe.Status.CurrentBuildRunName
+			status.LastBuildRunName = pe.Status.LastBuildRunName
+			status.CurrentBuildRunRef = pe.Status.CurrentBuildRunRef
+			status.LastSuccessfulBuildRunRef = pe.Status.LastSuccessfulBuildRunRef
+		}); err != nil {
 			log.Error(err, "update status to Building")
 		}
 		return ctrl.Result{RequeueAfter: previewBuildPollInterval}, false, nil
@@ -743,10 +773,24 @@ func (r *PreviewEnvironmentReconciler) setPreviewFailed(ctx context.Context, pe 
 		Message:            msg,
 		LastTransitionTime: metav1.NewTime(r.clock().Now()),
 	})
-	if err := r.Status().Update(ctx, pe); err != nil {
+	if err := r.updatePreviewStatus(ctx, pe, func(status *mortisev1alpha1.PreviewEnvironmentStatus) {
+		status.Phase = pe.Status.Phase
+		status.Conditions = pe.Status.Conditions
+	}); err != nil {
 		log.Error(err, "update failed preview status")
 	}
 	return fmt.Errorf("%s: %s", reason, msg)
+}
+
+func (r *PreviewEnvironmentReconciler) updatePreviewStatus(ctx context.Context, pe *mortisev1alpha1.PreviewEnvironment, mutate func(status *mortisev1alpha1.PreviewEnvironmentStatus)) error {
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var fresh mortisev1alpha1.PreviewEnvironment
+		if err := r.Get(ctx, types.NamespacedName{Name: pe.Name, Namespace: pe.Namespace}, &fresh); err != nil {
+			return err
+		}
+		mutate(&fresh.Status)
+		return r.Status().Update(ctx, &fresh)
+	})
 }
 
 func (r *PreviewEnvironmentReconciler) clock() clock.Clock {

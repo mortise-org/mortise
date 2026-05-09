@@ -46,6 +46,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/client-go/util/retry"
 	"k8s.io/utils/clock"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -314,7 +315,13 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	// applyEnvBuildSuccess mutates app.Status in-memory per env; batching
 	// avoids resourceVersion conflicts from per-env Status().Update() calls.
 	if buildStatusDirty {
-		if err := r.Status().Update(ctx, &app); err != nil {
+		if err := r.updateAppStatus(ctx, &app, func(status *mortisev1alpha1.AppStatus) {
+			status.Phase = app.Status.Phase
+			status.Conditions = app.Status.Conditions
+			status.CurrentBuildRunName = app.Status.CurrentBuildRunName
+			status.LastBuildRunName = app.Status.LastBuildRunName
+			status.Environments = app.Status.Environments
+		}); err != nil {
 			return ctrl.Result{}, fmt.Errorf("flush build status after env loop: %w", err)
 		}
 	}
@@ -2456,165 +2463,180 @@ func healthRequeueAfter(app *mortisev1alpha1.App, clk clock.Clock) time.Duration
 // cleared rather than stale — callers have already logged the underlying
 // cause at fetch time.
 func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.App, resolvedEnvs []mortisev1alpha1.Environment) error {
-	// Re-read the App first to get the latest resourceVersion and any
-	// status written by the API (e.g. Phase=Deploying from a manual
-	// redeploy). Building existingByName from the fresh copy means we
-	// carry forward deploy history and other per-env state that the API
-	// may have written between reconciles — preventing race-induced flicker.
-	var fresh mortisev1alpha1.App
-	if err := r.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: app.Namespace}, &fresh); err != nil {
-		return err
-	}
-
-	existingByName := make(map[string]mortisev1alpha1.EnvironmentStatus, len(fresh.Status.Environments))
-	for _, es := range fresh.Status.Environments {
-		existingByName[es.Name] = es
-	}
-
-	envStatuses := make([]mortisev1alpha1.EnvironmentStatus, 0, len(resolvedEnvs))
-
-	isCron := app.Spec.Kind == mortisev1alpha1.AppKindCron
-
-	anyNotReady := false
-	anyCrash := false
-	firstCrashMsg := ""
-
-	for _, env := range resolvedEnvs {
-		autoDomain := ""
-		if app.Spec.Network.Public {
-			autoDomain = r.autoDefaultDomain(ctx, app, env.Name)
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		// Re-read the App first to get the latest resourceVersion and any
+		// status written by the API (e.g. Phase=Deploying from a manual
+		// redeploy). Building existingByName from the fresh copy means we
+		// carry forward deploy history and other per-env state that the API
+		// may have written between reconciles — preventing race-induced flicker.
+		var fresh mortisev1alpha1.App
+		if err := r.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: app.Namespace}, &fresh); err != nil {
+			return err
 		}
-		domain := env.Domain
-		if domain == "" {
-			domain = autoDomain
+
+		existingByName := make(map[string]mortisev1alpha1.EnvironmentStatus, len(fresh.Status.Environments))
+		for _, es := range fresh.Status.Environments {
+			existingByName[es.Name] = es
 		}
-		es := mortisev1alpha1.EnvironmentStatus{
-			Name:         env.Name,
-			CurrentImage: r.currentImageForEnv(app, env.Name),
-			Domain:       domain,
-			AutoDomain:   autoDomain,
-		}
-		envNs, nsErr := appEnvNs(app, env.Name)
-		if nsErr != nil {
-			return nsErr
-		}
-		rollingOut := false
-		restartedAt := ""
-		deployedHash := ""
-		if isCron {
-			var cj batchv1.CronJob
-			if err := r.Get(ctx, types.NamespacedName{Name: cronJobName(app.Name), Namespace: envNs}, &cj); err == nil {
-				es.ReadyReplicas = 1
-				deployedHash = cj.Spec.JobTemplate.Spec.Template.Annotations["mortise.dev/env-hash"]
+
+		envStatuses := make([]mortisev1alpha1.EnvironmentStatus, 0, len(resolvedEnvs))
+
+		isCron := app.Spec.Kind == mortisev1alpha1.AppKindCron
+
+		anyNotReady := false
+		anyCrash := false
+		firstCrashMsg := ""
+
+		for _, env := range resolvedEnvs {
+			autoDomain := ""
+			if app.Spec.Network.Public {
+				autoDomain = r.autoDefaultDomain(ctx, app, env.Name)
 			}
-		} else {
-			name := deploymentName(app.Name)
-			var dep appsv1.Deployment
-			if err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: envNs}, &dep); err == nil {
-				es.ReadyReplicas = dep.Status.ReadyReplicas
-				if deploymentRollingOut(&dep) {
-					rollingOut = true
+			domain := env.Domain
+			if domain == "" {
+				domain = autoDomain
+			}
+			es := mortisev1alpha1.EnvironmentStatus{
+				Name:         env.Name,
+				CurrentImage: r.currentImageForEnv(app, env.Name),
+				Domain:       domain,
+				AutoDomain:   autoDomain,
+			}
+			envNs, nsErr := appEnvNs(app, env.Name)
+			if nsErr != nil {
+				return nsErr
+			}
+			rollingOut := false
+			restartedAt := ""
+			deployedHash := ""
+			if isCron {
+				var cj batchv1.CronJob
+				if err := r.Get(ctx, types.NamespacedName{Name: cronJobName(app.Name), Namespace: envNs}, &cj); err == nil {
+					es.ReadyReplicas = 1
+					deployedHash = cj.Spec.JobTemplate.Spec.Template.Annotations["mortise.dev/env-hash"]
 				}
-				restartedAt = dep.Spec.Template.Annotations["mortise.dev/restartedAt"]
-				deployedHash = dep.Spec.Template.Annotations["mortise.dev/env-hash"]
+			} else {
+				name := deploymentName(app.Name)
+				var dep appsv1.Deployment
+				if err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: envNs}, &dep); err == nil {
+					es.ReadyReplicas = dep.Status.ReadyReplicas
+					if deploymentRollingOut(&dep) {
+						rollingOut = true
+					}
+					restartedAt = dep.Spec.Template.Annotations["mortise.dev/restartedAt"]
+					deployedHash = dep.Spec.Template.Annotations["mortise.dev/env-hash"]
+				}
 			}
-		}
 
-		// Per-env hash tracking: PendingEnvHash is the live Secret state,
-		// DeployedEnvHash is what's on the running pod template.
-		es.PendingEnvHash = r.hashEnvSecretData(ctx, app.Name, envNs)
-		es.DeployedEnvHash = deployedHash
+			// Per-env hash tracking: PendingEnvHash is the live Secret state,
+			// DeployedEnvHash is what's on the running pod template.
+			es.PendingEnvHash = r.hashEnvSecretData(ctx, app.Name, envNs)
+			es.DeployedEnvHash = deployedHash
 
-		// Carry forward deploy history, restart tracking, and build info.
-		if prev, ok := existingByName[env.Name]; ok {
-			es.DeployHistory = prev.DeployHistory
-			es.LastProcessedRestartedAt = prev.LastProcessedRestartedAt
-			es.LastBuiltSHA = prev.LastBuiltSHA
-			es.LastBuiltImage = prev.LastBuiltImage
-		}
-		if needsDeployRecord(es.CurrentImage, es.DeployedEnvHash, es.DeployHistory) {
-			record := mortisev1alpha1.DeployRecord{
-				Image:     es.CurrentImage,
-				EnvHash:   es.DeployedEnvHash,
-				Timestamp: metav1.NewTime(r.clock().Now()),
+			// Carry forward deploy history, restart tracking, and build info.
+			if prev, ok := existingByName[env.Name]; ok {
+				es.DeployHistory = prev.DeployHistory
+				es.LastProcessedRestartedAt = prev.LastProcessedRestartedAt
+				es.LastBuiltSHA = prev.LastBuiltSHA
+				es.LastBuiltImage = prev.LastBuiltImage
+				es.CurrentBuildRunRef = prev.CurrentBuildRunRef
+				es.LastSuccessfulBuildRunRef = prev.LastSuccessfulBuildRunRef
 			}
-			es.DeployHistory = append([]mortisev1alpha1.DeployRecord{record}, es.DeployHistory...)
-			if len(es.DeployHistory) > maxDeployHistory {
-				es.DeployHistory = es.DeployHistory[:maxDeployHistory]
+			if needsDeployRecord(es.CurrentImage, es.DeployedEnvHash, es.DeployHistory) {
+				record := mortisev1alpha1.DeployRecord{
+					Image:     es.CurrentImage,
+					EnvHash:   es.DeployedEnvHash,
+					Timestamp: metav1.NewTime(r.clock().Now()),
+				}
+				es.DeployHistory = append([]mortisev1alpha1.DeployRecord{record}, es.DeployHistory...)
+				if len(es.DeployHistory) > maxDeployHistory {
+					es.DeployHistory = es.DeployHistory[:maxDeployHistory]
+				}
 			}
-		}
 
-		expectedReplicas := int32(1)
-		if !isCron && env.Replicas != nil {
-			expectedReplicas = *env.Replicas
-		}
-		ready := es.ReadyReplicas >= expectedReplicas && !rollingOut
-
-		// Latch: a new restartedAt value means a user-triggered redeploy is
-		// in progress. Keep Phase=Deploying until the rollout actually
-		// completes, even if readyReplicas temporarily satisfies the check.
-		newRestart := restartedAt != "" && restartedAt != es.LastProcessedRestartedAt
-
-		if ready && !newRestart {
-			if restartedAt != "" {
-				es.LastProcessedRestartedAt = restartedAt
+			expectedReplicas := int32(1)
+			if !isCron && env.Replicas != nil {
+				expectedReplicas = *env.Replicas
 			}
-			es.Phase = mortisev1alpha1.AppPhaseReady
-		} else if newRestart {
-			if ready {
-				es.LastProcessedRestartedAt = restartedAt
+			ready := es.ReadyReplicas >= expectedReplicas && !rollingOut
+
+			// Latch: a new restartedAt value means a user-triggered redeploy is
+			// in progress. Keep Phase=Deploying until the rollout actually
+			// completes, even if readyReplicas temporarily satisfies the check.
+			newRestart := restartedAt != "" && restartedAt != es.LastProcessedRestartedAt
+
+			if ready && !newRestart {
+				if restartedAt != "" {
+					es.LastProcessedRestartedAt = restartedAt
+				}
 				es.Phase = mortisev1alpha1.AppPhaseReady
+			} else if newRestart {
+				if ready {
+					es.LastProcessedRestartedAt = restartedAt
+					es.Phase = mortisev1alpha1.AppPhaseReady
+				} else {
+					es.Phase = mortisev1alpha1.AppPhaseDeploying
+					anyNotReady = true
+				}
 			} else {
 				es.Phase = mortisev1alpha1.AppPhaseDeploying
-				anyNotReady = true
-			}
-		} else {
-			es.Phase = mortisev1alpha1.AppPhaseDeploying
-			if !isCron {
-				if crashMsg := r.checkPodCrashLoopInEnv(ctx, app, env.Name, envNs); crashMsg != "" {
-					es.Phase = mortisev1alpha1.AppPhaseCrashLooping
-					es.Message = crashMsg
-					anyCrash = true
-					if firstCrashMsg == "" {
-						firstCrashMsg = crashMsg
+				if !isCron {
+					if crashMsg := r.checkPodCrashLoopInEnv(ctx, app, env.Name, envNs); crashMsg != "" {
+						es.Phase = mortisev1alpha1.AppPhaseCrashLooping
+						es.Message = crashMsg
+						anyCrash = true
+						if firstCrashMsg == "" {
+							firstCrashMsg = crashMsg
+						}
 					}
 				}
+				anyNotReady = true
 			}
-			anyNotReady = true
+
+			if app.Spec.Network.Public && es.Domain != "" {
+				if env.TLS != nil && env.TLS.SecretName != "" {
+					es.CertificateStatus, es.CertificateMessage = r.checkCustomTLSSecret(ctx, env.TLS.SecretName, envNs)
+				} else {
+					es.CertificateStatus, es.CertificateMessage = r.checkCertificateStatus(ctx, tlsSecretName(app.Name), envNs)
+				}
+			}
+
+			envStatuses = append(envStatuses, es)
 		}
 
-		if app.Spec.Network.Public && es.Domain != "" {
-			if env.TLS != nil && env.TLS.SecretName != "" {
-				es.CertificateStatus, es.CertificateMessage = r.checkCustomTLSSecret(ctx, env.TLS.SecretName, envNs)
-			} else {
-				es.CertificateStatus, es.CertificateMessage = r.checkCertificateStatus(ctx, tlsSecretName(app.Name), envNs)
-			}
+		// Aggregate phase across envs (kept for backward compat + top-level UI).
+		phase := mortisev1alpha1.AppPhaseDeploying
+		if !anyNotReady && len(envStatuses) > 0 {
+			phase = mortisev1alpha1.AppPhaseReady
+		}
+		if anyCrash {
+			phase = mortisev1alpha1.AppPhaseCrashLooping
+			meta.SetStatusCondition(&fresh.Status.Conditions, metav1.Condition{
+				Type:               "PodHealthy",
+				Status:             metav1.ConditionFalse,
+				Reason:             "CrashLoopBackOff",
+				Message:            firstCrashMsg,
+				ObservedGeneration: app.Generation,
+			})
+		} else {
+			meta.RemoveStatusCondition(&fresh.Status.Conditions, "PodHealthy")
 		}
 
-		envStatuses = append(envStatuses, es)
-	}
+		fresh.Status.Phase = phase
+		fresh.Status.Environments = envStatuses
+		return r.Status().Update(ctx, &fresh)
+	})
+}
 
-	// Aggregate phase across envs (kept for backward compat + top-level UI).
-	phase := mortisev1alpha1.AppPhaseDeploying
-	if !anyNotReady && len(envStatuses) > 0 {
-		phase = mortisev1alpha1.AppPhaseReady
-	}
-	if anyCrash {
-		phase = mortisev1alpha1.AppPhaseCrashLooping
-		meta.SetStatusCondition(&fresh.Status.Conditions, metav1.Condition{
-			Type:               "PodHealthy",
-			Status:             metav1.ConditionFalse,
-			Reason:             "CrashLoopBackOff",
-			Message:            firstCrashMsg,
-			ObservedGeneration: app.Generation,
-		})
-	} else {
-		meta.RemoveStatusCondition(&fresh.Status.Conditions, "PodHealthy")
-	}
-
-	fresh.Status.Phase = phase
-	fresh.Status.Environments = envStatuses
-	return r.Status().Update(ctx, &fresh)
+func (r *AppReconciler) updateAppStatus(ctx context.Context, app *mortisev1alpha1.App, mutate func(status *mortisev1alpha1.AppStatus)) error {
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var fresh mortisev1alpha1.App
+		if err := r.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: app.Namespace}, &fresh); err != nil {
+			return err
+		}
+		mutate(&fresh.Status)
+		return r.Status().Update(ctx, &fresh)
+	})
 }
 
 // needsDeployRecord returns true when a new deploy record should be created:
