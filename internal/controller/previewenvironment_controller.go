@@ -62,6 +62,7 @@ const previewFinalizer = "mortise.dev/preview-finalizer"
 // PreviewEnvironmentReconciler reconciles a PreviewEnvironment object.
 type PreviewEnvironmentReconciler struct {
 	client.Client
+	APIReader       client.Reader
 	Scheme          *runtime.Scheme
 	Clock           clock.Clock
 	BuildClient     build.BuildClient
@@ -523,7 +524,7 @@ func (r *PreviewEnvironmentReconciler) reconcilePreviewEnvSecret(ctx context.Con
 	// Copy shared vars from the control-namespace source of truth into the
 	// preview namespace. The source env namespace only carries a materialized
 	// cache, which may lag behind the control-ns Secret under load.
-	sourceShared, err := store.GetSharedSource(ctx, pe.Namespace)
+	sourceShared, err := r.readSharedSource(ctx, pe.Namespace)
 	if err != nil {
 		return fmt.Errorf("read shared-vars from control ns %q: %w", pe.Namespace, err)
 	}
@@ -538,7 +539,7 @@ func (r *PreviewEnvironmentReconciler) reconcilePreviewEnvSecret(ctx context.Con
 	}
 
 	// Read inherited per-app env vars from the source environment.
-	inherited, err := store.Get(ctx, sourceEnvNs, app.Name)
+	inherited, err := r.readAppEnvSource(ctx, sourceEnvNs, app.Name)
 	if err != nil {
 		return fmt.Errorf("read app env vars from source env %q: %w", sourceEnvNs, err)
 	}
@@ -922,6 +923,35 @@ func normalizePreviewVolumes(volumes []corev1.Volume) []corev1.Volume {
 		return nil
 	}
 	return volumes
+}
+
+func (r *PreviewEnvironmentReconciler) readSharedSource(ctx context.Context, controlNs string) ([]envstore.Env, error) {
+	if r.APIReader == nil {
+		store := &envstore.Store{Client: r.Client}
+		return store.GetSharedSource(ctx, controlNs)
+	}
+
+	var secret corev1.Secret
+	if err := r.APIReader.Get(ctx, types.NamespacedName{Namespace: controlNs, Name: envstore.SharedVarsSourceName}, &secret); err != nil {
+		if errors.IsNotFound(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return envstore.SecretToEnvs(&secret), nil
+}
+
+func (r *PreviewEnvironmentReconciler) readAppEnvSource(ctx context.Context, namespace, appName string) ([]envstore.Env, error) {
+	if r.APIReader == nil {
+		store := &envstore.Store{Client: r.Client}
+		return store.Get(ctx, namespace, appName)
+	}
+
+	var secret corev1.Secret
+	if err := r.APIReader.Get(ctx, types.NamespacedName{Namespace: namespace, Name: envstore.AppEnvSecretName(appName)}, &secret); err != nil {
+		return nil, err
+	}
+	return envstore.SecretToEnvs(&secret), nil
 }
 
 func hasOwnerRef(pe *mortisev1alpha1.PreviewEnvironment, uid types.UID) bool {

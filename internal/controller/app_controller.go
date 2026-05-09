@@ -176,6 +176,14 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	case mortisev1alpha1.SourceTypeGit:
 		if r.BuildClient != nil && !r.allEnvBuildsCurrentForRevision(&app, resolvedEnvs) {
 			result, proceed, err := r.prepareGitSource(ctx, &app)
+			if !proceed || err != nil {
+				if syncErr := r.reconcileResolvedEnvSecrets(ctx, &app, resolvedEnvs); syncErr != nil {
+					if err == nil {
+						return ctrl.Result{}, syncErr
+					}
+					log.Error(syncErr, "reconcile env secrets after git preflight failure", "app", app.Name)
+				}
+			}
 			if err != nil {
 				return ctrl.Result{}, err
 			}
@@ -821,6 +829,20 @@ func (r *AppReconciler) setFailedCondition(ctx context.Context, app *mortisev1al
 		log.Error(err, "update failed status")
 	}
 	return fmt.Errorf("%s: %s", reason, msg)
+}
+
+func (r *AppReconciler) reconcileResolvedEnvSecrets(ctx context.Context, app *mortisev1alpha1.App, resolvedEnvs []mortisev1alpha1.Environment) error {
+	for i := range resolvedEnvs {
+		env := &resolvedEnvs[i]
+		envNs, err := appEnvNs(app, env.Name)
+		if err != nil {
+			return err
+		}
+		if err := r.reconcileEnvSecret(ctx, app, env, envNs); err != nil {
+			return fmt.Errorf("reconcile env secret for env %s: %w", env.Name, err)
+		}
+	}
+	return nil
 }
 
 func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1alpha1.App, env *mortisev1alpha1.Environment, envNs, image, credentialsHash string, autoRedeploy bool) error {

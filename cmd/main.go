@@ -444,6 +444,7 @@ func main() {
 	}
 	if err := (&controller.PreviewEnvironmentReconciler{
 		Client:          mgr.GetClient(),
+		APIReader:       mgr.GetAPIReader(),
 		Scheme:          mgr.GetScheme(),
 		BuildClient:     stk.build,
 		GitClient:       stk.git,
