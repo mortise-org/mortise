@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 
@@ -160,8 +161,16 @@ func (s *Server) Refresh(w http.ResponseWriter, r *http.Request) {
 
 	native, ok := s.auth.(*auth.NativeAuthProvider)
 	if ok {
-		if err := native.CheckPasswordGen(r.Context(), principal.Email, tokenGen); err != nil {
-			writeJSON(w, http.StatusUnauthorized, errorResponse{"session invalidated by password change"})
+		principal, err = native.CurrentPrincipal(r.Context(), principal.Email, tokenGen)
+		if err != nil {
+			switch {
+			case errors.Is(err, auth.ErrPasswordChangeInvalidated):
+				writeJSON(w, http.StatusUnauthorized, errorResponse{"session invalidated by password change"})
+			case errors.Is(err, auth.ErrUserNotFound):
+				writeJSON(w, http.StatusUnauthorized, errorResponse{"user no longer exists"})
+			default:
+				writeJSON(w, http.StatusInternalServerError, errorResponse{err.Error()})
+			}
 			return
 		}
 	}

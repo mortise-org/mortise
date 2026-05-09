@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	stderrors "errors"
 	"fmt"
 	"time"
 
@@ -19,6 +20,11 @@ const (
 	userLabelKey     = "mortise.dev/user"
 	inviteLabelKey   = "mortise.dev/invite"
 	inviteExpiryDays = 7
+)
+
+var (
+	ErrUserNotFound              = stderrors.New("user not found")
+	ErrPasswordChangeInvalidated = stderrors.New("session invalidated by password change")
 )
 
 type NativeAuthProvider struct {
@@ -59,17 +65,7 @@ func (n *NativeAuthProvider) Authenticate(ctx context.Context, creds Credentials
 		return Principal{}, fmt.Errorf("invalid credentials")
 	}
 
-	var gen int64
-	if raw, ok := secret.Data["password_gen"]; ok {
-		fmt.Sscanf(string(raw), "%d", &gen)
-	}
-
-	return Principal{
-		ID:          string(secret.Data["email"]),
-		Email:       string(secret.Data["email"]),
-		Role:        Role(secret.Data["role"]),
-		PasswordGen: gen,
-	}, nil
+	return principalFromSecret(&secret), nil
 }
 
 func (n *NativeAuthProvider) Principal(ctx context.Context, session SessionToken) (Principal, error) {
@@ -78,21 +74,7 @@ func (n *NativeAuthProvider) Principal(ctx context.Context, session SessionToken
 		return Principal{}, err
 	}
 
-	var secret corev1.Secret
-	if err := n.client.Get(ctx, types.NamespacedName{
-		Name:      userSecretName(principal.Email),
-		Namespace: namespace,
-	}, &secret); err == nil {
-		if raw, ok := secret.Data["password_gen"]; ok {
-			var currentGen int64
-			fmt.Sscanf(string(raw), "%d", &currentGen)
-			if tokenGen < currentGen {
-				return Principal{}, fmt.Errorf("session invalidated by password change")
-			}
-		}
-	}
-
-	return principal, nil
+	return n.CurrentPrincipal(ctx, principal.Email, tokenGen)
 }
 
 func (n *NativeAuthProvider) ListUsers(ctx context.Context) ([]User, error) {
@@ -167,30 +149,34 @@ func (n *NativeAuthProvider) RevokeUser(ctx context.Context, userID string) erro
 	return nil
 }
 
-// CheckPasswordGen verifies that the token's password generation matches the
-// current value for the user. Returns an error if the password was changed
-// after the token was issued.
-func (n *NativeAuthProvider) CheckPasswordGen(ctx context.Context, email string, tokenGen int64) error {
+// CurrentPrincipal reloads the current native-auth user state and confirms the
+// token was not invalidated by a password reset.
+func (n *NativeAuthProvider) CurrentPrincipal(ctx context.Context, email string, tokenGen int64) (Principal, error) {
 	var secret corev1.Secret
 	err := n.client.Get(ctx, types.NamespacedName{
 		Name:      userSecretName(email),
 		Namespace: namespace,
 	}, &secret)
+	if errors.IsNotFound(err) {
+		return Principal{}, ErrUserNotFound
+	}
 	if err != nil {
-		if errors.IsNotFound(err) {
-			return fmt.Errorf("user not found")
-		}
-		return fmt.Errorf("reading user secret: %w", err)
+		return Principal{}, fmt.Errorf("reading user secret: %w", err)
 	}
 
-	if raw, ok := secret.Data["password_gen"]; ok {
-		var currentGen int64
-		fmt.Sscanf(string(raw), "%d", &currentGen)
-		if tokenGen < currentGen {
-			return fmt.Errorf("session invalidated by password change")
-		}
+	if tokenGen < passwordGenFromSecret(&secret) {
+		return Principal{}, ErrPasswordChangeInvalidated
 	}
-	return nil
+
+	return principalFromSecret(&secret), nil
+}
+
+// CheckPasswordGen verifies that the token's password generation matches the
+// current value for the user. Returns an error if the password was changed
+// after the token was issued.
+func (n *NativeAuthProvider) CheckPasswordGen(ctx context.Context, email string, tokenGen int64) error {
+	_, err := n.CurrentPrincipal(ctx, email, tokenGen)
+	return err
 }
 
 // CreateUser stores a new user in a k8s Secret. Used during invite acceptance.
@@ -290,4 +276,21 @@ func (n *NativeAuthProvider) VerifyPassword(ctx context.Context, email, password
 		return fmt.Errorf("invalid credentials")
 	}
 	return nil
+}
+
+func principalFromSecret(secret *corev1.Secret) Principal {
+	return Principal{
+		ID:          string(secret.Data["email"]),
+		Email:       string(secret.Data["email"]),
+		Role:        Role(secret.Data["role"]),
+		PasswordGen: passwordGenFromSecret(secret),
+	}
+}
+
+func passwordGenFromSecret(secret *corev1.Secret) int64 {
+	var gen int64
+	if raw, ok := secret.Data["password_gen"]; ok {
+		fmt.Sscanf(string(raw), "%d", &gen)
+	}
+	return gen
 }
