@@ -209,7 +209,7 @@ func (s *Server) CheckProjectNameAvailable(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	if err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"available": false})
