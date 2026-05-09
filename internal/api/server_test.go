@@ -862,6 +862,12 @@ func TestRebuild(t *testing.T) {
 	}
 	app.Status.Phase = mortisev1alpha1.AppPhaseReady
 	app.Status.LastBuiltSHA = "abc123"
+	app.Status.Conditions = []metav1.Condition{{
+		Type:               "Ready",
+		Status:             metav1.ConditionTrue,
+		Reason:             "ExistingReady",
+		LastTransitionTime: metav1.Now(),
+	}}
 	app.Status.Environments = []mortisev1alpha1.EnvironmentStatus{
 		{Name: "production", LastBuiltSHA: "main", LastBuiltImage: "registry.example/app:main"},
 	}
@@ -877,23 +883,26 @@ func TestRebuild(t *testing.T) {
 	if err := k8sClient.Get(ctx, types.NamespacedName{Name: "rebuild-app", Namespace: ns}, app); err != nil {
 		t.Fatalf("get app: %v", err)
 	}
-	if app.Annotations["mortise.dev/no-cache-build"] != "true" {
-		t.Errorf("expected no-cache-build annotation, got %q", app.Annotations["mortise.dev/no-cache-build"])
+	if app.Annotations["mortise.dev/rebuild-requested-at"] == "" {
+		t.Errorf("expected rebuild request marker to be set")
+	}
+	if app.Annotations["mortise.dev/rebuild-no-cache-requested-at"] == "" {
+		t.Errorf("expected no-cache rebuild request marker to be set")
 	}
 	if app.Annotations["mortise.dev/revision"] != "resolved-sha-123" {
 		t.Errorf("expected revision synced to resolved sha, got %q", app.Annotations["mortise.dev/revision"])
 	}
-	if app.Status.LastBuiltSHA != "" {
-		t.Errorf("expected LastBuiltSHA cleared, got %q", app.Status.LastBuiltSHA)
+	if app.Status.LastBuiltSHA != "abc123" {
+		t.Errorf("expected LastBuiltSHA preserved, got %q", app.Status.LastBuiltSHA)
 	}
-	if len(app.Status.Environments) != 1 || app.Status.Environments[0].LastBuiltSHA != "" {
-		t.Errorf("expected env LastBuiltSHA cleared, got %+v", app.Status.Environments)
+	if len(app.Status.Environments) != 1 || app.Status.Environments[0].LastBuiltSHA != "main" {
+		t.Errorf("expected env LastBuiltSHA preserved, got %+v", app.Status.Environments)
 	}
-	if app.Status.Phase != mortisev1alpha1.AppPhaseBuilding {
-		t.Errorf("expected phase Building, got %s", app.Status.Phase)
+	if app.Status.Phase != mortisev1alpha1.AppPhaseReady {
+		t.Errorf("expected phase Ready to remain unchanged, got %s", app.Status.Phase)
 	}
-	if app.Status.Conditions != nil {
-		t.Errorf("expected conditions cleared, got %v", app.Status.Conditions)
+	if app.Status.Conditions == nil {
+		t.Errorf("expected conditions preserved")
 	}
 }
 
@@ -917,6 +926,98 @@ func TestRebuildRejectsImageSource(t *testing.T) {
 	w := doRequest(h, http.MethodPost, "/api/projects/default/apps/rebuild-img/rebuild", nil)
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("expected 400 for image-source rebuild, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestBuildRunEndpoints(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+	ns := seedProject(t, k8sClient, "default")
+	ctx := context.Background()
+
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "buildrun-api", Namespace: ns},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeGit, Repo: "https://example.com/repo.git", Branch: "main"},
+		},
+	}
+	if err := k8sClient.Create(ctx, app); err != nil {
+		t.Fatalf("create app: %v", err)
+	}
+	run := &mortisev1alpha1.BuildRun{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "buildrun-api-prod-1",
+			Namespace: ns,
+			Labels: map[string]string{
+				"mortise.dev/buildrun-target-kind": "appenvironment",
+				"mortise.dev/buildrun-target-name": "buildrun-api",
+			},
+		},
+		Spec: mortisev1alpha1.BuildRunSpec{
+			TargetRef:   mortisev1alpha1.BuildRunTargetRef{Kind: mortisev1alpha1.BuildRunTargetAppEnvironment, Name: "buildrun-api", Namespace: ns},
+			Environment: "production",
+			Revision:    "cafebabe",
+			Repo:        "https://example.com/repo.git",
+		},
+	}
+	if err := k8sClient.Create(ctx, run); err != nil {
+		t.Fatalf("create buildrun: %v", err)
+	}
+	run.Status.Phase = mortisev1alpha1.BuildRunPhaseSucceeded
+	run.Status.LogRef = &corev1.LocalObjectReference{Name: "buildrun-buildrun-api-prod-1"}
+	if err := k8sClient.Status().Update(ctx, run); err != nil {
+		t.Fatalf("update buildrun status: %v", err)
+	}
+	if err := k8sClient.Create(ctx, &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "buildrun-buildrun-api-prod-1",
+			Namespace: ns,
+			Annotations: map[string]string{
+				"mortise.dev/build-timestamp": "2026-05-09T18:00:00Z",
+				"mortise.dev/build-commit":    "cafebabe",
+				"mortise.dev/build-status":    "Succeeded",
+			},
+		},
+		Data: map[string]string{"lines": "clone\nbuild\npush"},
+	}); err != nil {
+		t.Fatalf("create buildrun log configmap: %v", err)
+	}
+
+	w := doRequest(h, http.MethodGet, "/api/projects/default/apps/buildrun-api/build-runs", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("list buildruns: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var list []mortisev1alpha1.BuildRun
+	if err := json.NewDecoder(w.Body).Decode(&list); err != nil {
+		t.Fatalf("decode buildrun list: %v", err)
+	}
+	if len(list) != 1 || list[0].Name != run.Name {
+		t.Fatalf("unexpected buildrun list: %+v", list)
+	}
+
+	w = doRequest(h, http.MethodGet, "/api/projects/default/build-runs/buildrun-api-prod-1", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("get buildrun: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var got mortisev1alpha1.BuildRun
+	if err := json.NewDecoder(w.Body).Decode(&got); err != nil {
+		t.Fatalf("decode buildrun: %v", err)
+	}
+	if got.Name != run.Name || got.Spec.Revision != "cafebabe" {
+		t.Fatalf("unexpected buildrun: %+v", got)
+	}
+
+	w = doRequest(h, http.MethodGet, "/api/projects/default/build-runs/buildrun-api-prod-1/logs", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("get buildrun logs: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var logs map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&logs); err != nil {
+		t.Fatalf("decode buildrun logs: %v", err)
+	}
+	if logs["status"] != "Succeeded" || logs["commitSHA"] != "cafebabe" {
+		t.Fatalf("unexpected buildrun logs metadata: %+v", logs)
 	}
 }
 

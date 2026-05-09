@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -45,6 +46,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/client-go/util/retry"
 	"k8s.io/utils/clock"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -92,10 +94,9 @@ type AppReconciler struct {
 	// ingressClassName.
 	IngressProvider ingress.IngressProvider
 
-	// Builds tracks in-flight asynchronous git-source builds so subsequent
-	// reconciles can check progress without blocking the worker. Lost on
-	// operator restart; the next reconcile re-launches (builds are idempotent).
-	Builds buildTrackerStore
+	// Builds exposes the shared in-memory live-log store used while BuildRuns
+	// execute. Durable build state lives on BuildRun objects.
+	Builds *BuildTrackerStore
 
 	// gitTokenCache holds the resolved git token for the current reconcile
 	// iteration so per-env builds don't re-resolve credentials. Keyed by app name.
@@ -104,7 +105,13 @@ type AppReconciler struct {
 	GitAPIFactory func(*mortisev1alpha1.GitProvider, string, string) (git.GitAPI, error)
 }
 
-const previewSyncStateAnnotation = "mortise.dev/preview-sync-state"
+const (
+	previewSyncStateAnnotation = "mortise.dev/preview-sync-state"
+	webhookConditionType       = "WebhookConfigured"
+	webhookRegisteredReason    = "Registered"
+	webhookMissingURLReason    = "WebhookURLUnavailable"
+	webhookInputHashMessageKey = "inputHash="
+)
 
 // +kubebuilder:rbac:groups=mortise.mortise.dev,resources=apps,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=mortise.mortise.dev,resources=apps/status,verbs=get;update;patch
@@ -170,6 +177,14 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	case mortisev1alpha1.SourceTypeGit:
 		if r.BuildClient != nil && !r.allEnvBuildsCurrentForRevision(&app, resolvedEnvs) {
 			result, proceed, err := r.prepareGitSource(ctx, &app)
+			if !proceed || err != nil {
+				if syncErr := r.reconcileResolvedEnvSecrets(ctx, &app, resolvedEnvs); syncErr != nil {
+					if err == nil {
+						return ctrl.Result{}, syncErr
+					}
+					log.Error(syncErr, "reconcile env secrets after git preflight failure", "app", app.Name)
+				}
+			}
 			if err != nil {
 				return ctrl.Result{}, err
 			}
@@ -198,6 +213,7 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	// time we reach here — we just materialise the per-app objects inside.
 	needsRequeue := false
 	buildStatusDirty := false
+	clearNoCache := false
 	for i := range resolvedEnvs {
 		env := &resolvedEnvs[i]
 		envNs, err := appEnvNs(&app, env.Name)
@@ -224,9 +240,15 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		// Resolve the container image for this env.
 		var image string
 		if app.Spec.Source.Type == mortisev1alpha1.SourceTypeGit && r.BuildClient != nil {
-			envImage, requeue, dirty := r.reconcileEnvBuild(ctx, &app, env.Name)
+			envImage, requeue, dirty, shouldClearNoCache, err := r.reconcileEnvBuild(ctx, &app, env.Name)
+			if err != nil {
+				return ctrl.Result{}, fmt.Errorf("reconcile buildrun for env %s: %w", env.Name, err)
+			}
 			if dirty {
 				buildStatusDirty = true
+			}
+			if shouldClearNoCache {
+				clearNoCache = true
 			}
 			if requeue {
 				needsRequeue = true
@@ -293,8 +315,21 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	// applyEnvBuildSuccess mutates app.Status in-memory per env; batching
 	// avoids resourceVersion conflicts from per-env Status().Update() calls.
 	if buildStatusDirty {
-		if err := r.Status().Update(ctx, &app); err != nil {
+		if err := r.updateAppStatus(ctx, &app, func(status *mortisev1alpha1.AppStatus) {
+			status.Phase = app.Status.Phase
+			status.Conditions = app.Status.Conditions
+			status.LastBuiltSHA = app.Status.LastBuiltSHA
+			status.LastBuiltImage = app.Status.LastBuiltImage
+			status.DetectedPort = app.Status.DetectedPort
+			status.Environments = app.Status.Environments
+			status.CurrentBuildRunName, status.LastBuildRunName = aggregateAppBuildRunNames(status.Environments)
+		}); err != nil {
 			return ctrl.Result{}, fmt.Errorf("flush build status after env loop: %w", err)
+		}
+	}
+	if clearNoCache {
+		if err := clearNoCacheBuildAnnotation(ctx, r.Client, &app); err != nil {
+			return ctrl.Result{}, fmt.Errorf("clear no-cache annotation: %w", err)
 		}
 	}
 
@@ -522,7 +557,7 @@ func (r *AppReconciler) DeletePreviewEnvironment(ctx context.Context, pe *mortis
 // the image to use for this env's deployment, or "" if a build is still in
 // flight (caller should skip deployment and requeue). statusDirty is true when
 // applyEnvBuildSuccess mutated app.Status and the caller must flush.
-func (r *AppReconciler) reconcileEnvBuild(ctx context.Context, app *mortisev1alpha1.App, envName string) (image string, requeue bool, statusDirty bool) {
+func (r *AppReconciler) reconcileEnvBuild(ctx context.Context, app *mortisev1alpha1.App, envName string) (image string, requeue bool, statusDirty bool, shouldClearNoCache bool, err error) {
 	log := logf.FromContext(ctx)
 
 	revision := app.Annotations["mortise.dev/revision"]
@@ -533,107 +568,85 @@ func (r *AppReconciler) reconcileEnvBuild(ctx context.Context, app *mortisev1alp
 		revision = "main"
 	}
 
-	// Short-circuit: skip rebuild if we already built this revision for this env.
-	es := envStatusFor(app, envName)
-	if es != nil && es.LastBuiltSHA == revision && es.LastBuiltImage != "" {
-		return es.LastBuiltImage, false, false
-	}
-
-	key := envBuildKey(app, envName)
-
-	// Check for an existing tracker for this env.
-	if t := r.Builds.get(key); t != nil {
-		phase, trackedRev, builtImage, digest, errMsg, detectedPort := t.snapshot()
-		if trackedRev != revision {
-			t.mu.Lock()
-			cancel := t.cancel
-			t.mu.Unlock()
-			if cancel != nil {
-				cancel()
-			}
-			r.Builds.delete(key)
-		} else {
-			switch phase {
-			case buildPhaseRunning:
-				return "", true, false
-			case buildPhaseSucceeded:
-				r.Builds.delete(key)
-				r.applyEnvBuildSuccess(ctx, app, envName, revision, builtImage, digest, detectedPort)
-				return builtImage, false, true
-			case buildPhaseFailed:
-				r.Builds.delete(key)
-				_ = r.setFailedCondition(ctx, app, "BuildFailed", errMsg)
-				return "", false, false
-			}
-		}
-	}
-
-	tokenVal, _ := r.gitTokenCache.Load(app.Namespace + "/" + app.Name)
-	token, _ := tokenVal.(string)
-
 	imageRef, err := r.RegistryBackend.PushTarget(app.Name, envImageTag(revision, envName))
 	if err != nil {
 		log.Error(err, "push target failed", "env", envName)
-		return "", false, false
+		return "", false, false, false, nil
 	}
 	pullRef, err := r.RegistryBackend.PullTarget(app.Name, envImageTag(revision, envName))
 	if err != nil {
 		log.Error(err, "pull target failed", "env", envName)
-		return "", false, false
+		return "", false, false, false, nil
 	}
+	desiredRunSpec := appBuildRunSpec(app, envName, revision, imageRef.Full, pullRef.Full)
 
-	// Mark building phase.
-	app.Status.Phase = mortisev1alpha1.AppPhaseBuilding
-	meta.SetStatusCondition(&app.Status.Conditions, metav1.Condition{
-		Type:               "BuildStarted",
-		Status:             metav1.ConditionTrue,
-		Reason:             "BuildInProgress",
-		Message:            fmt.Sprintf("building revision %s for %s", revision, envName),
-		LastTransitionTime: metav1.NewTime(r.clock().Now()),
-	})
-	if err := r.Status().Update(ctx, app); err != nil {
-		log.Error(err, "update status to Building")
+	// Short-circuit: skip rebuild if we already built this revision for this env
+	// with the same effective build inputs.
+	es := envStatusFor(app, envName)
+	if app.Status.CurrentBuildRunName != "" {
+		var current mortisev1alpha1.BuildRun
+		if err := r.Get(ctx, types.NamespacedName{Namespace: app.Namespace, Name: app.Status.CurrentBuildRunName}, &current); err != nil {
+			if !errors.IsNotFound(err) {
+				return "", false, false, false, err
+			}
+		} else if buildRunMatchesAppSpec(&current, app, envName, desiredRunSpec) {
+			projectAppBuildRunStatus(app, envName, &current)
+			switch current.Status.Phase {
+			case mortisev1alpha1.BuildRunPhaseSucceeded:
+				r.applyEnvBuildSuccess(ctx, app, envName, revision, current.Status.Image, current.Status.Digest, current.Status.DetectedPort)
+				return current.Status.Image, false, true, false, nil
+			case mortisev1alpha1.BuildRunPhaseFailed:
+				_ = r.setFailedCondition(ctx, app, firstNonEmpty(current.Status.FailureReason, "BuildFailed"), current.Status.FailureMessage)
+				return "", false, false, false, nil
+			default:
+				app.Status.Phase = mortisev1alpha1.AppPhaseBuilding
+				meta.SetStatusCondition(&app.Status.Conditions, metav1.Condition{
+					Type:               "BuildStarted",
+					Status:             metav1.ConditionTrue,
+					Reason:             "BuildInProgress",
+					Message:            fmt.Sprintf("building revision %s for %s", revision, envName),
+					LastTransitionTime: metav1.NewTime(r.clock().Now()),
+				})
+				return "", true, true, false, nil
+			}
+		}
 	}
-
-	buildCtx, cancel := context.WithTimeout(context.Background(), buildTimeout)
-	tracker := &buildTracker{
-		revision: revision,
-		phase:    buildPhaseRunning,
-		cancel:   cancel,
-	}
-	r.Builds.set(key, tracker)
-
-	noCache := app.Annotations["mortise.dev/no-cache-build"] == "true"
-	if noCache {
-		delete(app.Annotations, "mortise.dev/no-cache-build")
-		if err := r.Update(ctx, app); err != nil {
-			log.Error(err, "clear no-cache-build annotation")
+	if es != nil && es.LastBuiltSHA == revision && es.LastBuiltImage != "" && !hasPendingRebuildRequest(app) && es.LastSuccessfulBuildRunRef != nil {
+		var lastSuccessful mortisev1alpha1.BuildRun
+		if err := r.Get(ctx, types.NamespacedName{Namespace: app.Namespace, Name: es.LastSuccessfulBuildRunRef.Name}, &lastSuccessful); err != nil {
+			if !errors.IsNotFound(err) {
+				return "", false, false, false, err
+			}
+		} else if buildRunMatchesAppSpec(&lastSuccessful, app, envName, desiredRunSpec) {
+			return es.LastBuiltImage, false, false, false, nil
 		}
 	}
 
-	bp := buildParams{
-		appName:      app.Name,
-		namespace:    app.Namespace,
-		revision:     revision,
-		repo:         app.Spec.Source.Repo,
-		branch:       firstNonEmpty(app.Spec.Source.Branch, "main"),
-		token:        token,
-		path:         app.Spec.Source.Path,
-		dockerfile:   dockerfilePath(app),
-		buildArgs:    buildArgsForEnv(app, envName),
-		buildContext: buildContextOf(app),
-		noCache:      noCache,
-		imageRef:     imageRef,
-		pullImageRef: pullRef,
+	run, err := r.ensureAppBuildRun(ctx, app, envName, revision, imageRef.Full, pullRef.Full)
+	if err != nil {
+		log.Error(err, "ensure buildrun failed", "env", envName)
+		return "", false, false, false, err
 	}
-	go runBuild(buildCtx, cancel, tracker, bp, r.GitClient, r.BuildClient, buildRunnerOptions{
-		logName:      "build",
-		tmpDirPrefix: "mortise-build-*",
-		appendLog:    true,
-		onDone:       func() { r.persistBuildLog(tracker, bp) },
-	})
 
-	return "", true, false
+	projectAppBuildRunStatus(app, envName, run)
+	switch run.Status.Phase {
+	case mortisev1alpha1.BuildRunPhaseSucceeded:
+		r.applyEnvBuildSuccess(ctx, app, envName, revision, run.Status.Image, run.Status.Digest, run.Status.DetectedPort)
+		return run.Status.Image, false, true, false, nil
+	case mortisev1alpha1.BuildRunPhaseFailed:
+		_ = r.setFailedCondition(ctx, app, firstNonEmpty(run.Status.FailureReason, "BuildFailed"), run.Status.FailureMessage)
+		return "", false, false, false, nil
+	default:
+		app.Status.Phase = mortisev1alpha1.AppPhaseBuilding
+		meta.SetStatusCondition(&app.Status.Conditions, metav1.Condition{
+			Type:               "BuildStarted",
+			Status:             metav1.ConditionTrue,
+			Reason:             "BuildInProgress",
+			Message:            fmt.Sprintf("building revision %s for %s", revision, envName),
+			LastTransitionTime: metav1.NewTime(r.clock().Now()),
+		})
+		return "", true, true, false, nil
+	}
 }
 
 // applyEnvBuildSuccess records the successful build for a specific environment.
@@ -713,97 +726,6 @@ const maxBuildLogConfigMapBytes = 900_000
 // error message can't push the ConfigMap past the API-server limit.
 const maxBuildErrorAnnotationBytes = 1024
 
-// persistBuildLog writes the tracker's final log buffer to a ConfigMap in the
-// App's namespace, owned by the App so it's GC'd on delete. Called from a
-// deferred in runBuild so every terminal path (success + every failure) hits
-// it. Uses a fresh background context with a short timeout so build-context
-// cancellation doesn't skip the write. Failures are logged and swallowed —
-// the build itself already succeeded/failed per the tracker; a ConfigMap
-// write error shouldn't re-fail it.
-func (r *AppReconciler) persistBuildLog(t *buildTracker, p buildParams) {
-	log := logf.Log.WithName("build-log-persist").WithValues("app", p.appName, "namespace", p.namespace)
-
-	phase, _, _, _, errMsg, _ := t.snapshot()
-	lines := t.snapshotLogs()
-
-	// Drop head lines until the joined payload fits under the size cap. The
-	// per-line cap already bounds each line, so this only trims when the log
-	// is long, not when any single line is huge.
-	joined := strings.Join(lines, "\n")
-	for len(joined) > maxBuildLogConfigMapBytes && len(lines) > 0 {
-		lines = lines[1:]
-		joined = strings.Join(lines, "\n")
-	}
-
-	status := "Succeeded"
-	if phase == buildPhaseFailed {
-		status = "Failed"
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	// Fetch the App to anchor the owner reference. If the App is gone
-	// (deleted mid-build), skip the persist entirely — there's nothing to
-	// own the ConfigMap and GC would delete it immediately anyway.
-	var app mortisev1alpha1.App
-	if err := r.Get(ctx, types.NamespacedName{Name: p.appName, Namespace: p.namespace}, &app); err != nil {
-		if !errors.IsNotFound(err) {
-			log.Error(err, "fetch app for build-log persist")
-		}
-		return
-	}
-
-	annotations := map[string]string{
-		buildLogAnnotationTimestamp: r.clock().Now().UTC().Format(time.RFC3339),
-		buildLogAnnotationCommit:    p.revision,
-		buildLogAnnotationStatus:    status,
-	}
-	if status == "Failed" && errMsg != "" {
-		if len(errMsg) > maxBuildErrorAnnotationBytes {
-			errMsg = errMsg[:maxBuildErrorAnnotationBytes]
-		}
-		annotations[buildLogAnnotationError] = errMsg
-	}
-
-	desired := &corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:        buildLogsConfigMapName(p.appName),
-			Namespace:   p.namespace,
-			Labels:      appLabels(&app, ""),
-			Annotations: annotations,
-		},
-		Data: map[string]string{
-			"lines": joined,
-		},
-	}
-	if err := controllerutil.SetControllerReference(&app, desired, r.Scheme); err != nil {
-		log.Error(err, "set owner reference on build-log configmap")
-		return
-	}
-
-	var existing corev1.ConfigMap
-	err := r.Get(ctx, types.NamespacedName{Name: desired.Name, Namespace: desired.Namespace}, &existing)
-	if errors.IsNotFound(err) {
-		if err := r.Create(ctx, desired); err != nil {
-			log.Error(err, "create build-log configmap")
-		}
-		return
-	}
-	if err != nil {
-		log.Error(err, "get build-log configmap")
-		return
-	}
-
-	existing.Labels = desired.Labels
-	existing.Annotations = desired.Annotations
-	existing.Data = desired.Data
-	existing.OwnerReferences = desired.OwnerReferences
-	if err := r.Update(ctx, &existing); err != nil {
-		log.Error(err, "update build-log configmap")
-	}
-}
-
 // resolveSourceDir returns the build context directory inside cloneDir,
 // honoring the App's source.path (monorepo subdirectory). An empty path means
 // the repo root. Rejects absolute paths and any segment equal to ".." to
@@ -850,11 +772,6 @@ func shortTag(revision string) string {
 // envImageTag produces a per-environment image tag: "sha-envname".
 func envImageTag(revision, envName string) string {
 	return shortTag(revision) + "-" + envName
-}
-
-// envBuildKey returns a tracker key scoped to app + environment.
-func envBuildKey(app *mortisev1alpha1.App, envName string) types.NamespacedName {
-	return types.NamespacedName{Namespace: app.Namespace, Name: app.Name + "/" + envName}
 }
 
 // envStatusFor returns the EnvironmentStatus for envName, or nil.
@@ -960,6 +877,20 @@ func (r *AppReconciler) setFailedCondition(ctx context.Context, app *mortisev1al
 	return fmt.Errorf("%s: %s", reason, msg)
 }
 
+func (r *AppReconciler) reconcileResolvedEnvSecrets(ctx context.Context, app *mortisev1alpha1.App, resolvedEnvs []mortisev1alpha1.Environment) error {
+	for i := range resolvedEnvs {
+		env := &resolvedEnvs[i]
+		envNs, err := appEnvNs(app, env.Name)
+		if err != nil {
+			return err
+		}
+		if err := r.reconcileEnvSecret(ctx, app, env, envNs); err != nil {
+			return fmt.Errorf("reconcile env secret for env %s: %w", env.Name, err)
+		}
+	}
+	return nil
+}
+
 func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1alpha1.App, env *mortisev1alpha1.Environment, envNs, image, credentialsHash string, autoRedeploy bool) error {
 	name := deploymentName(app.Name)
 	replicas := int32(1)
@@ -999,10 +930,6 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 		},
 	}
 
-	if !disableDefaultSecurityContext(app) && len(containers) > 0 {
-		containers[0].SecurityContext = restrictedContainerSecurityContext()
-	}
-
 	resources, err := toResourceRequirements(r.effectiveResources(ctx, env))
 	if err != nil {
 		return fmt.Errorf("resources: %w", err)
@@ -1025,6 +952,9 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 	secretVols, secretMounts := toSecretVolumesAndMounts(env.SecretMounts)
 	volumes = append(volumes, secretVols...)
 	mounts = append(mounts, secretMounts...)
+	if len(volumes) == 0 {
+		volumes = nil
+	}
 
 	if len(mounts) > 0 {
 		containers[0].VolumeMounts = mounts
@@ -1067,7 +997,6 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 				},
 				Spec: corev1.PodSpec{
 					ServiceAccountName: app.Name,
-					SecurityContext:    restrictedPodSecurityContext(app),
 					Containers:         containers,
 					Volumes:            volumes,
 				},
@@ -1095,28 +1024,31 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 	}
 	desiredContainer := desired.Spec.Template.Spec.Containers[0]
 
-	// Retry loop handles optimistic-locking conflicts: another writer (e.g.
-	// the HPA or a rolling rollout) may bump the resource version between our
-	// Get and Update. Re-fetch, re-apply, and retry up to 3 attempts before
-	// surfacing the error and requeuing.
-	const maxConflictRetries = 3
-	for attempt := 0; attempt < maxConflictRetries; attempt++ {
+	return envstore.UpdateWithConflictRetry(ctx, r.Client, types.NamespacedName{Name: name, Namespace: envNs}, func() *appsv1.Deployment {
+		return &appsv1.Deployment{}
+	}, func(existing *appsv1.Deployment) (bool, error) {
+		desiredAnnotations := mergeAnnotations(nil, desired.Annotations)
+		for k, v := range existing.Annotations {
+			if strings.HasPrefix(k, "deployment.kubernetes.io/") {
+				desiredAnnotations = mergeAnnotations(desiredAnnotations, map[string]string{k: v})
+			}
+		}
+
 		// Re-derive desired annotations from the (possibly re-fetched) existing
 		// Deployment so stale values from a prior iteration don't persist.
+		desiredPodAnnotations := mergeAnnotations(nil, desired.Spec.Template.Annotations)
 		if v, ok := existing.Spec.Template.Annotations["mortise.dev/restartedAt"]; ok {
-			if desired.Spec.Template.Annotations == nil {
-				desired.Spec.Template.Annotations = make(map[string]string)
-			}
-			desired.Spec.Template.Annotations["mortise.dev/restartedAt"] = v
+			desiredPodAnnotations = mergeAnnotations(desiredPodAnnotations, map[string]string{
+				"mortise.dev/restartedAt": v,
+			})
 		}
 		// When autoRedeploy is off, freeze the deployed env-hash so the new
 		// hash doesn't trigger a rolling update. Users redeploy manually.
 		if !autoRedeploy {
 			if v, ok := existing.Spec.Template.Annotations["mortise.dev/env-hash"]; ok {
-				if desired.Spec.Template.Annotations == nil {
-					desired.Spec.Template.Annotations = make(map[string]string)
-				}
-				desired.Spec.Template.Annotations["mortise.dev/env-hash"] = v
+				desiredPodAnnotations = mergeAnnotations(desiredPodAnnotations, map[string]string{
+					"mortise.dev/env-hash": v,
+				})
 			}
 		}
 
@@ -1126,7 +1058,7 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 		// that make our desired spec never match, triggering an infinite
 		// reconcile loop via the Deployment watch.
 		if len(existing.Spec.Template.Spec.Containers) == 0 {
-			return fmt.Errorf("existing Deployment %s/%s has no containers", envNs, name)
+			return false, fmt.Errorf("existing Deployment %s/%s has no containers", envNs, name)
 		}
 		existingContainer := existing.Spec.Template.Spec.Containers[0]
 
@@ -1161,21 +1093,32 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 		if !equality.Semantic.DeepEqual(existingContainer.StartupProbe, desiredContainer.StartupProbe) {
 			needsUpdate = true
 		}
-		if securityContextChanged(existing.Spec.Template.Spec.SecurityContext, desired.Spec.Template.Spec.SecurityContext, existingContainer.SecurityContext, desiredContainer.SecurityContext) {
-			needsUpdate = true
-		}
 		if existing.Spec.Replicas == nil || *existing.Spec.Replicas != *desired.Spec.Replicas {
 			needsUpdate = true
 		}
-		if !equality.Semantic.DeepEqual(existing.Spec.Template.ObjectMeta.Annotations, desired.Spec.Template.ObjectMeta.Annotations) {
+		if !annotationsEqual(existing.Spec.Template.ObjectMeta.Annotations, desiredPodAnnotations) {
 			needsUpdate = true
 		}
 		if existing.Spec.ProgressDeadlineSeconds == nil || *existing.Spec.ProgressDeadlineSeconds != *desired.Spec.ProgressDeadlineSeconds {
 			needsUpdate = true
 		}
+		if !annotationsEqual(existing.Annotations, desiredAnnotations) {
+			needsUpdate = true
+		}
+		if !equality.Semantic.DeepEqual(existing.Spec.Template.ObjectMeta.Labels, desired.Spec.Template.ObjectMeta.Labels) {
+			needsUpdate = true
+		}
+		if !securityContextsEqual(
+			existing.Spec.Template.Spec.SecurityContext,
+			desired.Spec.Template.Spec.SecurityContext,
+			existing.Spec.Template.Spec.Containers[0].SecurityContext,
+			desired.Spec.Template.Spec.Containers[0].SecurityContext,
+		) {
+			needsUpdate = true
+		}
 
 		if !needsUpdate {
-			return nil
+			return false, nil
 		}
 
 		// Apply our fields onto the existing Deployment (preserves k8s defaults).
@@ -1191,26 +1134,13 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 		existing.Spec.Template.Spec.Containers[0].LivenessProbe = desiredContainer.LivenessProbe
 		existing.Spec.Template.Spec.Containers[0].ReadinessProbe = desiredContainer.ReadinessProbe
 		existing.Spec.Template.Spec.Containers[0].StartupProbe = desiredContainer.StartupProbe
-		existing.Spec.Template.Spec.Containers[0].SecurityContext = desiredContainer.SecurityContext
-		existing.Spec.Template.Spec.SecurityContext = desired.Spec.Template.Spec.SecurityContext
-		existing.Spec.Template.ObjectMeta.Annotations = desired.Spec.Template.ObjectMeta.Annotations
+		existing.Spec.Template.Spec.Containers[0].SecurityContext = nil
+		existing.Spec.Template.Spec.SecurityContext = nil
+		existing.Spec.Template.ObjectMeta.Annotations = desiredPodAnnotations
 		existing.Spec.Template.ObjectMeta.Labels = desired.Spec.Template.ObjectMeta.Labels
-		existing.Annotations = desired.Annotations
-
-		updateErr := r.Update(ctx, &existing)
-		if updateErr == nil {
-			return nil
-		}
-		if !errors.IsConflict(updateErr) || attempt == maxConflictRetries-1 {
-			return updateErr
-		}
-
-		// Conflict: re-fetch the latest version before the next attempt.
-		if getErr := r.Get(ctx, types.NamespacedName{Name: name, Namespace: envNs}, &existing); getErr != nil {
-			return getErr
-		}
-	}
-	return nil
+		existing.Annotations = desiredAnnotations
+		return true, nil
+	})
 }
 
 func (r *AppReconciler) reconcileCronJob(ctx context.Context, app *mortisev1alpha1.App, env *mortisev1alpha1.Environment, envNs, image, credentialsHash string, autoRedeploy bool) error {
@@ -1230,10 +1160,6 @@ func (r *AppReconciler) reconcileCronJob(ctx context.Context, app *mortisev1alph
 		},
 	}
 
-	if !disableDefaultSecurityContext(app) && len(containers) > 0 {
-		containers[0].SecurityContext = restrictedContainerSecurityContext()
-	}
-
 	resources, err := toResourceRequirements(r.effectiveResources(ctx, env))
 	if err != nil {
 		return fmt.Errorf("resources: %w", err)
@@ -1245,6 +1171,9 @@ func (r *AppReconciler) reconcileCronJob(ctx context.Context, app *mortisev1alph
 	secretVols, secretMounts := toSecretVolumesAndMounts(env.SecretMounts)
 	volumes = append(volumes, secretVols...)
 	mounts = append(mounts, secretMounts...)
+	if len(volumes) == 0 {
+		volumes = nil
+	}
 
 	if len(mounts) > 0 {
 		containers[0].VolumeMounts = mounts
@@ -1295,7 +1224,6 @@ func (r *AppReconciler) reconcileCronJob(ctx context.Context, app *mortisev1alph
 						},
 						Spec: corev1.PodSpec{
 							ServiceAccountName: app.Name,
-							SecurityContext:    restrictedPodSecurityContext(app),
 							RestartPolicy:      corev1.RestartPolicyOnFailure,
 							Containers:         containers,
 							Volumes:            volumes,
@@ -1317,32 +1245,32 @@ func (r *AppReconciler) reconcileCronJob(ctx context.Context, app *mortisev1alph
 		return err
 	}
 
-	const maxConflictRetries = 3
-	for attempt := 0; attempt < maxConflictRetries; attempt++ {
+	return envstore.UpdateWithConflictRetry(ctx, r.Client, types.NamespacedName{Name: name, Namespace: envNs}, func() *batchv1.CronJob {
+		return &batchv1.CronJob{}
+	}, func(existing *batchv1.CronJob) (bool, error) {
+		desiredPodAnnotations := mergeAnnotations(nil, desired.Spec.JobTemplate.Spec.Template.Annotations)
 		if v, ok := existing.Spec.JobTemplate.Spec.Template.Annotations["mortise.dev/restartedAt"]; ok {
-			if desired.Spec.JobTemplate.Spec.Template.Annotations == nil {
-				desired.Spec.JobTemplate.Spec.Template.Annotations = make(map[string]string)
-			}
-			desired.Spec.JobTemplate.Spec.Template.Annotations["mortise.dev/restartedAt"] = v
+			desiredPodAnnotations = mergeAnnotations(desiredPodAnnotations, map[string]string{
+				"mortise.dev/restartedAt": v,
+			})
 		}
 		if !autoRedeploy {
 			if v, ok := existing.Spec.JobTemplate.Spec.Template.Annotations["mortise.dev/env-hash"]; ok {
-				if desired.Spec.JobTemplate.Spec.Template.Annotations == nil {
-					desired.Spec.JobTemplate.Spec.Template.Annotations = make(map[string]string)
-				}
-				desired.Spec.JobTemplate.Spec.Template.Annotations["mortise.dev/env-hash"] = v
+				desiredPodAnnotations = mergeAnnotations(desiredPodAnnotations, map[string]string{
+					"mortise.dev/env-hash": v,
+				})
 			}
 		}
 
 		desiredPodSpec := desired.Spec.JobTemplate.Spec.Template.Spec
 		if len(desiredPodSpec.Containers) == 0 {
-			return fmt.Errorf("desired CronJob %s/%s has no containers", envNs, name)
+			return false, fmt.Errorf("desired CronJob %s/%s has no containers", envNs, name)
 		}
 		desiredContainer := desiredPodSpec.Containers[0]
 
 		existingPodSpec := existing.Spec.JobTemplate.Spec.Template.Spec
 		if len(existingPodSpec.Containers) == 0 {
-			return fmt.Errorf("existing CronJob %s/%s has no containers", envNs, name)
+			return false, fmt.Errorf("existing CronJob %s/%s has no containers", envNs, name)
 		}
 		existingContainer := existingPodSpec.Containers[0]
 
@@ -1365,34 +1293,38 @@ func (r *AppReconciler) reconcileCronJob(ctx context.Context, app *mortisev1alph
 		if !equality.Semantic.DeepEqual(existingContainer.Resources, desiredContainer.Resources) {
 			needsUpdate = true
 		}
-		if securityContextChanged(existingPodSpec.SecurityContext, desiredPodSpec.SecurityContext, existingContainer.SecurityContext, desiredContainer.SecurityContext) {
-			needsUpdate = true
-		}
 		if existing.Spec.Schedule != desired.Spec.Schedule {
 			needsUpdate = true
 		}
 		if existing.Spec.ConcurrencyPolicy != desired.Spec.ConcurrencyPolicy {
 			needsUpdate = true
 		}
-		if !equality.Semantic.DeepEqual(existing.Spec.JobTemplate.Spec.Template.ObjectMeta.Annotations, desired.Spec.JobTemplate.Spec.Template.ObjectMeta.Annotations) {
+		if !annotationsEqual(existing.Spec.JobTemplate.Spec.Template.ObjectMeta.Annotations, desiredPodAnnotations) {
 			needsUpdate = true
 		}
-		if !equality.Semantic.DeepEqual(existing.Annotations, desired.Annotations) {
+		if !annotationsEqual(existing.Annotations, desired.Annotations) {
+			needsUpdate = true
+		}
+		if !equality.Semantic.DeepEqual(existing.Spec.JobTemplate.Spec.Template.ObjectMeta.Labels, desired.Spec.JobTemplate.Spec.Template.ObjectMeta.Labels) {
+			needsUpdate = true
+		}
+		if !securityContextsEqual(
+			existing.Spec.JobTemplate.Spec.Template.Spec.SecurityContext,
+			desired.Spec.JobTemplate.Spec.Template.Spec.SecurityContext,
+			existing.Spec.JobTemplate.Spec.Template.Spec.Containers[0].SecurityContext,
+			desired.Spec.JobTemplate.Spec.Template.Spec.Containers[0].SecurityContext,
+		) {
 			needsUpdate = true
 		}
 
 		if !needsUpdate {
-			return nil
+			return false, nil
 		}
-
-		// Merge-patch sends only the delta, preserving k8s defaults while the
-		// retry loop handles optimistic-locking conflicts.
-		patch := client.MergeFrom(existing.DeepCopy())
 
 		existing.Annotations = desired.Annotations
 		existing.Spec.Schedule = desired.Spec.Schedule
 		existing.Spec.ConcurrencyPolicy = desired.Spec.ConcurrencyPolicy
-		existing.Spec.JobTemplate.Spec.Template.ObjectMeta.Annotations = desired.Spec.JobTemplate.Spec.Template.ObjectMeta.Annotations
+		existing.Spec.JobTemplate.Spec.Template.ObjectMeta.Annotations = desiredPodAnnotations
 		existing.Spec.JobTemplate.Spec.Template.ObjectMeta.Labels = desired.Spec.JobTemplate.Spec.Template.ObjectMeta.Labels
 		existing.Spec.JobTemplate.Spec.Template.Spec.Containers[0].Image = desiredContainer.Image
 		existing.Spec.JobTemplate.Spec.Template.Spec.Containers[0].Env = desiredContainer.Env
@@ -1400,22 +1332,10 @@ func (r *AppReconciler) reconcileCronJob(ctx context.Context, app *mortisev1alph
 		existing.Spec.JobTemplate.Spec.Template.Spec.Containers[0].VolumeMounts = desiredContainer.VolumeMounts
 		existing.Spec.JobTemplate.Spec.Template.Spec.Volumes = desiredPodSpec.Volumes
 		existing.Spec.JobTemplate.Spec.Template.Spec.Containers[0].Resources = desiredContainer.Resources
-		existing.Spec.JobTemplate.Spec.Template.Spec.Containers[0].SecurityContext = desiredContainer.SecurityContext
-		existing.Spec.JobTemplate.Spec.Template.Spec.SecurityContext = desiredPodSpec.SecurityContext
-
-		patchErr := r.Patch(ctx, &existing, patch)
-		if patchErr == nil {
-			return nil
-		}
-		if !errors.IsConflict(patchErr) || attempt == maxConflictRetries-1 {
-			return patchErr
-		}
-
-		if getErr := r.Get(ctx, types.NamespacedName{Name: name, Namespace: envNs}, &existing); getErr != nil {
-			return getErr
-		}
-	}
-	return nil
+		existing.Spec.JobTemplate.Spec.Template.Spec.Containers[0].SecurityContext = nil
+		existing.Spec.JobTemplate.Spec.Template.Spec.SecurityContext = nil
+		return true, nil
+	})
 }
 
 func (r *AppReconciler) reconcileService(ctx context.Context, app *mortisev1alpha1.App, env *mortisev1alpha1.Environment, envNs string) error {
@@ -1459,15 +1379,28 @@ func (r *AppReconciler) reconcileService(ctx context.Context, app *mortisev1alph
 	}
 
 update:
-	// Re-fetch to ensure we have the latest version before updating.
-	if err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: envNs}, &existing); err != nil {
-		return fmt.Errorf("re-get service: %w", err)
-	}
-
-	existing.Annotations = desired.Annotations
-	existing.Spec.Selector = desired.Spec.Selector
-	existing.Spec.Ports = desired.Spec.Ports
-	return r.Update(ctx, &existing)
+	return envstore.UpdateWithConflictRetry(ctx, r.Client, types.NamespacedName{Name: name, Namespace: envNs}, func() *corev1.Service {
+		return &corev1.Service{}
+	}, func(existing *corev1.Service) (bool, error) {
+		changed := false
+		if !equality.Semantic.DeepEqual(existing.Annotations, desired.Annotations) {
+			existing.Annotations = desired.Annotations
+			changed = true
+		}
+		if !equality.Semantic.DeepEqual(existing.Labels, desired.Labels) {
+			existing.Labels = desired.Labels
+			changed = true
+		}
+		if !equality.Semantic.DeepEqual(existing.Spec.Selector, desired.Spec.Selector) {
+			existing.Spec.Selector = desired.Spec.Selector
+			changed = true
+		}
+		if !equality.Semantic.DeepEqual(existing.Spec.Ports, desired.Spec.Ports) {
+			existing.Spec.Ports = desired.Spec.Ports
+			changed = true
+		}
+		return changed, nil
+	})
 }
 
 func (r *AppReconciler) reconcileIngress(ctx context.Context, app *mortisev1alpha1.App, env *mortisev1alpha1.Environment, envNs string) error {
@@ -1569,9 +1502,24 @@ func (r *AppReconciler) reconcileIngress(ctx context.Context, app *mortisev1alph
 		return err
 	}
 
-	existing.Spec = desired.Spec
-	existing.Annotations = desired.Annotations
-	return r.Update(ctx, &existing)
+	return envstore.UpdateWithConflictRetry(ctx, r.Client, types.NamespacedName{Name: name, Namespace: envNs}, func() *networkingv1.Ingress {
+		return &networkingv1.Ingress{}
+	}, func(existing *networkingv1.Ingress) (bool, error) {
+		changed := false
+		if !equality.Semantic.DeepEqual(existing.Spec, desired.Spec) {
+			existing.Spec = desired.Spec
+			changed = true
+		}
+		if !equality.Semantic.DeepEqual(existing.Annotations, desired.Annotations) {
+			existing.Annotations = desired.Annotations
+			changed = true
+		}
+		if !equality.Semantic.DeepEqual(existing.Labels, desired.Labels) {
+			existing.Labels = desired.Labels
+			changed = true
+		}
+		return changed, nil
+	})
 }
 
 var certGVK = schema.GroupVersionKind{Group: "cert-manager.io", Version: "v1", Kind: "Certificate"}
@@ -1672,9 +1620,21 @@ func (r *AppReconciler) reconcileServiceAccount(ctx context.Context, app *mortis
 		return err
 	}
 
-	if !imagePullSecretsEqual(existing.ImagePullSecrets, desired.ImagePullSecrets) {
-		existing.ImagePullSecrets = desired.ImagePullSecrets
-		return r.Update(ctx, &existing)
+	if !equality.Semantic.DeepEqual(existing.Labels, desired.Labels) || !imagePullSecretsEqual(existing.ImagePullSecrets, desired.ImagePullSecrets) {
+		return envstore.UpdateWithConflictRetry(ctx, r.Client, types.NamespacedName{Name: app.Name, Namespace: envNs}, func() *corev1.ServiceAccount {
+			return &corev1.ServiceAccount{}
+		}, func(existing *corev1.ServiceAccount) (bool, error) {
+			changed := false
+			if !equality.Semantic.DeepEqual(existing.Labels, desired.Labels) {
+				existing.Labels = desired.Labels
+				changed = true
+			}
+			if !imagePullSecretsEqual(existing.ImagePullSecrets, desired.ImagePullSecrets) {
+				existing.ImagePullSecrets = desired.ImagePullSecrets
+				changed = true
+			}
+			return changed, nil
+		})
 	}
 	return nil
 }
@@ -1755,26 +1715,27 @@ func (r *AppReconciler) reconcilePVCs(ctx context.Context, app *mortisev1alpha1.
 		}
 
 	updatePVC:
-		// Re-fetch to ensure we have the latest version before updating.
-		if err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: envNs}, &existing); err != nil {
-			return fmt.Errorf("re-get PVC: %w", err)
-		}
-
-		// PVC spec is largely immutable; only storage size can be expanded (requires bound claim + expandable SC)
-		currentSize := existing.Spec.Resources.Requests[corev1.ResourceStorage]
-		needsUpdate := false
-		if vol.Size.Cmp(currentSize) != 0 {
-			existing.Spec.Resources.Requests[corev1.ResourceStorage] = vol.Size
-			needsUpdate = true
-		}
-		if !annotationsEqual(existing.Annotations, desired.Annotations) {
-			existing.Annotations = desired.Annotations
-			needsUpdate = true
-		}
-		if needsUpdate {
-			if err := r.Update(ctx, &existing); err != nil {
-				return err
+		if err := envstore.UpdateWithConflictRetry(ctx, r.Client, types.NamespacedName{Name: name, Namespace: envNs}, func() *corev1.PersistentVolumeClaim {
+			return &corev1.PersistentVolumeClaim{}
+		}, func(existing *corev1.PersistentVolumeClaim) (bool, error) {
+			// PVC spec is largely immutable; only storage size can be expanded (requires bound claim + expandable SC)
+			changed := false
+			currentSize := existing.Spec.Resources.Requests[corev1.ResourceStorage]
+			if vol.Size.Cmp(currentSize) != 0 {
+				existing.Spec.Resources.Requests[corev1.ResourceStorage] = vol.Size
+				changed = true
 			}
+			if !equality.Semantic.DeepEqual(existing.Labels, desired.Labels) {
+				existing.Labels = desired.Labels
+				changed = true
+			}
+			if !annotationsEqual(existing.Annotations, desired.Annotations) {
+				existing.Annotations = desired.Annotations
+				changed = true
+			}
+			return changed, nil
+		}); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -1838,13 +1799,24 @@ func (r *AppReconciler) reconcileConfigMaps(ctx context.Context, app *mortisev1a
 			return fmt.Errorf("ConfigMap %q already exists in namespace %q and is not managed by Mortise; rename or delete it to let Mortise manage configFiles", cmName, envNs)
 		}
 
-		// Update content and labels if changed.
-		if existing.Data[fileName] != cf.Content {
-			existing.Data = desired.Data
-			existing.Labels = desired.Labels
-			if err := r.Update(ctx, &existing); err != nil {
-				return err
+		if err := envstore.UpdateWithConflictRetry(ctx, r.Client, types.NamespacedName{Name: cmName, Namespace: envNs}, func() *corev1.ConfigMap {
+			return &corev1.ConfigMap{}
+		}, func(existing *corev1.ConfigMap) (bool, error) {
+			if !isMortiseManaged(existing) {
+				return false, fmt.Errorf("ConfigMap %q already exists in namespace %q and is not managed by Mortise; rename or delete it to let Mortise manage configFiles", cmName, envNs)
 			}
+			changed := false
+			if !equality.Semantic.DeepEqual(existing.Data, desired.Data) {
+				existing.Data = desired.Data
+				changed = true
+			}
+			if !equality.Semantic.DeepEqual(existing.Labels, desired.Labels) {
+				existing.Labels = desired.Labels
+				changed = true
+			}
+			return changed, nil
+		}); err != nil {
+			return err
 		}
 	}
 
@@ -2018,14 +1990,24 @@ func (r *AppReconciler) writeLastSpecEnv(ctx context.Context, ns, appName string
 	if err != nil {
 		return fmt.Errorf("marshal last-spec env: %w", err)
 	}
-	if sec.Annotations == nil {
-		sec.Annotations = make(map[string]string)
-	}
-	if sec.Annotations[envstore.AnnotationLastSpecEnv] == string(data) {
+	if sec.Annotations != nil && sec.Annotations[envstore.AnnotationLastSpecEnv] == string(data) {
 		return nil
 	}
-	sec.Annotations[envstore.AnnotationLastSpecEnv] = string(data)
-	if err := r.Client.Update(ctx, &sec); err != nil {
+	if err := envstore.UpdateWithConflictRetry(ctx, r.Client, types.NamespacedName{
+		Name:      envstore.AppEnvSecretName(appName),
+		Namespace: ns,
+	}, func() *corev1.Secret {
+		return &corev1.Secret{}
+	}, func(sec *corev1.Secret) (bool, error) {
+		if sec.Annotations == nil {
+			sec.Annotations = make(map[string]string)
+		}
+		if sec.Annotations[envstore.AnnotationLastSpecEnv] == string(data) {
+			return false, nil
+		}
+		sec.Annotations[envstore.AnnotationLastSpecEnv] = string(data)
+		return true, nil
+	}); err != nil {
 		return fmt.Errorf("write last-spec-env annotation: %w", err)
 	}
 	return nil
@@ -2124,10 +2106,27 @@ func (r *AppReconciler) reconcileCredentialsSecret(ctx context.Context, app *mor
 		// silent credential exfiltration.
 		return "", fmt.Errorf("secret %q already exists in namespace %q and is not managed by Mortise; rename or delete it to let Mortise manage credentials", name, envNs)
 	}
-	existing.Labels = desired.Labels
-	existing.Type = desired.Type
-	existing.Data = desired.Data
-	if err := r.Update(ctx, &existing); err != nil {
+	if err := envstore.UpdateWithConflictRetry(ctx, r.Client, key, func() *corev1.Secret {
+		return &corev1.Secret{}
+	}, func(existing *corev1.Secret) (bool, error) {
+		if !isMortiseManaged(existing) {
+			return false, fmt.Errorf("secret %q already exists in namespace %q and is not managed by Mortise; rename or delete it to let Mortise manage credentials", name, envNs)
+		}
+		changed := false
+		if !equality.Semantic.DeepEqual(existing.Labels, desired.Labels) {
+			existing.Labels = desired.Labels
+			changed = true
+		}
+		if existing.Type != desired.Type {
+			existing.Type = desired.Type
+			changed = true
+		}
+		if !reflect.DeepEqual(existing.Data, desired.Data) {
+			existing.Data = desired.Data
+			changed = true
+		}
+		return changed, nil
+	}); err != nil {
 		return "", fmt.Errorf("update credentials secret: %w", err)
 	}
 	return hash, nil
@@ -2223,16 +2222,11 @@ func isMortiseManaged(obj client.Object) bool {
 }
 
 // ensureWebhook registers a webhook on the git repo if not already done.
-// Uses an annotation on the App to track registration and avoid duplicates.
+// Registration is latched by an input hash stored on App.status.conditions.
 // Non-fatal — if registration fails (e.g. no public URL, no permissions),
 // builds still work via manual redeploy.
 func (r *AppReconciler) ensureWebhook(ctx context.Context, app *mortisev1alpha1.App, gp *mortisev1alpha1.GitProvider, token string) error {
 	log := logf.FromContext(ctx)
-
-	// Skip if already registered for this repo.
-	if app.Annotations["mortise.dev/webhook-registered"] == app.Spec.Source.Repo {
-		return nil
-	}
 
 	// Resolve the webhook URL from PlatformConfig domain.
 	var pc mortisev1alpha1.PlatformConfig
@@ -2244,7 +2238,8 @@ func (r *AppReconciler) ensureWebhook(ctx context.Context, app *mortisev1alpha1.
 		host = pc.Spec.Domain
 	}
 	if host == "" {
-		return nil // no domain configured, can't register webhooks
+		r.setWebhookCondition(ctx, app, metav1.ConditionFalse, webhookMissingURLReason, "platform domain is not configured")
+		return nil
 	}
 
 	scheme := "https"
@@ -2264,10 +2259,15 @@ func (r *AppReconciler) ensureWebhook(ctx context.Context, app *mortisev1alpha1.
 			webhookSecret = string(s.Data[gp.Spec.WebhookSecretRef.Key])
 		}
 	}
+	inputHash := webhookRegistrationInputHash(app, gp, webhookURL, webhookSecret)
+	if webhookConditionInputHash(app) == inputHash {
+		return nil
+	}
 
 	// Build GitAPI and register.
 	api, err := r.newGitAPI(gp, token, webhookSecret)
 	if err != nil {
+		r.setWebhookCondition(ctx, app, metav1.ConditionFalse, webhookConditionReason(err), err.Error())
 		return fmt.Errorf("create git API: %w", err)
 	}
 
@@ -2281,13 +2281,8 @@ func (r *AppReconciler) ensureWebhook(ctx context.Context, app *mortisev1alpha1.
 				continue
 			}
 			if hook.URL == webhookURL {
-				// Already registered, annotation was lost — restore it.
-				if app.Annotations == nil {
-					app.Annotations = make(map[string]string)
-				}
-				app.Annotations["mortise.dev/webhook-registered"] = app.Spec.Source.Repo
-				if err := r.Update(ctx, app); err != nil {
-					log.Error(err, "failed to save webhook-registered annotation")
+				if err := r.setWebhookCondition(ctx, app, metav1.ConditionTrue, webhookRegisteredReason, webhookInputHashMessage(inputHash)); err != nil {
+					log.Error(err, "failed to persist webhook condition")
 				}
 				return nil
 			}
@@ -2305,20 +2300,89 @@ func (r *AppReconciler) ensureWebhook(ctx context.Context, app *mortisev1alpha1.
 		Secret: webhookSecret,
 		Events: []string{"push", "pull_request"},
 	}); err != nil {
+		r.setWebhookCondition(ctx, app, metav1.ConditionFalse, webhookConditionReason(err), err.Error())
 		return fmt.Errorf("register webhook: %w", err)
 	}
 
-	// Mark as registered so we don't re-register on every reconcile.
-	if app.Annotations == nil {
-		app.Annotations = make(map[string]string)
-	}
-	app.Annotations["mortise.dev/webhook-registered"] = app.Spec.Source.Repo
-	if err := r.Update(ctx, app); err != nil {
-		log.Error(err, "failed to save webhook-registered annotation")
+	if err := r.setWebhookCondition(ctx, app, metav1.ConditionTrue, webhookRegisteredReason, webhookInputHashMessage(inputHash)); err != nil {
+		log.Error(err, "failed to persist webhook condition")
 	}
 
 	log.Info("registered webhook", "repo", app.Spec.Source.Repo, "url", webhookURL)
 	return nil
+}
+
+func webhookRegistrationInputHash(app *mortisev1alpha1.App, gp *mortisev1alpha1.GitProvider, webhookURL, webhookSecret string) string {
+	h := sha256.New()
+	fmt.Fprintf(h, "repo=%s\nproviderRef=%s\nproviderName=%s\nproviderType=%s\nproviderHost=%s\nurl=%s\nsecret=%s\n",
+		app.Spec.Source.Repo,
+		app.Spec.Source.ProviderRef,
+		gp.Name,
+		gp.Spec.Type,
+		gp.Spec.Host,
+		webhookURL,
+		webhookSecret,
+	)
+	writePreviewSyncHashJSON(h, "events", []string{"push", "pull_request"})
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+func webhookInputHashMessage(hash string) string {
+	return webhookInputHashMessageKey + hash
+}
+
+func webhookConditionInputHash(app *mortisev1alpha1.App) string {
+	cond := meta.FindStatusCondition(app.Status.Conditions, webhookConditionType)
+	if cond == nil || cond.Status != metav1.ConditionTrue || !strings.HasPrefix(cond.Message, webhookInputHashMessageKey) {
+		return ""
+	}
+	return strings.TrimPrefix(cond.Message, webhookInputHashMessageKey)
+}
+
+func webhookConditionReason(err error) string {
+	switch git.ClassifyWebhookError(err) {
+	case git.WebhookErrorClassUnauthorized:
+		return "WebhookAuthFailed"
+	case git.WebhookErrorClassNotFound:
+		return "WebhookRepoNotFound"
+	case git.WebhookErrorClassConflict:
+		return "WebhookConflict"
+	case git.WebhookErrorClassRateLimited:
+		return "WebhookRateLimited"
+	case git.WebhookErrorClassTransient:
+		return "WebhookTransientError"
+	default:
+		return "WebhookRegistrationFailed"
+	}
+}
+
+func (r *AppReconciler) setWebhookCondition(ctx context.Context, app *mortisev1alpha1.App, status metav1.ConditionStatus, reason, message string) error {
+	existing := meta.FindStatusCondition(app.Status.Conditions, webhookConditionType)
+	if existing != nil &&
+		existing.Status == status &&
+		existing.Reason == reason &&
+		existing.Message == message &&
+		existing.ObservedGeneration == app.Generation {
+		return nil
+	}
+
+	transitionTime := metav1.NewTime(r.clock().Now())
+	if existing != nil &&
+		existing.Status == status &&
+		existing.Reason == reason &&
+		existing.Message == message {
+		transitionTime = existing.LastTransitionTime
+	}
+
+	meta.SetStatusCondition(&app.Status.Conditions, metav1.Condition{
+		Type:               webhookConditionType,
+		Status:             status,
+		Reason:             reason,
+		Message:            message,
+		ObservedGeneration: app.Generation,
+		LastTransitionTime: transitionTime,
+	})
+	return r.Status().Update(ctx, app)
 }
 
 // checkPodCrashLoopInEnv checks pods for CrashLoopBackOff within a single env
@@ -2438,165 +2502,181 @@ func healthRequeueAfter(app *mortisev1alpha1.App, clk clock.Clock) time.Duration
 // cleared rather than stale — callers have already logged the underlying
 // cause at fetch time.
 func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.App, resolvedEnvs []mortisev1alpha1.Environment) error {
-	// Re-read the App first to get the latest resourceVersion and any
-	// status written by the API (e.g. Phase=Deploying from a manual
-	// redeploy). Building existingByName from the fresh copy means we
-	// carry forward deploy history and other per-env state that the API
-	// may have written between reconciles — preventing race-induced flicker.
-	var fresh mortisev1alpha1.App
-	if err := r.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: app.Namespace}, &fresh); err != nil {
-		return err
-	}
-
-	existingByName := make(map[string]mortisev1alpha1.EnvironmentStatus, len(fresh.Status.Environments))
-	for _, es := range fresh.Status.Environments {
-		existingByName[es.Name] = es
-	}
-
-	envStatuses := make([]mortisev1alpha1.EnvironmentStatus, 0, len(resolvedEnvs))
-
-	isCron := app.Spec.Kind == mortisev1alpha1.AppKindCron
-
-	anyNotReady := false
-	anyCrash := false
-	firstCrashMsg := ""
-
-	for _, env := range resolvedEnvs {
-		autoDomain := ""
-		if app.Spec.Network.Public {
-			autoDomain = r.autoDefaultDomain(ctx, app, env.Name)
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		// Re-read the App first to get the latest resourceVersion and any
+		// status written by the API (e.g. Phase=Deploying from a manual
+		// redeploy). Building existingByName from the fresh copy means we
+		// carry forward deploy history and other per-env state that the API
+		// may have written between reconciles — preventing race-induced flicker.
+		var fresh mortisev1alpha1.App
+		if err := r.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: app.Namespace}, &fresh); err != nil {
+			return err
 		}
-		domain := env.Domain
-		if domain == "" {
-			domain = autoDomain
+
+		existingByName := make(map[string]mortisev1alpha1.EnvironmentStatus, len(fresh.Status.Environments))
+		for _, es := range fresh.Status.Environments {
+			existingByName[es.Name] = es
 		}
-		es := mortisev1alpha1.EnvironmentStatus{
-			Name:         env.Name,
-			CurrentImage: r.currentImageForEnv(app, env.Name),
-			Domain:       domain,
-			AutoDomain:   autoDomain,
-		}
-		envNs, nsErr := appEnvNs(app, env.Name)
-		if nsErr != nil {
-			return nsErr
-		}
-		rollingOut := false
-		restartedAt := ""
-		deployedHash := ""
-		if isCron {
-			var cj batchv1.CronJob
-			if err := r.Get(ctx, types.NamespacedName{Name: cronJobName(app.Name), Namespace: envNs}, &cj); err == nil {
-				es.ReadyReplicas = 1
-				deployedHash = cj.Spec.JobTemplate.Spec.Template.Annotations["mortise.dev/env-hash"]
+
+		envStatuses := make([]mortisev1alpha1.EnvironmentStatus, 0, len(resolvedEnvs))
+
+		isCron := app.Spec.Kind == mortisev1alpha1.AppKindCron
+
+		anyNotReady := false
+		anyCrash := false
+		firstCrashMsg := ""
+
+		for _, env := range resolvedEnvs {
+			autoDomain := ""
+			if app.Spec.Network.Public {
+				autoDomain = r.autoDefaultDomain(ctx, app, env.Name)
 			}
-		} else {
-			name := deploymentName(app.Name)
-			var dep appsv1.Deployment
-			if err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: envNs}, &dep); err == nil {
-				es.ReadyReplicas = dep.Status.ReadyReplicas
-				if deploymentRollingOut(&dep) {
-					rollingOut = true
+			domain := env.Domain
+			if domain == "" {
+				domain = autoDomain
+			}
+			es := mortisev1alpha1.EnvironmentStatus{
+				Name:         env.Name,
+				CurrentImage: r.currentImageForEnv(app, env.Name),
+				Domain:       domain,
+				AutoDomain:   autoDomain,
+			}
+			envNs, nsErr := appEnvNs(app, env.Name)
+			if nsErr != nil {
+				return nsErr
+			}
+			rollingOut := false
+			restartedAt := ""
+			deployedHash := ""
+			if isCron {
+				var cj batchv1.CronJob
+				if err := r.Get(ctx, types.NamespacedName{Name: cronJobName(app.Name), Namespace: envNs}, &cj); err == nil {
+					es.ReadyReplicas = 1
+					deployedHash = cj.Spec.JobTemplate.Spec.Template.Annotations["mortise.dev/env-hash"]
 				}
-				restartedAt = dep.Spec.Template.Annotations["mortise.dev/restartedAt"]
-				deployedHash = dep.Spec.Template.Annotations["mortise.dev/env-hash"]
+			} else {
+				name := deploymentName(app.Name)
+				var dep appsv1.Deployment
+				if err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: envNs}, &dep); err == nil {
+					es.ReadyReplicas = dep.Status.ReadyReplicas
+					if deploymentRollingOut(&dep) {
+						rollingOut = true
+					}
+					restartedAt = dep.Spec.Template.Annotations["mortise.dev/restartedAt"]
+					deployedHash = dep.Spec.Template.Annotations["mortise.dev/env-hash"]
+				}
 			}
-		}
 
-		// Per-env hash tracking: PendingEnvHash is the live Secret state,
-		// DeployedEnvHash is what's on the running pod template.
-		es.PendingEnvHash = r.hashEnvSecretData(ctx, app.Name, envNs)
-		es.DeployedEnvHash = deployedHash
+			// Per-env hash tracking: PendingEnvHash is the live Secret state,
+			// DeployedEnvHash is what's on the running pod template.
+			es.PendingEnvHash = r.hashEnvSecretData(ctx, app.Name, envNs)
+			es.DeployedEnvHash = deployedHash
 
-		// Carry forward deploy history, restart tracking, and build info.
-		if prev, ok := existingByName[env.Name]; ok {
-			es.DeployHistory = prev.DeployHistory
-			es.LastProcessedRestartedAt = prev.LastProcessedRestartedAt
-			es.LastBuiltSHA = prev.LastBuiltSHA
-			es.LastBuiltImage = prev.LastBuiltImage
-		}
-		if needsDeployRecord(es.CurrentImage, es.DeployedEnvHash, es.DeployHistory) {
-			record := mortisev1alpha1.DeployRecord{
-				Image:     es.CurrentImage,
-				EnvHash:   es.DeployedEnvHash,
-				Timestamp: metav1.NewTime(r.clock().Now()),
+			// Carry forward deploy history, restart tracking, and build info.
+			if prev, ok := existingByName[env.Name]; ok {
+				es.DeployHistory = prev.DeployHistory
+				es.LastProcessedRestartedAt = prev.LastProcessedRestartedAt
+				es.LastBuiltSHA = prev.LastBuiltSHA
+				es.LastBuiltImage = prev.LastBuiltImage
+				es.CurrentBuildRunRef = prev.CurrentBuildRunRef
+				es.LastSuccessfulBuildRunRef = prev.LastSuccessfulBuildRunRef
 			}
-			es.DeployHistory = append([]mortisev1alpha1.DeployRecord{record}, es.DeployHistory...)
-			if len(es.DeployHistory) > maxDeployHistory {
-				es.DeployHistory = es.DeployHistory[:maxDeployHistory]
+			if needsDeployRecord(es.CurrentImage, es.DeployedEnvHash, es.DeployHistory) {
+				record := mortisev1alpha1.DeployRecord{
+					Image:     es.CurrentImage,
+					EnvHash:   es.DeployedEnvHash,
+					Timestamp: metav1.NewTime(r.clock().Now()),
+				}
+				es.DeployHistory = append([]mortisev1alpha1.DeployRecord{record}, es.DeployHistory...)
+				if len(es.DeployHistory) > maxDeployHistory {
+					es.DeployHistory = es.DeployHistory[:maxDeployHistory]
+				}
 			}
-		}
 
-		expectedReplicas := int32(1)
-		if !isCron && env.Replicas != nil {
-			expectedReplicas = *env.Replicas
-		}
-		ready := es.ReadyReplicas >= expectedReplicas && !rollingOut
-
-		// Latch: a new restartedAt value means a user-triggered redeploy is
-		// in progress. Keep Phase=Deploying until the rollout actually
-		// completes, even if readyReplicas temporarily satisfies the check.
-		newRestart := restartedAt != "" && restartedAt != es.LastProcessedRestartedAt
-
-		if ready && !newRestart {
-			if restartedAt != "" {
-				es.LastProcessedRestartedAt = restartedAt
+			expectedReplicas := int32(1)
+			if !isCron && env.Replicas != nil {
+				expectedReplicas = *env.Replicas
 			}
-			es.Phase = mortisev1alpha1.AppPhaseReady
-		} else if newRestart {
-			if ready {
-				es.LastProcessedRestartedAt = restartedAt
+			ready := es.ReadyReplicas >= expectedReplicas && !rollingOut
+
+			// Latch: a new restartedAt value means a user-triggered redeploy is
+			// in progress. Keep Phase=Deploying until the rollout actually
+			// completes, even if readyReplicas temporarily satisfies the check.
+			newRestart := restartedAt != "" && restartedAt != es.LastProcessedRestartedAt
+
+			if ready && !newRestart {
+				if restartedAt != "" {
+					es.LastProcessedRestartedAt = restartedAt
+				}
 				es.Phase = mortisev1alpha1.AppPhaseReady
+			} else if newRestart {
+				if ready {
+					es.LastProcessedRestartedAt = restartedAt
+					es.Phase = mortisev1alpha1.AppPhaseReady
+				} else {
+					es.Phase = mortisev1alpha1.AppPhaseDeploying
+					anyNotReady = true
+				}
 			} else {
 				es.Phase = mortisev1alpha1.AppPhaseDeploying
-				anyNotReady = true
-			}
-		} else {
-			es.Phase = mortisev1alpha1.AppPhaseDeploying
-			if !isCron {
-				if crashMsg := r.checkPodCrashLoopInEnv(ctx, app, env.Name, envNs); crashMsg != "" {
-					es.Phase = mortisev1alpha1.AppPhaseCrashLooping
-					es.Message = crashMsg
-					anyCrash = true
-					if firstCrashMsg == "" {
-						firstCrashMsg = crashMsg
+				if !isCron {
+					if crashMsg := r.checkPodCrashLoopInEnv(ctx, app, env.Name, envNs); crashMsg != "" {
+						es.Phase = mortisev1alpha1.AppPhaseCrashLooping
+						es.Message = crashMsg
+						anyCrash = true
+						if firstCrashMsg == "" {
+							firstCrashMsg = crashMsg
+						}
 					}
 				}
+				anyNotReady = true
 			}
-			anyNotReady = true
+
+			if app.Spec.Network.Public && es.Domain != "" {
+				if env.TLS != nil && env.TLS.SecretName != "" {
+					es.CertificateStatus, es.CertificateMessage = r.checkCustomTLSSecret(ctx, env.TLS.SecretName, envNs)
+				} else {
+					es.CertificateStatus, es.CertificateMessage = r.checkCertificateStatus(ctx, tlsSecretName(app.Name), envNs)
+				}
+			}
+
+			envStatuses = append(envStatuses, es)
 		}
 
-		if app.Spec.Network.Public && es.Domain != "" {
-			if env.TLS != nil && env.TLS.SecretName != "" {
-				es.CertificateStatus, es.CertificateMessage = r.checkCustomTLSSecret(ctx, env.TLS.SecretName, envNs)
-			} else {
-				es.CertificateStatus, es.CertificateMessage = r.checkCertificateStatus(ctx, tlsSecretName(app.Name), envNs)
-			}
+		// Aggregate phase across envs (kept for backward compat + top-level UI).
+		phase := mortisev1alpha1.AppPhaseDeploying
+		if !anyNotReady && len(envStatuses) > 0 {
+			phase = mortisev1alpha1.AppPhaseReady
+		}
+		if anyCrash {
+			phase = mortisev1alpha1.AppPhaseCrashLooping
+			meta.SetStatusCondition(&fresh.Status.Conditions, metav1.Condition{
+				Type:               "PodHealthy",
+				Status:             metav1.ConditionFalse,
+				Reason:             "CrashLoopBackOff",
+				Message:            firstCrashMsg,
+				ObservedGeneration: app.Generation,
+			})
+		} else {
+			meta.RemoveStatusCondition(&fresh.Status.Conditions, "PodHealthy")
 		}
 
-		envStatuses = append(envStatuses, es)
-	}
+		fresh.Status.Phase = phase
+		fresh.Status.Environments = envStatuses
+		fresh.Status.CurrentBuildRunName, fresh.Status.LastBuildRunName = aggregateAppBuildRunNames(envStatuses)
+		return r.Status().Update(ctx, &fresh)
+	})
+}
 
-	// Aggregate phase across envs (kept for backward compat + top-level UI).
-	phase := mortisev1alpha1.AppPhaseDeploying
-	if !anyNotReady && len(envStatuses) > 0 {
-		phase = mortisev1alpha1.AppPhaseReady
-	}
-	if anyCrash {
-		phase = mortisev1alpha1.AppPhaseCrashLooping
-		meta.SetStatusCondition(&fresh.Status.Conditions, metav1.Condition{
-			Type:               "PodHealthy",
-			Status:             metav1.ConditionFalse,
-			Reason:             "CrashLoopBackOff",
-			Message:            firstCrashMsg,
-			ObservedGeneration: app.Generation,
-		})
-	} else {
-		meta.RemoveStatusCondition(&fresh.Status.Conditions, "PodHealthy")
-	}
-
-	fresh.Status.Phase = phase
-	fresh.Status.Environments = envStatuses
-	return r.Status().Update(ctx, &fresh)
+func (r *AppReconciler) updateAppStatus(ctx context.Context, app *mortisev1alpha1.App, mutate func(status *mortisev1alpha1.AppStatus)) error {
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var fresh mortisev1alpha1.App
+		if err := r.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: app.Namespace}, &fresh); err != nil {
+			return err
+		}
+		mutate(&fresh.Status)
+		return r.Status().Update(ctx, &fresh)
+	})
 }
 
 // needsDeployRecord returns true when a new deploy record should be created:
@@ -2748,79 +2828,6 @@ func cronJobName(appName string) string    { return constants.CronJobName(appNam
 func serviceName(appName string) string    { return appName }
 func ingressName(appName string) string    { return appName }
 func tlsSecretName(appName string) string  { return fmt.Sprintf("%s-tls", ingressName(appName)) }
-
-func disableDefaultSecurityContext(app *mortisev1alpha1.App) bool {
-	return app.Annotations["mortise.dev/disable-default-security-context"] == "true"
-}
-
-func restrictedPodSecurityContext(app *mortisev1alpha1.App) *corev1.PodSecurityContext {
-	if disableDefaultSecurityContext(app) {
-		return nil
-	}
-	return &corev1.PodSecurityContext{
-		RunAsNonRoot: ptr.To(true),
-		SeccompProfile: &corev1.SeccompProfile{
-			Type: corev1.SeccompProfileTypeRuntimeDefault,
-		},
-	}
-}
-
-func restrictedContainerSecurityContext() *corev1.SecurityContext {
-	return &corev1.SecurityContext{
-		AllowPrivilegeEscalation: ptr.To(false),
-		Capabilities: &corev1.Capabilities{
-			Drop: []corev1.Capability{"ALL"},
-		},
-	}
-}
-
-// securityContextChanged reports whether the controller-managed security
-// context fields have drifted and need an update. The comparison normalises
-// nil vs empty structs (which the API server may default) to avoid an
-// infinite reconcile loop: the controller writes nil, the API server
-// defaults to &SecurityContext{}, the next reconcile sees a diff, updates
-// back to nil, and the cycle repeats.
-func securityContextChanged(existingPodSC, desiredPodSC *corev1.PodSecurityContext, existingContainerSC, desiredContainerSC *corev1.SecurityContext) bool {
-	if !containerSecurityContextEqual(existingContainerSC, desiredContainerSC) {
-		return true
-	}
-	if !podSecurityContextEqual(existingPodSC, desiredPodSC) {
-		return true
-	}
-	return false
-}
-
-// containerSecurityContextEqual returns true when two container SecurityContext
-// pointers are semantically equal, treating nil and a zero-value struct as the
-// same to avoid nil-vs-empty drift from API-server defaulting.
-func containerSecurityContextEqual(a, b *corev1.SecurityContext) bool {
-	if equality.Semantic.DeepEqual(a, b) {
-		return true
-	}
-	// Normalise: treat nil and zero-value as identical.
-	if a == nil {
-		a = &corev1.SecurityContext{}
-	}
-	if b == nil {
-		b = &corev1.SecurityContext{}
-	}
-	return equality.Semantic.DeepEqual(a, b)
-}
-
-// podSecurityContextEqual returns true when two PodSecurityContext pointers
-// are semantically equal, treating nil and a zero-value struct as the same.
-func podSecurityContextEqual(a, b *corev1.PodSecurityContext) bool {
-	if equality.Semantic.DeepEqual(a, b) {
-		return true
-	}
-	if a == nil {
-		a = &corev1.PodSecurityContext{}
-	}
-	if b == nil {
-		b = &corev1.PodSecurityContext{}
-	}
-	return equality.Semantic.DeepEqual(a, b)
-}
 
 // defaultDomainTemplate is the collision-safe default: {app}-{project}.{domain}
 // for production, {app}-{project}-{env}.{domain} for other environments.
@@ -3042,6 +3049,80 @@ func annotationsEqual(a, b map[string]string) bool {
 		}
 	}
 	return true
+}
+
+func normalizePodSecurityContext(sc *corev1.PodSecurityContext) *corev1.PodSecurityContext {
+	if sc == nil {
+		return nil
+	}
+	normalized := sc.DeepCopy()
+	normalizeStructPointers(reflect.ValueOf(normalized).Elem())
+	if equality.Semantic.DeepEqual(*normalized, corev1.PodSecurityContext{}) {
+		return nil
+	}
+	return normalized
+}
+
+func normalizeContainerSecurityContext(sc *corev1.SecurityContext) *corev1.SecurityContext {
+	if sc == nil {
+		return nil
+	}
+	normalized := sc.DeepCopy()
+	normalizeStructPointers(reflect.ValueOf(normalized).Elem())
+	if equality.Semantic.DeepEqual(*normalized, corev1.SecurityContext{}) {
+		return nil
+	}
+	return normalized
+}
+
+func securityContextsEqual(podA, podB *corev1.PodSecurityContext, containerA, containerB *corev1.SecurityContext) bool {
+	return equality.Semantic.DeepEqual(normalizePodSecurityContext(podA), normalizePodSecurityContext(podB)) &&
+		equality.Semantic.DeepEqual(normalizeContainerSecurityContext(containerA), normalizeContainerSecurityContext(containerB))
+}
+
+func normalizeStructPointers(v reflect.Value) {
+	if !v.IsValid() {
+		return
+	}
+
+	switch v.Kind() {
+	case reflect.Struct:
+		for i := 0; i < v.NumField(); i++ {
+			field := v.Field(i)
+			if field.CanSet() {
+				normalizeStructPointers(field)
+			}
+		}
+	case reflect.Ptr:
+		if v.IsNil() {
+			return
+		}
+		elem := v.Elem()
+		switch elem.Kind() {
+		case reflect.Struct:
+			normalizeStructPointers(elem)
+			if elem.IsZero() {
+				v.Set(reflect.Zero(v.Type()))
+			}
+		case reflect.Slice, reflect.Map:
+			normalizeStructPointers(elem)
+			if elem.Len() == 0 {
+				v.Set(reflect.Zero(v.Type()))
+			}
+		}
+	case reflect.Slice:
+		if v.Len() == 0 {
+			v.Set(reflect.Zero(v.Type()))
+			return
+		}
+		for i := 0; i < v.Len(); i++ {
+			normalizeStructPointers(v.Index(i))
+		}
+	case reflect.Map:
+		if v.Len() == 0 {
+			v.Set(reflect.Zero(v.Type()))
+		}
+	}
 }
 
 func (r *AppReconciler) effectiveResources(ctx context.Context, env *mortisev1alpha1.Environment) mortisev1alpha1.ResourceRequirements {
@@ -3326,6 +3407,19 @@ func (r *AppReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			Namespace: constants.ControlNamespace(projectName),
 		}}}
 	})
+	enqueueAppFromBuildRun := handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []reconcile.Request {
+		br, ok := obj.(*mortisev1alpha1.BuildRun)
+		if !ok {
+			return nil
+		}
+		if br.Spec.TargetRef.Kind != mortisev1alpha1.BuildRunTargetAppEnvironment || br.Spec.TargetRef.Name == "" || br.Namespace == "" {
+			return nil
+		}
+		return []reconcile.Request{{NamespacedName: types.NamespacedName{
+			Name:      br.Spec.TargetRef.Name,
+			Namespace: br.Namespace,
+		}}}
+	})
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&mortisev1alpha1.App{}).
 		Watches(&appsv1.Deployment{}, enqueueAppFromManagedResource).
@@ -3335,6 +3429,7 @@ func (r *AppReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(&corev1.Secret{}, enqueueAppFromManagedResource).
 		Watches(&corev1.ServiceAccount{}, enqueueAppFromManagedResource).
 		Watches(&networkingv1.Ingress{}, enqueueAppFromManagedResource).
+		Watches(&mortisev1alpha1.BuildRun{}, enqueueAppFromBuildRun).
 		Named("app").
 		Complete(r)
 }

@@ -203,6 +203,28 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              currentBuildRunName:
+                description: CurrentBuildRunName is the active durable build execution
+                  for this preview.
+                type: string
+              currentBuildRunRef:
+                description: CurrentBuildRunRef points at the currently selected BuildRun
+                  for this preview.
+                properties:
+                  name:
+                    type: string
+                  phase:
+                    description: BuildRunPhase is the durable lifecycle state of a
+                      git build execution.
+                    enum:
+                    - Pending
+                    - Running
+                    - Succeeded
+                    - Failed
+                    type: string
+                required:
+                - name
+                type: object
               expiresAt:
                 description: ExpiresAt is when this preview will be auto-deleted.
                 format: date-time
@@ -210,6 +232,28 @@ spec:
               image:
                 description: Image is the built container image reference.
                 type: string
+              lastBuildRunName:
+                description: LastBuildRunName is the most recent terminal durable
+                  build execution.
+                type: string
+              lastSuccessfulBuildRunRef:
+                description: LastSuccessfulBuildRunRef points at the most recent successful
+                  BuildRun.
+                properties:
+                  name:
+                    type: string
+                  phase:
+                    description: BuildRunPhase is the durable lifecycle state of a
+                      git build execution.
+                    enum:
+                    - Pending
+                    - Running
+                    - Succeeded
+                    - Failed
+                    type: string
+                required:
+                - name
+                type: object
               phase:
                 description: Phase is the current lifecycle phase.
                 enum:

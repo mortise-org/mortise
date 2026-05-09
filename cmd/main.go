@@ -402,6 +402,8 @@ func main() {
 		Reader:               mgr.GetClient(),
 	})
 
+	buildLogStore := &controller.BuildTrackerStore{}
+
 	appReconciler := &controller.AppReconciler{
 		Client:          mgr.GetClient(),
 		Scheme:          mgr.GetScheme(),
@@ -409,9 +411,21 @@ func main() {
 		GitClient:       stk.git,
 		RegistryBackend: stk.registry,
 		IngressProvider: ingressProvider,
+		Builds:          buildLogStore,
 	}
 	if err := appReconciler.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "App")
+		os.Exit(1)
+	}
+	if err := (&controller.BuildRunReconciler{
+		Client:          mgr.GetClient(),
+		Scheme:          mgr.GetScheme(),
+		BuildClient:     stk.build,
+		GitClient:       stk.git,
+		RegistryBackend: stk.registry,
+		Builds:          buildLogStore,
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "Failed to create controller", "controller", "BuildRun")
 		os.Exit(1)
 	}
 	if err := (&controller.PlatformConfigReconciler{
@@ -430,6 +444,7 @@ func main() {
 	}
 	if err := (&controller.PreviewEnvironmentReconciler{
 		Client:          mgr.GetClient(),
+		APIReader:       mgr.GetAPIReader(),
 		Scheme:          mgr.GetScheme(),
 		BuildClient:     stk.build,
 		GitClient:       stk.git,
@@ -504,7 +519,7 @@ func main() {
 	}
 
 	apiServer := api.NewServer(mgr.GetClient(), clientset, dynamicClient, mgr.GetConfig(), authProvider, jwtHelper, uiSub, authz.NewNativePolicyEngine(mgr.GetClient()))
-	apiServer.SetBuildLogProvider(&appReconciler.Builds)
+	apiServer.SetBuildLogProvider(buildLogStore)
 	if mc, err := metricsv.NewForConfig(mgr.GetConfig()); err == nil {
 		apiServer.SetMetricsClient(mc.MetricsV1beta1())
 	} else {

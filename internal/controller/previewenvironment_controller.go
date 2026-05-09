@@ -20,18 +20,21 @@ import (
 	"context"
 	stderrors "errors"
 	"fmt"
+	"maps"
 	"strings"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/client-go/util/retry"
 	"k8s.io/utils/clock"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -47,10 +50,10 @@ import (
 	"github.com/mortise-org/mortise/internal/envstore"
 	"github.com/mortise-org/mortise/internal/git"
 	"github.com/mortise-org/mortise/internal/ingress"
+	"github.com/mortise-org/mortise/internal/previewsync"
 	"github.com/mortise-org/mortise/internal/registry"
 )
 
-const previewBuildTimeout = 30 * time.Minute
 const previewBuildPollInterval = 15 * time.Second
 
 // previewFinalizer gates PreviewEnvironment deletion so we can garbage-collect
@@ -61,14 +64,13 @@ const previewFinalizer = "mortise.dev/preview-finalizer"
 // PreviewEnvironmentReconciler reconciles a PreviewEnvironment object.
 type PreviewEnvironmentReconciler struct {
 	client.Client
+	APIReader       client.Reader
 	Scheme          *runtime.Scheme
 	Clock           clock.Clock
 	BuildClient     build.BuildClient
 	GitClient       git.GitClient
 	RegistryBackend registry.RegistryBackend
 	IngressProvider ingress.IngressProvider
-
-	builds buildTrackerStore
 }
 
 // +kubebuilder:rbac:groups=mortise.mortise.dev,resources=previewenvironments,verbs=get;list;watch;create;update;patch;delete
@@ -173,6 +175,16 @@ func (r *PreviewEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.R
 	if project.Spec.Preview == nil || !project.Spec.Preview.Enabled {
 		return ctrl.Result{}, r.setPreviewFailed(ctx, &pe, "PreviewDisabledOnProject", fmt.Sprintf("Project %q does not have preview.enabled: true", project.Name))
 	}
+	if pe.Spec.SourceEnv == "" {
+		sourceEnv := previewsync.ResolveSourceEnv(project)
+		if sourceEnv == "" {
+			return ctrl.Result{}, r.setPreviewFailed(ctx, &pe, "MissingSourceEnv", "preview source environment is empty and no default preview source environment could be resolved")
+		}
+		pe.Spec.SourceEnv = sourceEnv
+		if err := r.Update(ctx, &pe); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
 
 	if err := r.ensurePreviewNamespace(ctx, project, &pe, previewNs); err != nil {
 		return ctrl.Result{}, r.setPreviewFailed(ctx, &pe, "NamespaceCreateFailed", err.Error())
@@ -227,7 +239,17 @@ func (r *PreviewEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.R
 		Message:            "preview environment is live",
 		LastTransitionTime: metav1.NewTime(r.clock().Now()),
 	})
-	if err := r.Status().Update(ctx, &pe); err != nil {
+	if err := r.updatePreviewStatus(ctx, &pe, func(status *mortisev1alpha1.PreviewEnvironmentStatus) {
+		status.ExpiresAt = pe.Status.ExpiresAt
+		status.Phase = pe.Status.Phase
+		status.Image = pe.Status.Image
+		status.URL = pe.Status.URL
+		status.CurrentBuildRunName = pe.Status.CurrentBuildRunName
+		status.LastBuildRunName = pe.Status.LastBuildRunName
+		status.CurrentBuildRunRef = pe.Status.CurrentBuildRunRef
+		status.LastSuccessfulBuildRunRef = pe.Status.LastSuccessfulBuildRunRef
+		status.Conditions = pe.Status.Conditions
+	}); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -264,40 +286,6 @@ func (r *PreviewEnvironmentReconciler) reconcilePreviewBuild(ctx context.Context
 		}
 	}
 
-	key := types.NamespacedName{Namespace: pe.Namespace, Name: pe.Name}
-
-	// Check for an existing tracker.
-	if t := r.builds.get(key); t != nil {
-		phase, trackedRev, image, _, errMsg, _ := t.snapshot()
-		if trackedRev != revision {
-			t.mu.Lock()
-			cancel := t.cancel
-			t.mu.Unlock()
-			if cancel != nil {
-				cancel()
-			}
-			r.builds.delete(key)
-		} else {
-			switch phase {
-			case buildPhaseRunning:
-				return ctrl.Result{RequeueAfter: previewBuildPollInterval}, false, nil
-			case buildPhaseSucceeded:
-				r.builds.delete(key)
-				pe.Status.Image = image
-				pe.Status.Phase = mortisev1alpha1.PreviewPhaseBuilding
-				return ctrl.Result{}, true, nil
-			case buildPhaseFailed:
-				r.builds.delete(key)
-				return ctrl.Result{}, false, r.setPreviewFailed(ctx, pe, "BuildFailed", errMsg)
-			}
-		}
-	}
-
-	// Already built this revision and have a live image — skip rebuild.
-	if pe.Status.Image != "" && pe.Status.Phase == mortisev1alpha1.PreviewPhaseReady {
-		return ctrl.Result{}, true, nil
-	}
-
 	// Resolve git credentials via the parent app's owner token.
 	if app.Spec.Source.ProviderRef == "" {
 		return ctrl.Result{}, false, r.setPreviewFailed(ctx, pe, "MissingProviderRef", "parent App has no source.providerRef")
@@ -326,40 +314,35 @@ func (r *PreviewEnvironmentReconciler) reconcilePreviewBuild(ctx context.Context
 		return ctrl.Result{}, false, r.setPreviewFailed(ctx, pe, "PullTargetFailed", err.Error())
 	}
 
-	// Mark as Building.
-	pe.Status.Phase = mortisev1alpha1.PreviewPhaseBuilding
-	if err := r.Status().Update(ctx, pe); err != nil {
-		log.Error(err, "update status to Building")
+	run, err := r.ensurePreviewBuildRun(ctx, pe, app, token, revision, imageRef.Full, pullRef.Full, gp.Name)
+	if err != nil {
+		log.Error(err, "ensure preview buildrun failed")
+		return ctrl.Result{}, false, err
 	}
 
-	// Launch background build.
-	buildCtx, cancel := context.WithTimeout(context.Background(), previewBuildTimeout)
-	tracker := &buildTracker{
-		revision: revision,
-		phase:    buildPhaseRunning,
-		cancel:   cancel,
+	projectPreviewBuildRunStatus(pe, run)
+	switch run.Status.Phase {
+	case mortisev1alpha1.BuildRunPhaseSucceeded:
+		pe.Status.Image = run.Status.Image
+		pe.Status.Phase = mortisev1alpha1.PreviewPhaseBuilding
+		return ctrl.Result{}, true, nil
+	case mortisev1alpha1.BuildRunPhaseFailed:
+		return ctrl.Result{}, false, r.setPreviewFailed(ctx, pe, firstNonEmpty(run.Status.FailureReason, "BuildFailed"), run.Status.FailureMessage)
+	default:
+		pe.Status.Phase = mortisev1alpha1.PreviewPhaseBuilding
+		if err := r.updatePreviewStatus(ctx, pe, func(status *mortisev1alpha1.PreviewEnvironmentStatus) {
+			status.ExpiresAt = pe.Status.ExpiresAt
+			status.Phase = pe.Status.Phase
+			status.Image = pe.Status.Image
+			status.CurrentBuildRunName = pe.Status.CurrentBuildRunName
+			status.LastBuildRunName = pe.Status.LastBuildRunName
+			status.CurrentBuildRunRef = pe.Status.CurrentBuildRunRef
+			status.LastSuccessfulBuildRunRef = pe.Status.LastSuccessfulBuildRunRef
+		}); err != nil {
+			log.Error(err, "update status to Building")
+		}
+		return ctrl.Result{RequeueAfter: previewBuildPollInterval}, false, nil
 	}
-	r.builds.set(key, tracker)
-
-	go runBuild(buildCtx, cancel, tracker, buildParams{
-		appName:      pe.Spec.AppRef,
-		namespace:    pe.Namespace,
-		repo:         app.Spec.Source.Repo,
-		branch:       pe.Spec.PullRequest.Branch,
-		token:        token,
-		path:         app.Spec.Source.Path,
-		dockerfile:   previewDockerfilePath(app),
-		buildArgs:    previewBuildArgs(app),
-		buildContext: buildContextOf(app),
-		imageRef:     imageRef,
-		pullImageRef: pullRef,
-	}, r.GitClient, r.BuildClient, buildRunnerOptions{
-		logName:      "preview-build",
-		tmpDirPrefix: "mortise-preview-build-*",
-		appendLog:    false,
-	})
-
-	return ctrl.Result{RequeueAfter: previewBuildPollInterval}, false, nil
 }
 
 func (r *PreviewEnvironmentReconciler) reconcilePreviewDeployment(ctx context.Context, pe *mortisev1alpha1.PreviewEnvironment, app *mortisev1alpha1.App, previewNs string) error {
@@ -423,8 +406,125 @@ func (r *PreviewEnvironmentReconciler) reconcilePreviewDeployment(ctx context.Co
 		return err
 	}
 
-	existing.Spec = desired.Spec
-	return r.Update(ctx, &existing)
+	if len(desired.Spec.Template.Spec.Containers) == 0 {
+		return fmt.Errorf("desired Deployment %s/%s has no containers", previewNs, name)
+	}
+	desiredContainer := desired.Spec.Template.Spec.Containers[0]
+
+	return envstore.UpdateWithConflictRetry(ctx, r.Client, types.NamespacedName{Name: name, Namespace: previewNs}, func() *appsv1.Deployment {
+		return &appsv1.Deployment{}
+	}, func(existing *appsv1.Deployment) (bool, error) {
+		if len(existing.Spec.Template.Spec.Containers) == 0 {
+			return false, fmt.Errorf("existing Deployment %s/%s has no containers", previewNs, name)
+		}
+		existingContainer := existing.Spec.Template.Spec.Containers[0]
+
+		needsUpdate := false
+		if existing.Spec.Replicas == nil || *existing.Spec.Replicas != *desired.Spec.Replicas {
+			needsUpdate = true
+		}
+		if len(existing.Spec.Template.Spec.Containers) != len(desired.Spec.Template.Spec.Containers) {
+			needsUpdate = true
+		}
+		if existingContainer.Name != desiredContainer.Name {
+			needsUpdate = true
+		}
+		if existingContainer.Image != desiredContainer.Image {
+			needsUpdate = true
+		}
+		if !equality.Semantic.DeepEqual(existingContainer.Env, desiredContainer.Env) {
+			needsUpdate = true
+		}
+		if !equality.Semantic.DeepEqual(existingContainer.Command, desiredContainer.Command) {
+			needsUpdate = true
+		}
+		if !equality.Semantic.DeepEqual(existingContainer.Args, desiredContainer.Args) {
+			needsUpdate = true
+		}
+		if !equality.Semantic.DeepEqual(existingContainer.EnvFrom, desiredContainer.EnvFrom) {
+			needsUpdate = true
+		}
+		if !equality.Semantic.DeepEqual(existingContainer.Ports, desiredContainer.Ports) {
+			needsUpdate = true
+		}
+		if !equality.Semantic.DeepEqual(existingContainer.VolumeMounts, desiredContainer.VolumeMounts) {
+			needsUpdate = true
+		}
+		if !equality.Semantic.DeepEqual(existingContainer.Resources, desiredContainer.Resources) {
+			needsUpdate = true
+		}
+		if !equality.Semantic.DeepEqual(existingContainer.LivenessProbe, desiredContainer.LivenessProbe) {
+			needsUpdate = true
+		}
+		if !equality.Semantic.DeepEqual(existingContainer.ReadinessProbe, desiredContainer.ReadinessProbe) {
+			needsUpdate = true
+		}
+		if !equality.Semantic.DeepEqual(existingContainer.StartupProbe, desiredContainer.StartupProbe) {
+			needsUpdate = true
+		}
+		if !securityContextsEqual(
+			existing.Spec.Template.Spec.SecurityContext,
+			desired.Spec.Template.Spec.SecurityContext,
+			existingContainer.SecurityContext,
+			desiredContainer.SecurityContext,
+		) {
+			needsUpdate = true
+		}
+		if !equality.Semantic.DeepEqual(existing.Spec.Selector, desired.Spec.Selector) {
+			needsUpdate = true
+		}
+		if !maps.Equal(existing.Spec.Template.ObjectMeta.Labels, desired.Spec.Template.ObjectMeta.Labels) {
+			needsUpdate = true
+		}
+		if !maps.Equal(existing.Spec.Template.ObjectMeta.Annotations, desired.Spec.Template.ObjectMeta.Annotations) {
+			needsUpdate = true
+		}
+		if existing.Spec.Template.Spec.ServiceAccountName != desired.Spec.Template.Spec.ServiceAccountName {
+			needsUpdate = true
+		}
+		if existing.Spec.Template.Spec.DeprecatedServiceAccount != desired.Spec.Template.Spec.DeprecatedServiceAccount {
+			needsUpdate = true
+		}
+		if len(existing.Spec.Template.Spec.InitContainers) != len(desired.Spec.Template.Spec.InitContainers) {
+			needsUpdate = true
+		}
+		if !equality.Semantic.DeepEqual(normalizePreviewVolumes(existing.Spec.Template.Spec.Volumes), normalizePreviewVolumes(desired.Spec.Template.Spec.Volumes)) {
+			needsUpdate = true
+		}
+		if !maps.Equal(existing.Labels, desired.Labels) {
+			needsUpdate = true
+		}
+
+		if !needsUpdate {
+			return false, nil
+		}
+
+		existing.Labels = desired.Labels
+		existing.Spec.Replicas = desired.Spec.Replicas
+		existing.Spec.Selector = desired.Spec.Selector
+		existing.Spec.Template.ObjectMeta.Labels = desired.Spec.Template.ObjectMeta.Labels
+		existing.Spec.Template.ObjectMeta.Annotations = desired.Spec.Template.ObjectMeta.Annotations
+		existing.Spec.Template.Spec.ServiceAccountName = desired.Spec.Template.Spec.ServiceAccountName
+		existing.Spec.Template.Spec.DeprecatedServiceAccount = desired.Spec.Template.Spec.DeprecatedServiceAccount
+		existing.Spec.Template.Spec.InitContainers = desired.Spec.Template.Spec.InitContainers
+		existing.Spec.Template.Spec.Volumes = normalizePreviewVolumes(desired.Spec.Template.Spec.Volumes)
+		existing.Spec.Template.Spec.SecurityContext = nil
+		existing.Spec.Template.Spec.Containers = existing.Spec.Template.Spec.Containers[:1]
+		existing.Spec.Template.Spec.Containers[0].Name = desiredContainer.Name
+		existing.Spec.Template.Spec.Containers[0].Image = desiredContainer.Image
+		existing.Spec.Template.Spec.Containers[0].Env = desiredContainer.Env
+		existing.Spec.Template.Spec.Containers[0].Command = desiredContainer.Command
+		existing.Spec.Template.Spec.Containers[0].Args = desiredContainer.Args
+		existing.Spec.Template.Spec.Containers[0].EnvFrom = desiredContainer.EnvFrom
+		existing.Spec.Template.Spec.Containers[0].Ports = desiredContainer.Ports
+		existing.Spec.Template.Spec.Containers[0].VolumeMounts = desiredContainer.VolumeMounts
+		existing.Spec.Template.Spec.Containers[0].Resources = desiredContainer.Resources
+		existing.Spec.Template.Spec.Containers[0].LivenessProbe = desiredContainer.LivenessProbe
+		existing.Spec.Template.Spec.Containers[0].ReadinessProbe = desiredContainer.ReadinessProbe
+		existing.Spec.Template.Spec.Containers[0].StartupProbe = desiredContainer.StartupProbe
+		existing.Spec.Template.Spec.Containers[0].SecurityContext = nil
+		return true, nil
+	})
 }
 
 // reconcilePreviewEnvSecret builds the preview's {app}-env and shared-env
@@ -451,10 +551,12 @@ func (r *PreviewEnvironmentReconciler) reconcilePreviewEnvSecret(ctx context.Con
 		"mortise.dev/pr-number":        fmt.Sprintf("%d", pe.Spec.PullRequest.Number),
 	}
 
-	// Copy shared-env from source env namespace into the preview namespace.
-	sourceShared, err := store.GetShared(ctx, sourceEnvNs)
+	// Copy shared vars from the control-namespace source of truth into the
+	// preview namespace. The source env namespace only carries a materialized
+	// cache, which may lag behind the control-ns Secret under load.
+	sourceShared, err := r.readSharedSource(ctx, pe.Namespace)
 	if err != nil {
-		return fmt.Errorf("read shared-env from source env %q: %w", sourceEnvNs, err)
+		return fmt.Errorf("read shared-vars from control ns %q: %w", pe.Namespace, err)
 	}
 	if len(sourceShared) > 0 {
 		if err := store.SetShared(ctx, previewNs, sourceShared, labels); err != nil {
@@ -467,7 +569,7 @@ func (r *PreviewEnvironmentReconciler) reconcilePreviewEnvSecret(ctx context.Con
 	}
 
 	// Read inherited per-app env vars from the source environment.
-	inherited, err := store.Get(ctx, sourceEnvNs, app.Name)
+	inherited, err := r.readAppEnvSource(ctx, sourceEnvNs, app.Name)
 	if err != nil {
 		return fmt.Errorf("read app env vars from source env %q: %w", sourceEnvNs, err)
 	}
@@ -671,10 +773,24 @@ func (r *PreviewEnvironmentReconciler) setPreviewFailed(ctx context.Context, pe 
 		Message:            msg,
 		LastTransitionTime: metav1.NewTime(r.clock().Now()),
 	})
-	if err := r.Status().Update(ctx, pe); err != nil {
+	if err := r.updatePreviewStatus(ctx, pe, func(status *mortisev1alpha1.PreviewEnvironmentStatus) {
+		status.Phase = pe.Status.Phase
+		status.Conditions = pe.Status.Conditions
+	}); err != nil {
 		log.Error(err, "update failed preview status")
 	}
 	return fmt.Errorf("%s: %s", reason, msg)
+}
+
+func (r *PreviewEnvironmentReconciler) updatePreviewStatus(ctx context.Context, pe *mortisev1alpha1.PreviewEnvironment, mutate func(status *mortisev1alpha1.PreviewEnvironmentStatus)) error {
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var fresh mortisev1alpha1.PreviewEnvironment
+		if err := r.Get(ctx, types.NamespacedName{Name: pe.Name, Namespace: pe.Namespace}, &fresh); err != nil {
+			return err
+		}
+		mutate(&fresh.Status)
+		return r.Status().Update(ctx, &fresh)
+	})
 }
 
 func (r *PreviewEnvironmentReconciler) clock() clock.Clock {
@@ -715,11 +831,25 @@ func (r *PreviewEnvironmentReconciler) SetupWithManager(mgr ctrl.Manager) error 
 			Namespace: constants.ControlNamespace(projectName),
 		}}}
 	})
+	enqueuePEFromBuildRun := handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []reconcile.Request {
+		br, ok := obj.(*mortisev1alpha1.BuildRun)
+		if !ok {
+			return nil
+		}
+		if br.Spec.TargetRef.Kind != mortisev1alpha1.BuildRunTargetPreviewEnvironment || br.Spec.TargetRef.Name == "" || br.Namespace == "" {
+			return nil
+		}
+		return []reconcile.Request{{NamespacedName: types.NamespacedName{
+			Name:      br.Spec.TargetRef.Name,
+			Namespace: br.Namespace,
+		}}}
+	})
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&mortisev1alpha1.PreviewEnvironment{}).
 		Watches(&appsv1.Deployment{}, enqueuePEFromManagedResource).
 		Watches(&corev1.Service{}, enqueuePEFromManagedResource).
 		Watches(&networkingv1.Ingress{}, enqueuePEFromManagedResource).
+		Watches(&mortisev1alpha1.BuildRun{}, enqueuePEFromBuildRun).
 		Named("previewenvironment").
 		Complete(r)
 }
@@ -844,6 +974,42 @@ func previewLabels(pe *mortisev1alpha1.PreviewEnvironment) map[string]string {
 		"mortise.dev/pr-number":        fmt.Sprintf("%d", pe.Spec.PullRequest.Number),
 		constants.ProjectLabel:         projectName,
 	}
+}
+
+func normalizePreviewVolumes(volumes []corev1.Volume) []corev1.Volume {
+	if len(volumes) == 0 {
+		return nil
+	}
+	return volumes
+}
+
+func (r *PreviewEnvironmentReconciler) readSharedSource(ctx context.Context, controlNs string) ([]envstore.Env, error) {
+	if r.APIReader == nil {
+		store := &envstore.Store{Client: r.Client}
+		return store.GetSharedSource(ctx, controlNs)
+	}
+
+	var secret corev1.Secret
+	if err := r.APIReader.Get(ctx, types.NamespacedName{Namespace: controlNs, Name: envstore.SharedVarsSourceName}, &secret); err != nil {
+		if errors.IsNotFound(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return envstore.SecretToEnvs(&secret), nil
+}
+
+func (r *PreviewEnvironmentReconciler) readAppEnvSource(ctx context.Context, namespace, appName string) ([]envstore.Env, error) {
+	if r.APIReader == nil {
+		store := &envstore.Store{Client: r.Client}
+		return store.Get(ctx, namespace, appName)
+	}
+
+	var secret corev1.Secret
+	if err := r.APIReader.Get(ctx, types.NamespacedName{Namespace: namespace, Name: envstore.AppEnvSecretName(appName)}, &secret); err != nil {
+		return nil, err
+	}
+	return envstore.SecretToEnvs(&secret), nil
 }
 
 func hasOwnerRef(pe *mortisev1alpha1.PreviewEnvironment, uid types.UID) bool {

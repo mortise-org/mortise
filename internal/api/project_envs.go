@@ -9,6 +9,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -449,9 +450,21 @@ func (s *Server) cloneAppOverrides(ctx context.Context, projectName, ns, sourceN
 const maxConflictRetries = 5
 
 func (s *Server) cloneEnvToApp(ctx context.Context, ns, appName, sourceName, targetName, sourceEnvNs string, store *envstore.Store) error {
-	secretVars, err := store.Get(ctx, sourceEnvNs, appName)
-	if err != nil {
-		return fmt.Errorf("read source env vars for app %q: %w", appName, err)
+	var secretVars []envstore.Env
+	if s.clientset != nil {
+		secret, err := s.clientset.CoreV1().Secrets(sourceEnvNs).Get(ctx, envstore.AppEnvSecretName(appName), metav1.GetOptions{})
+		if err == nil {
+			secretVars = envstore.SecretToEnvs(secret)
+		} else if !errors.IsNotFound(err) {
+			return fmt.Errorf("read source env vars for app %q: %w", appName, err)
+		}
+	}
+	if secretVars == nil {
+		var err error
+		secretVars, err = store.Get(ctx, sourceEnvNs, appName)
+		if err != nil {
+			return fmt.Errorf("read source env vars for app %q: %w", appName, err)
+		}
 	}
 
 	for attempt := range maxConflictRetries {

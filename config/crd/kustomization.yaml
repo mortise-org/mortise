@@ -3,6 +3,7 @@
 # It should be run by config/default
 resources:
 - bases/mortise.mortise.dev_apps.yaml
+- bases/mortise.mortise.dev_buildruns.yaml
 - bases/mortise.mortise.dev_platformconfigs.yaml
 - bases/mortise.mortise.dev_gitproviders.yaml
 - bases/mortise.mortise.dev_previewenvironments.yaml
