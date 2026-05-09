@@ -79,6 +79,31 @@ func TestSSETokenRedeemAndSingleUse(t *testing.T) {
 	}
 }
 
+func TestIssueSSETokenRejectsRevokedUser(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	ctx := context.Background()
+	_ = k8sClient.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "mortise-system"}})
+
+	authProvider := auth.NewNativeAuthProvider(k8sClient)
+	jwtHelper := auth.NewJWTHelper(k8sClient)
+	if err := authProvider.CreateUser(ctx, "revoked@example.com", "pass1234", auth.RoleAdmin); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	principal, _ := authProvider.Authenticate(ctx, auth.Credentials{Email: "revoked@example.com", Password: "pass1234"})
+	token, _ := jwtHelper.GenerateToken(ctx, principal)
+	if err := authProvider.RevokeUser(ctx, "revoked@example.com"); err != nil {
+		t.Fatalf("revoke user: %v", err)
+	}
+
+	srv := api.NewServer(k8sClient, fake.NewClientset(), nil, nil, authProvider, jwtHelper, nil, authz.NewNativePolicyEngine(k8sClient))
+	h := srv.Handler()
+
+	w := doRequestWithToken(h, http.MethodPost, "/api/auth/sse-token", nil, token)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for revoked user SSE token issue, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
 func TestRefreshToken(t *testing.T) {
 	k8sClient := setupEnvtest(t)
 	ctx := context.Background()

@@ -54,6 +54,9 @@ class MortiseStore {
 
 	constructor() {
 		if (browser) {
+			window.addEventListener('mortise:auth-required', () => {
+				this.logout();
+			});
 			this.token = localStorage.getItem('mortise_token');
 			this.currentProject = localStorage.getItem('mortise_project');
 			this.viewMode =

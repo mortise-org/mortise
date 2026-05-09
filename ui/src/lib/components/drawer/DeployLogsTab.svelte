@@ -1,6 +1,6 @@
 <script lang="ts">
-	import { onMount, untrack } from 'svelte';
-	import { api } from '$lib/api';
+	import { onDestroy, untrack } from 'svelte';
+	import { AuthRequiredError, api } from '$lib/api';
 	import { store } from '$lib/store.svelte';
 	import { Loader2, Search } from 'lucide-svelte';
 	import type { App, LogLineEvent, Pod } from '$lib/types';
@@ -36,10 +36,10 @@
 	let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 	let streamKey = '';
 	let disconnected = $state(false);
-	let intentionalClose = false;
 	let lastMessageTime = 0;
 	let reconnectDelay = 2000;
 	let logContainer: HTMLElement | null = $state(null);
+	let connectionID = 0;
 
 	type Mode = 'live' | 'history';
 	type TimeRange = '1h' | '6h' | '24h' | '7d';
@@ -63,9 +63,9 @@
 		if (m === mode) return;
 		mode = m;
 		if (m === 'live') {
-			connectLive(false);
+			void connectLive(false);
 		} else {
-			closeStream(true);
+			closeStream();
 			if (historyLines.length === 0) fetchHistory(true);
 		}
 	}
@@ -113,17 +113,32 @@
 		}
 	}
 
-	function closeStream(manual = true) {
-		if (manual) intentionalClose = true;
-		if (es) {
-			es.close();
-			es = null;
-		}
-		streamKey = '';
+	function clearReconnectTimer() {
 		if (reconnectTimer) {
 			clearTimeout(reconnectTimer);
 			reconnectTimer = null;
 		}
+	}
+
+	function closeEventSource(target?: EventSource) {
+		if (target) {
+			target.close();
+			if (es === target) {
+				es = null;
+			}
+			return;
+		}
+		if (es) {
+			es.close();
+			es = null;
+		}
+	}
+
+	function closeStream() {
+		connectionID += 1;
+		closeEventSource();
+		streamKey = '';
+		clearReconnectTimer();
 	}
 
 	function parseEvent(data: string): LogLineEvent | null {
@@ -145,62 +160,90 @@
 
 	async function connectLive(fresh = false) {
 		if (isBuilding || pods.length === 0) {
-			closeStream(true);
+			closeStream();
 			return;
 		}
 
 		const key = `${selectedEnv}|${selectedPod}|${previous ? '1' : '0'}`;
 		if (es && streamKey === key) return;
 
-		closeStream(true);
+		const id = ++connectionID;
+		clearReconnectTimer();
+		closeEventSource();
 		streamKey = key;
 		disconnected = false;
-		intentionalClose = false;
 		lastMessageTime = 0;
 		reconnectDelay = 2000;
 		if (fresh) {
 			events = [];
 		}
 
-		const url = await api.logsURL(project, app.metadata.name, {
-			env: selectedEnv,
-			follow: true,
-			tail: 200,
-			pod: selectedPod || undefined,
-			previous: selectedPod && previous ? true : undefined,
-		});
+		try {
+			const url = await api.logsURL(project, app.metadata.name, {
+				env: selectedEnv,
+				follow: true,
+				tail: 200,
+				pod: selectedPod || undefined,
+				previous: selectedPod && previous ? true : undefined,
+			});
+			if (id !== connectionID || streamKey !== key || mode !== 'live') return;
 
-		const openTime = Date.now();
-		es = new EventSource(url);
-		es.onopen = () => {
-			disconnected = false;
-			reconnectDelay = 2000;
-		};
-		es.onmessage = (e: MessageEvent) => {
-			const evt = parseEvent(e.data as string);
-			if (!evt) return;
-			lastMessageTime = Date.now();
-			const next = events.length >= MAX_EVENTS ? events.slice(-(MAX_EVENTS - 1)) : events.slice();
-			next.push(evt);
-			events = next;
-			if (liveFollow) setTimeout(scrollToBottom, 0);
-		};
-		es.onerror = () => {
-			if (intentionalClose || streamKey !== key) return;
-			const receivedData = lastMessageTime > openTime;
-			closeStream(false);
-			if (!receivedData) {
-				disconnected = true;
-				if (selectedPod) void loadPods();
+			const next = new EventSource(url);
+			if (id !== connectionID || streamKey !== key || mode !== 'live') {
+				next.close();
+				return;
 			}
-			if (!isBuilding && pods.length > 0) {
-				reconnectTimer = setTimeout(() => {
-					reconnectTimer = null;
-					connectLive(false);
-				}, reconnectDelay);
-				reconnectDelay = Math.min(reconnectDelay * 2, 30000);
+
+			const openTime = Date.now();
+			es = next;
+			next.onopen = () => {
+				if (id !== connectionID || es !== next) {
+					next.close();
+					return;
+				}
+				disconnected = false;
+				reconnectDelay = 2000;
+			};
+			next.onmessage = (e: MessageEvent) => {
+				if (id !== connectionID || es !== next) return;
+				const evt = parseEvent(e.data as string);
+				if (!evt) return;
+				lastMessageTime = Date.now();
+				const nextEvents =
+					events.length >= MAX_EVENTS ? events.slice(-(MAX_EVENTS - 1)) : events.slice();
+				nextEvents.push(evt);
+				events = nextEvents;
+				if (liveFollow) setTimeout(scrollToBottom, 0);
+			};
+			next.onerror = () => {
+				if (id !== connectionID || es !== next) return;
+				const receivedData = lastMessageTime > openTime;
+				closeEventSource(next);
+				if (!receivedData) {
+					disconnected = true;
+					if (selectedPod) void loadPods();
+				}
+				if (!isBuilding && pods.length > 0 && mode === 'live') {
+					reconnectTimer = setTimeout(() => {
+						reconnectTimer = null;
+						void connectLive(false);
+					}, reconnectDelay);
+					reconnectDelay = Math.min(reconnectDelay * 2, 30000);
+				}
+			};
+		} catch (error) {
+			if (id !== connectionID || streamKey !== key || mode !== 'live') return;
+			disconnected = true;
+			if (error instanceof AuthRequiredError) {
+				closeStream();
+				return;
 			}
-		};
+			reconnectTimer = setTimeout(() => {
+				reconnectTimer = null;
+				void connectLive(false);
+			}, reconnectDelay);
+			reconnectDelay = Math.min(reconnectDelay * 2, 30000);
+		}
 	}
 
 	async function loadPods() {
@@ -223,7 +266,9 @@
 
 	$effect(() => {
 		if (!podsLoaded) void loadPods();
-		untrack(() => { if (mode === 'live') connectLive(false); });
+		untrack(() => {
+			if (mode === 'live') void connectLive(false);
+		});
 	});
 
 	$effect(() => {
@@ -254,7 +299,7 @@
 		void previous;
 		untrack(() => {
 			events = [];
-			if (mode === 'live') connectLive(false);
+			if (mode === 'live') void connectLive(false);
 		});
 	});
 
@@ -262,8 +307,8 @@
 		if (!selectedPod && previous) previous = false;
 	});
 
-	onMount(() => {
-		return () => closeStream(true);
+	onDestroy(() => {
+		closeStream();
 	});
 
 	function clearLogs() {

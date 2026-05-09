@@ -1,3 +1,4 @@
+import { browser } from '$app/environment';
 import { goto } from '$app/navigation';
 import type {
 	App,
@@ -52,6 +53,23 @@ function tokenExpiresAt(): number | null {
 
 let refreshPromise: Promise<void> | null = null;
 
+export class AuthRequiredError extends Error {
+	constructor(message = 'Unauthorized') {
+		super(message);
+		this.name = 'AuthRequiredError';
+	}
+}
+
+function forceReauth(message = 'Unauthorized'): never {
+	if (browser) {
+		localStorage.removeItem('mortise_token');
+		localStorage.removeItem('mortise_user');
+		window.dispatchEvent(new CustomEvent('mortise:auth-required'));
+		void goto('/login');
+	}
+	throw new AuthRequiredError(message);
+}
+
 async function maybeRefreshToken(): Promise<void> {
 	const exp = tokenExpiresAt();
 	if (!exp) return;
@@ -69,6 +87,9 @@ async function maybeRefreshToken(): Promise<void> {
 					Authorization: `Bearer ${token}`
 				}
 			});
+			if (res.status === 401) {
+				forceReauth();
+			}
 			if (res.ok) {
 				const data = await res.json();
 				if (data.token) {
@@ -78,8 +99,11 @@ async function maybeRefreshToken(): Promise<void> {
 					}
 				}
 			}
-		} catch {
-			// refresh is best-effort; 401 handling below will redirect to login
+		} catch (error) {
+			if (error instanceof AuthRequiredError) {
+				throw error;
+			}
+			// refresh is best-effort for transient failures.
 		} finally {
 			refreshPromise = null;
 		}
@@ -106,9 +130,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 		const res = await fetch(`${BASE}${path}`, { ...init, headers });
 
 		if (res.status === 401) {
-			localStorage.removeItem('mortise_token');
-			goto('/login');
-			throw new Error('Unauthorized');
+			forceReauth();
 		}
 
 		if (res.status === 403) {
@@ -148,23 +170,30 @@ async function fetchSSEToken(): Promise<string> {
 	await maybeRefreshToken();
 
 	const token = localStorage.getItem('mortise_token');
-	if (!token) return '';
-	try {
-		const res = await fetch(`${BASE}/auth/sse-token`, {
-			method: 'POST',
-			headers: {
-				'Content-Type': 'application/json',
-				Authorization: `Bearer ${token}`
-			}
-		});
-		if (res.ok) {
-			const data = await res.json();
-			return data.token ?? '';
-		}
-	} catch {
-		// fall through
+	if (!token) {
+		forceReauth();
 	}
-	return '';
+
+	const res = await fetch(`${BASE}/auth/sse-token`, {
+		method: 'POST',
+		headers: {
+			'Content-Type': 'application/json',
+			Authorization: `Bearer ${token}`
+		}
+	});
+	if (res.status === 401) {
+		forceReauth();
+	}
+	if (!res.ok) {
+		const body = await res.json().catch(() => ({ error: res.statusText }));
+		throw new Error(body.error || 'Failed to acquire SSE token');
+	}
+
+	const data = await res.json();
+	if (typeof data.token !== 'string' || data.token === '') {
+		throw new Error('Failed to acquire SSE token');
+	}
+	return data.token;
 }
 
 function enc(s: string): string {

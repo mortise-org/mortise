@@ -81,9 +81,9 @@
 		}
 	});
 
-	async function connectSSE() {
+	function connectSSE() {
 		eventStream?.close();
-		eventStream = await connectProjectEvents(projectName, {
+		eventStream = connectProjectEvents(projectName, {
 			onAppUpdated: (app) => {
 				const idx = apps.findIndex(a => a.metadata.name === app.metadata.name);
 				if (idx >= 0) {

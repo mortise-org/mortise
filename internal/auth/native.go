@@ -82,13 +82,18 @@ func (n *NativeAuthProvider) Principal(ctx context.Context, session SessionToken
 	if err := n.client.Get(ctx, types.NamespacedName{
 		Name:      userSecretName(principal.Email),
 		Namespace: namespace,
-	}, &secret); err == nil {
-		if raw, ok := secret.Data["password_gen"]; ok {
-			var currentGen int64
-			fmt.Sscanf(string(raw), "%d", &currentGen)
-			if tokenGen < currentGen {
-				return Principal{}, fmt.Errorf("session invalidated by password change")
-			}
+	}, &secret); err != nil {
+		if errors.IsNotFound(err) {
+			return Principal{}, fmt.Errorf("user not found")
+		}
+		return Principal{}, fmt.Errorf("reading user secret: %w", err)
+	}
+
+	if raw, ok := secret.Data["password_gen"]; ok {
+		var currentGen int64
+		fmt.Sscanf(string(raw), "%d", &currentGen)
+		if tokenGen < currentGen {
+			return Principal{}, fmt.Errorf("session invalidated by password change")
 		}
 	}
 
