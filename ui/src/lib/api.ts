@@ -36,60 +36,77 @@ const BASE = '/api';
 let refreshPromise: Promise<boolean> | null = null;
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-	const token = localStorage.getItem('mortise_token');
-	const headers: Record<string, string> = {
-		'Content-Type': 'application/json',
-		...(init?.headers as Record<string, string>)
-	};
-	if (token) {
-		headers['Authorization'] = `Bearer ${token}`;
-	}
+	const method = init?.method?.toUpperCase();
+	const retryable = method === 'PUT' || method === 'PATCH';
+	const maxRetries = retryable ? 3 : 0;
 
-	const res = await fetch(`${BASE}${path}`, { ...init, headers });
-
-	if (res.status === 401 && token) {
-		if (!refreshPromise) {
-			refreshPromise = tryRefreshToken().finally(() => {
-				refreshPromise = null;
-			});
+	for (let attempt = 0; ; attempt++) {
+		const token = localStorage.getItem('mortise_token');
+		const headers: Record<string, string> = {
+			'Content-Type': 'application/json',
+			...(init?.headers as Record<string, string>)
+		};
+		if (token) {
+			headers['Authorization'] = `Bearer ${token}`;
 		}
-		const refreshed = await refreshPromise;
-		if (refreshed) {
-			headers['Authorization'] = `Bearer ${localStorage.getItem('mortise_token')}`;
-			const retry = await fetch(`${BASE}${path}`, { ...init, headers });
-			if (!retry.ok) {
-				if (retry.status === 401) {
-					localStorage.removeItem('mortise_token');
-					goto('/login');
-					throw new Error('Unauthorized');
-				}
-				const body = await retry.json().catch(() => ({ error: retry.statusText }));
-				throw new Error(body.error || retry.statusText);
+		const res = await fetch(`${BASE}${path}`, { ...init, headers });
+
+		if (res.status === 401 && token) {
+			if (!refreshPromise) {
+				refreshPromise = tryRefreshToken().finally(() => {
+					refreshPromise = null;
+				});
 			}
-			if (retry.status === 204) return undefined as T;
-			const text = await retry.text();
-			if (!text) return undefined as T;
-			return JSON.parse(text) as T;
+			const refreshed = await refreshPromise;
+			if (refreshed) {
+				headers['Authorization'] = `Bearer ${localStorage.getItem('mortise_token')}`;
+				const retry = await fetch(`${BASE}${path}`, { ...init, headers });
+				if (!retry.ok) {
+					if (retry.status === 401) {
+						localStorage.removeItem('mortise_token');
+						goto('/login');
+						throw new Error('Unauthorized');
+					}
+					const body = await retry.json().catch(() => ({ error: retry.statusText }));
+					throw new Error(body.error || retry.statusText);
+				}
+				if (retry.status === 204) return undefined as T;
+				const text = await retry.text();
+				if (!text) return undefined as T;
+				return JSON.parse(text) as T;
+			}
+			localStorage.removeItem('mortise_token');
+			goto('/login');
+			throw new Error('Unauthorized');
 		}
-		localStorage.removeItem('mortise_token');
-		goto('/login');
-		throw new Error('Unauthorized');
-	}
 
-	if (!res.ok) {
-		const body = await res.json().catch(() => ({ error: res.statusText }));
-		throw new Error(body.error || res.statusText);
-	}
+		if (res.status === 401) {
+			localStorage.removeItem('mortise_token');
+			goto('/login');
+			throw new Error('Unauthorized');
+		}
 
-	// 204s and empty bodies - return undefined as T.
-	if (res.status === 204) {
-		return undefined as T;
+		if (!res.ok) {
+			const body = await res.json().catch(() => ({ error: res.statusText }));
+			const msg = body.error || res.statusText;
+
+			if (attempt < maxRetries && res.status === 409) {
+				await new Promise((r) => setTimeout(r, 250 * (attempt + 1)));
+				continue;
+			}
+
+			throw new Error(msg);
+		}
+
+		if (res.status === 204) {
+			return undefined as T;
+		}
+		const text = await res.text();
+		if (!text) {
+			return undefined as T;
+		}
+		return JSON.parse(text) as T;
 	}
-	const text = await res.text();
-	if (!text) {
-		return undefined as T;
-	}
-	return JSON.parse(text) as T;
 }
 
 async function tryRefreshToken(): Promise<boolean> {
