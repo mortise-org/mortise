@@ -855,6 +855,10 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 		},
 	}
 
+	if !disableDefaultSecurityContext(app) && len(containers) > 0 {
+		containers[0].SecurityContext = restrictedContainerSecurityContext()
+	}
+
 	resources, err := toResourceRequirements(r.effectiveResources(ctx, env))
 	if err != nil {
 		return fmt.Errorf("resources: %w", err)
@@ -919,6 +923,7 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 				},
 				Spec: corev1.PodSpec{
 					ServiceAccountName: app.Name,
+					SecurityContext:    restrictedPodSecurityContext(app),
 					Containers:         containers,
 					Volumes:            volumes,
 				},
@@ -959,6 +964,9 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 		}
 	}
 
+	if len(desired.Spec.Template.Spec.Containers) == 0 {
+		return fmt.Errorf("desired Deployment %s/%s has no containers", envNs, name)
+	}
 	desiredContainer := desired.Spec.Template.Spec.Containers[0]
 
 	// Retry loop handles optimistic-locking conflicts: another writer (e.g.
@@ -972,6 +980,9 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 		// fields (securityContext, serviceAccount, terminationMessagePolicy, etc.)
 		// that make our desired spec never match, triggering an infinite
 		// reconcile loop via the Deployment watch.
+		if len(existing.Spec.Template.Spec.Containers) == 0 {
+			return fmt.Errorf("existing Deployment %s/%s has no containers", envNs, name)
+		}
 		existingContainer := existing.Spec.Template.Spec.Containers[0]
 
 		needsUpdate := false
@@ -1005,6 +1016,9 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 		if !equality.Semantic.DeepEqual(existingContainer.StartupProbe, desiredContainer.StartupProbe) {
 			needsUpdate = true
 		}
+		if securityContextChanged(existing.Spec.Template.Spec.SecurityContext, desired.Spec.Template.Spec.SecurityContext, existingContainer.SecurityContext, desiredContainer.SecurityContext) {
+			needsUpdate = true
+		}
 		if existing.Spec.Replicas == nil || *existing.Spec.Replicas != *desired.Spec.Replicas {
 			needsUpdate = true
 		}
@@ -1032,6 +1046,8 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 		existing.Spec.Template.Spec.Containers[0].LivenessProbe = desiredContainer.LivenessProbe
 		existing.Spec.Template.Spec.Containers[0].ReadinessProbe = desiredContainer.ReadinessProbe
 		existing.Spec.Template.Spec.Containers[0].StartupProbe = desiredContainer.StartupProbe
+		existing.Spec.Template.Spec.Containers[0].SecurityContext = desiredContainer.SecurityContext
+		existing.Spec.Template.Spec.SecurityContext = desired.Spec.Template.Spec.SecurityContext
 		existing.Spec.Template.ObjectMeta.Annotations = desired.Spec.Template.ObjectMeta.Annotations
 		existing.Spec.Template.ObjectMeta.Labels = desired.Spec.Template.ObjectMeta.Labels
 		existing.Annotations = desired.Annotations
@@ -1067,6 +1083,10 @@ func (r *AppReconciler) reconcileCronJob(ctx context.Context, app *mortisev1alph
 			Image:   image,
 			EnvFrom: envstore.EnvFromSources(app.Name),
 		},
+	}
+
+	if !disableDefaultSecurityContext(app) && len(containers) > 0 {
+		containers[0].SecurityContext = restrictedContainerSecurityContext()
 	}
 
 	resources, err := toResourceRequirements(r.effectiveResources(ctx, env))
@@ -1130,6 +1150,7 @@ func (r *AppReconciler) reconcileCronJob(ctx context.Context, app *mortisev1alph
 						},
 						Spec: corev1.PodSpec{
 							ServiceAccountName: app.Name,
+							SecurityContext:    restrictedPodSecurityContext(app),
 							RestartPolicy:      corev1.RestartPolicyOnFailure,
 							Containers:         containers,
 							Volumes:            volumes,
@@ -1166,9 +1187,76 @@ func (r *AppReconciler) reconcileCronJob(ctx context.Context, app *mortisev1alph
 		}
 	}
 
+	desiredPodSpec := desired.Spec.JobTemplate.Spec.Template.Spec
+	if len(desiredPodSpec.Containers) == 0 {
+		return fmt.Errorf("desired CronJob %s/%s has no containers", envNs, name)
+	}
+	desiredContainer := desiredPodSpec.Containers[0]
+
+	existingPodSpec := existing.Spec.JobTemplate.Spec.Template.Spec
+	if len(existingPodSpec.Containers) == 0 {
+		return fmt.Errorf("existing CronJob %s/%s has no containers", envNs, name)
+	}
+	existingContainer := existingPodSpec.Containers[0]
+
+	needsUpdate := false
+	if existingContainer.Image != desiredContainer.Image {
+		needsUpdate = true
+	}
+	if !equality.Semantic.DeepEqual(existingContainer.Env, desiredContainer.Env) {
+		needsUpdate = true
+	}
+	if !equality.Semantic.DeepEqual(existingContainer.EnvFrom, desiredContainer.EnvFrom) {
+		needsUpdate = true
+	}
+	if !equality.Semantic.DeepEqual(existingContainer.VolumeMounts, desiredContainer.VolumeMounts) {
+		needsUpdate = true
+	}
+	if !equality.Semantic.DeepEqual(existingPodSpec.Volumes, desiredPodSpec.Volumes) {
+		needsUpdate = true
+	}
+	if !equality.Semantic.DeepEqual(existingContainer.Resources, desiredContainer.Resources) {
+		needsUpdate = true
+	}
+	if securityContextChanged(existingPodSpec.SecurityContext, desiredPodSpec.SecurityContext, existingContainer.SecurityContext, desiredContainer.SecurityContext) {
+		needsUpdate = true
+	}
+	if existing.Spec.Schedule != desired.Spec.Schedule {
+		needsUpdate = true
+	}
+	if existing.Spec.ConcurrencyPolicy != desired.Spec.ConcurrencyPolicy {
+		needsUpdate = true
+	}
+	if !equality.Semantic.DeepEqual(existing.Spec.JobTemplate.Spec.Template.ObjectMeta.Annotations, desired.Spec.JobTemplate.Spec.Template.ObjectMeta.Annotations) {
+		needsUpdate = true
+	}
+	if !equality.Semantic.DeepEqual(existing.Annotations, desired.Annotations) {
+		needsUpdate = true
+	}
+
+	if !needsUpdate {
+		return nil
+	}
+
+	// Merge-patch sends only the delta, avoiding optimistic-locking conflicts
+	// that a full Update would require a retry loop for.
+	patch := client.MergeFrom(existing.DeepCopy())
+
 	existing.Annotations = desired.Annotations
-	existing.Spec = desired.Spec
-	return r.Update(ctx, &existing)
+	existing.Spec.Schedule = desired.Spec.Schedule
+	existing.Spec.ConcurrencyPolicy = desired.Spec.ConcurrencyPolicy
+	existing.Spec.JobTemplate.Spec.Template.ObjectMeta.Annotations = desired.Spec.JobTemplate.Spec.Template.ObjectMeta.Annotations
+	existing.Spec.JobTemplate.Spec.Template.ObjectMeta.Labels = desired.Spec.JobTemplate.Spec.Template.ObjectMeta.Labels
+	existing.Spec.JobTemplate.Spec.Template.Spec.Containers[0].Image = desiredContainer.Image
+	existing.Spec.JobTemplate.Spec.Template.Spec.Containers[0].Env = desiredContainer.Env
+	existing.Spec.JobTemplate.Spec.Template.Spec.Containers[0].EnvFrom = desiredContainer.EnvFrom
+	existing.Spec.JobTemplate.Spec.Template.Spec.Containers[0].VolumeMounts = desiredContainer.VolumeMounts
+	existing.Spec.JobTemplate.Spec.Template.Spec.Volumes = desiredPodSpec.Volumes
+	existing.Spec.JobTemplate.Spec.Template.Spec.Containers[0].Resources = desiredContainer.Resources
+	existing.Spec.JobTemplate.Spec.Template.Spec.Containers[0].SecurityContext = desiredContainer.SecurityContext
+	existing.Spec.JobTemplate.Spec.Template.Spec.SecurityContext = desiredPodSpec.SecurityContext
+
+	return r.Patch(ctx, &existing, patch)
 }
 
 func (r *AppReconciler) reconcileService(ctx context.Context, app *mortisev1alpha1.App, env *mortisev1alpha1.Environment, envNs string) error {
@@ -2427,6 +2515,79 @@ func deploymentName(appName string) string { return constants.DeploymentName(app
 func cronJobName(appName string) string    { return constants.CronJobName(appName) }
 func serviceName(appName string) string    { return appName }
 func ingressName(appName string) string    { return appName }
+
+func disableDefaultSecurityContext(app *mortisev1alpha1.App) bool {
+	return app.Annotations["mortise.dev/disable-default-security-context"] == "true"
+}
+
+func restrictedPodSecurityContext(app *mortisev1alpha1.App) *corev1.PodSecurityContext {
+	if disableDefaultSecurityContext(app) {
+		return nil
+	}
+	return &corev1.PodSecurityContext{
+		RunAsNonRoot: ptr.To(true),
+		SeccompProfile: &corev1.SeccompProfile{
+			Type: corev1.SeccompProfileTypeRuntimeDefault,
+		},
+	}
+}
+
+func restrictedContainerSecurityContext() *corev1.SecurityContext {
+	return &corev1.SecurityContext{
+		AllowPrivilegeEscalation: ptr.To(false),
+		Capabilities: &corev1.Capabilities{
+			Drop: []corev1.Capability{"ALL"},
+		},
+	}
+}
+
+// securityContextChanged reports whether the controller-managed security
+// context fields have drifted and need an update. The comparison normalises
+// nil vs empty structs (which the API server may default) to avoid an
+// infinite reconcile loop: the controller writes nil, the API server
+// defaults to &SecurityContext{}, the next reconcile sees a diff, updates
+// back to nil, and the cycle repeats.
+func securityContextChanged(existingPodSC, desiredPodSC *corev1.PodSecurityContext, existingContainerSC, desiredContainerSC *corev1.SecurityContext) bool {
+	if !containerSecurityContextEqual(existingContainerSC, desiredContainerSC) {
+		return true
+	}
+	if !podSecurityContextEqual(existingPodSC, desiredPodSC) {
+		return true
+	}
+	return false
+}
+
+// containerSecurityContextEqual returns true when two container SecurityContext
+// pointers are semantically equal, treating nil and a zero-value struct as the
+// same to avoid nil-vs-empty drift from API-server defaulting.
+func containerSecurityContextEqual(a, b *corev1.SecurityContext) bool {
+	if equality.Semantic.DeepEqual(a, b) {
+		return true
+	}
+	// Normalise: treat nil and zero-value as identical.
+	if a == nil {
+		a = &corev1.SecurityContext{}
+	}
+	if b == nil {
+		b = &corev1.SecurityContext{}
+	}
+	return equality.Semantic.DeepEqual(a, b)
+}
+
+// podSecurityContextEqual returns true when two PodSecurityContext pointers
+// are semantically equal, treating nil and a zero-value struct as the same.
+func podSecurityContextEqual(a, b *corev1.PodSecurityContext) bool {
+	if equality.Semantic.DeepEqual(a, b) {
+		return true
+	}
+	if a == nil {
+		a = &corev1.PodSecurityContext{}
+	}
+	if b == nil {
+		b = &corev1.PodSecurityContext{}
+	}
+	return equality.Semantic.DeepEqual(a, b)
+}
 
 // defaultDomainTemplate is the collision-safe default: {app}-{project}.{domain}
 // for production, {app}-{project}-{env}.{domain} for other environments.
