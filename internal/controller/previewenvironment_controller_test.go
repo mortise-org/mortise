@@ -338,13 +338,66 @@ var _ = Describe("PreviewEnvironment Controller", func() {
 			previewNs := constants.PreviewNamespace(project.Name, 7)
 			var dep appsv1.Deployment
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "stable-webapp", Namespace: previewNs}, &dep)).To(Succeed())
-			firstGeneration := dep.Generation
+			dep.Spec.Template.ObjectMeta.Annotations = map[string]string{}
+			dep.Spec.Template.Spec.Volumes = []corev1.Volume{}
+			Expect(k8sClient.Update(ctx, &dep)).To(Succeed())
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "stable-webapp", Namespace: previewNs}, &dep)).To(Succeed())
+			rvBefore := dep.ResourceVersion
 
 			_, err = reconciler.Reconcile(ctx, req)
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "stable-webapp", Namespace: previewNs}, &dep)).To(Succeed())
-			Expect(dep.Generation).To(Equal(firstGeneration))
+			Expect(dep.ResourceVersion).To(Equal(rvBefore))
+			Expect(dep.Spec.Template.ObjectMeta.Annotations).To(BeEmpty())
+			Expect(dep.Spec.Template.Spec.Volumes).To(BeEmpty())
+		})
+
+		It("should clear stale preview Deployment fields that Mortise owns", func() {
+			ctx := context.Background()
+			project, ns := createPreviewTestProject(ctx, true)
+
+			createPreviewApp(ctx, "reconcile-webapp", ns, &mortisev1alpha1.Environment{Name: "staging"})
+			previewDomain := fmt.Sprintf("reconcile-webapp-%s-pr-8.example.com", project.Name)
+			pe := createPreviewEnv(ctx, "reconcile-webapp-preview-pr-8", ns, "reconcile-webapp", 8, "feedbeef", "feat-y", previewDomain, 72*time.Hour)
+			pe.Status.Image = "registry.example.com/mortise/reconcile-webapp:pr-8-feedbee"
+			Expect(k8sClient.Status().Update(ctx, pe)).To(Succeed())
+
+			reconciler := &PreviewEnvironmentReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+				Clock:  clocktesting.NewFakeClock(time.Now()),
+			}
+			req := reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: pe.Name, Namespace: ns},
+			}
+
+			_, err := reconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			previewNs := constants.PreviewNamespace(project.Name, 8)
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "reconcile-webapp", Namespace: previewNs}, &dep)).To(Succeed())
+
+			dep.Spec.Template.ObjectMeta.Annotations = map[string]string{"stale": "annotation"}
+			dep.Spec.Template.Spec.ServiceAccountName = "stale-sa"
+			dep.Spec.Template.Spec.SecurityContext = &corev1.PodSecurityContext{}
+			dep.Spec.Template.Spec.Volumes = []corev1.Volume{{Name: "stale-volume"}}
+			dep.Spec.Template.Spec.Containers[0].Env = []corev1.EnvVar{{Name: "STALE", Value: "1"}}
+			dep.Spec.Template.Spec.Containers[0].SecurityContext = &corev1.SecurityContext{}
+			dep.Spec.Template.Spec.Containers = append(dep.Spec.Template.Spec.Containers, corev1.Container{Name: "sidecar", Image: "busybox"})
+			Expect(k8sClient.Update(ctx, &dep)).To(Succeed())
+
+			_, err = reconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "reconcile-webapp", Namespace: previewNs}, &dep)).To(Succeed())
+			Expect(dep.Spec.Template.ObjectMeta.Annotations).To(BeEmpty())
+			Expect(dep.Spec.Template.Spec.ServiceAccountName).To(BeEmpty())
+			Expect(dep.Spec.Template.Spec.Volumes).To(BeNil())
+			Expect(dep.Spec.Template.Spec.Containers).To(HaveLen(1))
+			Expect(dep.Spec.Template.Spec.Containers[0].Env).To(BeNil())
+			Expect(securityContextsEqual(dep.Spec.Template.Spec.SecurityContext, nil, dep.Spec.Template.Spec.Containers[0].SecurityContext, nil)).To(BeTrue())
 		})
 	})
 

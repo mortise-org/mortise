@@ -5636,8 +5636,12 @@ var _ = Describe("securityContext on user workloads", func() {
 				Name: appName, Namespace: envNsProduction,
 			}, &dep)).To(Succeed())
 
-			dep.Spec.Template.Spec.SecurityContext = &corev1.PodSecurityContext{}
-			dep.Spec.Template.Spec.Containers[0].SecurityContext = &corev1.SecurityContext{}
+			dep.Spec.Template.Spec.SecurityContext = &corev1.PodSecurityContext{
+				SELinuxOptions: &corev1.SELinuxOptions{},
+			}
+			dep.Spec.Template.Spec.Containers[0].SecurityContext = &corev1.SecurityContext{
+				Capabilities: &corev1.Capabilities{},
+			}
 			Expect(k8sClient.Update(ctx, &dep)).To(Succeed())
 
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
@@ -5655,8 +5659,7 @@ var _ = Describe("securityContext on user workloads", func() {
 				Name: appName, Namespace: envNsProduction,
 			}, &dep)).To(Succeed())
 			Expect(dep.ResourceVersion).To(Equal(rvBefore))
-			Expect(dep.Spec.Template.Spec.SecurityContext).To(Equal(&corev1.PodSecurityContext{}))
-			Expect(dep.Spec.Template.Spec.Containers[0].SecurityContext).To(Equal(&corev1.SecurityContext{}))
+			Expect(securityContextsEqual(dep.Spec.Template.Spec.SecurityContext, nil, dep.Spec.Template.Spec.Containers[0].SecurityContext, nil)).To(BeTrue())
 		})
 
 		It("should preserve deployment-controller annotations during reconcile", func() {

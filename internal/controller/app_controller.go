@@ -1234,7 +1234,7 @@ func (r *AppReconciler) reconcileCronJob(ctx context.Context, app *mortisev1alph
 		if !annotationsEqual(existing.Spec.JobTemplate.Spec.Template.ObjectMeta.Annotations, desiredPodAnnotations) {
 			needsUpdate = true
 		}
-		if !equality.Semantic.DeepEqual(existing.Annotations, desired.Annotations) {
+		if !annotationsEqual(existing.Annotations, desired.Annotations) {
 			needsUpdate = true
 		}
 		if !equality.Semantic.DeepEqual(existing.Spec.JobTemplate.Spec.Template.ObjectMeta.Labels, desired.Spec.JobTemplate.Spec.Template.ObjectMeta.Labels) {
@@ -2971,25 +2971,74 @@ func normalizePodSecurityContext(sc *corev1.PodSecurityContext) *corev1.PodSecur
 	if sc == nil {
 		return nil
 	}
-	if equality.Semantic.DeepEqual(*sc, corev1.PodSecurityContext{}) {
+	normalized := sc.DeepCopy()
+	normalizeStructPointers(reflect.ValueOf(normalized).Elem())
+	if equality.Semantic.DeepEqual(*normalized, corev1.PodSecurityContext{}) {
 		return nil
 	}
-	return sc
+	return normalized
 }
 
 func normalizeContainerSecurityContext(sc *corev1.SecurityContext) *corev1.SecurityContext {
 	if sc == nil {
 		return nil
 	}
-	if equality.Semantic.DeepEqual(*sc, corev1.SecurityContext{}) {
+	normalized := sc.DeepCopy()
+	normalizeStructPointers(reflect.ValueOf(normalized).Elem())
+	if equality.Semantic.DeepEqual(*normalized, corev1.SecurityContext{}) {
 		return nil
 	}
-	return sc
+	return normalized
 }
 
 func securityContextsEqual(podA, podB *corev1.PodSecurityContext, containerA, containerB *corev1.SecurityContext) bool {
 	return equality.Semantic.DeepEqual(normalizePodSecurityContext(podA), normalizePodSecurityContext(podB)) &&
 		equality.Semantic.DeepEqual(normalizeContainerSecurityContext(containerA), normalizeContainerSecurityContext(containerB))
+}
+
+func normalizeStructPointers(v reflect.Value) {
+	if !v.IsValid() {
+		return
+	}
+
+	switch v.Kind() {
+	case reflect.Struct:
+		for i := 0; i < v.NumField(); i++ {
+			field := v.Field(i)
+			if field.CanSet() {
+				normalizeStructPointers(field)
+			}
+		}
+	case reflect.Ptr:
+		if v.IsNil() {
+			return
+		}
+		elem := v.Elem()
+		switch elem.Kind() {
+		case reflect.Struct:
+			normalizeStructPointers(elem)
+			if elem.IsZero() {
+				v.Set(reflect.Zero(v.Type()))
+			}
+		case reflect.Slice, reflect.Map:
+			normalizeStructPointers(elem)
+			if elem.Len() == 0 {
+				v.Set(reflect.Zero(v.Type()))
+			}
+		}
+	case reflect.Slice:
+		if v.Len() == 0 {
+			v.Set(reflect.Zero(v.Type()))
+			return
+		}
+		for i := 0; i < v.Len(); i++ {
+			normalizeStructPointers(v.Index(i))
+		}
+	case reflect.Map:
+		if v.Len() == 0 {
+			v.Set(reflect.Zero(v.Type()))
+		}
+	}
 }
 
 func (r *AppReconciler) effectiveResources(ctx context.Context, env *mortisev1alpha1.Environment) mortisev1alpha1.ResourceRequirements {

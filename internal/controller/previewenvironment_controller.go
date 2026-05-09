@@ -20,6 +20,7 @@ import (
 	"context"
 	stderrors "errors"
 	"fmt"
+	"maps"
 	"strings"
 	"time"
 
@@ -391,25 +392,75 @@ func (r *PreviewEnvironmentReconciler) reconcilePreviewDeployment(ctx context.Co
 		if existing.Spec.Replicas == nil || *existing.Spec.Replicas != *desired.Spec.Replicas {
 			needsUpdate = true
 		}
+		if len(existing.Spec.Template.Spec.Containers) != len(desired.Spec.Template.Spec.Containers) {
+			needsUpdate = true
+		}
 		if existingContainer.Name != desiredContainer.Name {
 			needsUpdate = true
 		}
 		if existingContainer.Image != desiredContainer.Image {
 			needsUpdate = true
 		}
+		if !equality.Semantic.DeepEqual(existingContainer.Env, desiredContainer.Env) {
+			needsUpdate = true
+		}
+		if !equality.Semantic.DeepEqual(existingContainer.Command, desiredContainer.Command) {
+			needsUpdate = true
+		}
+		if !equality.Semantic.DeepEqual(existingContainer.Args, desiredContainer.Args) {
+			needsUpdate = true
+		}
 		if !equality.Semantic.DeepEqual(existingContainer.EnvFrom, desiredContainer.EnvFrom) {
+			needsUpdate = true
+		}
+		if !equality.Semantic.DeepEqual(existingContainer.Ports, desiredContainer.Ports) {
+			needsUpdate = true
+		}
+		if !equality.Semantic.DeepEqual(existingContainer.VolumeMounts, desiredContainer.VolumeMounts) {
 			needsUpdate = true
 		}
 		if !equality.Semantic.DeepEqual(existingContainer.Resources, desiredContainer.Resources) {
 			needsUpdate = true
 		}
+		if !equality.Semantic.DeepEqual(existingContainer.LivenessProbe, desiredContainer.LivenessProbe) {
+			needsUpdate = true
+		}
+		if !equality.Semantic.DeepEqual(existingContainer.ReadinessProbe, desiredContainer.ReadinessProbe) {
+			needsUpdate = true
+		}
+		if !equality.Semantic.DeepEqual(existingContainer.StartupProbe, desiredContainer.StartupProbe) {
+			needsUpdate = true
+		}
+		if !securityContextsEqual(
+			existing.Spec.Template.Spec.SecurityContext,
+			desired.Spec.Template.Spec.SecurityContext,
+			existingContainer.SecurityContext,
+			desiredContainer.SecurityContext,
+		) {
+			needsUpdate = true
+		}
 		if !equality.Semantic.DeepEqual(existing.Spec.Selector, desired.Spec.Selector) {
 			needsUpdate = true
 		}
-		if !equality.Semantic.DeepEqual(existing.Spec.Template.ObjectMeta.Labels, desired.Spec.Template.ObjectMeta.Labels) {
+		if !maps.Equal(existing.Spec.Template.ObjectMeta.Labels, desired.Spec.Template.ObjectMeta.Labels) {
 			needsUpdate = true
 		}
-		if !equality.Semantic.DeepEqual(existing.Labels, desired.Labels) {
+		if !maps.Equal(existing.Spec.Template.ObjectMeta.Annotations, desired.Spec.Template.ObjectMeta.Annotations) {
+			needsUpdate = true
+		}
+		if existing.Spec.Template.Spec.ServiceAccountName != desired.Spec.Template.Spec.ServiceAccountName {
+			needsUpdate = true
+		}
+		if existing.Spec.Template.Spec.DeprecatedServiceAccount != desired.Spec.Template.Spec.DeprecatedServiceAccount {
+			needsUpdate = true
+		}
+		if len(existing.Spec.Template.Spec.InitContainers) != len(desired.Spec.Template.Spec.InitContainers) {
+			needsUpdate = true
+		}
+		if !equality.Semantic.DeepEqual(normalizePreviewVolumes(existing.Spec.Template.Spec.Volumes), normalizePreviewVolumes(desired.Spec.Template.Spec.Volumes)) {
+			needsUpdate = true
+		}
+		if !maps.Equal(existing.Labels, desired.Labels) {
 			needsUpdate = true
 		}
 
@@ -421,10 +472,26 @@ func (r *PreviewEnvironmentReconciler) reconcilePreviewDeployment(ctx context.Co
 		existing.Spec.Replicas = desired.Spec.Replicas
 		existing.Spec.Selector = desired.Spec.Selector
 		existing.Spec.Template.ObjectMeta.Labels = desired.Spec.Template.ObjectMeta.Labels
+		existing.Spec.Template.ObjectMeta.Annotations = desired.Spec.Template.ObjectMeta.Annotations
+		existing.Spec.Template.Spec.ServiceAccountName = desired.Spec.Template.Spec.ServiceAccountName
+		existing.Spec.Template.Spec.DeprecatedServiceAccount = desired.Spec.Template.Spec.DeprecatedServiceAccount
+		existing.Spec.Template.Spec.InitContainers = desired.Spec.Template.Spec.InitContainers
+		existing.Spec.Template.Spec.Volumes = normalizePreviewVolumes(desired.Spec.Template.Spec.Volumes)
+		existing.Spec.Template.Spec.SecurityContext = nil
+		existing.Spec.Template.Spec.Containers = existing.Spec.Template.Spec.Containers[:1]
 		existing.Spec.Template.Spec.Containers[0].Name = desiredContainer.Name
 		existing.Spec.Template.Spec.Containers[0].Image = desiredContainer.Image
+		existing.Spec.Template.Spec.Containers[0].Env = desiredContainer.Env
+		existing.Spec.Template.Spec.Containers[0].Command = desiredContainer.Command
+		existing.Spec.Template.Spec.Containers[0].Args = desiredContainer.Args
 		existing.Spec.Template.Spec.Containers[0].EnvFrom = desiredContainer.EnvFrom
+		existing.Spec.Template.Spec.Containers[0].Ports = desiredContainer.Ports
+		existing.Spec.Template.Spec.Containers[0].VolumeMounts = desiredContainer.VolumeMounts
 		existing.Spec.Template.Spec.Containers[0].Resources = desiredContainer.Resources
+		existing.Spec.Template.Spec.Containers[0].LivenessProbe = desiredContainer.LivenessProbe
+		existing.Spec.Template.Spec.Containers[0].ReadinessProbe = desiredContainer.ReadinessProbe
+		existing.Spec.Template.Spec.Containers[0].StartupProbe = desiredContainer.StartupProbe
+		existing.Spec.Template.Spec.Containers[0].SecurityContext = nil
 		return true, nil
 	})
 }
@@ -848,6 +915,13 @@ func previewLabels(pe *mortisev1alpha1.PreviewEnvironment) map[string]string {
 		"mortise.dev/pr-number":        fmt.Sprintf("%d", pe.Spec.PullRequest.Number),
 		constants.ProjectLabel:         projectName,
 	}
+}
+
+func normalizePreviewVolumes(volumes []corev1.Volume) []corev1.Volume {
+	if len(volumes) == 0 {
+		return nil
+	}
+	return volumes
 }
 
 func hasOwnerRef(pe *mortisev1alpha1.PreviewEnvironment, uid types.UID) bool {
