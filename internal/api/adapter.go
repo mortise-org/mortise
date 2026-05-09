@@ -13,9 +13,17 @@ func (s *Server) proxyToAdapter(w http.ResponseWriter, r *http.Request, adapterU
 	u, err := url.Parse(adapterURL)
 	if err != nil {
 		writeJSON(w, http.StatusOK, map[string]any{
-			"available": true,
+			"available": false,
 			"error":     "invalid adapter endpoint",
 			"detail":    err.Error(),
+		})
+		return
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"available": false,
+			"error":     "invalid adapter endpoint",
+			"detail":    "adapter URL scheme must be http or https",
 		})
 		return
 	}
@@ -24,7 +32,7 @@ func (s *Server) proxyToAdapter(w http.ResponseWriter, r *http.Request, adapterU
 	req, err := http.NewRequestWithContext(r.Context(), "GET", u.String(), nil)
 	if err != nil {
 		writeJSON(w, http.StatusOK, map[string]any{
-			"available": true,
+			"available": false,
 			"error":     "failed to build adapter request",
 			"detail":    err.Error(),
 		})
@@ -37,7 +45,7 @@ func (s *Server) proxyToAdapter(w http.ResponseWriter, r *http.Request, adapterU
 	resp, err := adapterClient.Do(req)
 	if err != nil {
 		writeJSON(w, http.StatusOK, map[string]any{
-			"available": true,
+			"available": false,
 			"error":     "adapter unreachable",
 			"detail":    err.Error(),
 		})
@@ -48,7 +56,7 @@ func (s *Server) proxyToAdapter(w http.ResponseWriter, r *http.Request, adapterU
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 		writeJSON(w, http.StatusOK, map[string]any{
-			"available": true,
+			"available": false,
 			"error":     "adapter returned " + resp.Status,
 			"detail":    string(body),
 		})

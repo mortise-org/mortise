@@ -60,7 +60,7 @@ func (s *Server) Rollback(w http.ResponseWriter, r *http.Request) {
 
 	var app mortisev1alpha1.App
 	if err := s.client.Get(r.Context(), types.NamespacedName{Name: appName, Namespace: ns}, &app); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 	envNs := constants.EnvNamespace(projectName, req.Environment)
@@ -91,7 +91,7 @@ func (s *Server) Rollback(w http.ResponseWriter, r *http.Request) {
 	depName := constants.DeploymentName(appName)
 	var dep appsv1.Deployment
 	if err := s.client.Get(r.Context(), types.NamespacedName{Name: depName, Namespace: envNs}, &dep); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 	if len(dep.Spec.Template.Spec.Containers) == 0 {
@@ -101,7 +101,7 @@ func (s *Server) Rollback(w http.ResponseWriter, r *http.Request) {
 
 	dep.Spec.Template.Spec.Containers[0].Image = rollbackImage
 	if err := s.client.Update(r.Context(), &dep); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -159,7 +159,7 @@ func (s *Server) Promote(w http.ResponseWriter, r *http.Request) {
 
 	var app mortisev1alpha1.App
 	if err := s.client.Get(r.Context(), types.NamespacedName{Name: appName, Namespace: ns}, &app); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -203,7 +203,7 @@ func (s *Server) Promote(w http.ResponseWriter, r *http.Request) {
 	toEnvNs := constants.EnvNamespace(projectName, req.To)
 	var dep appsv1.Deployment
 	if err := s.client.Get(r.Context(), types.NamespacedName{Name: depName, Namespace: toEnvNs}, &dep); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 	if len(dep.Spec.Template.Spec.Containers) == 0 {
@@ -213,7 +213,7 @@ func (s *Server) Promote(w http.ResponseWriter, r *http.Request) {
 
 	dep.Spec.Template.Spec.Containers[0].Image = promoteImage
 	if err := s.client.Update(r.Context(), &dep); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -243,7 +243,7 @@ func (s *Server) Promote(w http.ResponseWriter, r *http.Request) {
 	toStatus.DeployHistory = append(toStatus.DeployHistory, record)
 
 	if err := s.client.Status().Update(r.Context(), &app); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 

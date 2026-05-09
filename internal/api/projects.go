@@ -166,13 +166,53 @@ func (s *Server) CreateProject(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.client.Create(r.Context(), project); err != nil {
-		writeError(w, err)
+		if errors.IsAlreadyExists(err) {
+			writeJSON(w, http.StatusConflict, errorResponse{fmt.Sprintf(
+				"A project named %q already exists. Project names must be unique across the platform. "+
+					"If you need access to the existing project, ask a project owner or platform admin to add you as a member.",
+				req.Name,
+			)})
+			return
+		}
+		writeError(w, r, err)
 		return
 	}
 
 	s.recordActivity(r, project.Name, "create", "project", project.Name, "Created project "+project.Name, "")
 
 	writeJSON(w, http.StatusCreated, toProjectResponse(project, nil))
+}
+
+// @Summary Check project name availability
+// @Description Returns whether a project name is available. Any authenticated user can call this.
+// @Tags projects
+// @Produce json
+// @Security BearerAuth
+// @Param name path string true "Project name to check"
+// @Success 200 {object} map[string]bool
+// @Failure 400 {object} errorResponse
+// @Failure 401 {object} errorResponse
+// @Router /projects/{name}/available [get]
+//
+// CheckProjectNameAvailable returns whether a project name is available for use.
+func (s *Server) CheckProjectNameAvailable(w http.ResponseWriter, r *http.Request) {
+	name := chi.URLParam(r, "name")
+	if msg := validateProjectName(name); msg != "" {
+		writeJSON(w, http.StatusBadRequest, errorResponse{msg})
+		return
+	}
+
+	var project mortisev1alpha1.Project
+	err := s.client.Get(r.Context(), types.NamespacedName{Name: name}, &project)
+	if errors.IsNotFound(err) {
+		writeJSON(w, http.StatusOK, map[string]bool{"available": true})
+		return
+	}
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"available": false})
 }
 
 // @Summary List projects
@@ -194,7 +234,7 @@ func (s *Server) ListProjects(w http.ResponseWriter, r *http.Request) {
 	}
 	var list mortisev1alpha1.ProjectList
 	if err := s.client.List(r.Context(), &list); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -205,7 +245,7 @@ func (s *Server) ListProjects(w http.ResponseWriter, r *http.Request) {
 	// Load all apps once for production health aggregation.
 	var allApps mortisev1alpha1.AppList
 	if err := s.client.List(r.Context(), &allApps); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -226,7 +266,7 @@ func (s *Server) ListProjects(w http.ResponseWriter, r *http.Request) {
 	if err := s.client.List(r.Context(), &allMembers,
 		client.MatchingLabels{"mortise.dev/member": "true"},
 	); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 	memberProjects := make(map[string]bool, len(allMembers.Items))
@@ -269,7 +309,7 @@ func (s *Server) GetProject(w http.ResponseWriter, r *http.Request) {
 
 	var project mortisev1alpha1.Project
 	if err := s.client.Get(r.Context(), types.NamespacedName{Name: name}, &project); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 	ns := project.Status.Namespace
@@ -278,7 +318,7 @@ func (s *Server) GetProject(w http.ResponseWriter, r *http.Request) {
 	}
 	var apps mortisev1alpha1.AppList
 	if err := s.client.List(r.Context(), &apps, client.InNamespace(ns)); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, toProjectResponse(&project, apps.Items))
@@ -309,12 +349,12 @@ func (s *Server) DeleteProject(w http.ResponseWriter, r *http.Request) {
 
 	var project mortisev1alpha1.Project
 	if err := s.client.Get(r.Context(), types.NamespacedName{Name: name}, &project); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
 	if err := s.client.Delete(r.Context(), &project); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -363,7 +403,7 @@ func (s *Server) UpdateProject(w http.ResponseWriter, r *http.Request) {
 
 	var project mortisev1alpha1.Project
 	if err := s.client.Get(r.Context(), types.NamespacedName{Name: projectName}, &project); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -389,7 +429,7 @@ func (s *Server) UpdateProject(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.client.Update(r.Context(), &project); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -399,7 +439,7 @@ func (s *Server) UpdateProject(w http.ResponseWriter, r *http.Request) {
 	}
 	var apps mortisev1alpha1.AppList
 	if err := s.client.List(r.Context(), &apps, client.InNamespace(ns)); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, toProjectResponse(&project, apps.Items))
@@ -429,7 +469,7 @@ func (s *Server) resolveProject(w http.ResponseWriter, r *http.Request) (namespa
 		return "", "", false
 	}
 	if err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return "", "", false
 	}
 

@@ -1554,6 +1554,19 @@ definitions:
           always computed regardless of whether a custom primary domain is set.
           +optional
         type: string
+      certificateMessage:
+        description: |-
+          CertificateMessage is a human-readable explanation of the certificate
+          state (e.g. challenge failure reason, DNS guidance).
+          +optional
+        type: string
+      certificateStatus:
+        description: |-
+          CertificateStatus is the readiness state of the TLS certificate for
+          this environment. Empty when cert-manager is not in use. Possible
+          values: "Ready", "Pending", "Failed".
+          +optional
+        type: string
       currentDigest:
         type: string
       currentImage:

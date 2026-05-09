@@ -96,7 +96,7 @@ func (s *Server) SetPullCredentials(w http.ResponseWriter, r *http.Request) {
 	// Verify the app exists.
 	var app mortisev1alpha1.App
 	if err := s.client.Get(r.Context(), types.NamespacedName{Name: appName, Namespace: ns}, &app); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -121,7 +121,7 @@ func (s *Server) SetPullCredentials(w http.ResponseWriter, r *http.Request) {
 	// Set PullSecretRef on the App CRD.
 	app.Spec.Source.PullSecretRef = secretName
 	if err := s.client.Update(r.Context(), &app); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -166,7 +166,7 @@ func (s *Server) GetPullCredentials(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -195,7 +195,7 @@ func (s *Server) DeletePullCredentials(w http.ResponseWriter, r *http.Request) {
 
 	var app mortisev1alpha1.App
 	if err := s.client.Get(r.Context(), types.NamespacedName{Name: appName, Namespace: ns}, &app); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -231,7 +231,7 @@ func (s *Server) DeletePullCredentials(w http.ResponseWriter, r *http.Request) {
 	if app.Spec.Source.PullSecretRef == secretName {
 		app.Spec.Source.PullSecretRef = ""
 		if err := s.client.Update(r.Context(), &app); err != nil {
-			writeError(w, err)
+			writeError(w, r, err)
 			return
 		}
 	}

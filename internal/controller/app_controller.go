@@ -40,7 +40,9 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/clock"
@@ -110,6 +112,7 @@ type AppReconciler struct {
 // +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=cert-manager.io,resources=certificates,verbs=get;list;watch
 
 func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
@@ -223,6 +226,8 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 				continue
 			}
 			image = envImage
+		} else if env.Image != "" {
+			image = env.Image
 		} else {
 			image = app.Spec.Source.Image
 		}
@@ -738,12 +743,17 @@ func envStatusFor(app *mortisev1alpha1.App, envName string) *mortisev1alpha1.Env
 }
 
 // currentImageForEnv returns the image currently deployed for the given
-// environment — the per-env built image if one exists, otherwise the
-// spec-level image (for image-source apps or pre-migration data).
+// environment. Precedence: per-env built image (status) > per-env spec
+// image override > spec-level image.
 func (r *AppReconciler) currentImageForEnv(app *mortisev1alpha1.App, envName string) string {
 	for _, es := range app.Status.Environments {
 		if es.Name == envName && es.LastBuiltImage != "" {
 			return es.LastBuiltImage
+		}
+	}
+	for _, env := range app.Spec.Environments {
+		if env.Name == envName && env.Image != "" {
+			return env.Image
 		}
 	}
 	return app.Spec.Source.Image
@@ -864,6 +874,10 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 		},
 	}
 
+	if !disableDefaultSecurityContext(app) && len(containers) > 0 {
+		containers[0].SecurityContext = restrictedContainerSecurityContext()
+	}
+
 	resources, err := toResourceRequirements(r.effectiveResources(ctx, env))
 	if err != nil {
 		return fmt.Errorf("resources: %w", err)
@@ -928,6 +942,7 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 				},
 				Spec: corev1.PodSpec{
 					ServiceAccountName: app.Name,
+					SecurityContext:    restrictedPodSecurityContext(app),
 					Containers:         containers,
 					Volumes:            volumes,
 				},
@@ -950,24 +965,9 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 		return err
 	}
 
-	// Preserve API-set annotations so the controller doesn't strip them.
-	if v, ok := existing.Spec.Template.Annotations["mortise.dev/restartedAt"]; ok {
-		if desired.Spec.Template.Annotations == nil {
-			desired.Spec.Template.Annotations = make(map[string]string)
-		}
-		desired.Spec.Template.Annotations["mortise.dev/restartedAt"] = v
+	if len(desired.Spec.Template.Spec.Containers) == 0 {
+		return fmt.Errorf("desired Deployment %s/%s has no containers", envNs, name)
 	}
-	// When autoRedeploy is off, freeze the deployed env-hash so the new
-	// hash doesn't trigger a rolling update. Users redeploy manually.
-	if !autoRedeploy {
-		if v, ok := existing.Spec.Template.Annotations["mortise.dev/env-hash"]; ok {
-			if desired.Spec.Template.Annotations == nil {
-				desired.Spec.Template.Annotations = make(map[string]string)
-			}
-			desired.Spec.Template.Annotations["mortise.dev/env-hash"] = v
-		}
-	}
-
 	desiredContainer := desired.Spec.Template.Spec.Containers[0]
 
 	// Retry loop handles optimistic-locking conflicts: another writer (e.g.
@@ -976,11 +976,33 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 	// surfacing the error and requeuing.
 	const maxConflictRetries = 3
 	for attempt := 0; attempt < maxConflictRetries; attempt++ {
+		// Re-derive desired annotations from the (possibly re-fetched) existing
+		// Deployment so stale values from a prior iteration don't persist.
+		if v, ok := existing.Spec.Template.Annotations["mortise.dev/restartedAt"]; ok {
+			if desired.Spec.Template.Annotations == nil {
+				desired.Spec.Template.Annotations = make(map[string]string)
+			}
+			desired.Spec.Template.Annotations["mortise.dev/restartedAt"] = v
+		}
+		// When autoRedeploy is off, freeze the deployed env-hash so the new
+		// hash doesn't trigger a rolling update. Users redeploy manually.
+		if !autoRedeploy {
+			if v, ok := existing.Spec.Template.Annotations["mortise.dev/env-hash"]; ok {
+				if desired.Spec.Template.Annotations == nil {
+					desired.Spec.Template.Annotations = make(map[string]string)
+				}
+				desired.Spec.Template.Annotations["mortise.dev/env-hash"] = v
+			}
+		}
+
 		// Only update if the fields we manage actually changed. Comparing the
 		// full spec/template doesn't work because k8s adds dozens of default
 		// fields (securityContext, serviceAccount, terminationMessagePolicy, etc.)
 		// that make our desired spec never match, triggering an infinite
 		// reconcile loop via the Deployment watch.
+		if len(existing.Spec.Template.Spec.Containers) == 0 {
+			return fmt.Errorf("existing Deployment %s/%s has no containers", envNs, name)
+		}
 		existingContainer := existing.Spec.Template.Spec.Containers[0]
 
 		needsUpdate := false
@@ -1014,6 +1036,9 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 		if !equality.Semantic.DeepEqual(existingContainer.StartupProbe, desiredContainer.StartupProbe) {
 			needsUpdate = true
 		}
+		if securityContextChanged(existing.Spec.Template.Spec.SecurityContext, desired.Spec.Template.Spec.SecurityContext, existingContainer.SecurityContext, desiredContainer.SecurityContext) {
+			needsUpdate = true
+		}
 		if existing.Spec.Replicas == nil || *existing.Spec.Replicas != *desired.Spec.Replicas {
 			needsUpdate = true
 		}
@@ -1041,6 +1066,8 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 		existing.Spec.Template.Spec.Containers[0].LivenessProbe = desiredContainer.LivenessProbe
 		existing.Spec.Template.Spec.Containers[0].ReadinessProbe = desiredContainer.ReadinessProbe
 		existing.Spec.Template.Spec.Containers[0].StartupProbe = desiredContainer.StartupProbe
+		existing.Spec.Template.Spec.Containers[0].SecurityContext = desiredContainer.SecurityContext
+		existing.Spec.Template.Spec.SecurityContext = desired.Spec.Template.Spec.SecurityContext
 		existing.Spec.Template.ObjectMeta.Annotations = desired.Spec.Template.ObjectMeta.Annotations
 		existing.Spec.Template.ObjectMeta.Labels = desired.Spec.Template.ObjectMeta.Labels
 		existing.Annotations = desired.Annotations
@@ -1076,6 +1103,10 @@ func (r *AppReconciler) reconcileCronJob(ctx context.Context, app *mortisev1alph
 			Image:   image,
 			EnvFrom: envstore.EnvFromSources(app.Name),
 		},
+	}
+
+	if !disableDefaultSecurityContext(app) && len(containers) > 0 {
+		containers[0].SecurityContext = restrictedContainerSecurityContext()
 	}
 
 	resources, err := toResourceRequirements(r.effectiveResources(ctx, env))
@@ -1139,6 +1170,7 @@ func (r *AppReconciler) reconcileCronJob(ctx context.Context, app *mortisev1alph
 						},
 						Spec: corev1.PodSpec{
 							ServiceAccountName: app.Name,
+							SecurityContext:    restrictedPodSecurityContext(app),
 							RestartPolicy:      corev1.RestartPolicyOnFailure,
 							Containers:         containers,
 							Volumes:            volumes,
@@ -1160,24 +1192,105 @@ func (r *AppReconciler) reconcileCronJob(ctx context.Context, app *mortisev1alph
 		return err
 	}
 
-	if v, ok := existing.Spec.JobTemplate.Spec.Template.Annotations["mortise.dev/restartedAt"]; ok {
-		if desired.Spec.JobTemplate.Spec.Template.Annotations == nil {
-			desired.Spec.JobTemplate.Spec.Template.Annotations = make(map[string]string)
-		}
-		desired.Spec.JobTemplate.Spec.Template.Annotations["mortise.dev/restartedAt"] = v
-	}
-	if !autoRedeploy {
-		if v, ok := existing.Spec.JobTemplate.Spec.Template.Annotations["mortise.dev/env-hash"]; ok {
+	const maxConflictRetries = 3
+	for attempt := 0; attempt < maxConflictRetries; attempt++ {
+		if v, ok := existing.Spec.JobTemplate.Spec.Template.Annotations["mortise.dev/restartedAt"]; ok {
 			if desired.Spec.JobTemplate.Spec.Template.Annotations == nil {
 				desired.Spec.JobTemplate.Spec.Template.Annotations = make(map[string]string)
 			}
-			desired.Spec.JobTemplate.Spec.Template.Annotations["mortise.dev/env-hash"] = v
+			desired.Spec.JobTemplate.Spec.Template.Annotations["mortise.dev/restartedAt"] = v
+		}
+		if !autoRedeploy {
+			if v, ok := existing.Spec.JobTemplate.Spec.Template.Annotations["mortise.dev/env-hash"]; ok {
+				if desired.Spec.JobTemplate.Spec.Template.Annotations == nil {
+					desired.Spec.JobTemplate.Spec.Template.Annotations = make(map[string]string)
+				}
+				desired.Spec.JobTemplate.Spec.Template.Annotations["mortise.dev/env-hash"] = v
+			}
+		}
+
+		desiredPodSpec := desired.Spec.JobTemplate.Spec.Template.Spec
+		if len(desiredPodSpec.Containers) == 0 {
+			return fmt.Errorf("desired CronJob %s/%s has no containers", envNs, name)
+		}
+		desiredContainer := desiredPodSpec.Containers[0]
+
+		existingPodSpec := existing.Spec.JobTemplate.Spec.Template.Spec
+		if len(existingPodSpec.Containers) == 0 {
+			return fmt.Errorf("existing CronJob %s/%s has no containers", envNs, name)
+		}
+		existingContainer := existingPodSpec.Containers[0]
+
+		needsUpdate := false
+		if existingContainer.Image != desiredContainer.Image {
+			needsUpdate = true
+		}
+		if !equality.Semantic.DeepEqual(existingContainer.Env, desiredContainer.Env) {
+			needsUpdate = true
+		}
+		if !equality.Semantic.DeepEqual(existingContainer.EnvFrom, desiredContainer.EnvFrom) {
+			needsUpdate = true
+		}
+		if !equality.Semantic.DeepEqual(existingContainer.VolumeMounts, desiredContainer.VolumeMounts) {
+			needsUpdate = true
+		}
+		if !equality.Semantic.DeepEqual(existingPodSpec.Volumes, desiredPodSpec.Volumes) {
+			needsUpdate = true
+		}
+		if !equality.Semantic.DeepEqual(existingContainer.Resources, desiredContainer.Resources) {
+			needsUpdate = true
+		}
+		if securityContextChanged(existingPodSpec.SecurityContext, desiredPodSpec.SecurityContext, existingContainer.SecurityContext, desiredContainer.SecurityContext) {
+			needsUpdate = true
+		}
+		if existing.Spec.Schedule != desired.Spec.Schedule {
+			needsUpdate = true
+		}
+		if existing.Spec.ConcurrencyPolicy != desired.Spec.ConcurrencyPolicy {
+			needsUpdate = true
+		}
+		if !equality.Semantic.DeepEqual(existing.Spec.JobTemplate.Spec.Template.ObjectMeta.Annotations, desired.Spec.JobTemplate.Spec.Template.ObjectMeta.Annotations) {
+			needsUpdate = true
+		}
+		if !equality.Semantic.DeepEqual(existing.Annotations, desired.Annotations) {
+			needsUpdate = true
+		}
+
+		if !needsUpdate {
+			return nil
+		}
+
+		// Merge-patch sends only the delta, preserving k8s defaults while the
+		// retry loop handles optimistic-locking conflicts.
+		patch := client.MergeFrom(existing.DeepCopy())
+
+		existing.Annotations = desired.Annotations
+		existing.Spec.Schedule = desired.Spec.Schedule
+		existing.Spec.ConcurrencyPolicy = desired.Spec.ConcurrencyPolicy
+		existing.Spec.JobTemplate.Spec.Template.ObjectMeta.Annotations = desired.Spec.JobTemplate.Spec.Template.ObjectMeta.Annotations
+		existing.Spec.JobTemplate.Spec.Template.ObjectMeta.Labels = desired.Spec.JobTemplate.Spec.Template.ObjectMeta.Labels
+		existing.Spec.JobTemplate.Spec.Template.Spec.Containers[0].Image = desiredContainer.Image
+		existing.Spec.JobTemplate.Spec.Template.Spec.Containers[0].Env = desiredContainer.Env
+		existing.Spec.JobTemplate.Spec.Template.Spec.Containers[0].EnvFrom = desiredContainer.EnvFrom
+		existing.Spec.JobTemplate.Spec.Template.Spec.Containers[0].VolumeMounts = desiredContainer.VolumeMounts
+		existing.Spec.JobTemplate.Spec.Template.Spec.Volumes = desiredPodSpec.Volumes
+		existing.Spec.JobTemplate.Spec.Template.Spec.Containers[0].Resources = desiredContainer.Resources
+		existing.Spec.JobTemplate.Spec.Template.Spec.Containers[0].SecurityContext = desiredContainer.SecurityContext
+		existing.Spec.JobTemplate.Spec.Template.Spec.SecurityContext = desiredPodSpec.SecurityContext
+
+		patchErr := r.Patch(ctx, &existing, patch)
+		if patchErr == nil {
+			return nil
+		}
+		if !errors.IsConflict(patchErr) || attempt == maxConflictRetries-1 {
+			return patchErr
+		}
+
+		if getErr := r.Get(ctx, types.NamespacedName{Name: name, Namespace: envNs}, &existing); getErr != nil {
+			return getErr
 		}
 	}
-
-	existing.Annotations = desired.Annotations
-	existing.Spec = desired.Spec
-	return r.Update(ctx, &existing)
+	return nil
 }
 
 func (r *AppReconciler) reconcileService(ctx context.Context, app *mortisev1alpha1.App, env *mortisev1alpha1.Environment, envNs string) error {
@@ -1267,9 +1380,9 @@ func (r *AppReconciler) reconcileIngress(ctx context.Context, app *mortisev1alph
 	}
 
 	// TLS Secret reference: BYO or auto-generated.
-	tlsSecretName := fmt.Sprintf("%s-tls", name)
+	tlsName := tlsSecretName(app.Name)
 	if env.TLS != nil && env.TLS.SecretName != "" {
-		tlsSecretName = env.TLS.SecretName
+		tlsName = env.TLS.SecretName
 	}
 
 	// Base annotations from IngressProvider (ExternalDNS hostname,
@@ -1308,7 +1421,7 @@ func (r *AppReconciler) reconcileIngress(ctx context.Context, app *mortisev1alph
 			TLS: []networkingv1.IngressTLS{
 				{
 					Hosts:      allHosts,
-					SecretName: tlsSecretName,
+					SecretName: tlsName,
 				},
 			},
 		},
@@ -1334,6 +1447,71 @@ func (r *AppReconciler) reconcileIngress(ctx context.Context, app *mortisev1alph
 	existing.Spec = desired.Spec
 	existing.Annotations = desired.Annotations
 	return r.Update(ctx, &existing)
+}
+
+var certGVK = schema.GroupVersionKind{Group: "cert-manager.io", Version: "v1", Kind: "Certificate"}
+
+// checkCertificateStatus reads the cert-manager Certificate resource for an
+// environment's TLS secret and returns (status, message). Returns ("", "")
+// when cert-manager is not in use or the Certificate doesn't exist yet.
+func (r *AppReconciler) checkCertificateStatus(ctx context.Context, secretName, namespace string) (string, string) {
+	cert := &unstructured.Unstructured{}
+	cert.SetGroupVersionKind(certGVK)
+	err := r.Get(ctx, types.NamespacedName{Name: secretName, Namespace: namespace}, cert)
+	if err != nil {
+		return "", ""
+	}
+
+	conditions, found, err := unstructured.NestedSlice(cert.Object, "status", "conditions")
+	if err != nil || !found {
+		return "Pending", "Certificate exists but has no status yet"
+	}
+
+	for _, c := range conditions {
+		cond, ok := c.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		condType, _, _ := unstructured.NestedString(cond, "type")
+		if condType != "Ready" {
+			continue
+		}
+		status, _, _ := unstructured.NestedString(cond, "status")
+		message, _, _ := unstructured.NestedString(cond, "message")
+		if status == "True" {
+			return "Ready", ""
+		}
+		reason, _, _ := unstructured.NestedString(cond, "reason")
+		// Transient cert-manager reasons indicate the certificate is still
+		// being issued or validated — not a terminal failure.
+		switch reason {
+		case "Issuing", "Pending", "InProgress", "":
+			if message != "" {
+				return "Pending", message
+			}
+			return "Pending", ""
+		default:
+			if message != "" {
+				return "Failed", fmt.Sprintf("%s: %s", reason, message)
+			}
+			return "Failed", reason
+		}
+	}
+
+	return "Pending", "Certificate is being issued"
+}
+
+// checkCustomTLSSecret verifies that a user-supplied TLS secret exists and
+// contains tls.crt + tls.key. Returns (status, message).
+func (r *AppReconciler) checkCustomTLSSecret(ctx context.Context, secretName, namespace string) (string, string) {
+	var sec corev1.Secret
+	if err := r.Get(ctx, types.NamespacedName{Name: secretName, Namespace: namespace}, &sec); err != nil {
+		return "Failed", fmt.Sprintf("custom TLS secret %q not found", secretName)
+	}
+	if sec.Data == nil || len(sec.Data["tls.crt"]) == 0 || len(sec.Data["tls.key"]) == 0 {
+		return "Failed", fmt.Sprintf("custom TLS secret %q missing tls.crt or tls.key", secretName)
+	}
+	return "Ready", ""
 }
 
 func (r *AppReconciler) reconcileServiceAccount(ctx context.Context, app *mortisev1alpha1.App, envNs, envName string) error {
@@ -2262,6 +2440,14 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 			anyNotReady = true
 		}
 
+		if app.Spec.Network.Public && es.Domain != "" {
+			if env.TLS != nil && env.TLS.SecretName != "" {
+				es.CertificateStatus, es.CertificateMessage = r.checkCustomTLSSecret(ctx, env.TLS.SecretName, envNs)
+			} else {
+				es.CertificateStatus, es.CertificateMessage = r.checkCertificateStatus(ctx, tlsSecretName(app.Name), envNs)
+			}
+		}
+
 		envStatuses = append(envStatuses, es)
 	}
 
@@ -2436,6 +2622,80 @@ func deploymentName(appName string) string { return constants.DeploymentName(app
 func cronJobName(appName string) string    { return constants.CronJobName(appName) }
 func serviceName(appName string) string    { return appName }
 func ingressName(appName string) string    { return appName }
+func tlsSecretName(appName string) string  { return fmt.Sprintf("%s-tls", ingressName(appName)) }
+
+func disableDefaultSecurityContext(app *mortisev1alpha1.App) bool {
+	return app.Annotations["mortise.dev/disable-default-security-context"] == "true"
+}
+
+func restrictedPodSecurityContext(app *mortisev1alpha1.App) *corev1.PodSecurityContext {
+	if disableDefaultSecurityContext(app) {
+		return nil
+	}
+	return &corev1.PodSecurityContext{
+		RunAsNonRoot: ptr.To(true),
+		SeccompProfile: &corev1.SeccompProfile{
+			Type: corev1.SeccompProfileTypeRuntimeDefault,
+		},
+	}
+}
+
+func restrictedContainerSecurityContext() *corev1.SecurityContext {
+	return &corev1.SecurityContext{
+		AllowPrivilegeEscalation: ptr.To(false),
+		Capabilities: &corev1.Capabilities{
+			Drop: []corev1.Capability{"ALL"},
+		},
+	}
+}
+
+// securityContextChanged reports whether the controller-managed security
+// context fields have drifted and need an update. The comparison normalises
+// nil vs empty structs (which the API server may default) to avoid an
+// infinite reconcile loop: the controller writes nil, the API server
+// defaults to &SecurityContext{}, the next reconcile sees a diff, updates
+// back to nil, and the cycle repeats.
+func securityContextChanged(existingPodSC, desiredPodSC *corev1.PodSecurityContext, existingContainerSC, desiredContainerSC *corev1.SecurityContext) bool {
+	if !containerSecurityContextEqual(existingContainerSC, desiredContainerSC) {
+		return true
+	}
+	if !podSecurityContextEqual(existingPodSC, desiredPodSC) {
+		return true
+	}
+	return false
+}
+
+// containerSecurityContextEqual returns true when two container SecurityContext
+// pointers are semantically equal, treating nil and a zero-value struct as the
+// same to avoid nil-vs-empty drift from API-server defaulting.
+func containerSecurityContextEqual(a, b *corev1.SecurityContext) bool {
+	if equality.Semantic.DeepEqual(a, b) {
+		return true
+	}
+	// Normalise: treat nil and zero-value as identical.
+	if a == nil {
+		a = &corev1.SecurityContext{}
+	}
+	if b == nil {
+		b = &corev1.SecurityContext{}
+	}
+	return equality.Semantic.DeepEqual(a, b)
+}
+
+// podSecurityContextEqual returns true when two PodSecurityContext pointers
+// are semantically equal, treating nil and a zero-value struct as the same.
+func podSecurityContextEqual(a, b *corev1.PodSecurityContext) bool {
+	if equality.Semantic.DeepEqual(a, b) {
+		return true
+	}
+	if a == nil {
+		a = &corev1.PodSecurityContext{}
+	}
+	if b == nil {
+		b = &corev1.PodSecurityContext{}
+	}
+	return equality.Semantic.DeepEqual(a, b)
+}
 
 // defaultDomainTemplate is the collision-safe default: {app}-{project}.{domain}
 // for production, {app}-{project}-{env}.{domain} for other environments.

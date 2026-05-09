@@ -182,7 +182,7 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 	// Resolve the App CRD (404 if missing). CRD lives in the control ns.
 	var app mortisev1alpha1.App
 	if err := s.client.Get(r.Context(), types.NamespacedName{Name: name, Namespace: ns}, &app); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -209,7 +209,7 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 	if pinnedPod != "" {
 		var pod corev1.Pod
 		if err := s.client.Get(r.Context(), types.NamespacedName{Name: pinnedPod, Namespace: envNs}, &pod); err != nil {
-			writeError(w, err)
+			writeError(w, r, err)
 			return
 		}
 		if pod.Labels[constants.AppNameLabel] != name || pod.Labels["mortise.dev/environment"] != env {

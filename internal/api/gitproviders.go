@@ -55,7 +55,7 @@ func (s *Server) ListGitProviders(w http.ResponseWriter, r *http.Request) {
 
 	var list mortisev1alpha1.GitProviderList
 	if err := s.client.List(r.Context(), &list); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -112,7 +112,7 @@ func (s *Server) CreateGitProvider(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !errors.IsNotFound(err) {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -141,7 +141,7 @@ func (s *Server) CreateGitProvider(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.client.Create(r.Context(), secret); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -162,7 +162,7 @@ func (s *Server) CreateGitProvider(w http.ResponseWriter, r *http.Request) {
 	if err := s.client.Create(r.Context(), gp); err != nil {
 		// Roll back the Secret.
 		_ = s.client.Delete(r.Context(), secret)
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -197,11 +197,11 @@ func (s *Server) DeleteGitProvider(w http.ResponseWriter, r *http.Request) {
 
 	var gp mortisev1alpha1.GitProvider
 	if err := s.client.Get(r.Context(), types.NamespacedName{Name: name}, &gp); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 	if err := s.client.Delete(r.Context(), &gp); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -213,7 +213,7 @@ func (s *Server) DeleteGitProvider(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 	if err := s.client.Delete(r.Context(), whSecret); err != nil && !errors.IsNotFound(err) {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -245,7 +245,7 @@ func (s *Server) GetWebhookSecret(w http.ResponseWriter, r *http.Request) {
 
 	var gp mortisev1alpha1.GitProvider
 	if err := s.client.Get(r.Context(), types.NamespacedName{Name: name}, &gp); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -259,7 +259,7 @@ func (s *Server) GetWebhookSecret(w http.ResponseWriter, r *http.Request) {
 		Namespace: gp.Spec.WebhookSecretRef.Namespace,
 		Name:      gp.Spec.WebhookSecretRef.Name,
 	}, &secret); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 

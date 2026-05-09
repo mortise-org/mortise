@@ -48,7 +48,7 @@ func (s *Server) ListPreviews(w http.ResponseWriter, r *http.Request) {
 
 	var list mortisev1alpha1.PreviewEnvironmentList
 	if err := s.client.List(r.Context(), &list, client.InNamespace(ns)); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 

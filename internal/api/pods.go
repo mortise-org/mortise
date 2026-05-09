@@ -47,12 +47,11 @@ type podSummary struct {
 // @Failure 500 {object} errorResponse
 // @Router /projects/{project}/apps/{app}/pods [get]
 func (s *Server) handleListPods(w http.ResponseWriter, r *http.Request) {
-	projectName := chi.URLParam(r, "project")
-	if !s.authorize(w, r, authz.Resource{Kind: "app", Project: projectName}, authz.ActionRead) {
-		return
-	}
 	ns, projectName, ok := s.resolveProject(w, r)
 	if !ok {
+		return
+	}
+	if !s.authorize(w, r, authz.Resource{Kind: "app", Namespace: ns, Project: projectName}, authz.ActionRead) {
 		return
 	}
 	name := chi.URLParam(r, "app")
@@ -61,7 +60,7 @@ func (s *Server) handleListPods(w http.ResponseWriter, r *http.Request) {
 
 	var app mortisev1alpha1.App
 	if err := s.client.Get(r.Context(), types.NamespacedName{Name: name, Namespace: ns}, &app); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 

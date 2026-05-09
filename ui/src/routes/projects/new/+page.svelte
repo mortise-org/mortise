@@ -7,10 +7,42 @@
 	let alsoStaging = $state(false);
 	let loading = $state(false);
 	let error = $state('');
+	let nameStatus = $state<'idle' | 'checking' | 'available' | 'taken'>('idle');
 
 	// RFC 1123 DNS label: lowercase letters, digits, and hyphens;
 	// must start and end with an alphanumeric; max 63 chars.
 	const DNS_LABEL = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
+
+	let debounceTimer: ReturnType<typeof setTimeout> | undefined;
+	let checkSeq = 0; // monotonic counter to discard stale responses
+
+	async function checkNameAvailability() {
+		const trimmed = name.trim();
+		if (!trimmed || !DNS_LABEL.test(trimmed)) {
+			nameStatus = 'idle';
+			return;
+		}
+		nameStatus = 'checking';
+		const seq = ++checkSeq;
+		try {
+			const result = await api.checkProjectNameAvailable(trimmed);
+			if (seq !== checkSeq) return; // stale response; discard
+			nameStatus = result.available ? 'available' : 'taken';
+		} catch {
+			if (seq !== checkSeq) return;
+			nameStatus = 'idle';
+		}
+	}
+
+	function debouncedCheck() {
+		clearTimeout(debounceTimer);
+		const trimmed = name.trim();
+		if (!trimmed || !DNS_LABEL.test(trimmed)) {
+			nameStatus = 'idle';
+			return;
+		}
+		debounceTimer = setTimeout(checkNameAvailability, 300);
+	}
 
 	async function handleCreate() {
 		if (!name) return;
@@ -51,15 +83,28 @@
 			<div>
 				<label for="name" class="block text-sm text-gray-400">Project name <span class="text-danger">*</span></label>
 				<input id="name" type="text" bind:value={name}
+					onblur={checkNameAvailability}
+					oninput={debouncedCheck}
 					placeholder="my-project"
 					pattern="[a-z0-9][a-z0-9-]*[a-z0-9]"
 					maxlength="63"
 					autocomplete="off"
 					required
-					class="mt-1 w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 font-mono text-sm text-white placeholder-gray-500 outline-none focus:border-accent" />
-				<p class="mt-1 text-xs text-gray-500">
-					Lowercase letters, numbers, and hyphens only. Apps run in namespace <span class="font-mono">project-{name || '<name>'}</span>.
-				</p>
+					class="mt-1 w-full rounded-md border {nameStatus === 'taken' ? 'border-danger' : nameStatus === 'available' ? 'border-green-500' : 'border-surface-600'} bg-surface-800 px-3 py-2 font-mono text-sm text-white placeholder-gray-500 outline-none focus:border-accent" />
+				{#if nameStatus === 'taken'}
+					<p class="mt-1 text-xs text-danger">
+						This name is already taken. Project names must be unique across the platform.
+						If you need access to the existing project, ask a project owner or platform admin to add you as a member.
+					</p>
+				{:else if nameStatus === 'checking'}
+					<p class="mt-1 text-xs text-gray-400">Checking availability...</p>
+				{:else if nameStatus === 'available'}
+					<p class="mt-1 text-xs text-green-500">Name available</p>
+				{:else}
+					<p class="mt-1 text-xs text-gray-500">
+						Lowercase letters, numbers, and hyphens only. Apps run in namespace <span class="font-mono">pj-{name || '<name>'}</span>.
+					</p>
+				{/if}
 			</div>
 			<div>
 				<label for="desc" class="block text-sm text-gray-400">Description <span class="text-gray-600">(optional)</span></label>

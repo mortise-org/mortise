@@ -68,6 +68,14 @@ rules:
   - list
   - watch
 - apiGroups:
+  - cert-manager.io
+  resources:
+  - certificates
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
   - mortise.mortise.dev
   resources:
   - apps

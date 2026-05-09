@@ -117,7 +117,7 @@ func (s *Server) AddDomain(w http.ResponseWriter, r *http.Request) {
 	// Check for cross-app domain collisions before accepting.
 	var allApps mortisev1alpha1.AppList
 	if err := s.client.List(r.Context(), &allApps, &client.ListOptions{}); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 	for i := range allApps.Items {
@@ -146,7 +146,7 @@ func (s *Server) AddDomain(w http.ResponseWriter, r *http.Request) {
 
 	env.CustomDomains = append(env.CustomDomains, req.Domain)
 	if err := s.client.Update(r.Context(), app); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -200,7 +200,7 @@ func (s *Server) RemoveDomain(w http.ResponseWriter, r *http.Request) {
 
 	env.CustomDomains = slices.Delete(env.CustomDomains, idx, idx+1)
 	if err := s.client.Update(r.Context(), app); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -291,7 +291,7 @@ func (s *Server) ValidateDomain(w http.ResponseWriter, r *http.Request) {
 
 	var apps mortisev1alpha1.AppList
 	if err := s.client.List(r.Context(), &apps, &client.ListOptions{}); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 

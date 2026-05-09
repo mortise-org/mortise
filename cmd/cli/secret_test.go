@@ -87,3 +87,21 @@ func TestSecretSubcommands(t *testing.T) {
 		}
 	}
 }
+
+func TestSecretDelete_HasYesFlag(t *testing.T) {
+	cmd := newSecretDeleteCmd()
+	f := cmd.Flags().Lookup("yes")
+	if f == nil {
+		t.Fatal("secret delete missing --yes flag")
+	}
+	if f.Shorthand != "y" {
+		t.Errorf("expected shorthand 'y', got %q", f.Shorthand)
+	}
+}
+
+func TestSecretSet_HasDeprecatedValueFlag(t *testing.T) {
+	cmd := newSecretSetCmd()
+	if cmd.Flags().Lookup("value") == nil {
+		t.Fatal("secret set missing --value flag")
+	}
+}

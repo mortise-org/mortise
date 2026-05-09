@@ -71,6 +71,7 @@ jobs:
       - name: Install k3d
         run: |
           curl -fsSL -o /usr/local/bin/k3d "https://github.com/k3d-io/k3d/releases/download/v5.8.3/k3d-linux-amd64"
+          echo "dbaa79a76ace7f4ca230a1ff41dc7d8a5036a8ad0309e9c54f9bf3836dbe853e  /usr/local/bin/k3d" | sha256sum --check
           chmod +x /usr/local/bin/k3d
 
       - name: Run integration tests
