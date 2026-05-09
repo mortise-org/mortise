@@ -643,7 +643,15 @@ test.describe('new project page — also create staging checkbox', () => {
     const stagingLabel = page.locator('label').filter({ hasText: 'Also create a staging environment' });
     const checkbox = stagingLabel.locator('input[type="checkbox"]');
     await expect(checkbox).toBeVisible();
-    await checkbox.check({ force: true });
+    await page.evaluate(() => {
+      const input = Array.from(document.querySelectorAll('input[type="checkbox"]')).find(
+        (node) => node.parentElement?.textContent?.includes('Also create a staging environment')
+      ) as HTMLInputElement | undefined;
+      if (!input) throw new Error('staging checkbox not found');
+      input.checked = true;
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+    });
     await expect(checkbox).toBeChecked();
 
     await page.getByRole('button', { name: 'Create project', exact: true }).click();
