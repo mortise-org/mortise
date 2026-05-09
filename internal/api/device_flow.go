@@ -16,6 +16,7 @@ import (
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -33,6 +34,7 @@ const (
 // implements the device authorization grant (RFC 8628).
 type DeviceFlowHandler struct {
 	client     client.Client
+	clientset  kubernetes.Interface
 	httpClient HTTPClient
 }
 
@@ -41,8 +43,8 @@ type HTTPClient interface {
 	Do(req *http.Request) (*http.Response, error)
 }
 
-func newDeviceFlowHandler(c client.Client) *DeviceFlowHandler {
-	return &DeviceFlowHandler{client: c, httpClient: http.DefaultClient}
+func newDeviceFlowHandler(c client.Client, cs kubernetes.Interface) *DeviceFlowHandler {
+	return &DeviceFlowHandler{client: c, clientset: cs, httpClient: http.DefaultClient}
 }
 
 // deviceCodeResponse is the JSON body returned from the device code request.
@@ -293,11 +295,23 @@ func (d *DeviceFlowHandler) GitTokenStatus(w http.ResponseWriter, r *http.Reques
 	}
 
 	secretName := git.UserTokenSecretName(providerName, principal.Email)
-	var s corev1.Secret
-	err := d.client.Get(r.Context(), types.NamespacedName{
-		Namespace: git.TokenSecretNamespace,
-		Name:      secretName,
-	}, &s)
+	var (
+		s   corev1.Secret
+		err error
+	)
+	if d.clientset != nil {
+		secret, getErr := d.clientset.CoreV1().Secrets(git.TokenSecretNamespace).Get(r.Context(), secretName, metav1.GetOptions{})
+		if getErr == nil {
+			s = *secret
+		}
+		err = getErr
+	}
+	if d.clientset == nil || k8serrors.IsNotFound(err) {
+		err = d.client.Get(r.Context(), types.NamespacedName{
+			Namespace: git.TokenSecretNamespace,
+			Name:      secretName,
+		}, &s)
+	}
 
 	connected := err == nil && len(s.Data["token"]) > 0
 	writeJSON(w, http.StatusOK, map[string]bool{"connected": connected})

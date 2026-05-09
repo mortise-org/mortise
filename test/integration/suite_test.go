@@ -101,6 +101,11 @@ func loadKubeconfig() *rest.Config {
 	if err != nil {
 		log.Fatalf("failed to load kubeconfig from %s: %v", kubeconfig, err)
 	}
+	// The integration suite runs many polling-heavy tests in parallel. Raising
+	// the client-side QPS/Burst keeps the shared client from becoming the
+	// bottleneck and timing out on its own throttling delays.
+	cfg.QPS = 50
+	cfg.Burst = 100
 	return cfg
 }
 

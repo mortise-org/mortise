@@ -82,7 +82,7 @@ func (s *Server) clock() kclock.Clock {
 func NewServer(c client.Client, cs kubernetes.Interface, dc dynamic.Interface, restConfig *rest.Config, authProvider auth.AuthProvider, jwt *auth.JWTHelper, ui fs.FS, policy authz.PolicyEngine) *Server {
 	kr := webhook.NewK8sReader(c)
 	wh := webhook.New(kr)
-	df := newDeviceFlowHandler(c)
+	df := newDeviceFlowHandler(c, cs)
 	srv := &Server{
 		client:        c,
 		clientset:     cs,
