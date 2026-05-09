@@ -172,6 +172,64 @@ func (g *GiteaAPI) ListBranches(ctx context.Context, repo string) ([]Branch, err
 	return result, nil
 }
 
+func (g *GiteaAPI) ResolveBranchHead(ctx context.Context, repo, branch string) (string, error) {
+	owner, name, err := splitRepo(repo)
+	if err != nil {
+		return "", err
+	}
+	branches, _, err := g.client.ListRepoBranches(owner, name, gogitea.ListRepoBranchesOptions{
+		ListOptions: gogitea.ListOptions{PageSize: 100},
+	})
+	if err != nil {
+		return "", fmt.Errorf("list gitea branches: %w", err)
+	}
+	for _, b := range branches {
+		if b.Name == branch {
+			if b.Commit == nil {
+				return "", fmt.Errorf("gitea branch %q has no commit", branch)
+			}
+			return b.Commit.ID, nil
+		}
+	}
+	return "", fmt.Errorf("gitea branch %q not found", branch)
+}
+
+func (g *GiteaAPI) ListOpenPullRequests(ctx context.Context, repo string) ([]PullRequestSnapshot, error) {
+	owner, name, err := splitRepo(repo)
+	if err != nil {
+		return nil, err
+	}
+	prs, _, err := g.client.ListRepoPullRequests(owner, name, gogitea.ListPullRequestsOptions{
+		State: gogitea.StateOpen,
+		ListOptions: gogitea.ListOptions{
+			PageSize: 100,
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list gitea pull requests: %w", err)
+	}
+	out := make([]PullRequestSnapshot, 0, len(prs))
+	for _, pr := range prs {
+		author := PullRequestAuthor{}
+		if pr.Poster != nil {
+			author.Login = pr.Poster.UserName
+		}
+		branch := ""
+		sha := ""
+		if pr.Head != nil {
+			branch = pr.Head.Ref
+			sha = pr.Head.Sha
+		}
+		out = append(out, PullRequestSnapshot{
+			Number: int(pr.Index),
+			Branch: branch,
+			SHA:    sha,
+			Author: author,
+		})
+	}
+	return out, nil
+}
+
 func (g *GiteaAPI) ListTree(ctx context.Context, owner, repo, branch, path string) ([]TreeEntry, error) {
 	_ = ctx
 	items, _, err := g.client.ListContents(owner, repo, branch, path)

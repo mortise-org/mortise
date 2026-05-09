@@ -23,6 +23,10 @@ type fakeGitAPI struct {
 	reposErr       error
 	branches       []Branch
 	branchesErr    error
+	branchHead     string
+	branchHeadErr  error
+	openPRs        []PullRequestSnapshot
+	openPRsErr     error
 	webhooks       []WebhookInfo
 	webhooksErr    error
 	deleteHookErr  error
@@ -60,6 +64,14 @@ func (f *fakeGitAPI) ListRepos(_ context.Context) ([]Repository, error) {
 
 func (f *fakeGitAPI) ListBranches(_ context.Context, _ string) ([]Branch, error) {
 	return f.branches, f.branchesErr
+}
+
+func (f *fakeGitAPI) ResolveBranchHead(_ context.Context, _, _ string) (string, error) {
+	return f.branchHead, f.branchHeadErr
+}
+
+func (f *fakeGitAPI) ListOpenPullRequests(_ context.Context, _ string) ([]PullRequestSnapshot, error) {
+	return f.openPRs, f.openPRsErr
 }
 
 func (f *fakeGitAPI) ListTree(_ context.Context, _, _, _, _ string) ([]TreeEntry, error) {
