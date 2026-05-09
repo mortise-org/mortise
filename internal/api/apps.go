@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -160,7 +161,7 @@ func (s *Server) CreateApp(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.client.Create(r.Context(), app); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -191,7 +192,7 @@ func (s *Server) ListApps(w http.ResponseWriter, r *http.Request) {
 
 	var list mortisev1alpha1.AppList
 	if err := s.client.List(r.Context(), &list, client.InNamespace(ns)); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -222,7 +223,7 @@ func (s *Server) GetApp(w http.ResponseWriter, r *http.Request) {
 
 	var app mortisev1alpha1.App
 	if err := s.client.Get(r.Context(), types.NamespacedName{Name: name, Namespace: ns}, &app); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -260,6 +261,14 @@ func (s *Server) UpdateApp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	for i, env := range spec.Environments {
+		if msg := validateDNSLabel(fmt.Sprintf("environments[%d].name", i), env.Name, maxEnvNameLen); msg != "" {
+			writeJSON(w, http.StatusBadRequest, errorResponse{msg})
+			return
+		}
+	}
+
+	// Normalize short-form repo URLs on update too.
 	if spec.Source.Type == mortisev1alpha1.SourceTypeGit {
 		spec.Source.Repo = s.normalizeRepoURL(r.Context(), ns, spec.Source.ProviderRef, spec.Source.Repo)
 	}
@@ -273,7 +282,7 @@ func (s *Server) UpdateApp(w http.ResponseWriter, r *http.Request) {
 		return s.client.Update(r.Context(), &app)
 	})
 	if err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -306,12 +315,12 @@ func (s *Server) DeleteApp(w http.ResponseWriter, r *http.Request) {
 
 	var app mortisev1alpha1.App
 	if err := s.client.Get(r.Context(), types.NamespacedName{Name: name, Namespace: ns}, &app); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
 	if err := s.client.Delete(r.Context(), &app); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -321,7 +330,7 @@ func (s *Server) DeleteApp(w http.ResponseWriter, r *http.Request) {
 }
 
 // writeError maps k8s API errors to HTTP status codes.
-func writeError(w http.ResponseWriter, err error) {
+func writeError(w http.ResponseWriter, r *http.Request, err error) {
 	if errors.IsNotFound(err) {
 		writeJSON(w, http.StatusNotFound, errorResponse{err.Error()})
 		return
@@ -338,5 +347,6 @@ func writeError(w http.ResponseWriter, err error) {
 		writeJSON(w, http.StatusUnprocessableEntity, errorResponse{err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusInternalServerError, errorResponse{err.Error()})
+	slog.Error("internal API error", "error", err, "method", r.Method, "path", r.URL.Path, "request_id", r.Header.Get("X-Request-ID"))
+	writeJSON(w, http.StatusInternalServerError, errorResponse{"internal server error"})
 }

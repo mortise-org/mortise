@@ -634,6 +634,7 @@
 									Connect
 								</button>
 							{/if}
+							{#if store.isAdmin}
 							<button
 								type="button"
 								onclick={() => deleteProvider(provider.name)}
@@ -641,6 +642,7 @@
 							>
 								<Trash2 class="h-4 w-4" />
 							</button>
+						{/if}
 						</div>
 					</div>
 				{/each}

@@ -113,7 +113,10 @@ spec.environments) and retry.`,
 			if !yes {
 				fmt.Printf("This will remove environment %q and garbage-collect every app's resources in it. Continue? [y/N]: ", name)
 				reader := bufio.NewReader(os.Stdin)
-				line, _ := reader.ReadString('\n')
+				line, readErr := reader.ReadString('\n')
+				if readErr != nil {
+					return fmt.Errorf("failed to read confirmation from stdin (if running non-interactively, use --yes to skip confirmation): %w", readErr)
+				}
 				if !strings.EqualFold(strings.TrimSpace(line), "y") {
 					fmt.Println("Aborted.")
 					return nil
@@ -216,7 +219,10 @@ func newProjectDeleteCmd() *cobra.Command {
 			if !yes {
 				fmt.Printf("This will delete project %q and every app inside it. Continue? [y/N]: ", name)
 				reader := bufio.NewReader(os.Stdin)
-				line, _ := reader.ReadString('\n')
+				line, readErr := reader.ReadString('\n')
+				if readErr != nil {
+					return fmt.Errorf("failed to read confirmation from stdin (if running non-interactively, use --yes to skip confirmation): %w", readErr)
+				}
 				if !strings.EqualFold(strings.TrimSpace(line), "y") {
 					fmt.Println("Aborted.")
 					return nil

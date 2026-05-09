@@ -113,7 +113,7 @@ func (s *Server) CreateToken(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.client.Create(r.Context(), secret); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -156,7 +156,7 @@ func (s *Server) ListTokens(w http.ResponseWriter, r *http.Request) {
 			"mortise.dev/app":          appName,
 		},
 	); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -204,7 +204,7 @@ func (s *Server) DeleteToken(w http.ResponseWriter, r *http.Request) {
 
 	var secret corev1.Secret
 	if err := s.client.Get(r.Context(), types.NamespacedName{Name: secretName, Namespace: ns}, &secret); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -214,7 +214,7 @@ func (s *Server) DeleteToken(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.client.Delete(r.Context(), &secret); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -382,7 +382,7 @@ func (s *Server) CreateProjectToken(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.client.Create(r.Context(), secret); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -423,7 +423,7 @@ func (s *Server) ListProjectTokens(w http.ResponseWriter, r *http.Request) {
 			"mortise.dev/project-token": "true",
 		},
 	); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -475,7 +475,7 @@ func (s *Server) DeleteProjectToken(w http.ResponseWriter, r *http.Request) {
 
 	var secret corev1.Secret
 	if err := s.client.Get(r.Context(), types.NamespacedName{Name: tokenName, Namespace: ns}, &secret); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -485,7 +485,7 @@ func (s *Server) DeleteProjectToken(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.client.Delete(r.Context(), &secret); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 

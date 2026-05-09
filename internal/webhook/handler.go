@@ -670,7 +670,7 @@ func parseGitLabPREvent(body []byte, header http.Header) (PREvent, bool) {
 // normalizeAction maps forge-specific PR actions to our internal set.
 func normalizeAction(action string) string {
 	switch action {
-	case "opened":
+	case "opened", "reopened":
 		return "opened"
 	case "synchronize", "synchronized":
 		return "synchronize"

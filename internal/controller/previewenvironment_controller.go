@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	stderrors "errors"
 	"fmt"
 	"strings"
 	"time"
@@ -149,10 +150,21 @@ func (r *PreviewEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.R
 		}
 		return ctrl.Result{}, err
 	}
-
-	// Preview only works for git-source apps with preview enabled on the parent Project.
+	// Validate source type before setting owner reference to avoid a wasted
+	// write on PEs that reference non-git apps.
 	if app.Spec.Source.Type != mortisev1alpha1.SourceTypeGit {
 		return ctrl.Result{}, r.setPreviewFailed(ctx, &pe, "NotGitSource", "previews only work for git source apps")
+	}
+
+	// Ensure the PE has an owner reference to the parent App so App deletion
+	// garbage-collects orphan PEs.
+	if !hasOwnerRef(&pe, app.UID) {
+		if err := controllerutil.SetControllerReference(&app, &pe, r.Scheme); err != nil {
+			return ctrl.Result{}, fmt.Errorf("set owner reference on PE: %w", err)
+		}
+		if err := r.Update(ctx, &pe); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 	project, err := r.getProjectForApp(ctx, &app)
 	if err != nil {
@@ -243,10 +255,12 @@ func (r *PreviewEnvironmentReconciler) reconcilePreviewBuild(ctx context.Context
 		return ctrl.Result{}, false, r.setPreviewFailed(ctx, pe, "MissingSHA", "pullRequest.sha is empty")
 	}
 
-	// Short-circuit: already built this SHA.
+	// Short-circuit: already built this SHA — skip the build but proceed
+	// with Deployment/Service/Ingress reconciliation so spec changes
+	// (replicas, resources, env vars, domain) are picked up.
 	if pe.Status.Image != "" && pe.Status.Phase == mortisev1alpha1.PreviewPhaseReady {
 		if strings.Contains(pe.Status.Image, shortTag(revision)) {
-			return ctrl.Result{}, false, nil
+			return ctrl.Result{}, true, nil
 		}
 	}
 
@@ -434,6 +448,7 @@ func (r *PreviewEnvironmentReconciler) reconcilePreviewEnvSecret(ctx context.Con
 		constants.ProjectLabel:         projectName,
 		"app.kubernetes.io/managed-by": "mortise",
 		"app.kubernetes.io/component":  "preview",
+		"mortise.dev/pr-number":        fmt.Sprintf("%d", pe.Spec.PullRequest.Number),
 	}
 
 	// Copy shared-env from source env namespace into the preview namespace.
@@ -758,6 +773,8 @@ func (r *PreviewEnvironmentReconciler) ensurePreviewNamespace(ctx context.Contex
 // coordinating "last PE out deletes the namespace" opens races we don't need
 // to solve: an empty preview namespace is cheap and gets reused on PR reopen.
 func (r *PreviewEnvironmentReconciler) gcPreviewResources(ctx context.Context, pe *mortisev1alpha1.PreviewEnvironment, previewNs string) error {
+	log := logf.FromContext(ctx)
+
 	projectName, ok := constants.ProjectFromControlNs(pe.Namespace)
 	if !ok {
 		return nil
@@ -769,23 +786,47 @@ func (r *PreviewEnvironmentReconciler) gcPreviewResources(ctx context.Context, p
 	}
 	inNs := client.InNamespace(previewNs)
 
+	var errs []error
+
 	var deploys appsv1.DeploymentList
 	if err := r.List(ctx, &deploys, selector, inNs); err == nil {
 		for i := range deploys.Items {
-			_ = r.Delete(ctx, &deploys.Items[i])
+			if err := r.Delete(ctx, &deploys.Items[i]); err != nil && !errors.IsNotFound(err) {
+				log.Error(err, "gc: failed to delete Deployment", "name", deploys.Items[i].Name, "namespace", previewNs)
+				errs = append(errs, fmt.Errorf("delete Deployment %s/%s: %w", previewNs, deploys.Items[i].Name, err))
+			}
 		}
 	}
 	var svcs corev1.ServiceList
 	if err := r.List(ctx, &svcs, selector, inNs); err == nil {
 		for i := range svcs.Items {
-			_ = r.Delete(ctx, &svcs.Items[i])
+			if err := r.Delete(ctx, &svcs.Items[i]); err != nil && !errors.IsNotFound(err) {
+				log.Error(err, "gc: failed to delete Service", "name", svcs.Items[i].Name, "namespace", previewNs)
+				errs = append(errs, fmt.Errorf("delete Service %s/%s: %w", previewNs, svcs.Items[i].Name, err))
+			}
 		}
 	}
 	var ings networkingv1.IngressList
 	if err := r.List(ctx, &ings, selector, inNs); err == nil {
 		for i := range ings.Items {
-			_ = r.Delete(ctx, &ings.Items[i])
+			if err := r.Delete(ctx, &ings.Items[i]); err != nil && !errors.IsNotFound(err) {
+				log.Error(err, "gc: failed to delete Ingress", "name", ings.Items[i].Name, "namespace", previewNs)
+				errs = append(errs, fmt.Errorf("delete Ingress %s/%s: %w", previewNs, ings.Items[i].Name, err))
+			}
 		}
+	}
+	var secrets corev1.SecretList
+	if err := r.List(ctx, &secrets, selector, inNs); err == nil {
+		for i := range secrets.Items {
+			if err := r.Delete(ctx, &secrets.Items[i]); err != nil && !errors.IsNotFound(err) {
+				log.Error(err, "gc: failed to delete Secret", "name", secrets.Items[i].Name, "namespace", previewNs)
+				errs = append(errs, fmt.Errorf("delete Secret %s/%s: %w", previewNs, secrets.Items[i].Name, err))
+			}
+		}
+	}
+
+	if len(errs) > 0 {
+		return fmt.Errorf("gc preview resources: %d deletion(s) failed: %w", len(errs), stderrors.Join(errs...))
 	}
 	return nil
 }
@@ -803,6 +844,15 @@ func previewLabels(pe *mortisev1alpha1.PreviewEnvironment) map[string]string {
 		"mortise.dev/pr-number":        fmt.Sprintf("%d", pe.Spec.PullRequest.Number),
 		constants.ProjectLabel:         projectName,
 	}
+}
+
+func hasOwnerRef(pe *mortisev1alpha1.PreviewEnvironment, uid types.UID) bool {
+	for _, ref := range pe.OwnerReferences {
+		if ref.UID == uid {
+			return true
+		}
+	}
+	return false
 }
 
 func previewDockerfilePath(app *mortisev1alpha1.App) string {

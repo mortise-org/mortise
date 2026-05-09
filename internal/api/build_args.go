@@ -92,7 +92,7 @@ func (s *Server) PutBuildArgs(w http.ResponseWriter, r *http.Request) {
 	env.BuildArgs = args
 
 	if err := s.client.Update(r.Context(), app); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 

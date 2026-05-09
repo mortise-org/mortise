@@ -300,6 +300,17 @@ func TestAppSubcommands_HaveProjectFlag(t *testing.T) {
 	}
 }
 
+func TestAppDelete_HasYesFlag(t *testing.T) {
+	cmd := newAppDeleteCmd()
+	f := cmd.Flags().Lookup("yes")
+	if f == nil {
+		t.Fatal("app delete missing --yes flag")
+	}
+	if f.Shorthand != "y" {
+		t.Errorf("expected shorthand 'y', got %q", f.Shorthand)
+	}
+}
+
 func TestAPIError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
