@@ -50,7 +50,6 @@ import (
 	"github.com/mortise-org/mortise/internal/registry"
 )
 
-const previewBuildTimeout = 30 * time.Minute
 const previewBuildPollInterval = 15 * time.Second
 
 // previewFinalizer gates PreviewEnvironment deletion so we can garbage-collect
@@ -67,8 +66,6 @@ type PreviewEnvironmentReconciler struct {
 	GitClient       git.GitClient
 	RegistryBackend registry.RegistryBackend
 	IngressProvider ingress.IngressProvider
-
-	builds BuildTrackerStore
 }
 
 // +kubebuilder:rbac:groups=mortise.mortise.dev,resources=previewenvironments,verbs=get;list;watch;create;update;patch;delete

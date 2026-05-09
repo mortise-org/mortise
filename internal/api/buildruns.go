@@ -134,17 +134,6 @@ func (s *Server) listAppBuildRuns(ctx context.Context, namespace, appName string
 	return list.Items, nil
 }
 
-func (s *Server) getAppBuildRun(ctx context.Context, namespace, appName, runName string) (*mortisev1alpha1.BuildRun, error) {
-	var run mortisev1alpha1.BuildRun
-	if err := s.client.Get(ctx, types.NamespacedName{Namespace: namespace, Name: runName}, &run); err != nil {
-		return nil, err
-	}
-	if !isAppBuildRun(&run, appName) {
-		return nil, errors.NewNotFound(mortisev1alpha1.GroupVersion.WithResource("buildruns").GroupResource(), runName)
-	}
-	return &run, nil
-}
-
 func (s *Server) getNamedBuildRun(ctx context.Context, namespace, runName string) (*mortisev1alpha1.BuildRun, error) {
 	if runName == "" {
 		return nil, nil
@@ -337,14 +326,6 @@ func (s *Server) readBuildRunLogSnapshot(ctx context.Context, namespace string, 
 		resp.Lines = []string{}
 	}
 	return toBuildLogSnapshot(resp)
-}
-
-func (s *Server) readLegacyBuildLogSnapshot(ctx context.Context, namespace, appName string) buildLogSnapshot {
-	cm, err := s.getLegacyBuildLogsConfigMap(ctx, namespace, appName)
-	if err != nil || cm == nil {
-		return buildLogSnapshot{lines: []string{}}
-	}
-	return toBuildLogSnapshot(buildRunLogResponseFromConfigMap(cm, false))
 }
 
 // handleListBuildRuns returns durable build executions for an app, newest first.

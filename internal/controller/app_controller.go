@@ -672,97 +672,6 @@ const maxBuildLogConfigMapBytes = 900_000
 // error message can't push the ConfigMap past the API-server limit.
 const maxBuildErrorAnnotationBytes = 1024
 
-// persistBuildLog writes the tracker's final log buffer to a ConfigMap in the
-// App's namespace, owned by the App so it's GC'd on delete. Called from a
-// deferred in runBuild so every terminal path (success + every failure) hits
-// it. Uses a fresh background context with a short timeout so build-context
-// cancellation doesn't skip the write. Failures are logged and swallowed —
-// the build itself already succeeded/failed per the tracker; a ConfigMap
-// write error shouldn't re-fail it.
-func (r *AppReconciler) persistBuildLog(t *buildTracker, p buildParams) {
-	log := logf.Log.WithName("build-log-persist").WithValues("app", p.appName, "namespace", p.namespace)
-
-	phase, _, _, _, errMsg, _ := t.snapshot()
-	lines := t.snapshotLogs()
-
-	// Drop head lines until the joined payload fits under the size cap. The
-	// per-line cap already bounds each line, so this only trims when the log
-	// is long, not when any single line is huge.
-	joined := strings.Join(lines, "\n")
-	for len(joined) > maxBuildLogConfigMapBytes && len(lines) > 0 {
-		lines = lines[1:]
-		joined = strings.Join(lines, "\n")
-	}
-
-	status := "Succeeded"
-	if phase == buildPhaseFailed {
-		status = "Failed"
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	// Fetch the App to anchor the owner reference. If the App is gone
-	// (deleted mid-build), skip the persist entirely — there's nothing to
-	// own the ConfigMap and GC would delete it immediately anyway.
-	var app mortisev1alpha1.App
-	if err := r.Get(ctx, types.NamespacedName{Name: p.appName, Namespace: p.namespace}, &app); err != nil {
-		if !errors.IsNotFound(err) {
-			log.Error(err, "fetch app for build-log persist")
-		}
-		return
-	}
-
-	annotations := map[string]string{
-		buildLogAnnotationTimestamp: r.clock().Now().UTC().Format(time.RFC3339Nano),
-		buildLogAnnotationCommit:    p.revision,
-		buildLogAnnotationStatus:    status,
-	}
-	if status == "Failed" && errMsg != "" {
-		if len(errMsg) > maxBuildErrorAnnotationBytes {
-			errMsg = errMsg[:maxBuildErrorAnnotationBytes]
-		}
-		annotations[buildLogAnnotationError] = errMsg
-	}
-
-	desired := &corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:        buildLogsConfigMapName(p.appName),
-			Namespace:   p.namespace,
-			Labels:      appLabels(&app, ""),
-			Annotations: annotations,
-		},
-		Data: map[string]string{
-			"lines": joined,
-		},
-	}
-	if err := controllerutil.SetControllerReference(&app, desired, r.Scheme); err != nil {
-		log.Error(err, "set owner reference on build-log configmap")
-		return
-	}
-
-	var existing corev1.ConfigMap
-	err := r.Get(ctx, types.NamespacedName{Name: desired.Name, Namespace: desired.Namespace}, &existing)
-	if errors.IsNotFound(err) {
-		if err := r.Create(ctx, desired); err != nil {
-			log.Error(err, "create build-log configmap")
-		}
-		return
-	}
-	if err != nil {
-		log.Error(err, "get build-log configmap")
-		return
-	}
-
-	existing.Labels = desired.Labels
-	existing.Annotations = desired.Annotations
-	existing.Data = desired.Data
-	existing.OwnerReferences = desired.OwnerReferences
-	if err := r.Update(ctx, &existing); err != nil {
-		log.Error(err, "update build-log configmap")
-	}
-}
-
 // resolveSourceDir returns the build context directory inside cloneDir,
 // honoring the App's source.path (monorepo subdirectory). An empty path means
 // the repo root. Rejects absolute paths and any segment equal to ".." to
@@ -809,11 +718,6 @@ func shortTag(revision string) string {
 // envImageTag produces a per-environment image tag: "sha-envname".
 func envImageTag(revision, envName string) string {
 	return shortTag(revision) + "-" + envName
-}
-
-// envBuildKey returns a tracker key scoped to app + environment.
-func envBuildKey(app *mortisev1alpha1.App, envName string) types.NamespacedName {
-	return types.NamespacedName{Namespace: app.Namespace, Name: app.Name + "/" + envName}
 }
 
 // envStatusFor returns the EnvironmentStatus for envName, or nil.
