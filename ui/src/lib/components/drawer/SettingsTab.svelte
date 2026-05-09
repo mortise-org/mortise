@@ -37,7 +37,9 @@
 		specOverride = spec;
 	}
 
-	const selectedEnv = $derived(store.currentEnv(project) ?? '');
+	const selectedEnv = $derived(
+		store.currentEnv(project) || app.spec.environments?.[0]?.name || 'production'
+	);
 	const envEntry = $derived(app.spec.environments?.find(e => e.name === selectedEnv));
 	const envEnabled = $derived(envEntry?.enabled !== false);
 	let togglingEnabled = $state(false);
