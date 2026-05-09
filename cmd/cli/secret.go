@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"os"
+	"strings"
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
@@ -57,6 +59,11 @@ func newSecretSetCmd() *cobra.Command {
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			secretValue := value
+			if cmd.Flags().Changed("value") {
+				fmt.Fprintln(os.Stderr, "WARNING: --value is deprecated and will be removed in a future release.")
+				fmt.Fprintln(os.Stderr, "Secret values passed via flags are visible in shell history and process listings.")
+				fmt.Fprintln(os.Stderr, "Use stdin instead: echo $SECRET | mortise secret set <app> <name>")
+			}
 			if secretValue == "" {
 				fmt.Print("Secret value: ")
 				pw, err := term.ReadPassword(int(os.Stdin.Fd()))
@@ -86,11 +93,24 @@ func newSecretSetCmd() *cobra.Command {
 
 func newSecretDeleteCmd() *cobra.Command {
 	var project, env string
+	var yes bool
 	cmd := &cobra.Command{
 		Use:   "delete <app> <name>",
 		Short: "Delete a secret",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if !yes {
+				fmt.Printf("This will delete secret %q from app %q. Continue? [y/N]: ", args[1], args[0])
+				reader := bufio.NewReader(os.Stdin)
+				line, readErr := reader.ReadString('\n')
+				if readErr != nil {
+					return fmt.Errorf("failed to read confirmation from stdin (if running non-interactively, use --yes to skip confirmation): %w", readErr)
+				}
+				if !strings.EqualFold(strings.TrimSpace(line), "y") {
+					fmt.Println("Aborted.")
+					return nil
+				}
+			}
 			c, err := newClientFromConfig()
 			if err != nil {
 				return err
@@ -105,5 +125,6 @@ func newSecretDeleteCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&project, "project", "", "Project (default: current project)")
 	cmd.Flags().StringVar(&env, "env", "", "Environment name")
+	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "Skip confirmation prompt")
 	return cmd
 }
