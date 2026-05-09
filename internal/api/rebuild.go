@@ -14,16 +14,17 @@ import (
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
 	"github.com/mortise-org/mortise/internal/authz"
 	"github.com/mortise-org/mortise/internal/constants"
+	"github.com/mortise-org/mortise/internal/git"
 )
 
 // Rebuild triggers a fresh build from the latest git commit.
-// It clears lastBuiltSHA so the reconciler treats the current revision as new,
-// and resets the phase from Failed/CrashLooping so the build guard doesn't skip it.
+// It resolves the current branch head, syncs mortise.dev/revision to that SHA,
+// and clears build freshness state so the reconciler must run a fresh no-cache build.
 //
 // POST /api/projects/{project}/apps/{app}/rebuild
 //
 // @Summary Rebuild an app from source
-// @Description Clear the last-built SHA and reset the phase so the reconciler triggers a fresh build. Only supported for git-source apps.
+// @Description Resolve the current branch head, sync mortise.dev/revision to that SHA, and clear build freshness state so the reconciler triggers a fresh no-cache build. Only supported for git-source apps.
 // @Tags deploy
 // @Produce json
 // @Security BearerAuth
@@ -44,7 +45,7 @@ func (s *Server) Rebuild(w http.ResponseWriter, r *http.Request) {
 
 	var app mortisev1alpha1.App
 	if err := s.client.Get(r.Context(), types.NamespacedName{Name: appName, Namespace: ns}, &app); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -53,13 +54,21 @@ func (s *Server) Rebuild(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Signal a no-cache build so BuildKit rebuilds all layers from scratch.
+	revision, err := s.resolveGitBranchHead(r.Context(), &app)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+
+	// Sync git state first, then force a no-cache build so BuildKit rebuilds
+	// all layers from the resolved commit SHA.
 	if app.Annotations == nil {
 		app.Annotations = make(map[string]string)
 	}
+	app.Annotations["mortise.dev/revision"] = revision
 	app.Annotations["mortise.dev/no-cache-build"] = "true"
 	if err := s.client.Update(r.Context(), &app); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -67,22 +76,64 @@ func (s *Server) Rebuild(w http.ResponseWriter, r *http.Request) {
 	// controller reconcile between the annotation write and this point would
 	// bump the resourceVersion, causing a stale-object conflict otherwise.
 	if err := s.client.Get(r.Context(), types.NamespacedName{Name: appName, Namespace: ns}, &app); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
-	// Clear lastBuiltSHA so the reconciler sees the revision as new.
+	// Clear app-level and per-environment build freshness so rebuild cannot
+	// no-op even when an older build stored a branch-name fallback.
 	app.Status.LastBuiltSHA = ""
+	app.Status.LastBuiltImage = ""
+	for i := range app.Status.Environments {
+		app.Status.Environments[i].LastBuiltSHA = ""
+	}
 	app.Status.Phase = mortisev1alpha1.AppPhaseBuilding
 	app.Status.Conditions = nil
 	if err := s.client.Status().Update(r.Context(), &app); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
 	s.recordActivity(r, projectName, "build", "app", appName, "Triggered rebuild for "+appName, "")
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "rebuilding"})
+}
+
+func (s *Server) resolveGitBranchHead(ctx context.Context, app *mortisev1alpha1.App) (string, error) {
+	if app.Spec.Source.ProviderRef == "" {
+		return "", fmt.Errorf("providerRef is required for git-source rebuilds")
+	}
+
+	var gp mortisev1alpha1.GitProvider
+	if err := s.client.Get(ctx, types.NamespacedName{Name: app.Spec.Source.ProviderRef}, &gp); err != nil {
+		return "", fmt.Errorf("get GitProvider %q: %w", app.Spec.Source.ProviderRef, err)
+	}
+
+	createdBy := app.Annotations["mortise.dev/created-by"]
+	cachedOwner := app.Annotations["mortise.dev/git-token-owner"]
+	tokenResult, err := git.ResolveGitTokenForApp(ctx, s.client, gp.Name, app.Namespace, createdBy, cachedOwner)
+	if err != nil {
+		return "", fmt.Errorf("resolve git token: %w", err)
+	}
+
+	apiFactory := s.GitAPIFactory
+	if apiFactory == nil {
+		apiFactory = git.NewGitAPIFromProvider
+	}
+	api, err := apiFactory(&gp, tokenResult.Token, "")
+	if err != nil {
+		return "", fmt.Errorf("create git API: %w", err)
+	}
+
+	branch := app.Spec.Source.Branch
+	if branch == "" {
+		branch = "main"
+	}
+	sha, err := api.ResolveBranchHead(ctx, app.Spec.Source.Repo, branch)
+	if err != nil {
+		return "", fmt.Errorf("resolve branch head: %w", err)
+	}
+	return sha, nil
 }
 
 // Redeploy triggers a rolling restart of an app's Deployment(s) by annotating
@@ -107,28 +158,28 @@ func (s *Server) Redeploy(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if !s.authorize(w, r, authz.Resource{Kind: "app", Project: projectName}, authz.ActionUpdate) {
-		return
-	}
 	appName := chi.URLParam(r, "app")
 	env := envFromQuery(r)
+	if !s.authorize(w, r, authz.Resource{Kind: "app", Project: projectName, Environment: env}, authz.ActionUpdate) {
+		return
+	}
 
 	envNs := constants.EnvNamespace(projectName, env)
 
 	var app mortisev1alpha1.App
 	if err := s.client.Get(r.Context(), types.NamespacedName{Name: appName, Namespace: ns}, &app); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
 	pendingHash := envStatusPendingHash(app.Status.Environments, env)
-	if err := restartDeployment(r.Context(), s.client, envNs, appName, pendingHash); err != nil {
-		writeError(w, err)
+	if err := restartDeployment(r.Context(), s.client, envNs, appName, pendingHash, s.clock().Now()); err != nil {
+		writeError(w, r, err)
 		return
 	}
 
 	if err := s.client.Get(r.Context(), types.NamespacedName{Name: appName, Namespace: ns}, &app); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -140,7 +191,7 @@ func (s *Server) Redeploy(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err := s.client.Status().Update(r.Context(), &app); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -176,18 +227,34 @@ func (s *Server) RedeployStale(w http.ResponseWriter, r *http.Request) {
 
 	var app mortisev1alpha1.App
 	if err := s.client.Get(r.Context(), types.NamespacedName{Name: appName, Namespace: ns}, &app); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
+		return
+	}
+
+	p := PrincipalFromContext(r.Context())
+	if p == nil {
+		writeJSON(w, http.StatusUnauthorized, errorResponse{"authentication required"})
 		return
 	}
 
 	var restarted []string
+	var skipped []string
 	for _, es := range app.Status.Environments {
 		if es.PendingEnvHash == "" || es.DeployedEnvHash == "" || es.PendingEnvHash == es.DeployedEnvHash {
 			continue
 		}
+		allowed, err := s.authz.Authorize(r.Context(), *p, authz.Resource{Kind: "app", Project: projectName, Environment: es.Name}, authz.ActionUpdate)
+		if err != nil {
+			writeError(w, r, err)
+			return
+		}
+		if !allowed {
+			skipped = append(skipped, es.Name)
+			continue
+		}
 		envNs := constants.EnvNamespace(projectName, es.Name)
-		if err := restartDeployment(r.Context(), s.client, envNs, appName, es.PendingEnvHash); err != nil {
-			writeError(w, err)
+	if err := restartDeployment(r.Context(), s.client, envNs, appName, es.PendingEnvHash, s.clock().Now()); err != nil {
+			writeError(w, r, err)
 			return
 		}
 		restarted = append(restarted, es.Name)
@@ -195,7 +262,7 @@ func (s *Server) RedeployStale(w http.ResponseWriter, r *http.Request) {
 
 	if len(restarted) > 0 {
 		if err := s.client.Get(r.Context(), types.NamespacedName{Name: appName, Namespace: ns}, &app); err != nil {
-			writeError(w, err)
+			writeError(w, r, err)
 			return
 		}
 		app.Status.Phase = mortisev1alpha1.AppPhaseDeploying
@@ -209,13 +276,17 @@ func (s *Server) RedeployStale(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if err := s.client.Status().Update(r.Context(), &app); err != nil {
-			writeError(w, err)
+			writeError(w, r, err)
 			return
 		}
 		s.recordActivity(r, projectName, "deploy", "app", appName, fmt.Sprintf("Redeployed stale envs for %s: %v", appName, restarted), "")
 	}
 
-	writeJSON(w, http.StatusOK, map[string][]string{"restarted": restarted})
+	resp := map[string][]string{"restarted": restarted}
+	if len(skipped) > 0 {
+		resp["skipped"] = skipped
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func envStatusPendingHash(envStatuses []mortisev1alpha1.EnvironmentStatus, envName string) string {
@@ -227,7 +298,7 @@ func envStatusPendingHash(envStatuses []mortisev1alpha1.EnvironmentStatus, envNa
 	return ""
 }
 
-func restartDeployment(ctx context.Context, c client.Client, namespace, appName, pendingEnvHash string) error {
+func restartDeployment(ctx context.Context, c client.Client, namespace, appName, pendingEnvHash string, now time.Time) error {
 	var dep appsv1.Deployment
 	if err := c.Get(ctx, types.NamespacedName{Name: appName, Namespace: namespace}, &dep); err != nil {
 		return err
@@ -236,7 +307,7 @@ func restartDeployment(ctx context.Context, c client.Client, namespace, appName,
 	if dep.Spec.Template.Annotations == nil {
 		dep.Spec.Template.Annotations = make(map[string]string)
 	}
-	dep.Spec.Template.Annotations["mortise.dev/restartedAt"] = fmt.Sprintf("%d", time.Now().UnixMilli())
+	dep.Spec.Template.Annotations["mortise.dev/restartedAt"] = fmt.Sprintf("%d", now.UnixMilli())
 	if pendingEnvHash != "" {
 		dep.Spec.Template.Annotations["mortise.dev/env-hash"] = pendingEnvHash
 	}

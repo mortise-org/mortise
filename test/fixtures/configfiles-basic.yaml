@@ -2,6 +2,8 @@ apiVersion: mortise.mortise.dev/v1alpha1
 kind: App
 metadata:
   name: test-configfiles
+  annotations:
+    mortise.dev/disable-default-security-context: "true"
 spec:
   source:
     type: image

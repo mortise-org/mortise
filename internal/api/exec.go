@@ -27,9 +27,32 @@ type execRequest struct {
 }
 
 type execResponse struct {
-	Stdout string `json:"stdout"`
-	Stderr string `json:"stderr"`
+	Stdout    string `json:"stdout"`
+	Stderr    string `json:"stderr"`
+	Truncated bool   `json:"truncated,omitempty"`
 }
+
+const maxExecOutputBytes = 10 << 20 // 10 MiB per stream
+
+type limitedBuffer struct {
+	buf   bytes.Buffer
+	limit int
+}
+
+func (lb *limitedBuffer) Write(p []byte) (int, error) {
+	remaining := lb.limit - lb.buf.Len()
+	if remaining <= 0 {
+		return len(p), nil
+	}
+	if len(p) > remaining {
+		lb.buf.Write(p[:remaining])
+		return len(p), nil
+	}
+	return lb.buf.Write(p)
+}
+
+func (lb *limitedBuffer) String() string { return lb.buf.String() }
+func (lb *limitedBuffer) Len() int       { return lb.buf.Len() }
 
 // @Summary Execute a command in an app pod
 // @Description Runs a command in the first running pod of the specified app and returns stdout/stderr
@@ -52,12 +75,11 @@ func (s *Server) ExecInApp(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if !s.authorize(w, r, authz.Resource{Kind: "app", Project: projectName}, authz.ActionUpdate) {
+	appName := chi.URLParam(r, "app")
+	env := envFromQuery(r)
+	if !s.authorize(w, r, authz.Resource{Kind: "app", Project: projectName, Environment: env}, authz.ActionUpdate) {
 		return
 	}
-	appName := chi.URLParam(r, "app")
-
-	env := envFromQuery(r)
 	envNs := constants.EnvNamespace(projectName, env)
 
 	var req execRequest
@@ -77,28 +99,29 @@ func (s *Server) ExecInApp(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Find the first running pod for this app in the env namespace.
-	podName, err := s.findAppPod(r.Context(), envNs, appName)
+	podName, err := s.findAppPod(r.Context(), envNs, appName, env)
 	if err != nil {
 		slog.Error("exec: failed to find app pod", "namespace", envNs, "app", appName, "err", err)
 		writeJSON(w, http.StatusNotFound, errorResponse{fmt.Sprintf("no running pod found for app %q", appName)})
 		return
 	}
 
-	stdout, stderr, err := s.execInPod(r.Context(), envNs, podName, req.Command)
+	stdout, stderr, truncated, err := s.execInPod(r.Context(), envNs, podName, req.Command)
 	if err != nil {
 		slog.Error("exec: streaming failed", "namespace", envNs, "app", appName, "pod", podName, "err", err)
 		writeJSON(w, http.StatusInternalServerError, errorResponse{"exec failed"})
 		return
 	}
 
-	writeJSON(w, http.StatusOK, execResponse{Stdout: stdout, Stderr: stderr})
+	writeJSON(w, http.StatusOK, execResponse{Stdout: stdout, Stderr: stderr, Truncated: truncated})
 }
 
 // findAppPod returns the name of the first running pod matching the app label.
-func (s *Server) findAppPod(ctx context.Context, ns, appName string) (string, error) {
+func (s *Server) findAppPod(ctx context.Context, ns, appName, env string) (string, error) {
 	pods, err := s.clientset.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{
-		LabelSelector: fmt.Sprintf("app.kubernetes.io/name=%s", appName),
-		Limit:         1,
+		LabelSelector: fmt.Sprintf("%s=%s,app.kubernetes.io/managed-by=mortise,%s=%s",
+			constants.AppNameLabel, appName, constants.EnvironmentLabel, env),
+		Limit: 1,
 	})
 	if err != nil {
 		return "", fmt.Errorf("listing pods: %w", err)
@@ -110,7 +133,7 @@ func (s *Server) findAppPod(ctx context.Context, ns, appName string) (string, er
 }
 
 // execInPod runs a command in the first container of the named pod.
-func (s *Server) execInPod(ctx context.Context, ns, podName string, command []string) (string, string, error) {
+func (s *Server) execInPod(ctx context.Context, ns, podName string, command []string) (string, string, bool, error) {
 	req := s.clientset.CoreV1().RESTClient().Post().
 		Resource("pods").
 		Name(podName).
@@ -124,16 +147,18 @@ func (s *Server) execInPod(ctx context.Context, ns, podName string, command []st
 
 	exec, err := remotecommand.NewSPDYExecutor(s.restConfig, "POST", req.URL())
 	if err != nil {
-		return "", "", fmt.Errorf("creating executor: %w", err)
+		return "", "", false, fmt.Errorf("creating executor: %w", err)
 	}
 
-	var stdout, stderr bytes.Buffer
+	stdout := &limitedBuffer{limit: maxExecOutputBytes}
+	stderr := &limitedBuffer{limit: maxExecOutputBytes}
 	if err := exec.StreamWithContext(ctx, remotecommand.StreamOptions{
-		Stdout: &stdout,
-		Stderr: &stderr,
+		Stdout: stdout,
+		Stderr: stderr,
 	}); err != nil {
-		return stdout.String(), stderr.String(), err
+		return stdout.String(), stderr.String(), false, err
 	}
 
-	return stdout.String(), stderr.String(), nil
+	truncated := stdout.Len() >= maxExecOutputBytes || stderr.Len() >= maxExecOutputBytes
+	return stdout.String(), stderr.String(), truncated, nil
 }

@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"testing"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -52,6 +53,49 @@ import (
 // testImageNginx is the pinned image used across App controller tests.
 // Hoisted to package scope so it is visible from multiple Describe blocks.
 const testImageNginx = "nginx:1.27"
+
+func TestPreviewSyncStateIncludesBackfillInputs(t *testing.T) {
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{
+			Annotations: map[string]string{},
+		},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{
+				Type:        mortisev1alpha1.SourceTypeGit,
+				Repo:        "owner/repo",
+				ProviderRef: "github",
+			},
+			Environments: []mortisev1alpha1.Environment{{Name: "staging"}},
+		},
+	}
+	project := &mortisev1alpha1.Project{
+		Spec: mortisev1alpha1.ProjectSpec{
+			Preview:      &mortisev1alpha1.PreviewConfig{Enabled: true, Domain: "pr-{number}.example.com"},
+			Environments: []mortisev1alpha1.ProjectEnvironment{{Name: "staging"}},
+		},
+	}
+
+	base := previewSyncState(app, project)
+
+	withAppEnvChange := app.DeepCopy()
+	replicas := int32(3)
+	withAppEnvChange.Spec.Environments[0].Replicas = &replicas
+	if got := previewSyncState(withAppEnvChange, project); got == base {
+		t.Fatal("preview sync state did not change after app environment preview input changed")
+	}
+
+	withProjectEnvChange := project.DeepCopy()
+	withProjectEnvChange.Spec.Environments = append(withProjectEnvChange.Spec.Environments, mortisev1alpha1.ProjectEnvironment{Name: "production"})
+	if got := previewSyncState(app, withProjectEnvChange); got == base {
+		t.Fatal("preview sync state did not change after project environment topology changed")
+	}
+
+	withCascadeRev := app.DeepCopy()
+	withCascadeRev.Annotations[ProjectPreviewRevAnnotation] = "2"
+	if got := previewSyncState(withCascadeRev, project); got == base {
+		t.Fatal("preview sync state did not change after project preview cascade revision changed")
+	}
+}
 
 var _ = Describe("App Controller", func() {
 	const namespace = "pj-default-project"
@@ -5193,5 +5237,236 @@ var _ = Describe("toResourceRequirements", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(req.Requests).To(BeEmpty())
 		Expect(req.Limits).To(BeEmpty())
+	})
+})
+
+var _ = Describe("securityContext on user workloads", func() {
+	const namespace = "pj-default-project"
+	const envNsProduction = "pj-default-project-production"
+
+	AfterEach(func() {
+		purgeAllAppsIn(context.Background(), namespace)
+	})
+
+	Context("Deployment (service app)", func() {
+		const appName = "sc-deploy"
+		ctx := context.Background()
+
+		var app *mortisev1alpha1.App
+
+		AfterEach(func() {
+			if app != nil {
+				_ = k8sClient.Delete(ctx, app)
+				app = nil
+			}
+		})
+
+		It("should set restricted pod and container securityContext by default", func() {
+			app = &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      appName,
+					Namespace: namespace,
+				},
+				Spec: mortisev1alpha1.AppSpec{
+					Source: mortisev1alpha1.AppSource{
+						Type:  mortisev1alpha1.SourceTypeImage,
+						Image: testImageNginx,
+					},
+					Network: mortisev1alpha1.NetworkConfig{Public: true},
+					Environments: []mortisev1alpha1.Environment{
+						{
+							Name:     "production",
+							Replicas: ptr.To[int32](1),
+							Resources: mortisev1alpha1.ResourceRequirements{
+								CPU: "100m", Memory: "128Mi",
+							},
+							Domain: "sc.example.com",
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var dep appsv1.Deployment
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName, Namespace: envNsProduction,
+			}, &dep)).To(Succeed())
+
+			podSC := dep.Spec.Template.Spec.SecurityContext
+			Expect(podSC).NotTo(BeNil())
+			Expect(*podSC.RunAsNonRoot).To(BeTrue())
+			Expect(podSC.SeccompProfile).NotTo(BeNil())
+			Expect(podSC.SeccompProfile.Type).To(Equal(corev1.SeccompProfileTypeRuntimeDefault))
+
+			cSC := dep.Spec.Template.Spec.Containers[0].SecurityContext
+			Expect(cSC).NotTo(BeNil())
+			Expect(*cSC.AllowPrivilegeEscalation).To(BeFalse())
+			Expect(cSC.Capabilities).NotTo(BeNil())
+			Expect(cSC.Capabilities.Drop).To(ConsistOf(corev1.Capability("ALL")))
+		})
+
+		It("should omit restricted securityContext fields when opt-out annotation is set", func() {
+			app = &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      appName,
+					Namespace: namespace,
+					Annotations: map[string]string{
+						"mortise.dev/disable-default-security-context": "true",
+					},
+				},
+				Spec: mortisev1alpha1.AppSpec{
+					Source: mortisev1alpha1.AppSource{
+						Type:  mortisev1alpha1.SourceTypeImage,
+						Image: testImageNginx,
+					},
+					Network: mortisev1alpha1.NetworkConfig{Public: true},
+					Environments: []mortisev1alpha1.Environment{
+						{
+							Name:     "production",
+							Replicas: ptr.To[int32](1),
+							Resources: mortisev1alpha1.ResourceRequirements{
+								CPU: "100m", Memory: "128Mi",
+							},
+							Domain: "sc-opt-out.example.com",
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var dep appsv1.Deployment
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName, Namespace: envNsProduction,
+			}, &dep)).To(Succeed())
+
+			podSC := dep.Spec.Template.Spec.SecurityContext
+			if podSC != nil {
+				Expect(podSC.RunAsNonRoot).To(BeNil())
+				Expect(podSC.SeccompProfile).To(BeNil())
+			}
+			Expect(dep.Spec.Template.Spec.Containers[0].SecurityContext).To(BeNil())
+		})
+	})
+
+	Context("CronJob (cron app)", func() {
+		const appName = "sc-cron"
+		ctx := context.Background()
+
+		var app *mortisev1alpha1.App
+
+		AfterEach(func() {
+			if app != nil {
+				_ = k8sClient.Delete(ctx, app)
+				app = nil
+			}
+		})
+
+		It("should set restricted pod and container securityContext on CronJob by default", func() {
+			app = &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      appName,
+					Namespace: namespace,
+				},
+				Spec: mortisev1alpha1.AppSpec{
+					Kind: mortisev1alpha1.AppKindCron,
+					Source: mortisev1alpha1.AppSource{
+						Type:  mortisev1alpha1.SourceTypeImage,
+						Image: testImageNginx,
+					},
+					Environments: []mortisev1alpha1.Environment{
+						{
+							Name:     "production",
+							Schedule: "*/10 * * * *",
+							Resources: mortisev1alpha1.ResourceRequirements{
+								CPU: "100m", Memory: "128Mi",
+							},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var cj batchv1.CronJob
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName, Namespace: envNsProduction,
+			}, &cj)).To(Succeed())
+
+			podSC := cj.Spec.JobTemplate.Spec.Template.Spec.SecurityContext
+			Expect(podSC).NotTo(BeNil())
+			Expect(*podSC.RunAsNonRoot).To(BeTrue())
+			Expect(podSC.SeccompProfile).NotTo(BeNil())
+			Expect(podSC.SeccompProfile.Type).To(Equal(corev1.SeccompProfileTypeRuntimeDefault))
+
+			cSC := cj.Spec.JobTemplate.Spec.Template.Spec.Containers[0].SecurityContext
+			Expect(cSC).NotTo(BeNil())
+			Expect(*cSC.AllowPrivilegeEscalation).To(BeFalse())
+			Expect(cSC.Capabilities).NotTo(BeNil())
+			Expect(cSC.Capabilities.Drop).To(ConsistOf(corev1.Capability("ALL")))
+		})
+
+		It("should omit restricted securityContext fields on CronJob when opt-out annotation is set", func() {
+			app = &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      appName,
+					Namespace: namespace,
+					Annotations: map[string]string{
+						"mortise.dev/disable-default-security-context": "true",
+					},
+				},
+				Spec: mortisev1alpha1.AppSpec{
+					Kind: mortisev1alpha1.AppKindCron,
+					Source: mortisev1alpha1.AppSource{
+						Type:  mortisev1alpha1.SourceTypeImage,
+						Image: testImageNginx,
+					},
+					Environments: []mortisev1alpha1.Environment{
+						{
+							Name:     "production",
+							Schedule: "*/10 * * * *",
+							Resources: mortisev1alpha1.ResourceRequirements{
+								CPU: "100m", Memory: "128Mi",
+							},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var cj batchv1.CronJob
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName, Namespace: envNsProduction,
+			}, &cj)).To(Succeed())
+
+			podSC := cj.Spec.JobTemplate.Spec.Template.Spec.SecurityContext
+			if podSC != nil {
+				Expect(podSC.RunAsNonRoot).To(BeNil())
+				Expect(podSC.SeccompProfile).To(BeNil())
+			}
+			Expect(cj.Spec.JobTemplate.Spec.Template.Spec.Containers[0].SecurityContext).To(BeNil())
+		})
 	})
 })

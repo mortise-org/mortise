@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"os"
+	"strings"
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
@@ -141,22 +143,37 @@ func newAppUpdateCmd() *cobra.Command {
 
 func newAppDeleteCmd() *cobra.Command {
 	var project string
+	var yes bool
 	cmd := &cobra.Command{
 		Use:   "delete <name>",
 		Short: "Delete an app from a project",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			name := args[0]
+			if !yes {
+				fmt.Printf("This will delete app %q and all its resources (deployments, services, ingresses, volumes). Continue? [y/N]: ", name)
+				reader := bufio.NewReader(os.Stdin)
+				line, readErr := reader.ReadString('\n')
+				if readErr != nil {
+					return fmt.Errorf("failed to read confirmation from stdin (if running non-interactively, use --yes to skip confirmation): %w", readErr)
+				}
+				if !strings.EqualFold(strings.TrimSpace(line), "y") {
+					fmt.Println("Aborted.")
+					return nil
+				}
+			}
 			c, err := newClientFromConfig()
 			if err != nil {
 				return err
 			}
-			if err := c.DeleteApp(c.ResolveProject(project), args[0]); err != nil {
+			if err := c.DeleteApp(c.ResolveProject(project), name); err != nil {
 				return err
 			}
-			fmt.Printf("App %q deleted.\n", args[0])
+			fmt.Printf("App %q deleted.\n", name)
 			return nil
 		},
 	}
 	cmd.Flags().StringVar(&project, "project", "", "Project the app belongs to (default: current project)")
+	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "Skip confirmation prompt")
 	return cmd
 }

@@ -170,6 +170,16 @@ func (c *LogCollector) startTailer(ctx context.Context, namespace string, pod *c
 }
 
 func (c *LogCollector) tailPod(ctx context.Context, namespace, podName, app, env string) {
+	key := namespace + "/" + podName
+	defer func() {
+		c.mu.Lock()
+		if _, exists := c.tailers[key]; exists {
+			delete(c.tailers, key)
+			c.tailerCount--
+		}
+		c.mu.Unlock()
+	}()
+
 	tail := int64(100)
 	opts := &corev1.PodLogOptions{
 		Follow:     true,
@@ -186,9 +196,15 @@ func (c *LogCollector) tailPod(ctx context.Context, namespace, podName, app, env
 	}
 	defer stream.Close()
 
+	done := make(chan struct{})
+	defer close(done)
+
 	go func() {
-		<-ctx.Done()
-		stream.Close()
+		select {
+		case <-ctx.Done():
+			stream.Close()
+		case <-done:
+		}
 	}()
 
 	scanner := bufio.NewScanner(stream)

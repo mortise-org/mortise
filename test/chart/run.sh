@@ -22,6 +22,7 @@ CLUSTER_NAME="mortise-chart"
 NAMESPACE="mortise-system"
 DEPS_NAMESPACE="mortise-deps"
 CHART_IMG="mortise:chart-test"
+K3D_RUNTIME_ULIMIT="${K3D_RUNTIME_ULIMIT:-nofile=1048576:1048576}"
 
 passed=0
 failed=0
@@ -68,7 +69,7 @@ wait_for_pods_ready() {
 
 info "Creating k3d cluster ${CLUSTER_NAME}..."
 k3d cluster delete "$CLUSTER_NAME" 2>/dev/null || true
-k3d cluster create --config "${SCRIPT_DIR}/k3d-config.yaml" --wait
+k3d cluster create --config "${SCRIPT_DIR}/k3d-config.yaml" --runtime-ulimit "${K3D_RUNTIME_ULIMIT}" --wait
 
 info "Building operator image..."
 docker build -t "$CHART_IMG" "$REPO_ROOT" -q

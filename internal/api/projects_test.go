@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -153,6 +154,94 @@ func TestGetProjectNonMemberForbidden(t *testing.T) {
 	w := doRequest(h, http.MethodGet, "/api/projects/private", nil)
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("expected 403 for non-member, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestCreateProjectDuplicateNameFriendlyError verifies that creating a project
+// with an already-taken name returns a user-friendly 409 error that explains
+// the constraint without leaking details about the existing project.
+func TestCreateProjectDuplicateNameFriendlyError(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+
+	w := doRequest(h, http.MethodPost, "/api/projects", map[string]any{"name": "taken"})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("first create should succeed: got %d: %s", w.Code, w.Body.String())
+	}
+
+	w = doRequest(h, http.MethodPost, "/api/projects", map[string]any{"name": "taken"})
+	if w.Code != http.StatusConflict {
+		t.Fatalf("expected 409 for duplicate name, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]string
+	_ = json.NewDecoder(w.Body).Decode(&resp)
+	msg := resp["error"]
+	if msg == "" {
+		t.Fatal("expected error field in 409 response")
+	}
+	// Must contain the user-friendly guidance, not the raw k8s error.
+	if !strings.Contains(msg, "unique across the platform") {
+		t.Errorf("expected friendly message with guidance, got: %s", msg)
+	}
+	if !strings.Contains(msg, "ask a project owner or platform admin") {
+		t.Errorf("expected actionable guidance in error, got: %s", msg)
+	}
+	// Must not leak the raw k8s error.
+	if strings.Contains(msg, "projects.mortise.dev") {
+		t.Errorf("error message should not expose raw k8s resource name, got: %s", msg)
+	}
+}
+
+// TestCheckProjectNameAvailableNotTaken verifies the availability endpoint
+// returns available=true for unused names.
+func TestCheckProjectNameAvailableNotTaken(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+
+	w := doRequest(h, http.MethodGet, "/api/projects/fresh-name/available", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]bool
+	_ = json.NewDecoder(w.Body).Decode(&resp)
+	if !resp["available"] {
+		t.Error("expected available=true for unused name")
+	}
+}
+
+// TestCheckProjectNameAvailableTaken verifies the availability endpoint
+// returns available=false for names already in use.
+func TestCheckProjectNameAvailableTaken(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+
+	seedProject(t, k8sClient, "existing")
+
+	w := doRequest(h, http.MethodGet, "/api/projects/existing/available", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]bool
+	_ = json.NewDecoder(w.Body).Decode(&resp)
+	if resp["available"] {
+		t.Error("expected available=false for existing project")
+	}
+}
+
+// TestCheckProjectNameAvailableInvalidName verifies the availability endpoint
+// rejects invalid DNS names with 400.
+func TestCheckProjectNameAvailableInvalidName(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+
+	w := doRequest(h, http.MethodGet, "/api/projects/BAD_NAME/available", nil)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for invalid name, got %d: %s", w.Code, w.Body.String())
 	}
 }
 

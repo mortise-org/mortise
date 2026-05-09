@@ -2,8 +2,6 @@ package authz
 
 import (
 	"context"
-	"encoding/hex"
-	"fmt"
 
 	v1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
 	"github.com/mortise-org/mortise/internal/auth"
@@ -27,7 +25,13 @@ func (e *NativePolicyEngine) Authorize(ctx context.Context, p auth.Principal, re
 	}
 
 	if p.Role == auth.RoleViewer {
-		return action == ActionRead, nil
+		if resource.Project == "" {
+			return action == ActionRead, nil
+		}
+		if action != ActionRead {
+			return false, nil
+		}
+		return e.authorizeProject(ctx, p, resource, action)
 	}
 
 	// Platform-scoped resources (no project context)
@@ -54,7 +58,7 @@ func (e *NativePolicyEngine) authorizePlatform(resource Resource, action Action)
 }
 
 func (e *NativePolicyEngine) authorizeProject(ctx context.Context, p auth.Principal, resource Resource, action Action) (bool, error) {
-	memberName := fmt.Sprintf("member-%s", hex.EncodeToString([]byte(p.Email)))
+	memberName := constants.MemberCRDName(p.Email)
 	ns := constants.ControlNamespace(resource.Project)
 
 	var member v1alpha1.ProjectMember

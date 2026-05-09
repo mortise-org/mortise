@@ -199,6 +199,11 @@ spec:
                         - name
                         type: object
                       type: array
+                    image:
+                      description: |-
+                        Image overrides the spec-level source image for this environment.
+                        Set by the deploy handler when a deploy targets a specific environment.
+                      type: string
                     livenessProbe:
                       properties:
                         initialDelaySeconds:
@@ -603,6 +608,17 @@ spec:
                       description: |-
                         AutoDomain is the platform-generated domain for this environment,
                         always computed regardless of whether a custom primary domain is set.
+                      type: string
+                    certificateMessage:
+                      description: |-
+                        CertificateMessage is a human-readable explanation of the certificate
+                        state (e.g. challenge failure reason, DNS guidance).
+                      type: string
+                    certificateStatus:
+                      description: |-
+                        CertificateStatus is the readiness state of the TLS certificate for
+                        this environment. Empty when cert-manager is not in use. Possible
+                        values: "Ready", "Pending", "Failed".
                       type: string
                     currentDigest:
                       type: string

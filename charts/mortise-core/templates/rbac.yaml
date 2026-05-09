@@ -115,6 +115,11 @@ rules:
     resources: ["cronjobs"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 
+  # cert-manager Certificates: read-only for TLS status surfacing.
+  - apiGroups: ["cert-manager.io"]
+    resources: ["certificates"]
+    verbs: ["get", "list", "watch"]
+
   # ---------------------------------------------------------------------------
   # Pod observability — read-only
   # Used for SSE streaming of pod logs to the Mortise UI.

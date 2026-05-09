@@ -227,6 +227,138 @@ func TestNonMemberDeniedProjectAccess(t *testing.T) {
 	}
 }
 
+func TestViewerDeniedProjectWithoutMembership(t *testing.T) {
+	const project = "secret-project"
+
+	c := fake.NewClientBuilder().
+		WithScheme(authzScheme(t)).
+		Build()
+	engine := NewNativePolicyEngine(c)
+	ctx := context.Background()
+	viewer := auth.Principal{ID: "viewer@example.com", Email: "viewer@example.com", Role: auth.RoleViewer}
+
+	for _, a := range []Action{ActionCreate, ActionRead, ActionUpdate, ActionDelete} {
+		ok, err := engine.Authorize(ctx, viewer, Resource{Kind: "app", Project: project}, a)
+		if err != nil {
+			t.Fatalf("Authorize(app, %s): %v", a, err)
+		}
+		if ok {
+			t.Errorf("viewer without project membership should not be allowed %s on project app", a)
+		}
+	}
+}
+
+func TestViewerWithProjectMembership(t *testing.T) {
+	const email = "viewer@example.com"
+	const project = "my-project"
+
+	c := fake.NewClientBuilder().
+		WithScheme(authzScheme(t)).
+		WithObjects(memberForProject(email, project, mortisev1alpha1.ProjectRoleViewer)).
+		Build()
+	engine := NewNativePolicyEngine(c)
+	ctx := context.Background()
+	viewer := auth.Principal{ID: email, Email: email, Role: auth.RoleViewer}
+
+	ok, err := engine.Authorize(ctx, viewer, Resource{Kind: "app", Project: project}, ActionRead)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Error("viewer with project membership should be allowed to read project app")
+	}
+
+	for _, a := range []Action{ActionCreate, ActionUpdate, ActionDelete} {
+		ok, err := engine.Authorize(ctx, viewer, Resource{Kind: "app", Project: project}, a)
+		if err != nil {
+			t.Fatalf("Authorize(app, %s): %v", a, err)
+		}
+		if ok {
+			t.Errorf("project-viewer should not be allowed %s on project app", a)
+		}
+	}
+}
+
+func TestViewerMembershipDoesNotGrantWrite(t *testing.T) {
+	const email = "viewer@example.com"
+	const project = "my-project"
+
+	c := fake.NewClientBuilder().
+		WithScheme(authzScheme(t)).
+		WithObjects(memberForProject(email, project, mortisev1alpha1.ProjectRoleDeveloper)).
+		Build()
+	engine := NewNativePolicyEngine(c)
+	ctx := context.Background()
+	viewer := auth.Principal{ID: email, Email: email, Role: auth.RoleViewer}
+
+	ok, err := engine.Authorize(ctx, viewer, Resource{Kind: "app", Project: project}, ActionUpdate)
+	if err != nil {
+		t.Fatalf("Authorize(app, update): %v", err)
+	}
+	if ok {
+		t.Error("platform viewer should remain read-only even with developer project membership")
+	}
+}
+
+func TestDeveloperRestrictedEnv(t *testing.T) {
+	const email = "dev@example.com"
+	const project = "my-project"
+
+	c := fake.NewClientBuilder().
+		WithScheme(authzScheme(t)).
+		WithObjects(
+			memberForProject(email, project, mortisev1alpha1.ProjectRoleDeveloper),
+			&mortisev1alpha1.Project{
+				ObjectMeta: metav1.ObjectMeta{Name: project},
+				Spec: mortisev1alpha1.ProjectSpec{
+					Environments: []mortisev1alpha1.ProjectEnvironment{
+						{Name: "staging", Restricted: false},
+						{Name: "production", Restricted: true},
+					},
+				},
+			},
+		).
+		Build()
+	engine := NewNativePolicyEngine(c)
+	ctx := context.Background()
+	dev := auth.Principal{ID: email, Email: email, Role: auth.RoleMember}
+
+	// Developer can update staging (not restricted)
+	ok, err := engine.Authorize(ctx, dev, Resource{Kind: "app", Project: project, Environment: "staging"}, ActionUpdate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Error("developer should be allowed to update app in staging")
+	}
+
+	// Developer can only read in restricted production
+	ok, err = engine.Authorize(ctx, dev, Resource{Kind: "app", Project: project, Environment: "production"}, ActionRead)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Error("developer should be allowed to read app in restricted production")
+	}
+
+	ok, err = engine.Authorize(ctx, dev, Resource{Kind: "app", Project: project, Environment: "production"}, ActionUpdate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok {
+		t.Error("developer should NOT be allowed to update app in restricted production")
+	}
+
+	// Developer without env specified can still update (no restriction check)
+	ok, err = engine.Authorize(ctx, dev, Resource{Kind: "app", Project: project}, ActionUpdate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Error("developer should be allowed to update app without env specified")
+	}
+}
+
 func TestProjectMemberNameConvention(t *testing.T) {
 	// Verify the name used by ensureOwnerMember matches what authorizeProject looks up.
 	// If these diverge the owner can never access their own project.

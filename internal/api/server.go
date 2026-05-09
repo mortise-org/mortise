@@ -13,11 +13,14 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	metricsv1beta1 "k8s.io/metrics/pkg/client/clientset/versioned/typed/metrics/v1beta1"
+	kclock "k8s.io/utils/clock"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
 	"github.com/mortise-org/mortise/internal/activity"
 	"github.com/mortise-org/mortise/internal/auth"
 	"github.com/mortise-org/mortise/internal/authz"
+	"github.com/mortise-org/mortise/internal/git"
 	"github.com/mortise-org/mortise/internal/webhook"
 )
 
@@ -44,6 +47,8 @@ type Server struct {
 	metricsClient metricsv1beta1.MetricsV1beta1Interface
 	proxies       *appProxyManager
 	activityStore activity.Store
+	Clock         kclock.Clock
+	GitAPIFactory func(*mortisev1alpha1.GitProvider, string, string) (git.GitAPI, error)
 }
 
 // RESTConfig returns the rest.Config the server was built with. Exposed for
@@ -61,6 +66,13 @@ func (s *Server) SetBuildLogProvider(p BuildLogProvider) {
 // Pass nil if metrics-server is not installed — the handler degrades gracefully.
 func (s *Server) SetMetricsClient(mc metricsv1beta1.MetricsV1beta1Interface) {
 	s.metricsClient = mc
+}
+
+func (s *Server) clock() kclock.Clock {
+	if s.Clock != nil {
+		return s.Clock
+	}
+	return kclock.RealClock{}
 }
 
 // NewServer creates a new API server.
@@ -83,6 +95,7 @@ func NewServer(c client.Client, cs kubernetes.Interface, dc dynamic.Interface, r
 		deviceFlow:    df,
 		proxies:       newAppProxyManager(),
 		activityStore: activity.NewConfigMapStore(c),
+		GitAPIFactory: git.NewGitAPIFromProvider,
 	}
 }
 
@@ -184,6 +197,7 @@ func (s *Server) Handler() http.Handler {
 
 			r.Post("/projects", s.CreateProject)
 			r.Get("/projects", s.ListProjects)
+			r.Get("/projects/{name}/available", s.CheckProjectNameAvailable)
 			r.Get("/projects/{project}", s.GetProject)
 			r.Patch("/projects/{project}", s.UpdateProject)
 			r.Delete("/projects/{project}", s.DeleteProject)
