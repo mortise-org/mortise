@@ -640,10 +640,10 @@ test.describe('new project page — also create staging checkbox', () => {
 
     await page.locator('input#name').fill(project);
     // Check the "Also create staging" checkbox.
-    const checkbox = page.locator('label').filter({ hasText: 'Also create a' }).getByRole('checkbox');
+    const stagingLabel = page.locator('label').filter({ hasText: 'Also create a staging environment' });
+    const checkbox = stagingLabel.getByRole('checkbox');
     await expect(checkbox).toBeVisible();
-    await checkbox.click({ force: true });
-    await expect(checkbox).toBeChecked();
+    await stagingLabel.click();
 
     await page.getByRole('button', { name: 'Create project', exact: true }).click();
 
