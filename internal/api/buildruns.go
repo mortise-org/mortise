@@ -276,6 +276,9 @@ func (s *Server) getBuildRunLogsResponse(ctx context.Context, run *mortisev1alph
 	}
 	resp.CommitSHA = run.Spec.Revision
 	resp.Status = buildRunPhaseStatus(run.Status.Phase)
+	if run.Status.Phase == mortisev1alpha1.BuildRunPhaseFailed {
+		resp.Error = run.Status.FailureMessage
+	}
 	cm, err := s.getBuildRunLogsConfigMap(ctx, run)
 	if err != nil {
 		return resp, false, err
@@ -287,6 +290,9 @@ func (s *Server) getBuildRunLogsResponse(ctx context.Context, run *mortisev1alph
 		}
 		if resp.Status == "" {
 			resp.Status = buildRunPhaseStatus(run.Status.Phase)
+		}
+		if resp.Error == "" && run.Status.Phase == mortisev1alpha1.BuildRunPhaseFailed {
+			resp.Error = run.Status.FailureMessage
 		}
 		return resp, true, nil
 	}
@@ -303,7 +309,7 @@ func (s *Server) getBuildRunLogsResponse(ctx context.Context, run *mortisev1alph
 	if resp.Building {
 		return resp, true, nil
 	}
-	return resp, false, nil
+	return resp, true, nil
 }
 
 func toBuildLogSnapshot(resp buildRunLogsResponse) buildLogSnapshot {

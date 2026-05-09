@@ -27,6 +27,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -113,7 +114,13 @@ func (r *BuildRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 				br.Status.FailureMessage = errMsg
 				setBuildRunCondition(&br.Status.Conditions, mortisev1alpha1.BuildRunPhaseFailed, br.Generation, errMsg, now)
 			}
-			return ctrl.Result{}, r.Status().Update(ctx, &br)
+			if err := r.Status().Update(ctx, &br); err != nil {
+				return ctrl.Result{}, err
+			}
+			if err := r.projectTerminalBuildRunStatus(ctx, &br); err != nil {
+				return ctrl.Result{}, err
+			}
+			return ctrl.Result{}, nil
 		}
 	}
 
@@ -257,6 +264,37 @@ func (r *BuildRunReconciler) persistBuildRunLog(ctx context.Context, br *mortise
 	}
 
 	return &corev1.LocalObjectReference{Name: runLog.Name}, nil
+}
+
+func (r *BuildRunReconciler) projectTerminalBuildRunStatus(ctx context.Context, br *mortisev1alpha1.BuildRun) error {
+	switch br.Spec.TargetRef.Kind {
+	case mortisev1alpha1.BuildRunTargetAppEnvironment:
+		return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			var app mortisev1alpha1.App
+			if err := r.Get(ctx, types.NamespacedName{Name: br.Spec.TargetRef.Name, Namespace: br.Namespace}, &app); err != nil {
+				if errors.IsNotFound(err) {
+					return nil
+				}
+				return err
+			}
+			projectAppBuildRunStatus(&app, br.Spec.Environment, br)
+			return r.Status().Update(ctx, &app)
+		})
+	case mortisev1alpha1.BuildRunTargetPreviewEnvironment:
+		return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			var pe mortisev1alpha1.PreviewEnvironment
+			if err := r.Get(ctx, types.NamespacedName{Name: br.Spec.TargetRef.Name, Namespace: br.Namespace}, &pe); err != nil {
+				if errors.IsNotFound(err) {
+					return nil
+				}
+				return err
+			}
+			projectPreviewBuildRunStatus(&pe, br)
+			return r.Status().Update(ctx, &pe)
+		})
+	default:
+		return nil
+	}
 }
 
 func upsertConfigMap(ctx context.Context, c client.Client, desired *corev1.ConfigMap) error {

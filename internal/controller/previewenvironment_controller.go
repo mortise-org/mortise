@@ -831,11 +831,25 @@ func (r *PreviewEnvironmentReconciler) SetupWithManager(mgr ctrl.Manager) error 
 			Namespace: constants.ControlNamespace(projectName),
 		}}}
 	})
+	enqueuePEFromBuildRun := handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []reconcile.Request {
+		br, ok := obj.(*mortisev1alpha1.BuildRun)
+		if !ok {
+			return nil
+		}
+		if br.Spec.TargetRef.Kind != mortisev1alpha1.BuildRunTargetPreviewEnvironment || br.Spec.TargetRef.Name == "" || br.Namespace == "" {
+			return nil
+		}
+		return []reconcile.Request{{NamespacedName: types.NamespacedName{
+			Name:      br.Spec.TargetRef.Name,
+			Namespace: br.Namespace,
+		}}}
+	})
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&mortisev1alpha1.PreviewEnvironment{}).
 		Watches(&appsv1.Deployment{}, enqueuePEFromManagedResource).
 		Watches(&corev1.Service{}, enqueuePEFromManagedResource).
 		Watches(&networkingv1.Ingress{}, enqueuePEFromManagedResource).
+		Watches(&mortisev1alpha1.BuildRun{}, enqueuePEFromBuildRun).
 		Named("previewenvironment").
 		Complete(r)
 }

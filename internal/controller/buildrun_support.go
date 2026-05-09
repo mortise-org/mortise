@@ -91,6 +91,14 @@ func buildRunInputHash(spec mortisev1alpha1.BuildRunSpec) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
+func buildRunSelectionHash(spec mortisev1alpha1.BuildRunSpec) string {
+	spec.Trigger = ""
+	spec.RequestID = ""
+	spec.NoCache = false
+	spec.InputHash = ""
+	return buildRunInputHash(spec)
+}
+
 func buildRunLabels(run *mortisev1alpha1.BuildRun) map[string]string {
 	return map[string]string{
 		"app.kubernetes.io/managed-by": "mortise",
@@ -163,6 +171,33 @@ func projectPreviewBuildRunStatus(pe *mortisev1alpha1.PreviewEnvironment, run *m
 		pe.Status.CurrentBuildRunName = ""
 		pe.Status.LastBuildRunName = run.Name
 	}
+}
+
+func aggregateAppBuildRunNames(envs []mortisev1alpha1.EnvironmentStatus) (current, last string) {
+	for _, es := range envs {
+		if es.CurrentBuildRunRef == nil {
+			continue
+		}
+		switch es.CurrentBuildRunRef.Phase {
+		case mortisev1alpha1.BuildRunPhasePending, mortisev1alpha1.BuildRunPhaseRunning:
+			if current == "" {
+				current = es.CurrentBuildRunRef.Name
+			}
+		case mortisev1alpha1.BuildRunPhaseSucceeded, mortisev1alpha1.BuildRunPhaseFailed:
+			if last == "" {
+				last = es.CurrentBuildRunRef.Name
+			}
+		}
+	}
+	if last == "" {
+		for _, es := range envs {
+			if es.LastSuccessfulBuildRunRef != nil && es.LastSuccessfulBuildRunRef.Name != "" {
+				last = es.LastSuccessfulBuildRunRef.Name
+				break
+			}
+		}
+	}
+	return current, last
 }
 
 func buildRunTokenSecretRef(providerName, email string) *mortisev1alpha1.SecretRef {
@@ -263,8 +298,29 @@ func buildModeOf(app *mortisev1alpha1.App) mortisev1alpha1.BuildMode {
 	return mortisev1alpha1.BuildModeAuto
 }
 
+func buildRunMatchesAppSpec(run *mortisev1alpha1.BuildRun, app *mortisev1alpha1.App, envName string, spec mortisev1alpha1.BuildRunSpec) bool {
+	if run == nil || app == nil {
+		return false
+	}
+	return run.Spec.TargetRef.Kind == mortisev1alpha1.BuildRunTargetAppEnvironment &&
+		run.Spec.TargetRef.Name == app.Name &&
+		run.Spec.Environment == envName &&
+		run.Spec.Revision == spec.Revision &&
+		buildRunSelectionHash(run.Spec) == buildRunSelectionHash(spec)
+}
+
 func (r *AppReconciler) ensureAppBuildRun(ctx context.Context, app *mortisev1alpha1.App, envName, revision, pushTarget, pullTarget string) (*mortisev1alpha1.BuildRun, error) {
 	spec := appBuildRunSpec(app, envName, revision, pushTarget, pullTarget)
+	if !hasPendingRebuildRequest(app) && app.Status.CurrentBuildRunName != "" {
+		var current mortisev1alpha1.BuildRun
+		if err := r.Get(ctx, client.ObjectKey{Namespace: app.Namespace, Name: app.Status.CurrentBuildRunName}, &current); err == nil {
+			if buildRunMatchesAppSpec(&current, app, envName, spec) {
+				return &current, nil
+			}
+		} else if !errors.IsNotFound(err) {
+			return nil, err
+		}
+	}
 	name := buildRunName("app", app.Name, envName, revision, spec.InputHash, spec.RequestID)
 	var run mortisev1alpha1.BuildRun
 	err := r.Get(ctx, client.ObjectKey{Namespace: app.Namespace, Name: name}, &run)

@@ -135,6 +135,348 @@ func TestEnsureAppBuildRunCreatesDistinctRunsForManualRebuildRequests(t *testing
 	}
 }
 
+func TestEnsureAppBuildRunReusesCurrentManualRunAfterMarkersClear(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := mortisev1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add scheme: %v", err)
+	}
+
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "demo",
+			Namespace: "pj-default-project",
+			Annotations: map[string]string{
+				"mortise.dev/git-token-owner": "owner@example.com",
+			},
+		},
+		Status: mortisev1alpha1.AppStatus{
+			CurrentBuildRunName: "manual-run",
+		},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{
+				Type:        mortisev1alpha1.SourceTypeGit,
+				Repo:        "https://example.com/repo.git",
+				Branch:      "main",
+				ProviderRef: "github",
+			},
+		},
+	}
+	manualApp := app.DeepCopy()
+	manualApp.Annotations[rebuildRequestedAtAnnotation] = "req-1"
+	manualApp.Annotations[rebuildNoCacheRequestedAtAnnotation] = "req-1"
+	manualSpec := appBuildRunSpec(manualApp, "production", "same-sha", "registry/push:tag", "registry/pull:tag")
+	run := &mortisev1alpha1.BuildRun{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "manual-run",
+			Namespace: app.Namespace,
+		},
+		Spec: manualSpec,
+		Status: mortisev1alpha1.BuildRunStatus{
+			Phase: mortisev1alpha1.BuildRunPhaseRunning,
+		},
+	}
+
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(app, run).Build()
+	r := &AppReconciler{Client: c, Scheme: scheme}
+
+	got, err := r.ensureAppBuildRun(context.Background(), app, "production", "same-sha", "registry/push:tag", "registry/pull:tag")
+	if err != nil {
+		t.Fatalf("ensure buildrun: %v", err)
+	}
+	if got.Name != run.Name {
+		t.Fatalf("expected current manual buildrun %q, got %q", run.Name, got.Name)
+	}
+
+	var runs mortisev1alpha1.BuildRunList
+	if err := c.List(context.Background(), &runs, client.InNamespace(app.Namespace)); err != nil {
+		t.Fatalf("list buildruns: %v", err)
+	}
+	if len(runs.Items) != 1 {
+		t.Fatalf("expected one buildrun, got %d", len(runs.Items))
+	}
+}
+
+func TestEnsureAppBuildRunReusesCurrentTerminalRunBeforeStatusProjection(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := mortisev1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add scheme: %v", err)
+	}
+
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "demo",
+			Namespace: "pj-default-project",
+			Annotations: map[string]string{
+				"mortise.dev/git-token-owner": "owner@example.com",
+			},
+		},
+		Status: mortisev1alpha1.AppStatus{
+			CurrentBuildRunName: "manual-run",
+		},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{
+				Type:        mortisev1alpha1.SourceTypeGit,
+				Repo:        "https://example.com/repo.git",
+				Branch:      "main",
+				ProviderRef: "github",
+			},
+		},
+	}
+	manualApp := app.DeepCopy()
+	manualApp.Annotations[rebuildRequestedAtAnnotation] = "req-1"
+	manualApp.Annotations[rebuildNoCacheRequestedAtAnnotation] = "req-1"
+	manualSpec := appBuildRunSpec(manualApp, "production", "same-sha", "registry/push:tag", "registry/pull:tag")
+	run := &mortisev1alpha1.BuildRun{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "manual-run",
+			Namespace: app.Namespace,
+		},
+		Spec: manualSpec,
+		Status: mortisev1alpha1.BuildRunStatus{
+			Phase: mortisev1alpha1.BuildRunPhaseSucceeded,
+			Image: "registry.example.com/demo:same-sha",
+		},
+	}
+
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(app, run).Build()
+	r := &AppReconciler{Client: c, Scheme: scheme}
+
+	got, err := r.ensureAppBuildRun(context.Background(), app, "production", "same-sha", "registry/push:tag", "registry/pull:tag")
+	if err != nil {
+		t.Fatalf("ensure buildrun: %v", err)
+	}
+	if got.Name != run.Name {
+		t.Fatalf("expected current terminal buildrun %q, got %q", run.Name, got.Name)
+	}
+
+	var runs mortisev1alpha1.BuildRunList
+	if err := c.List(context.Background(), &runs, client.InNamespace(app.Namespace)); err != nil {
+		t.Fatalf("list buildruns: %v", err)
+	}
+	if len(runs.Items) != 1 {
+		t.Fatalf("expected one buildrun, got %d", len(runs.Items))
+	}
+}
+
+func TestEnsureAppBuildRunDoesNotReuseCurrentRunWhenInputHashChanges(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := mortisev1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add scheme: %v", err)
+	}
+
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "demo",
+			Namespace: "pj-default-project",
+			Annotations: map[string]string{
+				"mortise.dev/git-token-owner": "owner@example.com",
+			},
+		},
+		Status: mortisev1alpha1.AppStatus{
+			CurrentBuildRunName: "current-run",
+		},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{
+				Type:        mortisev1alpha1.SourceTypeGit,
+				Repo:        "https://example.com/repo.git",
+				Branch:      "main",
+				ProviderRef: "github",
+			},
+			Environments: []mortisev1alpha1.Environment{
+				{Name: "production", BuildArgs: map[string]string{"FOO": "old"}},
+			},
+		},
+	}
+	currentApp := app.DeepCopy()
+	currentSpec := appBuildRunSpec(currentApp, "production", "same-sha", "registry/push:tag", "registry/pull:tag")
+	run := &mortisev1alpha1.BuildRun{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "current-run",
+			Namespace: app.Namespace,
+		},
+		Spec: currentSpec,
+		Status: mortisev1alpha1.BuildRunStatus{
+			Phase: mortisev1alpha1.BuildRunPhaseRunning,
+		},
+	}
+
+	app.Spec.Environments[0].BuildArgs["FOO"] = "new"
+
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(app, run).Build()
+	r := &AppReconciler{Client: c, Scheme: scheme}
+
+	got, err := r.ensureAppBuildRun(context.Background(), app, "production", "same-sha", "registry/push:tag", "registry/pull:tag")
+	if err != nil {
+		t.Fatalf("ensure buildrun: %v", err)
+	}
+	if got.Name == run.Name {
+		t.Fatalf("expected a fresh buildrun when input hash changes, reused %q", got.Name)
+	}
+
+	var runs mortisev1alpha1.BuildRunList
+	if err := c.List(context.Background(), &runs, client.InNamespace(app.Namespace)); err != nil {
+		t.Fatalf("list buildruns: %v", err)
+	}
+	if len(runs.Items) != 2 {
+		t.Fatalf("expected two buildruns after input-hash change, got %d", len(runs.Items))
+	}
+}
+
+func TestReconcileEnvBuildProjectsCurrentTerminalRunBeforeRevisionShortCircuit(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := mortisev1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add scheme: %v", err)
+	}
+
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "demo",
+			Namespace: "pj-default-project",
+			Annotations: map[string]string{
+				"mortise.dev/revision": "same-sha",
+			},
+		},
+		Status: mortisev1alpha1.AppStatus{
+			CurrentBuildRunName: "manual-run",
+			Environments: []mortisev1alpha1.EnvironmentStatus{
+				{
+					Name:           "production",
+					LastBuiltSHA:   "same-sha",
+					LastBuiltImage: "registry.example.com/demo:old",
+				},
+			},
+		},
+	}
+	manualApp := app.DeepCopy()
+	manualApp.Annotations[rebuildRequestedAtAnnotation] = "req-1"
+	manualApp.Annotations[rebuildNoCacheRequestedAtAnnotation] = "req-1"
+	manualSpec := appBuildRunSpec(manualApp, "production", "same-sha", "registry.example.com/mortise/demo:same-sh-production", "registry.example.com/mortise/demo:same-sh-production")
+	run := &mortisev1alpha1.BuildRun{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "manual-run",
+			Namespace: app.Namespace,
+		},
+		Spec: manualSpec,
+		Status: mortisev1alpha1.BuildRunStatus{
+			Phase:        mortisev1alpha1.BuildRunPhaseSucceeded,
+			Image:        "registry.example.com/demo:new",
+			Digest:       "sha256:new",
+			DetectedPort: 8080,
+		},
+	}
+
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(run).Build()
+	r := &AppReconciler{
+		Client:          c,
+		Scheme:          scheme,
+		RegistryBackend: &fakeRegistryBackend{},
+	}
+
+	image, requeue, statusDirty, _, err := r.reconcileEnvBuild(context.Background(), app, "production")
+	if err != nil {
+		t.Fatalf("reconcileEnvBuild: %v", err)
+	}
+	if requeue {
+		t.Fatal("expected terminal current run to avoid requeue")
+	}
+	if !statusDirty {
+		t.Fatal("expected status to be marked dirty")
+	}
+	if image != "registry.example.com/demo:new" {
+		t.Fatalf("expected image from current terminal run, got %q", image)
+	}
+	if app.Status.LastBuildRunName != "manual-run" {
+		t.Fatalf("expected last buildrun updated to manual run, got %q", app.Status.LastBuildRunName)
+	}
+	if app.Status.CurrentBuildRunName != "" {
+		t.Fatalf("expected current buildrun cleared after success, got %q", app.Status.CurrentBuildRunName)
+	}
+	if es := envStatusFor(app, "production"); es == nil || es.LastBuiltImage != "registry.example.com/demo:new" {
+		t.Fatalf("expected env status updated from manual run, got %+v", es)
+	}
+}
+
+func TestReconcileEnvBuildDoesNotShortCircuitLastBuiltSHAWhenInputHashChanges(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := mortisev1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add scheme: %v", err)
+	}
+
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "demo",
+			Namespace: "pj-default-project",
+			Annotations: map[string]string{
+				"mortise.dev/revision":        "same-sha",
+				"mortise.dev/git-token-owner": "owner@example.com",
+			},
+		},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{
+				Type:        mortisev1alpha1.SourceTypeGit,
+				Repo:        "https://example.com/repo.git",
+				Branch:      "main",
+				ProviderRef: "github",
+			},
+			Environments: []mortisev1alpha1.Environment{
+				{Name: "production", BuildArgs: map[string]string{"FOO": "new"}},
+			},
+		},
+		Status: mortisev1alpha1.AppStatus{
+			Environments: []mortisev1alpha1.EnvironmentStatus{
+				{
+					Name:           "production",
+					LastBuiltSHA:   "same-sha",
+					LastBuiltImage: "registry.example.com/demo:old",
+					LastSuccessfulBuildRunRef: &mortisev1alpha1.BuildRunReference{
+						Name: "last-run",
+					},
+				},
+			},
+		},
+	}
+	lastApp := app.DeepCopy()
+	lastApp.Spec.Environments[0].BuildArgs["FOO"] = "old"
+	lastRun := &mortisev1alpha1.BuildRun{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "last-run",
+			Namespace: app.Namespace,
+		},
+		Spec: appBuildRunSpec(lastApp, "production", "same-sha", "registry.example.com/mortise/demo:same-sh-production", "registry.example.com/mortise/demo:same-sh-production"),
+		Status: mortisev1alpha1.BuildRunStatus{
+			Phase: mortisev1alpha1.BuildRunPhaseSucceeded,
+			Image: "registry.example.com/demo:old",
+		},
+	}
+
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lastRun).Build()
+	r := &AppReconciler{
+		Client:          c,
+		Scheme:          scheme,
+		RegistryBackend: &fakeRegistryBackend{},
+	}
+
+	image, requeue, statusDirty, _, err := r.reconcileEnvBuild(context.Background(), app, "production")
+	if err != nil {
+		t.Fatalf("reconcileEnvBuild: %v", err)
+	}
+	if image != "" {
+		t.Fatalf("expected rebuild instead of reusing stale image, got %q", image)
+	}
+	if !requeue {
+		t.Fatal("expected new buildrun to requeue")
+	}
+	if !statusDirty {
+		t.Fatal("expected build start to dirty status")
+	}
+	if app.Status.CurrentBuildRunName == "" {
+		t.Fatal("expected a fresh current buildrun name after input-hash change")
+	}
+	if app.Status.CurrentBuildRunName == "last-run" {
+		t.Fatalf("expected a fresh buildrun, still pointing at %q", app.Status.CurrentBuildRunName)
+	}
+}
+
 func TestProjectAppBuildRunStatusProjectsRefs(t *testing.T) {
 	app := &mortisev1alpha1.App{}
 	run := &mortisev1alpha1.BuildRun{

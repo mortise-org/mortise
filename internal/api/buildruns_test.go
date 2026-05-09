@@ -288,3 +288,84 @@ func TestBuildLogsUsesCurrentBuildRunTrackerAndPersistedRunLogs(t *testing.T) {
 		t.Fatalf("unexpected terminal build-logs lines: %+v", terminalResp.Lines)
 	}
 }
+
+func TestBuildLogsPrefersCurrentBuildRunWhenPhaseStale(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+	ns := seedProject(t, k8sClient, "default")
+	appName := "demo-stale"
+	liveRunName := "run-live-stale"
+	doneRunName := "run-done-stale"
+
+	ctx := context.Background()
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: appName, Namespace: ns},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeGit, Repo: "https://example.com/demo.git"},
+		},
+	}
+	if err := k8sClient.Create(ctx, app); err != nil {
+		t.Fatalf("create app: %v", err)
+	}
+	if err := k8sClient.Get(ctx, types.NamespacedName{Name: appName, Namespace: ns}, app); err != nil {
+		t.Fatalf("get app after create: %v", err)
+	}
+	app.Status.Phase = mortisev1alpha1.AppPhaseReady
+	app.Status.CurrentBuildRunName = liveRunName
+	app.Status.LastBuildRunName = doneRunName
+	if err := k8sClient.Status().Update(ctx, app); err != nil {
+		t.Fatalf("update app status: %v", err)
+	}
+
+	liveRun := makeAppBuildRun(ns, appName, liveRunName, "rev-live", time.Now().UTC(), mortisev1alpha1.BuildRunPhaseRunning)
+	doneRun := makeAppBuildRun(ns, appName, doneRunName, "rev-done", time.Now().UTC().Add(-time.Hour), mortisev1alpha1.BuildRunPhaseSucceeded)
+	doneRun.Status.LogRef = &corev1.LocalObjectReference{Name: "buildrun-" + doneRunName}
+	for _, run := range []*mortisev1alpha1.BuildRun{liveRun, doneRun} {
+		if err := k8sClient.Create(ctx, run); err != nil {
+			t.Fatalf("create buildrun %s: %v", run.Name, err)
+		}
+		if err := k8sClient.Status().Update(ctx, run); err != nil {
+			t.Fatalf("update buildrun %s status: %v", run.Name, err)
+		}
+	}
+	if err := k8sClient.Create(ctx, &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "buildrun-" + doneRunName,
+			Namespace: ns,
+			Annotations: map[string]string{
+				"mortise.dev/build-commit": "rev-done",
+				"mortise.dev/build-status": "Succeeded",
+			},
+		},
+		Data: map[string]string{"lines": "done line"},
+	}); err != nil {
+		t.Fatalf("create persisted terminal log configmap: %v", err)
+	}
+
+	srv.SetBuildLogProvider(&fakeBuildLogProvider{
+		lines: map[types.NamespacedName][]string{
+			{Namespace: ns, Name: liveRunName}: {"live 1", "live 2"},
+		},
+	})
+
+	w := doRequest(h, http.MethodGet, "/api/projects/default/apps/"+appName+"/build-logs", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("build-logs: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Lines     []string `json:"lines"`
+		Building  bool     `json:"building"`
+		CommitSHA string   `json:"commitSHA"`
+		Status    string   `json:"status"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode build-logs: %v", err)
+	}
+	if !resp.Building || resp.CommitSHA != "rev-live" || resp.Status != "Running" {
+		t.Fatalf("unexpected build-logs response: %+v", resp)
+	}
+	if len(resp.Lines) != 2 || resp.Lines[0] != "live 1" {
+		t.Fatalf("unexpected live lines: %+v", resp.Lines)
+	}
+}

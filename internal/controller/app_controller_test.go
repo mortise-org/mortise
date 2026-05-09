@@ -120,6 +120,70 @@ func TestUpdateStatusPreservesBuildRunRefs(t *testing.T) {
 	if es.LastSuccessfulBuildRunRef == nil || es.LastSuccessfulBuildRunRef.Name != "buildrun-last" {
 		t.Fatalf("last successful buildrun ref lost: %+v", es.LastSuccessfulBuildRunRef)
 	}
+	if fresh.Status.CurrentBuildRunName != "buildrun-live" {
+		t.Fatalf("current buildrun name not recomputed from env refs: %q", fresh.Status.CurrentBuildRunName)
+	}
+	if fresh.Status.LastBuildRunName != "buildrun-last" {
+		t.Fatalf("last buildrun name not recomputed from env refs: %q", fresh.Status.LastBuildRunName)
+	}
+}
+
+func TestUpdateStatusRecomputesTopLevelBuildRunNamesFromTerminalEnvRef(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := mortisev1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add scheme: %v", err)
+	}
+
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "demo",
+			Namespace: "pj-default-project",
+		},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{
+				Type:  mortisev1alpha1.SourceTypeImage,
+				Image: "nginx:1.27",
+			},
+			Environments: []mortisev1alpha1.Environment{{Name: "production"}},
+		},
+		Status: mortisev1alpha1.AppStatus{
+			CurrentBuildRunName: "stale-current",
+			LastBuildRunName:    "stale-last",
+			Environments: []mortisev1alpha1.EnvironmentStatus{{
+				Name: "production",
+				CurrentBuildRunRef: &mortisev1alpha1.BuildRunReference{
+					Name:  "buildrun-manual",
+					Phase: mortisev1alpha1.BuildRunPhaseSucceeded,
+				},
+				LastSuccessfulBuildRunRef: &mortisev1alpha1.BuildRunReference{
+					Name:  "buildrun-auto",
+					Phase: mortisev1alpha1.BuildRunPhaseSucceeded,
+				},
+			}},
+		},
+	}
+
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(app).
+		WithObjects(app).
+		Build()
+	r := &AppReconciler{Client: c, Scheme: scheme}
+
+	if err := r.updateStatus(context.Background(), app, []mortisev1alpha1.Environment{{Name: "production"}}); err != nil {
+		t.Fatalf("update status: %v", err)
+	}
+
+	var fresh mortisev1alpha1.App
+	if err := c.Get(context.Background(), types.NamespacedName{Name: app.Name, Namespace: app.Namespace}, &fresh); err != nil {
+		t.Fatalf("get app: %v", err)
+	}
+	if fresh.Status.CurrentBuildRunName != "" {
+		t.Fatalf("expected terminal env ref to clear current buildrun name, got %q", fresh.Status.CurrentBuildRunName)
+	}
+	if fresh.Status.LastBuildRunName != "buildrun-manual" {
+		t.Fatalf("expected terminal env ref to become last buildrun name, got %q", fresh.Status.LastBuildRunName)
+	}
 }
 
 func TestPreviewSyncStateIncludesBackfillInputs(t *testing.T) {
@@ -3123,7 +3187,24 @@ var _ = Describe("App Controller — git source", func() {
 			Expect(k8sClient.Create(ctx, app)).To(Succeed())
 			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
 
-			// Simulate a prior successful build by presetting per-env status.
+			lastRun := &mortisev1alpha1.BuildRun{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "run-shortcircuit",
+					Namespace: namespace,
+				},
+				Spec: appBuildRunSpec(
+					app,
+					"production",
+					"same-sha",
+					"registry.example.com/mortise/git-shortcircuit:same-sh-production",
+					"registry.example.com/mortise/git-shortcircuit:same-sh-production",
+				),
+			}
+			Expect(k8sClient.Create(ctx, lastRun)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, lastRun)).To(Succeed()) }()
+
+			// Simulate a prior successful build by presetting per-env status and
+			// the durable BuildRun ref that now backs same-SHA reuse.
 			app.Status.LastBuiltSHA = "same-sha"
 			app.Status.LastBuiltImage = "registry.example.com/mortise/git-shortcircuit:same-sha"
 			app.Status.Environments = []mortisev1alpha1.EnvironmentStatus{
@@ -3131,6 +3212,10 @@ var _ = Describe("App Controller — git source", func() {
 					Name:           "production",
 					LastBuiltSHA:   "same-sha",
 					LastBuiltImage: "registry.example.com/mortise/git-shortcircuit:same-sha",
+					LastSuccessfulBuildRunRef: &mortisev1alpha1.BuildRunReference{
+						Name:  lastRun.Name,
+						Phase: mortisev1alpha1.BuildRunPhaseSucceeded,
+					},
 				},
 			}
 			Expect(k8sClient.Status().Update(ctx, app)).To(Succeed())

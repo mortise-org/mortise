@@ -80,16 +80,16 @@ func (s *Server) handleBuildLogs(w http.ResponseWriter, r *http.Request) {
 
 	var app mortisev1alpha1.App
 	if err := s.client.Get(r.Context(), key, &app); err == nil {
-		if app.Status.Phase != mortisev1alpha1.AppPhaseBuilding && app.Status.LastBuildRunName != "" {
-			if run, err := s.resolveLastAppBuildRun(r.Context(), ns, &app, app.Status.LastBuildRunName); err == nil && run != nil {
+		if app.Status.Phase == mortisev1alpha1.AppPhaseBuilding || app.Status.CurrentBuildRunName != "" {
+			if run, err := s.resolveCurrentAppBuildRun(r.Context(), ns, &app); err == nil && run != nil {
 				if resp, ok, err := s.getBuildRunLogsResponse(r.Context(), run); err == nil && ok {
 					writeJSON(w, http.StatusOK, resp)
 					return
 				}
 			}
 		}
-		if app.Status.Phase == mortisev1alpha1.AppPhaseBuilding || app.Status.CurrentBuildRunName != "" {
-			if run, err := s.resolveCurrentAppBuildRun(r.Context(), ns, &app); err == nil && run != nil {
+		if app.Status.Phase != mortisev1alpha1.AppPhaseBuilding && app.Status.LastBuildRunName != "" {
+			if run, err := s.resolveLastAppBuildRun(r.Context(), ns, &app, ""); err == nil && run != nil {
 				if resp, ok, err := s.getBuildRunLogsResponse(r.Context(), run); err == nil && ok {
 					writeJSON(w, http.StatusOK, resp)
 					return

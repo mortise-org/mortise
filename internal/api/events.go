@@ -366,14 +366,17 @@ func (s *Server) streamBuildLogs(ctx context.Context, ns string, w *sseWriter) {
 			nowBuilding := map[string]buildStreamState{}
 			for i := range appList.Items {
 				app := &appList.Items[i]
-				if app.Status.Phase != mortisev1alpha1.AppPhaseBuilding {
+				run, active, err := s.getBuildRunForApp(ctx, ns, app.Name)
+				if err != nil || run == nil {
 					if prev, ok := wasBuilding[app.Name]; ok {
 						s.emitBuildLogDelta(w, ns, app.Name, prev.runName, false, -1)
 					}
 					continue
 				}
-				run, _, err := s.getBuildRunForApp(ctx, ns, app.Name)
-				if err != nil || run == nil {
+				if !active {
+					if prev, ok := wasBuilding[app.Name]; ok {
+						s.emitBuildLogDelta(w, ns, app.Name, prev.runName, false, -1)
+					}
 					continue
 				}
 				prev := wasBuilding[app.Name]

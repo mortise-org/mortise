@@ -321,9 +321,8 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 			status.LastBuiltSHA = app.Status.LastBuiltSHA
 			status.LastBuiltImage = app.Status.LastBuiltImage
 			status.DetectedPort = app.Status.DetectedPort
-			status.CurrentBuildRunName = app.Status.CurrentBuildRunName
-			status.LastBuildRunName = app.Status.LastBuildRunName
 			status.Environments = app.Status.Environments
+			status.CurrentBuildRunName, status.LastBuildRunName = aggregateAppBuildRunNames(status.Environments)
 		}); err != nil {
 			return ctrl.Result{}, fmt.Errorf("flush build status after env loop: %w", err)
 		}
@@ -569,12 +568,6 @@ func (r *AppReconciler) reconcileEnvBuild(ctx context.Context, app *mortisev1alp
 		revision = "main"
 	}
 
-	// Short-circuit: skip rebuild if we already built this revision for this env.
-	es := envStatusFor(app, envName)
-	if es != nil && es.LastBuiltSHA == revision && es.LastBuiltImage != "" && !hasPendingRebuildRequest(app) {
-		return es.LastBuiltImage, false, false, false, nil
-	}
-
 	imageRef, err := r.RegistryBackend.PushTarget(app.Name, envImageTag(revision, envName))
 	if err != nil {
 		log.Error(err, "push target failed", "env", envName)
@@ -584,6 +577,49 @@ func (r *AppReconciler) reconcileEnvBuild(ctx context.Context, app *mortisev1alp
 	if err != nil {
 		log.Error(err, "pull target failed", "env", envName)
 		return "", false, false, false, nil
+	}
+	desiredRunSpec := appBuildRunSpec(app, envName, revision, imageRef.Full, pullRef.Full)
+
+	// Short-circuit: skip rebuild if we already built this revision for this env
+	// with the same effective build inputs.
+	es := envStatusFor(app, envName)
+	if app.Status.CurrentBuildRunName != "" {
+		var current mortisev1alpha1.BuildRun
+		if err := r.Get(ctx, types.NamespacedName{Namespace: app.Namespace, Name: app.Status.CurrentBuildRunName}, &current); err != nil {
+			if !errors.IsNotFound(err) {
+				return "", false, false, false, err
+			}
+		} else if buildRunMatchesAppSpec(&current, app, envName, desiredRunSpec) {
+			projectAppBuildRunStatus(app, envName, &current)
+			switch current.Status.Phase {
+			case mortisev1alpha1.BuildRunPhaseSucceeded:
+				r.applyEnvBuildSuccess(ctx, app, envName, revision, current.Status.Image, current.Status.Digest, current.Status.DetectedPort)
+				return current.Status.Image, false, true, false, nil
+			case mortisev1alpha1.BuildRunPhaseFailed:
+				_ = r.setFailedCondition(ctx, app, firstNonEmpty(current.Status.FailureReason, "BuildFailed"), current.Status.FailureMessage)
+				return "", false, false, false, nil
+			default:
+				app.Status.Phase = mortisev1alpha1.AppPhaseBuilding
+				meta.SetStatusCondition(&app.Status.Conditions, metav1.Condition{
+					Type:               "BuildStarted",
+					Status:             metav1.ConditionTrue,
+					Reason:             "BuildInProgress",
+					Message:            fmt.Sprintf("building revision %s for %s", revision, envName),
+					LastTransitionTime: metav1.NewTime(r.clock().Now()),
+				})
+				return "", true, true, false, nil
+			}
+		}
+	}
+	if es != nil && es.LastBuiltSHA == revision && es.LastBuiltImage != "" && !hasPendingRebuildRequest(app) && es.LastSuccessfulBuildRunRef != nil {
+		var lastSuccessful mortisev1alpha1.BuildRun
+		if err := r.Get(ctx, types.NamespacedName{Namespace: app.Namespace, Name: es.LastSuccessfulBuildRunRef.Name}, &lastSuccessful); err != nil {
+			if !errors.IsNotFound(err) {
+				return "", false, false, false, err
+			}
+		} else if buildRunMatchesAppSpec(&lastSuccessful, app, envName, desiredRunSpec) {
+			return es.LastBuiltImage, false, false, false, nil
+		}
 	}
 
 	run, err := r.ensureAppBuildRun(ctx, app, envName, revision, imageRef.Full, pullRef.Full)
@@ -2627,6 +2663,7 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 
 		fresh.Status.Phase = phase
 		fresh.Status.Environments = envStatuses
+		fresh.Status.CurrentBuildRunName, fresh.Status.LastBuildRunName = aggregateAppBuildRunNames(envStatuses)
 		return r.Status().Update(ctx, &fresh)
 	})
 }
@@ -3370,6 +3407,19 @@ func (r *AppReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			Namespace: constants.ControlNamespace(projectName),
 		}}}
 	})
+	enqueueAppFromBuildRun := handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []reconcile.Request {
+		br, ok := obj.(*mortisev1alpha1.BuildRun)
+		if !ok {
+			return nil
+		}
+		if br.Spec.TargetRef.Kind != mortisev1alpha1.BuildRunTargetAppEnvironment || br.Spec.TargetRef.Name == "" || br.Namespace == "" {
+			return nil
+		}
+		return []reconcile.Request{{NamespacedName: types.NamespacedName{
+			Name:      br.Spec.TargetRef.Name,
+			Namespace: br.Namespace,
+		}}}
+	})
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&mortisev1alpha1.App{}).
 		Watches(&appsv1.Deployment{}, enqueueAppFromManagedResource).
@@ -3379,6 +3429,7 @@ func (r *AppReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(&corev1.Secret{}, enqueueAppFromManagedResource).
 		Watches(&corev1.ServiceAccount{}, enqueueAppFromManagedResource).
 		Watches(&networkingv1.Ingress{}, enqueueAppFromManagedResource).
+		Watches(&mortisev1alpha1.BuildRun{}, enqueueAppFromBuildRun).
 		Named("app").
 		Complete(r)
 }
