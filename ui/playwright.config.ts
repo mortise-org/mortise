@@ -11,10 +11,10 @@ export default defineConfig({
 	testDir: 'tests/e2e',
 	globalSetup: './tests/e2e/global-setup.ts',
 	globalTeardown: './tests/e2e/global-teardown.ts',
-	fullyParallel: true,
+	fullyParallel: !process.env.CI,
 	forbidOnly: !!process.env.CI,
 	retries: process.env.CI ? 2 : 0,
-	workers: 8,
+	workers: process.env.CI ? 4 : 8,
 	reporter: 'html',
 	globalTimeout: 30 * 60 * 1000,
 	// 60s covers beforeAll hooks that create projects under operator load.

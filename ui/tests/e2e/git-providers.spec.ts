@@ -84,8 +84,11 @@ test.describe('git providers', () => {
 			.first();
 		await providerRow.getByRole('button').last().click();
 
-		// Provider should be gone from the list.
-		await expect(section.getByText(providerName)).toHaveCount(0, { timeout: 5_000 });
+		// Provider deletion is eventually consistent through the API and UI list.
+		await expect(async () => {
+			await page.reload();
+			await expect(section.getByText(providerName)).toHaveCount(0);
+		}).toPass({ timeout: 15_000 });
 
 		// Test passed -- skip afterEach's delete fallback.
 		providerName = '';

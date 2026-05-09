@@ -116,3 +116,41 @@ jobs:
 
       - name: Build
         run: cd ui && npm run build
+
+  ui-e2e:
+    name: UI E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.17.3
+
+      - name: Install k3d
+        run: |
+          curl -fsSL -o /usr/local/bin/k3d "https://github.com/k3d-io/k3d/releases/download/v5.8.3/k3d-linux-amd64"
+          chmod +x /usr/local/bin/k3d
+
+      - name: Start dev cluster
+        run: make dev-up
+
+      - name: Run UI E2E tests
+        run: make test-e2e
+
+      - name: Tear down dev cluster
+        if: always()
+        run: make dev-down
