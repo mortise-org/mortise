@@ -172,13 +172,13 @@ func (s *Server) UpdateUserRole(w http.ResponseWriter, r *http.Request) {
 		Name:      secretName,
 		Namespace: "mortise-system",
 	}, &secret); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
 	secret.Data["role"] = []byte(req.Role)
 	if err := s.client.Update(r.Context(), &secret); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
