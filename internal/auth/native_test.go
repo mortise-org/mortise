@@ -78,7 +78,14 @@ func TestAuthenticateNoUser(t *testing.T) {
 func TestJWTRoundTrip(t *testing.T) {
 	provider, ctx := setup(t)
 
-	original := Principal{ID: "alice@example.com", Email: "alice@example.com", Role: RoleAdmin}
+	if err := provider.CreateUser(ctx, "alice@example.com", "s3cret12", RoleAdmin); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	original, err := provider.Authenticate(ctx, Credentials{Email: "alice@example.com", Password: "s3cret12"})
+	if err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
 	token, err := provider.GenerateSessionToken(ctx, original)
 	if err != nil {
 		t.Fatalf("GenerateSessionToken: %v", err)
@@ -277,6 +284,35 @@ func TestPasswordChangeInvalidatesToken(t *testing.T) {
 	}
 	if _, err := provider.Principal(ctx, newToken); err != nil {
 		t.Fatalf("new token should be valid: %v", err)
+	}
+}
+
+func TestRevokedUserInvalidatesExistingToken(t *testing.T) {
+	provider, ctx := setup(t)
+
+	if err := provider.CreateUser(ctx, "revoked@example.com", "original1", RoleMember); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	principal, err := provider.Authenticate(ctx, Credentials{Email: "revoked@example.com", Password: "original1"})
+	if err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
+	token, err := provider.GenerateSessionToken(ctx, principal)
+	if err != nil {
+		t.Fatalf("GenerateSessionToken: %v", err)
+	}
+
+	if _, err := provider.Principal(ctx, token); err != nil {
+		t.Fatalf("token should be valid before revocation: %v", err)
+	}
+
+	if err := provider.RevokeUser(ctx, "revoked@example.com"); err != nil {
+		t.Fatalf("RevokeUser: %v", err)
+	}
+
+	if _, err := provider.Principal(ctx, token); err == nil {
+		t.Fatal("token issued before revocation should be rejected")
 	}
 }
 

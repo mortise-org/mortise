@@ -1,3 +1,4 @@
+import { browser } from '$app/environment';
 import { goto } from '$app/navigation';
 import type {
 	App,
@@ -33,10 +34,88 @@ import type {
 
 const BASE = '/api';
 
+const REFRESH_WINDOW_MS = 4 * 60 * 60 * 1000; // refresh when <4h remaining
+
+function tokenExpiresAt(): number | null {
+	const token = localStorage.getItem('mortise_token');
+	if (!token) return null;
+	try {
+		const payloadSegment = token.split('.')[1];
+		if (!payloadSegment) return null;
+		const normalized = payloadSegment.replace(/-/g, '+').replace(/_/g, '/');
+		const padded = normalized.padEnd(normalized.length + ((4 - (normalized.length % 4)) % 4), '=');
+		const payload = JSON.parse(atob(padded));
+		return typeof payload.exp === 'number' ? payload.exp * 1000 : null;
+	} catch {
+		return null;
+	}
+}
+
+let refreshPromise: Promise<void> | null = null;
+
+export class AuthRequiredError extends Error {
+	constructor(message = 'Unauthorized') {
+		super(message);
+		this.name = 'AuthRequiredError';
+	}
+}
+
+function forceReauth(message = 'Unauthorized'): never {
+	if (browser) {
+		localStorage.removeItem('mortise_token');
+		localStorage.removeItem('mortise_user');
+		window.dispatchEvent(new CustomEvent('mortise:auth-required'));
+		void goto('/login');
+	}
+	throw new AuthRequiredError(message);
+}
+
+async function maybeRefreshToken(): Promise<void> {
+	const exp = tokenExpiresAt();
+	if (!exp) return;
+	if (exp - Date.now() > REFRESH_WINDOW_MS) return;
+	if (refreshPromise) return refreshPromise;
+
+	refreshPromise = (async () => {
+		try {
+			const token = localStorage.getItem('mortise_token');
+			if (!token) return;
+			const res = await fetch(`${BASE}/auth/refresh`, {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+					Authorization: `Bearer ${token}`
+				}
+			});
+			if (res.status === 401) {
+				forceReauth();
+			}
+			if (res.ok) {
+				const data = await res.json();
+				if (data.token) {
+					localStorage.setItem('mortise_token', data.token);
+					if (data.user) {
+						localStorage.setItem('mortise_user', JSON.stringify(data.user));
+					}
+				}
+			}
+		} catch (error) {
+			if (error instanceof AuthRequiredError) {
+				throw error;
+			}
+			// refresh is best-effort for transient failures.
+		} finally {
+			refreshPromise = null;
+		}
+	})();
+	return refreshPromise;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
 	const method = init?.method?.toUpperCase();
 	const retryable = method === 'PUT' || method === 'PATCH';
 	const maxRetries = retryable ? 3 : 0;
+	await maybeRefreshToken();
 
 	for (let attempt = 0; ; attempt++) {
 		const token = localStorage.getItem('mortise_token');
@@ -51,9 +130,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 		const res = await fetch(`${BASE}${path}`, { ...init, headers });
 
 		if (res.status === 401) {
-			localStorage.removeItem('mortise_token');
-			goto('/login');
-			throw new Error('Unauthorized');
+			forceReauth();
 		}
 
 		if (res.status === 403) {
@@ -87,6 +164,36 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 		}
 		return JSON.parse(text) as T;
 	}
+}
+
+async function fetchSSEToken(): Promise<string> {
+	await maybeRefreshToken();
+
+	const token = localStorage.getItem('mortise_token');
+	if (!token) {
+		forceReauth();
+	}
+
+	const res = await fetch(`${BASE}/auth/sse-token`, {
+		method: 'POST',
+		headers: {
+			'Content-Type': 'application/json',
+			Authorization: `Bearer ${token}`
+		}
+	});
+	if (res.status === 401) {
+		forceReauth();
+	}
+	if (!res.ok) {
+		const body = await res.json().catch(() => ({ error: res.statusText }));
+		throw new Error(body.error || 'Failed to acquire SSE token');
+	}
+
+	const data = await res.json();
+	if (typeof data.token !== 'string' || data.token === '') {
+		throw new Error('Failed to acquire SSE token');
+	}
+	return data.token;
 }
 
 function enc(s: string): string {
@@ -238,8 +345,8 @@ export const api = {
 	listPods: (project: string, app: string, env: string) =>
 		request<Pod[]>(`/projects/${enc(project)}/apps/${enc(app)}/pods?env=${enc(env)}`),
 
-	// --- logs: returns a ready-to-use SSE URL including the JWT ---
-	logsURL: (
+	// --- logs: returns a ready-to-use SSE URL with a short-lived SSE token ---
+	logsURL: async (
 		project: string,
 		app: string,
 		opts: {
@@ -251,8 +358,8 @@ export const api = {
 			sinceSeconds?: number;
 			sinceTime?: string;
 		}
-	): string => {
-		const token = localStorage.getItem('mortise_token') ?? '';
+	): Promise<string> => {
+		const sseToken = await fetchSSEToken();
 		const params = new URLSearchParams({ env: opts.env });
 		if (opts.follow) params.set('follow', 'true');
 		if (opts.tail !== undefined) params.set('tail', String(opts.tail));
@@ -260,9 +367,11 @@ export const api = {
 		if (opts.previous) params.set('previous', 'true');
 		if (opts.sinceSeconds !== undefined) params.set('sinceSeconds', String(opts.sinceSeconds));
 		if (opts.sinceTime) params.set('sinceTime', opts.sinceTime);
-		if (token) params.set('token', token);
+		if (sseToken) params.set('token', sseToken);
 		return `/api/projects/${enc(project)}/apps/${enc(app)}/logs?${params.toString()}`;
 	},
+
+	fetchSSEToken,
 
 	getBuildLogs: (project: string, app: string) =>
 		request<BuildLogsResponse>(`/projects/${enc(project)}/apps/${enc(app)}/build-logs`),

@@ -35,7 +35,7 @@
 		selectedApp ? apps.find(a => a.metadata.name === selectedApp) ?? null : null
 	);
 
-	let eventStream: ReturnType<typeof connectProjectEvents> | null = null;
+	let eventStream: Awaited<ReturnType<typeof connectProjectEvents>> | null = null;
 
 	onMount(async () => {
 		if (!localStorage.getItem('mortise_token')) {

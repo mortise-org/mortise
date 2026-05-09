@@ -3,8 +3,11 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"log/slog"
 	"math"
+	"net/http"
 	"path/filepath"
 	"testing"
 	"time"
@@ -13,7 +16,12 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
+	"k8s.io/client-go/kubernetes/scheme"
+	coreclientv1 "k8s.io/client-go/kubernetes/typed/core/v1"
+	rest "k8s.io/client-go/rest"
+	fakerest "k8s.io/client-go/rest/fake"
 	clienttesting "k8s.io/client-go/testing"
 	metricsv1beta1 "k8s.io/metrics/pkg/apis/metrics/v1beta1"
 	metricsfake "k8s.io/metrics/pkg/client/clientset/versioned/fake"
@@ -26,6 +34,53 @@ func discardLogger() *slog.Logger {
 type nopWriter struct{}
 
 func (nopWriter) Write(p []byte) (int, error) { return len(p), nil }
+
+type blockingLogClientset struct {
+	kubernetes.Interface
+	t *testing.T
+}
+
+func (c *blockingLogClientset) CoreV1() coreclientv1.CoreV1Interface {
+	return &blockingLogCoreV1{CoreV1Interface: c.Interface.CoreV1(), t: c.t}
+}
+
+type blockingLogCoreV1 struct {
+	coreclientv1.CoreV1Interface
+	t *testing.T
+}
+
+func (c *blockingLogCoreV1) Pods(namespace string) coreclientv1.PodInterface {
+	return &blockingLogPods{PodInterface: c.CoreV1Interface.Pods(namespace), namespace: namespace, t: c.t}
+}
+
+type blockingLogPods struct {
+	coreclientv1.PodInterface
+	namespace string
+	t         *testing.T
+}
+
+func (p *blockingLogPods) GetLogs(name string, opts *corev1.PodLogOptions) *rest.Request {
+	reader, writer := io.Pipe()
+	p.t.Cleanup(func() {
+		_ = reader.Close()
+		_ = writer.Close()
+	})
+
+	fakeClient := &fakerest.RESTClient{
+		Client: fakerest.CreateHTTPClient(func(_ *http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: http.StatusOK, Body: reader}, nil
+		}),
+		NegotiatedSerializer: scheme.Codecs.WithoutConversion(),
+		GroupVersion:         corev1.SchemeGroupVersion,
+		VersionedAPIPath:     fmt.Sprintf("/api/v1/namespaces/%s/pods/%s/log", p.namespace, name),
+	}
+	return fakeClient.Request()
+}
+
+func withBlockingPodLogs(t *testing.T, cs kubernetes.Interface) kubernetes.Interface {
+	t.Helper()
+	return &blockingLogClientset{Interface: cs, t: t}
+}
 
 // --- parseLogTimestamp ---
 
@@ -307,7 +362,7 @@ func TestLogCollectorSyncFindsEnvPods(t *testing.T) {
 	}
 	defer store.Close()
 
-	collector := NewLogCollector(cs, store, time.Minute, 100, discardLogger())
+	collector := NewLogCollector(withBlockingPodLogs(t, cs), store, time.Minute, 100, discardLogger())
 	collector.sync(context.Background())
 
 	collector.mu.Lock()
@@ -359,7 +414,7 @@ func TestLogCollectorMaxPods(t *testing.T) {
 	}
 	defer store.Close()
 
-	collector := NewLogCollector(cs, store, time.Minute, 2, discardLogger())
+	collector := NewLogCollector(withBlockingPodLogs(t, cs), store, time.Minute, 2, discardLogger())
 	collector.sync(context.Background())
 
 	collector.mu.Lock()
@@ -392,7 +447,7 @@ func TestLogCollectorSyncCleansUpRemovedPods(t *testing.T) {
 	}
 	defer store.Close()
 
-	collector := NewLogCollector(cs, store, time.Minute, 100, discardLogger())
+	collector := NewLogCollector(withBlockingPodLogs(t, cs), store, time.Minute, 100, discardLogger())
 	collector.sync(context.Background())
 
 	collector.mu.Lock()
@@ -437,7 +492,7 @@ func TestLogCollectorSyncSkipsNonMortiseNamespaces(t *testing.T) {
 	}
 	defer store.Close()
 
-	collector := NewLogCollector(cs, store, time.Minute, 100, discardLogger())
+	collector := NewLogCollector(withBlockingPodLogs(t, cs), store, time.Minute, 100, discardLogger())
 	collector.sync(context.Background())
 
 	collector.mu.Lock()
@@ -459,7 +514,7 @@ func TestLogCollectorStartTailerIdempotent(t *testing.T) {
 	}
 	defer store.Close()
 
-	collector := NewLogCollector(cs, store, time.Minute, 100, discardLogger())
+	collector := NewLogCollector(withBlockingPodLogs(t, cs), store, time.Minute, 100, discardLogger())
 
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
@@ -496,7 +551,7 @@ func TestLogCollectorStopAll(t *testing.T) {
 	}
 	defer store.Close()
 
-	collector := NewLogCollector(cs, store, time.Minute, 100, discardLogger())
+	collector := NewLogCollector(withBlockingPodLogs(t, cs), store, time.Minute, 100, discardLogger())
 
 	ctx := context.Background()
 	for _, name := range []string{"pod-1", "pod-2", "pod-3"} {
@@ -603,7 +658,7 @@ func TestLogTailerCleansUpOnExit(t *testing.T) {
 	}
 	defer store.Close()
 
-	collector := NewLogCollector(cs, store, time.Minute, 100, discardLogger())
+	collector := NewLogCollector(withBlockingPodLogs(t, cs), store, time.Minute, 100, discardLogger())
 
 	ctx, cancel := context.WithCancel(context.Background())
 	pod := &corev1.Pod{
