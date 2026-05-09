@@ -133,6 +133,7 @@ async function tryRefreshToken(): Promise<boolean> {
 			localStorage.setItem('mortise_token', data.token);
 			if (data.user) {
 				localStorage.setItem('mortise_user', JSON.stringify(data.user));
+				window.dispatchEvent(new CustomEvent('mortise:user-updated', { detail: data.user }));
 			}
 			return true;
 		}

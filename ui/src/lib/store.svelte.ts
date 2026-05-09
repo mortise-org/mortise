@@ -83,6 +83,13 @@ class MortiseStore {
 					}
 				} catch { /* ignore */ }
 			}
+
+			window.addEventListener('mortise:user-updated', (event: Event) => {
+				const detail = (event as CustomEvent<{ email: string; role: 'admin' | 'member' }>).detail;
+				if (detail) {
+					this.user = detail;
+				}
+			});
 		}
 	}
 

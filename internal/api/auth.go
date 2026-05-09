@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -163,13 +164,16 @@ func (s *Server) Refresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	refresher, ok := s.auth.(refreshPrincipalProvider)
-	if !ok {
-		writeJSON(w, http.StatusUnauthorized, errorResponse{"token refresh unavailable for this auth provider"})
-		return
+	if native, ok := s.auth.(*auth.NativeAuthProvider); ok && s.clientset != nil {
+		principal, err = native.CurrentPrincipalLive(r.Context(), s.clientset, principal.Email, tokenGen)
+	} else {
+		refresher, ok := s.auth.(refreshPrincipalProvider)
+		if !ok {
+			writeJSON(w, http.StatusUnauthorized, errorResponse{"token refresh unavailable for this auth provider"})
+			return
+		}
+		principal, err = refresher.CurrentPrincipal(r.Context(), principal.Email, tokenGen)
 	}
-
-	principal, err = refresher.CurrentPrincipal(r.Context(), principal.Email, tokenGen)
 	if err != nil {
 		switch {
 		case errors.Is(err, auth.ErrPasswordChangeInvalidated):

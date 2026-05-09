@@ -13,6 +13,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -169,6 +170,24 @@ func (n *NativeAuthProvider) CurrentPrincipal(ctx context.Context, email string,
 	}
 
 	return principalFromSecret(&secret), nil
+}
+
+// CurrentPrincipalLive reloads the current native-auth user state directly from
+// the API server, bypassing the controller-runtime cache.
+func (n *NativeAuthProvider) CurrentPrincipalLive(ctx context.Context, clientset kubernetes.Interface, email string, tokenGen int64) (Principal, error) {
+	secret, err := clientset.CoreV1().Secrets(namespace).Get(ctx, userSecretName(email), metav1.GetOptions{})
+	if errors.IsNotFound(err) {
+		return Principal{}, ErrUserNotFound
+	}
+	if err != nil {
+		return Principal{}, fmt.Errorf("reading user secret: %w", err)
+	}
+
+	if tokenGen < passwordGenFromSecret(secret) {
+		return Principal{}, ErrPasswordChangeInvalidated
+	}
+
+	return principalFromSecret(secret), nil
 }
 
 // CheckPasswordGen verifies that the token's password generation matches the
