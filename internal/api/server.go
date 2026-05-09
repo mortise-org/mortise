@@ -300,8 +300,8 @@ func (s *Server) Handler() http.Handler {
 		})
 
 		// SSE endpoints: authenticated via short-lived SSE token (?token=msse_...)
-		// or JWT query param (legacy fallback). sseAuthMiddleware handles both,
-		// then jwtAuthMiddleware runs for JWT-based paths.
+		// or Authorization bearer token. sseAuthMiddleware handles SSE-token
+		// query auth, then jwtAuthMiddleware handles bearer-token auth.
 		r.Group(func(r chi.Router) {
 			r.Use(s.sseAuthMiddleware)
 			r.Use(s.jwtAuthMiddleware)

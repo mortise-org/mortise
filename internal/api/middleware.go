@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"log/slog"
 	"net/http"
 	"strings"
 
@@ -86,10 +85,8 @@ func maxBytesMiddleware(maxBytes int64) func(http.Handler) http.Handler {
 	}
 }
 
-// sseAuthMiddleware handles authentication for SSE endpoints. It accepts a
-// ?token= query parameter containing either a short-lived SSE token (msse_
-// prefix, preferred) or a JWT (legacy fallback). SSE tokens are single-use
-// and short-lived, avoiding exposure of the long-lived JWT in URLs.
+// sseAuthMiddleware handles authentication for SSE endpoints. It accepts only
+// a short-lived, single-use SSE token in the ?token= query parameter.
 func (s *Server) sseAuthMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// If Authorization header is already set, let jwtAuthMiddleware handle it.
@@ -115,9 +112,6 @@ func (s *Server) sseAuthMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
-		// Legacy fallback: promote JWT query param to Authorization header.
-		r.Header.Set("Authorization", "Bearer "+tok)
-		slog.Debug("sse: using JWT ?token= query param (deprecated)", "path", r.URL.Path)
-		next.ServeHTTP(w, r)
+		writeJSON(w, http.StatusUnauthorized, errorResponse{"invalid or expired SSE token"})
 	})
 }
