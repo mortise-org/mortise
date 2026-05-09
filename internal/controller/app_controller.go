@@ -318,6 +318,9 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		if err := r.updateAppStatus(ctx, &app, func(status *mortisev1alpha1.AppStatus) {
 			status.Phase = app.Status.Phase
 			status.Conditions = app.Status.Conditions
+			status.LastBuiltSHA = app.Status.LastBuiltSHA
+			status.LastBuiltImage = app.Status.LastBuiltImage
+			status.DetectedPort = app.Status.DetectedPort
 			status.CurrentBuildRunName = app.Status.CurrentBuildRunName
 			status.LastBuildRunName = app.Status.LastBuildRunName
 			status.Environments = app.Status.Environments
