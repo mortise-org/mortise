@@ -9,6 +9,7 @@ import { expect, type APIRequestContext, type Page } from '@playwright/test';
 export const BASE_URL = process.env.MORTISE_BASE_URL ?? 'http://127.0.0.1:8080';
 export const ADMIN_EMAIL = process.env.MORTISE_ADMIN_EMAIL!;
 export const ADMIN_PASSWORD = process.env.MORTISE_ADMIN_PASSWORD!;
+const CONFLICT_RETRY_DELAY_MS = 1000;
 
 if (!ADMIN_EMAIL || !ADMIN_PASSWORD) {
 	throw new Error(
@@ -365,18 +366,29 @@ export async function addDomainViaAPI(
 	domain: string,
 	environment: string = 'production'
 ): Promise<{ primary: string; custom: string[] }> {
-	const res = await request.post(
-		`/api/projects/${encodeURIComponent(project)}/apps/${encodeURIComponent(appName)}/domains?environment=${encodeURIComponent(environment)}`,
-		{
-			headers: { Authorization: `Bearer ${token}` },
-			data: { domain }
+	for (let attempt = 0; attempt < 5; attempt++) {
+		const res = await request.post(
+			`/api/projects/${encodeURIComponent(project)}/apps/${encodeURIComponent(appName)}/domains?environment=${encodeURIComponent(environment)}`,
+			{
+				headers: { Authorization: `Bearer ${token}` },
+				data: { domain }
+			}
+		);
+		if (res.ok()) {
+			return (await res.json()) as { primary: string; custom: string[] };
 		}
-	);
-	if (!res.ok()) {
 		const body = await res.text().catch(() => '');
+		if (
+			res.status() === 409 &&
+			body.includes('the object has been modified') &&
+			attempt < 4
+		) {
+			await new Promise((r) => setTimeout(r, CONFLICT_RETRY_DELAY_MS));
+			continue;
+		}
 		throw new Error(`addDomainViaAPI failed: HTTP ${res.status()} ${body}`);
 	}
-	return (await res.json()) as { primary: string; custom: string[] };
+	throw new Error('addDomainViaAPI failed after retrying conflict responses');
 }
 
 /** Remove a custom domain from an app via the API (best-effort, swallows errors). */
