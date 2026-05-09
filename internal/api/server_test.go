@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/fstest"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -29,12 +30,41 @@ import (
 	"github.com/mortise-org/mortise/internal/auth"
 	"github.com/mortise-org/mortise/internal/authz"
 	"github.com/mortise-org/mortise/internal/constants"
+	"github.com/mortise-org/mortise/internal/git"
 )
 
 // sharedCfg is the envtest rest.Config. Started once by TestMain and reused
 // by every test via setupEnvtest. Starting envtest takes ~4s, so doing it
 // once per package (instead of per test) is the main cost win.
 var sharedCfg *rest.Config
+
+type gitfake struct {
+	branchHead string
+}
+
+func (g *gitfake) RegisterWebhook(context.Context, string, git.WebhookConfig) error { return nil }
+func (g *gitfake) ListWebhooks(context.Context, string) ([]git.WebhookInfo, error)  { return nil, nil }
+func (g *gitfake) DeleteWebhook(context.Context, string, int64) error               { return nil }
+func (g *gitfake) PostCommitStatus(context.Context, string, string, git.CommitStatus) error {
+	return nil
+}
+func (g *gitfake) VerifyWebhookSignature([]byte, http.Header) error { return nil }
+func (g *gitfake) ResolveCloneCredentials(context.Context, string) (git.GitCredentials, error) {
+	return git.GitCredentials{}, nil
+}
+func (g *gitfake) ListRepos(context.Context) ([]git.Repository, error) { return nil, nil }
+func (g *gitfake) ListBranches(context.Context, string) ([]git.Branch, error) {
+	return nil, nil
+}
+func (g *gitfake) ResolveBranchHead(context.Context, string, string) (string, error) {
+	return g.branchHead, nil
+}
+func (g *gitfake) ListOpenPullRequests(context.Context, string) ([]git.PullRequestSnapshot, error) {
+	return nil, nil
+}
+func (g *gitfake) ListTree(context.Context, string, string, string, string) ([]git.TreeEntry, error) {
+	return nil, nil
+}
 
 func TestMain(m *testing.M) {
 	if err := mortisev1alpha1.AddToScheme(scheme.Scheme); err != nil {
@@ -495,6 +525,53 @@ func TestDeploy(t *testing.T) {
 	}
 }
 
+func TestDeployPerEnvironment(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+	seedProject(t, k8sClient, "default")
+
+	doRequest(h, http.MethodPost, "/api/projects/default/apps", map[string]any{
+		"name": "env-deploy-target",
+		"spec": map[string]any{
+			"source":       map[string]any{"type": "image", "image": "nginx:1.25.0"},
+			"environments": []map[string]any{{"name": "staging"}, {"name": "production"}},
+		},
+	})
+
+	// Deploy to staging only.
+	w := doRequest(h, http.MethodPost, "/api/projects/default/apps/env-deploy-target/deploy", map[string]any{
+		"image":       "nginx:1.26.0",
+		"environment": "staging",
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("deploy: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var app mortisev1alpha1.App
+	err := k8sClient.Get(context.Background(), types.NamespacedName{Name: "env-deploy-target", Namespace: "pj-default"}, &app)
+	if err != nil {
+		t.Fatalf("get app after deploy: %v", err)
+	}
+
+	// Spec-level image must NOT change.
+	if app.Spec.Source.Image != "nginx:1.25.0" {
+		t.Errorf("spec image changed: expected nginx:1.25.0, got %s", app.Spec.Source.Image)
+	}
+
+	// Per-env image must be set on the staging environment.
+	var stagingImage string
+	for _, env := range app.Spec.Environments {
+		if env.Name == "staging" {
+			stagingImage = env.Image
+			break
+		}
+	}
+	if stagingImage != "nginx:1.26.0" {
+		t.Errorf("expected staging image nginx:1.26.0, got %q", stagingImage)
+	}
+}
+
 func TestSecretsCRUD(t *testing.T) {
 	k8sClient := setupEnvtest(t)
 	srv := newAdminServer(t, k8sClient)
@@ -605,7 +682,7 @@ func TestRollback(t *testing.T) {
 	// in the per-env namespace.
 	envNs := constants.EnvNamespace("default", "production")
 	dep := &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{Name: "rollback-app-production", Namespace: envNs},
+		ObjectMeta: metav1.ObjectMeta{Name: "rollback-app", Namespace: envNs},
 		Spec: appsv1.DeploymentSpec{
 			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "rollback-app"}},
 			Template: corev1.PodTemplateSpec{
@@ -649,7 +726,7 @@ func TestRollback(t *testing.T) {
 	}
 
 	// Verify Deployment was patched.
-	if err := k8sClient.Get(ctx, types.NamespacedName{Name: "rollback-app-production", Namespace: envNs}, dep); err != nil {
+	if err := k8sClient.Get(ctx, types.NamespacedName{Name: "rollback-app", Namespace: envNs}, dep); err != nil {
 		t.Fatalf("get deployment: %v", err)
 	}
 	if dep.Spec.Template.Spec.Containers[0].Image != "nginx:1.26" {
@@ -737,14 +814,44 @@ func TestRollbackRequiresAuth(t *testing.T) {
 func TestRebuild(t *testing.T) {
 	k8sClient := setupEnvtest(t)
 	srv := newAdminServer(t, k8sClient)
+	srv.GitAPIFactory = func(*mortisev1alpha1.GitProvider, string, string) (git.GitAPI, error) {
+		return &gitfake{branchHead: "resolved-sha-123"}, nil
+	}
 	h := srv.Handler()
 	ns := seedProject(t, k8sClient, "default")
 
 	ctx := context.Background()
+	if err := k8sClient.Create(ctx, &mortisev1alpha1.GitProvider{
+		ObjectMeta: metav1.ObjectMeta{Name: "github-main"},
+		Spec: mortisev1alpha1.GitProviderSpec{
+			Type: mortisev1alpha1.GitProviderTypeGitHub,
+			Host: "https://github.com",
+		},
+	}); err != nil {
+		t.Fatalf("create provider: %v", err)
+	}
+	if err := k8sClient.Create(ctx, &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "user-github-main-token-" + hex.EncodeToString([]byte("test@example.com")),
+			Namespace: "mortise-system",
+		},
+		Data: map[string][]byte{"token": []byte("gho_test")},
+	}); err != nil {
+		t.Fatalf("create token secret: %v", err)
+	}
 	app := &mortisev1alpha1.App{
-		ObjectMeta: metav1.ObjectMeta{Name: "rebuild-app", Namespace: ns},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        "rebuild-app",
+			Namespace:   ns,
+			Annotations: map[string]string{"mortise.dev/created-by": "test@example.com"},
+		},
 		Spec: mortisev1alpha1.AppSpec{
-			Source: mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeGit, Repo: "https://github.com/example/repo"},
+			Source: mortisev1alpha1.AppSource{
+				Type:        mortisev1alpha1.SourceTypeGit,
+				Repo:        "https://github.com/example/repo",
+				Branch:      "main",
+				ProviderRef: "github-main",
+			},
 			Environments: []mortisev1alpha1.Environment{
 				{Name: "production"},
 			},
@@ -755,6 +862,9 @@ func TestRebuild(t *testing.T) {
 	}
 	app.Status.Phase = mortisev1alpha1.AppPhaseReady
 	app.Status.LastBuiltSHA = "abc123"
+	app.Status.Environments = []mortisev1alpha1.EnvironmentStatus{
+		{Name: "production", LastBuiltSHA: "main", LastBuiltImage: "registry.example/app:main"},
+	}
 	if err := k8sClient.Status().Update(ctx, app); err != nil {
 		t.Fatalf("update status: %v", err)
 	}
@@ -770,8 +880,14 @@ func TestRebuild(t *testing.T) {
 	if app.Annotations["mortise.dev/no-cache-build"] != "true" {
 		t.Errorf("expected no-cache-build annotation, got %q", app.Annotations["mortise.dev/no-cache-build"])
 	}
+	if app.Annotations["mortise.dev/revision"] != "resolved-sha-123" {
+		t.Errorf("expected revision synced to resolved sha, got %q", app.Annotations["mortise.dev/revision"])
+	}
 	if app.Status.LastBuiltSHA != "" {
 		t.Errorf("expected LastBuiltSHA cleared, got %q", app.Status.LastBuiltSHA)
+	}
+	if len(app.Status.Environments) != 1 || app.Status.Environments[0].LastBuiltSHA != "" {
+		t.Errorf("expected env LastBuiltSHA cleared, got %+v", app.Status.Environments)
 	}
 	if app.Status.Phase != mortisev1alpha1.AppPhaseBuilding {
 		t.Errorf("expected phase Building, got %s", app.Status.Phase)
@@ -1112,7 +1228,7 @@ func TestRedeployStaleNoStaleEnvs(t *testing.T) {
 	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if resp.Restarted != nil && len(resp.Restarted) != 0 {
+	if len(resp.Restarted) != 0 {
 		t.Errorf("expected no envs restarted, got %v", resp.Restarted)
 	}
 }
@@ -1142,7 +1258,7 @@ func TestPromote(t *testing.T) {
 	for _, envName := range []string{"staging", "production"} {
 		depNs := constants.EnvNamespace("default", envName)
 		dep := &appsv1.Deployment{
-			ObjectMeta: metav1.ObjectMeta{Name: "promote-app-" + envName, Namespace: depNs},
+			ObjectMeta: metav1.ObjectMeta{Name: "promote-app", Namespace: depNs},
 			Spec: appsv1.DeploymentSpec{
 				Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "promote-app", "env": envName}},
 				Template: corev1.PodTemplateSpec{
@@ -1176,7 +1292,7 @@ func TestPromote(t *testing.T) {
 	// Verify production Deployment has the staging image.
 	prodNs := constants.EnvNamespace("default", "production")
 	var dep appsv1.Deployment
-	if err := k8sClient.Get(ctx, types.NamespacedName{Name: "promote-app-production", Namespace: prodNs}, &dep); err != nil {
+	if err := k8sClient.Get(ctx, types.NamespacedName{Name: "promote-app", Namespace: prodNs}, &dep); err != nil {
 		t.Fatalf("get production deployment: %v", err)
 	}
 	if dep.Spec.Template.Spec.Containers[0].Image != "sha256:abc123" {
@@ -1318,5 +1434,61 @@ func TestMemberCanCRUDSecrets(t *testing.T) {
 	w = doRequest(h, http.MethodDelete, "/api/projects/default/apps/sec-app/secrets/db-pass", nil)
 	if w.Code != http.StatusOK {
 		t.Fatalf("delete secret: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestOGImageEscapesHostHeader(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+
+	authProvider := auth.NewNativeAuthProvider(k8sClient)
+	jwtHelper := auth.NewJWTHelper(k8sClient)
+
+	mockUI := fstest.MapFS{
+		"index.html": &fstest.MapFile{
+			Data: []byte(`<html><head><meta property="og:image" content="/og-image.png"></head><body></body></html>`),
+		},
+	}
+
+	srv := api.NewServer(k8sClient, fake.NewClientset(), nil, nil, authProvider, jwtHelper, mockUI, authz.NewNativePolicyEngine(k8sClient))
+	h := srv.Handler()
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Host = `evil.com"><script>alert(1)</script><img src="`
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	body := w.Body.String()
+	if strings.Contains(body, "<script>") {
+		t.Fatal("Host header was not escaped — XSS payload present in response body")
+	}
+	if !strings.Contains(body, "&lt;script&gt;") && !strings.Contains(body, "&#") {
+		t.Log("body:", body)
+	}
+}
+
+func TestOGImageRejectsInvalidProto(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+
+	authProvider := auth.NewNativeAuthProvider(k8sClient)
+	jwtHelper := auth.NewJWTHelper(k8sClient)
+
+	mockUI := fstest.MapFS{
+		"index.html": &fstest.MapFile{
+			Data: []byte(`<html><head><meta property="og:image" content="/og-image.png"></head><body></body></html>`),
+		},
+	}
+
+	srv := api.NewServer(k8sClient, fake.NewClientset(), nil, nil, authProvider, jwtHelper, mockUI, authz.NewNativePolicyEngine(k8sClient))
+	h := srv.Handler()
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Host = "example.com"
+	req.Header.Set("X-Forwarded-Proto", "javascript")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	body := w.Body.String()
+	if strings.Contains(body, "javascript://") {
+		t.Fatal("invalid X-Forwarded-Proto was not rejected — 'javascript' scheme in response")
 	}
 }

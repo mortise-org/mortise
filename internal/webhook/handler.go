@@ -10,25 +10,24 @@ package webhook
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"strings"
-	"time"
 
 	"github.com/go-chi/chi/v5"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
 	"github.com/mortise-org/mortise/internal/constants"
 	"github.com/mortise-org/mortise/internal/git"
+	"github.com/mortise-org/mortise/internal/previewsync"
 )
 
 // Handler handles inbound git forge webhooks.
 type Handler struct {
-	k8s k8sReader
+	k8s                k8sReader
+	gitAPIFromProvider func(*mortisev1alpha1.GitProvider, string, string) (git.GitAPI, error)
 }
 
 // k8sReader is a minimal interface over the k8s client so Handler doesn't
@@ -43,11 +42,12 @@ type k8sReader interface {
 	createPreviewEnvironment(ctx context.Context, pe *mortisev1alpha1.PreviewEnvironment) error
 	updatePreviewEnvironment(ctx context.Context, pe *mortisev1alpha1.PreviewEnvironment) error
 	deletePreviewEnvironment(ctx context.Context, pe *mortisev1alpha1.PreviewEnvironment) error
+	resolveGitTokenForApp(ctx context.Context, providerName, controlNamespace, createdBy, cachedOwner string) (git.TokenResult, error)
 }
 
 // New creates a Handler.
 func New(r k8sReader) *Handler {
-	return &Handler{k8s: r}
+	return &Handler{k8s: r, gitAPIFromProvider: git.NewGitAPIFromProvider}
 }
 
 // ServeHTTP dispatches to the chi-routed sub-router.
@@ -103,7 +103,7 @@ func (h *Handler) handleWebhook(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// Construct an ephemeral GitAPI for signature verification only.
-	api, err := git.NewGitAPIFromProvider(gp, "" /* token unused */, webhookSecret)
+	api, err := h.gitAPIFromProvider(gp, "" /* token unused */, webhookSecret)
 	if err != nil {
 		log.Error(err, "build git api")
 		http.Error(w, "internal error", http.StatusInternalServerError)
@@ -191,10 +191,8 @@ func (h *Handler) dispatchToApps(ctx context.Context, br BuildRequest) {
 	}
 }
 
-// dispatchPREvent handles pull_request events: creates, updates, or deletes
-// PreviewEnvironment CRDs for matching Apps. Preview is gated at the Project
-// level (SPEC §5.8): every App in a Project with preview.enabled=true
-// participates in each open PR's preview namespace.
+// dispatchPREvent handles pull_request events by reconciling previews against
+// the forge's current open-PR list for each matching App.
 func (h *Handler) dispatchPREvent(ctx context.Context, pr PREvent) {
 	log := logf.FromContext(ctx)
 
@@ -208,6 +206,7 @@ func (h *Handler) dispatchPREvent(ctx context.Context, pr PREvent) {
 	// and env-set validation all hang off the same record.
 	projectCache := make(map[string]*mortisev1alpha1.Project)
 	projectKnown := make(map[string]bool)
+	openPRCache := make(map[string][]git.PullRequestSnapshot)
 
 	matched := 0
 	for i := range apps {
@@ -248,13 +247,39 @@ func (h *Handler) dispatchPREvent(ctx context.Context, pr PREvent) {
 			continue
 		}
 
-		switch pr.Action {
-		case "opened", "synchronize":
-			h.handlePROpenOrSync(ctx, app, project, preview, pr)
-		case "closed":
-			h.handlePRClosed(ctx, app, pr)
-		default:
-			log.Info("ignoring PR action", "action", pr.Action)
+		cacheKey := gpRepoKey(pr.Provider, app.Namespace, src.Repo)
+		openPRs, ok := openPRCache[cacheKey]
+		if !ok {
+			gp, err := h.k8s.getGitProvider(ctx, app.Spec.Source.ProviderRef)
+			if err != nil {
+				log.Error(err, "get GitProvider for preview sync", "provider", app.Spec.Source.ProviderRef)
+				continue
+			}
+			createdBy := app.Annotations["mortise.dev/created-by"]
+			cachedOwner := app.Annotations["mortise.dev/git-token-owner"]
+			tokenResult, err := h.k8s.resolveGitTokenForApp(ctx, gp.Name, app.Namespace, createdBy, cachedOwner)
+			if err != nil {
+				log.Error(err, "resolve git token for preview sync", "app", app.Name, "provider", gp.Name)
+				continue
+			}
+			api, err := h.gitAPIFromProvider(gp, tokenResult.Token, "")
+			if err != nil {
+				log.Error(err, "create git API for preview sync", "app", app.Name)
+				continue
+			}
+			openPRs, err = api.ListOpenPullRequests(ctx, app.Spec.Source.Repo)
+			if err != nil {
+				log.Error(err, "list open pull requests for preview sync", "app", app.Name, "repo", app.Spec.Source.Repo)
+				continue
+			}
+			openPRCache[cacheKey] = openPRs
+		}
+		if pr.Action == "closed" {
+			openPRs = filterClosedPR(openPRs, pr.Number)
+		}
+		if err := previewsync.ReconcileAppPreviews(ctx, previewStore{reader: h.k8s}, app, project, preview, openPRs); err != nil {
+			log.Error(err, "reconcile previews from webhook", "app", app.Name, "project", project.Name)
+			continue
 		}
 		matched++
 	}
@@ -264,122 +289,18 @@ func (h *Handler) dispatchPREvent(ctx context.Context, pr PREvent) {
 	}
 }
 
-func (h *Handler) handlePROpenOrSync(ctx context.Context, app *mortisev1alpha1.App, project *mortisev1alpha1.Project, preview *mortisev1alpha1.PreviewConfig, pr PREvent) {
-	log := logf.FromContext(ctx)
-
-	// Preview envs inherit settings from a source environment. Resolve which
-	// env to clone from: prefer "staging" if it exists, otherwise the first
-	// non-production env. If the project only has "production", warn and skip.
-	sourceEnv := resolvePreviewSourceEnv(project)
-	if sourceEnv == "" {
-		log.Info("skipping preview env: project has no non-production environment to inherit from; add a staging or development environment",
-			"project", project.Name, "app", app.Name, "pr", pr.Number)
-		return
+func filterClosedPR(openPRs []git.PullRequestSnapshot, closedNumber int) []git.PullRequestSnapshot {
+	if closedNumber == 0 || len(openPRs) == 0 {
+		return openPRs
 	}
-
-	peName := previewEnvName(app.Name, pr.Number)
-
-	// Resolve domain from template.
-	domain := ""
-	if preview != nil {
-		domain = resolvePreviewDomainTemplate(preview.Domain, app.Name, project.Name, pr.Number)
-	}
-
-	// Default TTL: 72h.
-	ttlDuration := 72 * time.Hour
-	if preview != nil && preview.TTL != "" {
-		if parsed, err := time.ParseDuration(preview.TTL); err == nil {
-			ttlDuration = parsed
-		} else {
-			log.Error(err, "parse TTL, using default 72h", "ttl", preview.TTL)
+	filtered := openPRs[:0]
+	for _, pr := range openPRs {
+		if pr.Number == closedNumber {
+			continue
 		}
+		filtered = append(filtered, pr)
 	}
-
-	// Find the source env override on the App (may be nil — defaults are fine).
-	sourceEnvOverride := findAppEnv(app, sourceEnv)
-
-	// Check if PreviewEnvironment already exists.
-	existing, err := h.k8s.listPreviewEnvironments(ctx, app.Namespace)
-	if err != nil {
-		log.Error(err, "list preview environments")
-		return
-	}
-
-	for j := range existing {
-		if existing[j].Name == peName {
-			// Update SHA to trigger rebuild.
-			existing[j].Spec.PullRequest.SHA = pr.SHA
-			existing[j].Spec.PullRequest.Branch = pr.Branch
-			if err := h.k8s.updatePreviewEnvironment(ctx, &existing[j]); err != nil {
-				log.Error(err, "update preview environment", "name", peName)
-			} else {
-				log.Info("updated preview environment SHA", "name", peName, "sha", pr.SHA)
-			}
-			return
-		}
-	}
-
-	// Create new PreviewEnvironment.
-	pe := &mortisev1alpha1.PreviewEnvironment{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      peName,
-			Namespace: app.Namespace,
-		},
-		Spec: mortisev1alpha1.PreviewEnvironmentSpec{
-			AppRef:    app.Name,
-			SourceEnv: sourceEnv,
-			PullRequest: mortisev1alpha1.PullRequestRef{
-				Number: pr.Number,
-				Branch: pr.Branch,
-				SHA:    pr.SHA,
-			},
-			Domain: domain,
-			TTL:    metav1.Duration{Duration: ttlDuration},
-		},
-	}
-
-	// Inherit from source environment.
-	if sourceEnvOverride != nil {
-		pe.Spec.Replicas = sourceEnvOverride.Replicas
-		pe.Spec.Resources = sourceEnvOverride.Resources
-		pe.Spec.Env = sourceEnvOverride.Env
-		pe.Spec.Bindings = sourceEnvOverride.Bindings
-	}
-
-	// Apply project-level preview overrides.
-	if preview != nil {
-		if preview.Resources.CPU != "" || preview.Resources.Memory != "" {
-			pe.Spec.Resources = preview.Resources
-		}
-	}
-
-	if err := h.k8s.createPreviewEnvironment(ctx, pe); err != nil {
-		log.Error(err, "create preview environment", "name", peName)
-	} else {
-		log.Info("created preview environment", "name", peName, "pr", pr.Number)
-	}
-}
-
-func (h *Handler) handlePRClosed(ctx context.Context, app *mortisev1alpha1.App, pr PREvent) {
-	log := logf.FromContext(ctx)
-
-	existing, err := h.k8s.listPreviewEnvironments(ctx, app.Namespace)
-	if err != nil {
-		log.Error(err, "list preview environments for cleanup")
-		return
-	}
-
-	peName := previewEnvName(app.Name, pr.Number)
-	for j := range existing {
-		if existing[j].Name == peName {
-			if err := h.k8s.deletePreviewEnvironment(ctx, &existing[j]); err != nil {
-				log.Error(err, "delete preview environment", "name", peName)
-			} else {
-				log.Info("deleted preview environment", "name", peName)
-			}
-			return
-		}
-	}
+	return filtered
 }
 
 // branchFromRef strips the "refs/heads/" prefix from a git ref string.
@@ -389,20 +310,25 @@ func branchFromRef(ref string) string {
 }
 
 // repoMatches returns true if the App's configured repo URL and the webhook
-// event's repo identifier refer to the same repository.
+// event's repo identifier refer to the same repository. Both sides must
+// resolve to the same owner/repo pair after normalization.
 func repoMatches(appRepo, eventRepo string) bool {
 	if appRepo == "" || eventRepo == "" {
 		return false
 	}
 	a := normalizeRepo(appRepo)
 	b := normalizeRepo(eventRepo)
-	if a == b {
-		return true
+	return ownerRepo(a) == ownerRepo(b)
+}
+
+// ownerRepo extracts the "owner/repo" suffix from a normalized repo string,
+// requiring both components to be present for a valid match.
+func ownerRepo(normalized string) string {
+	parts := strings.Split(normalized, "/")
+	if len(parts) < 2 {
+		return ""
 	}
-	if strings.HasSuffix(a, "/"+b) || strings.HasSuffix(b, "/"+a) {
-		return true
-	}
-	return false
+	return parts[len(parts)-2] + "/" + parts[len(parts)-1]
 }
 
 // normalizeRepo returns a canonical lowercased string for comparison.
@@ -665,7 +591,7 @@ func parseGitLabPREvent(body []byte, header http.Header) (PREvent, bool) {
 // normalizeAction maps forge-specific PR actions to our internal set.
 func normalizeAction(action string) string {
 	switch action {
-	case "opened":
+	case "opened", "reopened":
 		return "opened"
 	case "synchronize", "synchronized":
 		return "synchronize"
@@ -718,50 +644,26 @@ func matchesWatchPaths(watchPaths, changedPaths []string) bool {
 	return false
 }
 
-// previewEnvName returns the name for a PreviewEnvironment CRD.
-func previewEnvName(appName string, prNumber int) string {
-	return fmt.Sprintf("%s-preview-pr-%d", appName, prNumber)
+func gpRepoKey(providerName, namespace, repo string) string {
+	return providerName + "|" + namespace + "|" + repo
 }
 
-// resolvePreviewDomainTemplate replaces {number}, {app}, and {project} in a domain template.
-func resolvePreviewDomainTemplate(template, appName, projectName string, prNumber int) string {
-	if template == "" {
-		return ""
-	}
-	result := strings.ReplaceAll(template, "{number}", fmt.Sprintf("%d", prNumber))
-	result = strings.ReplaceAll(result, "{app}", appName)
-	result = strings.ReplaceAll(result, "{project}", projectName)
-	return result
+type previewStore struct {
+	reader k8sReader
 }
 
-// findAppEnv returns the App's per-environment override for the named env,
-// or nil when the App declares no override for that env. Callers that need
-// defaults should treat nil as "use App defaults".
-func findAppEnv(app *mortisev1alpha1.App, envName string) *mortisev1alpha1.Environment {
-	for i := range app.Spec.Environments {
-		if app.Spec.Environments[i].Name == envName {
-			return &app.Spec.Environments[i]
-		}
-	}
-	return nil
+func (p previewStore) ListPreviewEnvironments(ctx context.Context, namespace string) ([]mortisev1alpha1.PreviewEnvironment, error) {
+	return p.reader.listPreviewEnvironments(ctx, namespace)
 }
 
-// resolvePreviewSourceEnv picks the project environment that preview envs
-// should inherit from. It prefers "staging" if declared, otherwise falls back
-// to the first non-production environment. Returns "" if no suitable env
-// exists (i.e. the project only has "production").
-func resolvePreviewSourceEnv(project *mortisev1alpha1.Project) string {
-	if project == nil {
-		return ""
-	}
-	var firstNonProd string
-	for _, env := range project.Spec.Environments {
-		if env.Name == "staging" {
-			return "staging"
-		}
-		if env.Name != "production" && firstNonProd == "" {
-			firstNonProd = env.Name
-		}
-	}
-	return firstNonProd
+func (p previewStore) CreatePreviewEnvironment(ctx context.Context, pe *mortisev1alpha1.PreviewEnvironment) error {
+	return p.reader.createPreviewEnvironment(ctx, pe)
+}
+
+func (p previewStore) UpdatePreviewEnvironment(ctx context.Context, pe *mortisev1alpha1.PreviewEnvironment) error {
+	return p.reader.updatePreviewEnvironment(ctx, pe)
+}
+
+func (p previewStore) DeletePreviewEnvironment(ctx context.Context, pe *mortisev1alpha1.PreviewEnvironment) error {
+	return p.reader.deletePreviewEnvironment(ctx, pe)
 }

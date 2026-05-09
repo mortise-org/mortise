@@ -75,6 +75,21 @@ cert-manager:
     enabled: true
 
 # ---------------------------------------------------------------------------
+# TLS — automatic certificate issuance via cert-manager
+# ---------------------------------------------------------------------------
+# When acme.email is set and cert-manager is enabled, a default ClusterIssuer
+# is created and wired into PlatformConfig automatically.
+tls:
+  acme:
+    # email is the ACME registration email (required for Let's Encrypt).
+    # Leave empty to skip automatic ClusterIssuer creation.
+    email: ""
+    # issuerName is the name of the ClusterIssuer to create.
+    issuerName: letsencrypt-prod
+    # server is the ACME directory URL.
+    server: https://acme-v02.api.letsencrypt.org/directory
+
+# ---------------------------------------------------------------------------
 # Build infrastructure namespace
 # ---------------------------------------------------------------------------
 buildInfra:

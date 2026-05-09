@@ -61,7 +61,7 @@ func (s *Server) Deploy(w http.ResponseWriter, r *http.Request) {
 
 	// Check auth: JWT principal (policy-checked) or deploy token (inline check).
 	if p := PrincipalFromContext(r.Context()); p != nil {
-		if !s.authorize(w, r, authz.Resource{Kind: "app", Namespace: ns, Project: projectName}, authz.ActionUpdate) {
+		if !s.authorize(w, r, authz.Resource{Kind: "app", Namespace: ns, Project: projectName, Environment: req.Environment}, authz.ActionUpdate) {
 			return
 		}
 	} else {
@@ -98,13 +98,32 @@ func (s *Server) Deploy(w http.ResponseWriter, r *http.Request) {
 
 	var app mortisev1alpha1.App
 	if err := s.client.Get(r.Context(), types.NamespacedName{Name: appName, Namespace: ns}, &app); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
-	app.Spec.Source.Image = req.Image
+	if req.Environment != "" {
+		if msg := validateDNSLabel("environment", req.Environment, 63); msg != "" {
+			writeJSON(w, http.StatusBadRequest, errorResponse{msg})
+			return
+		}
+		found := false
+		for i := range app.Spec.Environments {
+			if app.Spec.Environments[i].Name == req.Environment {
+				app.Spec.Environments[i].Image = req.Image
+				found = true
+				break
+			}
+		}
+		if !found {
+			writeJSON(w, http.StatusNotFound, errorResponse{fmt.Sprintf("environment %q not found in app spec", req.Environment)})
+			return
+		}
+	} else {
+		app.Spec.Source.Image = req.Image
+	}
 	if err := s.client.Update(r.Context(), &app); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 

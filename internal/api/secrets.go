@@ -67,7 +67,7 @@ func (s *Server) CreateSecret(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if !s.authorize(w, r, authz.Resource{Kind: "secret", Project: projectName}, authz.ActionCreate) {
+	if !s.authorize(w, r, authz.Resource{Kind: "secret", Project: projectName, Environment: envFromQuery(r)}, authz.ActionCreate) {
 		return
 	}
 	appName := chi.URLParam(r, "app")
@@ -79,8 +79,8 @@ func (s *Server) CreateSecret(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errorResponse{"invalid JSON: " + err.Error()})
 		return
 	}
-	if req.Name == "" {
-		writeJSON(w, http.StatusBadRequest, errorResponse{"name is required"})
+	if msg := validateDNSLabel("name", req.Name, 253); msg != "" {
+		writeJSON(w, http.StatusBadRequest, errorResponse{msg})
 		return
 	}
 
@@ -97,7 +97,7 @@ func (s *Server) CreateSecret(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.client.Create(r.Context(), secret); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -136,7 +136,7 @@ func (s *Server) ListSecrets(w http.ResponseWriter, r *http.Request) {
 			"app.kubernetes.io/managed-by": "mortise",
 		},
 	); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -166,7 +166,7 @@ func (s *Server) DeleteSecret(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if !s.authorize(w, r, authz.Resource{Kind: "secret", Project: projectName}, authz.ActionDelete) {
+	if !s.authorize(w, r, authz.Resource{Kind: "secret", Project: projectName, Environment: envFromQuery(r)}, authz.ActionDelete) {
 		return
 	}
 	appName := chi.URLParam(r, "app")
@@ -176,7 +176,7 @@ func (s *Server) DeleteSecret(w http.ResponseWriter, r *http.Request) {
 
 	var secret corev1.Secret
 	if err := s.client.Get(r.Context(), types.NamespacedName{Name: secretName, Namespace: envNs}, &secret); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -197,7 +197,7 @@ func (s *Server) DeleteSecret(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusNotFound, errorResponse{err.Error()})
 			return
 		}
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 

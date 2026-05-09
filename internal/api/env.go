@@ -66,7 +66,7 @@ func (s *Server) GetEnv(w http.ResponseWriter, r *http.Request) {
 	store := &envstore.Store{Client: s.client}
 	envs, err := store.Get(r.Context(), envNs, app.Name)
 	if err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -96,7 +96,7 @@ func (s *Server) GetEnv(w http.ResponseWriter, r *http.Request) {
 // @Router /projects/{project}/apps/{app}/env [put]
 func (s *Server) PutEnv(w http.ResponseWriter, r *http.Request) {
 	projectName := chi.URLParam(r, "project")
-	if !s.authorize(w, r, authz.Resource{Kind: "app", Project: projectName}, authz.ActionUpdate) {
+	if !s.authorize(w, r, authz.Resource{Kind: "app", Project: projectName, Environment: queryEnv(r)}, authz.ActionUpdate) {
 		return
 	}
 	app, envName, ok := s.resolveAppEnv(w, r)
@@ -120,7 +120,7 @@ func (s *Server) PutEnv(w http.ResponseWriter, r *http.Request) {
 	// Read existing vars so we can preserve non-user sources (binding, generated, shared).
 	existing, err := store.Get(r.Context(), envNs, app.Name)
 	if err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -147,12 +147,12 @@ func (s *Server) PutEnv(w http.ResponseWriter, r *http.Request) {
 		constants.AppNameLabel:     app.Name,
 	}
 	if err := store.Set(r.Context(), envNs, app.Name, merged, labels); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
-	if err := pokeAppForReconcile(r.Context(), s.client, app); err != nil {
-		writeError(w, err)
+	if err := pokeAppForReconcile(r.Context(), s.client, app, s.clock().Now()); err != nil {
+		writeError(w, r, err)
 		return
 	}
 
@@ -180,7 +180,7 @@ func (s *Server) PutEnv(w http.ResponseWriter, r *http.Request) {
 // @Router /projects/{project}/apps/{app}/env [patch]
 func (s *Server) PatchEnv(w http.ResponseWriter, r *http.Request) {
 	projectName := chi.URLParam(r, "project")
-	if !s.authorize(w, r, authz.Resource{Kind: "app", Project: projectName}, authz.ActionUpdate) {
+	if !s.authorize(w, r, authz.Resource{Kind: "app", Project: projectName, Environment: queryEnv(r)}, authz.ActionUpdate) {
 		return
 	}
 	app, envName, ok := s.resolveAppEnv(w, r)
@@ -204,14 +204,21 @@ func (s *Server) PatchEnv(w http.ResponseWriter, r *http.Request) {
 	// Read existing vars from Secret.
 	existing, err := store.Get(r.Context(), envNs, app.Name)
 	if err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
-	// Apply unsets.
+	// Apply unsets — reject non-user sources.
 	unsetMap := make(map[string]bool, len(req.Unset))
 	for _, k := range req.Unset {
 		unsetMap[k] = true
+	}
+	for _, e := range existing {
+		if unsetMap[e.Name] && e.Source != "" && e.Source != "user" {
+			writeJSON(w, http.StatusConflict, errorResponse{fmt.Sprintf(
+				"cannot unset %q: managed by %s (only user-set vars can be removed)", e.Name, e.Source)})
+			return
+		}
 	}
 	var result []envstore.Env
 	for _, e := range existing {
@@ -220,7 +227,18 @@ func (s *Server) PatchEnv(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Apply sets.
+	// Apply sets — reject overwrites of non-user sources.
+	existingSource := make(map[string]string, len(result))
+	for _, e := range result {
+		existingSource[e.Name] = e.Source
+	}
+	for k := range req.Set {
+		if src, ok := existingSource[k]; ok && src != "" && src != "user" {
+			writeJSON(w, http.StatusConflict, errorResponse{fmt.Sprintf(
+				"cannot overwrite %q: managed by %s (only user-set vars can be modified)", k, src)})
+			return
+		}
+	}
 	for k, v := range req.Set {
 		found := false
 		for i := range result {
@@ -247,12 +265,12 @@ func (s *Server) PatchEnv(w http.ResponseWriter, r *http.Request) {
 		constants.AppNameLabel:     app.Name,
 	}
 	if err := store.Set(r.Context(), envNs, app.Name, result, labels); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
-	if err := pokeAppForReconcile(r.Context(), s.client, app); err != nil {
-		writeError(w, err)
+	if err := pokeAppForReconcile(r.Context(), s.client, app, s.clock().Now()); err != nil {
+		writeError(w, r, err)
 		return
 	}
 
@@ -279,7 +297,7 @@ func (s *Server) PatchEnv(w http.ResponseWriter, r *http.Request) {
 // @Router /projects/{project}/apps/{app}/env/import [post]
 func (s *Server) ImportEnv(w http.ResponseWriter, r *http.Request) {
 	projectName := chi.URLParam(r, "project")
-	if !s.authorize(w, r, authz.Resource{Kind: "app", Project: projectName}, authz.ActionUpdate) {
+	if !s.authorize(w, r, authz.Resource{Kind: "app", Project: projectName, Environment: queryEnv(r)}, authz.ActionUpdate) {
 		return
 	}
 	app, envName, ok := s.resolveAppEnv(w, r)
@@ -318,12 +336,12 @@ func (s *Server) ImportEnv(w http.ResponseWriter, r *http.Request) {
 		constants.AppNameLabel:     app.Name,
 	}
 	if err := store.Merge(r.Context(), envNs, app.Name, vars, labels); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
-	if err := pokeAppForReconcile(r.Context(), s.client, app); err != nil {
-		writeError(w, err)
+	if err := pokeAppForReconcile(r.Context(), s.client, app, s.clock().Now()); err != nil {
+		writeError(w, r, err)
 		return
 	}
 
@@ -359,7 +377,7 @@ func (s *Server) GetSharedVars(w http.ResponseWriter, r *http.Request) {
 	store := &envstore.Store{Client: s.client}
 	envs, err := store.GetSharedSource(r.Context(), controlNs)
 	if err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -415,7 +433,7 @@ func (s *Server) PutSharedVars(w http.ResponseWriter, r *http.Request) {
 		constants.ProjectLabel: project.Name,
 	}
 	if err := store.SetSharedSource(r.Context(), controlNs, envVars, labels); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -423,12 +441,12 @@ func (s *Server) PutSharedVars(w http.ResponseWriter, r *http.Request) {
 	// materializes the updated shared vars into each env namespace.
 	var apps mortisev1alpha1.AppList
 	if err := s.client.List(r.Context(), &apps, client.InNamespace(controlNs)); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 	for i := range apps.Items {
-		if err := pokeAppForReconcile(r.Context(), s.client, &apps.Items[i]); err != nil {
-			writeError(w, err)
+		if err := pokeAppForReconcile(r.Context(), s.client, &apps.Items[i], s.clock().Now()); err != nil {
+			writeError(w, r, err)
 			return
 		}
 	}
@@ -468,7 +486,7 @@ func (s *Server) resolveAppEnv(w http.ResponseWriter, r *http.Request) (*mortise
 
 	var app mortisev1alpha1.App
 	if err := s.client.Get(r.Context(), types.NamespacedName{Name: appName, Namespace: projectNs(project)}, &app); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return nil, "", false
 	}
 	return &app, env, true
@@ -489,11 +507,11 @@ func ensureEnvironment(app *mortisev1alpha1.App, name string) *mortisev1alpha1.E
 // pokeAppForReconcile stamps a timestamp annotation on the App CRD so the
 // controller re-reconciles (picking up the latest Secret contents). The
 // Secret is the source of truth — we never sync env vars back to the CRD spec.
-func pokeAppForReconcile(ctx context.Context, k8s client.Client, app *mortisev1alpha1.App) error {
+func pokeAppForReconcile(ctx context.Context, k8s client.Client, app *mortisev1alpha1.App, now time.Time) error {
 	if app.Annotations == nil {
 		app.Annotations = make(map[string]string)
 	}
-	app.Annotations["mortise.dev/env-updated"] = fmt.Sprintf("%d", time.Now().UnixMilli())
+	app.Annotations["mortise.dev/env-updated"] = fmt.Sprintf("%d", now.UnixMilli())
 	return k8s.Update(ctx, app)
 }
 

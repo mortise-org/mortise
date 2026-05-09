@@ -1,6 +1,10 @@
 package constants
 
-import "fmt"
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+)
 
 const (
 	// ControlNamespacePrefix prefixes the Project control namespace: `pj-{name}`.
@@ -65,6 +69,24 @@ func ProjectFromControlNs(ns string) (string, bool) {
 	}
 	return ns[len(ControlNamespacePrefix):], true
 }
+
+// MemberCRDName returns the deterministic ProjectMember CRD name for an email.
+// Uses hex encoding for short emails (backward-compatible) and falls back to
+// SHA-256 for long emails that would exceed the 253-char k8s name limit.
+func MemberCRDName(email string) string {
+	encoded := hex.EncodeToString([]byte(email))
+	if len("member-")+len(encoded) <= 253 {
+		return "member-" + encoded
+	}
+	hash := sha256.Sum256([]byte(email))
+	return "member-" + hex.EncodeToString(hash[:])
+}
+
+// DeploymentName returns the Deployment name for an App in any env namespace.
+func DeploymentName(appName string) string { return appName }
+
+// CronJobName returns the CronJob name for an App in any env namespace.
+func CronJobName(appName string) string { return appName }
 
 // Namespace role label values — stamped on every namespace the Project
 // controller owns so callers can distinguish control / env / preview.

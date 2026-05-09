@@ -1,6 +1,8 @@
 import { browser } from '$app/environment';
 import { api } from './api';
-import type { App, AppSpec, PreviewSummary, Project, ProjectEnvironment } from './types';
+import type { App, AppSpec, PreviewSummary, Project, ProjectEnvironment, ProjectMember } from './types';
+
+export type ProjectRole = 'owner' | 'developer' | 'viewer';
 
 interface StagedChange {
 	appName: string;
@@ -33,6 +35,12 @@ class MortiseStore {
 	// Preview environments keyed by project name.
 	previewEnvs = $state<Record<string, PreviewSummary[]>>({});
 
+	// Project-level role for the current user, keyed by project name.
+	projectRoles = $state<Record<string, ProjectRole | null>>({});
+
+	// Warnings when role loading fails (network errors, etc.).
+	roleLoadWarnings = $state<Record<string, string>>({});
+
 	// Staged changes (client-side only, in-memory)
 	stagedChanges = $state<Map<string, StagedChange>>(new Map());
 	get stagedChangeCount(): number { return this.stagedChanges.size; }
@@ -46,6 +54,9 @@ class MortiseStore {
 
 	constructor() {
 		if (browser) {
+			window.addEventListener('mortise:auth-required', () => {
+				this.logout();
+			});
 			this.token = localStorage.getItem('mortise_token');
 			this.currentProject = localStorage.getItem('mortise_project');
 			this.viewMode =
@@ -66,7 +77,8 @@ class MortiseStore {
 			if (savedUser) {
 				try { this.user = JSON.parse(savedUser); } catch { /* ignore */ }
 			}
-			// JWT decode fallback when token exists but no persisted user
+			// JWT decode fallback when token exists but no persisted user.
+			// The server still enforces authorization on every request.
 			if (!this.user && this.token) {
 				try {
 					const payload = JSON.parse(atob(this.token.split('.')[1]));
@@ -146,6 +158,61 @@ class MortiseStore {
 		} catch {
 			return [];
 		}
+	}
+
+	async loadProjectRole(project: string): Promise<ProjectRole | null> {
+		if (!this.user) return null;
+		if (this.isAdmin) {
+			this.projectRoles = { ...this.projectRoles, [project]: 'owner' };
+			return 'owner';
+		}
+		try {
+			const members = await api.listMembers(project);
+			const me = members.find((m: ProjectMember) => m.email === this.user?.email);
+			const role = me?.role ?? null;
+			this.projectRoles = { ...this.projectRoles, [project]: role };
+			this.roleLoadWarnings = { ...this.roleLoadWarnings };
+			delete this.roleLoadWarnings[project];
+			return role;
+		} catch {
+			// Don't restrict the UI on network/server errors — the server
+			// enforces 403 anyway. Show a warning instead of silently
+			// locking the user out.
+			this.roleLoadWarnings = {
+				...this.roleLoadWarnings,
+				[project]: 'Could not verify your project permissions. Some actions may fail.'
+			};
+			return this.projectRoles[project] ?? null;
+		}
+	}
+
+	projectRole(project: string | null): ProjectRole | null {
+		if (!project) return null;
+		if (this.isAdmin) return 'owner';
+		return this.projectRoles[project] ?? null;
+	}
+
+	roleLoadWarning(project: string | null): string | null {
+		if (!project) return null;
+		return this.roleLoadWarnings[project] ?? null;
+	}
+
+	/** True when the user is a platform admin or project owner. */
+	private isOwnerOrAdmin(project: string | null): boolean {
+		if (!project) return false;
+		if (this.isAdmin) return true;
+		return this.projectRole(project) === 'owner';
+	}
+
+	canManageMembers(project: string | null): boolean {
+		return this.isOwnerOrAdmin(project);
+	}
+
+	// Separate from canManageMembers so the two can diverge when
+	// finer-grained RBAC is introduced (e.g. "editor" may delete apps
+	// but not manage members).
+	canDeleteInProject(project: string | null): boolean {
+		return this.isOwnerOrAdmin(project);
 	}
 
 	stageChange(appName: string, original: AppSpec, dirty: AppSpec) {

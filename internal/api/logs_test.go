@@ -283,10 +283,9 @@ func TestLogsSSEHeadersWithPod(t *testing.T) {
 	}
 }
 
-// TestLogsAcceptsTokenQueryParam verifies that the /logs endpoint treats
-// ?token=<jwt> as a fallback when the Authorization header is absent
-// (EventSource workaround).
-func TestLogsAcceptsTokenQueryParam(t *testing.T) {
+// TestLogsRejectsJWTTokenQueryParam verifies that the /logs endpoint no longer
+// accepts a long-lived JWT in the query string.
+func TestLogsRejectsJWTTokenQueryParam(t *testing.T) {
 	k8sClient := setupEnvtest(t)
 	srv, token := newTestServer(t, k8sClient)
 	h := srv.Handler()
@@ -301,13 +300,12 @@ func TestLogsAcceptsTokenQueryParam(t *testing.T) {
 
 	path := "/api/projects/default/apps/tok-app/logs?token=" + token
 	w := doRequestWithToken(h, http.MethodGet, path, nil, "")
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("expected 404 (auth passed, no pods), got %d: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for JWT query token, got %d: %s", w.Code, w.Body.String())
 	}
 }
 
-// TestLogsRequiresAuth verifies that /logs still requires authentication —
-// the query-param token fallback doesn't weaken the auth requirement.
+// TestLogsRequiresAuth verifies that /logs still requires authentication.
 func TestLogsRequiresAuth(t *testing.T) {
 	k8sClient := setupEnvtest(t)
 	srv := newAdminServer(t, k8sClient)

@@ -12,6 +12,7 @@ metadata:
   name: test-git-app
   annotations:
     mortise.dev/revision: ""  # overridden by test to "main" to trigger build
+    mortise.dev/disable-default-security-context: "true"
 spec:
   source:
     type: git

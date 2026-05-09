@@ -206,6 +206,65 @@ func TestGitLab_ListBranches(t *testing.T) {
 	}
 }
 
+func TestGitLab_ResolveBranchHead(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/api/v4/projects/myorg/myrepo/repository/branches/main" {
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]any{
+				"name": "main",
+				"commit": map[string]any{
+					"id": "cafebabe",
+				},
+			})
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	api := newTestGitLabAPI(t, srv.URL)
+	sha, err := api.ResolveBranchHead(context.Background(), "myorg/myrepo", "main")
+	if err != nil {
+		t.Fatalf("ResolveBranchHead: %v", err)
+	}
+	if sha != "cafebabe" {
+		t.Fatalf("expected cafebabe, got %q", sha)
+	}
+}
+
+func TestGitLab_ListOpenPullRequests(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/api/v4/projects/myorg/myrepo/merge_requests" {
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode([]map[string]any{
+				{
+					"iid":           7,
+					"source_branch": "feat-sync",
+					"sha":           "feedface",
+					"author": map[string]any{
+						"username": "alice",
+					},
+				},
+			})
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	api := newTestGitLabAPI(t, srv.URL)
+	prs, err := api.ListOpenPullRequests(context.Background(), "myorg/myrepo")
+	if err != nil {
+		t.Fatalf("ListOpenPullRequests: %v", err)
+	}
+	if len(prs) != 1 {
+		t.Fatalf("expected 1 merge request, got %d", len(prs))
+	}
+	if prs[0].Number != 7 || prs[0].Branch != "feat-sync" || prs[0].SHA != "feedface" {
+		t.Fatalf("unexpected merge request snapshot: %+v", prs[0])
+	}
+}
+
 func TestGitLab_VerifyWebhookSignature_Valid(t *testing.T) {
 	api := &GitLabAPI{secret: "gl-token-abc"}
 

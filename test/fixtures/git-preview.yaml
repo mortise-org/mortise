@@ -8,6 +8,7 @@ metadata:
   name: test-preview-app
   annotations:
     mortise.dev/revision: ""
+    mortise.dev/disable-default-security-context: "true"
 spec:
   source:
     type: git

@@ -125,9 +125,12 @@ export interface EnvironmentStatus {
 	currentImage?: string;
 	currentDigest?: string;
 	domain?: string;
+	autoDomain?: string;
 	deployHistory?: DeployRecord[];
 	pendingEnvHash?: string;
 	deployedEnvHash?: string;
+	certificateStatus?: string;
+	certificateMessage?: string;
 }
 
 export type AppPhase = 'Pending' | 'Building' | 'Deploying' | 'Ready' | 'CrashLooping' | 'Failed';
@@ -143,8 +146,6 @@ export interface Condition {
 export interface AppStatus {
 	phase?: AppPhase;
 	environments?: EnvironmentStatus[];
-	pendingEnvHash?: string;
-	deployedEnvHash?: string;
 	conditions?: Condition[];
 }
 
@@ -163,6 +164,12 @@ export function appNeedsRedeploy(app: App): boolean {
 		!!env.pendingEnvHash && !!env.deployedEnvHash &&
 		env.pendingEnvHash !== env.deployedEnvHash
 	) ?? false;
+}
+
+export function staleEnvironments(app: App): string[] {
+	return (app.status?.environments ?? [])
+		.filter(env => !!env.pendingEnvHash && !!env.deployedEnvHash && env.pendingEnvHash !== env.deployedEnvHash)
+		.map(env => env.name);
 }
 
 export interface SecretResponse {
@@ -295,8 +302,8 @@ export interface DeployToken {
 
 export interface SecretMount {
 	name: string;
-	secretName: string;
-	mountPath: string;
+	secret: string;
+	path: string;
 	readOnly?: boolean;
 	items?: { key: string; path: string }[];
 }

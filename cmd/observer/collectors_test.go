@@ -2,8 +2,12 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"io"
 	"log/slog"
 	"math"
+	"net/http"
 	"path/filepath"
 	"testing"
 	"time"
@@ -12,7 +16,12 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
+	"k8s.io/client-go/kubernetes/scheme"
+	coreclientv1 "k8s.io/client-go/kubernetes/typed/core/v1"
+	rest "k8s.io/client-go/rest"
+	fakerest "k8s.io/client-go/rest/fake"
 	clienttesting "k8s.io/client-go/testing"
 	metricsv1beta1 "k8s.io/metrics/pkg/apis/metrics/v1beta1"
 	metricsfake "k8s.io/metrics/pkg/client/clientset/versioned/fake"
@@ -25,6 +34,53 @@ func discardLogger() *slog.Logger {
 type nopWriter struct{}
 
 func (nopWriter) Write(p []byte) (int, error) { return len(p), nil }
+
+type blockingLogClientset struct {
+	kubernetes.Interface
+	t *testing.T
+}
+
+func (c *blockingLogClientset) CoreV1() coreclientv1.CoreV1Interface {
+	return &blockingLogCoreV1{CoreV1Interface: c.Interface.CoreV1(), t: c.t}
+}
+
+type blockingLogCoreV1 struct {
+	coreclientv1.CoreV1Interface
+	t *testing.T
+}
+
+func (c *blockingLogCoreV1) Pods(namespace string) coreclientv1.PodInterface {
+	return &blockingLogPods{PodInterface: c.CoreV1Interface.Pods(namespace), namespace: namespace, t: c.t}
+}
+
+type blockingLogPods struct {
+	coreclientv1.PodInterface
+	namespace string
+	t         *testing.T
+}
+
+func (p *blockingLogPods) GetLogs(name string, opts *corev1.PodLogOptions) *rest.Request {
+	reader, writer := io.Pipe()
+	p.t.Cleanup(func() {
+		_ = reader.Close()
+		_ = writer.Close()
+	})
+
+	fakeClient := &fakerest.RESTClient{
+		Client: fakerest.CreateHTTPClient(func(_ *http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: http.StatusOK, Body: reader}, nil
+		}),
+		NegotiatedSerializer: scheme.Codecs.WithoutConversion(),
+		GroupVersion:         corev1.SchemeGroupVersion,
+		VersionedAPIPath:     fmt.Sprintf("/api/v1/namespaces/%s/pods/%s/log", p.namespace, name),
+	}
+	return fakeClient.Request()
+}
+
+func withBlockingPodLogs(t *testing.T, cs kubernetes.Interface) kubernetes.Interface {
+	t.Helper()
+	return &blockingLogClientset{Interface: cs, t: t}
+}
 
 // --- parseLogTimestamp ---
 
@@ -306,7 +362,7 @@ func TestLogCollectorSyncFindsEnvPods(t *testing.T) {
 	}
 	defer store.Close()
 
-	collector := NewLogCollector(cs, store, time.Minute, 100, discardLogger())
+	collector := NewLogCollector(withBlockingPodLogs(t, cs), store, time.Minute, 100, discardLogger())
 	collector.sync(context.Background())
 
 	collector.mu.Lock()
@@ -358,7 +414,7 @@ func TestLogCollectorMaxPods(t *testing.T) {
 	}
 	defer store.Close()
 
-	collector := NewLogCollector(cs, store, time.Minute, 2, discardLogger())
+	collector := NewLogCollector(withBlockingPodLogs(t, cs), store, time.Minute, 2, discardLogger())
 	collector.sync(context.Background())
 
 	collector.mu.Lock()
@@ -391,7 +447,7 @@ func TestLogCollectorSyncCleansUpRemovedPods(t *testing.T) {
 	}
 	defer store.Close()
 
-	collector := NewLogCollector(cs, store, time.Minute, 100, discardLogger())
+	collector := NewLogCollector(withBlockingPodLogs(t, cs), store, time.Minute, 100, discardLogger())
 	collector.sync(context.Background())
 
 	collector.mu.Lock()
@@ -436,7 +492,7 @@ func TestLogCollectorSyncSkipsNonMortiseNamespaces(t *testing.T) {
 	}
 	defer store.Close()
 
-	collector := NewLogCollector(cs, store, time.Minute, 100, discardLogger())
+	collector := NewLogCollector(withBlockingPodLogs(t, cs), store, time.Minute, 100, discardLogger())
 	collector.sync(context.Background())
 
 	collector.mu.Lock()
@@ -458,7 +514,7 @@ func TestLogCollectorStartTailerIdempotent(t *testing.T) {
 	}
 	defer store.Close()
 
-	collector := NewLogCollector(cs, store, time.Minute, 100, discardLogger())
+	collector := NewLogCollector(withBlockingPodLogs(t, cs), store, time.Minute, 100, discardLogger())
 
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
@@ -495,7 +551,7 @@ func TestLogCollectorStopAll(t *testing.T) {
 	}
 	defer store.Close()
 
-	collector := NewLogCollector(cs, store, time.Minute, 100, discardLogger())
+	collector := NewLogCollector(withBlockingPodLogs(t, cs), store, time.Minute, 100, discardLogger())
 
 	ctx := context.Background()
 	for _, name := range []string{"pod-1", "pod-2", "pod-3"} {
@@ -587,6 +643,157 @@ func TestLogCollectorRunStopsOnCancel(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("Run did not return after context cancellation")
+	}
+}
+
+// --- Tailer cleanup on goroutine exit (P0-12) ---
+
+func TestLogTailerCleansUpOnExit(t *testing.T) {
+	cs := fake.NewClientset()
+
+	dir := t.TempDir()
+	store, err := NewStore(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	collector := NewLogCollector(withBlockingPodLogs(t, cs), store, time.Minute, 100, discardLogger())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "pod-1",
+			Namespace: "pj-demo-prod",
+			Labels: map[string]string{
+				"app.kubernetes.io/name":  "web",
+				"mortise.dev/environment": "prod",
+			},
+		},
+	}
+	collector.startTailer(ctx, "pj-demo-prod", pod)
+
+	collector.mu.Lock()
+	if collector.tailerCount != 1 {
+		t.Fatalf("expected 1 tailer, got %d", collector.tailerCount)
+	}
+	collector.mu.Unlock()
+
+	cancel()
+	time.Sleep(100 * time.Millisecond)
+
+	collector.mu.Lock()
+	count := collector.tailerCount
+	_, exists := collector.tailers["pj-demo-prod/pod-1"]
+	collector.mu.Unlock()
+
+	if count != 0 {
+		t.Errorf("tailerCount = %d after goroutine exit, want 0", count)
+	}
+	if exists {
+		t.Error("tailer map entry should be removed after goroutine exit")
+	}
+}
+
+func TestTrafficTailerCleansUpOnExit(t *testing.T) {
+	cs := fake.NewClientset()
+
+	dir := t.TempDir()
+	store, err := NewStore(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	tc := NewTrafficCollector(cs, store, NewLiveTrafficCache(time.Hour), time.Minute, 5*time.Second, "traefik", discardLogger())
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	tc.mu.Lock()
+	tailCtx, tailCancel := context.WithCancel(ctx)
+	tc.tailers["traefik/traefik-pod-1"] = tailCancel
+	tc.mu.Unlock()
+
+	go tc.tailTraefikPod(tailCtx, "traefik-pod-1")
+	time.Sleep(50 * time.Millisecond)
+
+	cancel()
+	time.Sleep(100 * time.Millisecond)
+
+	tc.mu.Lock()
+	_, exists := tc.tailers["traefik/traefik-pod-1"]
+	tc.mu.Unlock()
+
+	if exists {
+		t.Error("tailer map entry should be removed after goroutine exit")
+	}
+}
+
+// --- Reservoir sampling (P2-5) ---
+
+func TestReservoirSamplingCapsLatencies(t *testing.T) {
+	tc := NewTrafficCollector(fake.NewClientset(), nil, nil, time.Minute, 5*time.Second, "traefik", discardLogger())
+
+	tc.svcMu.Lock()
+	tc.svcCache["pj-demo-app@kubernetes"] = appEnvKey{namespace: "pj-demo", app: "web", env: "prod"}
+	tc.svcMu.Unlock()
+
+	for i := 0; i < maxLatencySamples+500; i++ {
+		line, _ := json.Marshal(trafikAccessLog{
+			ServiceName:  "pj-demo-app-80@kubernetes",
+			OriginStatus: 200,
+			Duration:     int64(i) * 1e6,
+		})
+		tc.processLine(line)
+	}
+
+	tc.accMu.Lock()
+	var bucket *trafficBucket
+	for _, b := range tc.accumulator {
+		bucket = b
+		break
+	}
+	tc.accMu.Unlock()
+
+	if bucket == nil {
+		t.Fatal("expected an accumulator bucket")
+	}
+	if len(bucket.latencies) != maxLatencySamples {
+		t.Errorf("latencies length = %d, want %d", len(bucket.latencies), maxLatencySamples)
+	}
+	if bucket.latencyCount != int64(maxLatencySamples+500) {
+		t.Errorf("latencyCount = %d, want %d", bucket.latencyCount, maxLatencySamples+500)
+	}
+}
+
+// --- LiveTrafficCache.Sweep coverage (P1-11) ---
+
+func TestLiveTrafficCacheSweepRemovesStaleKeys(t *testing.T) {
+	cache := NewLiveTrafficCache(time.Hour)
+
+	staleEntry := TrafficEntry{
+		Ts:        time.Now().Add(-2 * time.Hour).Unix(),
+		Namespace: "pj-demo",
+		App:       "web",
+		Env:       "prod",
+		Requests:  10,
+	}
+	cache.Add([]TrafficEntry{staleEntry})
+
+	cache.mu.RLock()
+	lenBefore := len(cache.series)
+	cache.mu.RUnlock()
+	if lenBefore != 1 {
+		t.Fatalf("expected 1 series before sweep, got %d", lenBefore)
+	}
+
+	cache.Sweep()
+
+	cache.mu.RLock()
+	lenAfter := len(cache.series)
+	cache.mu.RUnlock()
+	if lenAfter != 0 {
+		t.Errorf("expected 0 series after sweep, got %d", lenAfter)
 	}
 }
 

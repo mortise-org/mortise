@@ -128,7 +128,7 @@ export const templates: Template[] = [
 		defaults: {
 			name: 'paperless',
 			spec: {
-				source: { type: 'image', image: 'ghcr.io/paperless-ngx/paperless-ngx:latest' },
+				source: { type: 'image', image: 'ghcr.io/paperless-ngx/paperless-ngx:2.20.15' },
 				network: { public: true },
 				storage: [
 					{ name: 'data', mountPath: '/usr/src/paperless/data', size: '5Gi' },
@@ -163,7 +163,7 @@ export const templates: Template[] = [
 		defaults: {
 			name: 'vaultwarden',
 			spec: {
-				source: { type: 'image', image: 'vaultwarden/server:latest' },
+				source: { type: 'image', image: 'vaultwarden/server:1.36.0' },
 				network: { public: true },
 				storage: [
 					{ name: 'data', mountPath: '/data', size: '2Gi' }
@@ -196,7 +196,7 @@ export const templates: Template[] = [
 		defaults: {
 			name: 'mealie',
 			spec: {
-				source: { type: 'image', image: 'ghcr.io/mealie-recipes/mealie:latest' },
+				source: { type: 'image', image: 'ghcr.io/mealie-recipes/mealie:v3.17.0' },
 				network: { public: true },
 				storage: [
 					{ name: 'data', mountPath: '/app/data', size: '2Gi' }

@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"testing"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -52,6 +53,49 @@ import (
 // testImageNginx is the pinned image used across App controller tests.
 // Hoisted to package scope so it is visible from multiple Describe blocks.
 const testImageNginx = "nginx:1.27"
+
+func TestPreviewSyncStateIncludesBackfillInputs(t *testing.T) {
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{
+			Annotations: map[string]string{},
+		},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{
+				Type:        mortisev1alpha1.SourceTypeGit,
+				Repo:        "owner/repo",
+				ProviderRef: "github",
+			},
+			Environments: []mortisev1alpha1.Environment{{Name: "staging"}},
+		},
+	}
+	project := &mortisev1alpha1.Project{
+		Spec: mortisev1alpha1.ProjectSpec{
+			Preview:      &mortisev1alpha1.PreviewConfig{Enabled: true, Domain: "pr-{number}.example.com"},
+			Environments: []mortisev1alpha1.ProjectEnvironment{{Name: "staging"}},
+		},
+	}
+
+	base := previewSyncState(app, project)
+
+	withAppEnvChange := app.DeepCopy()
+	replicas := int32(3)
+	withAppEnvChange.Spec.Environments[0].Replicas = &replicas
+	if got := previewSyncState(withAppEnvChange, project); got == base {
+		t.Fatal("preview sync state did not change after app environment preview input changed")
+	}
+
+	withProjectEnvChange := project.DeepCopy()
+	withProjectEnvChange.Spec.Environments = append(withProjectEnvChange.Spec.Environments, mortisev1alpha1.ProjectEnvironment{Name: "production"})
+	if got := previewSyncState(app, withProjectEnvChange); got == base {
+		t.Fatal("preview sync state did not change after project environment topology changed")
+	}
+
+	withCascadeRev := app.DeepCopy()
+	withCascadeRev.Annotations[ProjectPreviewRevAnnotation] = "2"
+	if got := previewSyncState(withCascadeRev, project); got == base {
+		t.Fatal("preview sync state did not change after project preview cascade revision changed")
+	}
+}
 
 var _ = Describe("App Controller", func() {
 	const namespace = "pj-default-project"
@@ -4476,6 +4520,168 @@ var _ = Describe("App Controller — git source", func() {
 			Expect(envData).To(HaveKeyWithValue("PORT", "4000"), "second reconcile should not overwrite user-edited value")
 		})
 
+		It("propagates CRD spec env var changes to the Secret when user has not overridden", func() {
+			appName := "spec-change-test"
+			app := &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{Name: appName, Namespace: namespace},
+				Spec: mortisev1alpha1.AppSpec{
+					Source: mortisev1alpha1.AppSource{
+						Type:  mortisev1alpha1.SourceTypeImage,
+						Image: testImageNginx,
+					},
+					Network: mortisev1alpha1.NetworkConfig{Public: true},
+					Environments: []mortisev1alpha1.Environment{{
+						Name:   "production",
+						Domain: "specchange.example.com",
+						Env: []mortisev1alpha1.EnvVar{
+							{Name: "R2_BUCKET_NAME", Value: "old-value"},
+							{Name: "STATIC_VAR", Value: "unchanged"},
+						},
+					}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			envData := readAppEnvSecret(ctx, appName, envNsProduction)
+			Expect(envData).To(HaveKeyWithValue("R2_BUCKET_NAME", "old-value"))
+			Expect(envData).To(HaveKeyWithValue("STATIC_VAR", "unchanged"))
+
+			// Patch the CRD spec to change R2_BUCKET_NAME.
+			var fetchedApp mortisev1alpha1.App
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: appName, Namespace: namespace}, &fetchedApp)).To(Succeed())
+			fetchedApp.Spec.Environments[0].Env[0].Value = "new-value"
+			Expect(k8sClient.Update(ctx, &fetchedApp)).To(Succeed())
+
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			envData = readAppEnvSecret(ctx, appName, envNsProduction)
+			Expect(envData).To(HaveKeyWithValue("R2_BUCKET_NAME", "new-value"), "CRD spec change should propagate to Secret")
+			Expect(envData).To(HaveKeyWithValue("STATIC_VAR", "unchanged"))
+
+			// Verify the last-applied annotation was written.
+			var sec corev1.Secret
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      envstore.AppEnvSecretName(appName),
+				Namespace: envNsProduction,
+			}, &sec)).To(Succeed())
+			Expect(sec.Annotations).To(HaveKey(envstore.AnnotationLastSpecEnv))
+		})
+
+		It("preserves user-overridden values even when CRD spec changes", func() {
+			appName := "user-override-test"
+			app := &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{Name: appName, Namespace: namespace},
+				Spec: mortisev1alpha1.AppSpec{
+					Source: mortisev1alpha1.AppSource{
+						Type:  mortisev1alpha1.SourceTypeImage,
+						Image: testImageNginx,
+					},
+					Network: mortisev1alpha1.NetworkConfig{Public: true},
+					Environments: []mortisev1alpha1.Environment{{
+						Name:   "production",
+						Domain: "override.example.com",
+						Env: []mortisev1alpha1.EnvVar{
+							{Name: "PORT", Value: "3000"},
+						},
+					}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// User edits the Secret directly (simulating UI edit).
+			var sec corev1.Secret
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      envstore.AppEnvSecretName(appName),
+				Namespace: envNsProduction,
+			}, &sec)).To(Succeed())
+			sec.Data["PORT"] = []byte("5000")
+			Expect(k8sClient.Update(ctx, &sec)).To(Succeed())
+
+			// Now change the CRD spec to a DIFFERENT value.
+			var fetchedApp mortisev1alpha1.App
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: appName, Namespace: namespace}, &fetchedApp)).To(Succeed())
+			fetchedApp.Spec.Environments[0].Env[0].Value = "4000"
+			Expect(k8sClient.Update(ctx, &fetchedApp)).To(Succeed())
+
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			envData := readAppEnvSecret(ctx, appName, envNsProduction)
+			Expect(envData).To(HaveKeyWithValue("PORT", "5000"), "user-overridden value should be preserved even when CRD changes")
+		})
+
+		It("retains removed CRD spec env var keys in the Secret", func() {
+			appName := "key-removal-test"
+			app := &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{Name: appName, Namespace: namespace},
+				Spec: mortisev1alpha1.AppSpec{
+					Source: mortisev1alpha1.AppSource{
+						Type:  mortisev1alpha1.SourceTypeImage,
+						Image: testImageNginx,
+					},
+					Network: mortisev1alpha1.NetworkConfig{Public: true},
+					Environments: []mortisev1alpha1.Environment{{
+						Name:   "production",
+						Domain: "keyremoval.example.com",
+						Env: []mortisev1alpha1.EnvVar{
+							{Name: "KEEP_ME", Value: "yes"},
+							{Name: "DROP_ME", Value: "initially"},
+						},
+					}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			envData := readAppEnvSecret(ctx, appName, envNsProduction)
+			Expect(envData).To(HaveKeyWithValue("KEEP_ME", "yes"))
+			Expect(envData).To(HaveKeyWithValue("DROP_ME", "initially"))
+
+			// Remove DROP_ME from the CRD spec.
+			var fetchedApp mortisev1alpha1.App
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: appName, Namespace: namespace}, &fetchedApp)).To(Succeed())
+			fetchedApp.Spec.Environments[0].Env = []mortisev1alpha1.EnvVar{
+				{Name: "KEEP_ME", Value: "yes"},
+			}
+			Expect(k8sClient.Update(ctx, &fetchedApp)).To(Succeed())
+
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Key removal from CRD does NOT delete from Secret — user may
+			// have set it via UI. The key remains with its last value.
+			envData = readAppEnvSecret(ctx, appName, envNsProduction)
+			Expect(envData).To(HaveKeyWithValue("KEEP_ME", "yes"))
+			Expect(envData).To(HaveKey("DROP_ME"), "removed CRD key should remain in Secret")
+		})
+
 		It("adds binding vars on first binding, clears them when binding is removed", func() {
 			dbName := "seed-db"
 			apiName := "seed-api"
@@ -5001,3 +5207,266 @@ func readAppEnvSecret(ctx context.Context, appName, namespace string) map[string
 	}
 	return result
 }
+
+var _ = Describe("toResourceRequirements", func() {
+	It("should parse valid CPU and memory", func() {
+		r := mortisev1alpha1.ResourceRequirements{CPU: "500m", Memory: "256Mi"}
+		req, err := toResourceRequirements(r)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(req.Requests.Cpu().String()).To(Equal("500m"))
+		Expect(req.Requests.Memory().String()).To(Equal("256Mi"))
+	})
+
+	It("should return error for invalid CPU", func() {
+		r := mortisev1alpha1.ResourceRequirements{CPU: "banana", Memory: "256Mi"}
+		_, err := toResourceRequirements(r)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("invalid cpu"))
+	})
+
+	It("should return error for invalid memory", func() {
+		r := mortisev1alpha1.ResourceRequirements{CPU: "500m", Memory: "notamemory"}
+		_, err := toResourceRequirements(r)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("invalid memory"))
+	})
+
+	It("should handle empty values without error", func() {
+		r := mortisev1alpha1.ResourceRequirements{}
+		req, err := toResourceRequirements(r)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(req.Requests).To(BeEmpty())
+		Expect(req.Limits).To(BeEmpty())
+	})
+})
+
+var _ = Describe("securityContext on user workloads", func() {
+	const namespace = "pj-default-project"
+	const envNsProduction = "pj-default-project-production"
+
+	AfterEach(func() {
+		purgeAllAppsIn(context.Background(), namespace)
+	})
+
+	Context("Deployment (service app)", func() {
+		const appName = "sc-deploy"
+		ctx := context.Background()
+
+		var app *mortisev1alpha1.App
+
+		AfterEach(func() {
+			if app != nil {
+				_ = k8sClient.Delete(ctx, app)
+				app = nil
+			}
+		})
+
+		It("should set restricted pod and container securityContext by default", func() {
+			app = &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      appName,
+					Namespace: namespace,
+				},
+				Spec: mortisev1alpha1.AppSpec{
+					Source: mortisev1alpha1.AppSource{
+						Type:  mortisev1alpha1.SourceTypeImage,
+						Image: testImageNginx,
+					},
+					Network: mortisev1alpha1.NetworkConfig{Public: true},
+					Environments: []mortisev1alpha1.Environment{
+						{
+							Name:     "production",
+							Replicas: ptr.To[int32](1),
+							Resources: mortisev1alpha1.ResourceRequirements{
+								CPU: "100m", Memory: "128Mi",
+							},
+							Domain: "sc.example.com",
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var dep appsv1.Deployment
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName, Namespace: envNsProduction,
+			}, &dep)).To(Succeed())
+
+			podSC := dep.Spec.Template.Spec.SecurityContext
+			Expect(podSC).NotTo(BeNil())
+			Expect(*podSC.RunAsNonRoot).To(BeTrue())
+			Expect(podSC.SeccompProfile).NotTo(BeNil())
+			Expect(podSC.SeccompProfile.Type).To(Equal(corev1.SeccompProfileTypeRuntimeDefault))
+
+			cSC := dep.Spec.Template.Spec.Containers[0].SecurityContext
+			Expect(cSC).NotTo(BeNil())
+			Expect(*cSC.AllowPrivilegeEscalation).To(BeFalse())
+			Expect(cSC.Capabilities).NotTo(BeNil())
+			Expect(cSC.Capabilities.Drop).To(ConsistOf(corev1.Capability("ALL")))
+		})
+
+		It("should omit restricted securityContext fields when opt-out annotation is set", func() {
+			app = &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      appName,
+					Namespace: namespace,
+					Annotations: map[string]string{
+						"mortise.dev/disable-default-security-context": "true",
+					},
+				},
+				Spec: mortisev1alpha1.AppSpec{
+					Source: mortisev1alpha1.AppSource{
+						Type:  mortisev1alpha1.SourceTypeImage,
+						Image: testImageNginx,
+					},
+					Network: mortisev1alpha1.NetworkConfig{Public: true},
+					Environments: []mortisev1alpha1.Environment{
+						{
+							Name:     "production",
+							Replicas: ptr.To[int32](1),
+							Resources: mortisev1alpha1.ResourceRequirements{
+								CPU: "100m", Memory: "128Mi",
+							},
+							Domain: "sc-opt-out.example.com",
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var dep appsv1.Deployment
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName, Namespace: envNsProduction,
+			}, &dep)).To(Succeed())
+
+			podSC := dep.Spec.Template.Spec.SecurityContext
+			if podSC != nil {
+				Expect(podSC.RunAsNonRoot).To(BeNil())
+				Expect(podSC.SeccompProfile).To(BeNil())
+			}
+			Expect(dep.Spec.Template.Spec.Containers[0].SecurityContext).To(BeNil())
+		})
+	})
+
+	Context("CronJob (cron app)", func() {
+		const appName = "sc-cron"
+		ctx := context.Background()
+
+		var app *mortisev1alpha1.App
+
+		AfterEach(func() {
+			if app != nil {
+				_ = k8sClient.Delete(ctx, app)
+				app = nil
+			}
+		})
+
+		It("should set restricted pod and container securityContext on CronJob by default", func() {
+			app = &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      appName,
+					Namespace: namespace,
+				},
+				Spec: mortisev1alpha1.AppSpec{
+					Kind: mortisev1alpha1.AppKindCron,
+					Source: mortisev1alpha1.AppSource{
+						Type:  mortisev1alpha1.SourceTypeImage,
+						Image: testImageNginx,
+					},
+					Environments: []mortisev1alpha1.Environment{
+						{
+							Name:     "production",
+							Schedule: "*/10 * * * *",
+							Resources: mortisev1alpha1.ResourceRequirements{
+								CPU: "100m", Memory: "128Mi",
+							},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var cj batchv1.CronJob
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName, Namespace: envNsProduction,
+			}, &cj)).To(Succeed())
+
+			podSC := cj.Spec.JobTemplate.Spec.Template.Spec.SecurityContext
+			Expect(podSC).NotTo(BeNil())
+			Expect(*podSC.RunAsNonRoot).To(BeTrue())
+			Expect(podSC.SeccompProfile).NotTo(BeNil())
+			Expect(podSC.SeccompProfile.Type).To(Equal(corev1.SeccompProfileTypeRuntimeDefault))
+
+			cSC := cj.Spec.JobTemplate.Spec.Template.Spec.Containers[0].SecurityContext
+			Expect(cSC).NotTo(BeNil())
+			Expect(*cSC.AllowPrivilegeEscalation).To(BeFalse())
+			Expect(cSC.Capabilities).NotTo(BeNil())
+			Expect(cSC.Capabilities.Drop).To(ConsistOf(corev1.Capability("ALL")))
+		})
+
+		It("should omit restricted securityContext fields on CronJob when opt-out annotation is set", func() {
+			app = &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      appName,
+					Namespace: namespace,
+					Annotations: map[string]string{
+						"mortise.dev/disable-default-security-context": "true",
+					},
+				},
+				Spec: mortisev1alpha1.AppSpec{
+					Kind: mortisev1alpha1.AppKindCron,
+					Source: mortisev1alpha1.AppSource{
+						Type:  mortisev1alpha1.SourceTypeImage,
+						Image: testImageNginx,
+					},
+					Environments: []mortisev1alpha1.Environment{
+						{
+							Name:     "production",
+							Schedule: "*/10 * * * *",
+							Resources: mortisev1alpha1.ResourceRequirements{
+								CPU: "100m", Memory: "128Mi",
+							},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var cj batchv1.CronJob
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName, Namespace: envNsProduction,
+			}, &cj)).To(Succeed())
+
+			podSC := cj.Spec.JobTemplate.Spec.Template.Spec.SecurityContext
+			if podSC != nil {
+				Expect(podSC.RunAsNonRoot).To(BeNil())
+				Expect(podSC.SeccompProfile).To(BeNil())
+			}
+			Expect(cj.Spec.JobTemplate.Spec.Template.Spec.Containers[0].SecurityContext).To(BeNil())
+		})
+	})
+})

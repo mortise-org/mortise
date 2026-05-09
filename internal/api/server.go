@@ -2,6 +2,7 @@ package api
 
 import (
 	"embed"
+	"html"
 	"io/fs"
 	"net/http"
 	"strings"
@@ -12,11 +13,14 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	metricsv1beta1 "k8s.io/metrics/pkg/client/clientset/versioned/typed/metrics/v1beta1"
+	kclock "k8s.io/utils/clock"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
 	"github.com/mortise-org/mortise/internal/activity"
 	"github.com/mortise-org/mortise/internal/auth"
 	"github.com/mortise-org/mortise/internal/authz"
+	"github.com/mortise-org/mortise/internal/git"
 	"github.com/mortise-org/mortise/internal/webhook"
 )
 
@@ -43,6 +47,9 @@ type Server struct {
 	metricsClient metricsv1beta1.MetricsV1beta1Interface
 	proxies       *appProxyManager
 	activityStore activity.Store
+	Clock         kclock.Clock
+	sseTokens     *sseTokenStore
+	GitAPIFactory func(*mortisev1alpha1.GitProvider, string, string) (git.GitAPI, error)
 }
 
 // RESTConfig returns the rest.Config the server was built with. Exposed for
@@ -62,6 +69,13 @@ func (s *Server) SetMetricsClient(mc metricsv1beta1.MetricsV1beta1Interface) {
 	s.metricsClient = mc
 }
 
+func (s *Server) clock() kclock.Clock {
+	if s.Clock != nil {
+		return s.Clock
+	}
+	return kclock.RealClock{}
+}
+
 // NewServer creates a new API server.
 // ui is an optional filesystem for serving the SvelteKit UI; pass nil to disable UI serving.
 // restConfig is used for pod/exec streaming; pass nil in tests that don't exercise exec.
@@ -69,7 +83,7 @@ func NewServer(c client.Client, cs kubernetes.Interface, dc dynamic.Interface, r
 	kr := webhook.NewK8sReader(c)
 	wh := webhook.New(kr)
 	df := newDeviceFlowHandler(c)
-	return &Server{
+	srv := &Server{
 		client:        c,
 		clientset:     cs,
 		dynamicClient: dc,
@@ -82,7 +96,10 @@ func NewServer(c client.Client, cs kubernetes.Interface, dc dynamic.Interface, r
 		deviceFlow:    df,
 		proxies:       newAppProxyManager(),
 		activityStore: activity.NewConfigMapStore(c),
+		GitAPIFactory: git.NewGitAPIFromProvider,
 	}
+	srv.sseTokens = newSSETokenStore(srv.clock())
+	return srv
 }
 
 // authorize checks whether the authenticated principal is allowed to perform
@@ -159,6 +176,9 @@ func (s *Server) Handler() http.Handler {
 		r.Group(func(r chi.Router) {
 			r.Use(s.jwtAuthMiddleware)
 
+			r.Post("/auth/sse-token", s.IssueSSEToken)
+			r.Post("/auth/refresh", s.RefreshToken)
+
 			// Device flow: provider-parameterized routes for per-user git auth.
 			r.Post("/auth/git/{provider}/device", s.deviceFlow.RequestCode)
 			r.Post("/auth/git/{provider}/device/poll", s.deviceFlow.Poll)
@@ -182,6 +202,7 @@ func (s *Server) Handler() http.Handler {
 
 			r.Post("/projects", s.CreateProject)
 			r.Get("/projects", s.ListProjects)
+			r.Get("/projects/{name}/available", s.CheckProjectNameAvailable)
 			r.Get("/projects/{project}", s.GetProject)
 			r.Patch("/projects/{project}", s.UpdateProject)
 			r.Delete("/projects/{project}", s.DeleteProject)
@@ -278,11 +299,11 @@ func (s *Server) Handler() http.Handler {
 			r.Post("/projects/{project}/apps/{app}/deploy", s.Deploy)
 		})
 
-		// SSE endpoints: JWT may come via `?token=` query param as an EventSource
-		// workaround. sseTokenQueryParamMiddleware runs before jwtAuthMiddleware
-		// and promotes the query param onto the Authorization header.
+		// SSE endpoints: authenticated via short-lived SSE token (?token=msse_...)
+		// or Authorization bearer token. sseAuthMiddleware handles SSE-token
+		// query auth, then jwtAuthMiddleware handles bearer-token auth.
 		r.Group(func(r chi.Router) {
-			r.Use(sseTokenQueryParamMiddleware)
+			r.Use(s.sseAuthMiddleware)
 			r.Use(s.jwtAuthMiddleware)
 			r.Get("/projects/{project}/apps/{app}/logs", s.handleLogs)
 			r.Get("/projects/{project}/events", s.handleProjectEvents)
@@ -306,14 +327,14 @@ func (s *Server) Handler() http.Handler {
 			// previews (Discord, Slack, etc.) resolve the image correctly.
 			if path == "index.html" {
 				scheme := "https"
-				if proto := req.Header.Get("X-Forwarded-Proto"); proto != "" {
+				if proto := req.Header.Get("X-Forwarded-Proto"); proto == "http" || proto == "https" {
 					scheme = proto
 				} else if req.TLS == nil {
 					scheme = "http"
 				}
 				raw, err := fs.ReadFile(s.ui, "index.html")
 				if err == nil {
-					abs := scheme + "://" + req.Host + "/og-image.png"
+					abs := scheme + "://" + html.EscapeString(req.Host) + "/og-image.png"
 					body := strings.ReplaceAll(string(raw), `content="/og-image.png"`, `content="`+abs+`"`)
 					w.Header().Set("Content-Type", "text/html; charset=utf-8")
 					_, _ = w.Write([]byte(body))

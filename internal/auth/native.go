@@ -82,17 +82,51 @@ func (n *NativeAuthProvider) Principal(ctx context.Context, session SessionToken
 	if err := n.client.Get(ctx, types.NamespacedName{
 		Name:      userSecretName(principal.Email),
 		Namespace: namespace,
-	}, &secret); err == nil {
-		if raw, ok := secret.Data["password_gen"]; ok {
-			var currentGen int64
-			fmt.Sscanf(string(raw), "%d", &currentGen)
-			if tokenGen < currentGen {
-				return Principal{}, fmt.Errorf("session invalidated by password change")
-			}
+	}, &secret); err != nil {
+		if errors.IsNotFound(err) {
+			return Principal{}, fmt.Errorf("user not found")
+		}
+		return Principal{}, fmt.Errorf("reading user secret: %w", err)
+	}
+
+	if raw, ok := secret.Data["password_gen"]; ok {
+		var currentGen int64
+		fmt.Sscanf(string(raw), "%d", &currentGen)
+		if tokenGen < currentGen {
+			return Principal{}, fmt.Errorf("session invalidated by password change")
 		}
 	}
 
 	return principal, nil
+}
+
+func (n *NativeAuthProvider) RefreshPrincipal(ctx context.Context, email string, tokenGen int64) (Principal, error) {
+	var secret corev1.Secret
+	err := n.client.Get(ctx, types.NamespacedName{
+		Name:      userSecretName(email),
+		Namespace: namespace,
+	}, &secret)
+	if errors.IsNotFound(err) {
+		return Principal{}, fmt.Errorf("user not found")
+	}
+	if err != nil {
+		return Principal{}, fmt.Errorf("reading user secret: %w", err)
+	}
+
+	var currentGen int64
+	if raw, ok := secret.Data["password_gen"]; ok {
+		fmt.Sscanf(string(raw), "%d", &currentGen)
+		if tokenGen < currentGen {
+			return Principal{}, fmt.Errorf("session invalidated by password change")
+		}
+	}
+
+	return Principal{
+		ID:          string(secret.Data["email"]),
+		Email:       string(secret.Data["email"]),
+		Role:        Role(secret.Data["role"]),
+		PasswordGen: currentGen,
+	}, nil
 }
 
 func (n *NativeAuthProvider) ListUsers(ctx context.Context) ([]User, error) {
@@ -169,6 +203,9 @@ func (n *NativeAuthProvider) RevokeUser(ctx context.Context, userID string) erro
 
 // CreateUser stores a new user in a k8s Secret. Used during invite acceptance.
 func (n *NativeAuthProvider) CreateUser(ctx context.Context, email, password string, role Role) error {
+	if len(password) < 8 {
+		return fmt.Errorf("password must be at least 8 characters")
+	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
 		return fmt.Errorf("hashing password: %w", err)
@@ -186,6 +223,7 @@ func (n *NativeAuthProvider) CreateUser(ctx context.Context, email, password str
 			"email":         []byte(email),
 			"password_hash": hash,
 			"role":          []byte(role),
+			"password_gen":  []byte("0"),
 		},
 	}
 

@@ -3,6 +3,7 @@ package api
 import (
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -112,7 +113,7 @@ func (s *Server) CreateToken(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.client.Create(r.Context(), secret); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -155,7 +156,7 @@ func (s *Server) ListTokens(w http.ResponseWriter, r *http.Request) {
 			"mortise.dev/app":          appName,
 		},
 	); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -203,7 +204,7 @@ func (s *Server) DeleteToken(w http.ResponseWriter, r *http.Request) {
 
 	var secret corev1.Secret
 	if err := s.client.Get(r.Context(), types.NamespacedName{Name: secretName, Namespace: ns}, &secret); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -213,7 +214,7 @@ func (s *Server) DeleteToken(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.client.Delete(r.Context(), &secret); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -253,7 +254,7 @@ func (s *Server) validateDeployToken(r *http.Request, ns, appName, env string) (
 	for i := range list.Items {
 		sec := &list.Items[i]
 		stored := string(sec.Data["token-hash"])
-		if stored == hashHex {
+		if subtle.ConstantTimeCompare([]byte(stored), []byte(hashHex)) == 1 {
 			name := sec.Labels["mortise.dev/token-name"]
 			if name == "" {
 				name = sec.Name
@@ -304,8 +305,11 @@ func (s *Server) validateProjectDeployToken(r *http.Request, ns, projectName str
 
 	for i := range list.Items {
 		sec := &list.Items[i]
-		stored := string(sec.Data["token_hash"])
-		if stored == hashHex {
+		stored := string(sec.Data["token-hash"])
+		if stored == "" {
+			stored = string(sec.Data["token_hash"])
+		}
+		if subtle.ConstantTimeCompare([]byte(stored), []byte(hashHex)) == 1 {
 			return true, sec.Name
 		}
 	}
@@ -371,14 +375,14 @@ func (s *Server) CreateProjectToken(w http.ResponseWriter, r *http.Request) {
 			},
 		},
 		StringData: map[string]string{
-			"token_hash":  hashHex,
+			"token-hash":  hashHex,
 			"description": req.Description,
 			"project":     projectName,
 		},
 	}
 
 	if err := s.client.Create(r.Context(), secret); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -419,7 +423,7 @@ func (s *Server) ListProjectTokens(w http.ResponseWriter, r *http.Request) {
 			"mortise.dev/project-token": "true",
 		},
 	); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -471,7 +475,7 @@ func (s *Server) DeleteProjectToken(w http.ResponseWriter, r *http.Request) {
 
 	var secret corev1.Secret
 	if err := s.client.Get(r.Context(), types.NamespacedName{Name: tokenName, Namespace: ns}, &secret); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -481,7 +485,7 @@ func (s *Server) DeleteProjectToken(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.client.Delete(r.Context(), &secret); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 

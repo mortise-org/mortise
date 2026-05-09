@@ -3,7 +3,9 @@ package auth
 import (
 	"context"
 	"testing"
+	"time"
 
+	"github.com/golang-jwt/jwt/v5"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -32,11 +34,11 @@ func setup(t *testing.T) (*NativeAuthProvider, context.Context) {
 func TestCreateAndAuthenticate(t *testing.T) {
 	provider, ctx := setup(t)
 
-	if err := provider.CreateUser(ctx, "alice@example.com", "s3cret", RoleAdmin); err != nil {
+	if err := provider.CreateUser(ctx, "alice@example.com", "s3cret12", RoleAdmin); err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
 
-	p, err := provider.Authenticate(ctx, Credentials{Email: "alice@example.com", Password: "s3cret"})
+	p, err := provider.Authenticate(ctx, Credentials{Email: "alice@example.com", Password: "s3cret12"})
 	if err != nil {
 		t.Fatalf("Authenticate: %v", err)
 	}
@@ -46,16 +48,19 @@ func TestCreateAndAuthenticate(t *testing.T) {
 	if p.Role != RoleAdmin {
 		t.Errorf("expected role admin, got %s", p.Role)
 	}
+	if p.PasswordGen != 0 {
+		t.Errorf("expected password_gen 0 for new user, got %d", p.PasswordGen)
+	}
 }
 
 func TestAuthenticateWrongPassword(t *testing.T) {
 	provider, ctx := setup(t)
 
-	if err := provider.CreateUser(ctx, "bob@example.com", "correct", RoleMember); err != nil {
+	if err := provider.CreateUser(ctx, "bob@example.com", "correct1", RoleMember); err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
 
-	_, err := provider.Authenticate(ctx, Credentials{Email: "bob@example.com", Password: "wrong"})
+	_, err := provider.Authenticate(ctx, Credentials{Email: "bob@example.com", Password: "wrongpwd"})
 	if err == nil {
 		t.Fatal("expected error for wrong password")
 	}
@@ -73,7 +78,14 @@ func TestAuthenticateNoUser(t *testing.T) {
 func TestJWTRoundTrip(t *testing.T) {
 	provider, ctx := setup(t)
 
-	original := Principal{ID: "alice@example.com", Email: "alice@example.com", Role: RoleAdmin}
+	if err := provider.CreateUser(ctx, "alice@example.com", "s3cret12", RoleAdmin); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	original, err := provider.Authenticate(ctx, Credentials{Email: "alice@example.com", Password: "s3cret12"})
+	if err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
 	token, err := provider.GenerateSessionToken(ctx, original)
 	if err != nil {
 		t.Fatalf("GenerateSessionToken: %v", err)
@@ -92,7 +104,7 @@ func TestListUsers(t *testing.T) {
 	provider, ctx := setup(t)
 
 	for _, email := range []string{"a@example.com", "b@example.com"} {
-		if err := provider.CreateUser(ctx, email, "pass", RoleMember); err != nil {
+		if err := provider.CreateUser(ctx, email, "pass1234", RoleMember); err != nil {
 			t.Fatalf("CreateUser(%s): %v", email, err)
 		}
 	}
@@ -124,7 +136,7 @@ func TestInviteUser(t *testing.T) {
 func TestRevokeUser(t *testing.T) {
 	provider, ctx := setup(t)
 
-	if err := provider.CreateUser(ctx, "doomed@example.com", "pass", RoleMember); err != nil {
+	if err := provider.CreateUser(ctx, "doomed@example.com", "pass1234", RoleMember); err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
 
@@ -132,7 +144,7 @@ func TestRevokeUser(t *testing.T) {
 		t.Fatalf("RevokeUser: %v", err)
 	}
 
-	_, err := provider.Authenticate(ctx, Credentials{Email: "doomed@example.com", Password: "pass"})
+	_, err := provider.Authenticate(ctx, Credentials{Email: "doomed@example.com", Password: "pass1234"})
 	if err == nil {
 		t.Fatal("expected error after revocation")
 	}
@@ -272,5 +284,123 @@ func TestPasswordChangeInvalidatesToken(t *testing.T) {
 	}
 	if _, err := provider.Principal(ctx, newToken); err != nil {
 		t.Fatalf("new token should be valid: %v", err)
+	}
+}
+
+func TestRevokedUserInvalidatesExistingToken(t *testing.T) {
+	provider, ctx := setup(t)
+
+	if err := provider.CreateUser(ctx, "revoked@example.com", "original1", RoleMember); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	principal, err := provider.Authenticate(ctx, Credentials{Email: "revoked@example.com", Password: "original1"})
+	if err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
+	token, err := provider.GenerateSessionToken(ctx, principal)
+	if err != nil {
+		t.Fatalf("GenerateSessionToken: %v", err)
+	}
+
+	if _, err := provider.Principal(ctx, token); err != nil {
+		t.Fatalf("token should be valid before revocation: %v", err)
+	}
+
+	if err := provider.RevokeUser(ctx, "revoked@example.com"); err != nil {
+		t.Fatalf("RevokeUser: %v", err)
+	}
+
+	if _, err := provider.Principal(ctx, token); err == nil {
+		t.Fatal("token issued before revocation should be rejected")
+	}
+}
+
+func TestJWTRejectsTokenWithoutIssuerAudience(t *testing.T) {
+	provider, ctx := setup(t)
+
+	// Manually craft a token without iss/aud claims.
+	key, err := provider.jwt.signingKey(ctx)
+	if err != nil {
+		t.Fatalf("signingKey: %v", err)
+	}
+
+	claims := jwt.MapClaims{
+		"sub":     "alice@example.com",
+		"email":   "alice@example.com",
+		"role":    "admin",
+		"pwd_gen": float64(0),
+		"iat":     time.Now().Unix(),
+		"exp":     time.Now().Add(time.Hour).Unix(),
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	tokenString, err := token.SignedString(key)
+	if err != nil {
+		t.Fatalf("signing token: %v", err)
+	}
+
+	_, _, err = provider.jwt.ValidateToken(ctx, tokenString)
+	if err == nil {
+		t.Fatal("token without iss/aud should be rejected")
+	}
+}
+
+func TestJWTRejectsTokenWithWrongIssuer(t *testing.T) {
+	provider, ctx := setup(t)
+
+	key, err := provider.jwt.signingKey(ctx)
+	if err != nil {
+		t.Fatalf("signingKey: %v", err)
+	}
+
+	claims := jwt.MapClaims{
+		"sub":     "alice@example.com",
+		"email":   "alice@example.com",
+		"role":    "admin",
+		"pwd_gen": float64(0),
+		"iss":     "other-service",
+		"aud":     "mortise-api",
+		"iat":     time.Now().Unix(),
+		"exp":     time.Now().Add(time.Hour).Unix(),
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	tokenString, err := token.SignedString(key)
+	if err != nil {
+		t.Fatalf("signing token: %v", err)
+	}
+
+	_, _, err = provider.jwt.ValidateToken(ctx, tokenString)
+	if err == nil {
+		t.Fatal("token with wrong issuer should be rejected")
+	}
+}
+
+func TestJWTRejectsTokenWithWrongAudience(t *testing.T) {
+	provider, ctx := setup(t)
+
+	key, err := provider.jwt.signingKey(ctx)
+	if err != nil {
+		t.Fatalf("signingKey: %v", err)
+	}
+
+	claims := jwt.MapClaims{
+		"sub":     "alice@example.com",
+		"email":   "alice@example.com",
+		"role":    "admin",
+		"pwd_gen": float64(0),
+		"iss":     "mortise",
+		"aud":     "other-api",
+		"iat":     time.Now().Unix(),
+		"exp":     time.Now().Add(time.Hour).Unix(),
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	tokenString, err := token.SignedString(key)
+	if err != nil {
+		t.Fatalf("signing token: %v", err)
+	}
+
+	_, _, err = provider.jwt.ValidateToken(ctx, tokenString)
+	if err == nil {
+		t.Fatal("token with wrong audience should be rejected")
 	}
 }

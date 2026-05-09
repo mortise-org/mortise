@@ -57,14 +57,14 @@ func (s *Server) ListDomains(w http.ResponseWriter, r *http.Request) {
 
 	env := findEnvironment(app, envName)
 	if env == nil {
-		writeJSON(w, http.StatusOK, domainsResponse{Auto: statusDomain(app, envName)})
+		writeJSON(w, http.StatusOK, domainsResponse{Auto: statusAutoDomain(app, envName)})
 		return
 	}
 
 	writeJSON(w, http.StatusOK, domainsResponse{
 		Primary: env.Domain,
 		Custom:  env.CustomDomains,
-		Auto:    statusDomain(app, envName),
+		Auto:    statusAutoDomain(app, envName),
 	})
 }
 
@@ -89,7 +89,7 @@ func (s *Server) ListDomains(w http.ResponseWriter, r *http.Request) {
 // @Router /projects/{project}/apps/{app}/domains [post]
 func (s *Server) AddDomain(w http.ResponseWriter, r *http.Request) {
 	projectName := chi.URLParam(r, "project")
-	if !s.authorize(w, r, authz.Resource{Kind: "app", Project: projectName}, authz.ActionUpdate) {
+	if !s.authorize(w, r, authz.Resource{Kind: "app", Project: projectName, Environment: queryEnv(r)}, authz.ActionUpdate) {
 		return
 	}
 	app, envName, ok := s.resolveAppEnv(w, r)
@@ -117,7 +117,7 @@ func (s *Server) AddDomain(w http.ResponseWriter, r *http.Request) {
 	// Check for cross-app domain collisions before accepting.
 	var allApps mortisev1alpha1.AppList
 	if err := s.client.List(r.Context(), &allApps, &client.ListOptions{}); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 	for i := range allApps.Items {
@@ -135,7 +135,7 @@ func (s *Server) AddDomain(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		for _, se := range other.Status.Environments {
-			if se.Domain == req.Domain {
+			if se.Domain == req.Domain || se.AutoDomain == req.Domain {
 				writeJSON(w, http.StatusConflict, errorResponse{
 					fmt.Sprintf("domain %s is already used by %s in %s (%s)", req.Domain, other.Name, otherProject, se.Name),
 				})
@@ -146,7 +146,7 @@ func (s *Server) AddDomain(w http.ResponseWriter, r *http.Request) {
 
 	env.CustomDomains = append(env.CustomDomains, req.Domain)
 	if err := s.client.Update(r.Context(), app); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -155,7 +155,7 @@ func (s *Server) AddDomain(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, domainsResponse{
 		Primary: env.Domain,
 		Custom:  env.CustomDomains,
-		Auto:    statusDomain(app, envName),
+		Auto:    statusAutoDomain(app, envName),
 	})
 }
 
@@ -177,7 +177,7 @@ func (s *Server) AddDomain(w http.ResponseWriter, r *http.Request) {
 // @Router /projects/{project}/apps/{app}/domains/{domain} [delete]
 func (s *Server) RemoveDomain(w http.ResponseWriter, r *http.Request) {
 	projectName := chi.URLParam(r, "project")
-	if !s.authorize(w, r, authz.Resource{Kind: "app", Project: projectName}, authz.ActionUpdate) {
+	if !s.authorize(w, r, authz.Resource{Kind: "app", Project: projectName, Environment: queryEnv(r)}, authz.ActionUpdate) {
 		return
 	}
 	app, envName, ok := s.resolveAppEnv(w, r)
@@ -200,7 +200,7 @@ func (s *Server) RemoveDomain(w http.ResponseWriter, r *http.Request) {
 
 	env.CustomDomains = slices.Delete(env.CustomDomains, idx, idx+1)
 	if err := s.client.Update(r.Context(), app); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -209,7 +209,7 @@ func (s *Server) RemoveDomain(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, domainsResponse{
 		Primary: env.Domain,
 		Custom:  env.CustomDomains,
-		Auto:    statusDomain(app, envName),
+		Auto:    statusAutoDomain(app, envName),
 	})
 }
 
@@ -225,12 +225,12 @@ func findEnvironment(app *mortisev1alpha1.App, name string) *mortisev1alpha1.Env
 	return nil
 }
 
-// statusDomain returns the auto-generated domain from the app's status for
+// statusAutoDomain returns the auto-generated domain from the app's status for
 // the given environment, or empty if none exists.
-func statusDomain(app *mortisev1alpha1.App, envName string) string {
+func statusAutoDomain(app *mortisev1alpha1.App, envName string) string {
 	for _, se := range app.Status.Environments {
 		if se.Name == envName {
-			return se.Domain
+			return se.AutoDomain
 		}
 	}
 	return ""
@@ -291,7 +291,7 @@ func (s *Server) ValidateDomain(w http.ResponseWriter, r *http.Request) {
 
 	var apps mortisev1alpha1.AppList
 	if err := s.client.List(r.Context(), &apps, &client.ListOptions{}); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -329,7 +329,7 @@ func (s *Server) ValidateDomain(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		for _, se := range app.Status.Environments {
-			if se.Domain == req.Domain {
+			if se.Domain == req.Domain || se.AutoDomain == req.Domain {
 				writeJSON(w, http.StatusOK, domainValidateResponse{
 					Valid: false,
 					Conflict: &domainConflict{

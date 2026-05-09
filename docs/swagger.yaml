@@ -301,6 +301,8 @@ definitions:
         type: string
       stdout:
         type: string
+      truncated:
+        type: boolean
     type: object
   api.gitProviderSummary:
     properties:
@@ -1281,12 +1283,6 @@ definitions:
         items:
           $ref: '#/definitions/v1.Condition'
         type: array
-      deployedEnvHash:
-        description: |-
-          DeployedEnvHash is the env hash currently on the running pod template.
-          When it differs from PendingEnvHash, the app has unapplied env changes.
-          +optional
-        type: string
       detectedPort:
         description: |-
           DetectedPort is the container port auto-detected from EXPOSE directives
@@ -1308,11 +1304,6 @@ definitions:
         description: |-
           LastBuiltSHA is the git commit SHA of the most recently completed build.
           The reconciler uses this to short-circuit rebuilds when the revision hasn't changed.
-          +optional
-        type: string
-      pendingEnvHash:
-        description: |-
-          PendingEnvHash is the hash of the current env Secret state.
           +optional
         type: string
       phase:
@@ -1449,6 +1440,11 @@ definitions:
   v1alpha1.EnvVar:
     properties:
       name:
+        description: |-
+          Name is the environment variable name.
+          +kubebuilder:validation:Required
+          +kubebuilder:validation:Pattern=`^[a-zA-Z_][a-zA-Z0-9_]*$`
+          +kubebuilder:validation:MaxLength=253
         type: string
       value:
         type: string
@@ -1509,6 +1505,12 @@ definitions:
         items:
           $ref: '#/definitions/v1alpha1.EnvVar'
         type: array
+      image:
+        description: |-
+          Image overrides the spec-level source image for this environment.
+          Set by the deploy handler when a deploy targets a specific environment.
+          +optional
+        type: string
       livenessProbe:
         $ref: '#/definitions/v1alpha1.ProbeConfig'
       name:
@@ -1554,6 +1556,25 @@ definitions:
     type: object
   v1alpha1.EnvironmentStatus:
     properties:
+      autoDomain:
+        description: |-
+          AutoDomain is the platform-generated domain for this environment,
+          always computed regardless of whether a custom primary domain is set.
+          +optional
+        type: string
+      certificateMessage:
+        description: |-
+          CertificateMessage is a human-readable explanation of the certificate
+          state (e.g. challenge failure reason, DNS guidance).
+          +optional
+        type: string
+      certificateStatus:
+        description: |-
+          CertificateStatus is the readiness state of the TLS certificate for
+          this environment. Empty when cert-manager is not in use. Possible
+          values: "Ready", "Pending", "Failed".
+          +optional
+        type: string
       currentDigest:
         type: string
       currentImage:
@@ -2623,6 +2644,38 @@ paths:
       security:
       - BearerAuth: []
       summary: Create a project
+      tags:
+      - projects
+  /projects/{name}/available:
+    get:
+      description: Returns whether a project name is available. Any authenticated
+        user can call this.
+      parameters:
+      - description: Project name to check
+        in: path
+        name: name
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: boolean
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.errorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/api.errorResponse'
+      security:
+      - BearerAuth: []
+      summary: Check project name availability
       tags:
       - projects
   /projects/{project}:
@@ -3896,8 +3949,9 @@ paths:
       - rollback
   /projects/{project}/apps/{app}/rebuild:
     post:
-      description: Clear the last-built SHA and reset the phase so the reconciler
-        triggers a fresh build. Only supported for git-source apps.
+      description: Resolve the current branch head, sync mortise.dev/revision to that
+        SHA, and clear build freshness state so the reconciler triggers a fresh no-cache
+        build. Only supported for git-source apps.
       parameters:
       - description: Project name
         in: path

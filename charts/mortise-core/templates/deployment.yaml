@@ -17,10 +17,14 @@ spec:
         app.kubernetes.io/name: mortise
     spec:
       serviceAccountName: {{ .Values.serviceAccount.name }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
         - name: mortise
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
           ports:
             - name: api
               containerPort: {{ .Values.api.port }}
@@ -34,8 +38,14 @@ spec:
             - name: MORTISE_INGRESS_CLASS
               value: {{ .Values.operator.ingressClassName | quote }}
             {{- end }}
+            # Redirect temp writes to the writable emptyDir volume
+            - name: TMPDIR
+              value: /tmp
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
           livenessProbe:
             httpGet:
               path: /healthz
@@ -48,6 +58,10 @@ spec:
               port: 8081
             initialDelaySeconds: 5
             periodSeconds: 10
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
 ---
 {{- if .Values.ingress.enabled }}
 apiVersion: networking.k8s.io/v1
@@ -58,6 +72,10 @@ metadata:
   labels:
     app.kubernetes.io/name: mortise
     app.kubernetes.io/managed-by: {{ .Release.Service }}
+  {{- if .Values.ingress.certManagerClusterIssuer }}
+  annotations:
+    cert-manager.io/cluster-issuer: {{ .Values.ingress.certManagerClusterIssuer | quote }}
+  {{- end }}
 spec:
   {{- if .Values.ingress.className }}
   ingressClassName: {{ .Values.ingress.className }}
@@ -73,4 +91,10 @@ spec:
                 name: mortise
                 port:
                   number: {{ .Values.service.port }}
+  {{- if .Values.ingress.certManagerClusterIssuer }}
+  tls:
+    - hosts:
+        - {{ .Values.ingress.host }}
+      secretName: mortise-tls
+  {{- end }}
 {{- end }}

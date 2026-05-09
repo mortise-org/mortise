@@ -6,7 +6,7 @@
 		description: string;
 		category: 'Infrastructure' | 'Security' | 'Tenons';
 		action: string;
-		actionLabel: string;
+		actionLabel: 'Docs' | 'Recipe' | 'Repo';
 	}
 
 	const extensions: Extension[] = [
@@ -18,18 +18,25 @@
 			actionLabel: 'Docs'
 		},
 		{
-			name: 'ExternalDNS',
-			description: 'Optional. Automatically creates per-app DNS records at your DNS provider. Not needed if you use a wildcard DNS record or Cloudflare Tunnel.',
-			category: 'Infrastructure',
-			action: 'https://kubernetes-sigs.github.io/external-dns/',
-			actionLabel: 'Docs'
-		},
-		{
 			name: 'Traefik',
 			description: 'Ingress controller for routing traffic to your apps. Bundled by default.',
 			category: 'Infrastructure',
 			action: 'https://doc.traefik.io/traefik/',
 			actionLabel: 'Docs'
+		},
+		{
+			name: 'ExternalDNS',
+			description: 'Automatically creates per-app DNS records at your DNS provider. Not needed if you use a wildcard DNS record or Cloudflare Tunnel.',
+			category: 'Infrastructure',
+			action: 'https://kubernetes-sigs.github.io/external-dns/',
+			actionLabel: 'Docs'
+		},
+		{
+			name: 'Cloudflare Tunnel',
+			description: 'Access Mortise from anywhere without a public IP. Deploy cloudflared as an App pointing at Traefik.',
+			category: 'Infrastructure',
+			action: 'https://github.com/mortise-org/mortise/blob/main/docs/recipes/cloudflare-tunnel.md',
+			actionLabel: 'Recipe'
 		},
 		{
 			name: 'kube-prometheus-stack',
@@ -47,7 +54,7 @@
 		},
 		{
 			name: 'OPA Gatekeeper',
-			description: 'Policy enforcement via admission control. Gate deployments with custom rules. Mortise creates standard resources that OPA can evaluate.',
+			description: 'Policy enforcement via admission control. Mortise creates standard resources that OPA can evaluate.',
 			category: 'Security',
 			action: 'https://open-policy-agent.github.io/gatekeeper/',
 			actionLabel: 'Docs'
@@ -72,13 +79,6 @@
 			category: 'Tenons',
 			action: 'https://github.com/mortise-tenons/backup-tenon',
 			actionLabel: 'Repo'
-		},
-		{
-			name: 'Cloudflare Tunnel',
-			description: 'Access Mortise from anywhere without a public IP. Deploy cloudflared as an App pointing at Traefik.',
-			category: 'Infrastructure',
-			action: 'https://github.com/mortise-org/mortise/blob/main/docs/recipes/cloudflare-tunnel.md',
-			actionLabel: 'Recipe'
 		}
 	];
 
@@ -93,50 +93,47 @@
 		Security: 'Authentication, secret management, and policy enforcement.',
 		Tenons: 'Independent projects that extend Mortise via its REST API.'
 	};
+
+	const actionIcons = { Docs: ExternalLink, Recipe: BookOpen, Repo: GitBranch } as const;
 </script>
 
 <svelte:head>
 	<title>Extensions - Mortise</title>
 </svelte:head>
 
-<div class="p-8">
+<div class="mx-auto max-w-4xl p-8">
 	<div class="mb-8">
 		<h1 class="text-xl font-semibold text-white">Extensions</h1>
 		<p class="mt-2 text-sm text-gray-400">
 			Known integrations and tenons that work with Mortise. These are standard
-			Kubernetes tools - Mortise interoperates through native primitives, not a
+			Kubernetes tools — Mortise interoperates through native primitives, not a
 			plugin API.
 		</p>
 	</div>
 
 	{#each categories as category}
-		<section class="mb-10">
+		<section class="mb-8">
 			<h2 class="mb-1 text-sm font-medium text-gray-300">{category}</h2>
 			<p class="mb-4 text-xs text-gray-500">{categoryDescriptions[category]}</p>
 
-			<div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+			<div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
 				{#each forCategory(category) as ext}
-					<div class="flex flex-col justify-between rounded-lg border border-surface-600 bg-surface-800 p-5 transition-all duration-150 hover:-translate-y-0.5 hover:border-surface-500 hover:shadow-lg hover:shadow-black/20">
+					{@const Icon = actionIcons[ext.actionLabel]}
+					<div class="flex flex-col justify-between rounded-lg border border-surface-600 bg-surface-800 p-4 transition-colors hover:border-surface-500">
 						<div>
 							<h3 class="text-sm font-medium text-white">{ext.name}</h3>
-							<p class="mt-1.5 text-xs leading-relaxed text-gray-400">
+							<p class="mt-1 text-xs leading-relaxed text-gray-400">
 								{ext.description}
 							</p>
 						</div>
-						<div class="mt-4">
+						<div class="mt-3">
 							<a
 								href={ext.action}
-								target={ext.action.startsWith('http') ? '_blank' : undefined}
-								rel={ext.action.startsWith('http') ? 'noopener noreferrer' : undefined}
+								target="_blank"
+								rel="noopener noreferrer"
 								class="inline-flex items-center gap-1.5 rounded-md border border-surface-600 px-3 py-1.5 text-xs font-medium text-accent transition-colors hover:border-accent/50 hover:bg-surface-700"
 							>
-								{#if ext.action.startsWith('http')}
-									<ExternalLink class="h-3 w-3" />
-								{:else if ext.actionLabel === 'Recipe'}
-									<BookOpen class="h-3 w-3" />
-								{:else}
-									<GitBranch class="h-3 w-3" />
-								{/if}
+								<Icon class="h-3 w-3" />
 								{ext.actionLabel}
 							</a>
 						</div>

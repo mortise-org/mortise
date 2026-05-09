@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"log/slog"
 	"net/http"
 	"strings"
 
@@ -23,6 +22,11 @@ func PrincipalFromContext(ctx context.Context) *auth.Principal {
 // Applied only to protected /api routes — not to UI paths or /api/auth/*.
 func (s *Server) jwtAuthMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if PrincipalFromContext(r.Context()) != nil {
+			next.ServeHTTP(w, r)
+			return
+		}
+
 		header := r.Header.Get("Authorization")
 		if header == "" || !strings.HasPrefix(header, "Bearer ") {
 			writeJSON(w, http.StatusUnauthorized, errorResponse{"missing or invalid Authorization header"})
@@ -81,21 +85,33 @@ func maxBytesMiddleware(maxBytes int64) func(http.Handler) http.Handler {
 	}
 }
 
-// sseTokenQueryParamMiddleware allows the SSE log-stream endpoint to accept
-// a `?token=<jwt>` query param as an alternative to the Authorization header.
-// This is the standard workaround for EventSource, which cannot set custom
-// headers. If the Authorization header is already present, this is a no-op.
-//
-// The token value itself is never logged; only its presence is noted at debug
-// level.
-func sseTokenQueryParamMiddleware(next http.Handler) http.Handler {
+// sseAuthMiddleware handles authentication for SSE endpoints. It accepts only
+// a short-lived, single-use SSE token in the ?token= query parameter.
+func (s *Server) sseAuthMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") == "" {
-			if tok := r.URL.Query().Get("token"); tok != "" {
-				r.Header.Set("Authorization", "Bearer "+tok)
-				slog.Debug("sse: using ?token= query param for authorization", "path", r.URL.Path)
-			}
+		// If Authorization header is already set, let jwtAuthMiddleware handle it.
+		if r.Header.Get("Authorization") != "" {
+			next.ServeHTTP(w, r)
+			return
 		}
-		next.ServeHTTP(w, r)
+
+		tok := r.URL.Query().Get("token")
+		if tok == "" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		if strings.HasPrefix(tok, sseTokenPrefix) {
+			principal, ok := s.sseTokens.Redeem(tok)
+			if !ok {
+				writeJSON(w, http.StatusUnauthorized, errorResponse{"invalid or expired SSE token"})
+				return
+			}
+			ctx := context.WithValue(r.Context(), principalKey, &principal)
+			next.ServeHTTP(w, r.WithContext(ctx))
+			return
+		}
+
+		writeJSON(w, http.StatusUnauthorized, errorResponse{"invalid or expired SSE token"})
 	})
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -11,6 +12,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
@@ -60,9 +62,41 @@ const maxEnvNameLen = 63
 
 // createAppRequest is the JSON body for POST /api/projects/{project}/apps.
 // Namespace is NOT caller-specified — it's always the project's namespace.
+// Accepts both wrapped ({"name":"…","spec":{…}}) and flat ({"name":"…","source":{…}})
+// formats — see UnmarshalJSON.
 type createAppRequest struct {
 	Name string                  `json:"name"`
 	Spec mortisev1alpha1.AppSpec `json:"spec"`
+}
+
+func (r *createAppRequest) UnmarshalJSON(data []byte) error {
+	// Try wrapped format first: {"name":"…","spec":{…}}.
+	type wrapped createAppRequest
+	var w wrapped
+	if err := json.Unmarshal(data, &w); err != nil {
+		return err
+	}
+	// If spec.source.type is populated, the caller used the wrapped format.
+	if w.Spec.Source.Type != "" {
+		*r = createAppRequest(w)
+		return nil
+	}
+	// Fall back to flat format: top-level fields map directly to AppSpec.
+	var flat struct {
+		Name string                  `json:"name"`
+		Spec mortisev1alpha1.AppSpec `json:"spec"`
+		mortisev1alpha1.AppSpec
+	}
+	if err := json.Unmarshal(data, &flat); err != nil {
+		return err
+	}
+	r.Name = flat.Name
+	if flat.AppSpec.Source.Type != "" {
+		r.Spec = flat.AppSpec
+	} else {
+		r.Spec = flat.Spec
+	}
+	return nil
 }
 
 // @Summary Create an app
@@ -127,7 +161,7 @@ func (s *Server) CreateApp(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.client.Create(r.Context(), app); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -158,7 +192,7 @@ func (s *Server) ListApps(w http.ResponseWriter, r *http.Request) {
 
 	var list mortisev1alpha1.AppList
 	if err := s.client.List(r.Context(), &list, client.InNamespace(ns)); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -189,7 +223,7 @@ func (s *Server) GetApp(w http.ResponseWriter, r *http.Request) {
 
 	var app mortisev1alpha1.App
 	if err := s.client.Get(r.Context(), types.NamespacedName{Name: name, Namespace: ns}, &app); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -221,16 +255,17 @@ func (s *Server) UpdateApp(w http.ResponseWriter, r *http.Request) {
 	}
 	name := chi.URLParam(r, "app")
 
-	var app mortisev1alpha1.App
-	if err := s.client.Get(r.Context(), types.NamespacedName{Name: name, Namespace: ns}, &app); err != nil {
-		writeError(w, err)
-		return
-	}
-
 	var spec mortisev1alpha1.AppSpec
 	if err := json.NewDecoder(r.Body).Decode(&spec); err != nil {
 		writeJSON(w, http.StatusBadRequest, errorResponse{"invalid JSON: " + err.Error()})
 		return
+	}
+
+	for i, env := range spec.Environments {
+		if msg := validateDNSLabel(fmt.Sprintf("environments[%d].name", i), env.Name, maxEnvNameLen); msg != "" {
+			writeJSON(w, http.StatusBadRequest, errorResponse{msg})
+			return
+		}
 	}
 
 	// Normalize short-form repo URLs on update too.
@@ -238,9 +273,16 @@ func (s *Server) UpdateApp(w http.ResponseWriter, r *http.Request) {
 		spec.Source.Repo = s.normalizeRepoURL(r.Context(), ns, spec.Source.ProviderRef, spec.Source.Repo)
 	}
 
-	app.Spec = spec
-	if err := s.client.Update(r.Context(), &app); err != nil {
-		writeError(w, err)
+	var app mortisev1alpha1.App
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		if err := s.client.Get(r.Context(), types.NamespacedName{Name: name, Namespace: ns}, &app); err != nil {
+			return err
+		}
+		app.Spec = spec
+		return s.client.Update(r.Context(), &app)
+	})
+	if err != nil {
+		writeError(w, r, err)
 		return
 	}
 
@@ -273,12 +315,12 @@ func (s *Server) DeleteApp(w http.ResponseWriter, r *http.Request) {
 
 	var app mortisev1alpha1.App
 	if err := s.client.Get(r.Context(), types.NamespacedName{Name: name, Namespace: ns}, &app); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
 	if err := s.client.Delete(r.Context(), &app); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 
@@ -288,9 +330,13 @@ func (s *Server) DeleteApp(w http.ResponseWriter, r *http.Request) {
 }
 
 // writeError maps k8s API errors to HTTP status codes.
-func writeError(w http.ResponseWriter, err error) {
+func writeError(w http.ResponseWriter, r *http.Request, err error) {
 	if errors.IsNotFound(err) {
 		writeJSON(w, http.StatusNotFound, errorResponse{err.Error()})
+		return
+	}
+	if errors.IsConflict(err) {
+		writeJSON(w, http.StatusConflict, errorResponse{err.Error()})
 		return
 	}
 	if errors.IsAlreadyExists(err) {
@@ -301,5 +347,6 @@ func writeError(w http.ResponseWriter, err error) {
 		writeJSON(w, http.StatusUnprocessableEntity, errorResponse{err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusInternalServerError, errorResponse{err.Error()})
+	slog.Error("internal API error", "error", err, "method", r.Method, "path", r.URL.Path, "request_id", r.Header.Get("X-Request-ID"))
+	writeJSON(w, http.StatusInternalServerError, errorResponse{"internal server error"})
 }
