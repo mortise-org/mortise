@@ -89,7 +89,7 @@ func (s *Server) ListDomains(w http.ResponseWriter, r *http.Request) {
 // @Router /projects/{project}/apps/{app}/domains [post]
 func (s *Server) AddDomain(w http.ResponseWriter, r *http.Request) {
 	projectName := chi.URLParam(r, "project")
-	if !s.authorize(w, r, authz.Resource{Kind: "app", Project: projectName}, authz.ActionUpdate) {
+	if !s.authorize(w, r, authz.Resource{Kind: "app", Project: projectName, Environment: queryEnv(r)}, authz.ActionUpdate) {
 		return
 	}
 	app, envName, ok := s.resolveAppEnv(w, r)
@@ -177,7 +177,7 @@ func (s *Server) AddDomain(w http.ResponseWriter, r *http.Request) {
 // @Router /projects/{project}/apps/{app}/domains/{domain} [delete]
 func (s *Server) RemoveDomain(w http.ResponseWriter, r *http.Request) {
 	projectName := chi.URLParam(r, "project")
-	if !s.authorize(w, r, authz.Resource{Kind: "app", Project: projectName}, authz.ActionUpdate) {
+	if !s.authorize(w, r, authz.Resource{Kind: "app", Project: projectName, Environment: queryEnv(r)}, authz.ActionUpdate) {
 		return
 	}
 	app, envName, ok := s.resolveAppEnv(w, r)

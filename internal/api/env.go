@@ -96,7 +96,7 @@ func (s *Server) GetEnv(w http.ResponseWriter, r *http.Request) {
 // @Router /projects/{project}/apps/{app}/env [put]
 func (s *Server) PutEnv(w http.ResponseWriter, r *http.Request) {
 	projectName := chi.URLParam(r, "project")
-	if !s.authorize(w, r, authz.Resource{Kind: "app", Project: projectName}, authz.ActionUpdate) {
+	if !s.authorize(w, r, authz.Resource{Kind: "app", Project: projectName, Environment: queryEnv(r)}, authz.ActionUpdate) {
 		return
 	}
 	app, envName, ok := s.resolveAppEnv(w, r)
@@ -180,7 +180,7 @@ func (s *Server) PutEnv(w http.ResponseWriter, r *http.Request) {
 // @Router /projects/{project}/apps/{app}/env [patch]
 func (s *Server) PatchEnv(w http.ResponseWriter, r *http.Request) {
 	projectName := chi.URLParam(r, "project")
-	if !s.authorize(w, r, authz.Resource{Kind: "app", Project: projectName}, authz.ActionUpdate) {
+	if !s.authorize(w, r, authz.Resource{Kind: "app", Project: projectName, Environment: queryEnv(r)}, authz.ActionUpdate) {
 		return
 	}
 	app, envName, ok := s.resolveAppEnv(w, r)
@@ -297,7 +297,7 @@ func (s *Server) PatchEnv(w http.ResponseWriter, r *http.Request) {
 // @Router /projects/{project}/apps/{app}/env/import [post]
 func (s *Server) ImportEnv(w http.ResponseWriter, r *http.Request) {
 	projectName := chi.URLParam(r, "project")
-	if !s.authorize(w, r, authz.Resource{Kind: "app", Project: projectName}, authz.ActionUpdate) {
+	if !s.authorize(w, r, authz.Resource{Kind: "app", Project: projectName, Environment: queryEnv(r)}, authz.ActionUpdate) {
 		return
 	}
 	app, envName, ok := s.resolveAppEnv(w, r)

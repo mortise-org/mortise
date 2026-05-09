@@ -25,7 +25,13 @@ func (e *NativePolicyEngine) Authorize(ctx context.Context, p auth.Principal, re
 	}
 
 	if p.Role == auth.RoleViewer {
-		return action == ActionRead, nil
+		if resource.Project == "" {
+			return action == ActionRead, nil
+		}
+		if action != ActionRead {
+			return false, nil
+		}
+		return e.authorizeProject(ctx, p, resource, action)
 	}
 
 	// Platform-scoped resources (no project context)
