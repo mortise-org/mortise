@@ -1503,6 +1503,12 @@ definitions:
         items:
           $ref: '#/definitions/v1alpha1.EnvVar'
         type: array
+      image:
+        description: |-
+          Image overrides the spec-level source image for this environment.
+          Set by the deploy handler when a deploy targets a specific environment.
+          +optional
+        type: string
       livenessProbe:
         $ref: '#/definitions/v1alpha1.ProbeConfig'
       name:
@@ -2636,6 +2642,38 @@ paths:
       security:
       - BearerAuth: []
       summary: Create a project
+      tags:
+      - projects
+  /projects/{name}/available:
+    get:
+      description: Returns whether a project name is available. Any authenticated
+        user can call this.
+      parameters:
+      - description: Project name to check
+        in: path
+        name: name
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: boolean
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.errorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/api.errorResponse'
+      security:
+      - BearerAuth: []
+      summary: Check project name availability
       tags:
       - projects
   /projects/{project}:
@@ -3909,8 +3947,9 @@ paths:
       - rollback
   /projects/{project}/apps/{app}/rebuild:
     post:
-      description: Clear the last-built SHA and reset the phase so the reconciler
-        triggers a fresh build. Only supported for git-source apps.
+      description: Resolve the current branch head, sync mortise.dev/revision to that
+        SHA, and clear build freshness state so the reconciler triggers a fresh no-cache
+        build. Only supported for git-source apps.
       parameters:
       - description: Project name
         in: path

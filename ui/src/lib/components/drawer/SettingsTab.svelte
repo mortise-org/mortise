@@ -1,5 +1,4 @@
 <script lang="ts">
-	import { api } from '$lib/api';
 	import { store } from '$lib/store.svelte';
 	import type { App, AppSpec } from '$lib/types';
 
@@ -56,6 +55,7 @@
 			spec.environments.push({ name: selectedEnv, enabled: next });
 		}
 		try {
+			const { api } = await import('$lib/api');
 			const result = await api.updateApp(project, app.metadata.name, spec);
 			specOverride = result.spec;
 		} catch (e) {
@@ -138,7 +138,7 @@
 	{/if}
 
 	{#if sectionVisible('domains')}
-		<DomainsSection {project} {app} {selectedEnv} {cloneSpec} onSpecUpdate={handleSpecUpdate} onError={handleError} />
+		<DomainsSection {project} {app} {selectedEnv} onSpecUpdate={handleSpecUpdate} onError={handleError} />
 	{/if}
 
 	{#if sectionVisible('deploy tokens')}

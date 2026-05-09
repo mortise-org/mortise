@@ -14,16 +14,17 @@ import (
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
 	"github.com/mortise-org/mortise/internal/authz"
 	"github.com/mortise-org/mortise/internal/constants"
+	"github.com/mortise-org/mortise/internal/git"
 )
 
 // Rebuild triggers a fresh build from the latest git commit.
-// It clears lastBuiltSHA so the reconciler treats the current revision as new,
-// and resets the phase from Failed/CrashLooping so the build guard doesn't skip it.
+// It resolves the current branch head, syncs mortise.dev/revision to that SHA,
+// and clears build freshness state so the reconciler must run a fresh no-cache build.
 //
 // POST /api/projects/{project}/apps/{app}/rebuild
 //
 // @Summary Rebuild an app from source
-// @Description Clear the last-built SHA and reset the phase so the reconciler triggers a fresh build. Only supported for git-source apps.
+// @Description Resolve the current branch head, sync mortise.dev/revision to that SHA, and clear build freshness state so the reconciler triggers a fresh no-cache build. Only supported for git-source apps.
 // @Tags deploy
 // @Produce json
 // @Security BearerAuth
@@ -53,10 +54,18 @@ func (s *Server) Rebuild(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Signal a no-cache build so BuildKit rebuilds all layers from scratch.
+	revision, err := s.resolveGitBranchHead(r.Context(), &app)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+
+	// Sync git state first, then force a no-cache build so BuildKit rebuilds
+	// all layers from the resolved commit SHA.
 	if app.Annotations == nil {
 		app.Annotations = make(map[string]string)
 	}
+	app.Annotations["mortise.dev/revision"] = revision
 	app.Annotations["mortise.dev/no-cache-build"] = "true"
 	if err := s.client.Update(r.Context(), &app); err != nil {
 		writeError(w, r, err)
@@ -71,8 +80,13 @@ func (s *Server) Rebuild(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Clear lastBuiltSHA so the reconciler sees the revision as new.
+	// Clear app-level and per-environment build freshness so rebuild cannot
+	// no-op even when an older build stored a branch-name fallback.
 	app.Status.LastBuiltSHA = ""
+	app.Status.LastBuiltImage = ""
+	for i := range app.Status.Environments {
+		app.Status.Environments[i].LastBuiltSHA = ""
+	}
 	app.Status.Phase = mortisev1alpha1.AppPhaseBuilding
 	app.Status.Conditions = nil
 	if err := s.client.Status().Update(r.Context(), &app); err != nil {
@@ -83,6 +97,43 @@ func (s *Server) Rebuild(w http.ResponseWriter, r *http.Request) {
 	s.recordActivity(r, projectName, "build", "app", appName, "Triggered rebuild for "+appName, "")
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "rebuilding"})
+}
+
+func (s *Server) resolveGitBranchHead(ctx context.Context, app *mortisev1alpha1.App) (string, error) {
+	if app.Spec.Source.ProviderRef == "" {
+		return "", fmt.Errorf("providerRef is required for git-source rebuilds")
+	}
+
+	var gp mortisev1alpha1.GitProvider
+	if err := s.client.Get(ctx, types.NamespacedName{Name: app.Spec.Source.ProviderRef}, &gp); err != nil {
+		return "", fmt.Errorf("get GitProvider %q: %w", app.Spec.Source.ProviderRef, err)
+	}
+
+	createdBy := app.Annotations["mortise.dev/created-by"]
+	cachedOwner := app.Annotations["mortise.dev/git-token-owner"]
+	tokenResult, err := git.ResolveGitTokenForApp(ctx, s.client, gp.Name, app.Namespace, createdBy, cachedOwner)
+	if err != nil {
+		return "", fmt.Errorf("resolve git token: %w", err)
+	}
+
+	apiFactory := s.GitAPIFactory
+	if apiFactory == nil {
+		apiFactory = git.NewGitAPIFromProvider
+	}
+	api, err := apiFactory(&gp, tokenResult.Token, "")
+	if err != nil {
+		return "", fmt.Errorf("create git API: %w", err)
+	}
+
+	branch := app.Spec.Source.Branch
+	if branch == "" {
+		branch = "main"
+	}
+	sha, err := api.ResolveBranchHead(ctx, app.Spec.Source.Repo, branch)
+	if err != nil {
+		return "", fmt.Errorf("resolve branch head: %w", err)
+	}
+	return sha, nil
 }
 
 // Redeploy triggers a rolling restart of an app's Deployment(s) by annotating

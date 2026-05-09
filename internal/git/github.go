@@ -187,6 +187,50 @@ func (g *GitHubAPI) ListBranches(ctx context.Context, repo string) ([]Branch, er
 	return result, nil
 }
 
+func (g *GitHubAPI) ResolveBranchHead(ctx context.Context, repo, branch string) (string, error) {
+	owner, name, err := splitRepo(repo)
+	if err != nil {
+		return "", err
+	}
+	b, _, err := g.client.Repositories.GetBranch(ctx, owner, name, branch, 0)
+	if err != nil {
+		return "", wrapGitHubError(fmt.Errorf("get github branch: %w", err))
+	}
+	return b.GetCommit().GetSHA(), nil
+}
+
+func (g *GitHubAPI) ListOpenPullRequests(ctx context.Context, repo string) ([]PullRequestSnapshot, error) {
+	owner, name, err := splitRepo(repo)
+	if err != nil {
+		return nil, err
+	}
+	prs, _, err := g.client.PullRequests.List(ctx, owner, name, &gogithub.PullRequestListOptions{
+		State: "open",
+		ListOptions: gogithub.ListOptions{
+			PerPage: 100,
+		},
+	})
+	if err != nil {
+		return nil, wrapGitHubError(fmt.Errorf("list github pull requests: %w", err))
+	}
+	out := make([]PullRequestSnapshot, 0, len(prs))
+	for _, pr := range prs {
+		author := PullRequestAuthor{}
+		if user := pr.GetUser(); user != nil {
+			author.Login = user.GetLogin()
+			author.Type = user.GetType()
+			author.IsBot = strings.EqualFold(user.GetType(), "Bot")
+		}
+		out = append(out, PullRequestSnapshot{
+			Number: pr.GetNumber(),
+			Branch: pr.GetHead().GetRef(),
+			SHA:    pr.GetHead().GetSHA(),
+			Author: author,
+		})
+	}
+	return out, nil
+}
+
 func (g *GitHubAPI) ListTree(ctx context.Context, owner, repo, branch, path string) ([]TreeEntry, error) {
 	opts := &gogithub.RepositoryContentGetOptions{Ref: branch}
 	_, contents, _, err := g.client.Repositories.GetContents(ctx, owner, repo, path, opts)

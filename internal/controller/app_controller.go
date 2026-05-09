@@ -61,6 +61,7 @@ import (
 	"github.com/mortise-org/mortise/internal/envstore"
 	"github.com/mortise-org/mortise/internal/git"
 	"github.com/mortise-org/mortise/internal/ingress"
+	"github.com/mortise-org/mortise/internal/previewsync"
 	"github.com/mortise-org/mortise/internal/registry"
 )
 
@@ -99,7 +100,11 @@ type AppReconciler struct {
 	// gitTokenCache holds the resolved git token for the current reconcile
 	// iteration so per-env builds don't re-resolve credentials. Keyed by app name.
 	gitTokenCache sync.Map
+
+	GitAPIFactory func(*mortisev1alpha1.GitProvider, string, string) (git.GitAPI, error)
 }
+
+const previewSyncStateAnnotation = "mortise.dev/preview-sync-state"
 
 // +kubebuilder:rbac:groups=mortise.mortise.dev,resources=apps,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=mortise.mortise.dev,resources=apps/status,verbs=get;update;patch
@@ -181,6 +186,11 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		return ctrl.Result{}, nil
 	}
 
+	if app.Spec.Source.Type == mortisev1alpha1.SourceTypeGit {
+		if err := r.syncOpenPreviews(ctx, &app, project); err != nil {
+			log.Error(err, "preview sync failed", "app", app.Name)
+		}
+	}
 	// Each env gets its own namespace; per-app resources (SA, credentials
 	// Secret, ConfigMaps, PVCs) fan out once per env namespace so pods that
 	// reference them can resolve cross-ns (they can't). The controller owns
@@ -378,6 +388,103 @@ func (r *AppReconciler) prepareGitSource(ctx context.Context, app *mortisev1alph
 	r.gitTokenCache.Store(app.Namespace+"/"+app.Name, tokenResult.Token)
 
 	return ctrl.Result{}, true, nil
+}
+
+func (r *AppReconciler) syncOpenPreviews(ctx context.Context, app *mortisev1alpha1.App, project *mortisev1alpha1.Project) error {
+	if project == nil || project.Spec.Preview == nil || !project.Spec.Preview.Enabled {
+		return nil
+	}
+	if app.Spec.Source.Type != mortisev1alpha1.SourceTypeGit || app.Spec.Source.ProviderRef == "" {
+		return nil
+	}
+
+	desiredState := previewSyncState(app, project)
+	if app.Annotations[previewSyncStateAnnotation] == desiredState {
+		return nil
+	}
+
+	tokenVal, _ := r.gitTokenCache.Load(app.Name)
+	token, _ := tokenVal.(string)
+
+	var gp mortisev1alpha1.GitProvider
+	if err := r.Get(ctx, types.NamespacedName{Name: app.Spec.Source.ProviderRef}, &gp); err != nil {
+		return fmt.Errorf("get GitProvider %q: %w", app.Spec.Source.ProviderRef, err)
+	}
+	if token == "" {
+		createdBy := app.Annotations["mortise.dev/created-by"]
+		cachedOwner := app.Annotations["mortise.dev/git-token-owner"]
+		tokenResult, err := git.ResolveGitTokenForApp(ctx, r.Client, gp.Name, app.Namespace, createdBy, cachedOwner)
+		if err != nil {
+			return fmt.Errorf("resolve git token for preview sync: %w", err)
+		}
+		token = tokenResult.Token
+		r.gitTokenCache.Store(app.Name, token)
+	}
+
+	api, err := r.newGitAPI(&gp, token, "")
+	if err != nil {
+		return fmt.Errorf("create git API: %w", err)
+	}
+	openPRs, err := api.ListOpenPullRequests(ctx, app.Spec.Source.Repo)
+	if err != nil {
+		return fmt.Errorf("list open pull requests: %w", err)
+	}
+	if err := previewsync.ReconcileAppPreviews(ctx, r, app, project, project.Spec.Preview, openPRs); err != nil {
+		return fmt.Errorf("reconcile preview environments: %w", err)
+	}
+
+	patch := client.MergeFrom(app.DeepCopy())
+	if app.Annotations == nil {
+		app.Annotations = map[string]string{}
+	}
+	app.Annotations[previewSyncStateAnnotation] = desiredState
+	if err := r.Patch(ctx, app, patch); err != nil {
+		return fmt.Errorf("patch preview sync state: %w", err)
+	}
+
+	return nil
+}
+
+func previewSyncState(app *mortisev1alpha1.App, project *mortisev1alpha1.Project) string {
+	h := sha256.New()
+	fmt.Fprintf(h, "repo=%s\nprovider=%s\npreview=%t\n", app.Spec.Source.Repo, app.Spec.Source.ProviderRef, project.Spec.Preview != nil && project.Spec.Preview.Enabled)
+	if project.Spec.Preview != nil {
+		fmt.Fprintf(h, "domain=%s\nttl=%s\nbot=%t\ncpu=%s\nmemory=%s\n",
+			project.Spec.Preview.Domain,
+			project.Spec.Preview.TTL,
+			project.Spec.Preview.BotPR,
+			project.Spec.Preview.Resources.CPU,
+			project.Spec.Preview.Resources.Memory,
+		)
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+func (r *AppReconciler) newGitAPI(gp *mortisev1alpha1.GitProvider, token, webhookSecret string) (git.GitAPI, error) {
+	if r.GitAPIFactory != nil {
+		return r.GitAPIFactory(gp, token, webhookSecret)
+	}
+	return git.NewGitAPIFromProvider(gp, token, webhookSecret)
+}
+
+func (r *AppReconciler) ListPreviewEnvironments(ctx context.Context, namespace string) ([]mortisev1alpha1.PreviewEnvironment, error) {
+	var list mortisev1alpha1.PreviewEnvironmentList
+	if err := r.List(ctx, &list, client.InNamespace(namespace)); err != nil {
+		return nil, err
+	}
+	return list.Items, nil
+}
+
+func (r *AppReconciler) CreatePreviewEnvironment(ctx context.Context, pe *mortisev1alpha1.PreviewEnvironment) error {
+	return r.Create(ctx, pe)
+}
+
+func (r *AppReconciler) UpdatePreviewEnvironment(ctx context.Context, pe *mortisev1alpha1.PreviewEnvironment) error {
+	return r.Update(ctx, pe)
+}
+
+func (r *AppReconciler) DeletePreviewEnvironment(ctx context.Context, pe *mortisev1alpha1.PreviewEnvironment) error {
+	return r.Delete(ctx, pe)
 }
 
 // reconcileEnvBuild handles per-environment builds for git-source apps. Returns
@@ -2132,7 +2239,7 @@ func (r *AppReconciler) ensureWebhook(ctx context.Context, app *mortisev1alpha1.
 	}
 
 	// Build GitAPI and register.
-	api, err := git.NewGitAPIFromProvider(gp, token, webhookSecret)
+	api, err := r.newGitAPI(gp, token, webhookSecret)
 	if err != nil {
 		return fmt.Errorf("create git API: %w", err)
 	}

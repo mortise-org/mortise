@@ -98,16 +98,6 @@
 		if (env === lastLoadedEnv && appName === lastLoadedApp) return;
 		lastLoadedEnv = env;
 		lastLoadedApp = appName;
-		// Reset transient UI state when switching environments
-		for (const s of [envSection, sharedSection, buildSection]) {
-			s.showNewRow = false;
-			s.newKey = '';
-			s.newValue = '';
-			s.rawMode = false;
-			s.rawText = '';
-			s.showPicker = false;
-			s.error = '';
-		}
 		void loadEnv(env);
 		void loadShared();
 		void loadBuildArgs();

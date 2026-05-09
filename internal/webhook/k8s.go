@@ -10,6 +10,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
+	"github.com/mortise-org/mortise/internal/git"
 )
 
 // K8sReader implements k8sReader using a controller-runtime client.
@@ -105,4 +106,8 @@ func (r *K8sReader) updatePreviewEnvironment(ctx context.Context, pe *mortisev1a
 // deletePreviewEnvironment deletes a PreviewEnvironment CRD.
 func (r *K8sReader) deletePreviewEnvironment(ctx context.Context, pe *mortisev1alpha1.PreviewEnvironment) error {
 	return r.client.Delete(ctx, pe)
+}
+
+func (r *K8sReader) resolveGitTokenForApp(ctx context.Context, providerName, controlNamespace, createdBy, cachedOwner string) (git.TokenResult, error) {
+	return git.ResolveGitTokenForApp(ctx, r.client, providerName, controlNamespace, createdBy, cachedOwner)
 }
