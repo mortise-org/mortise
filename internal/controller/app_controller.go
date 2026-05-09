@@ -460,7 +460,14 @@ func (r *AppReconciler) syncOpenPreviews(ctx context.Context, app *mortisev1alph
 
 func previewSyncState(app *mortisev1alpha1.App, project *mortisev1alpha1.Project) string {
 	h := sha256.New()
-	fmt.Fprintf(h, "repo=%s\nprovider=%s\npreview=%t\n", app.Spec.Source.Repo, app.Spec.Source.ProviderRef, project.Spec.Preview != nil && project.Spec.Preview.Enabled)
+	fmt.Fprintf(h, "repo=%s\nprovider=%s\npreview=%t\nprojectPreviewRev=%s\n",
+		app.Spec.Source.Repo,
+		app.Spec.Source.ProviderRef,
+		project.Spec.Preview != nil && project.Spec.Preview.Enabled,
+		app.Annotations[ProjectPreviewRevAnnotation],
+	)
+	writePreviewSyncHashJSON(h, "appEnvironments", app.Spec.Environments)
+	writePreviewSyncHashJSON(h, "projectEnvironments", project.Spec.Environments)
 	if project.Spec.Preview != nil {
 		fmt.Fprintf(h, "domain=%s\nttl=%s\nbot=%t\ncpu=%s\nmemory=%s\n",
 			project.Spec.Preview.Domain,
@@ -471,6 +478,17 @@ func previewSyncState(app *mortisev1alpha1.App, project *mortisev1alpha1.Project
 		)
 	}
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+func writePreviewSyncHashJSON(h hashWriter, key string, value any) {
+	fmt.Fprintf(h, "%s=", key)
+	if err := json.NewEncoder(h).Encode(value); err != nil {
+		fmt.Fprintf(h, "json-error=%v\n", err)
+	}
+}
+
+type hashWriter interface {
+	Write([]byte) (int, error)
 }
 
 func (r *AppReconciler) newGitAPI(gp *mortisev1alpha1.GitProvider, token, webhookSecret string) (git.GitAPI, error) {

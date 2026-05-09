@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"testing"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -52,6 +53,49 @@ import (
 // testImageNginx is the pinned image used across App controller tests.
 // Hoisted to package scope so it is visible from multiple Describe blocks.
 const testImageNginx = "nginx:1.27"
+
+func TestPreviewSyncStateIncludesBackfillInputs(t *testing.T) {
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{
+			Annotations: map[string]string{},
+		},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{
+				Type:        mortisev1alpha1.SourceTypeGit,
+				Repo:        "owner/repo",
+				ProviderRef: "github",
+			},
+			Environments: []mortisev1alpha1.Environment{{Name: "staging"}},
+		},
+	}
+	project := &mortisev1alpha1.Project{
+		Spec: mortisev1alpha1.ProjectSpec{
+			Preview:      &mortisev1alpha1.PreviewConfig{Enabled: true, Domain: "pr-{number}.example.com"},
+			Environments: []mortisev1alpha1.ProjectEnvironment{{Name: "staging"}},
+		},
+	}
+
+	base := previewSyncState(app, project)
+
+	withAppEnvChange := app.DeepCopy()
+	replicas := int32(3)
+	withAppEnvChange.Spec.Environments[0].Replicas = &replicas
+	if got := previewSyncState(withAppEnvChange, project); got == base {
+		t.Fatal("preview sync state did not change after app environment preview input changed")
+	}
+
+	withProjectEnvChange := project.DeepCopy()
+	withProjectEnvChange.Spec.Environments = append(withProjectEnvChange.Spec.Environments, mortisev1alpha1.ProjectEnvironment{Name: "production"})
+	if got := previewSyncState(app, withProjectEnvChange); got == base {
+		t.Fatal("preview sync state did not change after project environment topology changed")
+	}
+
+	withCascadeRev := app.DeepCopy()
+	withCascadeRev.Annotations[ProjectPreviewRevAnnotation] = "2"
+	if got := previewSyncState(withCascadeRev, project); got == base {
+		t.Fatal("preview sync state did not change after project preview cascade revision changed")
+	}
+}
 
 var _ = Describe("App Controller", func() {
 	const namespace = "pj-default-project"
