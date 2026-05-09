@@ -126,7 +126,7 @@ func (s *Server) authorize(w http.ResponseWriter, r *http.Request, resource auth
 //
 // URL scheme:
 //
-//	/api/auth/{status|setup|login}                                 unauthenticated
+//	/api/auth/{status|setup|login|refresh}                          unauthenticated
 //	/api/webhooks/{provider}                                       unauthenticated — HMAC-verified
 //	/api/auth/git/{provider}/device                                authenticated — device flow initiation
 //	/api/auth/git/{provider}/device/poll                           authenticated — device flow polling
@@ -164,6 +164,7 @@ func (s *Server) Handler() http.Handler {
 	r.Get("/api/auth/status", s.Status)
 	r.Post("/api/auth/setup", s.Setup)
 	r.Post("/api/auth/login", s.Login)
+	r.Post("/api/auth/refresh", s.Refresh)
 
 	// Unauthenticated git forge webhook receiver (auth is via HMAC).
 	// Webhook handler has its own 10MB limit via io.LimitReader; no global

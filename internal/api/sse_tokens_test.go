@@ -3,7 +3,6 @@ package api_test
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
@@ -17,30 +16,6 @@ import (
 	"github.com/mortise-org/mortise/internal/auth"
 	"github.com/mortise-org/mortise/internal/authz"
 )
-
-type staticAuthProvider struct {
-	principal auth.Principal
-}
-
-func (s staticAuthProvider) Authenticate(ctx context.Context, creds auth.Credentials) (auth.Principal, error) {
-	return auth.Principal{}, fmt.Errorf("not implemented")
-}
-
-func (s staticAuthProvider) Principal(ctx context.Context, session auth.SessionToken) (auth.Principal, error) {
-	return s.principal, nil
-}
-
-func (s staticAuthProvider) ListUsers(ctx context.Context) ([]auth.User, error) {
-	return nil, nil
-}
-
-func (s staticAuthProvider) InviteUser(ctx context.Context, email string, role auth.Role) (auth.InviteLink, error) {
-	return auth.InviteLink{}, fmt.Errorf("not implemented")
-}
-
-func (s staticAuthProvider) RevokeUser(ctx context.Context, userID string) error {
-	return fmt.Errorf("not implemented")
-}
 
 func TestIssueSSEToken(t *testing.T) {
 	k8sClient := setupEnvtest(t)

@@ -3,6 +3,7 @@ package api_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"testing"
 
@@ -14,6 +15,30 @@ import (
 	"github.com/mortise-org/mortise/internal/auth"
 	"github.com/mortise-org/mortise/internal/authz"
 )
+
+type staticAuthProvider struct {
+	principal auth.Principal
+}
+
+func (s staticAuthProvider) Authenticate(ctx context.Context, creds auth.Credentials) (auth.Principal, error) {
+	return auth.Principal{}, fmt.Errorf("not implemented")
+}
+
+func (s staticAuthProvider) Principal(ctx context.Context, session auth.SessionToken) (auth.Principal, error) {
+	return s.principal, nil
+}
+
+func (s staticAuthProvider) ListUsers(ctx context.Context) ([]auth.User, error) {
+	return nil, nil
+}
+
+func (s staticAuthProvider) InviteUser(ctx context.Context, email string, role auth.Role) (auth.InviteLink, error) {
+	return auth.InviteLink{}, fmt.Errorf("not implemented")
+}
+
+func (s staticAuthProvider) RevokeUser(ctx context.Context, userID string) error {
+	return fmt.Errorf("not implemented")
+}
 
 // TestAuthStatusSetupRequired verifies /api/auth/status flips from setupRequired=true
 // to false once the first admin is created.
@@ -182,6 +207,238 @@ func TestProtectedRouteRequiresToken(t *testing.T) {
 	w = doRequestWithToken(h, http.MethodGet, "/api/projects", nil, "garbage-token")
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401 with invalid token, got %d", w.Code)
+	}
+}
+
+// TestRefreshValidToken verifies that a valid JWT can be refreshed.
+func TestRefreshValidToken(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	ctx := context.Background()
+	_ = k8sClient.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "mortise-system"}})
+
+	authProvider := auth.NewNativeAuthProvider(k8sClient)
+	jwtHelper := auth.NewJWTHelper(k8sClient)
+	if err := authProvider.CreateUser(ctx, "user@example.com", "pass1234", auth.RoleMember); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	principal, _ := authProvider.Authenticate(ctx, auth.Credentials{Email: "user@example.com", Password: "pass1234"})
+	token, _ := jwtHelper.GenerateToken(ctx, principal)
+
+	srv := api.NewServer(k8sClient, fake.NewClientset(), nil, nil, authProvider, jwtHelper, nil, authz.NewNativePolicyEngine(k8sClient))
+	h := srv.Handler()
+
+	w := doRequestWithToken(h, http.MethodPost, "/api/auth/refresh", nil, token)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 on refresh, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]any
+	json.NewDecoder(w.Body).Decode(&resp)
+	newToken, _ := resp["token"].(string)
+	if newToken == "" {
+		t.Error("expected a non-empty token in refresh response")
+	}
+
+	// The refreshed token should work for protected routes.
+	w = doRequestWithToken(h, http.MethodGet, "/api/projects", nil, newToken)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 with refreshed token, got %d", w.Code)
+	}
+}
+
+// TestRefreshWithoutToken verifies that refresh without a token returns 401.
+func TestRefreshWithoutToken(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	ctx := context.Background()
+	_ = k8sClient.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "mortise-system"}})
+
+	authProvider := auth.NewNativeAuthProvider(k8sClient)
+	jwtHelper := auth.NewJWTHelper(k8sClient)
+	srv := api.NewServer(k8sClient, fake.NewClientset(), nil, nil, authProvider, jwtHelper, nil, authz.NewNativePolicyEngine(k8sClient))
+	h := srv.Handler()
+
+	w := doRequestWithToken(h, http.MethodPost, "/api/auth/refresh", nil, "")
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 without token, got %d", w.Code)
+	}
+}
+
+// TestRefreshInvalidToken verifies that garbage tokens are rejected.
+func TestRefreshInvalidToken(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	ctx := context.Background()
+	_ = k8sClient.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "mortise-system"}})
+
+	authProvider := auth.NewNativeAuthProvider(k8sClient)
+	jwtHelper := auth.NewJWTHelper(k8sClient)
+	srv := api.NewServer(k8sClient, fake.NewClientset(), nil, nil, authProvider, jwtHelper, nil, authz.NewNativePolicyEngine(k8sClient))
+	h := srv.Handler()
+
+	w := doRequestWithToken(h, http.MethodPost, "/api/auth/refresh", nil, "not-a-real-token")
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 with invalid token, got %d", w.Code)
+	}
+}
+
+// TestRefreshAfterPasswordChange verifies that refresh fails when the password
+// was changed after the token was issued.
+func TestRefreshAfterPasswordChange(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	ctx := context.Background()
+	_ = k8sClient.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "mortise-system"}})
+
+	authProvider := auth.NewNativeAuthProvider(k8sClient)
+	jwtHelper := auth.NewJWTHelper(k8sClient)
+	if err := authProvider.CreateUser(ctx, "user@example.com", "pass1234", auth.RoleMember); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	principal, _ := authProvider.Authenticate(ctx, auth.Credentials{Email: "user@example.com", Password: "pass1234"})
+	token, _ := jwtHelper.GenerateToken(ctx, principal)
+
+	if err := authProvider.UpdatePassword(ctx, "user@example.com", "newpass12"); err != nil {
+		t.Fatalf("update password: %v", err)
+	}
+
+	srv := api.NewServer(k8sClient, fake.NewClientset(), nil, nil, authProvider, jwtHelper, nil, authz.NewNativePolicyEngine(k8sClient))
+	h := srv.Handler()
+
+	w := doRequestWithToken(h, http.MethodPost, "/api/auth/refresh", nil, token)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 after password change, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestRefreshRoleChangeUsesCurrentRole(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	ctx := context.Background()
+	_ = k8sClient.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "mortise-system"}})
+
+	authProvider := auth.NewNativeAuthProvider(k8sClient)
+	jwtHelper := auth.NewJWTHelper(k8sClient)
+	if err := authProvider.CreateUser(ctx, "admin@example.com", "adminpass1", auth.RoleAdmin); err != nil {
+		t.Fatalf("create admin: %v", err)
+	}
+	if err := authProvider.CreateUser(ctx, "user@example.com", "pass1234", auth.RoleAdmin); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	adminPrincipal, err := authProvider.Authenticate(ctx, auth.Credentials{Email: "admin@example.com", Password: "adminpass1"})
+	if err != nil {
+		t.Fatalf("authenticate admin: %v", err)
+	}
+	adminToken, err := jwtHelper.GenerateToken(ctx, adminPrincipal)
+	if err != nil {
+		t.Fatalf("generate admin token: %v", err)
+	}
+
+	principal, err := authProvider.Authenticate(ctx, auth.Credentials{Email: "user@example.com", Password: "pass1234"})
+	if err != nil {
+		t.Fatalf("authenticate user: %v", err)
+	}
+	token, err := jwtHelper.GenerateToken(ctx, principal)
+	if err != nil {
+		t.Fatalf("generate user token: %v", err)
+	}
+
+	srv := api.NewServer(k8sClient, fake.NewClientset(), nil, nil, authProvider, jwtHelper, nil, authz.NewNativePolicyEngine(k8sClient))
+	h := srv.Handler()
+
+	w := doRequestWithToken(h, http.MethodPatch, "/api/admin/users/user@example.com", map[string]any{"role": "member"}, adminToken)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 updating role, got %d: %s", w.Code, w.Body.String())
+	}
+
+	w = doRequestWithToken(h, http.MethodPost, "/api/auth/refresh", nil, token)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 on refresh, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp struct {
+		Token string         `json:"token"`
+		User  auth.Principal `json:"user"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode refresh response: %v", err)
+	}
+	if resp.User.Role != auth.RoleMember {
+		t.Fatalf("expected refreshed role %q, got %q", auth.RoleMember, resp.User.Role)
+	}
+
+	if resp.Token == "" {
+		t.Fatal("expected refreshed token")
+	}
+	refreshed, _, err := jwtHelper.ValidateToken(ctx, resp.Token)
+	if err != nil {
+		t.Fatalf("validate refreshed token: %v", err)
+	}
+	if refreshed.Role != auth.RoleMember {
+		t.Fatalf("expected refreshed token role %q, got %q", auth.RoleMember, refreshed.Role)
+	}
+}
+
+func TestRefreshRejectedAfterUserRevoked(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	ctx := context.Background()
+	_ = k8sClient.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "mortise-system"}})
+
+	authProvider := auth.NewNativeAuthProvider(k8sClient)
+	jwtHelper := auth.NewJWTHelper(k8sClient)
+	if err := authProvider.CreateUser(ctx, "user@example.com", "pass1234", auth.RoleMember); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	principal, err := authProvider.Authenticate(ctx, auth.Credentials{Email: "user@example.com", Password: "pass1234"})
+	if err != nil {
+		t.Fatalf("authenticate user: %v", err)
+	}
+	token, err := jwtHelper.GenerateToken(ctx, principal)
+	if err != nil {
+		t.Fatalf("generate user token: %v", err)
+	}
+
+	if err := authProvider.RevokeUser(ctx, "user@example.com"); err != nil {
+		t.Fatalf("revoke user: %v", err)
+	}
+
+	srv := api.NewServer(k8sClient, fake.NewClientset(), nil, nil, authProvider, jwtHelper, nil, authz.NewNativePolicyEngine(k8sClient))
+	h := srv.Handler()
+
+	w := doRequestWithToken(h, http.MethodPost, "/api/auth/refresh", nil, token)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 after revocation, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestRefreshRejectsProviderWithoutCurrentPrincipal(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	ctx := context.Background()
+	_ = k8sClient.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "mortise-system"}})
+
+	jwtHelper := auth.NewJWTHelper(k8sClient)
+	principal := auth.Principal{
+		ID:          "user@example.com",
+		Email:       "user@example.com",
+		Role:        auth.RoleAdmin,
+		PasswordGen: 0,
+	}
+	token, err := jwtHelper.GenerateToken(ctx, principal)
+	if err != nil {
+		t.Fatalf("generate token: %v", err)
+	}
+
+	srv := api.NewServer(
+		k8sClient,
+		fake.NewClientset(),
+		nil,
+		nil,
+		staticAuthProvider{principal: principal},
+		jwtHelper,
+		nil,
+		authz.NewNativePolicyEngine(k8sClient),
+	)
+	h := srv.Handler()
+
+	w := doRequestWithToken(h, http.MethodPost, "/api/auth/refresh", nil, token)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 when provider cannot revalidate refresh, got %d: %s", w.Code, w.Body.String())
 	}
 }
 
