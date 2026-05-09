@@ -152,9 +152,9 @@ dev-up: build-ui ## Create k3d dev cluster with build infra, install Mortise, po
 	kubectl -n mortise-test-deps rollout status deployment/gitea     --timeout=180s
 	kubectl -n mortise-test-deps rollout status deployment/buildkitd --timeout=180s
 	@echo "==> Fetching Helm chart dependencies..."
-	helm repo add traefik https://traefik.github.io/charts
-	helm repo add jetstack https://charts.jetstack.io
-	helm repo add metrics-server https://kubernetes-sigs.github.io/metrics-server/
+	helm repo add traefik https://traefik.github.io/charts --force-update
+	helm repo add jetstack https://charts.jetstack.io --force-update
+	helm repo add metrics-server https://kubernetes-sigs.github.io/metrics-server/ --force-update
 	helm repo update
 	helm dependency build charts/mortise
 	@echo "==> Installing Mortise via Helm..."
