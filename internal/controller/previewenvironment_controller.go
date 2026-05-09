@@ -26,6 +26,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -373,8 +374,59 @@ func (r *PreviewEnvironmentReconciler) reconcilePreviewDeployment(ctx context.Co
 		return err
 	}
 
-	existing.Spec = desired.Spec
-	return r.Update(ctx, &existing)
+	if len(desired.Spec.Template.Spec.Containers) == 0 {
+		return fmt.Errorf("desired Deployment %s/%s has no containers", previewNs, name)
+	}
+	desiredContainer := desired.Spec.Template.Spec.Containers[0]
+
+	return envstore.UpdateWithConflictRetry(ctx, r.Client, types.NamespacedName{Name: name, Namespace: previewNs}, func() *appsv1.Deployment {
+		return &appsv1.Deployment{}
+	}, func(existing *appsv1.Deployment) (bool, error) {
+		if len(existing.Spec.Template.Spec.Containers) == 0 {
+			return false, fmt.Errorf("existing Deployment %s/%s has no containers", previewNs, name)
+		}
+		existingContainer := existing.Spec.Template.Spec.Containers[0]
+
+		needsUpdate := false
+		if existing.Spec.Replicas == nil || *existing.Spec.Replicas != *desired.Spec.Replicas {
+			needsUpdate = true
+		}
+		if existingContainer.Name != desiredContainer.Name {
+			needsUpdate = true
+		}
+		if existingContainer.Image != desiredContainer.Image {
+			needsUpdate = true
+		}
+		if !equality.Semantic.DeepEqual(existingContainer.EnvFrom, desiredContainer.EnvFrom) {
+			needsUpdate = true
+		}
+		if !equality.Semantic.DeepEqual(existingContainer.Resources, desiredContainer.Resources) {
+			needsUpdate = true
+		}
+		if !equality.Semantic.DeepEqual(existing.Spec.Selector, desired.Spec.Selector) {
+			needsUpdate = true
+		}
+		if !equality.Semantic.DeepEqual(existing.Spec.Template.ObjectMeta.Labels, desired.Spec.Template.ObjectMeta.Labels) {
+			needsUpdate = true
+		}
+		if !equality.Semantic.DeepEqual(existing.Labels, desired.Labels) {
+			needsUpdate = true
+		}
+
+		if !needsUpdate {
+			return false, nil
+		}
+
+		existing.Labels = desired.Labels
+		existing.Spec.Replicas = desired.Spec.Replicas
+		existing.Spec.Selector = desired.Spec.Selector
+		existing.Spec.Template.ObjectMeta.Labels = desired.Spec.Template.ObjectMeta.Labels
+		existing.Spec.Template.Spec.Containers[0].Name = desiredContainer.Name
+		existing.Spec.Template.Spec.Containers[0].Image = desiredContainer.Image
+		existing.Spec.Template.Spec.Containers[0].EnvFrom = desiredContainer.EnvFrom
+		existing.Spec.Template.Spec.Containers[0].Resources = desiredContainer.Resources
+		return true, nil
+	})
 }
 
 // reconcilePreviewEnvSecret builds the preview's {app}-env and shared-env
@@ -401,10 +453,12 @@ func (r *PreviewEnvironmentReconciler) reconcilePreviewEnvSecret(ctx context.Con
 		"mortise.dev/pr-number":        fmt.Sprintf("%d", pe.Spec.PullRequest.Number),
 	}
 
-	// Copy shared-env from source env namespace into the preview namespace.
-	sourceShared, err := store.GetShared(ctx, sourceEnvNs)
+	// Copy shared vars from the control-namespace source of truth into the
+	// preview namespace. The source env namespace only carries a materialized
+	// cache, which may lag behind the control-ns Secret under load.
+	sourceShared, err := store.GetSharedSource(ctx, pe.Namespace)
 	if err != nil {
-		return fmt.Errorf("read shared-env from source env %q: %w", sourceEnvNs, err)
+		return fmt.Errorf("read shared-vars from control ns %q: %w", pe.Namespace, err)
 	}
 	if len(sourceShared) > 0 {
 		if err := store.SetShared(ctx, previewNs, sourceShared, labels); err != nil {

@@ -185,6 +185,33 @@ var _ = Describe("App Controller", func() {
 			Expect(svc.Spec.Ports[0].Port).To(Equal(int32(8080)))
 		})
 
+		It("should not rewrite a volume-less Deployment on repeated reconcile", func() {
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			req := reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			}
+
+			_, err := reconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			var dep appsv1.Deployment
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName, Namespace: envNsProduction,
+			}, &dep)).To(Succeed())
+			rvBefore := dep.ResourceVersion
+			Expect(dep.Spec.Template.Spec.Volumes).To(BeNil())
+
+			_, err = reconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			dep = appsv1.Deployment{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName, Namespace: envNsProduction,
+			}, &dep)).To(Succeed())
+			Expect(dep.ResourceVersion).To(Equal(rvBefore))
+			Expect(dep.Spec.Template.Spec.Volumes).To(BeNil())
+		})
+
 		It("should create an Ingress with TLS for the domain", func() {
 			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{
@@ -5571,6 +5598,127 @@ var _ = Describe("securityContext on user workloads", func() {
 			}
 			Expect(dep.Spec.Template.Spec.Containers[0].SecurityContext).To(BeNil())
 		})
+
+		It("should treat empty workload securityContext objects as already cleared", func() {
+			app = &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      appName,
+					Namespace: namespace,
+				},
+				Spec: mortisev1alpha1.AppSpec{
+					Source: mortisev1alpha1.AppSource{
+						Type:  mortisev1alpha1.SourceTypeImage,
+						Image: testImageNginx,
+					},
+					Network: mortisev1alpha1.NetworkConfig{Public: true},
+					Environments: []mortisev1alpha1.Environment{
+						{
+							Name:     "production",
+							Replicas: ptr.To[int32](1),
+							Resources: mortisev1alpha1.ResourceRequirements{
+								CPU: "100m", Memory: "128Mi",
+							},
+							Domain: "sc-empty.example.com",
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var dep appsv1.Deployment
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName, Namespace: envNsProduction,
+			}, &dep)).To(Succeed())
+
+			dep.Spec.Template.Spec.SecurityContext = &corev1.PodSecurityContext{}
+			dep.Spec.Template.Spec.Containers[0].SecurityContext = &corev1.SecurityContext{}
+			Expect(k8sClient.Update(ctx, &dep)).To(Succeed())
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName, Namespace: envNsProduction,
+			}, &dep)).To(Succeed())
+			rvBefore := dep.ResourceVersion
+
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			dep = appsv1.Deployment{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName, Namespace: envNsProduction,
+			}, &dep)).To(Succeed())
+			Expect(dep.ResourceVersion).To(Equal(rvBefore))
+			Expect(dep.Spec.Template.Spec.SecurityContext).To(Equal(&corev1.PodSecurityContext{}))
+			Expect(dep.Spec.Template.Spec.Containers[0].SecurityContext).To(Equal(&corev1.SecurityContext{}))
+		})
+
+		It("should preserve deployment-controller annotations during reconcile", func() {
+			app = &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      appName,
+					Namespace: namespace,
+				},
+				Spec: mortisev1alpha1.AppSpec{
+					Source: mortisev1alpha1.AppSource{
+						Type:  mortisev1alpha1.SourceTypeImage,
+						Image: testImageNginx,
+					},
+					Network: mortisev1alpha1.NetworkConfig{Public: true},
+					Environments: []mortisev1alpha1.Environment{
+						{
+							Name:     "production",
+							Replicas: ptr.To[int32](1),
+							Resources: mortisev1alpha1.ResourceRequirements{
+								CPU: "100m", Memory: "128Mi",
+							},
+							Domain: "sc-revision.example.com",
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var dep appsv1.Deployment
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName, Namespace: envNsProduction,
+			}, &dep)).To(Succeed())
+
+			if dep.Annotations == nil {
+				dep.Annotations = map[string]string{}
+			}
+			dep.Annotations["deployment.kubernetes.io/revision"] = "1"
+			Expect(k8sClient.Update(ctx, &dep)).To(Succeed())
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName, Namespace: envNsProduction,
+			}, &dep)).To(Succeed())
+			rvBefore := dep.ResourceVersion
+
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			dep = appsv1.Deployment{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName, Namespace: envNsProduction,
+			}, &dep)).To(Succeed())
+			Expect(dep.ResourceVersion).To(Equal(rvBefore))
+			Expect(dep.Annotations).To(HaveKeyWithValue("deployment.kubernetes.io/revision", "1"))
+		})
 	})
 
 	Context("CronJob (cron app)", func() {
@@ -5696,6 +5844,65 @@ var _ = Describe("securityContext on user workloads", func() {
 				Expect(podSC.SeccompProfile).To(BeNil())
 			}
 			Expect(cj.Spec.JobTemplate.Spec.Template.Spec.Containers[0].SecurityContext).To(BeNil())
+		})
+
+		It("should treat empty CronJob workload securityContext objects as already cleared", func() {
+			app = &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      appName,
+					Namespace: namespace,
+				},
+				Spec: mortisev1alpha1.AppSpec{
+					Kind: mortisev1alpha1.AppKindCron,
+					Source: mortisev1alpha1.AppSource{
+						Type:  mortisev1alpha1.SourceTypeImage,
+						Image: testImageNginx,
+					},
+					Environments: []mortisev1alpha1.Environment{
+						{
+							Name:     "production",
+							Schedule: "*/10 * * * *",
+							Resources: mortisev1alpha1.ResourceRequirements{
+								CPU: "100m", Memory: "128Mi",
+							},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var cj batchv1.CronJob
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName, Namespace: envNsProduction,
+			}, &cj)).To(Succeed())
+
+			cj.Spec.JobTemplate.Spec.Template.Spec.SecurityContext = &corev1.PodSecurityContext{}
+			cj.Spec.JobTemplate.Spec.Template.Spec.Containers[0].SecurityContext = &corev1.SecurityContext{}
+			Expect(k8sClient.Update(ctx, &cj)).To(Succeed())
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName, Namespace: envNsProduction,
+			}, &cj)).To(Succeed())
+			rvBefore := cj.ResourceVersion
+
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			cj = batchv1.CronJob{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName, Namespace: envNsProduction,
+			}, &cj)).To(Succeed())
+			Expect(cj.ResourceVersion).To(Equal(rvBefore))
+			Expect(cj.Spec.JobTemplate.Spec.Template.Spec.SecurityContext).To(Equal(&corev1.PodSecurityContext{}))
+			Expect(cj.Spec.JobTemplate.Spec.Template.Spec.Containers[0].SecurityContext).To(Equal(&corev1.SecurityContext{}))
 		})
 	})
 })

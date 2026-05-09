@@ -499,6 +499,11 @@ func secretToEnvs(secret *corev1.Secret) []Env {
 	return envs
 }
 
+// SecretToEnvs decodes a Secret using envstore's source annotations.
+func SecretToEnvs(secret *corev1.Secret) []Env {
+	return secretToEnvs(secret)
+}
+
 func parseKeySet(csv string) map[string]bool {
 	if csv == "" {
 		return nil

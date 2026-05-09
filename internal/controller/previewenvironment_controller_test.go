@@ -310,6 +310,42 @@ var _ = Describe("PreviewEnvironment Controller", func() {
 			Expect(updated.Status.Phase).To(Equal(mortisev1alpha1.PreviewPhaseReady))
 			Expect(updated.Status.URL).To(Equal("https://" + previewDomain))
 		})
+
+		It("should not update the preview Deployment when only defaulted nil-vs-empty fields differ", func() {
+			ctx := context.Background()
+			project, ns := createPreviewTestProject(ctx, true)
+
+			createPreviewApp(ctx, "stable-webapp", ns, &mortisev1alpha1.Environment{Name: "staging"})
+			previewDomain := fmt.Sprintf("stable-webapp-%s-pr-7.example.com", project.Name)
+			pe := createPreviewEnv(ctx, "stable-webapp-preview-pr-7", ns, "stable-webapp", 7, "deadbeef", "feat-x", previewDomain, 72*time.Hour)
+			pe.Spec.Replicas = ptr.To(int32(1))
+			Expect(k8sClient.Update(ctx, pe)).To(Succeed())
+			pe.Status.Image = "registry.example.com/mortise/stable-webapp:pr-7-deadbee"
+			Expect(k8sClient.Status().Update(ctx, pe)).To(Succeed())
+
+			reconciler := &PreviewEnvironmentReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+				Clock:  clocktesting.NewFakeClock(time.Now()),
+			}
+			req := reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: pe.Name, Namespace: ns},
+			}
+
+			_, err := reconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			previewNs := constants.PreviewNamespace(project.Name, 7)
+			var dep appsv1.Deployment
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "stable-webapp", Namespace: previewNs}, &dep)).To(Succeed())
+			firstGeneration := dep.Generation
+
+			_, err = reconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "stable-webapp", Namespace: previewNs}, &dep)).To(Succeed())
+			Expect(dep.Generation).To(Equal(firstGeneration))
+		})
 	})
 
 	Context("preview env var inheritance from source environment", func() {
@@ -359,7 +395,7 @@ var _ = Describe("PreviewEnvironment Controller", func() {
 			Expect(envMap).To(HaveKeyWithValue("LOG_LEVEL", "info"))
 		})
 
-		It("should inherit shared-env from source environment namespace", func() {
+		It("should inherit shared vars from the control-namespace source of truth", func() {
 			ctx := context.Background()
 			project, ns := createPreviewTestProject(ctx, true)
 
@@ -367,13 +403,8 @@ var _ = Describe("PreviewEnvironment Controller", func() {
 				Name: "staging",
 			})
 
-			// Seed shared-env in the source env namespace.
-			sourceEnvNs := constants.EnvNamespace(project.Name, "staging")
-			sourceNs := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: sourceEnvNs}}
-			Expect(k8sClient.Create(ctx, sourceNs)).To(Succeed())
-
 			store := &envstore.Store{Client: k8sClient}
-			Expect(store.SetShared(ctx, sourceEnvNs, []envstore.Env{
+			Expect(store.SetSharedSource(ctx, ns, []envstore.Env{
 				{Name: "SENTRY_DSN", Value: "https://sentry.io/123", Source: "shared"},
 				{Name: "FEATURE_FLAG", Value: "true", Source: "shared"},
 			}, nil)).To(Succeed())

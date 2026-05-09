@@ -884,6 +884,9 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 	secretVols, secretMounts := toSecretVolumesAndMounts(env.SecretMounts)
 	volumes = append(volumes, secretVols...)
 	mounts = append(mounts, secretMounts...)
+	if len(volumes) == 0 {
+		volumes = nil
+	}
 
 	if len(mounts) > 0 {
 		containers[0].VolumeMounts = mounts
@@ -956,6 +959,13 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 	return envstore.UpdateWithConflictRetry(ctx, r.Client, types.NamespacedName{Name: name, Namespace: envNs}, func() *appsv1.Deployment {
 		return &appsv1.Deployment{}
 	}, func(existing *appsv1.Deployment) (bool, error) {
+		desiredAnnotations := mergeAnnotations(nil, desired.Annotations)
+		for k, v := range existing.Annotations {
+			if strings.HasPrefix(k, "deployment.kubernetes.io/") {
+				desiredAnnotations = mergeAnnotations(desiredAnnotations, map[string]string{k: v})
+			}
+		}
+
 		// Re-derive desired annotations from the (possibly re-fetched) existing
 		// Deployment so stale values from a prior iteration don't persist.
 		desiredPodAnnotations := mergeAnnotations(nil, desired.Spec.Template.Annotations)
@@ -1018,19 +1028,24 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 		if existing.Spec.Replicas == nil || *existing.Spec.Replicas != *desired.Spec.Replicas {
 			needsUpdate = true
 		}
-		if !equality.Semantic.DeepEqual(existing.Spec.Template.ObjectMeta.Annotations, desiredPodAnnotations) {
+		if !annotationsEqual(existing.Spec.Template.ObjectMeta.Annotations, desiredPodAnnotations) {
 			needsUpdate = true
 		}
 		if existing.Spec.ProgressDeadlineSeconds == nil || *existing.Spec.ProgressDeadlineSeconds != *desired.Spec.ProgressDeadlineSeconds {
 			needsUpdate = true
 		}
-		if !equality.Semantic.DeepEqual(existing.Annotations, desired.Annotations) {
+		if !annotationsEqual(existing.Annotations, desiredAnnotations) {
 			needsUpdate = true
 		}
 		if !equality.Semantic.DeepEqual(existing.Spec.Template.ObjectMeta.Labels, desired.Spec.Template.ObjectMeta.Labels) {
 			needsUpdate = true
 		}
-		if existing.Spec.Template.Spec.SecurityContext != nil || existing.Spec.Template.Spec.Containers[0].SecurityContext != nil {
+		if !securityContextsEqual(
+			existing.Spec.Template.Spec.SecurityContext,
+			desired.Spec.Template.Spec.SecurityContext,
+			existing.Spec.Template.Spec.Containers[0].SecurityContext,
+			desired.Spec.Template.Spec.Containers[0].SecurityContext,
+		) {
 			needsUpdate = true
 		}
 
@@ -1055,7 +1070,7 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 		existing.Spec.Template.Spec.SecurityContext = nil
 		existing.Spec.Template.ObjectMeta.Annotations = desiredPodAnnotations
 		existing.Spec.Template.ObjectMeta.Labels = desired.Spec.Template.ObjectMeta.Labels
-		existing.Annotations = desired.Annotations
+		existing.Annotations = desiredAnnotations
 		return true, nil
 	})
 }
@@ -1088,6 +1103,9 @@ func (r *AppReconciler) reconcileCronJob(ctx context.Context, app *mortisev1alph
 	secretVols, secretMounts := toSecretVolumesAndMounts(env.SecretMounts)
 	volumes = append(volumes, secretVols...)
 	mounts = append(mounts, secretMounts...)
+	if len(volumes) == 0 {
+		volumes = nil
+	}
 
 	if len(mounts) > 0 {
 		containers[0].VolumeMounts = mounts
@@ -1213,7 +1231,7 @@ func (r *AppReconciler) reconcileCronJob(ctx context.Context, app *mortisev1alph
 		if existing.Spec.ConcurrencyPolicy != desired.Spec.ConcurrencyPolicy {
 			needsUpdate = true
 		}
-		if !equality.Semantic.DeepEqual(existing.Spec.JobTemplate.Spec.Template.ObjectMeta.Annotations, desiredPodAnnotations) {
+		if !annotationsEqual(existing.Spec.JobTemplate.Spec.Template.ObjectMeta.Annotations, desiredPodAnnotations) {
 			needsUpdate = true
 		}
 		if !equality.Semantic.DeepEqual(existing.Annotations, desired.Annotations) {
@@ -1222,7 +1240,12 @@ func (r *AppReconciler) reconcileCronJob(ctx context.Context, app *mortisev1alph
 		if !equality.Semantic.DeepEqual(existing.Spec.JobTemplate.Spec.Template.ObjectMeta.Labels, desired.Spec.JobTemplate.Spec.Template.ObjectMeta.Labels) {
 			needsUpdate = true
 		}
-		if existing.Spec.JobTemplate.Spec.Template.Spec.SecurityContext != nil || existing.Spec.JobTemplate.Spec.Template.Spec.Containers[0].SecurityContext != nil {
+		if !securityContextsEqual(
+			existing.Spec.JobTemplate.Spec.Template.Spec.SecurityContext,
+			desired.Spec.JobTemplate.Spec.Template.Spec.SecurityContext,
+			existing.Spec.JobTemplate.Spec.Template.Spec.Containers[0].SecurityContext,
+			desired.Spec.JobTemplate.Spec.Template.Spec.Containers[0].SecurityContext,
+		) {
 			needsUpdate = true
 		}
 
@@ -2942,6 +2965,31 @@ func annotationsEqual(a, b map[string]string) bool {
 		}
 	}
 	return true
+}
+
+func normalizePodSecurityContext(sc *corev1.PodSecurityContext) *corev1.PodSecurityContext {
+	if sc == nil {
+		return nil
+	}
+	if equality.Semantic.DeepEqual(*sc, corev1.PodSecurityContext{}) {
+		return nil
+	}
+	return sc
+}
+
+func normalizeContainerSecurityContext(sc *corev1.SecurityContext) *corev1.SecurityContext {
+	if sc == nil {
+		return nil
+	}
+	if equality.Semantic.DeepEqual(*sc, corev1.SecurityContext{}) {
+		return nil
+	}
+	return sc
+}
+
+func securityContextsEqual(podA, podB *corev1.PodSecurityContext, containerA, containerB *corev1.SecurityContext) bool {
+	return equality.Semantic.DeepEqual(normalizePodSecurityContext(podA), normalizePodSecurityContext(podB)) &&
+		equality.Semantic.DeepEqual(normalizeContainerSecurityContext(containerA), normalizeContainerSecurityContext(containerB))
 }
 
 func (r *AppReconciler) effectiveResources(ctx context.Context, env *mortisev1alpha1.Environment) mortisev1alpha1.ResourceRequirements {
