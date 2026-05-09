@@ -61,7 +61,7 @@ func (s *Server) Deploy(w http.ResponseWriter, r *http.Request) {
 
 	// Check auth: JWT principal (policy-checked) or deploy token (inline check).
 	if p := PrincipalFromContext(r.Context()); p != nil {
-		if !s.authorize(w, r, authz.Resource{Kind: "app", Namespace: ns, Project: projectName}, authz.ActionUpdate) {
+		if !s.authorize(w, r, authz.Resource{Kind: "app", Namespace: ns, Project: projectName, Environment: req.Environment}, authz.ActionUpdate) {
 			return
 		}
 	} else {
