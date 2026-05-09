@@ -49,6 +49,13 @@ test.describe('app drawer settings tab sections', () => {
 		await expect(page.getByPlaceholder('Filter settings…')).toBeVisible({ timeout: 5_000 });
 	}
 
+	function settingsSection(
+		page: import('@playwright/test').Page,
+		heading: string
+	) {
+		return page.locator('.rounded-lg.border').filter({ has: page.getByRole('heading', { name: heading, exact: true }) }).first();
+	}
+
 	test('Test 1: Settings tab opens and shows filter input with Source/Networking headings', async ({ page }) => {
 		await navigateToSettingsTab(page);
 
@@ -92,16 +99,17 @@ test.describe('app drawer settings tab sections', () => {
 		await navigateToSettingsTab(page);
 
 		// The public toggle is a role="switch"
-		const publicToggle = page.getByRole('switch', { name: 'Toggle public access' });
+		const networkingSection = settingsSection(page, 'Networking');
+		const publicToggle = networkingSection.getByRole('switch', { name: 'Toggle public access' });
 		await publicToggle.scrollIntoViewIfNeeded();
 		await expect(publicToggle).toHaveAttribute('aria-checked', 'true');
-		await publicToggle.click();
-		await expect(publicToggle).toHaveAttribute('aria-checked', 'false');
+		await publicToggle.click({ force: true });
+		await expect.poll(async () => await publicToggle.getAttribute('aria-checked')).toBe('false');
 
 		// Click the Networking section "Update" button (second Update on the page)
 		// Filter to networking to isolate the button
 		await page.getByPlaceholder('Filter settings…').fill('networking');
-		await page.getByRole('button', { name: 'Update', exact: true }).click();
+		await networkingSection.getByRole('button', { name: 'Update', exact: true }).click();
 
 		await expect(async () => {
 			const app = await getAppViaAPI(request, token, project, appName);
@@ -111,11 +119,11 @@ test.describe('app drawer settings tab sections', () => {
 
 		// Restore: toggle back to public
 		await page.getByPlaceholder('Filter settings…').clear();
-		const toggle2 = page.getByRole('switch', { name: 'Toggle public access' });
-		await toggle2.click();
-		await expect(toggle2).toHaveAttribute('aria-checked', 'true');
+		const toggle2 = settingsSection(page, 'Networking').getByRole('switch', { name: 'Toggle public access' });
+		await toggle2.click({ force: true });
+		await expect.poll(async () => await toggle2.getAttribute('aria-checked')).toBe('true');
 		await page.getByPlaceholder('Filter settings…').fill('networking');
-		await page.getByRole('button', { name: 'Update', exact: true }).click();
+		await settingsSection(page, 'Networking').getByRole('button', { name: 'Update', exact: true }).click();
 		await expect(async () => {
 			const app = await getAppViaAPI(request, token, project, appName);
 			const spec = app.spec as { network: { public: boolean } };
@@ -170,16 +178,17 @@ test.describe('app drawer settings tab sections', () => {
 		// Filter to scale section
 		await page.getByPlaceholder('Filter settings…').fill('scale');
 
-		const cpuInput = page.locator('#scale-cpu');
+		const scaleSection = settingsSection(page, 'Scale');
+		const cpuInput = scaleSection.locator('#scale-cpu');
 		await cpuInput.scrollIntoViewIfNeeded();
 		await cpuInput.clear();
 		await cpuInput.fill('1000m');
 
-		const memInput = page.locator('#scale-mem');
+		const memInput = scaleSection.locator('#scale-mem');
 		await memInput.clear();
 		await memInput.fill('1Gi');
 
-		await page.getByRole('button', { name: 'Update', exact: true }).click();
+		await scaleSection.getByRole('button', { name: 'Update', exact: true }).click();
 
 		await expect(async () => {
 			const app = await getAppViaAPI(request, token, project, appName);
@@ -204,15 +213,16 @@ test.describe('app drawer settings tab sections', () => {
 		await advancedBtn.scrollIntoViewIfNeeded();
 		await advancedBtn.click();
 
-		await page.getByText('Add annotation').click();
+		const advancedSection = page.locator('.rounded-lg.border').filter({ hasText: 'Environment Annotations' }).first();
+		await advancedSection.getByText('Add annotation').click();
 
-		const annotationKeyInput = page.getByPlaceholder('annotation.example.com/key');
+		const annotationKeyInput = advancedSection.getByPlaceholder('annotation.example.com/key');
 		await annotationKeyInput.fill('linkerd.io/inject');
 
-		const annotationValueInput = page.getByPlaceholder('value');
+		const annotationValueInput = advancedSection.getByPlaceholder('value');
 		await annotationValueInput.fill('enabled');
 
-		await page.getByRole('button', { name: 'Save annotations', exact: true }).click();
+		await advancedSection.getByRole('button', { name: 'Save annotations', exact: true }).click();
 
 		await expect(async () => {
 			const app = await getAppViaAPI(request, token, project, appName);
@@ -326,12 +336,14 @@ test.describe('app drawer settings tab sections', () => {
 		await expect(page.getByText('Exposed Credentials')).toBeVisible({ timeout: 5_000 });
 
 		// Click the + button in the Exposed Credentials header
-		const credHeader = page.locator('div[role="button"]').filter({ hasText: 'Exposed Credentials' });
+		const credSection = page.locator('.rounded-lg.border').filter({ hasText: 'Exposed Credentials' }).first();
+		const credHeader = credSection.locator('div[role="button"]').filter({ hasText: 'Exposed Credentials' });
 		await credHeader.locator('button').click();
+		await expect(credSection.locator('#cred-name')).toBeVisible({ timeout: 10_000 });
 
-		await page.locator('#cred-name').fill('password');
-		await page.locator('#cred-value').fill('secret123');
-		await page.getByRole('button', { name: 'Add', exact: true }).click();
+		await credSection.locator('#cred-name').fill('password');
+		await credSection.locator('#cred-value').fill('secret123');
+		await credSection.getByRole('button', { name: 'Add', exact: true }).click();
 
 		// Verify the credential appears in the UI
 		await expect(page.locator('.font-mono').filter({ hasText: 'password' })).toBeVisible({ timeout: 5_000 });

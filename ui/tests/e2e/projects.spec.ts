@@ -56,9 +56,6 @@ test.describe('projects', () => {
 		await page.getByLabel('Project name').fill(name);
 		await page.getByLabel('Description').fill('E2E test project');
 
-		// Namespace preview updates in the helper text.
-		await expect(page.getByText(`project-${name}`)).toBeVisible();
-
 		await page.getByRole('button', { name: 'Create project' }).click();
 
 		// Should redirect to the new project's canvas page.

@@ -242,6 +242,29 @@ export async function getAppViaAPI(
 	return (await res.json()) as Record<string, unknown>;
 }
 
+/** Wait until an app status publishes a currentImage for at least one env. */
+export async function waitForAppCurrentImage(
+	request: APIRequestContext,
+	token: string,
+	project: string,
+	appName: string,
+	timeoutMs = 90_000
+): Promise<void> {
+	const deadline = Date.now() + timeoutMs;
+	while (Date.now() < deadline) {
+		const app = await getAppViaAPI(request, token, project, appName);
+		const status = app.status as
+			| { environments?: Array<{ currentImage?: string; deployHistory?: Array<unknown> }> }
+			| undefined;
+		const envs = status?.environments ?? [];
+		if (envs.some((env) => !!env.currentImage)) {
+			return;
+		}
+		await new Promise((r) => setTimeout(r, 500));
+	}
+	throw new Error(`app ${appName}: currentImage not populated after ${timeoutMs}ms`);
+}
+
 /** Fetch env vars for an app's environment. Returns [{name, value}, ...]. */
 export async function getEnvViaAPI(
 	request: APIRequestContext,
