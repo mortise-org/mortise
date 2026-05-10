@@ -246,6 +246,26 @@ func (s *Server) UpdateMember(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
+	if member.Spec.Role == mortisev1alpha1.ProjectRoleOwner && mortisev1alpha1.ProjectRole(req.Role) != mortisev1alpha1.ProjectRoleOwner {
+		var allMembers mortisev1alpha1.ProjectMemberList
+		if err := s.client.List(r.Context(), &allMembers,
+			client.InNamespace(ns),
+			client.MatchingLabels{"mortise.dev/member": "true"},
+		); err != nil {
+			writeError(w, r, err)
+			return
+		}
+		ownerCount := 0
+		for _, m := range allMembers.Items {
+			if m.Spec.Role == mortisev1alpha1.ProjectRoleOwner {
+				ownerCount++
+			}
+		}
+		if ownerCount <= 1 {
+			writeJSON(w, http.StatusBadRequest, errorResponse{"cannot demote the last owner of a project"})
+			return
+		}
+	}
 
 	member.Spec.Role = mortisev1alpha1.ProjectRole(req.Role)
 	if err := s.client.Update(r.Context(), &member); err != nil {
