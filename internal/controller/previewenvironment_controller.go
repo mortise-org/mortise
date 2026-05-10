@@ -34,10 +34,13 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/clock"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
@@ -52,6 +55,7 @@ import (
 
 const previewBuildTimeout = 30 * time.Minute
 const previewBuildPollInterval = 15 * time.Second
+const appEnvUpdatedAnnotation = "mortise.dev/env-updated"
 
 // previewFinalizer gates PreviewEnvironment deletion so we can garbage-collect
 // resources in the per-PR namespace (`pj-{project}-pr-{num}`). Owner
@@ -715,11 +719,51 @@ func (r *PreviewEnvironmentReconciler) SetupWithManager(mgr ctrl.Manager) error 
 			Namespace: constants.ControlNamespace(projectName),
 		}}}
 	})
+	enqueuePEFromApp := handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []reconcile.Request {
+		app, ok := obj.(*mortisev1alpha1.App)
+		if !ok {
+			return nil
+		}
+		var previews mortisev1alpha1.PreviewEnvironmentList
+		if err := r.List(ctx, &previews, client.InNamespace(app.Namespace)); err != nil {
+			return nil
+		}
+		requests := make([]reconcile.Request, 0, len(previews.Items))
+		for i := range previews.Items {
+			if previews.Items[i].Spec.AppRef != app.Name {
+				continue
+			}
+			requests = append(requests, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      previews.Items[i].Name,
+					Namespace: previews.Items[i].Namespace,
+				},
+			})
+		}
+		return requests
+	})
+	appPreviewRefreshPredicate := predicate.Funcs{
+		CreateFunc:  func(event.CreateEvent) bool { return false },
+		DeleteFunc:  func(event.DeleteEvent) bool { return false },
+		GenericFunc: func(event.GenericEvent) bool { return false },
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			oldApp, okOld := e.ObjectOld.(*mortisev1alpha1.App)
+			newApp, okNew := e.ObjectNew.(*mortisev1alpha1.App)
+			if !okOld || !okNew {
+				return false
+			}
+			if oldApp.Generation != newApp.Generation {
+				return true
+			}
+			return oldApp.Annotations[appEnvUpdatedAnnotation] != newApp.Annotations[appEnvUpdatedAnnotation]
+		},
+	}
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&mortisev1alpha1.PreviewEnvironment{}).
 		Watches(&appsv1.Deployment{}, enqueuePEFromManagedResource).
 		Watches(&corev1.Service{}, enqueuePEFromManagedResource).
 		Watches(&networkingv1.Ingress{}, enqueuePEFromManagedResource).
+		Watches(&mortisev1alpha1.App{}, enqueuePEFromApp, builder.WithPredicates(appPreviewRefreshPredicate)).
 		Named("previewenvironment").
 		Complete(r)
 }

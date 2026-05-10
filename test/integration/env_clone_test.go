@@ -42,7 +42,6 @@ func TestPreviewEnvironmentInheritsSourceEnvVars(t *testing.T) {
 
 	envName := app.Spec.Environments[0].Name
 	envNs := constants.EnvNamespace(projectName, envName)
-
 	helpers.WaitForAppReady(t, k8sClient, ns, app.Name, 5*time.Minute)
 
 	// Seed per-app env vars in the source environment.
@@ -174,6 +173,137 @@ func TestPreviewEnvironmentInheritsSourceEnvVars(t *testing.T) {
 	if got := string(sharedSecret.Data["SENTRY_DSN"]); got != "https://sentry.io/123" {
 		t.Errorf("SENTRY_DSN in shared-env: got %q, want %q", got, "https://sentry.io/123")
 	}
+}
+
+func TestPreviewEnvironmentRefreshesAfterEnvAPIUpdate(t *testing.T) {
+	t.Parallel()
+	projectName := "prev-refresh-" + randSuffix()
+	ns := createProjectForTest(t, projectName)
+
+	app := helpers.LoadFixture(t, filepath.Join(fixturesDir(), "image-basic.yaml"))
+	app.Namespace = ns
+	app.Name = "refresh-app-" + randSuffix()
+
+	if err := k8sClient.Create(context.Background(), app); err != nil {
+		t.Fatalf("create App: %v", err)
+	}
+
+	envName := app.Spec.Environments[0].Name
+	envNs := constants.EnvNamespace(projectName, envName)
+	gpName := "preview-gp-" + randSuffix()
+
+	gp := &mortisev1alpha1.GitProvider{
+		ObjectMeta: metav1.ObjectMeta{Name: gpName},
+		Spec: mortisev1alpha1.GitProviderSpec{
+			Type: mortisev1alpha1.GitProviderTypeGitHub,
+			Host: "https://github.example.com",
+		},
+	}
+	if err := k8sClient.Create(context.Background(), gp); err != nil {
+		t.Fatalf("create GitProvider: %v", err)
+	}
+	t.Cleanup(func() { _ = k8sClient.Delete(context.Background(), gp) })
+
+	helpers.WaitForAppReady(t, k8sClient, ns, app.Name, 5*time.Minute)
+
+	store := &envstore.Store{Client: k8sClient}
+	if err := store.Merge(context.Background(), envNs, app.Name, []envstore.Env{
+		{Name: "LOG_LEVEL", Value: "info", Source: "user"},
+	}, nil); err != nil {
+		t.Fatalf("seed env vars: %v", err)
+	}
+
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var latest mortisev1alpha1.App
+		if err := k8sClient.Get(context.Background(), types.NamespacedName{
+			Namespace: ns, Name: app.Name,
+		}, &latest); err != nil {
+			return err
+		}
+		latest.Spec.Source.Type = mortisev1alpha1.SourceTypeGit
+		latest.Spec.Source.Repo = "http://fake/repo.git"
+		latest.Spec.Source.Branch = "main"
+		latest.Spec.Source.ProviderRef = gpName
+		return k8sClient.Update(context.Background(), &latest)
+	})
+	if err != nil {
+		t.Fatalf("patch app source type: %v", err)
+	}
+
+	enableProjectPreview(t, projectName, &mortisev1alpha1.PreviewConfig{
+		Enabled: true,
+		Domain:  "pr-{number}-{app}.test.local",
+		TTL:     "1h",
+	})
+
+	pe := &mortisev1alpha1.PreviewEnvironment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      app.Name + "-pr-101",
+			Namespace: ns,
+		},
+		Spec: mortisev1alpha1.PreviewEnvironmentSpec{
+			AppRef:    app.Name,
+			SourceEnv: envName,
+			PullRequest: mortisev1alpha1.PullRequestRef{
+				Number: 101,
+				Branch: "feat-refresh",
+				SHA:    "abc123refresh",
+			},
+			Domain: "pr-101-" + app.Name + ".test.local",
+			TTL:    metav1.Duration{Duration: 1 * time.Hour},
+		},
+	}
+	pe.SetGroupVersionKind(mortisev1alpha1.GroupVersion.WithKind("PreviewEnvironment"))
+	if err := k8sClient.Create(context.Background(), pe); err != nil {
+		t.Fatalf("create PreviewEnvironment: %v", err)
+	}
+	err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var latest mortisev1alpha1.PreviewEnvironment
+		if err := k8sClient.Get(context.Background(), types.NamespacedName{
+			Namespace: ns, Name: pe.Name,
+		}, &latest); err != nil {
+			return err
+		}
+		latest.Status.Image = "registry.example.com/mortise/refresh:pr-101-abc123r"
+		latest.Status.Phase = mortisev1alpha1.PreviewPhaseReady
+		return k8sClient.Status().Update(context.Background(), &latest)
+	})
+	if err != nil {
+		t.Fatalf("update PreviewEnvironment status: %v", err)
+	}
+	t.Cleanup(func() { _ = k8sClient.Delete(context.Background(), pe) })
+
+	previewNs := constants.PreviewNamespace(projectName, 101)
+	helpers.RequireEventually(t, 2*time.Minute, func() bool {
+		var envSecret corev1.Secret
+		if err := k8sClient.Get(context.Background(), types.NamespacedName{
+			Name: app.Name + "-env", Namespace: previewNs,
+		}, &envSecret); err != nil {
+			return false
+		}
+		return string(envSecret.Data["LOG_LEVEL"]) == "info"
+	})
+
+	mortisePort := helpers.PortForward(t, "mortise-system", "mortise", 80)
+	mortiseURL := fmt.Sprintf("http://127.0.0.1:%d", mortisePort)
+	token := helpers.LoginAsAdmin(t, mortiseURL, "admin-integ@example.invalid", "integ-admin-pw-01")
+
+	envResp := doJSON(t, http.MethodPut, fmt.Sprintf("%s/api/projects/%s/apps/%s/env?env=%s", mortiseURL, projectName, app.Name, envName), token, []map[string]string{
+		{"name": "LOG_LEVEL", "value": "debug"},
+	})
+	if envResp.StatusCode != http.StatusOK {
+		t.Fatalf("put env: expected 200, got %d: %s", envResp.StatusCode, envResp.Body)
+	}
+
+	helpers.RequireEventually(t, 2*time.Minute, func() bool {
+		var envSecret corev1.Secret
+		if err := k8sClient.Get(context.Background(), types.NamespacedName{
+			Name: app.Name + "-env", Namespace: previewNs,
+		}, &envSecret); err != nil {
+			return false
+		}
+		return string(envSecret.Data["LOG_LEVEL"]) == "debug"
+	})
 }
 
 // TestEnvironmentCloneCreatesEnvWithConfig creates a project with production
