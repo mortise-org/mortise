@@ -47,6 +47,7 @@ import (
 
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
 	"github.com/mortise-org/mortise/internal/build"
+	"github.com/mortise-org/mortise/internal/constants"
 	"github.com/mortise-org/mortise/internal/envstore"
 	"github.com/mortise-org/mortise/internal/git"
 	"github.com/mortise-org/mortise/internal/ingress"
@@ -336,6 +337,31 @@ var _ = Describe("App Controller", func() {
 			}, &dep)).To(Succeed())
 			Expect(dep.ResourceVersion).To(Equal(rvBefore))
 			Expect(dep.Spec.Template.Spec.Volumes).To(BeNil())
+		})
+
+		It("collects Mortise-managed pull secrets during finalizer GC", func() {
+			secret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      appName + "-pull-secret",
+					Namespace: envNsProduction,
+					Labels: map[string]string{
+						constants.AppNameLabel:         appName,
+						constants.ProjectLabel:         "default-project",
+						constants.EnvironmentLabel:     "production",
+						"app.kubernetes.io/managed-by": "mortise",
+					},
+				},
+				Type: corev1.SecretTypeDockerConfigJson,
+				Data: map[string][]byte{".dockerconfigjson": []byte(`{"auths":{"ghcr.io":{"username":"octo","password":"pw"}}}`)},
+			}
+			Expect(k8sClient.Create(ctx, secret)).To(Succeed())
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			Expect(reconciler.gcAppAcrossEnvs(ctx, app)).To(Succeed())
+
+			var got corev1.Secret
+			err := k8sClient.Get(ctx, types.NamespacedName{Name: secret.Name, Namespace: envNsProduction}, &got)
+			Expect(kerrors.IsNotFound(err)).To(BeTrue(), "expected pull secret to be deleted, got %v", err)
 		})
 
 		It("should create an Ingress with TLS for the domain", func() {
