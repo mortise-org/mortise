@@ -94,6 +94,28 @@ func newAppProxyManager() *appProxyManager {
 	return &appProxyManager{proxies: make(map[string]*appProxyEntry)}
 }
 
+func (s *Server) resolveProxyEnvironment(w http.ResponseWriter, r *http.Request) (*mortisev1alpha1.Project, string, bool) {
+	project, ok := s.getProject(w, r)
+	if !ok {
+		return nil, "", false
+	}
+	env := queryEnv(r)
+	if env == "" {
+		if len(project.Spec.Environments) == 0 {
+			writeJSON(w, http.StatusBadRequest, errorResponse{fmt.Sprintf("project %q has no environments", project.Name)})
+			return nil, "", false
+		}
+		env = project.Spec.Environments[0].Name
+	}
+	if indexOfEnv(project, env) < 0 {
+		writeJSON(w, http.StatusBadRequest, errorResponse{fmt.Sprintf(
+			"environment %q is not declared on project %q — add it via POST /api/projects/%s/environments first",
+			env, project.Name, project.Name)})
+		return nil, "", false
+	}
+	return project, env, true
+}
+
 // handleConnect starts a reverse proxy listener for an app on an auto-allocated
 // port and returns the URL. If already running, returns the existing URL.
 // Both the CLI and UI call this same endpoint.
@@ -118,14 +140,14 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log := logf.FromContext(r.Context())
-	ns, projectName, ok := s.resolveProject(w, r)
+	project, env, ok := s.resolveProxyEnvironment(w, r)
 	if !ok {
 		return
 	}
 	appName := chi.URLParam(r, "app")
-	env := envFromQuery(r)
-	envNs := constants.EnvNamespace(projectName, env)
-	key := proxyKey(projectName, appName, env)
+	ns := projectNs(project)
+	envNs := constants.EnvNamespace(project.Name, env)
+	key := proxyKey(project.Name, appName, env)
 
 	// If already proxying, return the existing URL.
 	s.proxies.mu.Lock()
@@ -214,9 +236,12 @@ func (s *Server) handleDisconnect(w http.ResponseWriter, r *http.Request) {
 	if !s.authorize(w, r, authz.Resource{Kind: "app", Project: projectName}, authz.ActionRead) {
 		return
 	}
+	project, env, ok := s.resolveProxyEnvironment(w, r)
+	if !ok {
+		return
+	}
 	appName := chi.URLParam(r, "app")
-	env := envFromQuery(r)
-	key := proxyKey(projectName, appName, env)
+	key := proxyKey(project.Name, appName, env)
 
 	s.proxies.mu.Lock()
 	entry, exists := s.proxies.proxies[key]
