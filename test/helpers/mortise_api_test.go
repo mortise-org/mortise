@@ -63,3 +63,29 @@ func TestLoginAsAdminFallsBackToLoginAfterSetupConflict(t *testing.T) {
 		t.Fatalf("expected one login attempt after setup conflict, got %d", got)
 	}
 }
+
+func TestLoginAsAdminTreatsSetupAsBestEffort(t *testing.T) {
+	var loginCalls atomic.Int32
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/auth/setup":
+			http.Error(w, `{"error":"transient setup failure"}`, http.StatusInternalServerError)
+		case "/api/auth/login":
+			loginCalls.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"token": "login-token"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	token := LoginAsAdmin(t, srv.URL, "admin@example.com", "password123")
+	if token != "login-token" {
+		t.Fatalf("expected login token, got %q", token)
+	}
+	if got := loginCalls.Load(); got != 1 {
+		t.Fatalf("expected one login attempt after setup failure, got %d", got)
+	}
+}

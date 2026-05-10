@@ -51,12 +51,7 @@ func LoginAsAdmin(t *testing.T, baseURL, email, password string) string {
 			}
 			return
 		}
-		if setupResp.StatusCode == http.StatusConflict {
-			return
-		}
-		b, _ := io.ReadAll(setupResp.Body)
-		t.Fatalf("mortise: POST /api/auth/setup status %d: %s",
-			setupResp.StatusCode, string(b))
+		_, _ = io.Copy(io.Discard, setupResp.Body)
 	}()
 	if setupAuth.Token != "" {
 		return setupAuth.Token
