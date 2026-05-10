@@ -164,6 +164,10 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, errorResponse{"app not found"})
 		return
 	}
+	if !appParticipatesInEnv(&app, env) {
+		writeJSON(w, http.StatusNotFound, errorResponse{fmt.Sprintf("app %q is not enabled in environment %q", app.Name, env)})
+		return
+	}
 
 	port := app.Spec.Network.Port
 	if port == 0 {

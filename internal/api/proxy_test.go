@@ -120,6 +120,23 @@ func TestHandleConnectRejectsUndeclaredEnvironment(t *testing.T) {
 	}
 }
 
+func TestHandleConnectRejectsDisabledAppEnvironment(t *testing.T) {
+	disabled := false
+	app := seedProxyApp("default", "web")
+	app.Spec.Environments = []mortisev1alpha1.Environment{{Name: "staging", Enabled: &disabled}}
+	srv := newProxyTestServer(t, seedProxyProject("default", "staging", "production"), app)
+
+	w := httptest.NewRecorder()
+	srv.handleConnect(w, proxyRequest(http.MethodPost, "/api/projects/default/apps/web/connect?env=staging", "default", "web"))
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", w.Code, w.Body.String())
+	}
+	if len(srv.proxies.proxies) != 0 {
+		t.Fatalf("expected no proxy to be created, got %#v", srv.proxies.proxies)
+	}
+}
+
 func TestHandleDisconnectRejectsUndeclaredEnvironment(t *testing.T) {
 	srv := newProxyTestServer(t, seedProxyProject("default", "production"))
 
