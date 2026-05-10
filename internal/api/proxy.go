@@ -21,6 +21,8 @@ import (
 	"github.com/mortise-org/mortise/internal/constants"
 )
 
+var proxyListen = net.Listen
+
 type retryTransport struct {
 	base     http.RoundTripper
 	retries  int
@@ -127,18 +129,17 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	envNs := constants.EnvNamespace(projectName, env)
 	key := proxyKey(projectName, appName, env)
 
-	// If already proxying, return the existing URL.
 	s.proxies.mu.Lock()
 	if entry, exists := s.proxies.proxies[key]; exists {
 		s.proxies.mu.Unlock()
 		writeJSON(w, http.StatusOK, entry)
 		return
 	}
-	s.proxies.mu.Unlock()
 
 	// Resolve app CRD (control ns) to get the port.
 	var app mortisev1alpha1.App
 	if err := s.client.Get(r.Context(), types.NamespacedName{Name: appName, Namespace: ns}, &app); err != nil {
+		s.proxies.mu.Unlock()
 		writeJSON(w, http.StatusNotFound, errorResponse{"app not found"})
 		return
 	}
@@ -151,13 +152,15 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	target := fmt.Sprintf("http://%s.%s.svc:%d", appName, envNs, port)
 	targetURL, err := url.Parse(target)
 	if err != nil {
+		s.proxies.mu.Unlock()
 		writeJSON(w, http.StatusInternalServerError, errorResponse{"invalid proxy target"})
 		return
 	}
 
 	// Allocate a random port and start listening.
-	listener, err := net.Listen("tcp", proxyBindAddress+":0")
+	listener, err := proxyListen("tcp", proxyBindAddress+":0")
 	if err != nil {
+		s.proxies.mu.Unlock()
 		writeJSON(w, http.StatusInternalServerError, errorResponse{"failed to allocate port: " + err.Error()})
 		return
 	}
@@ -188,7 +191,6 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		listener: listener,
 	}
 
-	s.proxies.mu.Lock()
 	s.proxies.proxies[key] = entry
 	s.proxies.mu.Unlock()
 
