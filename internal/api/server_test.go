@@ -525,11 +525,178 @@ func TestDeploy(t *testing.T) {
 	}
 }
 
+func TestDeployEnvironmentUpdatesOnlyTargetOverride(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+	seedProject(t, k8sClient, "default", "staging", "production")
+
+	doRequest(h, http.MethodPost, "/api/projects/default/apps", map[string]any{
+		"name": "deploy-target",
+		"spec": map[string]any{
+			"source": map[string]any{"type": "image", "image": "nginx:1.25.0"},
+			"environments": []map[string]any{
+				{"name": "production", "image": "nginx:1.25.1"},
+			},
+		},
+	})
+
+	w := doRequest(h, http.MethodPost, "/api/projects/default/apps/deploy-target/deploy", map[string]any{
+		"environment": "staging",
+		"image":       "nginx:1.26.0",
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("deploy staging: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var app mortisev1alpha1.App
+	if err := k8sClient.Get(context.Background(), types.NamespacedName{Name: "deploy-target", Namespace: "pj-default"}, &app); err != nil {
+		t.Fatalf("get app after deploy: %v", err)
+	}
+	if app.Spec.Source.Image != "nginx:1.25.0" {
+		t.Fatalf("global image changed unexpectedly: got %s", app.Spec.Source.Image)
+	}
+	var stagingImage, productionImage string
+	for _, env := range app.Spec.Environments {
+		switch env.Name {
+		case "staging":
+			stagingImage = env.Image
+		case "production":
+			productionImage = env.Image
+		}
+	}
+	if stagingImage != "nginx:1.26.0" {
+		t.Fatalf("staging image = %q, want nginx:1.26.0", stagingImage)
+	}
+	if productionImage != "nginx:1.25.1" {
+		t.Fatalf("production image changed unexpectedly: got %q", productionImage)
+	}
+}
+
+func TestDeployRejectsUndeclaredEnvironment(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+	seedProject(t, k8sClient, "default", "production")
+
+	doRequest(h, http.MethodPost, "/api/projects/default/apps", map[string]any{
+		"name": "deploy-target",
+		"spec": map[string]any{
+			"source": map[string]any{"type": "image", "image": "nginx:1.25.0"},
+		},
+	})
+
+	w := doRequest(h, http.MethodPost, "/api/projects/default/apps/deploy-target/deploy", map[string]any{
+		"environment": "staging",
+		"image":       "nginx:1.26.0",
+	})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for undeclared env, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestDeployRestrictedEnvironmentRequiresEnvAwareAuthz(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	seedProject(t, k8sClient, "default", "staging", "production")
+	var project mortisev1alpha1.Project
+	if err := k8sClient.Get(context.Background(), types.NamespacedName{Name: "default"}, &project); err != nil {
+		t.Fatalf("get project: %v", err)
+	}
+	for i := range project.Spec.Environments {
+		if project.Spec.Environments[i].Name == "production" {
+			project.Spec.Environments[i].Restricted = true
+		}
+	}
+	if err := k8sClient.Update(context.Background(), &project); err != nil {
+		t.Fatalf("update project restrictions: %v", err)
+	}
+
+	srv, _ := newTestServerAs(t, k8sClient, auth.RoleMember)
+	h := srv.Handler()
+	seedProjectMember(t, k8sClient, "default", "member@example.com", mortisev1alpha1.ProjectRoleDeveloper)
+
+	doRequest(h, http.MethodPost, "/api/projects/default/apps", map[string]any{
+		"name": "deploy-target",
+		"spec": map[string]any{
+			"source": map[string]any{"type": "image", "image": "nginx:1.25.0"},
+		},
+	})
+
+	w := doRequest(h, http.MethodPost, "/api/projects/default/apps/deploy-target/deploy", map[string]any{
+		"environment": "production",
+		"image":       "nginx:1.26.0",
+	})
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for restricted env deploy, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestDeployWithoutEnvironmentIsForbiddenWhenRestrictedEnvParticipates(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	seedProject(t, k8sClient, "default", "staging", "production")
+	var project mortisev1alpha1.Project
+	if err := k8sClient.Get(context.Background(), types.NamespacedName{Name: "default"}, &project); err != nil {
+		t.Fatalf("get project: %v", err)
+	}
+	for i := range project.Spec.Environments {
+		if project.Spec.Environments[i].Name == "production" {
+			project.Spec.Environments[i].Restricted = true
+		}
+	}
+	if err := k8sClient.Update(context.Background(), &project); err != nil {
+		t.Fatalf("update project restrictions: %v", err)
+	}
+
+	srv, _ := newTestServerAs(t, k8sClient, auth.RoleMember)
+	h := srv.Handler()
+	seedProjectMember(t, k8sClient, "default", "member@example.com", mortisev1alpha1.ProjectRoleDeveloper)
+
+	doRequest(h, http.MethodPost, "/api/projects/default/apps", map[string]any{
+		"name": "deploy-target",
+		"spec": map[string]any{
+			"source": map[string]any{"type": "image", "image": "nginx:1.25.0"},
+		},
+	})
+
+	w := doRequest(h, http.MethodPost, "/api/projects/default/apps/deploy-target/deploy", map[string]any{
+		"image": "nginx:1.26.0",
+	})
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for global deploy touching restricted envs, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestDeployRejectsDisabledAppEnvironment(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+	seedProject(t, k8sClient, "default", "staging", "production")
+	disabled := false
+
+	doRequest(h, http.MethodPost, "/api/projects/default/apps", map[string]any{
+		"name": "deploy-target",
+		"spec": map[string]any{
+			"source": map[string]any{"type": "image", "image": "nginx:1.25.0"},
+			"environments": []map[string]any{
+				{"name": "staging", "enabled": disabled},
+			},
+		},
+	})
+
+	w := doRequest(h, http.MethodPost, "/api/projects/default/apps/deploy-target/deploy", map[string]any{
+		"environment": "staging",
+		"image":       "nginx:1.26.0",
+	})
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for disabled app env, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
 func TestDeployPerEnvironment(t *testing.T) {
 	k8sClient := setupEnvtest(t)
 	srv := newAdminServer(t, k8sClient)
 	h := srv.Handler()
-	seedProject(t, k8sClient, "default")
+	seedProject(t, k8sClient, "default", "staging", "production")
 
 	doRequest(h, http.MethodPost, "/api/projects/default/apps", map[string]any{
 		"name": "env-deploy-target",
