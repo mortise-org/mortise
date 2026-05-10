@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
@@ -263,7 +264,15 @@ func (s *Server) GetWebhookSecret(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	v := string(secret.Data[gp.Spec.WebhookSecretRef.Key])
+	raw, ok := secret.Data[gp.Spec.WebhookSecretRef.Key]
+	if !ok {
+		writeJSON(w, http.StatusNotFound, errorResponse{
+			fmt.Sprintf("secret %s/%s does not contain key %q", gp.Spec.WebhookSecretRef.Namespace, gp.Spec.WebhookSecretRef.Name, gp.Spec.WebhookSecretRef.Key),
+		})
+		return
+	}
+
+	v := string(raw)
 	writeJSON(w, http.StatusOK, map[string]string{"webhookSecret": v})
 }
 
