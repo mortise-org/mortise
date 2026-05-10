@@ -6,11 +6,14 @@ import (
 	"net/http"
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
 	"github.com/mortise-org/mortise/internal/auth"
+	"github.com/mortise-org/mortise/internal/constants"
+	"github.com/mortise-org/mortise/internal/envstore"
 )
 
 // TestListProjectEnvironmentsEmptyProject verifies that listing envs on a
@@ -148,9 +151,10 @@ func TestCreateProjectEnvironment(t *testing.T) {
 	k8sClient := setupEnvtest(t)
 	srv := newAdminServer(t, k8sClient)
 	h := srv.Handler()
-	seedProject(t, k8sClient, "demo")
+	const projectName = "demo-create-env"
+	seedProject(t, k8sClient, projectName)
 
-	w := doRequest(h, http.MethodPost, "/api/projects/demo/environments", map[string]any{
+	w := doRequest(h, http.MethodPost, "/api/projects/"+projectName+"/environments", map[string]any{
 		"name":         "staging",
 		"displayOrder": 5,
 	})
@@ -159,7 +163,7 @@ func TestCreateProjectEnvironment(t *testing.T) {
 	}
 
 	var proj mortisev1alpha1.Project
-	if err := k8sClient.Get(context.Background(), types.NamespacedName{Name: "demo"}, &proj); err != nil {
+	if err := k8sClient.Get(context.Background(), types.NamespacedName{Name: projectName}, &proj); err != nil {
 		t.Fatalf("get project: %v", err)
 	}
 	if len(proj.Spec.Environments) != 2 {
@@ -287,6 +291,107 @@ func TestUpdateProjectEnvironmentRename(t *testing.T) {
 	}
 }
 
+func TestUpdateProjectEnvironmentRenamePreservesSecretEnvVars(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+	const projectName = "demo-rename-envvars"
+	ns := seedProject(t, k8sClient, projectName, "production", "staging")
+
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: ns},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: "nginx:1.25.0"},
+			Environments: []mortisev1alpha1.Environment{{
+				Name: "staging",
+				Env:  []mortisev1alpha1.EnvVar{{Name: "LOG_LEVEL", Value: "debug"}},
+			}},
+		},
+	}
+	if err := k8sClient.Create(context.Background(), app); err != nil {
+		t.Fatalf("create app: %v", err)
+	}
+
+	store := &envstore.Store{Client: k8sClient}
+	if err := store.Set(context.Background(), constants.EnvNamespace(projectName, "staging"), "web", []envstore.Env{
+		{Name: "EXTRA_FLAG", Value: "one", Source: "user"},
+		{Name: "BINDING_ONLY", Value: "skip-me", Source: "binding"},
+	}, nil); err != nil {
+		t.Fatalf("seed env secret: %v", err)
+	}
+
+	w := doRequest(h, http.MethodPatch, "/api/projects/"+projectName+"/environments/staging", map[string]any{"name": "stage"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var got mortisev1alpha1.App
+	_ = k8sClient.Get(context.Background(), types.NamespacedName{Namespace: ns, Name: "web"}, &got)
+	if len(got.Spec.Environments) != 1 || got.Spec.Environments[0].Name != "stage" {
+		t.Fatalf("app override not renamed: %+v", got.Spec.Environments)
+	}
+
+	envMap := map[string]string{}
+	for _, ev := range got.Spec.Environments[0].Env {
+		envMap[ev.Name] = ev.Value
+	}
+	if envMap["LOG_LEVEL"] != "debug" {
+		t.Fatalf("expected LOG_LEVEL to be preserved, got %+v", got.Spec.Environments[0].Env)
+	}
+	if envMap["EXTRA_FLAG"] != "one" {
+		t.Fatalf("expected EXTRA_FLAG to be preserved, got %+v", got.Spec.Environments[0].Env)
+	}
+	if _, found := envMap["BINDING_ONLY"]; found {
+		t.Fatalf("expected binding-sourced vars to stay out of CRD env, got %+v", got.Spec.Environments[0].Env)
+	}
+}
+
+func TestUpdateProjectEnvironmentRenamePreservesCustomSecrets(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+	const projectName = "demo-rename-custom-secret"
+	seedProject(t, k8sClient, projectName, "production", "staging")
+	doRequest(h, http.MethodPost, "/api/projects/"+projectName+"/apps", map[string]any{
+		"name": "webapp",
+		"spec": map[string]any{
+			"source": map[string]any{"type": "image", "image": "nginx:1.25.0"},
+		},
+	})
+
+	stagingNs := constants.EnvNamespace(projectName, "staging")
+	if err := k8sClient.Create(context.Background(), &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "db-pass",
+			Namespace: stagingNs,
+			Labels: map[string]string{
+				constants.AppNameLabel:         "webapp",
+				constants.ProjectLabel:         projectName,
+				"app.kubernetes.io/managed-by": "mortise",
+			},
+		},
+		StringData: map[string]string{"PASSWORD": "secret"},
+	}); err != nil {
+		t.Fatalf("seed custom secret: %v", err)
+	}
+
+	w := doRequest(h, http.MethodPatch, "/api/projects/"+projectName+"/environments/staging", map[string]any{"name": "canary"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var copied corev1.Secret
+	if err := k8sClient.Get(context.Background(), types.NamespacedName{
+		Namespace: constants.EnvNamespace(projectName, "canary"),
+		Name:      "db-pass",
+	}, &copied); err != nil {
+		t.Fatalf("get copied custom secret: %v", err)
+	}
+	if string(copied.Data["PASSWORD"]) != "secret" {
+		t.Fatalf("expected copied secret data, got %+v", copied.Data)
+	}
+}
+
 // TestUpdateProjectEnvironmentReorder updates only the displayOrder.
 func TestUpdateProjectEnvironmentReorder(t *testing.T) {
 	k8sClient := setupEnvtest(t)
@@ -353,6 +458,43 @@ func TestDeleteProjectEnvironment(t *testing.T) {
 	}
 }
 
+// TestDeleteProjectEnvironmentRejectsReferencedOverride verifies the REST API
+// enforces the same protection as the optional admission webhook.
+func TestDeleteProjectEnvironmentRejectsReferencedOverride(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+	ns := seedProject(t, k8sClient, "demo", "production", "staging")
+
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: ns},
+		Spec: mortisev1alpha1.AppSpec{
+			Source:       mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: "nginx:1.25.0"},
+			Environments: []mortisev1alpha1.Environment{{Name: "staging", Domain: "web-staging.example.com"}},
+		},
+	}
+	if err := k8sClient.Create(context.Background(), app); err != nil {
+		t.Fatalf("create app: %v", err)
+	}
+
+	w := doRequest(h, http.MethodDelete, "/api/projects/demo/environments/staging", nil)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var proj mortisev1alpha1.Project
+	_ = k8sClient.Get(context.Background(), types.NamespacedName{Name: "demo"}, &proj)
+	if len(proj.Spec.Environments) != 2 {
+		t.Fatalf("expected project envs unchanged, got %+v", proj.Spec.Environments)
+	}
+
+	var got mortisev1alpha1.App
+	_ = k8sClient.Get(context.Background(), types.NamespacedName{Namespace: ns, Name: "web"}, &got)
+	if len(got.Spec.Environments) != 1 || got.Spec.Environments[0].Name != "staging" {
+		t.Fatalf("expected app override unchanged, got %+v", got.Spec.Environments)
+	}
+}
+
 // TestDeleteProjectEnvironmentRejectsLast refuses to delete the only env.
 func TestDeleteProjectEnvironmentRejectsLast(t *testing.T) {
 	k8sClient := setupEnvtest(t)
@@ -409,7 +551,8 @@ func TestCloneProjectEnvironment(t *testing.T) {
 	k8sClient := setupEnvtest(t)
 	srv := newAdminServer(t, k8sClient)
 	h := srv.Handler()
-	ns := seedProject(t, k8sClient, "demo")
+	const projectName = "demo-clone-env"
+	ns := seedProject(t, k8sClient, projectName)
 
 	replicas := int32(3)
 	app := &mortisev1alpha1.App{
@@ -432,7 +575,7 @@ func TestCloneProjectEnvironment(t *testing.T) {
 		t.Fatalf("create app: %v", err)
 	}
 
-	w := doRequest(h, http.MethodPost, "/api/projects/demo/environments/production/clone", map[string]any{
+	w := doRequest(h, http.MethodPost, "/api/projects/"+projectName+"/environments/production/clone", map[string]any{
 		"name":         "staging",
 		"displayOrder": 5,
 	})
@@ -442,7 +585,7 @@ func TestCloneProjectEnvironment(t *testing.T) {
 
 	// Verify project has the new env.
 	var proj mortisev1alpha1.Project
-	if err := k8sClient.Get(context.Background(), types.NamespacedName{Name: "demo"}, &proj); err != nil {
+	if err := k8sClient.Get(context.Background(), types.NamespacedName{Name: projectName}, &proj); err != nil {
 		t.Fatalf("get project: %v", err)
 	}
 	if len(proj.Spec.Environments) != 2 {
@@ -485,13 +628,62 @@ func TestCloneProjectEnvironment(t *testing.T) {
 	}
 }
 
+func TestCloneProjectEnvironmentCopiesCustomSecrets(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+	const projectName = "demo-clone-custom-secret"
+	seedProject(t, k8sClient, projectName)
+	doRequest(h, http.MethodPost, "/api/projects/"+projectName+"/apps", map[string]any{
+		"name": "webapp",
+		"spec": map[string]any{
+			"source": map[string]any{"type": "image", "image": "nginx:1.25.0"},
+		},
+	})
+
+	prodNs := constants.EnvNamespace(projectName, "production")
+	if err := k8sClient.Create(context.Background(), &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "api-key",
+			Namespace: prodNs,
+			Labels: map[string]string{
+				constants.AppNameLabel:         "webapp",
+				constants.ProjectLabel:         projectName,
+				"app.kubernetes.io/managed-by": "mortise",
+			},
+		},
+		StringData: map[string]string{"TOKEN": "abc123"},
+	}); err != nil {
+		t.Fatalf("seed custom secret: %v", err)
+	}
+
+	w := doRequest(h, http.MethodPost, "/api/projects/"+projectName+"/environments/production/clone", map[string]any{
+		"name": "staging",
+	})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var copied corev1.Secret
+	if err := k8sClient.Get(context.Background(), types.NamespacedName{
+		Namespace: constants.EnvNamespace(projectName, "staging"),
+		Name:      "api-key",
+	}, &copied); err != nil {
+		t.Fatalf("get copied custom secret: %v", err)
+	}
+	if string(copied.Data["TOKEN"]) != "abc123" {
+		t.Fatalf("expected copied secret data, got %+v", copied.Data)
+	}
+}
+
 // TestCloneProjectEnvironmentNoSourceOverrides clones when apps have no
 // explicit overrides for the source env — should create an empty env entry.
 func TestCloneProjectEnvironmentNoSourceOverrides(t *testing.T) {
 	k8sClient := setupEnvtest(t)
 	srv := newAdminServer(t, k8sClient)
 	h := srv.Handler()
-	ns := seedProject(t, k8sClient, "demo")
+	const projectName = "demo-clone-empty"
+	ns := seedProject(t, k8sClient, projectName)
 
 	app := &mortisev1alpha1.App{
 		ObjectMeta: metav1.ObjectMeta{Name: "api", Namespace: ns},
@@ -503,7 +695,7 @@ func TestCloneProjectEnvironmentNoSourceOverrides(t *testing.T) {
 		t.Fatalf("create app: %v", err)
 	}
 
-	w := doRequest(h, http.MethodPost, "/api/projects/demo/environments/production/clone", map[string]any{
+	w := doRequest(h, http.MethodPost, "/api/projects/"+projectName+"/environments/production/clone", map[string]any{
 		"name": "staging",
 	})
 	if w.Code != http.StatusCreated {

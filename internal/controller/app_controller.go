@@ -135,6 +135,13 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	// that enumerates them and deletes by label.
 	if !app.DeletionTimestamp.IsZero() {
 		if controllerutil.ContainsFinalizer(&app, appFinalizer) {
+			remainingPreviews, err := r.deleteAppPreviews(ctx, &app)
+			if err != nil {
+				return ctrl.Result{}, fmt.Errorf("delete previews for app: %w", err)
+			}
+			if remainingPreviews {
+				return ctrl.Result{RequeueAfter: time.Second}, nil
+			}
 			if err := r.gcAppAcrossEnvs(ctx, &app); err != nil {
 				return ctrl.Result{}, fmt.Errorf("gc app across envs: %w", err)
 			}

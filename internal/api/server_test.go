@@ -294,7 +294,15 @@ func seedProject(t *testing.T, c client.Client, name string, envs ...string) str
 	}
 
 	nsName := constants.ControlNamespace(name)
-	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: nsName}}
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
+		Name: nsName,
+		Labels: map[string]string{
+			"app.kubernetes.io/managed-by": "mortise",
+			constants.ProjectLabel:         name,
+			"mortise.dev/managed-by":       "project",
+			constants.NamespaceRoleLabel:   constants.NamespaceRoleControl,
+		},
+	}}
 	if err := c.Create(ctx, ns); err != nil && !apierrors.IsAlreadyExists(err) {
 		t.Fatalf("create namespace %q: %v", nsName, err)
 	}
@@ -305,7 +313,16 @@ func seedProject(t *testing.T, c client.Client, name string, envs ...string) str
 	// the control ns. Namespaces leak across tests in envtest (no GC
 	// controller runs to finalize them), so tolerate AlreadyExists.
 	for _, env := range envs {
-		envNs := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: constants.EnvNamespace(name, env)}}
+		envNs := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
+			Name: constants.EnvNamespace(name, env),
+			Labels: map[string]string{
+				"app.kubernetes.io/managed-by": "mortise",
+				constants.ProjectLabel:         name,
+				"mortise.dev/managed-by":       "project",
+				constants.NamespaceRoleLabel:   constants.NamespaceRoleEnv,
+				constants.EnvironmentLabel:     env,
+			},
+		}}
 		if err := c.Create(ctx, envNs); err != nil && !apierrors.IsAlreadyExists(err) {
 			t.Fatalf("create env namespace %q: %v", envNs.Name, err)
 		}
@@ -576,9 +593,19 @@ func TestSecretsCRUD(t *testing.T) {
 	k8sClient := setupEnvtest(t)
 	srv := newAdminServer(t, k8sClient)
 	h := srv.Handler()
-	seedProject(t, k8sClient, "default")
+	const projectName = "default-secrets-crud"
+	seedProject(t, k8sClient, projectName)
+	createApp := doRequest(h, http.MethodPost, "/api/projects/"+projectName+"/apps", map[string]any{
+		"name": "myapp",
+		"spec": map[string]any{
+			"source": map[string]any{"type": "image", "image": "nginx:1.25.0"},
+		},
+	})
+	if createApp.Code != http.StatusCreated {
+		t.Fatalf("create app: expected 201, got %d: %s", createApp.Code, createApp.Body.String())
+	}
 
-	w := doRequest(h, http.MethodPost, "/api/projects/default/apps/myapp/secrets", map[string]any{
+	w := doRequest(h, http.MethodPost, "/api/projects/"+projectName+"/apps/myapp/secrets", map[string]any{
 		"name": "db-creds",
 		"data": map[string]string{"password": "s3cret"},
 	})
@@ -586,7 +613,7 @@ func TestSecretsCRUD(t *testing.T) {
 		t.Fatalf("create secret: expected 201, got %d: %s", w.Code, w.Body.String())
 	}
 
-	w = doRequest(h, http.MethodGet, "/api/projects/default/apps/myapp/secrets", nil)
+	w = doRequest(h, http.MethodGet, "/api/projects/"+projectName+"/apps/myapp/secrets", nil)
 	if w.Code != http.StatusOK {
 		t.Fatalf("list secrets: expected 200, got %d: %s", w.Code, w.Body.String())
 	}
@@ -600,12 +627,12 @@ func TestSecretsCRUD(t *testing.T) {
 		t.Errorf("expected secret name db-creds, got %v", secrets[0]["name"])
 	}
 
-	w = doRequest(h, http.MethodDelete, "/api/projects/default/apps/myapp/secrets/db-creds", nil)
+	w = doRequest(h, http.MethodDelete, "/api/projects/"+projectName+"/apps/myapp/secrets/db-creds", nil)
 	if w.Code != http.StatusOK {
 		t.Fatalf("delete secret: expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 
-	w = doRequest(h, http.MethodGet, "/api/projects/default/apps/myapp/secrets", nil)
+	w = doRequest(h, http.MethodGet, "/api/projects/"+projectName+"/apps/myapp/secrets", nil)
 	_ = json.NewDecoder(w.Body).Decode(&secrets)
 	if len(secrets) != 0 {
 		t.Errorf("expected 0 secrets after delete, got %d", len(secrets))

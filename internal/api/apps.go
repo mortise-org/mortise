@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/go-chi/chi/v5"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -17,6 +18,7 @@ import (
 
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
 	"github.com/mortise-org/mortise/internal/authz"
+	"github.com/mortise-org/mortise/internal/constants"
 )
 
 // normalizeRepoURL expands short-form "owner/repo" strings to a full git URL.
@@ -304,10 +306,12 @@ func (s *Server) UpdateApp(w http.ResponseWriter, r *http.Request) {
 // @Failure 404 {object} errorResponse
 // @Router /projects/{project}/apps/{app} [delete]
 func (s *Server) DeleteApp(w http.ResponseWriter, r *http.Request) {
-	ns, projectName, ok := s.resolveProject(w, r)
+	project, ok := s.getProject(w, r)
 	if !ok {
 		return
 	}
+	ns := projectNs(project)
+	projectName := project.Name
 	if !s.authorize(w, r, authz.Resource{Kind: "app", Namespace: ns, Project: projectName}, authz.ActionDelete) {
 		return
 	}
@@ -315,6 +319,10 @@ func (s *Server) DeleteApp(w http.ResponseWriter, r *http.Request) {
 
 	var app mortisev1alpha1.App
 	if err := s.client.Get(r.Context(), types.NamespacedName{Name: name, Namespace: ns}, &app); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	if err := s.deleteAppManagedSecrets(r.Context(), project, app.Name); err != nil {
 		writeError(w, r, err)
 		return
 	}
@@ -327,6 +335,31 @@ func (s *Server) DeleteApp(w http.ResponseWriter, r *http.Request) {
 	s.recordActivity(r, projectName, "delete", "app", app.Name, "Deleted app "+app.Name, "")
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+func (s *Server) deleteAppManagedSecrets(ctx context.Context, project *mortisev1alpha1.Project, appName string) error {
+	for _, env := range project.Spec.Environments {
+		envNs := constants.EnvNamespace(project.Name, env.Name)
+		var list corev1.SecretList
+		if err := s.client.List(ctx, &list,
+			client.InNamespace(envNs),
+			client.MatchingLabels{
+				constants.AppNameLabel:         appName,
+				"app.kubernetes.io/managed-by": "mortise",
+			},
+		); err != nil {
+			if errors.IsNotFound(err) {
+				continue
+			}
+			return err
+		}
+		for i := range list.Items {
+			if err := s.client.Delete(ctx, &list.Items[i]); err != nil && !errors.IsNotFound(err) {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // writeError maps k8s API errors to HTTP status codes.

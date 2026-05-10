@@ -8,7 +8,9 @@ import (
 	"sort"
 
 	"github.com/go-chi/chi/v5"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -153,7 +155,16 @@ func (s *Server) CreateProjectEnvironment(w http.ResponseWriter, r *http.Request
 		Name:         req.Name,
 		DisplayOrder: req.DisplayOrder,
 	})
+	if err := s.ensureProjectEnvNamespace(r.Context(), project, req.Name, false); err != nil {
+		writeError(w, r, err)
+		return
+	}
 	if err := s.client.Update(r.Context(), project); err != nil {
+		_ = s.deleteProjectEnvNamespace(r.Context(), project, req.Name)
+		writeError(w, r, err)
+		return
+	}
+	if err := s.ensureProjectEnvNamespace(r.Context(), project, req.Name, true); err != nil {
 		writeError(w, r, err)
 		return
 	}
@@ -221,10 +232,19 @@ func (s *Server) UpdateProjectEnvironment(w http.ResponseWriter, r *http.Request
 			writeJSON(w, http.StatusConflict, errorResponse{fmt.Sprintf("environment %q already exists on project %q", *req.Name, project.Name)})
 			return
 		}
+		if err := s.ensureProjectEnvNamespace(r.Context(), project, *req.Name, false); err != nil {
+			writeError(w, r, err)
+			return
+		}
+		if err := s.cloneCustomSecrets(r.Context(), constants.EnvNamespace(project.Name, envName), constants.EnvNamespace(project.Name, *req.Name)); err != nil {
+			writeError(w, r, err)
+			return
+		}
 		// Rename App overrides first so the admission webhook doesn't reject
 		// the project update when its post-state includes an env name that
 		// disappeared from overrides.
-		if err := s.renameAppOverrides(r.Context(), projectNs(project), envName, *req.Name); err != nil {
+		if err := s.renameAppOverrides(r.Context(), projectName, projectNs(project), envName, *req.Name); err != nil {
+			_ = s.deleteProjectEnvNamespace(r.Context(), project, *req.Name)
 			writeError(w, r, err)
 			return
 		}
@@ -248,8 +268,17 @@ func (s *Server) UpdateProjectEnvironment(w http.ResponseWriter, r *http.Request
 	}
 
 	if err := s.client.Update(r.Context(), project); err != nil {
+		if req.Name != nil && *req.Name != envName {
+			_ = s.deleteProjectEnvNamespace(r.Context(), project, *req.Name)
+		}
 		writeError(w, r, err)
 		return
+	}
+	if req.Name != nil && *req.Name != envName {
+		if err := s.ensureProjectEnvNamespace(r.Context(), project, *req.Name, true); err != nil {
+			writeError(w, r, err)
+			return
+		}
 	}
 
 	updated := project.Spec.Environments[idx]
@@ -303,6 +332,17 @@ func (s *Server) DeleteProjectEnvironment(w http.ResponseWriter, r *http.Request
 	}
 	if len(project.Spec.Environments) == 1 {
 		writeJSON(w, http.StatusBadRequest, errorResponse{"cannot delete the last environment on a project — delete the project instead"})
+		return
+	}
+	offenders, err := s.appsReferencingEnv(r.Context(), projectNs(project), envName)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	if len(offenders) > 0 {
+		writeJSON(w, http.StatusConflict, errorResponse{
+			fmt.Sprintf("cannot remove environment %q while App overrides still reference it: %v — remove the entries from spec.environments on those Apps first", envName, offenders),
+		})
 		return
 	}
 
@@ -397,14 +437,27 @@ func (s *Server) CloneProjectEnvironment(w http.ResponseWriter, r *http.Request)
 			Name:         req.Name,
 			DisplayOrder: req.DisplayOrder,
 		})
+		if err := s.ensureProjectEnvNamespace(r.Context(), project, req.Name, false); err != nil {
+			writeError(w, r, err)
+			return
+		}
 		if err := s.client.Update(r.Context(), project); err != nil {
+			_ = s.deleteProjectEnvNamespace(r.Context(), project, req.Name)
 			writeError(w, r, err)
 			return
 		}
 	}
+	if err := s.ensureProjectEnvNamespace(r.Context(), project, req.Name, true); err != nil {
+		writeError(w, r, err)
+		return
+	}
 
 	// Clone env overrides (CRD + Secret-level) from source to target for every App.
 	if err := s.cloneAppOverrides(r.Context(), projectName, projectNs(project), sourceName, req.Name); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	if err := s.cloneCustomSecrets(r.Context(), constants.EnvNamespace(project.Name, sourceName), constants.EnvNamespace(project.Name, req.Name)); err != nil {
 		writeError(w, r, err)
 		return
 	}
@@ -583,28 +636,263 @@ func indexOfEnv(project *mortisev1alpha1.Project, name string) int {
 // any spec.environments[].name == oldName to newName. Called before updating
 // the Project so the admission webhook's "overrides must exist on project"
 // invariant is preserved throughout the transition.
-func (s *Server) renameAppOverrides(ctx context.Context, ns, oldName, newName string) error {
+func (s *Server) renameAppOverrides(ctx context.Context, projectName, ns, oldName, newName string) error {
 	var apps mortisev1alpha1.AppList
 	if err := s.client.List(ctx, &apps, client.InNamespace(ns)); err != nil {
 		return err
 	}
+	store := &envstore.Store{Client: s.client}
+	sourceEnvNs := constants.EnvNamespace(projectName, oldName)
 	for i := range apps.Items {
-		app := &apps.Items[i]
-		changed := false
-		for j := range app.Spec.Environments {
-			if app.Spec.Environments[j].Name == oldName {
-				app.Spec.Environments[j].Name = newName
-				changed = true
-			}
-		}
-		if !changed {
-			continue
-		}
-		if err := s.client.Update(ctx, app); err != nil {
+		if err := s.renameEnvOnApp(ctx, ns, apps.Items[i].Name, oldName, newName, sourceEnvNs, store); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func (s *Server) renameEnvOnApp(ctx context.Context, ns, appName, oldName, newName, sourceEnvNs string, store *envstore.Store) error {
+	secretVars, err := store.Get(ctx, sourceEnvNs, appName)
+	if err != nil {
+		return fmt.Errorf("read source env vars for app %q: %w", appName, err)
+	}
+
+	for attempt := range maxConflictRetries {
+		var app mortisev1alpha1.App
+		if err := s.client.Get(ctx, types.NamespacedName{Namespace: ns, Name: appName}, &app); err != nil {
+			return fmt.Errorf("get app %q: %w", appName, err)
+		}
+
+		overrideIdx := -1
+		for j := range app.Spec.Environments {
+			if app.Spec.Environments[j].Name == oldName {
+				overrideIdx = j
+				break
+			}
+		}
+		if overrideIdx < 0 && len(secretVars) == 0 {
+			return nil
+		}
+
+		envMap := make(map[string]mortisev1alpha1.EnvVar)
+		for _, ev := range secretVars {
+			if ev.Source == "binding" {
+				continue
+			}
+			envMap[ev.Name] = mortisev1alpha1.EnvVar{Name: ev.Name, Value: ev.Value}
+		}
+
+		var renamed mortisev1alpha1.Environment
+		if overrideIdx >= 0 {
+			renamed = app.Spec.Environments[overrideIdx]
+			for _, ev := range renamed.Env {
+				envMap[ev.Name] = ev
+			}
+		} else {
+			renamed = mortisev1alpha1.Environment{}
+		}
+		renamed.Name = newName
+		if len(envMap) > 0 {
+			renamed.Env = make([]mortisev1alpha1.EnvVar, 0, len(envMap))
+			for _, ev := range envMap {
+				renamed.Env = append(renamed.Env, ev)
+			}
+			sort.Slice(renamed.Env, func(a, b int) bool { return renamed.Env[a].Name < renamed.Env[b].Name })
+		}
+
+		if overrideIdx >= 0 {
+			app.Spec.Environments[overrideIdx] = renamed
+		} else {
+			app.Spec.Environments = append(app.Spec.Environments, renamed)
+		}
+
+		updateErr := s.client.Update(ctx, &app)
+		if updateErr == nil {
+			return nil
+		}
+		if !errors.IsConflict(updateErr) || attempt == maxConflictRetries-1 {
+			return fmt.Errorf("rename env override for app %q: %w", appName, updateErr)
+		}
+	}
+	return nil
+}
+
+func (s *Server) appsReferencingEnv(ctx context.Context, ns, envName string) ([]string, error) {
+	var apps mortisev1alpha1.AppList
+	if err := s.client.List(ctx, &apps, client.InNamespace(ns)); err != nil {
+		return nil, err
+	}
+	var offenders []string
+	for i := range apps.Items {
+		app := &apps.Items[i]
+		for _, env := range app.Spec.Environments {
+			if env.Name != envName {
+				continue
+			}
+			offenders = append(offenders, app.Name)
+			break
+		}
+	}
+	sort.Strings(offenders)
+	return offenders, nil
+}
+
+func (s *Server) ensureProjectEnvNamespace(ctx context.Context, project *mortisev1alpha1.Project, envName string, active bool) error {
+	nsName := constants.EnvNamespace(project.Name, envName)
+	labels := map[string]string{
+		"app.kubernetes.io/managed-by": "mortise",
+	}
+	if active {
+		labels[constants.ProjectLabel] = project.Name
+		labels["mortise.dev/managed-by"] = "project"
+		labels[constants.NamespaceRoleLabel] = constants.NamespaceRoleEnv
+		labels[constants.EnvironmentLabel] = envName
+	}
+
+	var existing corev1.Namespace
+	err := s.client.Get(ctx, types.NamespacedName{Name: nsName}, &existing)
+	if errors.IsNotFound(err) {
+		isController := true
+		blockOwnerDeletion := true
+		return s.client.Create(ctx, &corev1.Namespace{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:   nsName,
+				Labels: labels,
+				OwnerReferences: []metav1.OwnerReference{{
+					APIVersion:         mortisev1alpha1.GroupVersion.String(),
+					Kind:               "Project",
+					Name:               project.Name,
+					UID:                project.UID,
+					Controller:         &isController,
+					BlockOwnerDeletion: &blockOwnerDeletion,
+				}},
+			},
+		})
+	}
+	if err != nil {
+		return err
+	}
+
+	ownedByUs := false
+	ownedByOther := ""
+	for _, ref := range existing.OwnerReferences {
+		if ref.APIVersion == mortisev1alpha1.GroupVersion.String() && ref.Kind == "Project" {
+			if ref.UID == project.UID {
+				ownedByUs = true
+				break
+			}
+			ownedByOther = ref.Name
+		}
+	}
+	if !ownedByUs {
+		if existing.Labels["app.kubernetes.io/managed-by"] == "mortise" && existing.Labels[constants.ProjectLabel] == project.Name {
+			ownedByUs = true
+		}
+	}
+	if !ownedByUs {
+		if ownedByOther != "" {
+			return fmt.Errorf("namespace %q is already owned by Project %q", nsName, ownedByOther)
+		}
+		return fmt.Errorf("namespace %q already exists and is not managed by mortise", nsName)
+	}
+
+	changed := false
+	if existing.Labels == nil {
+		existing.Labels = map[string]string{}
+	}
+	for k, v := range labels {
+		if existing.Labels[k] != v {
+			existing.Labels[k] = v
+			changed = true
+		}
+	}
+	if !changed {
+		return nil
+	}
+	return s.client.Update(ctx, &existing)
+}
+
+func (s *Server) deleteProjectEnvNamespace(ctx context.Context, project *mortisev1alpha1.Project, envName string) error {
+	var ns corev1.Namespace
+	if err := s.client.Get(ctx, types.NamespacedName{Name: constants.EnvNamespace(project.Name, envName)}, &ns); err != nil {
+		if errors.IsNotFound(err) {
+			return nil
+		}
+		return err
+	}
+	return s.client.Delete(ctx, &ns)
+}
+
+func (s *Server) cloneCustomSecrets(ctx context.Context, sourceEnvNs, targetEnvNs string) error {
+	var secrets corev1.SecretList
+	if err := s.client.List(ctx, &secrets, client.InNamespace(sourceEnvNs)); err != nil {
+		return err
+	}
+
+	for i := range secrets.Items {
+		src := &secrets.Items[i]
+		appName := src.Labels[constants.AppNameLabel]
+		if appName == "" || src.Labels["app.kubernetes.io/managed-by"] != "mortise" {
+			continue
+		}
+		if isInternalAppEnvSecret(appName, src) {
+			continue
+		}
+
+		var existing corev1.Secret
+		getErr := s.client.Get(ctx, types.NamespacedName{Namespace: targetEnvNs, Name: src.Name}, &existing)
+		if errors.IsNotFound(getErr) {
+			copied := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:        src.Name,
+					Namespace:   targetEnvNs,
+					Labels:      copyStringMap(src.Labels),
+					Annotations: copyStringMap(src.Annotations),
+				},
+				Type: src.Type,
+				Data: copyBytesMap(src.Data),
+			}
+			if err := s.client.Create(ctx, copied); err != nil && !errors.IsAlreadyExists(err) {
+				return err
+			}
+			continue
+		}
+		if getErr != nil {
+			return getErr
+		}
+		existing.Labels = copyStringMap(src.Labels)
+		existing.Annotations = copyStringMap(src.Annotations)
+		existing.Type = src.Type
+		existing.Data = copyBytesMap(src.Data)
+		if err := s.client.Update(ctx, &existing); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func copyStringMap(src map[string]string) map[string]string {
+	if len(src) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(src))
+	for k, v := range src {
+		out[k] = v
+	}
+	return out
+}
+
+func copyBytesMap(src map[string][]byte) map[string][]byte {
+	if len(src) == 0 {
+		return nil
+	}
+	out := make(map[string][]byte, len(src))
+	for k, v := range src {
+		buf := make([]byte, len(v))
+		copy(buf, v)
+		out[k] = buf
+	}
+	return out
 }
 
 // aggregateEnvHealth reduces per-app phase into a single navbar dot per env.

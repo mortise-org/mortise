@@ -146,7 +146,10 @@ func (r *PreviewEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.R
 	var app mortisev1alpha1.App
 	if err := r.Get(ctx, types.NamespacedName{Name: pe.Spec.AppRef, Namespace: pe.Namespace}, &app); err != nil {
 		if errors.IsNotFound(err) {
-			return ctrl.Result{}, r.setPreviewFailed(ctx, &pe, "AppNotFound", fmt.Sprintf("App %q not found", pe.Spec.AppRef))
+			if err := r.Delete(ctx, &pe); err != nil && !errors.IsNotFound(err) {
+				return ctrl.Result{}, err
+			}
+			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, err
 	}
@@ -818,6 +821,9 @@ func (r *PreviewEnvironmentReconciler) gcPreviewResources(ctx context.Context, p
 	var secrets corev1.SecretList
 	if err := r.List(ctx, &secrets, selector, inNs); err == nil {
 		for i := range secrets.Items {
+			if secrets.Items[i].Name == envstore.SharedEnvName {
+				continue
+			}
 			if err := r.Delete(ctx, &secrets.Items[i]); err != nil && !errors.IsNotFound(err) {
 				log.Error(err, "gc: failed to delete Secret", "name", secrets.Items[i].Name, "namespace", previewNs)
 				errs = append(errs, fmt.Errorf("delete Secret %s/%s: %w", previewNs, secrets.Items[i].Name, err))
@@ -825,6 +831,31 @@ func (r *PreviewEnvironmentReconciler) gcPreviewResources(ctx context.Context, p
 		}
 	}
 
+	var envSecret corev1.Secret
+	if err := r.Get(ctx, types.NamespacedName{Name: pe.Spec.AppRef + "-env", Namespace: previewNs}, &envSecret); err == nil {
+		_ = r.Delete(ctx, &envSecret)
+	}
+
+	removeShared := true
+	var siblings mortisev1alpha1.PreviewEnvironmentList
+	if err := r.List(ctx, &siblings, client.InNamespace(pe.Namespace)); err == nil {
+		for i := range siblings.Items {
+			sibling := &siblings.Items[i]
+			if sibling.Name == pe.Name || !sibling.DeletionTimestamp.IsZero() {
+				continue
+			}
+			if sibling.Spec.PullRequest.Number == pe.Spec.PullRequest.Number {
+				removeShared = false
+				break
+			}
+		}
+	}
+	if removeShared {
+		var shared corev1.Secret
+		if err := r.Get(ctx, types.NamespacedName{Name: envstore.SharedEnvName, Namespace: previewNs}, &shared); err == nil {
+			_ = r.Delete(ctx, &shared)
+		}
+	}
 	if len(errs) > 0 {
 		return fmt.Errorf("gc preview resources: %d deletion(s) failed: %w", len(errs), stderrors.Join(errs...))
 	}
