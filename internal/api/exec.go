@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -11,9 +12,11 @@ import (
 	"github.com/go-chi/chi/v5"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/remotecommand"
 
+	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
 	"github.com/mortise-org/mortise/internal/authz"
 	"github.com/mortise-org/mortise/internal/constants"
 )
@@ -33,6 +36,11 @@ type execResponse struct {
 }
 
 const maxExecOutputBytes = 10 << 20 // 10 MiB per stream
+
+var (
+	errExecPodLookup     = errors.New("list app pods")
+	errExecPodNotRunning = errors.New("no running app pod")
+)
 
 type limitedBuffer struct {
 	buf   bytes.Buffer
@@ -71,16 +79,25 @@ func (lb *limitedBuffer) Len() int       { return lb.buf.Len() }
 // @Failure 500 {object} errorResponse
 // @Router /projects/{project}/apps/{app}/exec [post]
 func (s *Server) ExecInApp(w http.ResponseWriter, r *http.Request) {
-	_, projectName, ok := s.resolveProject(w, r)
+	projectName := chi.URLParam(r, "project")
+	if !s.authorize(w, r, authz.Resource{Kind: "app", Project: projectName, Environment: envFromQuery(r)}, authz.ActionUpdate) {
+		return
+	}
+
+	app, env, ok := s.resolveExecTarget(w, r)
 	if !ok {
 		return
 	}
-	appName := chi.URLParam(r, "app")
-	env := envFromQuery(r)
-	if !s.authorize(w, r, authz.Resource{Kind: "app", Project: projectName, Environment: env}, authz.ActionUpdate) {
+	projectName, ok = constants.ProjectFromControlNs(app.Namespace)
+	if !ok {
+		writeJSON(w, http.StatusInternalServerError, errorResponse{fmt.Sprintf("app %q not in a control namespace (%q)", app.Name, app.Namespace)})
 		return
 	}
-	envNs := constants.EnvNamespace(projectName, env)
+	envNs, err := envNamespace(app, env)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorResponse{err.Error()})
+		return
+	}
 
 	var req execRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -93,22 +110,26 @@ func (s *Server) ExecInApp(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if s.restConfig == nil {
-		slog.Error("exec: server has no rest.Config; exec is unavailable", "namespace", envNs, "app", appName)
+		slog.Error("exec: server has no rest.Config; exec is unavailable", "namespace", envNs, "app", app.Name)
 		writeJSON(w, http.StatusInternalServerError, errorResponse{"exec is not available on this server"})
 		return
 	}
 
 	// Find the first running pod for this app in the env namespace.
-	podName, err := s.findAppPod(r.Context(), envNs, appName, env)
+	podName, containerName, err := s.findAppPod(r.Context(), envNs, app.Name, env)
 	if err != nil {
-		slog.Error("exec: failed to find app pod", "namespace", envNs, "app", appName, "err", err)
-		writeJSON(w, http.StatusNotFound, errorResponse{fmt.Sprintf("no running pod found for app %q", appName)})
+		slog.Error("exec: failed to find app pod", "namespace", envNs, "app", app.Name, "err", err)
+		if errors.Is(err, errExecPodNotRunning) {
+			writeJSON(w, http.StatusNotFound, errorResponse{fmt.Sprintf("no running pod found for app %q", app.Name)})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, errorResponse{"failed to locate app pod"})
 		return
 	}
 
-	stdout, stderr, truncated, err := s.execInPod(r.Context(), envNs, podName, req.Command)
+	stdout, stderr, truncated, err := s.execInPod(r.Context(), envNs, podName, containerName, req.Command)
 	if err != nil {
-		slog.Error("exec: streaming failed", "namespace", envNs, "app", appName, "pod", podName, "err", err)
+		slog.Error("exec: streaming failed", "namespace", envNs, "app", app.Name, "pod", podName, "err", err)
 		writeJSON(w, http.StatusInternalServerError, errorResponse{"exec failed"})
 		return
 	}
@@ -116,33 +137,51 @@ func (s *Server) ExecInApp(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, execResponse{Stdout: stdout, Stderr: stderr, Truncated: truncated})
 }
 
-// findAppPod returns the name of the first running pod matching the app label.
-func (s *Server) findAppPod(ctx context.Context, ns, appName, env string) (string, error) {
+// findAppPod returns the first running pod and app container matching the app label.
+func (s *Server) findAppPod(ctx context.Context, ns, appName, env string) (string, string, error) {
 	pods, err := s.clientset.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{
 		LabelSelector: fmt.Sprintf("%s=%s,app.kubernetes.io/managed-by=mortise,%s=%s",
 			constants.AppNameLabel, appName, constants.EnvironmentLabel, env),
-		Limit: 1,
 	})
 	if err != nil {
-		return "", fmt.Errorf("listing pods: %w", err)
+		return "", "", fmt.Errorf("%w: %w", errExecPodLookup, err)
 	}
-	if len(pods.Items) == 0 {
-		return "", fmt.Errorf("no pods found for app %q", appName)
+	for i := range pods.Items {
+		pod := &pods.Items[i]
+		if pod.DeletionTimestamp != nil {
+			continue
+		}
+		if pod.Status.Phase != corev1.PodRunning {
+			continue
+		}
+		containerName, ok := firstAppContainerName(pod)
+		if !ok {
+			continue
+		}
+		return pod.Name, containerName, nil
 	}
-	return pods.Items[0].Name, nil
+	return "", "", fmt.Errorf("%w for app %q", errExecPodNotRunning, appName)
 }
 
-// execInPod runs a command in the first container of the named pod.
-func (s *Server) execInPod(ctx context.Context, ns, podName string, command []string) (string, string, bool, error) {
+func firstAppContainerName(pod *corev1.Pod) (string, bool) {
+	if len(pod.Spec.Containers) == 0 {
+		return "", false
+	}
+	return pod.Spec.Containers[0].Name, true
+}
+
+// execInPod runs a command in the selected container of the named pod.
+func (s *Server) execInPod(ctx context.Context, ns, podName, containerName string, command []string) (string, string, bool, error) {
 	req := s.clientset.CoreV1().RESTClient().Post().
 		Resource("pods").
 		Name(podName).
 		Namespace(ns).
 		SubResource("exec").
 		VersionedParams(&corev1.PodExecOptions{
-			Command: command,
-			Stdout:  true,
-			Stderr:  true,
+			Command:   command,
+			Container: containerName,
+			Stdout:    true,
+			Stderr:    true,
 		}, scheme.ParameterCodec)
 
 	exec, err := remotecommand.NewSPDYExecutor(s.restConfig, "POST", req.URL())
@@ -161,4 +200,26 @@ func (s *Server) execInPod(ctx context.Context, ns, podName string, command []st
 
 	truncated := stdout.Len() >= maxExecOutputBytes || stderr.Len() >= maxExecOutputBytes
 	return stdout.String(), stderr.String(), truncated, nil
+}
+
+func (s *Server) resolveExecTarget(w http.ResponseWriter, r *http.Request) (*mortisev1alpha1.App, string, bool) {
+	project, ok := s.getProject(w, r)
+	if !ok {
+		return nil, "", false
+	}
+	appName := chi.URLParam(r, "app")
+	env := envFromQuery(r)
+	if indexOfEnv(project, env) < 0 {
+		writeJSON(w, http.StatusBadRequest, errorResponse{fmt.Sprintf(
+			"environment %q is not declared on project %q — add it via POST /api/projects/%s/environments first",
+			env, project.Name, project.Name)})
+		return nil, "", false
+	}
+
+	var app mortisev1alpha1.App
+	if err := s.client.Get(r.Context(), types.NamespacedName{Name: appName, Namespace: projectNs(project)}, &app); err != nil {
+		writeError(w, r, err)
+		return nil, "", false
+	}
+	return &app, env, true
 }
