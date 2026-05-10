@@ -36,7 +36,26 @@ func LoginAsAdmin(t *testing.T, baseURL, email, password string) string {
 	if err != nil {
 		t.Fatalf("mortise: POST /api/auth/setup: %v", err)
 	}
-	setupResp.Body.Close()
+
+	var setupAuth struct {
+		Token string `json:"token"`
+	}
+	func() {
+		defer setupResp.Body.Close()
+		if setupResp.StatusCode == http.StatusCreated {
+			if err := json.NewDecoder(setupResp.Body).Decode(&setupAuth); err != nil {
+				t.Fatalf("mortise: decode /api/auth/setup response: %v", err)
+			}
+			if setupAuth.Token == "" {
+				t.Fatal("mortise: empty token in setup response")
+			}
+			return
+		}
+		_, _ = io.Copy(io.Discard, setupResp.Body)
+	}()
+	if setupAuth.Token != "" {
+		return setupAuth.Token
+	}
 
 	type creds struct {
 		email    string
