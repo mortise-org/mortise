@@ -164,6 +164,9 @@ func (h *Handler) dispatchToApps(ctx context.Context, br BuildRequest) {
 		if src.Type != mortisev1alpha1.SourceTypeGit {
 			continue
 		}
+		if src.ProviderRef != "" && src.ProviderRef != br.Provider {
+			continue
+		}
 		if !repoMatches(src.Repo, br.Repo) {
 			continue
 		}
@@ -215,6 +218,9 @@ func (h *Handler) dispatchPREvent(ctx context.Context, pr PREvent) {
 		if src.Type != mortisev1alpha1.SourceTypeGit {
 			continue
 		}
+		if src.ProviderRef != "" && src.ProviderRef != pr.Provider {
+			continue
+		}
 		if !repoMatches(src.Repo, pr.Repo) {
 			continue
 		}
@@ -244,6 +250,13 @@ func (h *Handler) dispatchPREvent(ctx context.Context, pr PREvent) {
 		}
 		preview := project.Spec.Preview
 		if preview == nil || !preview.Enabled {
+			if pr.Action == "closed" {
+				if err := h.deletePreviewForPR(ctx, app, pr.Number); err != nil {
+					log.Error(err, "delete preview after close with previews disabled", "app", app.Name, "project", projectName, "number", pr.Number)
+					continue
+				}
+				matched++
+			}
 			continue
 		}
 
@@ -287,6 +300,26 @@ func (h *Handler) dispatchPREvent(ctx context.Context, pr PREvent) {
 	if matched == 0 {
 		log.Info("no matching apps for PR event", "repo", pr.Repo, "number", pr.Number)
 	}
+}
+
+func (h *Handler) deletePreviewForPR(ctx context.Context, app *mortisev1alpha1.App, number int) error {
+	if app == nil || number == 0 {
+		return nil
+	}
+	existing, err := h.k8s.listPreviewEnvironments(ctx, app.Namespace)
+	if err != nil {
+		return err
+	}
+	for i := range existing {
+		pe := &existing[i]
+		if pe.Spec.AppRef != app.Name || pe.Spec.PullRequest.Number != number {
+			continue
+		}
+		if err := h.k8s.deletePreviewEnvironment(ctx, pe); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func filterClosedPR(openPRs []git.PullRequestSnapshot, closedNumber int) []git.PullRequestSnapshot {

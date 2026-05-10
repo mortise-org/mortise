@@ -594,6 +594,48 @@ func TestWebhook_WatchPathsGating(t *testing.T) {
 	}
 }
 
+func TestWebhook_PushHonorsProviderRef(t *testing.T) {
+	const secret = "secret"
+
+	providerAApp := makeGitApp("app-a", "pj-a", "https://github.com/org/repo", "main")
+	providerAApp.Spec.Source.ProviderRef = "provider-a"
+	providerBApp := makeGitApp("app-b", "pj-a", "https://github.com/org/repo", "main")
+	providerBApp.Spec.Source.ProviderRef = "provider-b"
+
+	body, _ := json.Marshal(map[string]interface{}{
+		"ref":   "refs/heads/main",
+		"after": "sha-provider-a",
+		"repository": map[string]string{
+			"full_name": "org/repo",
+		},
+	})
+
+	gp := makeGitProvider(mortisev1alpha1.GitProviderTypeGitHub, "mortise-system", "wh-secret", "value")
+	kr := &fakeK8sReader{
+		provider: gp,
+		secrets:  map[string]string{"mortise-system/wh-secret/value": secret},
+		apps:     []mortisev1alpha1.App{providerAApp, providerBApp},
+	}
+	h := New(kr)
+
+	req := httptest.NewRequest(http.MethodPost, "/provider-a", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Hub-Signature-256", githubSignature(body, secret))
+
+	rr := httptest.NewRecorder()
+	h.Routes().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if got := kr.patched["pj-a/app-a"]; got != "sha-provider-a" {
+		t.Fatalf("provider-a app patched sha = %q, want sha-provider-a", got)
+	}
+	if _, ok := kr.patched["pj-a/app-b"]; ok {
+		t.Fatalf("provider-b app should not be patched from provider-a webhook: %+v", kr.patched)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // PR event tests
 // ---------------------------------------------------------------------------
@@ -872,6 +914,103 @@ func TestPREvent_ProjectPreviewDisabled_NoPECreated(t *testing.T) {
 	}
 	if len(kr2.createdPreviews) != 0 {
 		t.Errorf("expected no PE created with preview.enabled=false, got %d", len(kr2.createdPreviews))
+	}
+}
+
+func TestPREvent_OpenedHonorsProviderRef(t *testing.T) {
+	const secret = "prsecret"
+	body := githubPRPayloadJSON("opened", 42, "feature/x", "shaopened", "org/repo")
+
+	gp := makeGitProvider(mortisev1alpha1.GitProviderTypeGitHub, "mortise-system", "wh-secret", "value")
+	appA, proj := makePreviewGitApp("app-a", "pj-default", "https://github.com/org/repo", "main", "pr-{number}.{app}.example.com", "24h")
+	appA.Spec.Source.ProviderRef = "provider-a"
+	appB, _ := makePreviewGitApp("app-b", "pj-default", "https://github.com/org/repo", "main", "pr-{number}.{app}.example.com", "24h")
+	appB.Spec.Source.ProviderRef = "provider-b"
+
+	kr := &fakeK8sReader{
+		provider: gp,
+		secrets:  map[string]string{"mortise-system/wh-secret/value": secret},
+		apps:     []mortisev1alpha1.App{appA, appB},
+		projects: map[string]*mortisev1alpha1.Project{"default": proj},
+		openPRs:  []git.PullRequestSnapshot{{Number: 42, Branch: "feature/x", SHA: "shaopened"}},
+	}
+	h := newTestHandler(kr)
+
+	req := httptest.NewRequest(http.MethodPost, "/provider-a", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-GitHub-Event", "pull_request")
+	req.Header.Set("X-Hub-Signature-256", githubSignature(body, secret))
+
+	rr := httptest.NewRecorder()
+	h.Routes().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if len(kr.createdPreviews) != 1 {
+		t.Fatalf("expected exactly 1 preview create, got %d", len(kr.createdPreviews))
+	}
+	if got := kr.createdPreviews[0].Spec.AppRef; got != "app-a" {
+		t.Fatalf("preview created for app %q, want app-a", got)
+	}
+}
+
+func TestPREvent_ClosedDeletesPreviewWhenPreviewDisabled(t *testing.T) {
+	const secret = "prsecret"
+	body := githubPRPayloadJSON("closed", 42, "feature/x", "closedsha", "org/repo")
+
+	gp := makeGitProvider(mortisev1alpha1.GitProviderTypeGitHub, "mortise-system", "wh-secret", "value")
+	app := makeGitApp("my-app", "pj-default", "https://github.com/org/repo", "main")
+	app.Spec.Source.ProviderRef = "provider-a"
+	project := &mortisev1alpha1.Project{
+		ObjectMeta: metav1.ObjectMeta{Name: "default"},
+		Spec: mortisev1alpha1.ProjectSpec{
+			Environments: []mortisev1alpha1.ProjectEnvironment{
+				{Name: "production"},
+				{Name: "staging"},
+			},
+			Preview: &mortisev1alpha1.PreviewConfig{Enabled: false, Domain: "pr-{number}.example.com"},
+		},
+	}
+	existing := mortisev1alpha1.PreviewEnvironment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "my-app-preview-pr-42",
+			Namespace: "pj-default",
+		},
+		Spec: mortisev1alpha1.PreviewEnvironmentSpec{
+			AppRef: "my-app",
+			PullRequest: mortisev1alpha1.PullRequestRef{
+				Number: 42,
+				Branch: "feature/x",
+				SHA:    "oldsha",
+			},
+		},
+	}
+	kr := &fakeK8sReader{
+		provider:    gp,
+		secrets:     map[string]string{"mortise-system/wh-secret/value": secret},
+		apps:        []mortisev1alpha1.App{app},
+		projects:    map[string]*mortisev1alpha1.Project{"default": project},
+		previewEnvs: []mortisev1alpha1.PreviewEnvironment{existing},
+	}
+	h := newTestHandler(kr)
+
+	req := httptest.NewRequest(http.MethodPost, "/provider-a", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-GitHub-Event", "pull_request")
+	req.Header.Set("X-Hub-Signature-256", githubSignature(body, secret))
+
+	rr := httptest.NewRecorder()
+	h.Routes().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if len(kr.deletedPreviews) != 1 {
+		t.Fatalf("expected 1 preview delete, got %d", len(kr.deletedPreviews))
+	}
+	if kr.deletedPreviews[0].Name != "my-app-preview-pr-42" {
+		t.Fatalf("deleted preview = %q, want my-app-preview-pr-42", kr.deletedPreviews[0].Name)
 	}
 }
 
