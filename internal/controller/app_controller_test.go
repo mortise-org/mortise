@@ -592,6 +592,44 @@ var _ = Describe("App Controller", func() {
 			Expect(svc.Spec.Ports[0].Port).To(Equal(int32(8080)))
 		})
 
+		It("removes app deploy token secrets during finalizer GC without touching project tokens", func() {
+			appToken := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "deploy-token-test-nginx-ci",
+					Namespace: namespace,
+					Labels: map[string]string{
+						"mortise.dev/deploy-token": "true",
+						"mortise.dev/app":          appName,
+						"mortise.dev/environment":  "production",
+						"mortise.dev/token-name":   "ci",
+					},
+				},
+				Data: map[string][]byte{"token-hash": []byte("hash")},
+			}
+			Expect(k8sClient.Create(ctx, appToken)).To(Succeed())
+
+			projectToken := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "deploy-token-pj-keep",
+					Namespace: namespace,
+					Labels: map[string]string{
+						"mortise.dev/deploy-token":  "true",
+						"mortise.dev/project-token": "true",
+					},
+				},
+				Data: map[string][]byte{"token-hash": []byte("hash")},
+			}
+			Expect(k8sClient.Create(ctx, projectToken)).To(Succeed())
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			Expect(reconciler.gcAppAcrossEnvs(ctx, app)).To(Succeed())
+
+			var got corev1.Secret
+			err := k8sClient.Get(ctx, types.NamespacedName{Name: appToken.Name, Namespace: namespace}, &got)
+			Expect(kerrors.IsNotFound(err)).To(BeTrue(), "expected app deploy token secret to be deleted, got %v", err)
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: projectToken.Name, Namespace: namespace}, &got)).To(Succeed())
+		})
+
 		It("should not rewrite a volume-less Deployment on repeated reconcile", func() {
 			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
 			req := reconcile.Request{

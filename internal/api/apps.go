@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/go-chi/chi/v5"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -324,6 +325,11 @@ func (s *Server) DeleteApp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err := s.deleteAppDeployTokens(r.Context(), ns, app.Name); err != nil {
+		writeError(w, r, err)
+		return
+	}
+
 	if err := s.client.Delete(r.Context(), &app); err != nil {
 		writeError(w, r, err)
 		return
@@ -332,6 +338,25 @@ func (s *Server) DeleteApp(w http.ResponseWriter, r *http.Request) {
 	s.recordActivity(r, projectName, "delete", "app", app.Name, "Deleted app "+app.Name, "")
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+func (s *Server) deleteAppDeployTokens(ctx context.Context, ns, appName string) error {
+	var tokens corev1.SecretList
+	if err := s.client.List(ctx, &tokens,
+		client.InNamespace(ns),
+		client.MatchingLabels{
+			"mortise.dev/deploy-token": "true",
+			"mortise.dev/app":          appName,
+		},
+	); err != nil {
+		return err
+	}
+	for i := range tokens.Items {
+		if err := s.client.Delete(ctx, &tokens.Items[i]); err != nil && !errors.IsNotFound(err) {
+			return err
+		}
+	}
+	return nil
 }
 
 // writeError maps k8s API errors to HTTP status codes.
