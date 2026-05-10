@@ -79,28 +79,30 @@ func (s *Server) handleBuildLogs(w http.ResponseWriter, r *http.Request) {
 	key := types.NamespacedName{Namespace: ns, Name: name}
 
 	var app mortisev1alpha1.App
-	if err := s.client.Get(r.Context(), key, &app); err == nil {
-		if app.Status.Phase == mortisev1alpha1.AppPhaseBuilding || app.Status.CurrentBuildRunName != "" {
-			if run, err := s.resolveCurrentAppBuildRun(r.Context(), ns, &app); err == nil && run != nil {
-				if resp, ok, err := s.getBuildRunLogsResponse(r.Context(), run); err == nil && ok {
-					writeJSON(w, http.StatusOK, resp)
-					return
-				}
-			}
-		}
-		if app.Status.Phase != mortisev1alpha1.AppPhaseBuilding && app.Status.LastBuildRunName != "" {
-			if run, err := s.resolveLastAppBuildRun(r.Context(), ns, &app, ""); err == nil && run != nil {
-				if resp, ok, err := s.getBuildRunLogsResponse(r.Context(), run); err == nil && ok {
-					writeJSON(w, http.StatusOK, resp)
-					return
-				}
-			}
-		}
-		if run, err := s.resolveLastAppBuildRun(r.Context(), ns, &app, app.Status.CurrentBuildRunName); err == nil && run != nil {
+	if err := s.client.Get(r.Context(), key, &app); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	if app.Status.Phase == mortisev1alpha1.AppPhaseBuilding || app.Status.CurrentBuildRunName != "" {
+		if run, err := s.resolveCurrentAppBuildRun(r.Context(), ns, &app); err == nil && run != nil {
 			if resp, ok, err := s.getBuildRunLogsResponse(r.Context(), run); err == nil && ok {
 				writeJSON(w, http.StatusOK, resp)
 				return
 			}
+		}
+	}
+	if app.Status.Phase != mortisev1alpha1.AppPhaseBuilding && app.Status.LastBuildRunName != "" {
+		if run, err := s.resolveLastAppBuildRun(r.Context(), ns, &app, ""); err == nil && run != nil {
+			if resp, ok, err := s.getBuildRunLogsResponse(r.Context(), run); err == nil && ok {
+				writeJSON(w, http.StatusOK, resp)
+				return
+			}
+		}
+	}
+	if run, err := s.resolveLastAppBuildRun(r.Context(), ns, &app, app.Status.CurrentBuildRunName); err == nil && run != nil {
+		if resp, ok, err := s.getBuildRunLogsResponse(r.Context(), run); err == nil && ok {
+			writeJSON(w, http.StatusOK, resp)
+			return
 		}
 	}
 
@@ -140,13 +142,15 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 	if !s.authorize(w, r, authz.Resource{Kind: "app", Project: projectName}, authz.ActionRead) {
 		return
 	}
-	ns, projectName, ok := s.resolveProject(w, r)
+	_, projectName, ok := s.resolveProject(w, r)
 	if !ok {
 		return
 	}
-	name := chi.URLParam(r, "app")
-
-	env := envFromQuery(r)
+	app, env, ok := s.resolveDefaultedAppEnv(w, r)
+	if !ok {
+		return
+	}
+	name := app.Name
 	follow := r.URL.Query().Get("follow") == "true"
 	previous := r.URL.Query().Get("previous") == "true"
 	pinnedPod := r.URL.Query().Get("pod")
@@ -174,13 +178,6 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 	// If both are set, prefer sinceTime and drop sinceSeconds.
 	if sinceTime != nil {
 		sinceSeconds = nil
-	}
-
-	// Resolve the App CRD (404 if missing). CRD lives in the control ns.
-	var app mortisev1alpha1.App
-	if err := s.client.Get(r.Context(), types.NamespacedName{Name: name, Namespace: ns}, &app); err != nil {
-		writeError(w, r, err)
-		return
 	}
 
 	// Workload pods live in the per-env namespace.

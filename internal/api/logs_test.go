@@ -778,3 +778,51 @@ func TestHandleBuildLogsNoTrackerNoConfigMap(t *testing.T) {
 		t.Errorf("expected empty lines, got %v", linesAny)
 	}
 }
+
+func TestHandleBuildLogsMissingAppReturns404EvenWithLegacyConfigMap(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+	nsName := seedProject(t, k8sClient, "default")
+
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "buildlogs-ghost",
+			Namespace: nsName,
+			Annotations: map[string]string{
+				"mortise.dev/build-status": "Succeeded",
+			},
+		},
+		Data: map[string]string{"lines": "stale line"},
+	}
+	if err := k8sClient.Create(context.Background(), cm); err != nil {
+		t.Fatalf("create stale configmap: %v", err)
+	}
+
+	w := doRequest(h, http.MethodGet, "/api/projects/default/apps/ghost/build-logs", nil)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for missing app, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestHandleLogsRejectsUndeclaredEnvironment(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+	ns := seedProject(t, k8sClient, "default")
+
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "logs-env-app", Namespace: ns},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: "nginx:1.25.0"},
+		},
+	}
+	if err := k8sClient.Create(context.Background(), app); err != nil {
+		t.Fatalf("create app: %v", err)
+	}
+
+	w := doRequest(h, http.MethodGet, "/api/projects/default/apps/logs-env-app/logs?env=staging", nil)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for undeclared env, got %d: %s", w.Code, w.Body.String())
+	}
+}
