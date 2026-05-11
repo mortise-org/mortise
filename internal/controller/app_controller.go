@@ -142,6 +142,13 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	// that enumerates them and deletes by label.
 	if !app.DeletionTimestamp.IsZero() {
 		if controllerutil.ContainsFinalizer(&app, appFinalizer) {
+			remainingPreviews, err := r.deleteAppPreviews(ctx, &app)
+			if err != nil {
+				return ctrl.Result{}, fmt.Errorf("delete previews for app: %w", err)
+			}
+			if remainingPreviews {
+				return ctrl.Result{RequeueAfter: time.Second}, nil
+			}
 			if err := r.gcAppAcrossEnvs(ctx, &app); err != nil {
 				return ctrl.Result{}, fmt.Errorf("gc app across envs: %w", err)
 			}
@@ -366,7 +373,7 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 
 // appFinalizer is the finalizer string applied to every App. Cleared only
 // after cross-namespace cleanup of workload resources completes.
-const appFinalizer = "mortise.dev/app-finalizer"
+const appFinalizer = constants.AppFinalizer
 
 func (r *AppReconciler) addAppFinalizerWithRetry(ctx context.Context, key types.NamespacedName) error {
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {

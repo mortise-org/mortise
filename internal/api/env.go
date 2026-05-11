@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -151,7 +152,7 @@ func (s *Server) PutEnv(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := pokeAppForReconcile(r.Context(), s.client, app, s.clock().Now()); err != nil {
+	if err := pokeAppForReconcile(r.Context(), s.client, app); err != nil {
 		writeError(w, r, err)
 		return
 	}
@@ -269,7 +270,7 @@ func (s *Server) PatchEnv(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := pokeAppForReconcile(r.Context(), s.client, app, s.clock().Now()); err != nil {
+	if err := pokeAppForReconcile(r.Context(), s.client, app); err != nil {
 		writeError(w, r, err)
 		return
 	}
@@ -340,7 +341,7 @@ func (s *Server) ImportEnv(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := pokeAppForReconcile(r.Context(), s.client, app, s.clock().Now()); err != nil {
+	if err := pokeAppForReconcile(r.Context(), s.client, app); err != nil {
 		writeError(w, r, err)
 		return
 	}
@@ -445,7 +446,7 @@ func (s *Server) PutSharedVars(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for i := range apps.Items {
-		if err := pokeAppForReconcile(r.Context(), s.client, &apps.Items[i], s.clock().Now()); err != nil {
+		if err := pokeAppForReconcile(r.Context(), s.client, &apps.Items[i]); err != nil {
 			writeError(w, r, err)
 			return
 		}
@@ -535,12 +536,25 @@ func ensureEnvironment(app *mortisev1alpha1.App, name string) *mortisev1alpha1.E
 // pokeAppForReconcile stamps a timestamp annotation on the App CRD so the
 // controller re-reconciles (picking up the latest Secret contents). The
 // Secret is the source of truth — we never sync env vars back to the CRD spec.
-func pokeAppForReconcile(ctx context.Context, k8s client.Client, app *mortisev1alpha1.App, now time.Time) error {
-	if app.Annotations == nil {
-		app.Annotations = make(map[string]string)
+func pokeAppForReconcile(ctx context.Context, k8s client.Client, app *mortisev1alpha1.App) error {
+	for attempt := range maxConflictRetries {
+		latest := &mortisev1alpha1.App{}
+		if err := k8s.Get(ctx, types.NamespacedName{Namespace: app.Namespace, Name: app.Name}, latest); err != nil {
+			return err
+		}
+		if latest.Annotations == nil {
+			latest.Annotations = make(map[string]string)
+		}
+		latest.Annotations["mortise.dev/env-updated"] = fmt.Sprintf("%d", time.Now().UnixMilli())
+		updateErr := k8s.Update(ctx, latest)
+		if updateErr == nil {
+			return nil
+		}
+		if !errors.IsConflict(updateErr) || attempt == maxConflictRetries-1 {
+			return updateErr
+		}
 	}
-	app.Annotations["mortise.dev/env-updated"] = fmt.Sprintf("%d", now.UnixMilli())
-	return k8s.Update(ctx, app)
+	return nil
 }
 
 // parseDotEnv parses KEY=value lines from a .env file string.
