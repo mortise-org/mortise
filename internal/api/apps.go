@@ -325,12 +325,12 @@ func (s *Server) DeleteApp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.deleteAppDeployTokens(r.Context(), ns, app.Name); err != nil {
+	if err := s.client.Delete(r.Context(), &app); err != nil {
 		writeError(w, r, err)
 		return
 	}
 
-	if err := s.client.Delete(r.Context(), &app); err != nil {
+	if err := s.deleteAppDeployTokens(r.Context(), ns, app.Name); err != nil {
 		writeError(w, r, err)
 		return
 	}
