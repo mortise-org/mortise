@@ -289,6 +289,15 @@ func (r *PreviewEnvironmentReconciler) reconcilePreviewBuild(ctx context.Context
 		if strings.Contains(pe.Status.Image, shortTag(revision)) {
 			return ctrl.Result{}, true, nil
 		}
+		previewTagPrefix := fmt.Sprintf("pr-%d-", pe.Spec.PullRequest.Number)
+		if !strings.Contains(pe.Status.Image, previewTagPrefix) &&
+			pe.Status.CurrentBuildRunName == "" &&
+			pe.Status.LastBuildRunName == "" &&
+			pe.Status.CurrentBuildRunRef == nil &&
+			pe.Status.LastSuccessfulBuildRunRef == nil {
+			log.Info("preview already has an externally seeded image; skipping rebuild", "preview", pe.Name)
+			return ctrl.Result{}, true, nil
+		}
 	}
 
 	// Resolve git credentials via the parent app's owner token.
@@ -611,21 +620,7 @@ func (r *PreviewEnvironmentReconciler) reconcilePreviewEnvSecret(ctx context.Con
 	if err := store.Set(ctx, previewNs, app.Name, flat, labels); err != nil {
 		return "", err
 	}
-	return hashPreviewEnvData(sourceShared, flat), nil
-}
-
-func hashPreviewEnvData(shared, appVars []envstore.Env) string {
-	if len(shared) == 0 && len(appVars) == 0 {
-		return ""
-	}
-	combined := make(map[string][]byte, len(shared)+len(appVars))
-	for _, env := range shared {
-		combined[env.Name] = []byte(env.Value)
-	}
-	for _, env := range appVars {
-		combined[env.Name] = []byte(env.Value)
-	}
-	return hashCredentialData(combined)
+	return hashEnvSecretData(ctx, r.apiReader(), app.Name, previewNs), nil
 }
 
 func (r *PreviewEnvironmentReconciler) reconcilePreviewService(ctx context.Context, pe *mortisev1alpha1.PreviewEnvironment, app *mortisev1alpha1.App, previewNs string) error {

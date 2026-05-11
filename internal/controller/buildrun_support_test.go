@@ -689,6 +689,78 @@ func TestReconcilePreviewBuildCreatesRunWhenReadyImageSHAChanged(t *testing.T) {
 	}
 }
 
+func TestReconcilePreviewBuildSkipsWhenReadyImageExternallySeeded(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := mortisev1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add mortise scheme: %v", err)
+	}
+
+	pe := &mortisev1alpha1.PreviewEnvironment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "demo-preview-pr-10",
+			Namespace: "pj-default-project",
+		},
+		Spec: mortisev1alpha1.PreviewEnvironmentSpec{
+			AppRef:    "demo",
+			SourceEnv: "production",
+			PullRequest: mortisev1alpha1.PullRequestRef{
+				Number: 10,
+				SHA:    "sha-new",
+				Branch: "feature/demo",
+			},
+		},
+		Status: mortisev1alpha1.PreviewEnvironmentStatus{
+			Phase: mortisev1alpha1.PreviewPhaseReady,
+			Image: "nginx:1.27",
+		},
+	}
+
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(pe.DeepCopy()).
+		WithStatusSubresource(pe).
+		Build()
+	r := &PreviewEnvironmentReconciler{
+		Client:          c,
+		Scheme:          scheme,
+		BuildClient:     noopBuildClient{},
+		GitClient:       noopGitClient{},
+		RegistryBackend: staticRegistryBackend{},
+	}
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "demo",
+			Namespace: pe.Namespace,
+		},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{
+				Type:        mortisev1alpha1.SourceTypeGit,
+				Repo:        "https://example.com/repo.git",
+				ProviderRef: "github-main",
+			},
+		},
+	}
+
+	result, proceed, err := r.reconcilePreviewBuild(context.Background(), pe, app)
+	if err != nil {
+		t.Fatalf("reconcile preview build: %v", err)
+	}
+	if !proceed {
+		t.Fatalf("expected externally seeded ready image to skip preview build, got %+v", result)
+	}
+	if result.RequeueAfter != 0 {
+		t.Fatalf("expected no requeue when build is skipped, got %+v", result)
+	}
+
+	var runs mortisev1alpha1.BuildRunList
+	if err := c.List(context.Background(), &runs, client.InNamespace(pe.Namespace)); err != nil {
+		t.Fatalf("list preview buildruns: %v", err)
+	}
+	if len(runs.Items) != 0 {
+		t.Fatalf("expected no preview buildruns to be created, got %d", len(runs.Items))
+	}
+}
+
 type noopBuildClient struct{}
 
 func (noopBuildClient) Submit(context.Context, build.BuildRequest) (<-chan build.BuildEvent, error) {
