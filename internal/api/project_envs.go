@@ -12,6 +12,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -303,7 +304,8 @@ func (s *Server) UpdateProjectEnvironment(w http.ResponseWriter, r *http.Request
 		project.Spec.Environments[idx].Restricted = *req.Restricted
 	}
 
-	if err := s.client.Update(r.Context(), project); err != nil {
+	updated, err := s.updateProjectEnvironment(r.Context(), project.Name, envName, req)
+	if err != nil {
 		if req.Name != nil && *req.Name != envName {
 			_ = s.deleteProjectEnvNamespace(r.Context(), project, *req.Name)
 		}
@@ -317,7 +319,6 @@ func (s *Server) UpdateProjectEnvironment(w http.ResponseWriter, r *http.Request
 		}
 	}
 
-	updated := project.Spec.Environments[idx]
 	msg := "Updated project environment " + updated.Name
 	if req.Name != nil && *req.Name != envName {
 		msg = "Renamed project environment " + envName + " to " + updated.Name
@@ -329,6 +330,57 @@ func (s *Server) UpdateProjectEnvironment(w http.ResponseWriter, r *http.Request
 		Health:       EnvHealthUnknown,
 		Restricted:   updated.Restricted,
 	})
+}
+
+func (s *Server) updateProjectEnvironment(ctx context.Context, projectName, envName string, req patchProjectEnvRequest) (mortisev1alpha1.ProjectEnvironment, error) {
+	var updated mortisev1alpha1.ProjectEnvironment
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var current mortisev1alpha1.Project
+		if err := s.client.Get(ctx, types.NamespacedName{Name: projectName}, &current); err != nil {
+			return err
+		}
+
+		idx := indexOfEnv(&current, envName)
+		if idx < 0 {
+			return apierrors.NewNotFound(
+				schema.GroupResource{Group: mortisev1alpha1.GroupVersion.Group, Resource: "projectenvironments"},
+				envName,
+			)
+		}
+
+		if req.Name != nil && *req.Name != envName {
+			if duplicateIdx := indexOfEnv(&current, *req.Name); duplicateIdx >= 0 && duplicateIdx != idx {
+				return &projectEnvExistsError{project: current.Name, name: *req.Name}
+			}
+			current.Spec.Environments[idx].Name = *req.Name
+		}
+		if req.DisplayOrder != nil {
+			oldOrder := current.Spec.Environments[idx].DisplayOrder
+			newOrder := *req.DisplayOrder
+			if oldOrder != newOrder {
+				for i := range current.Spec.Environments {
+					if i != idx && current.Spec.Environments[i].DisplayOrder == newOrder {
+						current.Spec.Environments[i].DisplayOrder = oldOrder
+						break
+					}
+				}
+				current.Spec.Environments[idx].DisplayOrder = newOrder
+			}
+		}
+		if req.Restricted != nil {
+			current.Spec.Environments[idx].Restricted = *req.Restricted
+		}
+
+		if err := s.client.Update(ctx, &current); err != nil {
+			return err
+		}
+		updated = current.Spec.Environments[idx]
+		return nil
+	})
+	if err != nil {
+		return mortisev1alpha1.ProjectEnvironment{}, err
+	}
+	return updated, nil
 }
 
 // DeleteProjectEnvironment removes an env from spec.environments. The

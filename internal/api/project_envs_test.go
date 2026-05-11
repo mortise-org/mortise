@@ -380,6 +380,65 @@ func TestUpdateProjectEnvironmentRename(t *testing.T) {
 	}
 }
 
+func TestUpdateProjectEnvironmentRenamePreservesConcurrentProjectUpdate(t *testing.T) {
+	baseClient := setupEnvtest(t)
+	ns := seedProject(t, baseClient, "demo", "production", "staging")
+
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: ns},
+		Spec: mortisev1alpha1.AppSpec{
+			Source:       mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: "nginx:1.25.0"},
+			Environments: []mortisev1alpha1.Environment{{Name: "staging", Domain: "web-staging.example.com"}},
+		},
+	}
+	if err := baseClient.Create(context.Background(), app); err != nil {
+		t.Fatalf("create app: %v", err)
+	}
+
+	conflictClient := &projectCreateConflictClient{Client: baseClient}
+	srv := newAdminServer(t, conflictClient)
+	h := srv.Handler()
+
+	w := doRequest(h, http.MethodPatch, "/api/projects/demo/environments/staging", map[string]any{"name": "stage"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if !conflictClient.fired {
+		t.Fatalf("expected simulated conflict to fire")
+	}
+
+	var proj mortisev1alpha1.Project
+	if err := baseClient.Get(context.Background(), types.NamespacedName{Name: "demo"}, &proj); err != nil {
+		t.Fatalf("get project: %v", err)
+	}
+	var production, stage *mortisev1alpha1.ProjectEnvironment
+	for i := range proj.Spec.Environments {
+		env := &proj.Spec.Environments[i]
+		switch env.Name {
+		case "production":
+			production = env
+		case "stage":
+			stage = env
+		case "staging":
+			t.Fatalf("old env name still present: %+v", proj.Spec.Environments)
+		}
+	}
+	if production == nil || stage == nil {
+		t.Fatalf("expected production and stage envs, got %+v", proj.Spec.Environments)
+	}
+	if !production.Restricted {
+		t.Fatalf("expected concurrent production update to be preserved")
+	}
+
+	var got mortisev1alpha1.App
+	if err := baseClient.Get(context.Background(), types.NamespacedName{Namespace: ns, Name: "web"}, &got); err != nil {
+		t.Fatalf("get app: %v", err)
+	}
+	if len(got.Spec.Environments) != 1 || got.Spec.Environments[0].Name != "stage" {
+		t.Fatalf("app override not renamed: %+v", got.Spec.Environments)
+	}
+}
+
 func TestUpdateProjectEnvironmentRenamePreservesSecretEnvVars(t *testing.T) {
 	k8sClient := setupEnvtest(t)
 	srv := newAdminServer(t, k8sClient)
