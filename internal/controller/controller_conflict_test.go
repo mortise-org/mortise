@@ -359,22 +359,6 @@ func (c *appUpdateConflictClient) Update(ctx context.Context, obj client.Object,
 	return c.Client.Update(ctx, obj, opts...)
 }
 
-type namespaceAlreadyExistsClient struct {
-	client.Client
-	fired bool
-}
-
-func (c *namespaceAlreadyExistsClient) Create(ctx context.Context, obj client.Object, opts ...client.CreateOption) error {
-	if ns, ok := obj.(*corev1.Namespace); ok && !c.fired {
-		c.fired = true
-		if err := c.Client.Create(ctx, ns.DeepCopy(), opts...); err != nil {
-			return err
-		}
-		return apierrors.NewAlreadyExists(schema.GroupResource{Resource: "namespaces"}, ns.Name)
-	}
-	return c.Client.Create(ctx, obj, opts...)
-}
-
 type staleNamespaceCacheClient struct {
 	client.Client
 	fired       bool
