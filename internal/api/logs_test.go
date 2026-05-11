@@ -331,9 +331,9 @@ func TestLogsStreamOpenFailureUsesStructuredErrorPayload(t *testing.T) {
 	srv, _ := newLogsServer(t, k8sClient, cs)
 	h := srv.Handler()
 	ns := seedProject(t, k8sClient, "default")
-	seedAppAndPod(t, k8sClient, ns, "stream-app", "production", "stream-app-pod-1")
+	seedAppAndPod(t, k8sClient, ns, "stream-fail-app", "production", "stream-fail-pod-1")
 
-	w := doRequest(h, http.MethodGet, "/api/projects/default/apps/stream-app/logs?env=production", nil)
+	w := doRequest(h, http.MethodGet, "/api/projects/default/apps/stream-fail-app/logs?env=production", nil)
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
