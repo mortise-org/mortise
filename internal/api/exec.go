@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/go-chi/chi/v5"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/scheme"
@@ -75,12 +74,20 @@ func (s *Server) ExecInApp(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	appName := chi.URLParam(r, "app")
 	env := envFromQuery(r)
 	if !s.authorize(w, r, authz.Resource{Kind: "app", Project: projectName, Environment: env}, authz.ActionUpdate) {
 		return
 	}
-	envNs := constants.EnvNamespace(projectName, env)
+	app, env, ok := s.resolveDefaultedAppEnv(w, r)
+	if !ok {
+		return
+	}
+	envNs, err := envNamespace(app, env)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorResponse{err.Error()})
+		return
+	}
+	appName := app.Name
 
 	var req execRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {

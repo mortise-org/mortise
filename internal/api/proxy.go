@@ -116,6 +116,22 @@ func (s *Server) resolveProxyEnvironment(w http.ResponseWriter, r *http.Request)
 	return project, env, true
 }
 
+func (s *Server) resolveProxyEnvironmentName(w http.ResponseWriter, r *http.Request) (*mortisev1alpha1.Project, string, bool) {
+	project, ok := s.getProject(w, r)
+	if !ok {
+		return nil, "", false
+	}
+	env := queryEnv(r)
+	if env == "" {
+		if len(project.Spec.Environments) == 0 {
+			writeJSON(w, http.StatusBadRequest, errorResponse{fmt.Sprintf("project %q has no environments", project.Name)})
+			return nil, "", false
+		}
+		env = project.Spec.Environments[0].Name
+	}
+	return project, env, true
+}
+
 // handleConnect starts a reverse proxy listener for an app on an auto-allocated
 // port and returns the URL. If already running, returns the existing URL.
 // Both the CLI and UI call this same endpoint.
@@ -131,6 +147,7 @@ func (s *Server) resolveProxyEnvironment(w http.ResponseWriter, r *http.Request)
 // @Param app path string true "App name"
 // @Param environment query string false "Environment name (defaults to first env)"
 // @Success 200 {object} appProxyEntry
+// @Failure 400 {object} errorResponse
 // @Failure 404 {object} errorResponse
 // @Failure 500 {object} errorResponse
 // @Router /projects/{project}/apps/{app}/connect [post]
@@ -165,7 +182,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !appParticipatesInEnv(&app, env) {
-		writeJSON(w, http.StatusNotFound, errorResponse{fmt.Sprintf("app %q is not enabled in environment %q", app.Name, env)})
+		writeJSON(w, http.StatusNotFound, errorResponse{fmt.Sprintf("environment %q is disabled for app %q", env, app.Name)})
 		return
 	}
 
@@ -232,7 +249,9 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 // @Security BearerAuth
 // @Param project path string true "Project name"
 // @Param app path string true "App name"
+// @Param environment query string false "Environment name (defaults to first env)"
 // @Success 204
+// @Failure 400 {object} errorResponse
 // @Failure 404 {object} errorResponse
 // @Router /projects/{project}/apps/{app}/disconnect [post]
 func (s *Server) handleDisconnect(w http.ResponseWriter, r *http.Request) {
@@ -240,7 +259,7 @@ func (s *Server) handleDisconnect(w http.ResponseWriter, r *http.Request) {
 	if !s.authorize(w, r, authz.Resource{Kind: "app", Project: projectName}, authz.ActionRead) {
 		return
 	}
-	project, env, ok := s.resolveProxyEnvironment(w, r)
+	project, env, ok := s.resolveProxyEnvironmentName(w, r)
 	if !ok {
 		return
 	}
@@ -255,10 +274,27 @@ func (s *Server) handleDisconnect(w http.ResponseWriter, r *http.Request) {
 	}
 	s.proxies.mu.Unlock()
 
-	if !exists {
-		writeJSON(w, http.StatusNotFound, errorResponse{"no active proxy for this app"})
+	if exists {
+		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 
-	w.WriteHeader(http.StatusNoContent)
+	if indexOfEnv(project, env) < 0 {
+		writeJSON(w, http.StatusBadRequest, errorResponse{fmt.Sprintf(
+			"environment %q is not declared on project %q — add it via POST /api/projects/%s/environments first",
+			env, project.Name, project.Name)})
+		return
+	}
+
+	var app mortisev1alpha1.App
+	if err := s.client.Get(r.Context(), types.NamespacedName{Name: appName, Namespace: projectNs(project)}, &app); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	if !appParticipatesInEnv(&app, env) {
+		writeJSON(w, http.StatusNotFound, errorResponse{fmt.Sprintf("environment %q is disabled for app %q", env, app.Name)})
+		return
+	}
+
+	writeJSON(w, http.StatusNotFound, errorResponse{"no active proxy for this app"})
 }

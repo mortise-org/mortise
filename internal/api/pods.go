@@ -4,13 +4,10 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/go-chi/chi/v5"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
 	"github.com/mortise-org/mortise/internal/authz"
 	"github.com/mortise-org/mortise/internal/constants"
 )
@@ -42,6 +39,7 @@ type podSummary struct {
 // @Param app path string true "App name"
 // @Param env query string false "Environment name (default: production)"
 // @Success 200 {array} podSummary
+// @Failure 400 {object} errorResponse
 // @Failure 403 {object} errorResponse
 // @Failure 404 {object} errorResponse
 // @Failure 500 {object} errorResponse
@@ -54,20 +52,19 @@ func (s *Server) handleListPods(w http.ResponseWriter, r *http.Request) {
 	if !s.authorize(w, r, authz.Resource{Kind: "app", Namespace: ns, Project: projectName}, authz.ActionRead) {
 		return
 	}
-	name := chi.URLParam(r, "app")
-
-	env := envFromQuery(r)
-
-	var app mortisev1alpha1.App
-	if err := s.client.Get(r.Context(), types.NamespacedName{Name: name, Namespace: ns}, &app); err != nil {
-		writeError(w, r, err)
+	app, env, ok := s.resolveDefaultedAppEnv(w, r)
+	if !ok {
 		return
 	}
 
-	envNs := constants.EnvNamespace(projectName, env)
+	envNs, err := envNamespace(app, env)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorResponse{err.Error()})
+		return
+	}
 
 	sel := labels.SelectorFromSet(map[string]string{
-		constants.AppNameLabel:         name,
+		constants.AppNameLabel:         app.Name,
 		"app.kubernetes.io/managed-by": "mortise",
 		"mortise.dev/environment":      env,
 	})

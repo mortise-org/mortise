@@ -8,6 +8,7 @@ import (
 	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/rest"
 
+	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
 	"github.com/mortise-org/mortise/internal/api"
 	"github.com/mortise-org/mortise/internal/auth"
 	"github.com/mortise-org/mortise/internal/authz"
@@ -36,7 +37,8 @@ func TestExecEmptyCommand(t *testing.T) {
 	k8sClient := setupEnvtest(t)
 	srv := newAdminServer(t, k8sClient)
 	h := srv.Handler()
-	seedProject(t, k8sClient, "default")
+	ns := seedProject(t, k8sClient, "default")
+	seedImageApp(t, k8sClient, ns, "anything")
 
 	w := doRequest(h, http.MethodPost, "/api/projects/default/apps/anything/exec", map[string]any{
 		"command": []string{},
@@ -51,7 +53,8 @@ func TestExecInvalidJSON(t *testing.T) {
 	k8sClient := setupEnvtest(t)
 	srv := newAdminServer(t, k8sClient)
 	h := srv.Handler()
-	seedProject(t, k8sClient, "default")
+	ns := seedProject(t, k8sClient, "default")
+	seedImageApp(t, k8sClient, ns, "anything")
 
 	w := doRequestRawBody(h, http.MethodPost, "/api/projects/default/apps/anything/exec", "{bad json", testToken)
 	if w.Code != http.StatusBadRequest {
@@ -80,7 +83,8 @@ func TestExecRejectsWhenNoRESTConfig(t *testing.T) {
 	k8sClient := setupEnvtest(t)
 	srv := newAdminServer(t, k8sClient)
 	h := srv.Handler()
-	seedProject(t, k8sClient, "default")
+	ns := seedProject(t, k8sClient, "default")
+	seedImageApp(t, k8sClient, ns, "anything")
 
 	body := map[string]any{"command": []string{"ls"}}
 	w := doRequest(h, http.MethodPost, "/api/projects/default/apps/anything/exec", body)
@@ -91,5 +95,36 @@ func TestExecRejectsWhenNoRESTConfig(t *testing.T) {
 	_ = json.NewDecoder(w.Body).Decode(&resp)
 	if resp["error"] == "" {
 		t.Errorf("expected error message in body")
+	}
+}
+
+func TestExecRejectsUndeclaredEnvironment(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+	ns := seedProject(t, k8sClient, "default")
+	seedImageApp(t, k8sClient, ns, "anything")
+
+	w := doRequest(h, http.MethodPost, "/api/projects/default/apps/anything/exec?env=staging", map[string]any{
+		"command": []string{"ls"},
+	})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for undeclared env, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestExecRejectsDisabledAppEnvironment(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+	ns := seedProject(t, k8sClient, "default", "staging", "production")
+	disabled := false
+	seedImageApp(t, k8sClient, ns, "anything", mortisev1alpha1.Environment{Name: "staging", Enabled: &disabled})
+
+	w := doRequest(h, http.MethodPost, "/api/projects/default/apps/anything/exec?env=staging", map[string]any{
+		"command": []string{"ls"},
+	})
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for disabled env, got %d: %s", w.Code, w.Body.String())
 	}
 }

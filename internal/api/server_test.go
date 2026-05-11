@@ -344,6 +344,22 @@ func seedProjectMember(t *testing.T, c client.Client, projectName, email string,
 	}
 }
 
+func seedImageApp(t *testing.T, c client.Client, projectNS, appName string, envs ...mortisev1alpha1.Environment) {
+	t.Helper()
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: appName, Namespace: projectNS},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: "nginx:1.25.0"},
+		},
+	}
+	if len(envs) > 0 {
+		app.Spec.Environments = envs
+	}
+	if err := c.Create(context.Background(), app); err != nil {
+		t.Fatalf("create app: %v", err)
+	}
+}
+
 // testToken is set by the first call to newTestServer. Tests that use
 // doRequest (no explicit token) pick it up here.
 var testToken string
@@ -743,7 +759,8 @@ func TestSecretsCRUD(t *testing.T) {
 	k8sClient := setupEnvtest(t)
 	srv := newAdminServer(t, k8sClient)
 	h := srv.Handler()
-	seedProject(t, k8sClient, "default")
+	ns := seedProject(t, k8sClient, "default")
+	seedImageApp(t, k8sClient, ns, "myapp")
 
 	w := doRequest(h, http.MethodPost, "/api/projects/default/apps/myapp/secrets", map[string]any{
 		"name": "db-creds",
@@ -1267,6 +1284,33 @@ func TestRedeploy(t *testing.T) {
 	}
 }
 
+func TestRedeployRejectsUndeclaredEnvironment(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+	ns := seedProject(t, k8sClient, "default")
+	seedImageApp(t, k8sClient, ns, "redeploy-app")
+
+	w := doRequest(h, http.MethodPost, "/api/projects/default/apps/redeploy-app/redeploy?env=staging", nil)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for undeclared env, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestRedeployRejectsDisabledAppEnvironment(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+	ns := seedProject(t, k8sClient, "default", "staging", "production")
+	disabled := false
+	seedImageApp(t, k8sClient, ns, "redeploy-app", mortisev1alpha1.Environment{Name: "staging", Enabled: &disabled})
+
+	w := doRequest(h, http.MethodPost, "/api/projects/default/apps/redeploy-app/redeploy?env=staging", nil)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for disabled env, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
 func TestRedeployHistoryCap(t *testing.T) {
 	k8sClient := setupEnvtest(t)
 	srv := newAdminServer(t, k8sClient)
@@ -1673,18 +1717,12 @@ func TestMemberCanCRUDApps(t *testing.T) {
 // TestMemberCanCRUDSecrets verifies members have full CRUD access to secrets.
 func TestMemberCanCRUDSecrets(t *testing.T) {
 	k8sClient := setupEnvtest(t)
-	seedProject(t, k8sClient, "default")
+	ns := seedProject(t, k8sClient, "default")
 	srv, _ := newTestServerAs(t, k8sClient, auth.RoleMember)
 	h := srv.Handler()
 
 	seedProjectMember(t, k8sClient, "default", "member@example.com", mortisev1alpha1.ProjectRoleDeveloper)
-
-	doRequest(h, http.MethodPost, "/api/projects/default/apps", map[string]any{
-		"name": "sec-app",
-		"spec": map[string]any{
-			"source": map[string]any{"type": "image", "image": "nginx:1.25.0"},
-		},
-	})
+	seedImageApp(t, k8sClient, ns, "sec-app")
 
 	w := doRequest(h, http.MethodPost, "/api/projects/default/apps/sec-app/secrets", map[string]any{
 		"name": "db-pass",
