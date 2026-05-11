@@ -23,7 +23,6 @@ type sseTokenPrincipal struct {
 	email       string
 	passwordGen int64
 }
-
 type sseTokenEntry struct {
 	principal sseTokenPrincipal
 	expiresAt time.Time

@@ -14,7 +14,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
-	"github.com/mortise-org/mortise/internal/auth"
 	"github.com/mortise-org/mortise/internal/authz"
 	"github.com/mortise-org/mortise/internal/constants"
 )
@@ -216,7 +215,7 @@ func (s *Server) CheckProjectNameAvailable(w http.ResponseWriter, r *http.Reques
 }
 
 // @Summary List projects
-// @Description Returns projects the caller has access to. Admins see all; members see only their projects.
+// @Description Returns projects the caller has access to. Admins see all; other users see only their projects.
 // @Tags projects
 // @Produce json
 // @Security BearerAuth
@@ -225,9 +224,9 @@ func (s *Server) CheckProjectNameAvailable(w http.ResponseWriter, r *http.Reques
 // @Failure 403 {object} errorResponse
 // @Router /projects [get]
 //
-// ListProjects returns Projects the caller has access to. Admins and platform
-// viewers see all projects; regular members see only projects where they hold
-// a ProjectMember.
+// ListProjects returns Projects the caller has access to. Admins see all
+// projects; viewers and members see only projects where they hold a
+// ProjectMember.
 func (s *Server) ListProjects(w http.ResponseWriter, r *http.Request) {
 	if !s.authorize(w, r, authz.Resource{Kind: "project"}, authz.ActionRead) {
 		return
@@ -249,40 +248,22 @@ func (s *Server) ListProjects(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	principal := PrincipalFromContext(r.Context())
-
-	// Admins and platform viewers see everything.
-	if principal != nil && (principal.Role == auth.RoleAdmin || principal.Role == auth.RoleViewer) {
-		resp := make([]projectResponse, 0, len(list.Items))
-		for i := range list.Items {
-			resp = append(resp, toProjectResponse(&list.Items[i], allApps.Items))
-		}
-		writeJSON(w, http.StatusOK, resp)
-		return
-	}
-
-	// For regular members, build a set of projects where this user has membership.
-	var allMembers mortisev1alpha1.ProjectMemberList
-	if err := s.client.List(r.Context(), &allMembers,
-		client.MatchingLabels{"mortise.dev/member": "true"},
-	); err != nil {
+	readableProjects, err := s.readableProjects(r)
+	if err != nil {
 		writeError(w, r, err)
 		return
 	}
-	memberProjects := make(map[string]bool, len(allMembers.Items))
-	if principal != nil {
-		for _, m := range allMembers.Items {
-			if m.Spec.Email == principal.Email {
-				memberProjects[m.Spec.Project] = true
-			}
-		}
+	readable := make(map[string]struct{}, len(readableProjects))
+	for _, name := range readableProjects {
+		readable[name] = struct{}{}
 	}
 
 	resp := make([]projectResponse, 0, len(list.Items))
 	for i := range list.Items {
-		if memberProjects[list.Items[i].Name] {
-			resp = append(resp, toProjectResponse(&list.Items[i], allApps.Items))
+		if _, ok := readable[list.Items[i].Name]; !ok {
+			continue
 		}
+		resp = append(resp, toProjectResponse(&list.Items[i], allApps.Items))
 	}
 	writeJSON(w, http.StatusOK, resp)
 }

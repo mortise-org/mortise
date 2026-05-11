@@ -208,7 +208,6 @@ func TestIssueSSETokenRejectsRevokedUser(t *testing.T) {
 		t.Fatalf("expected 401 for revoked user SSE token issue, got %d: %s", w.Code, w.Body.String())
 	}
 }
-
 func TestIssueSSETokenRejectsProviderWithoutCurrentPrincipal(t *testing.T) {
 	k8sClient := setupEnvtest(t)
 	ctx := context.Background()

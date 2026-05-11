@@ -28,6 +28,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/retry"
+	"k8s.io/utils/clock"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -44,6 +45,7 @@ const buildRunPollInterval = 15 * time.Second
 type BuildRunReconciler struct {
 	client.Client
 	Scheme          *runtime.Scheme
+	Clock           clock.Clock
 	BuildClient     build.BuildClient
 	GitClient       git.GitClient
 	RegistryBackend registry.RegistryBackend
@@ -217,7 +219,7 @@ func (r *BuildRunReconciler) persistBuildRunLog(ctx context.Context, br *mortise
 	}
 
 	annotations := map[string]string{
-		buildLogAnnotationTimestamp: time.Now().UTC().Format(time.RFC3339Nano),
+		buildLogAnnotationTimestamp: r.clock().Now().UTC().Format(time.RFC3339Nano),
 		buildLogAnnotationCommit:    br.Spec.Revision,
 		buildLogAnnotationStatus:    status,
 	}
@@ -325,6 +327,13 @@ func parseImageRef(full string) registry.ImageRef {
 		ref.Path = ref.Path[:idx]
 	}
 	return ref
+}
+
+func (r *BuildRunReconciler) clock() clock.Clock {
+	if r.Clock != nil {
+		return r.Clock
+	}
+	return clock.RealClock{}
 }
 
 func (r *BuildRunReconciler) SetupWithManager(mgr ctrl.Manager) error {
