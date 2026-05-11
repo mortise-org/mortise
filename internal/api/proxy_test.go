@@ -14,6 +14,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
@@ -283,15 +284,14 @@ func TestHandleConnectDoesNotSerializeDifferentKeys(t *testing.T) {
 }
 
 func TestHandleDisconnectRemovesStaleProxyAfterProjectEnvChange(t *testing.T) {
-	project := seedProxyProject("default", "staging", "production")
-	srv := newProxyTestServer(t, project, seedProxyApp("default", "web"))
+	srv := newProxyRaceServer(t)
 	listener, err := net.Listen("tcp", proxyBindAddress+":0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
 	t.Cleanup(func() {
 		_ = listener.Close()
-		closeProxyListeners(srv)
+		closeProxyEntries(srv)
 	})
 	srv.proxies.proxies[proxyKey("default", "web", "staging")] = &appProxyEntry{
 		Port:     listener.Addr().(*net.TCPAddr).Port,
@@ -299,13 +299,17 @@ func TestHandleDisconnectRemovesStaleProxyAfterProjectEnvChange(t *testing.T) {
 		listener: listener,
 	}
 
+	project := &mortisev1alpha1.Project{}
+	if err := srv.client.Get(context.Background(), types.NamespacedName{Name: "default"}, project); err != nil {
+		t.Fatalf("get project: %v", err)
+	}
 	project.Spec.Environments = []mortisev1alpha1.ProjectEnvironment{{Name: "production", DisplayOrder: 0}}
 	if err := srv.client.Update(context.Background(), project); err != nil {
 		t.Fatalf("update project environments: %v", err)
 	}
 
 	w := httptest.NewRecorder()
-	srv.handleDisconnect(w, proxyRequest(http.MethodPost, "/api/projects/default/apps/web/disconnect?env=staging", "default", "web"))
+	srv.handleDisconnect(w, proxyRaceRequest(http.MethodPost, "/api/projects/default/apps/web/disconnect?env=staging", "web"))
 
 	if w.Code != http.StatusNoContent {
 		t.Fatalf("expected 204, got %d: %s", w.Code, w.Body.String())
