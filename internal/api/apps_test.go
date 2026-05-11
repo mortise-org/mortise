@@ -230,7 +230,7 @@ func TestUpdateAppRetriesConflict(t *testing.T) {
 	baseClient := fake.NewClientBuilder().WithScheme(scheme.Scheme).WithObjects(project, app).Build()
 	s := &Server{
 		client: &appUpdateConflictClient{Client: baseClient, fired: &fired},
-		authz:  allowAllPolicy{},
+		authz:  allowAllAppsPolicy{},
 	}
 
 	req := httptest.NewRequest(http.MethodPut, "/api/projects/default/apps/update-conflict", bytes.NewBufferString(`{"source":{"type":"image","image":"nginx:1.26.0"}}`))
@@ -260,9 +260,9 @@ func TestUpdateAppRetriesConflict(t *testing.T) {
 	}
 }
 
-type allowAllPolicy struct{}
+type allowAllAppsPolicy struct{}
 
-func (allowAllPolicy) Authorize(context.Context, auth.Principal, authz.Resource, authz.Action) (bool, error) {
+func (allowAllAppsPolicy) Authorize(context.Context, auth.Principal, authz.Resource, authz.Action) (bool, error) {
 	return true, nil
 }
 
