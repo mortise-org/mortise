@@ -200,6 +200,34 @@ func purgeAllAppsIn(ctx context.Context, namespace string) {
 	}, time.Second*5, time.Millisecond*50).Should(BeTrue())
 }
 
+func purgeAllPreviewsIn(ctx context.Context, namespace string) {
+	var list mortisev1alpha1.PreviewEnvironmentList
+	if err := k8sClient.List(ctx, &list, client.InNamespace(namespace)); err != nil {
+		return
+	}
+	for i := range list.Items {
+		pe := &list.Items[i]
+		if pe.DeletionTimestamp.IsZero() {
+			_ = k8sClient.Delete(ctx, pe)
+		}
+		var fresh mortisev1alpha1.PreviewEnvironment
+		if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(pe), &fresh); err != nil {
+			continue
+		}
+		if len(fresh.Finalizers) > 0 {
+			fresh.Finalizers = nil
+			_ = k8sClient.Update(ctx, &fresh)
+		}
+	}
+	Eventually(func() bool {
+		var cur mortisev1alpha1.PreviewEnvironmentList
+		if err := k8sClient.List(ctx, &cur, client.InNamespace(namespace)); err != nil {
+			return false
+		}
+		return len(cur.Items) == 0
+	}, time.Second*5, time.Millisecond*50).Should(BeTrue())
+}
+
 var _ = AfterSuite(func() {
 	By("tearing down the test environment")
 	cancel()

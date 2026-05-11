@@ -234,6 +234,7 @@ var _ = Describe("App Controller", func() {
 	const envNsProduction = "pj-default-project-production"
 
 	AfterEach(func() {
+		purgeAllPreviewsIn(context.Background(), namespace)
 		purgeAllAppsIn(context.Background(), namespace)
 	})
 
@@ -2876,6 +2877,7 @@ var _ = Describe("App Controller — git source", func() {
 	const envNsProduction = "pj-default-project-production"
 
 	AfterEach(func() {
+		purgeAllPreviewsIn(context.Background(), namespace)
 		purgeAllAppsIn(context.Background(), namespace)
 	})
 
@@ -4907,6 +4909,7 @@ var _ = Describe("App Controller — git source", func() {
 		ctx := context.Background()
 
 		AfterEach(func() {
+			purgeAllPreviewsIn(ctx, namespace)
 			purgeAllAppsIn(ctx, namespace)
 		})
 
