@@ -78,6 +78,29 @@ func (r *AppReconciler) gcAppAcrossEnvs(ctx context.Context, app *mortisev1alpha
 	return nil
 }
 
+func (r *AppReconciler) deleteAppPreviews(ctx context.Context, app *mortisev1alpha1.App) (bool, error) {
+	var previews mortisev1alpha1.PreviewEnvironmentList
+	if err := r.List(ctx, &previews, client.InNamespace(app.Namespace)); err != nil {
+		return false, err
+	}
+
+	remaining := false
+	for i := range previews.Items {
+		pe := &previews.Items[i]
+		if pe.Spec.AppRef != app.Name {
+			continue
+		}
+		remaining = true
+		if !pe.DeletionTimestamp.IsZero() {
+			continue
+		}
+		if err := r.Delete(ctx, pe); err != nil && !errors.IsNotFound(err) {
+			return false, err
+		}
+	}
+	return remaining, nil
+}
+
 // gcOptedOutEnvs deletes resources for envs this App explicitly opts out of
 // via `Spec.Environments[].Enabled: false`. When an env is removed from the
 // project entirely, the env namespace is deleted by the Project controller

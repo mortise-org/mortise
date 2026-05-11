@@ -108,7 +108,8 @@ func asNamespaceResolveError(err error) (*namespaceResolveError, bool) {
 // delete, and propagates env-set changes to owned Apps.
 type ProjectReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme    *runtime.Scheme
+	APIReader client.Reader
 }
 
 // +kubebuilder:rbac:groups=mortise.mortise.dev,resources=projects,verbs=get;list;watch;create;update;patch;delete
@@ -325,9 +326,17 @@ func (r *ProjectReconciler) ensureNamespace(ctx context.Context, project *mortis
 			return fmt.Errorf("set owner ref on namespace: %w", err)
 		}
 		if err := r.Create(ctx, desired); err != nil {
-			return fmt.Errorf("create namespace: %w", err)
+			if errors.IsAlreadyExists(err) {
+				if err := r.namespaceReader().Get(ctx, types.NamespacedName{Name: nsName}, &existing); err != nil {
+					return fmt.Errorf("get namespace after already exists: %w", err)
+				}
+				getErr = nil
+			} else {
+				return fmt.Errorf("create namespace: %w", err)
+			}
+		} else {
+			return nil
 		}
-		return nil
 	}
 	if getErr != nil {
 		return fmt.Errorf("get namespace: %w", getErr)
@@ -410,6 +419,13 @@ func (r *ProjectReconciler) checkControlNamespaceUniqueness(ctx context.Context,
 		}
 	}
 	return nil
+}
+
+func (r *ProjectReconciler) namespaceReader() client.Reader {
+	if r.APIReader != nil {
+		return r.APIReader
+	}
+	return r.Client
 }
 
 // gcStaleEnvNamespaces deletes any env namespace labelled for this project but

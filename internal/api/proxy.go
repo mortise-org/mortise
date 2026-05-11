@@ -21,6 +21,8 @@ import (
 	"github.com/mortise-org/mortise/internal/constants"
 )
 
+var proxyListen = net.Listen
+
 type retryTransport struct {
 	base     http.RoundTripper
 	retries  int
@@ -77,6 +79,10 @@ type appProxyEntry struct {
 	listener net.Listener
 }
 
+type proxyPending struct {
+	done chan struct{}
+}
+
 const proxyBindAddress = "127.0.0.1"
 
 // appProxyManager manages per-app reverse proxy listeners. Each app gets its
@@ -84,6 +90,7 @@ const proxyBindAddress = "127.0.0.1"
 type appProxyManager struct {
 	mu      sync.Mutex
 	proxies map[string]*appProxyEntry // key: "project/app/env"
+	pending map[string]*proxyPending
 }
 
 func proxyKey(project, app, env string) string {
@@ -91,7 +98,10 @@ func proxyKey(project, app, env string) string {
 }
 
 func newAppProxyManager() *appProxyManager {
-	return &appProxyManager{proxies: make(map[string]*appProxyEntry)}
+	return &appProxyManager{
+		proxies: make(map[string]*appProxyEntry),
+		pending: make(map[string]*proxyPending),
+	}
 }
 
 // handleConnect starts a reverse proxy listener for an app on an auto-allocated
@@ -127,20 +137,67 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	envNs := constants.EnvNamespace(projectName, env)
 	key := proxyKey(projectName, appName, env)
 
-	// If already proxying, return the existing URL.
-	s.proxies.mu.Lock()
-	if entry, exists := s.proxies.proxies[key]; exists {
+	for {
+		s.proxies.mu.Lock()
+		if entry, exists := s.proxies.proxies[key]; exists {
+			s.proxies.mu.Unlock()
+			writeJSON(w, http.StatusOK, entry)
+			return
+		}
+		if pending, exists := s.proxies.pending[key]; exists {
+			s.proxies.mu.Unlock()
+			select {
+			case <-pending.done:
+				continue
+			case <-r.Context().Done():
+				writeJSON(w, http.StatusRequestTimeout, errorResponse{"request canceled while waiting for proxy"})
+				return
+			}
+		}
+		pending := &proxyPending{done: make(chan struct{})}
+		s.proxies.pending[key] = pending
 		s.proxies.mu.Unlock()
+		entry, err := s.createProxyEntry(r, ns, appName, envNs, key, log)
+		s.proxies.mu.Lock()
+		if err == nil {
+			s.proxies.proxies[key] = entry
+		}
+		delete(s.proxies.pending, key)
+		close(pending.done)
+		s.proxies.mu.Unlock()
+		if err != nil {
+			var status int
+			var msg string
+			switch {
+			case errors.Is(err, errProxyAppNotFound):
+				status = http.StatusNotFound
+				msg = "app not found"
+			case errors.Is(err, errProxyInvalidTarget):
+				status = http.StatusInternalServerError
+				msg = "invalid proxy target"
+			default:
+				status = http.StatusInternalServerError
+				msg = err.Error()
+			}
+			writeJSON(w, status, errorResponse{msg})
+			return
+		}
+		log.Info("started app proxy", "app", key, "port", entry.Port, "target", entry.URL)
 		writeJSON(w, http.StatusOK, entry)
 		return
 	}
-	s.proxies.mu.Unlock()
+}
 
+var (
+	errProxyAppNotFound   = errors.New("app not found")
+	errProxyInvalidTarget = errors.New("invalid proxy target")
+)
+
+func (s *Server) createProxyEntry(r *http.Request, ns, appName, envNs, key string, log interface{ Info(string, ...any) }) (*appProxyEntry, error) {
 	// Resolve app CRD (control ns) to get the port.
 	var app mortisev1alpha1.App
 	if err := s.client.Get(r.Context(), types.NamespacedName{Name: appName, Namespace: ns}, &app); err != nil {
-		writeJSON(w, http.StatusNotFound, errorResponse{"app not found"})
-		return
+		return nil, errProxyAppNotFound
 	}
 
 	port := app.Spec.Network.Port
@@ -151,15 +208,13 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	target := fmt.Sprintf("http://%s.%s.svc:%d", appName, envNs, port)
 	targetURL, err := url.Parse(target)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorResponse{"invalid proxy target"})
-		return
+		return nil, errProxyInvalidTarget
 	}
 
 	// Allocate a random port and start listening.
-	listener, err := net.Listen("tcp", proxyBindAddress+":0")
+	listener, err := proxyListen("tcp", proxyBindAddress+":0")
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorResponse{"failed to allocate port: " + err.Error()})
-		return
+		return nil, fmt.Errorf("failed to allocate port: %w", err)
 	}
 	allocatedPort := listener.Addr().(*net.TCPAddr).Port
 
@@ -182,18 +237,11 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	entry := &appProxyEntry{
+	return &appProxyEntry{
 		Port:     allocatedPort,
 		URL:      fmt.Sprintf("http://localhost:%d", allocatedPort),
 		listener: listener,
-	}
-
-	s.proxies.mu.Lock()
-	s.proxies.proxies[key] = entry
-	s.proxies.mu.Unlock()
-
-	log.Info("started app proxy", "app", key, "port", allocatedPort, "target", target)
-	writeJSON(w, http.StatusOK, entry)
+	}, nil
 }
 
 // handleDisconnect stops the proxy for an app.

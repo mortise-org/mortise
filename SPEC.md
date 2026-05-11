@@ -240,8 +240,8 @@ domain" concept does not exist.
 | **Admin** | |
 | `GET /api/admin/users` | list platform users |
 | `POST /api/admin/users` | create user |
-| `PATCH /api/admin/users/{email}` | update user role |
-| `DELETE /api/admin/users/{email}` | delete user |
+| `PATCH /api/admin/users/{email}` | update user role; rejects demoting the last platform admin |
+| `DELETE /api/admin/users/{email}` | delete user; rejects deleting the last platform admin |
 | `POST /api/admin/users/{email}/password` | reset user password |
 | **Git providers** | |
 | `GET /api/gitproviders` | list git providers |
@@ -1065,6 +1065,9 @@ Platform roles:
 | **member** | Can create projects; project-level permissions depend on `ProjectMember` role within each project. |
 | **viewer** | Read-only. |
 
+The platform must always retain at least one `admin`. API requests that would
+demote or delete the last platform admin are rejected with `400 Bad Request`.
+
 Project roles (`ProjectMember` CRD, per project):
 
 | Role | Can do |
@@ -1072,6 +1075,9 @@ Project roles (`ProjectMember` CRD, per project):
 | **owner** | Full project control (apps, members, tokens, project settings). |
 | **developer** | App lifecycle operations, but no member/token management; cannot delete app/project. Restricted envs are read-only. |
 | **viewer** | Read-only in project. |
+
+Each project must always retain at least one `owner`. API requests that would
+demote the last owner are rejected with `400 Bad Request`.
 
 **Restricted environments.** When `environments[].restricted: true` on a
 `Project`, Developer-role members have read-only access to that environment.
