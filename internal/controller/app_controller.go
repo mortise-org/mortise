@@ -2264,24 +2264,28 @@ func hashCredentialData(data map[string][]byte) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-func (r *AppReconciler) hashEnvSecretData(ctx context.Context, appName, envNs string) string {
+func hashEnvSecretData(ctx context.Context, reader client.Reader, appName, envNs string) string {
 	combined := make(map[string][]byte)
 
 	var appSecret corev1.Secret
-	if err := r.Get(ctx, types.NamespacedName{Name: envstore.AppEnvSecretName(appName), Namespace: envNs}, &appSecret); err == nil {
+	if err := reader.Get(ctx, types.NamespacedName{Name: envstore.AppEnvSecretName(appName), Namespace: envNs}, &appSecret); err == nil {
 		for k, v := range appSecret.Data {
 			combined[k] = v
 		}
 	}
 
 	var sharedSecret corev1.Secret
-	if err := r.Get(ctx, types.NamespacedName{Name: envstore.SharedEnvName, Namespace: envNs}, &sharedSecret); err == nil {
+	if err := reader.Get(ctx, types.NamespacedName{Name: envstore.SharedEnvName, Namespace: envNs}, &sharedSecret); err == nil {
 		for k, v := range sharedSecret.Data {
 			combined[k] = v
 		}
 	}
 
 	return hashCredentialData(combined)
+}
+
+func (r *AppReconciler) hashEnvSecretData(ctx context.Context, appName, envNs string) string {
+	return hashEnvSecretData(ctx, r.Client, appName, envNs)
 }
 
 // isMortiseManaged returns true iff the object carries the standard

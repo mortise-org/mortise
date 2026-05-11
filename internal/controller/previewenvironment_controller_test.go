@@ -535,6 +535,81 @@ var _ = Describe("PreviewEnvironment Controller", func() {
 			Expect(envMap).To(HaveKeyWithValue("FEATURE_FLAG", "true"))
 		})
 
+		It("should refresh preview secrets on a later reconcile after source env secrets change", func() {
+			ctx := context.Background()
+			project, ns := createPreviewTestProject(ctx, true)
+
+			createPreviewApp(ctx, "refresh-app", ns, &mortisev1alpha1.Environment{
+				Name: "staging",
+			})
+
+			sourceEnvNs := constants.EnvNamespace(project.Name, "staging")
+			sourceNs := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: sourceEnvNs}}
+			Expect(k8sClient.Create(ctx, sourceNs)).To(Succeed())
+
+			store := &envstore.Store{Client: k8sClient}
+			Expect(store.Set(ctx, sourceEnvNs, "refresh-app", []envstore.Env{
+				{Name: "LOG_LEVEL", Value: "info", Source: "user"},
+			}, nil)).To(Succeed())
+			Expect(store.SetShared(ctx, sourceEnvNs, []envstore.Env{
+				{Name: "SENTRY_DSN", Value: "https://sentry.io/123", Source: "shared"},
+			}, nil)).To(Succeed())
+
+			pe := createPreviewEnv(ctx, "refresh-app-preview-pr-21", ns, "refresh-app", 21, "abc123", "feat", "pr-21-refresh-app.example.com", 72*time.Hour)
+			pe.Status.Image = "registry.example.com/mortise/refresh-app:pr-21"
+			Expect(k8sClient.Status().Update(ctx, pe)).To(Succeed())
+
+			reconciler := &PreviewEnvironmentReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+				Clock:  clocktesting.NewFakeClock(time.Now()),
+			}
+
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: pe.Name, Namespace: ns},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			previewNs := constants.PreviewNamespace(project.Name, 21)
+			previewVars, err := store.Get(ctx, previewNs, "refresh-app")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(previewVars).To(ContainElement(envstore.Env{Name: "LOG_LEVEL", Value: "info", Source: "user"}))
+
+			sharedVars, err := store.GetShared(ctx, previewNs)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(sharedVars).To(ContainElement(envstore.Env{Name: "SENTRY_DSN", Value: "https://sentry.io/123", Source: "shared"}))
+
+			var initialDeployment appsv1.Deployment
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "refresh-app", Namespace: previewNs}, &initialDeployment)).To(Succeed())
+			initialEnvHash := initialDeployment.Spec.Template.Annotations["mortise.dev/env-hash"]
+			Expect(initialEnvHash).NotTo(BeEmpty())
+
+			Expect(store.Set(ctx, sourceEnvNs, "refresh-app", []envstore.Env{
+				{Name: "LOG_LEVEL", Value: "debug", Source: "user"},
+			}, nil)).To(Succeed())
+			Expect(store.SetShared(ctx, sourceEnvNs, []envstore.Env{
+				{Name: "SENTRY_DSN", Value: "https://sentry.io/456", Source: "shared"},
+			}, nil)).To(Succeed())
+
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: pe.Name, Namespace: ns},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			previewVars, err = store.Get(ctx, previewNs, "refresh-app")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(previewVars).To(ContainElement(envstore.Env{Name: "LOG_LEVEL", Value: "debug", Source: "user"}))
+
+			sharedVars, err = store.GetShared(ctx, previewNs)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(sharedVars).To(ContainElement(envstore.Env{Name: "SENTRY_DSN", Value: "https://sentry.io/456", Source: "shared"}))
+
+			var refreshedDeployment appsv1.Deployment
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "refresh-app", Namespace: previewNs}, &refreshedDeployment)).To(Succeed())
+			Expect(refreshedDeployment.Spec.Template.Annotations["mortise.dev/env-hash"]).NotTo(BeEmpty())
+			Expect(refreshedDeployment.Spec.Template.Annotations["mortise.dev/env-hash"]).NotTo(Equal(initialEnvHash))
+		})
+
 		It("should let pe.Spec.Env overrides win over inherited vars", func() {
 			ctx := context.Background()
 			project, ns := createPreviewTestProject(ctx, true)
