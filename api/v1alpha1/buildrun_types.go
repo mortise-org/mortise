@@ -98,6 +98,7 @@ type BuildRunSpec struct {
 // BuildRunStatus defines the observed state of BuildRun.
 type BuildRunStatus struct {
 	Phase          BuildRunPhase                `json:"phase,omitempty"`
+	Attempt        int32                        `json:"attempt,omitempty"`
 	JobRef         *corev1.LocalObjectReference `json:"jobRef,omitempty"`
 	LogRef         *corev1.LocalObjectReference `json:"logRef,omitempty"`
 	Image          string                       `json:"image,omitempty"`
