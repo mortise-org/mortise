@@ -31,16 +31,17 @@
 		}
 		lastSeenSpec = app.spec;
 	});
-	function cloneSpec(): AppSpec { return JSON.parse(JSON.stringify(specOverride ?? app.spec)); }
+	const effectiveSpec = $derived(specOverride ?? app.spec);
+	function cloneSpec(): AppSpec { return JSON.parse(JSON.stringify(effectiveSpec)); }
 
 	function handleSpecUpdate(spec: AppSpec) {
 		specOverride = spec;
 	}
 
 	const selectedEnv = $derived(
-		store.currentEnv(project) || app.spec.environments?.[0]?.name || 'production'
+		store.currentEnv(project) || effectiveSpec.environments?.[0]?.name || 'production'
 	);
-	const envEntry = $derived(app.spec.environments?.find(e => e.name === selectedEnv));
+	const envEntry = $derived(effectiveSpec.environments?.find(e => e.name === selectedEnv));
 	const envEnabled = $derived(envEntry?.enabled !== false);
 	let togglingEnabled = $state(false);
 

@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	corev1 "k8s.io/api/core/v1"
@@ -411,7 +412,7 @@ func inferProviderType(name string) (mortisev1alpha1.GitProviderType, string) {
 // the user clicking "Connect."
 func (d *DeviceFlowHandler) getOrCreateGitProvider(ctx context.Context, name string, providerType mortisev1alpha1.GitProviderType, host string) (*mortisev1alpha1.GitProvider, error) {
 	var gp mortisev1alpha1.GitProvider
-	err := d.client.Get(ctx, types.NamespacedName{Name: name}, &gp)
+	err := d.getGitProviderWithRetry(ctx, name, &gp)
 	if err == nil {
 		return &gp, nil
 	}
@@ -484,6 +485,31 @@ func (d *DeviceFlowHandler) getOrCreateGitProvider(ctx context.Context, name str
 		return nil, fmt.Errorf("create git provider %q: %w", name, err)
 	}
 	return newGP, nil
+}
+
+func (d *DeviceFlowHandler) getGitProviderWithRetry(ctx context.Context, name string, gp *mortisev1alpha1.GitProvider) error {
+	const (
+		maxAttempts = 5
+		retryDelay  = 100 * time.Millisecond
+	)
+
+	var err error
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		err = d.client.Get(ctx, types.NamespacedName{Name: name}, gp)
+		if err == nil || !k8serrors.IsNotFound(err) || attempt == maxAttempts-1 {
+			return err
+		}
+
+		timer := time.NewTimer(retryDelay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+
+	return err
 }
 
 // storeUserToken persists a git provider access token in a k8s Secret keyed

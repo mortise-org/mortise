@@ -393,9 +393,16 @@ test.describe('app drawer env interpolation', () => {
     await enabledSwitch.scrollIntoViewIfNeeded();
     await expect(enabledSwitch).toBeVisible({ timeout: 10_000 });
     await expect(enabledSwitch).toBeEnabled({ timeout: 10_000 });
+    await expect(enabledSwitch).toHaveAttribute('aria-checked', 'true', { timeout: 5_000 });
 
-    // Click to disable the env and verify via API.
+    // Click to disable the env. The drawer should reflect the saved state
+    // immediately, before any prop refresh or page reload.
     await enabledSwitch.click();
+    await expect(enabledSwitch).toHaveAttribute('aria-checked', 'false', { timeout: 10_000 });
+    await expect(enabledSwitch).toHaveClass(/bg-surface-600/, { timeout: 10_000 });
+    await expect(enabledSwitch.locator('span')).toHaveClass(/translate-x-0\.5/, { timeout: 10_000 });
+
+    // Verify via API that the persisted spec matches the local UI state.
     await expect(async () => {
       const app = await getAppViaAPI(request, token, project, appName);
       const spec = app.spec as { environments?: Array<{ name: string; enabled?: boolean }> };
@@ -416,6 +423,9 @@ test.describe('app drawer env interpolation', () => {
 
     // Click to re-enable.
     await enabledSwitch.click();
+    await expect(enabledSwitch).toHaveAttribute('aria-checked', 'true', { timeout: 10_000 });
+    await expect(enabledSwitch).toHaveClass(/bg-accent/, { timeout: 10_000 });
+    await expect(enabledSwitch.locator('span')).toHaveClass(/translate-x-4\.5/, { timeout: 10_000 });
     await expect(async () => {
       const app = await getAppViaAPI(request, token, project, appName);
       const spec = app.spec as { environments?: Array<{ name: string; enabled?: boolean }> };
