@@ -187,6 +187,20 @@ func TestGetProjectAsMember(t *testing.T) {
 	}
 }
 
+func TestGetProjectAsViewerWithMembership(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	seedProject(t, k8sClient, "viewer-readable")
+	srv, _ := newTestServerAs(t, k8sClient, auth.RoleViewer)
+	h := srv.Handler()
+
+	seedProjectMember(t, k8sClient, "viewer-readable", "test@example.com", mortisev1alpha1.ProjectRoleViewer)
+
+	w := doRequest(h, http.MethodGet, "/api/projects/viewer-readable", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 for viewer getting project with membership, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
 // TestGetProjectNonMemberForbidden verifies non-members cannot read a project.
 func TestGetProjectNonMemberForbidden(t *testing.T) {
 	k8sClient := setupEnvtest(t)
@@ -197,6 +211,18 @@ func TestGetProjectNonMemberForbidden(t *testing.T) {
 	w := doRequest(h, http.MethodGet, "/api/projects/private", nil)
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("expected 403 for non-member, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestGetProjectAsViewerWithoutMembershipForbidden(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	seedProject(t, k8sClient, "viewer-private")
+	srv, _ := newTestServerAs(t, k8sClient, auth.RoleViewer)
+	h := srv.Handler()
+
+	w := doRequest(h, http.MethodGet, "/api/projects/viewer-private", nil)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for viewer without membership, got %d: %s", w.Code, w.Body.String())
 	}
 }
 
