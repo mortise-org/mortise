@@ -11,9 +11,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
 
-	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
 	"github.com/mortise-org/mortise/internal/authz"
 	"github.com/mortise-org/mortise/internal/constants"
 	"github.com/mortise-org/mortise/internal/platformconfig"
@@ -60,18 +58,15 @@ func (s *Server) handleMetricsCurrent(w http.ResponseWriter, r *http.Request) {
 	if !s.authorize(w, r, authz.Resource{Kind: "app", Project: projectName}, authz.ActionRead) {
 		return
 	}
-	ns, projectName, ok := s.resolveProject(w, r)
+	_, projectName, ok := s.resolveProject(w, r)
 	if !ok {
 		return
 	}
-	name := chi.URLParam(r, "app")
-	env := envFromQuery(r)
-
-	var app mortisev1alpha1.App
-	if err := s.client.Get(r.Context(), types.NamespacedName{Name: name, Namespace: ns}, &app); err != nil {
-		writeError(w, r, err)
+	app, env, ok := s.resolveDefaultedAppEnv(w, r)
+	if !ok {
 		return
 	}
+	name := app.Name
 
 	if current, ok, err := s.currentMetricsFromAdapter(r, projectName, name, env); err != nil {
 		writeJSON(w, http.StatusOK, map[string]any{"available": false, "error": err.Error()})
@@ -204,23 +199,20 @@ func (s *Server) handleMetricsHistory(w http.ResponseWriter, r *http.Request) {
 	if !s.authorize(w, r, authz.Resource{Kind: "app", Project: projectName}, authz.ActionRead) {
 		return
 	}
-	ns, projectName, ok := s.resolveProject(w, r)
+	_, projectName, ok := s.resolveProject(w, r)
 	if !ok {
 		return
 	}
-	name := chi.URLParam(r, "app")
-	env := envFromQuery(r)
+	app, env, ok := s.resolveDefaultedAppEnv(w, r)
+	if !ok {
+		return
+	}
+	name := app.Name
 
 	start := r.URL.Query().Get("start")
 	end := r.URL.Query().Get("end")
 	if start == "" || end == "" {
 		writeJSON(w, http.StatusBadRequest, errorResponse{"start and end are required"})
-		return
-	}
-
-	var app mortisev1alpha1.App
-	if err := s.client.Get(r.Context(), types.NamespacedName{Name: name, Namespace: ns}, &app); err != nil {
-		writeError(w, r, err)
 		return
 	}
 
@@ -279,23 +271,20 @@ func (s *Server) handleLogHistory(w http.ResponseWriter, r *http.Request) {
 	if !s.authorize(w, r, authz.Resource{Kind: "app", Project: projectName}, authz.ActionRead) {
 		return
 	}
-	ns, projectName, ok := s.resolveProject(w, r)
+	_, projectName, ok := s.resolveProject(w, r)
 	if !ok {
 		return
 	}
-	name := chi.URLParam(r, "app")
-	env := envFromQuery(r)
+	app, env, ok := s.resolveDefaultedAppEnv(w, r)
+	if !ok {
+		return
+	}
+	name := app.Name
 
 	start := r.URL.Query().Get("start")
 	end := r.URL.Query().Get("end")
 	if start == "" || end == "" {
 		writeJSON(w, http.StatusBadRequest, errorResponse{"start and end are required"})
-		return
-	}
-
-	var app mortisev1alpha1.App
-	if err := s.client.Get(r.Context(), types.NamespacedName{Name: name, Namespace: ns}, &app); err != nil {
-		writeError(w, r, err)
 		return
 	}
 

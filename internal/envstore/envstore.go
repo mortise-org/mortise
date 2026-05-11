@@ -241,9 +241,20 @@ func (s *Store) Delete(ctx context.Context, namespace, appName, key string) erro
 		}
 		return err
 	}
-	delete(secret.Data, key)
-	removeKeyFromAnnotations(secret, key)
-	return s.Client.Update(ctx, secret)
+	if _, exists := secret.Data[key]; !exists {
+		return nil
+	}
+
+	return UpdateWithConflictRetry(ctx, s.Client, types.NamespacedName{Namespace: namespace, Name: name}, func() *corev1.Secret {
+		return &corev1.Secret{}
+	}, func(secret *corev1.Secret) (bool, error) {
+		if _, exists := secret.Data[key]; !exists {
+			return false, nil
+		}
+		delete(secret.Data, key)
+		removeKeyFromAnnotations(secret, key)
+		return true, nil
+	})
 }
 
 // SecretExists reports whether the app's env Secret exists in the namespace,
@@ -378,36 +389,43 @@ func (s *Store) upsertSecret(ctx context.Context, namespace, name string, vars [
 	}
 
 update:
-	// Re-fetch to ensure we have the latest version before updating.
-	if err := s.Client.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, &existing); err != nil {
-		return fmt.Errorf("re-get env secret %s/%s: %w", namespace, name, err)
-	}
-
-	if reflect.DeepEqual(existing.Data, desired.Data) {
-		return nil
-	}
-
-	existing.Data = desired.Data
-	// Replace mortise source-tracking annotations entirely from desired,
-	// preserving any non-mortise annotations on the existing Secret.
-	if existing.Annotations == nil {
-		existing.Annotations = make(map[string]string)
-	}
-	for k := range existing.Annotations {
-		if strings.HasPrefix(k, "mortise.dev/") {
-			delete(existing.Annotations, k)
+	return UpdateWithConflictRetry(ctx, s.Client, types.NamespacedName{Namespace: namespace, Name: name}, func() *corev1.Secret {
+		return &corev1.Secret{}
+	}, func(existing *corev1.Secret) (bool, error) {
+		changed := false
+		if !reflect.DeepEqual(existing.Data, desired.Data) {
+			existing.Data = desired.Data
+			changed = true
 		}
-	}
-	for k, v := range desired.Annotations {
-		existing.Annotations[k] = v
-	}
-	if existing.Labels == nil {
-		existing.Labels = make(map[string]string)
-	}
-	for k, v := range desired.Labels {
-		existing.Labels[k] = v
-	}
-	return s.Client.Update(ctx, &existing)
+
+		if existing.Annotations == nil {
+			existing.Annotations = make(map[string]string)
+		}
+		for _, key := range []string{AnnotationBindingKeys, AnnotationGeneratedKeys, AnnotationSharedKeys} {
+			if _, ok := existing.Annotations[key]; ok {
+				delete(existing.Annotations, key)
+				changed = true
+			}
+		}
+		for k, v := range desired.Annotations {
+			if existing.Annotations[k] != v {
+				existing.Annotations[k] = v
+				changed = true
+			}
+		}
+
+		if existing.Labels == nil {
+			existing.Labels = make(map[string]string)
+		}
+		for k, v := range desired.Labels {
+			if existing.Labels[k] != v {
+				existing.Labels[k] = v
+				changed = true
+			}
+		}
+
+		return changed, nil
+	})
 }
 
 func buildSecret(namespace, name string, vars []Env, extraLabels map[string]string) *corev1.Secret {
@@ -479,6 +497,11 @@ func secretToEnvs(secret *corev1.Secret) []Env {
 	}
 	sort.Slice(envs, func(i, j int) bool { return envs[i].Name < envs[j].Name })
 	return envs
+}
+
+// SecretToEnvs decodes a Secret using envstore's source annotations.
+func SecretToEnvs(secret *corev1.Secret) []Env {
+	return secretToEnvs(secret)
 }
 
 func parseKeySet(csv string) map[string]bool {

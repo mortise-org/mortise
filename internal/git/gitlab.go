@@ -48,14 +48,17 @@ func (g *GitLabAPI) RegisterWebhook(ctx context.Context, repo string, cfg Webhoo
 		Token:                 gogitlab.Ptr(token),
 		EnableSSLVerification: gogitlab.Ptr(true),
 	}
-	_, _, err := g.client.Projects.AddProjectHook(repo, opts)
-	return err
+	_, resp, err := g.client.Projects.AddProjectHook(repo, opts)
+	if err != nil {
+		return wrapWebhookOperationError("gitlab", WebhookOperationRegister, gitlabStatusCode(resp), fmt.Errorf("register gitlab hook: %w", err))
+	}
+	return nil
 }
 
 func (g *GitLabAPI) ListWebhooks(ctx context.Context, repo string) ([]WebhookInfo, error) {
-	hooks, _, err := g.client.Projects.ListProjectHooks(repo, nil)
+	hooks, resp, err := g.client.Projects.ListProjectHooks(repo, nil)
 	if err != nil {
-		return nil, fmt.Errorf("list gitlab hooks: %w", err)
+		return nil, wrapWebhookOperationError("gitlab", WebhookOperationList, gitlabStatusCode(resp), fmt.Errorf("list gitlab hooks: %w", err))
 	}
 	result := make([]WebhookInfo, 0, len(hooks))
 	for _, h := range hooks {
@@ -70,8 +73,11 @@ func (g *GitLabAPI) ListWebhooks(ctx context.Context, repo string) ([]WebhookInf
 }
 
 func (g *GitLabAPI) DeleteWebhook(ctx context.Context, repo string, hookID int64) error {
-	_, err := g.client.Projects.DeleteProjectHook(repo, hookID)
-	return err
+	resp, err := g.client.Projects.DeleteProjectHook(repo, hookID)
+	if err != nil {
+		return wrapWebhookOperationError("gitlab", WebhookOperationDelete, gitlabStatusCode(resp), fmt.Errorf("delete gitlab hook: %w", err))
+	}
+	return nil
 }
 
 func (g *GitLabAPI) PostCommitStatus(ctx context.Context, repo, sha string, status CommitStatus) error {
@@ -237,4 +243,11 @@ func gitlabState(s CommitStatusState) string {
 	default:
 		return "pending"
 	}
+}
+
+func gitlabStatusCode(resp *gogitlab.Response) int {
+	if resp == nil || resp.Response == nil {
+		return 0
+	}
+	return resp.Response.StatusCode
 }

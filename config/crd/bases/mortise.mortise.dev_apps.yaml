@@ -592,6 +592,10 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              currentBuildRunName:
+                description: CurrentBuildRunName is the active durable build execution
+                  for the app.
+                type: string
               detectedPort:
                 description: |-
                   DetectedPort is the container port auto-detected from EXPOSE directives
@@ -620,6 +624,25 @@ spec:
                         this environment. Empty when cert-manager is not in use. Possible
                         values: "Ready", "Pending", "Failed".
                       type: string
+                    currentBuildRunRef:
+                      description: |-
+                        CurrentBuildRunRef points at the currently selected BuildRun for this
+                        environment, whether it is pending, running, failed, or succeeded.
+                      properties:
+                        name:
+                          type: string
+                        phase:
+                          description: BuildRunPhase is the durable lifecycle state
+                            of a git build execution.
+                          enum:
+                          - Pending
+                          - Running
+                          - Succeeded
+                          - Failed
+                          type: string
+                      required:
+                      - name
+                      type: object
                     currentDigest:
                       type: string
                     currentImage:
@@ -673,6 +696,25 @@ spec:
                         controller from snapping the phase back to Ready before a user-triggered
                         redeploy has actually rolled out.
                       type: string
+                    lastSuccessfulBuildRunRef:
+                      description: |-
+                        LastSuccessfulBuildRunRef points at the most recent successful BuildRun
+                        for this environment.
+                      properties:
+                        name:
+                          type: string
+                        phase:
+                          description: BuildRunPhase is the durable lifecycle state
+                            of a git build execution.
+                          enum:
+                          - Pending
+                          - Running
+                          - Succeeded
+                          - Failed
+                          type: string
+                      required:
+                      - name
+                      type: object
                     message:
                       type: string
                     name:
@@ -699,6 +741,10 @@ spec:
                   - name
                   type: object
                 type: array
+              lastBuildRunName:
+                description: LastBuildRunName is the most recent terminal durable
+                  build execution.
+                type: string
               lastBuiltImage:
                 description: |-
                   LastBuiltImage is the full image reference (including digest) produced by the

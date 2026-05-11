@@ -48,13 +48,16 @@ func (g *GiteaAPI) RegisterWebhook(ctx context.Context, repo string, cfg Webhook
 		"content_type": "json",
 		"secret":       cfg.Secret,
 	}
-	_, _, err = g.client.CreateRepoHook(owner, name, gogitea.CreateHookOption{
+	_, resp, err := g.client.CreateRepoHook(owner, name, gogitea.CreateHookOption{
 		Type:   gogitea.HookTypeGitea,
 		Config: hookCfg,
 		Events: events,
 		Active: true,
 	})
-	return err
+	if err != nil {
+		return wrapWebhookOperationError("gitea", WebhookOperationRegister, giteaStatusCode(resp), fmt.Errorf("register gitea hook: %w", err))
+	}
+	return nil
 }
 
 func (g *GiteaAPI) ListWebhooks(ctx context.Context, repo string) ([]WebhookInfo, error) {
@@ -62,9 +65,9 @@ func (g *GiteaAPI) ListWebhooks(ctx context.Context, repo string) ([]WebhookInfo
 	if err != nil {
 		return nil, err
 	}
-	hooks, _, err := g.client.ListRepoHooks(owner, name, gogitea.ListHooksOptions{})
+	hooks, resp, err := g.client.ListRepoHooks(owner, name, gogitea.ListHooksOptions{})
 	if err != nil {
-		return nil, fmt.Errorf("list gitea hooks: %w", err)
+		return nil, wrapWebhookOperationError("gitea", WebhookOperationList, giteaStatusCode(resp), fmt.Errorf("list gitea hooks: %w", err))
 	}
 	result := make([]WebhookInfo, 0, len(hooks))
 	for _, h := range hooks {
@@ -82,8 +85,11 @@ func (g *GiteaAPI) DeleteWebhook(ctx context.Context, repo string, hookID int64)
 	if err != nil {
 		return err
 	}
-	_, err = g.client.DeleteRepoHook(owner, name, hookID)
-	return err
+	resp, err := g.client.DeleteRepoHook(owner, name, hookID)
+	if err != nil {
+		return wrapWebhookOperationError("gitea", WebhookOperationDelete, giteaStatusCode(resp), fmt.Errorf("delete gitea hook: %w", err))
+	}
+	return nil
 }
 
 func (g *GiteaAPI) PostCommitStatus(_ context.Context, repo, sha string, status CommitStatus) error {
@@ -262,4 +268,11 @@ func giteaState(s CommitStatusState) gogitea.StatusState {
 	default:
 		return gogitea.StatusPending
 	}
+}
+
+func giteaStatusCode(resp *gogitea.Response) int {
+	if resp == nil || resp.Response == nil {
+		return 0
+	}
+	return resp.Response.StatusCode
 }

@@ -1,0 +1,284 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.20.1
+  name: buildruns.mortise.mortise.dev
+spec:
+  group: mortise.mortise.dev
+  names:
+    kind: BuildRun
+    listKind: BuildRunList
+    plural: buildruns
+    singular: buildrun
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.targetRef.name
+      name: Target
+      type: string
+    - jsonPath: .spec.environment
+      name: Env
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .spec.revision
+      name: Revision
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: BuildRun is the Schema for durable build executions.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: BuildRunSpec defines the desired state of BuildRun.
+            properties:
+              appName:
+                type: string
+              branch:
+                type: string
+              buildArgs:
+                additionalProperties:
+                  type: string
+                type: object
+              buildContext:
+                description: |-
+                  BuildContext selects the BuildKit build-context root when source.path is set.
+                  "root" forces the repo root (monorepo Dockerfile referencing sibling dirs).
+                  "subdir" forces the subdirectory (self-contained, Railway-style).
+                  Unset = auto: pick subdir if a Dockerfile lives there, unless that Dockerfile
+                  references the subdir prefix in COPY/ADD sources, in which case fall back to
+                  repo root.
+                enum:
+                - root
+                - subdir
+                type: string
+              buildMode:
+                type: string
+              createdBy:
+                type: string
+              dockerfile:
+                type: string
+              dockerfilePath:
+                type: string
+              environment:
+                type: string
+              inputHash:
+                type: string
+              noCache:
+                type: boolean
+              path:
+                type: string
+              providerRef:
+                type: string
+              pullImage:
+                type: string
+              pullTarget:
+                type: string
+              pushImage:
+                type: string
+              pushTarget:
+                type: string
+              repo:
+                type: string
+              requestID:
+                type: string
+              revision:
+                type: string
+              sourcePath:
+                type: string
+              targetRef:
+                description: BuildRunTargetRef identifies the resource requesting
+                  the build.
+                properties:
+                  kind:
+                    type: string
+                  name:
+                    type: string
+                  namespace:
+                    type: string
+                required:
+                - kind
+                - name
+                type: object
+              tokenOwner:
+                type: string
+              tokenSecretRef:
+                description: SecretRef is a reference to a key in a Kubernetes Secret.
+                properties:
+                  key:
+                    description: Key within the secret.
+                    type: string
+                  name:
+                    description: Name of the secret.
+                    type: string
+                  namespace:
+                    description: Namespace of the secret.
+                    type: string
+                required:
+                - key
+                - name
+                - namespace
+                type: object
+              trigger:
+                description: BuildRunTrigger describes why a BuildRun exists.
+                type: string
+            required:
+            - repo
+            - targetRef
+            type: object
+          status:
+            description: BuildRunStatus defines the observed state of BuildRun.
+            properties:
+              completedAt:
+                format: date-time
+                type: string
+              conditions:
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              detectedPort:
+                format: int32
+                type: integer
+              digest:
+                type: string
+              error:
+                type: string
+              failureMessage:
+                type: string
+              failureReason:
+                type: string
+              finishedAt:
+                format: date-time
+                type: string
+              image:
+                type: string
+              jobRef:
+                description: |-
+                  LocalObjectReference contains enough information to let you locate the
+                  referenced object inside the same namespace.
+                properties:
+                  name:
+                    default: ""
+                    description: |-
+                      Name of the referent.
+                      This field is effectively required, but due to backwards compatibility is
+                      allowed to be empty. Instances of this type with an empty value here are
+                      almost certainly wrong.
+                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                    type: string
+                type: object
+                x-kubernetes-map-type: atomic
+              logRef:
+                description: |-
+                  LocalObjectReference contains enough information to let you locate the
+                  referenced object inside the same namespace.
+                properties:
+                  name:
+                    default: ""
+                    description: |-
+                      Name of the referent.
+                      This field is effectively required, but due to backwards compatibility is
+                      allowed to be empty. Instances of this type with an empty value here are
+                      almost certainly wrong.
+                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                    type: string
+                type: object
+                x-kubernetes-map-type: atomic
+              phase:
+                description: BuildRunPhase is the durable lifecycle state of a git
+                  build execution.
+                enum:
+                - Pending
+                - Running
+                - Succeeded
+                - Failed
+                type: string
+              startedAt:
+                format: date-time
+                type: string
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

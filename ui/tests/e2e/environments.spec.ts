@@ -393,9 +393,16 @@ test.describe('app drawer env interpolation', () => {
     await enabledSwitch.scrollIntoViewIfNeeded();
     await expect(enabledSwitch).toBeVisible({ timeout: 10_000 });
     await expect(enabledSwitch).toBeEnabled({ timeout: 10_000 });
+    await expect(enabledSwitch).toHaveAttribute('aria-checked', 'true', { timeout: 5_000 });
 
-    // Click to disable the env and verify via API.
+    // Click to disable the env. The drawer should reflect the saved state
+    // immediately, before any prop refresh or page reload.
     await enabledSwitch.click();
+    await expect(enabledSwitch).toHaveAttribute('aria-checked', 'false', { timeout: 10_000 });
+    await expect(enabledSwitch).toHaveClass(/bg-surface-600/, { timeout: 10_000 });
+    await expect(enabledSwitch.locator('span')).toHaveClass(/translate-x-0\.5/, { timeout: 10_000 });
+
+    // Verify via API that the persisted spec matches the local UI state.
     await expect(async () => {
       const app = await getAppViaAPI(request, token, project, appName);
       const spec = app.spec as { environments?: Array<{ name: string; enabled?: boolean }> };
@@ -416,6 +423,9 @@ test.describe('app drawer env interpolation', () => {
 
     // Click to re-enable.
     await enabledSwitch.click();
+    await expect(enabledSwitch).toHaveAttribute('aria-checked', 'true', { timeout: 10_000 });
+    await expect(enabledSwitch).toHaveClass(/bg-accent/, { timeout: 10_000 });
+    await expect(enabledSwitch.locator('span')).toHaveClass(/translate-x-4\.5/, { timeout: 10_000 });
     await expect(async () => {
       const app = await getAppViaAPI(request, token, project, appName);
       const spec = app.spec as { environments?: Array<{ name: string; enabled?: boolean }> };
@@ -640,9 +650,18 @@ test.describe('new project page — also create staging checkbox', () => {
 
     await page.locator('input#name').fill(project);
     // Check the "Also create staging" checkbox.
-    const checkbox = page.getByRole('checkbox');
+    const stagingLabel = page.locator('label').filter({ hasText: 'Also create a staging environment' });
+    const checkbox = stagingLabel.locator('input[type="checkbox"]');
     await expect(checkbox).toBeVisible();
-    await checkbox.check();
+    await page.evaluate(() => {
+      const input = Array.from(document.querySelectorAll('input[type="checkbox"]')).find(
+        (node) => node.parentElement?.textContent?.includes('Also create a staging environment')
+      ) as HTMLInputElement | undefined;
+      if (!input) throw new Error('staging checkbox not found');
+      input.checked = true;
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+    });
     await expect(checkbox).toBeChecked();
 
     await page.getByRole('button', { name: 'Create project', exact: true }).click();

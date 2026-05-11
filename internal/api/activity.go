@@ -107,13 +107,9 @@ func (s *Server) ListPlatformActivity(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	perProject := limit
-	if len(projects) > 1 {
-		perProject = max(limit/len(projects), 1)
-	}
 	var merged []activity.Event
 	for _, project := range projects {
-		events, err := s.activityStore.List(r.Context(), project, perProject)
+		events, err := s.activityStore.List(r.Context(), project, limit)
 		if err != nil {
 			writeError(w, r, err)
 			return

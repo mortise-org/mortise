@@ -23,6 +23,7 @@ mortise-core:
 
   operator:
     ingressClassName: ""
+    tmpSizeLimit: null
 
   service:
     type: ClusterIP

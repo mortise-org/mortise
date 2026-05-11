@@ -148,8 +148,55 @@ var _ = Describe("PreviewEnvironment Controller", func() {
 		})
 	})
 
+	Context("when the PreviewEnvironment omits sourceEnv", func() {
+		It("should resolve the default preview source environment", func() {
+			ctx := context.Background()
+			project, ns := createPreviewTestProject(ctx, true)
+			project.Spec.Environments = []mortisev1alpha1.ProjectEnvironment{{Name: "staging"}}
+			Expect(k8sClient.Update(ctx, project)).To(Succeed())
+
+			staging := &mortisev1alpha1.Environment{Name: "staging"}
+			app := createPreviewApp(ctx, "sourceenv-app", ns, staging)
+			app.Spec.Source.Image = "registry.example.com/demo:preview"
+			Expect(k8sClient.Update(ctx, app)).To(Succeed())
+
+			pe := &mortisev1alpha1.PreviewEnvironment{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "sourceenv-app-preview-pr-7",
+					Namespace: ns,
+				},
+				Spec: mortisev1alpha1.PreviewEnvironmentSpec{
+					AppRef: "sourceenv-app",
+					PullRequest: mortisev1alpha1.PullRequestRef{
+						Number: 7,
+						Branch: "main",
+						SHA:    "deadbeef",
+					},
+					Domain: fmt.Sprintf("sourceenv-app-%s-pr-7.example.com", project.Name),
+					TTL:    metav1.Duration{Duration: 72 * time.Hour},
+				},
+			}
+			Expect(k8sClient.Create(ctx, pe)).To(Succeed())
+
+			reconciler := &PreviewEnvironmentReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+				Clock:  clocktesting.NewFakeClock(time.Now()),
+			}
+
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: pe.Name, Namespace: ns},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var updated mortisev1alpha1.PreviewEnvironment
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: pe.Name, Namespace: ns}, &updated)).To(Succeed())
+			Expect(updated.Spec.SourceEnv).To(Equal("staging"))
+		})
+	})
+
 	Context("when the parent App does not exist", func() {
-		It("should set the PreviewEnvironment to Failed", func() {
+		It("should mark the PreviewEnvironment for deletion", func() {
 			ctx := context.Background()
 			_, ns := createPreviewTestProject(ctx, true)
 
@@ -165,12 +212,11 @@ var _ = Describe("PreviewEnvironment Controller", func() {
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{Name: pe.Name, Namespace: ns},
 			})
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("AppNotFound"))
+			Expect(err).NotTo(HaveOccurred())
 
 			var updated mortisev1alpha1.PreviewEnvironment
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: pe.Name, Namespace: ns}, &updated)).To(Succeed())
-			Expect(updated.Status.Phase).To(Equal(mortisev1alpha1.PreviewPhaseFailed))
+			Expect(updated.DeletionTimestamp.IsZero()).To(BeFalse())
 		})
 	})
 
@@ -310,6 +356,95 @@ var _ = Describe("PreviewEnvironment Controller", func() {
 			Expect(updated.Status.Phase).To(Equal(mortisev1alpha1.PreviewPhaseReady))
 			Expect(updated.Status.URL).To(Equal("https://" + previewDomain))
 		})
+
+		It("should not update the preview Deployment when only defaulted nil-vs-empty fields differ", func() {
+			ctx := context.Background()
+			project, ns := createPreviewTestProject(ctx, true)
+
+			createPreviewApp(ctx, "stable-webapp", ns, &mortisev1alpha1.Environment{Name: "staging"})
+			previewDomain := fmt.Sprintf("stable-webapp-%s-pr-7.example.com", project.Name)
+			pe := createPreviewEnv(ctx, "stable-webapp-preview-pr-7", ns, "stable-webapp", 7, "deadbeef", "feat-x", previewDomain, 72*time.Hour)
+			pe.Spec.Replicas = ptr.To(int32(1))
+			Expect(k8sClient.Update(ctx, pe)).To(Succeed())
+			pe.Status.Image = "registry.example.com/mortise/stable-webapp:pr-7-deadbee"
+			Expect(k8sClient.Status().Update(ctx, pe)).To(Succeed())
+
+			reconciler := &PreviewEnvironmentReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+				Clock:  clocktesting.NewFakeClock(time.Now()),
+			}
+			req := reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: pe.Name, Namespace: ns},
+			}
+
+			_, err := reconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			previewNs := constants.PreviewNamespace(project.Name, 7)
+			var dep appsv1.Deployment
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "stable-webapp", Namespace: previewNs}, &dep)).To(Succeed())
+			dep.Spec.Template.ObjectMeta.Annotations = map[string]string{}
+			dep.Spec.Template.Spec.Volumes = []corev1.Volume{}
+			Expect(k8sClient.Update(ctx, &dep)).To(Succeed())
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "stable-webapp", Namespace: previewNs}, &dep)).To(Succeed())
+			rvBefore := dep.ResourceVersion
+
+			_, err = reconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "stable-webapp", Namespace: previewNs}, &dep)).To(Succeed())
+			Expect(dep.ResourceVersion).To(Equal(rvBefore))
+			Expect(dep.Spec.Template.ObjectMeta.Annotations).To(BeEmpty())
+			Expect(dep.Spec.Template.Spec.Volumes).To(BeEmpty())
+		})
+
+		It("should clear stale preview Deployment fields that Mortise owns", func() {
+			ctx := context.Background()
+			project, ns := createPreviewTestProject(ctx, true)
+
+			createPreviewApp(ctx, "reconcile-webapp", ns, &mortisev1alpha1.Environment{Name: "staging"})
+			previewDomain := fmt.Sprintf("reconcile-webapp-%s-pr-8.example.com", project.Name)
+			pe := createPreviewEnv(ctx, "reconcile-webapp-preview-pr-8", ns, "reconcile-webapp", 8, "feedbeef", "feat-y", previewDomain, 72*time.Hour)
+			pe.Status.Image = "registry.example.com/mortise/reconcile-webapp:pr-8-feedbee"
+			Expect(k8sClient.Status().Update(ctx, pe)).To(Succeed())
+
+			reconciler := &PreviewEnvironmentReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+				Clock:  clocktesting.NewFakeClock(time.Now()),
+			}
+			req := reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: pe.Name, Namespace: ns},
+			}
+
+			_, err := reconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			previewNs := constants.PreviewNamespace(project.Name, 8)
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "reconcile-webapp", Namespace: previewNs}, &dep)).To(Succeed())
+
+			dep.Spec.Template.ObjectMeta.Annotations = map[string]string{"stale": "annotation"}
+			dep.Spec.Template.Spec.ServiceAccountName = "stale-sa"
+			dep.Spec.Template.Spec.SecurityContext = &corev1.PodSecurityContext{}
+			dep.Spec.Template.Spec.Volumes = []corev1.Volume{{Name: "stale-volume"}}
+			dep.Spec.Template.Spec.Containers[0].Env = []corev1.EnvVar{{Name: "STALE", Value: "1"}}
+			dep.Spec.Template.Spec.Containers[0].SecurityContext = &corev1.SecurityContext{}
+			dep.Spec.Template.Spec.Containers = append(dep.Spec.Template.Spec.Containers, corev1.Container{Name: "sidecar", Image: "busybox"})
+			Expect(k8sClient.Update(ctx, &dep)).To(Succeed())
+
+			_, err = reconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "reconcile-webapp", Namespace: previewNs}, &dep)).To(Succeed())
+			Expect(dep.Spec.Template.ObjectMeta.Annotations).To(BeEmpty())
+			Expect(dep.Spec.Template.Spec.ServiceAccountName).To(BeEmpty())
+			Expect(dep.Spec.Template.Spec.Volumes).To(BeNil())
+			Expect(dep.Spec.Template.Spec.Containers).To(HaveLen(1))
+			Expect(dep.Spec.Template.Spec.Containers[0].Env).To(BeNil())
+			Expect(securityContextsEqual(dep.Spec.Template.Spec.SecurityContext, nil, dep.Spec.Template.Spec.Containers[0].SecurityContext, nil)).To(BeTrue())
+		})
 	})
 
 	Context("preview env var inheritance from source environment", func() {
@@ -359,7 +494,7 @@ var _ = Describe("PreviewEnvironment Controller", func() {
 			Expect(envMap).To(HaveKeyWithValue("LOG_LEVEL", "info"))
 		})
 
-		It("should inherit shared-env from source environment namespace", func() {
+		It("should inherit shared vars from the control-namespace source of truth", func() {
 			ctx := context.Background()
 			project, ns := createPreviewTestProject(ctx, true)
 
@@ -367,13 +502,8 @@ var _ = Describe("PreviewEnvironment Controller", func() {
 				Name: "staging",
 			})
 
-			// Seed shared-env in the source env namespace.
-			sourceEnvNs := constants.EnvNamespace(project.Name, "staging")
-			sourceNs := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: sourceEnvNs}}
-			Expect(k8sClient.Create(ctx, sourceNs)).To(Succeed())
-
 			store := &envstore.Store{Client: k8sClient}
-			Expect(store.SetShared(ctx, sourceEnvNs, []envstore.Env{
+			Expect(store.SetSharedSource(ctx, ns, []envstore.Env{
 				{Name: "SENTRY_DSN", Value: "https://sentry.io/123", Source: "shared"},
 				{Name: "FEATURE_FLAG", Value: "true", Source: "shared"},
 			}, nil)).To(Succeed())
@@ -623,6 +753,10 @@ var _ = Describe("PreviewEnvironment Controller", func() {
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "cleanapp", Namespace: previewNs}, &svc)).To(Succeed())
 			var ing networkingv1.Ingress
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "cleanapp", Namespace: previewNs}, &ing)).To(Succeed())
+			var shared corev1.Secret
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: envstore.SharedEnvName, Namespace: previewNs}, &shared)).To(Succeed())
+			var appEnv corev1.Secret
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: envstore.AppEnvSecretName("cleanapp"), Namespace: previewNs}, &appEnv)).To(Succeed())
 
 			// Delete the PreviewEnvironment.
 			Expect(k8sClient.Delete(ctx, pe)).To(Succeed())
@@ -646,6 +780,57 @@ var _ = Describe("PreviewEnvironment Controller", func() {
 			Expect(errors.IsNotFound(err)).To(BeTrue())
 			err = k8sClient.Get(ctx, types.NamespacedName{Name: "cleanapp", Namespace: previewNs}, &ing)
 			Expect(errors.IsNotFound(err)).To(BeTrue())
+			err = k8sClient.Get(ctx, types.NamespacedName{Name: envstore.SharedEnvName, Namespace: previewNs}, &shared)
+			Expect(errors.IsNotFound(err)).To(BeTrue())
+			err = k8sClient.Get(ctx, types.NamespacedName{Name: envstore.AppEnvSecretName("cleanapp"), Namespace: previewNs}, &appEnv)
+			Expect(errors.IsNotFound(err)).To(BeTrue())
+		})
+
+		It("should preserve shared-env while another preview for the same PR remains", func() {
+			ctx := context.Background()
+			project, ns := createPreviewTestProject(ctx, true)
+
+			createPreviewApp(ctx, "cleanapp-a", ns, nil)
+			createPreviewApp(ctx, "cleanapp-b", ns, nil)
+
+			peA := createPreviewEnv(ctx, "cleanapp-a-preview-pr-100", ns, "cleanapp-a", 100, "sha-a", "cleanup-branch", "pr-100-cleanapp-a.example.com", 72*time.Hour)
+			peA.Status.Image = "registry.example.com/mortise/cleanapp-a:pr-100-sha-a"
+			Expect(k8sClient.Status().Update(ctx, peA)).To(Succeed())
+
+			peB := createPreviewEnv(ctx, "cleanapp-b-preview-pr-100", ns, "cleanapp-b", 100, "sha-b", "cleanup-branch", "pr-100-cleanapp-b.example.com", 72*time.Hour)
+			peB.Status.Image = "registry.example.com/mortise/cleanapp-b:pr-100-sha-b"
+			Expect(k8sClient.Status().Update(ctx, peB)).To(Succeed())
+
+			fakeClock := clocktesting.NewFakeClock(time.Now())
+			reconciler := &PreviewEnvironmentReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+				Clock:  fakeClock,
+			}
+
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: peA.Name, Namespace: ns},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: peB.Name, Namespace: ns},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			previewNs := constants.PreviewNamespace(project.Name, 100)
+			var shared corev1.Secret
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: envstore.SharedEnvName, Namespace: previewNs}, &shared)).To(Succeed())
+
+			Expect(k8sClient.Delete(ctx, peA)).To(Succeed())
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: peA.Name, Namespace: ns},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: envstore.SharedEnvName, Namespace: previewNs}, &shared)).To(Succeed())
+
+			var otherAppEnv corev1.Secret
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: envstore.AppEnvSecretName("cleanapp-b"), Namespace: previewNs}, &otherAppEnv)).To(Succeed())
 		})
 	})
 })

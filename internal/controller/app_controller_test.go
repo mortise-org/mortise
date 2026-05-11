@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"strings"
 	"sync"
 	"testing"
@@ -34,9 +35,11 @@ import (
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	clocktesting "k8s.io/utils/clock/testing"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -50,9 +53,138 @@ import (
 	"github.com/mortise-org/mortise/internal/registry"
 )
 
+var (
+	dep appsv1.Deployment
+	cj  batchv1.CronJob
+)
+
 // testImageNginx is the pinned image used across App controller tests.
 // Hoisted to package scope so it is visible from multiple Describe blocks.
 const testImageNginx = "nginx:1.27"
+
+func TestUpdateStatusPreservesBuildRunRefs(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := mortisev1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add scheme: %v", err)
+	}
+
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "demo",
+			Namespace: "pj-default-project",
+		},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{
+				Type:  mortisev1alpha1.SourceTypeImage,
+				Image: "nginx:1.27",
+			},
+			Environments: []mortisev1alpha1.Environment{{Name: "production"}},
+		},
+		Status: mortisev1alpha1.AppStatus{
+			Environments: []mortisev1alpha1.EnvironmentStatus{{
+				Name: "production",
+				CurrentBuildRunRef: &mortisev1alpha1.BuildRunReference{
+					Name:  "buildrun-live",
+					Phase: mortisev1alpha1.BuildRunPhaseRunning,
+				},
+				LastSuccessfulBuildRunRef: &mortisev1alpha1.BuildRunReference{
+					Name:  "buildrun-last",
+					Phase: mortisev1alpha1.BuildRunPhaseSucceeded,
+				},
+			}},
+		},
+	}
+
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(app).
+		WithObjects(app).
+		Build()
+	r := &AppReconciler{Client: c, Scheme: scheme}
+
+	if err := r.updateStatus(context.Background(), app, []mortisev1alpha1.Environment{{Name: "production"}}); err != nil {
+		t.Fatalf("update status: %v", err)
+	}
+
+	var fresh mortisev1alpha1.App
+	if err := c.Get(context.Background(), types.NamespacedName{Name: app.Name, Namespace: app.Namespace}, &fresh); err != nil {
+		t.Fatalf("get app: %v", err)
+	}
+	if len(fresh.Status.Environments) != 1 {
+		t.Fatalf("expected 1 environment status, got %d", len(fresh.Status.Environments))
+	}
+	es := fresh.Status.Environments[0]
+	if es.CurrentBuildRunRef == nil || es.CurrentBuildRunRef.Name != "buildrun-live" {
+		t.Fatalf("current buildrun ref lost: %+v", es.CurrentBuildRunRef)
+	}
+	if es.LastSuccessfulBuildRunRef == nil || es.LastSuccessfulBuildRunRef.Name != "buildrun-last" {
+		t.Fatalf("last successful buildrun ref lost: %+v", es.LastSuccessfulBuildRunRef)
+	}
+	if fresh.Status.CurrentBuildRunName != "buildrun-live" {
+		t.Fatalf("current buildrun name not recomputed from env refs: %q", fresh.Status.CurrentBuildRunName)
+	}
+	if fresh.Status.LastBuildRunName != "buildrun-last" {
+		t.Fatalf("last buildrun name not recomputed from env refs: %q", fresh.Status.LastBuildRunName)
+	}
+}
+
+func TestUpdateStatusRecomputesTopLevelBuildRunNamesFromTerminalEnvRef(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := mortisev1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add scheme: %v", err)
+	}
+
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "demo",
+			Namespace: "pj-default-project",
+		},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{
+				Type:  mortisev1alpha1.SourceTypeImage,
+				Image: "nginx:1.27",
+			},
+			Environments: []mortisev1alpha1.Environment{{Name: "production"}},
+		},
+		Status: mortisev1alpha1.AppStatus{
+			CurrentBuildRunName: "stale-current",
+			LastBuildRunName:    "stale-last",
+			Environments: []mortisev1alpha1.EnvironmentStatus{{
+				Name: "production",
+				CurrentBuildRunRef: &mortisev1alpha1.BuildRunReference{
+					Name:  "buildrun-manual",
+					Phase: mortisev1alpha1.BuildRunPhaseSucceeded,
+				},
+				LastSuccessfulBuildRunRef: &mortisev1alpha1.BuildRunReference{
+					Name:  "buildrun-auto",
+					Phase: mortisev1alpha1.BuildRunPhaseSucceeded,
+				},
+			}},
+		},
+	}
+
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(app).
+		WithObjects(app).
+		Build()
+	r := &AppReconciler{Client: c, Scheme: scheme}
+
+	if err := r.updateStatus(context.Background(), app, []mortisev1alpha1.Environment{{Name: "production"}}); err != nil {
+		t.Fatalf("update status: %v", err)
+	}
+
+	var fresh mortisev1alpha1.App
+	if err := c.Get(context.Background(), types.NamespacedName{Name: app.Name, Namespace: app.Namespace}, &fresh); err != nil {
+		t.Fatalf("get app: %v", err)
+	}
+	if fresh.Status.CurrentBuildRunName != "" {
+		t.Fatalf("expected terminal env ref to clear current buildrun name, got %q", fresh.Status.CurrentBuildRunName)
+	}
+	if fresh.Status.LastBuildRunName != "buildrun-manual" {
+		t.Fatalf("expected terminal env ref to become last buildrun name, got %q", fresh.Status.LastBuildRunName)
+	}
+}
 
 func TestPreviewSyncStateIncludesBackfillInputs(t *testing.T) {
 	app := &mortisev1alpha1.App{
@@ -102,6 +234,7 @@ var _ = Describe("App Controller", func() {
 	const envNsProduction = "pj-default-project-production"
 
 	AfterEach(func() {
+		purgeAllPreviewsIn(context.Background(), namespace)
 		purgeAllAppsIn(context.Background(), namespace)
 	})
 
@@ -150,7 +283,7 @@ var _ = Describe("App Controller", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			var dep appsv1.Deployment
+			dep = appsv1.Deployment{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
 				Name: "test-nginx", Namespace: envNsProduction,
 			}, &dep)).To(Succeed())
@@ -177,6 +310,33 @@ var _ = Describe("App Controller", func() {
 			Expect(svc.Spec.Selector["app.kubernetes.io/name"]).To(Equal(appName))
 			Expect(svc.Spec.Ports).To(HaveLen(1))
 			Expect(svc.Spec.Ports[0].Port).To(Equal(int32(8080)))
+		})
+
+		It("should not rewrite a volume-less Deployment on repeated reconcile", func() {
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			req := reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			}
+
+			_, err := reconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			var dep appsv1.Deployment
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName, Namespace: envNsProduction,
+			}, &dep)).To(Succeed())
+			rvBefore := dep.ResourceVersion
+			Expect(dep.Spec.Template.Spec.Volumes).To(BeNil())
+
+			_, err = reconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			dep = appsv1.Deployment{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName, Namespace: envNsProduction,
+			}, &dep)).To(Succeed())
+			Expect(dep.ResourceVersion).To(Equal(rvBefore))
+			Expect(dep.Spec.Template.Spec.Volumes).To(BeNil())
 		})
 
 		It("should create an Ingress with TLS for the domain", func() {
@@ -353,6 +513,78 @@ var _ = Describe("App Controller", func() {
 			}, &ing)).To(Succeed())
 			Expect(ing.Annotations["linkerd.io/inject"]).To(Equal("enabled"))
 			Expect(ing.Annotations["cert-manager.io/cluster-issuer"]).To(Equal("user-wins"))
+		})
+	})
+
+	Context("app deletion with previews", func() {
+		It("should block app finalizer removal until matching previews are deleted", func() {
+			ctx := context.Background()
+			const appName = "preview-owner"
+			const prNumber = 17
+
+			app := makeGitSourceApp(appName, namespace, "github-main")
+			app.Finalizers = []string{appFinalizer}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			var storedApp mortisev1alpha1.App
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: appName, Namespace: namespace}, &storedApp)).To(Succeed())
+			Expect(storedApp.Finalizers).To(ContainElement(appFinalizer))
+
+			pe := &mortisev1alpha1.PreviewEnvironment{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       fmt.Sprintf("%s-preview-pr-%d", appName, prNumber),
+					Namespace:  namespace,
+					Finalizers: []string{previewFinalizer},
+				},
+				Spec: mortisev1alpha1.PreviewEnvironmentSpec{
+					AppRef:    appName,
+					SourceEnv: "production",
+					PullRequest: mortisev1alpha1.PullRequestRef{
+						Number: prNumber,
+						Branch: "feature/delete-app",
+						SHA:    "deadbeef",
+					},
+					TTL: metav1.Duration{Duration: time.Hour},
+				},
+			}
+			Expect(k8sClient.Create(ctx, pe)).To(Succeed())
+
+			Expect(k8sClient.Delete(ctx, &storedApp)).To(Succeed())
+
+			res, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res.RequeueAfter).ToNot(BeZero())
+
+			var deletingPreview mortisev1alpha1.PreviewEnvironment
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: pe.Name, Namespace: namespace}, &deletingPreview)).To(Succeed())
+			Expect(deletingPreview.DeletionTimestamp).ToNot(BeNil())
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: appName, Namespace: namespace}, &storedApp)).To(Succeed())
+			Expect(storedApp.DeletionTimestamp).ToNot(BeNil())
+			Expect(storedApp.Finalizers).To(ContainElement(appFinalizer))
+
+			deletingPreview.Finalizers = nil
+			Expect(k8sClient.Update(ctx, &deletingPreview)).To(Succeed())
+			err = k8sClient.Delete(ctx, &deletingPreview)
+			Expect(err == nil || kerrors.IsNotFound(err)).To(BeTrue())
+			Eventually(func() bool {
+				var gone mortisev1alpha1.PreviewEnvironment
+				return kerrors.IsNotFound(k8sClient.Get(ctx, types.NamespacedName{Name: pe.Name, Namespace: namespace}, &gone))
+			}).Should(BeTrue())
+
+			Eventually(func() bool {
+				_, err := reconciler.Reconcile(ctx, reconcile.Request{
+					NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+				})
+				if err != nil {
+					return false
+				}
+				var gone mortisev1alpha1.App
+				return kerrors.IsNotFound(k8sClient.Get(ctx, types.NamespacedName{Name: appName, Namespace: namespace}, &gone))
+			}, 5*time.Second, 100*time.Millisecond).Should(BeTrue())
 		})
 	})
 
@@ -612,7 +844,7 @@ var _ = Describe("App Controller", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			var dep appsv1.Deployment
+			dep = appsv1.Deployment{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
 				Name: appName, Namespace: envNsProduction,
 			}, &dep)).To(Succeed())
@@ -1422,7 +1654,7 @@ var _ = Describe("App Controller", func() {
 			Expect(k8sClient.Update(ctx, &envSec)).To(Succeed())
 
 			// Simulate a redeploy by annotating the Deployment with a new hash.
-			var dep appsv1.Deployment
+			dep = appsv1.Deployment{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
 				Name: appName, Namespace: envNsProduction,
 			}, &dep)).To(Succeed())
@@ -1589,7 +1821,7 @@ var _ = Describe("App Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Simulate Ready state by setting Deployment status.
-			var dep appsv1.Deployment
+			dep = appsv1.Deployment{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
 				Name: appName, Namespace: envNsProduction,
 			}, &dep)).To(Succeed())
@@ -1881,7 +2113,6 @@ var _ = Describe("App Controller", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			var dep appsv1.Deployment
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
 				Name: appName, Namespace: envNsProduction,
 			}, &dep)).To(Succeed())
@@ -2495,6 +2726,70 @@ func (f *fakeRegistryBackend) DeleteTag(_ context.Context, _, _ string) error {
 	return nil
 }
 
+type fakeWebhookAPI struct {
+	mu            sync.Mutex
+	listCount     int
+	registerCount int
+	deleteCount   int
+	webhooks      []git.WebhookInfo
+	listErr       error
+	registerErr   error
+	deleteErr     error
+}
+
+func (f *fakeWebhookAPI) RegisterWebhook(_ context.Context, _ string, _ git.WebhookConfig) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.registerCount++
+	return f.registerErr
+}
+
+func (f *fakeWebhookAPI) ListWebhooks(_ context.Context, _ string) ([]git.WebhookInfo, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.listCount++
+	return append([]git.WebhookInfo(nil), f.webhooks...), f.listErr
+}
+
+func (f *fakeWebhookAPI) DeleteWebhook(_ context.Context, _ string, _ int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.deleteCount++
+	return f.deleteErr
+}
+
+func (f *fakeWebhookAPI) PostCommitStatus(_ context.Context, _, _ string, _ git.CommitStatus) error {
+	return nil
+}
+
+func (f *fakeWebhookAPI) VerifyWebhookSignature(_ []byte, _ http.Header) error {
+	return nil
+}
+
+func (f *fakeWebhookAPI) ResolveCloneCredentials(_ context.Context, _ string) (git.GitCredentials, error) {
+	return git.GitCredentials{}, nil
+}
+
+func (f *fakeWebhookAPI) ListRepos(_ context.Context) ([]git.Repository, error) {
+	return nil, nil
+}
+
+func (f *fakeWebhookAPI) ListBranches(_ context.Context, _ string) ([]git.Branch, error) {
+	return nil, nil
+}
+
+func (f *fakeWebhookAPI) ResolveBranchHead(_ context.Context, _, _ string) (string, error) {
+	return "", nil
+}
+
+func (f *fakeWebhookAPI) ListOpenPullRequests(_ context.Context, _ string) ([]git.PullRequestSnapshot, error) {
+	return nil, nil
+}
+
+func (f *fakeWebhookAPI) ListTree(_ context.Context, _, _, _, _ string) ([]git.TreeEntry, error) {
+	return nil, nil
+}
+
 // gitSourceReconciler returns an AppReconciler wired with fakes for git-source tests.
 func gitSourceReconciler(bc build.BuildClient, gc git.GitClient, rb registry.RegistryBackend) *AppReconciler {
 	return &AppReconciler{
@@ -2511,9 +2806,30 @@ func gitSourceReconciler(bc build.BuildClient, gc git.GitClient, rb registry.Reg
 // more than a bounded number of iterations (the fake BuildClient completes
 // synchronously, so a handful of reconciles is always sufficient).
 func reconcileUntilBuildDone(r *AppReconciler, ctx context.Context, req reconcile.Request) (reconcile.Result, error) {
+	if r.Builds == nil {
+		r.Builds = &BuildTrackerStore{}
+	}
 	var res reconcile.Result
 	for i := 0; i < 40; i++ {
 		res, _ = r.Reconcile(ctx, req)
+		var runs mortisev1alpha1.BuildRunList
+		if listErr := r.List(ctx, &runs, client.InNamespace(req.Namespace)); listErr == nil {
+			buildRunReconciler := &BuildRunReconciler{
+				Client:          r.Client,
+				Scheme:          r.Scheme,
+				BuildClient:     r.BuildClient,
+				GitClient:       r.GitClient,
+				RegistryBackend: r.RegistryBackend,
+				Builds:          r.Builds,
+			}
+			for i := range runs.Items {
+				if _, err := buildRunReconciler.Reconcile(ctx, reconcile.Request{
+					NamespacedName: types.NamespacedName{Name: runs.Items[i].Name, Namespace: runs.Items[i].Namespace},
+				}); err != nil {
+					return res, err
+				}
+			}
+		}
 		// Check the app phase — stop when it's no longer Building.
 		var app mortisev1alpha1.App
 		if getErr := r.Get(ctx, req.NamespacedName, &app); getErr == nil {
@@ -2561,6 +2877,7 @@ var _ = Describe("App Controller — git source", func() {
 	const envNsProduction = "pj-default-project-production"
 
 	AfterEach(func() {
+		purgeAllPreviewsIn(context.Background(), namespace)
 		purgeAllAppsIn(context.Background(), namespace)
 	})
 
@@ -2673,6 +2990,116 @@ var _ = Describe("App Controller — git source", func() {
 
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: namespace}, app)).To(Succeed())
 			Expect(app.Status.Phase).To(Equal(mortisev1alpha1.AppPhaseFailed))
+		})
+	})
+
+	Context("webhook registration", func() {
+		It("latches registration on a status condition input hash", func() {
+			ctx := context.Background()
+
+			pc := &mortisev1alpha1.PlatformConfig{
+				ObjectMeta: metav1.ObjectMeta{Name: "platform"},
+				Spec:       mortisev1alpha1.PlatformConfigSpec{Domain: "example.com"},
+			}
+			Expect(k8sClient.Create(ctx, pc)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, pc)).To(Succeed()) }()
+
+			gp := &mortisev1alpha1.GitProvider{
+				ObjectMeta: metav1.ObjectMeta{Name: "gh-webhook-latch"},
+				Spec: mortisev1alpha1.GitProviderSpec{
+					Type: mortisev1alpha1.GitProviderTypeGitHub,
+					Host: "https://github.com",
+				},
+			}
+			Expect(k8sClient.Create(ctx, gp)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, gp)).To(Succeed()) }()
+
+			app := makeGitSourceApp("git-webhook-latch", namespace, gp.Name)
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: namespace}, app)).To(Succeed())
+
+			api := &fakeWebhookAPI{}
+			r := gitSourceReconciler(&fakeBuildClient{digest: "sha256:latch"}, &fakeGitClient{}, &fakeRegistryBackend{})
+			r.GitAPIFactory = func(_ *mortisev1alpha1.GitProvider, _, _ string) (git.GitAPI, error) {
+				return api, nil
+			}
+
+			Expect(r.ensureWebhook(ctx, app, gp, "tok")).To(Succeed())
+			Expect(api.listCount).To(Equal(1))
+			Expect(api.registerCount).To(Equal(1))
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: namespace}, app)).To(Succeed())
+			cond := meta.FindStatusCondition(app.Status.Conditions, webhookConditionType)
+			Expect(cond).NotTo(BeNil())
+			Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+			Expect(cond.Reason).To(Equal(webhookRegisteredReason))
+			Expect(cond.Message).To(HavePrefix(webhookInputHashMessageKey))
+
+			Expect(r.ensureWebhook(ctx, app, gp, "tok")).To(Succeed())
+			Expect(api.listCount).To(Equal(1))
+			Expect(api.registerCount).To(Equal(1))
+		})
+
+		It("keeps webhook registration non-fatal and records the failure condition", func() {
+			ctx := context.Background()
+
+			pc := &mortisev1alpha1.PlatformConfig{
+				ObjectMeta: metav1.ObjectMeta{Name: "platform"},
+				Spec:       mortisev1alpha1.PlatformConfigSpec{Domain: "example.com"},
+			}
+			Expect(k8sClient.Create(ctx, pc)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, pc)).To(Succeed()) }()
+
+			gp := &mortisev1alpha1.GitProvider{
+				ObjectMeta: metav1.ObjectMeta{Name: "gh-webhook-failure"},
+				Spec: mortisev1alpha1.GitProviderSpec{
+					Type:     mortisev1alpha1.GitProviderTypeGitHub,
+					Host:     "https://github.com",
+					ClientID: "test-client-id",
+				},
+			}
+			Expect(k8sClient.Create(ctx, gp)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, gp)).To(Succeed()) }()
+
+			tokenSecret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{Name: "user-gh-webhook-failure-token-74657374406578616d706c652e636f6d", Namespace: "mortise-system"},
+				Data:       map[string][]byte{"token": []byte("tok")},
+			}
+			_ = k8sClient.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "mortise-system"}})
+			Expect(k8sClient.Create(ctx, tokenSecret)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, tokenSecret)).To(Succeed()) }()
+
+			app := makeGitSourceApp("git-webhook-failure", namespace, gp.Name)
+			app.Annotations["mortise.dev/revision"] = "webhook-failure-sha"
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+
+			api := &fakeWebhookAPI{
+				registerErr: &git.WebhookOperationError{
+					Provider:   "github",
+					Operation:  git.WebhookOperationRegister,
+					StatusCode: http.StatusForbidden,
+					Err:        fmt.Errorf("%w: missing webhook scope", git.ErrAuthFailed),
+				},
+			}
+			r := gitSourceReconciler(&fakeBuildClient{digest: "sha256:webhook-failure"}, &fakeGitClient{}, &fakeRegistryBackend{})
+			r.GitAPIFactory = func(_ *mortisev1alpha1.GitProvider, _, _ string) (git.GitAPI, error) {
+				return api, nil
+			}
+
+			_, err := reconcileUntilBuildDone(r, ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: app.Name, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: namespace}, app)).To(Succeed())
+			Expect(app.Status.LastBuiltSHA).To(Equal("webhook-failure-sha"))
+			cond := meta.FindStatusCondition(app.Status.Conditions, webhookConditionType)
+			Expect(cond).NotTo(BeNil())
+			Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(cond.Reason).To(Equal("WebhookAuthFailed"))
+			Expect(cond.Message).To(ContainSubstring("missing webhook scope"))
 		})
 	})
 
@@ -2834,7 +3261,24 @@ var _ = Describe("App Controller — git source", func() {
 			Expect(k8sClient.Create(ctx, app)).To(Succeed())
 			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
 
-			// Simulate a prior successful build by presetting per-env status.
+			lastRun := &mortisev1alpha1.BuildRun{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "run-shortcircuit",
+					Namespace: namespace,
+				},
+				Spec: appBuildRunSpec(
+					app,
+					"production",
+					"same-sha",
+					"registry.example.com/mortise/git-shortcircuit:same-sh-production",
+					"registry.example.com/mortise/git-shortcircuit:same-sh-production",
+				),
+			}
+			Expect(k8sClient.Create(ctx, lastRun)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, lastRun)).To(Succeed()) }()
+
+			// Simulate a prior successful build by presetting per-env status and
+			// the durable BuildRun ref that now backs same-SHA reuse.
 			app.Status.LastBuiltSHA = "same-sha"
 			app.Status.LastBuiltImage = "registry.example.com/mortise/git-shortcircuit:same-sha"
 			app.Status.Environments = []mortisev1alpha1.EnvironmentStatus{
@@ -2842,6 +3286,10 @@ var _ = Describe("App Controller — git source", func() {
 					Name:           "production",
 					LastBuiltSHA:   "same-sha",
 					LastBuiltImage: "registry.example.com/mortise/git-shortcircuit:same-sha",
+					LastSuccessfulBuildRunRef: &mortisev1alpha1.BuildRunReference{
+						Name:  lastRun.Name,
+						Phase: mortisev1alpha1.BuildRunPhaseSucceeded,
+					},
 				},
 			}
 			Expect(k8sClient.Status().Update(ctx, app)).To(Succeed())
@@ -3890,7 +4338,7 @@ var _ = Describe("App Controller — git source", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			var cj batchv1.CronJob
+			cj = batchv1.CronJob{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
 				Name: appName, Namespace: envNsProduction,
 			}, &cj)).To(Succeed())
@@ -3981,7 +4429,7 @@ var _ = Describe("App Controller — git source", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			var cj batchv1.CronJob
+			cj = batchv1.CronJob{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
 				Name: appName, Namespace: envNsProduction,
 			}, &cj)).To(Succeed())
@@ -4019,7 +4467,6 @@ var _ = Describe("App Controller — git source", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			var cj batchv1.CronJob
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
 				Name: appName, Namespace: envNsProduction,
 			}, &cj)).To(Succeed())
@@ -4065,7 +4512,6 @@ var _ = Describe("App Controller — git source", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			var cj batchv1.CronJob
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
 				Name: appName, Namespace: envNsProduction,
 			}, &cj)).To(Succeed())
@@ -4102,7 +4548,6 @@ var _ = Describe("App Controller — git source", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			var cj batchv1.CronJob
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
 				Name: appName, Namespace: envNsProduction,
 			}, &cj)).To(Succeed())
@@ -4464,6 +4909,7 @@ var _ = Describe("App Controller — git source", func() {
 		ctx := context.Background()
 
 		AfterEach(func() {
+			purgeAllPreviewsIn(ctx, namespace)
 			purgeAllAppsIn(ctx, namespace)
 		})
 
@@ -5166,6 +5612,64 @@ var _ = Describe("App Controller — git source", func() {
 			Expect(stagingArgs).To(Equal(map[string]string{"ENV": "staging", "DEBUG": "true"}))
 		})
 	})
+
+	Context("app deletion with previews", func() {
+		It("should request deletion of matching PreviewEnvironments before removing the app finalizer", func() {
+			ctx := context.Background()
+			app := &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       "preview-owner",
+					Namespace:  namespace,
+					Finalizers: []string{appFinalizer},
+				},
+				Spec: mortisev1alpha1.AppSpec{
+					Source: mortisev1alpha1.AppSource{
+						Type:  mortisev1alpha1.SourceTypeImage,
+						Image: testImageNginx,
+					},
+					Environments: []mortisev1alpha1.Environment{{Name: "production"}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+
+			preview := &mortisev1alpha1.PreviewEnvironment{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       "preview-owner-pr-1",
+					Namespace:  namespace,
+					Finalizers: []string{previewFinalizer},
+				},
+				Spec: mortisev1alpha1.PreviewEnvironmentSpec{
+					AppRef: "preview-owner",
+					PullRequest: mortisev1alpha1.PullRequestRef{
+						Number: 1,
+						Branch: "feature",
+						SHA:    "abc123",
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, preview)).To(Succeed())
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			req := reconcile.Request{NamespacedName: client.ObjectKeyFromObject(app)}
+			Expect(k8sClient.Delete(ctx, app)).To(Succeed())
+			res, err := reconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res.RequeueAfter).ToNot(BeZero())
+
+			var deletingPreview mortisev1alpha1.PreviewEnvironment
+			err = k8sClient.Get(ctx, client.ObjectKeyFromObject(preview), &deletingPreview)
+			if kerrors.IsNotFound(err) {
+				// Preview reconcile may have already finished the delete path.
+			} else {
+				Expect(err).NotTo(HaveOccurred())
+				Expect(deletingPreview.DeletionTimestamp.IsZero()).To(BeFalse())
+			}
+
+			var deletingApp mortisev1alpha1.App
+			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(app), &deletingApp)).To(Succeed())
+			Expect(deletingApp.Finalizers).To(ContainElement(appFinalizer))
+		})
+	})
 })
 
 // deploymentConflictClient wraps a client.Client and returns a 409 Conflict
@@ -5261,7 +5765,7 @@ var _ = Describe("securityContext on user workloads", func() {
 			}
 		})
 
-		It("should set restricted pod and container securityContext by default", func() {
+		It("should leave workload securityContext unset by default", func() {
 			app = &mortisev1alpha1.App{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      appName,
@@ -5293,32 +5797,24 @@ var _ = Describe("securityContext on user workloads", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			var dep appsv1.Deployment
+			var depAfter appsv1.Deployment
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
 				Name: appName, Namespace: envNsProduction,
-			}, &dep)).To(Succeed())
+			}, &depAfter)).To(Succeed())
 
-			podSC := dep.Spec.Template.Spec.SecurityContext
-			Expect(podSC).NotTo(BeNil())
-			Expect(*podSC.RunAsNonRoot).To(BeTrue())
-			Expect(podSC.SeccompProfile).NotTo(BeNil())
-			Expect(podSC.SeccompProfile.Type).To(Equal(corev1.SeccompProfileTypeRuntimeDefault))
-
-			cSC := dep.Spec.Template.Spec.Containers[0].SecurityContext
-			Expect(cSC).NotTo(BeNil())
-			Expect(*cSC.AllowPrivilegeEscalation).To(BeFalse())
-			Expect(cSC.Capabilities).NotTo(BeNil())
-			Expect(cSC.Capabilities.Drop).To(ConsistOf(corev1.Capability("ALL")))
+			podSC := depAfter.Spec.Template.Spec.SecurityContext
+			if podSC != nil {
+				Expect(podSC.RunAsNonRoot).To(BeNil())
+				Expect(podSC.SeccompProfile).To(BeNil())
+			}
+			Expect(depAfter.Spec.Template.Spec.Containers[0].SecurityContext).To(BeNil())
 		})
 
-		It("should omit restricted securityContext fields when opt-out annotation is set", func() {
+		It("should clear previously injected workload securityContext fields", func() {
 			app = &mortisev1alpha1.App{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      appName,
 					Namespace: namespace,
-					Annotations: map[string]string{
-						"mortise.dev/disable-default-security-context": "true",
-					},
 				},
 				Spec: mortisev1alpha1.AppSpec{
 					Source: mortisev1alpha1.AppSource{
@@ -5351,12 +5847,160 @@ var _ = Describe("securityContext on user workloads", func() {
 				Name: appName, Namespace: envNsProduction,
 			}, &dep)).To(Succeed())
 
+			dep.Spec.Template.Spec.SecurityContext = &corev1.PodSecurityContext{
+				RunAsNonRoot: ptr.To(true),
+				SeccompProfile: &corev1.SeccompProfile{
+					Type: corev1.SeccompProfileTypeRuntimeDefault,
+				},
+			}
+			dep.Spec.Template.Spec.Containers[0].SecurityContext = &corev1.SecurityContext{
+				AllowPrivilegeEscalation: ptr.To(false),
+				Capabilities: &corev1.Capabilities{
+					Drop: []corev1.Capability{"ALL"},
+				},
+			}
+			Expect(k8sClient.Update(ctx, &dep)).To(Succeed())
+
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			dep = appsv1.Deployment{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName, Namespace: envNsProduction,
+			}, &dep)).To(Succeed())
+
 			podSC := dep.Spec.Template.Spec.SecurityContext
 			if podSC != nil {
 				Expect(podSC.RunAsNonRoot).To(BeNil())
 				Expect(podSC.SeccompProfile).To(BeNil())
 			}
 			Expect(dep.Spec.Template.Spec.Containers[0].SecurityContext).To(BeNil())
+		})
+
+		It("should treat empty workload securityContext objects as already cleared", func() {
+			app = &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      appName,
+					Namespace: namespace,
+				},
+				Spec: mortisev1alpha1.AppSpec{
+					Source: mortisev1alpha1.AppSource{
+						Type:  mortisev1alpha1.SourceTypeImage,
+						Image: testImageNginx,
+					},
+					Network: mortisev1alpha1.NetworkConfig{Public: true},
+					Environments: []mortisev1alpha1.Environment{
+						{
+							Name:     "production",
+							Replicas: ptr.To[int32](1),
+							Resources: mortisev1alpha1.ResourceRequirements{
+								CPU: "100m", Memory: "128Mi",
+							},
+							Domain: "sc-empty.example.com",
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var dep appsv1.Deployment
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName, Namespace: envNsProduction,
+			}, &dep)).To(Succeed())
+
+			dep.Spec.Template.Spec.SecurityContext = &corev1.PodSecurityContext{
+				SELinuxOptions: &corev1.SELinuxOptions{},
+			}
+			dep.Spec.Template.Spec.Containers[0].SecurityContext = &corev1.SecurityContext{
+				Capabilities: &corev1.Capabilities{},
+			}
+			Expect(k8sClient.Update(ctx, &dep)).To(Succeed())
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName, Namespace: envNsProduction,
+			}, &dep)).To(Succeed())
+			rvBefore := dep.ResourceVersion
+
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			dep = appsv1.Deployment{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName, Namespace: envNsProduction,
+			}, &dep)).To(Succeed())
+			Expect(dep.ResourceVersion).To(Equal(rvBefore))
+			Expect(securityContextsEqual(dep.Spec.Template.Spec.SecurityContext, nil, dep.Spec.Template.Spec.Containers[0].SecurityContext, nil)).To(BeTrue())
+		})
+
+		It("should preserve deployment-controller annotations during reconcile", func() {
+			app = &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      appName,
+					Namespace: namespace,
+				},
+				Spec: mortisev1alpha1.AppSpec{
+					Source: mortisev1alpha1.AppSource{
+						Type:  mortisev1alpha1.SourceTypeImage,
+						Image: testImageNginx,
+					},
+					Network: mortisev1alpha1.NetworkConfig{Public: true},
+					Environments: []mortisev1alpha1.Environment{
+						{
+							Name:     "production",
+							Replicas: ptr.To[int32](1),
+							Resources: mortisev1alpha1.ResourceRequirements{
+								CPU: "100m", Memory: "128Mi",
+							},
+							Domain: "sc-revision.example.com",
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var dep appsv1.Deployment
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName, Namespace: envNsProduction,
+			}, &dep)).To(Succeed())
+
+			if dep.Annotations == nil {
+				dep.Annotations = map[string]string{}
+			}
+			dep.Annotations["deployment.kubernetes.io/revision"] = "1"
+			Expect(k8sClient.Update(ctx, &dep)).To(Succeed())
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName, Namespace: envNsProduction,
+			}, &dep)).To(Succeed())
+			rvBefore := dep.ResourceVersion
+
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			dep = appsv1.Deployment{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName, Namespace: envNsProduction,
+			}, &dep)).To(Succeed())
+			Expect(dep.ResourceVersion).To(Equal(rvBefore))
+			Expect(dep.Annotations).To(HaveKeyWithValue("deployment.kubernetes.io/revision", "1"))
 		})
 	})
 
@@ -5373,7 +6017,7 @@ var _ = Describe("securityContext on user workloads", func() {
 			}
 		})
 
-		It("should set restricted pod and container securityContext on CronJob by default", func() {
+		It("should leave CronJob workload securityContext unset by default", func() {
 			app = &mortisev1alpha1.App{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      appName,
@@ -5404,59 +6048,75 @@ var _ = Describe("securityContext on user workloads", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			var cj batchv1.CronJob
+			var cjAfter batchv1.CronJob
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName, Namespace: envNsProduction,
+			}, &cjAfter)).To(Succeed())
+
+			podSC := cjAfter.Spec.JobTemplate.Spec.Template.Spec.SecurityContext
+			if podSC != nil {
+				Expect(podSC.RunAsNonRoot).To(BeNil())
+				Expect(podSC.SeccompProfile).To(BeNil())
+			}
+			Expect(cjAfter.Spec.JobTemplate.Spec.Template.Spec.Containers[0].SecurityContext).To(BeNil())
+		})
+
+		It("should clear previously injected CronJob workload securityContext fields", func() {
+			app = &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      appName,
+					Namespace: namespace,
+				},
+				Spec: mortisev1alpha1.AppSpec{
+					Kind: mortisev1alpha1.AppKindCron,
+					Source: mortisev1alpha1.AppSource{
+						Type:  mortisev1alpha1.SourceTypeImage,
+						Image: testImageNginx,
+					},
+					Environments: []mortisev1alpha1.Environment{
+						{
+							Name:     "production",
+							Schedule: "*/10 * * * *",
+							Resources: mortisev1alpha1.ResourceRequirements{
+								CPU: "100m", Memory: "128Mi",
+							},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			cj = batchv1.CronJob{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
 				Name: appName, Namespace: envNsProduction,
 			}, &cj)).To(Succeed())
 
-			podSC := cj.Spec.JobTemplate.Spec.Template.Spec.SecurityContext
-			Expect(podSC).NotTo(BeNil())
-			Expect(*podSC.RunAsNonRoot).To(BeTrue())
-			Expect(podSC.SeccompProfile).NotTo(BeNil())
-			Expect(podSC.SeccompProfile.Type).To(Equal(corev1.SeccompProfileTypeRuntimeDefault))
-
-			cSC := cj.Spec.JobTemplate.Spec.Template.Spec.Containers[0].SecurityContext
-			Expect(cSC).NotTo(BeNil())
-			Expect(*cSC.AllowPrivilegeEscalation).To(BeFalse())
-			Expect(cSC.Capabilities).NotTo(BeNil())
-			Expect(cSC.Capabilities.Drop).To(ConsistOf(corev1.Capability("ALL")))
-		})
-
-		It("should omit restricted securityContext fields on CronJob when opt-out annotation is set", func() {
-			app = &mortisev1alpha1.App{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      appName,
-					Namespace: namespace,
-					Annotations: map[string]string{
-						"mortise.dev/disable-default-security-context": "true",
-					},
-				},
-				Spec: mortisev1alpha1.AppSpec{
-					Kind: mortisev1alpha1.AppKindCron,
-					Source: mortisev1alpha1.AppSource{
-						Type:  mortisev1alpha1.SourceTypeImage,
-						Image: testImageNginx,
-					},
-					Environments: []mortisev1alpha1.Environment{
-						{
-							Name:     "production",
-							Schedule: "*/10 * * * *",
-							Resources: mortisev1alpha1.ResourceRequirements{
-								CPU: "100m", Memory: "128Mi",
-							},
-						},
-					},
+			cj.Spec.JobTemplate.Spec.Template.Spec.SecurityContext = &corev1.PodSecurityContext{
+				RunAsNonRoot: ptr.To(true),
+				SeccompProfile: &corev1.SeccompProfile{
+					Type: corev1.SeccompProfileTypeRuntimeDefault,
 				},
 			}
-			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			cj.Spec.JobTemplate.Spec.Template.Spec.Containers[0].SecurityContext = &corev1.SecurityContext{
+				AllowPrivilegeEscalation: ptr.To(false),
+				Capabilities: &corev1.Capabilities{
+					Drop: []corev1.Capability{"ALL"},
+				},
+			}
+			Expect(k8sClient.Update(ctx, &cj)).To(Succeed())
 
-			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
-			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			var cj batchv1.CronJob
+			cj = batchv1.CronJob{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
 				Name: appName, Namespace: envNsProduction,
 			}, &cj)).To(Succeed())
@@ -5467,6 +6127,65 @@ var _ = Describe("securityContext on user workloads", func() {
 				Expect(podSC.SeccompProfile).To(BeNil())
 			}
 			Expect(cj.Spec.JobTemplate.Spec.Template.Spec.Containers[0].SecurityContext).To(BeNil())
+		})
+
+		It("should treat empty CronJob workload securityContext objects as already cleared", func() {
+			app = &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      appName,
+					Namespace: namespace,
+				},
+				Spec: mortisev1alpha1.AppSpec{
+					Kind: mortisev1alpha1.AppKindCron,
+					Source: mortisev1alpha1.AppSource{
+						Type:  mortisev1alpha1.SourceTypeImage,
+						Image: testImageNginx,
+					},
+					Environments: []mortisev1alpha1.Environment{
+						{
+							Name:     "production",
+							Schedule: "*/10 * * * *",
+							Resources: mortisev1alpha1.ResourceRequirements{
+								CPU: "100m", Memory: "128Mi",
+							},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var cj batchv1.CronJob
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName, Namespace: envNsProduction,
+			}, &cj)).To(Succeed())
+
+			cj.Spec.JobTemplate.Spec.Template.Spec.SecurityContext = &corev1.PodSecurityContext{}
+			cj.Spec.JobTemplate.Spec.Template.Spec.Containers[0].SecurityContext = &corev1.SecurityContext{}
+			Expect(k8sClient.Update(ctx, &cj)).To(Succeed())
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName, Namespace: envNsProduction,
+			}, &cj)).To(Succeed())
+			rvBefore := cj.ResourceVersion
+
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			cj = batchv1.CronJob{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: appName, Namespace: envNsProduction,
+			}, &cj)).To(Succeed())
+			Expect(cj.ResourceVersion).To(Equal(rvBefore))
+			Expect(cj.Spec.JobTemplate.Spec.Template.Spec.SecurityContext).To(Equal(&corev1.PodSecurityContext{}))
+			Expect(cj.Spec.JobTemplate.Spec.Template.Spec.Containers[0].SecurityContext).To(Equal(&corev1.SecurityContext{}))
 		})
 	})
 })

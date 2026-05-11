@@ -10,12 +10,14 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	corev1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -33,6 +35,7 @@ const (
 // implements the device authorization grant (RFC 8628).
 type DeviceFlowHandler struct {
 	client     client.Client
+	clientset  kubernetes.Interface
 	httpClient HTTPClient
 }
 
@@ -41,8 +44,8 @@ type HTTPClient interface {
 	Do(req *http.Request) (*http.Response, error)
 }
 
-func newDeviceFlowHandler(c client.Client) *DeviceFlowHandler {
-	return &DeviceFlowHandler{client: c, httpClient: http.DefaultClient}
+func newDeviceFlowHandler(c client.Client, cs kubernetes.Interface) *DeviceFlowHandler {
+	return &DeviceFlowHandler{client: c, clientset: cs, httpClient: http.DefaultClient}
 }
 
 // deviceCodeResponse is the JSON body returned from the device code request.
@@ -293,11 +296,23 @@ func (d *DeviceFlowHandler) GitTokenStatus(w http.ResponseWriter, r *http.Reques
 	}
 
 	secretName := git.UserTokenSecretName(providerName, principal.Email)
-	var s corev1.Secret
-	err := d.client.Get(r.Context(), types.NamespacedName{
-		Namespace: git.TokenSecretNamespace,
-		Name:      secretName,
-	}, &s)
+	var (
+		s   corev1.Secret
+		err error
+	)
+	if d.clientset != nil {
+		secret, getErr := d.clientset.CoreV1().Secrets(git.TokenSecretNamespace).Get(r.Context(), secretName, metav1.GetOptions{})
+		if getErr == nil {
+			s = *secret
+		}
+		err = getErr
+	}
+	if d.clientset == nil || k8serrors.IsNotFound(err) {
+		err = d.client.Get(r.Context(), types.NamespacedName{
+			Namespace: git.TokenSecretNamespace,
+			Name:      secretName,
+		}, &s)
+	}
 
 	connected := err == nil && len(s.Data["token"]) > 0
 	writeJSON(w, http.StatusOK, map[string]bool{"connected": connected})
@@ -397,7 +412,7 @@ func inferProviderType(name string) (mortisev1alpha1.GitProviderType, string) {
 // the user clicking "Connect."
 func (d *DeviceFlowHandler) getOrCreateGitProvider(ctx context.Context, name string, providerType mortisev1alpha1.GitProviderType, host string) (*mortisev1alpha1.GitProvider, error) {
 	var gp mortisev1alpha1.GitProvider
-	err := d.client.Get(ctx, types.NamespacedName{Name: name}, &gp)
+	err := d.getGitProviderWithRetry(ctx, name, &gp)
 	if err == nil {
 		return &gp, nil
 	}
@@ -470,6 +485,31 @@ func (d *DeviceFlowHandler) getOrCreateGitProvider(ctx context.Context, name str
 		return nil, fmt.Errorf("create git provider %q: %w", name, err)
 	}
 	return newGP, nil
+}
+
+func (d *DeviceFlowHandler) getGitProviderWithRetry(ctx context.Context, name string, gp *mortisev1alpha1.GitProvider) error {
+	const (
+		maxAttempts = 5
+		retryDelay  = 100 * time.Millisecond
+	)
+
+	var err error
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		err = d.client.Get(ctx, types.NamespacedName{Name: name}, gp)
+		if err == nil || !k8serrors.IsNotFound(err) || attempt == maxAttempts-1 {
+			return err
+		}
+
+		timer := time.NewTimer(retryDelay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+
+	return err
 }
 
 // storeUserToken persists a git provider access token in a k8s Secret keyed
