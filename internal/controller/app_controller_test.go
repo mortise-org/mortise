@@ -422,6 +422,93 @@ func TestSyncOpenPreviewsIsolatesGitTokenCacheKeysByNamespace(t *testing.T) {
 	}
 }
 
+func TestReconcileClearsStaleGitTokenCacheBetweenReconciles(t *testing.T) {
+	ctx := context.Background()
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add core scheme: %v", err)
+	}
+	if err := appsv1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add apps scheme: %v", err)
+	}
+	if err := batchv1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add batch scheme: %v", err)
+	}
+	if err := networkingv1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add networking scheme: %v", err)
+	}
+	if err := storagev1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add storage scheme: %v", err)
+	}
+	if err := mortisev1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add mortise scheme: %v", err)
+	}
+
+	provider := &mortisev1alpha1.GitProvider{
+		ObjectMeta: metav1.ObjectMeta{Name: "gh-preview-stale-cache"},
+		Spec: mortisev1alpha1.GitProviderSpec{
+			Type: mortisev1alpha1.GitProviderTypeGitHub,
+			Host: "https://github.com",
+		},
+	}
+	project := &mortisev1alpha1.Project{
+		ObjectMeta: metav1.ObjectMeta{Name: "alpha"},
+		Spec: mortisev1alpha1.ProjectSpec{
+			Preview:      &mortisev1alpha1.PreviewConfig{Enabled: true, Domain: "pr-{number}.example.com"},
+			Environments: []mortisev1alpha1.ProjectEnvironment{{Name: "production"}},
+		},
+	}
+	app := makeGitSourceApp("web", "pj-alpha", provider.Name)
+	app.Spec.Source.Image = testImageNginx
+	app.Status.Environments = []mortisev1alpha1.EnvironmentStatus{{
+		Name:           "production",
+		LastBuiltSHA:   "main",
+		LastBuiltImage: "registry.example.com/mortise/web:main-production",
+	}}
+
+	tokenSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      git.UserTokenSecretName(provider.Name, "test@example.com"),
+			Namespace: git.TokenSecretNamespace,
+		},
+		Data: map[string][]byte{"token": []byte("fresh-token")},
+	}
+
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(app).
+		WithObjects(provider, project, app, tokenSecret).
+		Build()
+
+	usedTokens := make([]string, 0, 1)
+	r := &AppReconciler{
+		Client: c,
+		Scheme: scheme,
+		GitAPIFactory: func(_ *mortisev1alpha1.GitProvider, token, _ string) (git.GitAPI, error) {
+			usedTokens = append(usedTokens, token)
+			return &fakeWebhookAPI{}, nil
+		},
+	}
+	cacheKey := gitTokenCacheKey(app)
+	r.gitTokenCache.Store(cacheKey, "stale-token")
+
+	if _, err := r.Reconcile(ctx, reconcile.Request{
+		NamespacedName: types.NamespacedName{Name: app.Name, Namespace: app.Namespace},
+	}); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	if len(usedTokens) != 1 {
+		t.Fatalf("GitAPIFactory called %d times, want 1", len(usedTokens))
+	}
+	if usedTokens[0] != "fresh-token" {
+		t.Fatalf("preview sync used token %q, want %q", usedTokens[0], "fresh-token")
+	}
+	if _, ok := r.gitTokenCache.Load(cacheKey); ok {
+		t.Fatalf("expected reconcile to clear cache entry %q", cacheKey)
+	}
+}
+
 var _ = Describe("App Controller", func() {
 	const namespace = "pj-default-project"
 	const envNsProduction = "pj-default-project-production"

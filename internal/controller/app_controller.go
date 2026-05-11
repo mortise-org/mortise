@@ -137,6 +137,9 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		}
 		return ctrl.Result{}, err
 	}
+	cacheKey := gitTokenCacheKey(&app)
+	r.gitTokenCache.Delete(cacheKey)
+	defer r.gitTokenCache.Delete(cacheKey)
 
 	// Finalizer flow — owner references can't cross namespaces, so the only
 	// way to clean up per-env-ns resources on App delete is via a finalizer
