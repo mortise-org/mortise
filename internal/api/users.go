@@ -129,7 +129,7 @@ func (s *Server) CreateUser(w http.ResponseWriter, r *http.Request) {
 }
 
 // @Summary Update a user's role
-// @Description Changes a platform user's role. Admin-only.
+// @Description Changes a platform user's role. Admin-only. Returns 400 when the change would demote the last platform admin.
 // @Tags users
 // @Accept json
 // @Produce json
@@ -207,7 +207,7 @@ func (s *Server) UpdateUserRole(w http.ResponseWriter, r *http.Request) {
 }
 
 // @Summary Delete a user
-// @Description Removes a platform user. Admin-only.
+// @Description Removes a platform user. Admin-only. Returns 400 when the target user is the last platform admin.
 // @Tags users
 // @Security BearerAuth
 // @Param email path string true "User email"

@@ -201,7 +201,7 @@ func (s *Server) AddMember(w http.ResponseWriter, r *http.Request) {
 // UpdateMember changes the role of an existing project member.
 //
 // @Summary Update a project member's role
-// @Description Changes the role of an existing project member
+// @Description Changes the role of an existing project member. Returns 400 when the change would demote the last project owner.
 // @Tags members
 // @Accept json
 // @Produce json
