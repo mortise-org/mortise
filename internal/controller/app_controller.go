@@ -290,15 +290,16 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 			if env.Domain != "" {
 				allHosts := append([]string{env.Domain}, env.CustomDomains...)
 				if err := r.checkDomainCollisions(ctx, &app, env.Name, allHosts); err != nil {
-					app.Status.Phase = mortisev1alpha1.AppPhaseFailed
-					meta.SetStatusCondition(&app.Status.Conditions, metav1.Condition{
-						Type:               "DomainCollision",
-						Status:             metav1.ConditionTrue,
-						Reason:             "DomainInUse",
-						Message:            err.Error(),
-						ObservedGeneration: app.Generation,
-					})
-					if updateErr := r.Status().Update(ctx, &app); updateErr != nil {
+					if updateErr := r.updateAppStatus(ctx, &app, func(status *mortisev1alpha1.AppStatus) {
+						status.Phase = mortisev1alpha1.AppPhaseFailed
+						meta.SetStatusCondition(&status.Conditions, metav1.Condition{
+							Type:               "DomainCollision",
+							Status:             metav1.ConditionTrue,
+							Reason:             "DomainInUse",
+							Message:            err.Error(),
+							ObservedGeneration: app.Generation,
+						})
+					}); updateErr != nil {
 						log.Error(updateErr, "update status after domain collision")
 					}
 					return ctrl.Result{}, nil
@@ -381,6 +382,23 @@ func (r *AppReconciler) addAppFinalizerWithRetry(ctx context.Context, key types.
 	})
 }
 
+func (r *AppReconciler) setAppAnnotationWithRetry(ctx context.Context, key types.NamespacedName, annotationKey, annotationValue string) error {
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var fresh mortisev1alpha1.App
+		if err := r.Get(ctx, key, &fresh); err != nil {
+			return err
+		}
+		if fresh.Annotations == nil {
+			fresh.Annotations = map[string]string{}
+		}
+		if fresh.Annotations[annotationKey] == annotationValue {
+			return nil
+		}
+		fresh.Annotations[annotationKey] = annotationValue
+		return r.Update(ctx, &fresh)
+	})
+}
+
 func (r *AppReconciler) removeAppFinalizerWithRetry(ctx context.Context, key types.NamespacedName) error {
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		var fresh mortisev1alpha1.App
@@ -449,7 +467,7 @@ func (r *AppReconciler) prepareGitSource(ctx context.Context, app *mortisev1alph
 			app.Annotations = make(map[string]string)
 		}
 		app.Annotations["mortise.dev/git-token-owner"] = tokenResult.Email
-		if err := r.Update(ctx, app); err != nil {
+		if err := r.setAppAnnotationWithRetry(ctx, types.NamespacedName{Name: app.Name, Namespace: app.Namespace}, "mortise.dev/git-token-owner", tokenResult.Email); err != nil {
 			log.Error(err, "failed to cache git-token-owner annotation")
 		}
 	}
@@ -890,17 +908,27 @@ func buildContextOf(app *mortisev1alpha1.App) mortisev1alpha1.BuildContext {
 // status, and returns an error so the reconciler requeues.
 func (r *AppReconciler) setFailedCondition(ctx context.Context, app *mortisev1alpha1.App, reason, msg string) error {
 	log := logf.FromContext(ctx)
+	transitionTime := metav1.NewTime(r.clock().Now())
+	if err := r.updateAppStatus(ctx, app, func(status *mortisev1alpha1.AppStatus) {
+		status.Phase = mortisev1alpha1.AppPhaseFailed
+		meta.SetStatusCondition(&status.Conditions, metav1.Condition{
+			Type:               "BuildSucceeded",
+			Status:             metav1.ConditionFalse,
+			Reason:             reason,
+			Message:            msg,
+			LastTransitionTime: transitionTime,
+		})
+	}); err != nil {
+		log.Error(err, "update failed status")
+	}
 	app.Status.Phase = mortisev1alpha1.AppPhaseFailed
 	meta.SetStatusCondition(&app.Status.Conditions, metav1.Condition{
 		Type:               "BuildSucceeded",
 		Status:             metav1.ConditionFalse,
 		Reason:             reason,
 		Message:            msg,
-		LastTransitionTime: metav1.NewTime(r.clock().Now()),
+		LastTransitionTime: transitionTime,
 	})
-	if err := r.Status().Update(ctx, app); err != nil {
-		log.Error(err, "update failed status")
-	}
 	return fmt.Errorf("%s: %s", reason, msg)
 }
 
@@ -2409,7 +2437,17 @@ func (r *AppReconciler) setWebhookCondition(ctx context.Context, app *mortisev1a
 		ObservedGeneration: app.Generation,
 		LastTransitionTime: transitionTime,
 	})
-	return r.Status().Update(ctx, app)
+
+	return r.updateAppStatus(ctx, app, func(appStatus *mortisev1alpha1.AppStatus) {
+		meta.SetStatusCondition(&appStatus.Conditions, metav1.Condition{
+			Type:               webhookConditionType,
+			Status:             status,
+			Reason:             reason,
+			Message:            message,
+			ObservedGeneration: app.Generation,
+			LastTransitionTime: transitionTime,
+		})
+	})
 }
 
 // checkPodCrashLoopInEnv checks pods for CrashLoopBackOff within a single env
@@ -3329,15 +3367,16 @@ func (r *AppReconciler) reconcileExternalSource(ctx context.Context, app *mortis
 			if env.Domain != "" {
 				allHosts := append([]string{env.Domain}, env.CustomDomains...)
 				if err := r.checkDomainCollisions(ctx, app, env.Name, allHosts); err != nil {
-					app.Status.Phase = mortisev1alpha1.AppPhaseFailed
-					meta.SetStatusCondition(&app.Status.Conditions, metav1.Condition{
-						Type:               "DomainCollision",
-						Status:             metav1.ConditionTrue,
-						Reason:             "DomainInUse",
-						Message:            err.Error(),
-						ObservedGeneration: app.Generation,
-					})
-					if updateErr := r.Status().Update(ctx, app); updateErr != nil {
+					if updateErr := r.updateAppStatus(ctx, app, func(status *mortisev1alpha1.AppStatus) {
+						status.Phase = mortisev1alpha1.AppPhaseFailed
+						meta.SetStatusCondition(&status.Conditions, metav1.Condition{
+							Type:               "DomainCollision",
+							Status:             metav1.ConditionTrue,
+							Reason:             "DomainInUse",
+							Message:            err.Error(),
+							ObservedGeneration: app.Generation,
+						})
+					}); updateErr != nil {
 						log.Error(updateErr, "update status after domain collision")
 					}
 					return ctrl.Result{}, nil
@@ -3353,8 +3392,9 @@ func (r *AppReconciler) reconcileExternalSource(ctx context.Context, app *mortis
 	}
 
 	// External apps are always Ready — there is no workload to wait for.
-	app.Status.Phase = mortisev1alpha1.AppPhaseReady
-	if err := r.Status().Update(ctx, app); err != nil {
+	if err := r.updateAppStatus(ctx, app, func(status *mortisev1alpha1.AppStatus) {
+		status.Phase = mortisev1alpha1.AppPhaseReady
+	}); err != nil {
 		return ctrl.Result{}, fmt.Errorf("update status: %w", err)
 	}
 	return ctrl.Result{}, nil
