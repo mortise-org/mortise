@@ -40,13 +40,13 @@ Press Ctrl-C to stop.`,
 			<-sig
 
 			fmt.Fprintln(os.Stderr, "\nDisconnecting...")
-			if err := c.Disconnect(p, app); err != nil {
+			if err := c.Disconnect(p, app, env); err != nil {
 				fmt.Fprintf(os.Stderr, "warning: disconnect failed: %v\n", err)
 			}
 			return nil
 		},
 	}
 	cmd.Flags().StringVar(&project, "project", "", "Project (default: current project)")
-	cmd.Flags().StringVar(&env, "env", "", "Environment (default: production)")
+	cmd.Flags().StringVar(&env, "env", "", "Environment (default: first project environment)")
 	return cmd
 }

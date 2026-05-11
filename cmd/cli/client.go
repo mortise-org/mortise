@@ -579,8 +579,11 @@ func (c *Client) Connect(project, app, env string) (*ConnectResponse, error) {
 	return &resp, nil
 }
 
-func (c *Client) Disconnect(project, app string) error {
+func (c *Client) Disconnect(project, app, env string) error {
 	u := c.appBase(project, app) + "/disconnect"
+	if env != "" {
+		u += "?environment=" + url.QueryEscape(env)
+	}
 	return c.doJSON(http.MethodPost, u, nil, nil)
 }
 
