@@ -1071,6 +1071,9 @@ func (r *PreviewEnvironmentReconciler) readAppEnvSource(ctx context.Context, nam
 	reader := r.apiReader()
 	var secret corev1.Secret
 	if err := reader.Get(ctx, types.NamespacedName{Namespace: namespace, Name: envstore.AppEnvSecretName(appName)}, &secret); err != nil {
+		if errors.IsNotFound(err) {
+			return nil, nil
+		}
 		return nil, err
 	}
 	return envstore.SecretToEnvs(&secret), nil
