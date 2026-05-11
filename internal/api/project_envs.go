@@ -510,31 +510,25 @@ func (s *Server) CloneProjectEnvironment(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Retry-safe: if the target env already exists on the project (partial
-	// failure added the env but didn't finish cloning app overrides), skip
-	// the project update and continue with per-app cloning.
-	targetExists := false
 	for _, existing := range project.Spec.Environments {
 		if existing.Name == req.Name {
-			targetExists = true
-			break
+			writeJSON(w, http.StatusConflict, errorResponse{fmt.Sprintf("environment %q already exists on project %q", req.Name, project.Name)})
+			return
 		}
 	}
 
-	if !targetExists {
-		project.Spec.Environments = append(project.Spec.Environments, mortisev1alpha1.ProjectEnvironment{
-			Name:         req.Name,
-			DisplayOrder: req.DisplayOrder,
-		})
-		if err := s.ensureProjectEnvNamespace(r.Context(), project, req.Name, false); err != nil {
-			writeError(w, r, err)
-			return
-		}
-		if err := s.client.Update(r.Context(), project); err != nil {
-			_ = s.deleteProjectEnvNamespace(r.Context(), project, req.Name)
-			writeError(w, r, err)
-			return
-		}
+	project.Spec.Environments = append(project.Spec.Environments, mortisev1alpha1.ProjectEnvironment{
+		Name:         req.Name,
+		DisplayOrder: req.DisplayOrder,
+	})
+	if err := s.ensureProjectEnvNamespace(r.Context(), project, req.Name, false); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	if err := s.client.Update(r.Context(), project); err != nil {
+		_ = s.deleteProjectEnvNamespace(r.Context(), project, req.Name)
+		writeError(w, r, err)
+		return
 	}
 	if err := s.ensureProjectEnvNamespace(r.Context(), project, req.Name, true); err != nil {
 		writeError(w, r, err)
@@ -554,11 +548,7 @@ func (s *Server) CloneProjectEnvironment(w http.ResponseWriter, r *http.Request)
 	s.recordActivity(r, projectName, "create", "environment", req.Name,
 		fmt.Sprintf("Cloned environment %s from %s", req.Name, sourceName), "")
 
-	status := http.StatusCreated
-	if targetExists {
-		status = http.StatusOK
-	}
-	writeJSON(w, status, projectEnvResponse{
+	writeJSON(w, http.StatusCreated, projectEnvResponse{
 		Name:         req.Name,
 		DisplayOrder: req.DisplayOrder,
 		Health:       EnvHealthUnknown,
