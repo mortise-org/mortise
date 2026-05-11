@@ -157,10 +157,10 @@ func TestDeployTokenCanDeployToDeclaredEnvWithoutExplicitAppOverride(t *testing.
 	srv := newAdminServer(t, k8sClient)
 	h := srv.Handler()
 	ns := seedProject(t, k8sClient, "default", "staging", "production")
-	seedTokenApp(t, k8sClient, ns, "webapp")
+	seedTokenApp(t, k8sClient, ns, "env-deploy-target")
 
-	create := doRequest(h, http.MethodPost, "/api/projects/default/apps/webapp/tokens", map[string]any{
-		"name":        "ci-staging",
+	create := doRequest(h, http.MethodPost, "/api/projects/default/apps/env-deploy-target/tokens", map[string]any{
+		"name":        "ci-staging-deploy",
 		"environment": "staging",
 	})
 	if create.Code != http.StatusCreated {
@@ -176,7 +176,7 @@ func TestDeployTokenCanDeployToDeclaredEnvWithoutExplicitAppOverride(t *testing.
 		t.Fatal("expected raw deploy token")
 	}
 
-	deploy := doRequestWithToken(h, http.MethodPost, "/api/projects/default/apps/webapp/deploy", map[string]any{
+	deploy := doRequestWithToken(h, http.MethodPost, "/api/projects/default/apps/env-deploy-target/deploy", map[string]any{
 		"environment": "staging",
 		"image":       "nginx:1.27.0",
 	}, created.Token)
@@ -185,7 +185,7 @@ func TestDeployTokenCanDeployToDeclaredEnvWithoutExplicitAppOverride(t *testing.
 	}
 
 	var app mortisev1alpha1.App
-	if err := k8sClient.Get(context.Background(), client.ObjectKey{Name: "webapp", Namespace: ns}, &app); err != nil {
+	if err := k8sClient.Get(context.Background(), client.ObjectKey{Name: "env-deploy-target", Namespace: ns}, &app); err != nil {
 		t.Fatalf("get app: %v", err)
 	}
 	if len(app.Spec.Environments) != 1 || app.Spec.Environments[0].Name != "staging" || app.Spec.Environments[0].Image != "nginx:1.27.0" {
