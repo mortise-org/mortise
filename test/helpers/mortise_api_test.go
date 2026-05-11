@@ -64,6 +64,35 @@ func TestLoginAsAdminFallsBackToLoginAfterSetupConflict(t *testing.T) {
 	}
 }
 
+func TestLoginAsAdminRetriesUnauthorizedAfterSetupConflict(t *testing.T) {
+	var loginCalls atomic.Int32
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/auth/setup":
+			http.Error(w, `{"error":"setup already complete"}`, http.StatusConflict)
+		case "/api/auth/login":
+			if loginCalls.Add(1) == 1 {
+				http.Error(w, `{"error":"invalid credentials"}`, http.StatusUnauthorized)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"token": "login-token"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	token := LoginAsAdmin(t, srv.URL, "admin@example.com", "password123")
+	if token != "login-token" {
+		t.Fatalf("expected login token, got %q", token)
+	}
+	if got := loginCalls.Load(); got < 2 {
+		t.Fatalf("expected retry after unauthorized login, got %d call(s)", got)
+	}
+}
+
 func TestLoginAsAdminTreatsSetupAsBestEffort(t *testing.T) {
 	var loginCalls atomic.Int32
 
