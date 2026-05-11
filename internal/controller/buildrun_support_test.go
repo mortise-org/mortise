@@ -3,11 +3,13 @@ package controller
 import (
 	"context"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	clocktesting "k8s.io/utils/clock/testing"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -758,6 +760,138 @@ func TestReconcilePreviewBuildSkipsWhenReadyImageExternallySeeded(t *testing.T) 
 	}
 	if len(runs.Items) != 0 {
 		t.Fatalf("expected no preview buildruns to be created, got %d", len(runs.Items))
+	}
+}
+
+func TestReconcilePreviewBuildSkipsWhenExternallySeededImageAlreadyFailed(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := mortisev1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add mortise scheme: %v", err)
+	}
+
+	pe := &mortisev1alpha1.PreviewEnvironment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "demo-preview-pr-10",
+			Namespace: "pj-default-project",
+		},
+		Spec: mortisev1alpha1.PreviewEnvironmentSpec{
+			AppRef:    "demo",
+			SourceEnv: "production",
+			PullRequest: mortisev1alpha1.PullRequestRef{
+				Number: 10,
+				SHA:    "sha-new",
+				Branch: "feature/demo",
+			},
+		},
+		Status: mortisev1alpha1.PreviewEnvironmentStatus{
+			Phase: mortisev1alpha1.PreviewPhaseFailed,
+			Image: "nginx:1.27",
+		},
+	}
+
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(pe.DeepCopy()).
+		WithStatusSubresource(pe).
+		Build()
+	r := &PreviewEnvironmentReconciler{
+		Client:          c,
+		Scheme:          scheme,
+		BuildClient:     noopBuildClient{},
+		GitClient:       noopGitClient{},
+		RegistryBackend: staticRegistryBackend{},
+	}
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "demo",
+			Namespace: pe.Namespace,
+		},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{
+				Type:        mortisev1alpha1.SourceTypeGit,
+				Repo:        "https://example.com/repo.git",
+				ProviderRef: "github-main",
+			},
+		},
+	}
+
+	result, proceed, err := r.reconcilePreviewBuild(context.Background(), pe, app)
+	if err != nil {
+		t.Fatalf("reconcile preview build: %v", err)
+	}
+	if !proceed {
+		t.Fatalf("expected externally seeded failed image to skip preview build, got %+v", result)
+	}
+
+	var runs mortisev1alpha1.BuildRunList
+	if err := c.List(context.Background(), &runs, client.InNamespace(pe.Namespace)); err != nil {
+		t.Fatalf("list preview buildruns: %v", err)
+	}
+	if len(runs.Items) != 0 {
+		t.Fatalf("expected no preview buildruns to be created, got %d", len(runs.Items))
+	}
+}
+
+func TestReconcilePreviewBuildRequeuesBrieflyForSeededImageGrace(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := mortisev1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add mortise scheme: %v", err)
+	}
+
+	now := time.Now()
+	pe := &mortisev1alpha1.PreviewEnvironment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              "demo-preview-pr-10",
+			Namespace:         "pj-default-project",
+			CreationTimestamp: metav1.NewTime(now),
+		},
+		Spec: mortisev1alpha1.PreviewEnvironmentSpec{
+			AppRef:    "demo",
+			SourceEnv: "production",
+			PullRequest: mortisev1alpha1.PullRequestRef{
+				Number: 10,
+				SHA:    "sha-new",
+				Branch: "feature/demo",
+			},
+		},
+	}
+
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(pe.DeepCopy()).
+		WithStatusSubresource(pe).
+		Build()
+	r := &PreviewEnvironmentReconciler{
+		Client:          c,
+		Scheme:          scheme,
+		Clock:           clocktesting.NewFakeClock(now.Add(time.Second)),
+		BuildClient:     noopBuildClient{},
+		GitClient:       noopGitClient{},
+		RegistryBackend: staticRegistryBackend{},
+	}
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "demo",
+			Namespace: pe.Namespace,
+		},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{
+				Type:        mortisev1alpha1.SourceTypeGit,
+				Repo:        "https://example.com/repo.git",
+				ProviderRef: "github-main",
+			},
+		},
+	}
+
+	result, proceed, err := r.reconcilePreviewBuild(context.Background(), pe, app)
+	if err != nil {
+		t.Fatalf("reconcile preview build: %v", err)
+	}
+	if proceed {
+		t.Fatal("expected preview build to wait for seeded image during grace period")
+	}
+	if result.RequeueAfter <= 0 {
+		t.Fatalf("expected requeue during seeded image grace period, got %+v", result)
 	}
 }
 

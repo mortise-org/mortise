@@ -58,6 +58,7 @@ import (
 )
 
 const previewBuildPollInterval = 15 * time.Second
+const previewBuildSeedGracePeriod = 5 * time.Second
 const appEnvUpdatedAnnotation = "mortise.dev/env-updated"
 
 // previewFinalizer gates PreviewEnvironment deletion so we can garbage-collect
@@ -285,12 +286,13 @@ func (r *PreviewEnvironmentReconciler) reconcilePreviewBuild(ctx context.Context
 	// Short-circuit: already built this SHA — skip the build but proceed
 	// with Deployment/Service/Ingress reconciliation so spec changes
 	// (replicas, resources, env vars, domain) are picked up.
-	if pe.Status.Image != "" && pe.Status.Phase == mortisev1alpha1.PreviewPhaseReady {
+	if pe.Status.Image != "" {
 		if strings.Contains(pe.Status.Image, shortTag(revision)) {
 			return ctrl.Result{}, true, nil
 		}
 		previewTagPrefix := fmt.Sprintf("pr-%d-", pe.Spec.PullRequest.Number)
-		if !strings.Contains(pe.Status.Image, previewTagPrefix) &&
+		if pe.Status.Phase != mortisev1alpha1.PreviewPhaseBuilding &&
+			!strings.Contains(pe.Status.Image, previewTagPrefix) &&
 			pe.Status.CurrentBuildRunName == "" &&
 			pe.Status.LastBuildRunName == "" &&
 			pe.Status.CurrentBuildRunRef == nil &&
@@ -300,16 +302,33 @@ func (r *PreviewEnvironmentReconciler) reconcilePreviewBuild(ctx context.Context
 		}
 	}
 
+	withinSeedGrace := !pe.CreationTimestamp.IsZero() &&
+		r.clock().Now().Sub(pe.CreationTimestamp.Time) < previewBuildSeedGracePeriod &&
+		pe.Status.Image == "" &&
+		pe.Status.CurrentBuildRunName == "" &&
+		pe.Status.LastBuildRunName == "" &&
+		pe.Status.CurrentBuildRunRef == nil &&
+		pe.Status.LastSuccessfulBuildRunRef == nil
+
 	// Resolve git credentials via the parent app's owner token.
 	if app.Spec.Source.ProviderRef == "" {
+		if withinSeedGrace {
+			return ctrl.Result{RequeueAfter: time.Second}, false, nil
+		}
 		return ctrl.Result{}, false, r.setPreviewFailed(ctx, pe, "MissingProviderRef", "parent App has no source.providerRef")
 	}
 	var gp mortisev1alpha1.GitProvider
 	if err := r.Get(ctx, types.NamespacedName{Name: app.Spec.Source.ProviderRef}, &gp); err != nil {
+		if withinSeedGrace && errors.IsNotFound(err) {
+			return ctrl.Result{RequeueAfter: time.Second}, false, nil
+		}
 		return ctrl.Result{}, false, r.setPreviewFailed(ctx, pe, "ProviderNotFound", fmt.Sprintf("GitProvider %q: %v", app.Spec.Source.ProviderRef, err))
 	}
 	createdBy := app.Annotations["mortise.dev/created-by"]
 	if createdBy == "" {
+		if withinSeedGrace {
+			return ctrl.Result{RequeueAfter: time.Second}, false, nil
+		}
 		return ctrl.Result{}, false, r.setPreviewFailed(ctx, pe, "MissingOwner", "parent app has no mortise.dev/created-by annotation")
 	}
 	token, err := git.ResolveGitToken(ctx, r.Client, gp.Name, createdBy)
