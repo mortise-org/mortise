@@ -16,7 +16,8 @@ import {
 	createAppViaAPI,
 	deleteProjectViaAPI,
 	deleteAppViaAPI,
-	getAppViaAPI
+	getAppViaAPI,
+	waitForAppCurrentImage
 } from './helpers';
 
 test.describe('deployments tab', () => {
@@ -63,16 +64,7 @@ test.describe('deployments tab', () => {
 		test.slow();
 		const appName = `e2e-redeploy-${randomSuffix()}`;
 		await createAppViaAPI(request, token, project, appName, 'nginx:1.27', { port: 80 });
-
-		// Wait until the app phase is Ready.
-		await expect(async () => {
-			const app = await getAppViaAPI(request, token, project, appName);
-			const status = app.status as {
-				phase?: string;
-				environments?: Array<{ phase?: string; currentImage?: string }>;
-			};
-			expect(status?.phase === 'Ready' || status?.environments?.[0]?.phase === 'Ready').toBeTruthy();
-		}).toPass({ timeout: 90_000 });
+		await waitForAppCurrentImage(request, token, project, appName);
 
 		await injectToken(page, token);
 		await page.goto(`/projects/${project}/apps/${appName}`);

@@ -10,8 +10,11 @@ import (
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
+	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
 )
@@ -400,6 +403,49 @@ func TestStorePATOverwritesExistingToken(t *testing.T) {
 	}
 }
 
+func TestStorePATRetriesStaleGitProviderLookup(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	ctx := context.Background()
+
+	_ = k8sClient.Create(ctx, &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: "mortise-system"},
+	})
+
+	gp := &mortisev1alpha1.GitProvider{
+		ObjectMeta: metav1.ObjectMeta{Name: "gitea-oauth-stale"},
+		Spec: mortisev1alpha1.GitProviderSpec{
+			Type: mortisev1alpha1.GitProviderTypeGitea,
+			Host: "https://gitea.example.com",
+		},
+	}
+	if err := k8sClient.Create(ctx, gp); err != nil {
+		t.Fatalf("create GitProvider: %v", err)
+	}
+
+	staleClient := &staleGitProviderClient{
+		Client:       k8sClient,
+		providerName: gp.Name,
+		missesLeft:   1,
+	}
+	srv, _ := newTestServer(t, staleClient)
+	h := srv.Handler()
+
+	w := doRequest(h, http.MethodPost, "/api/auth/git/"+gp.Name+"/token", map[string]string{"token": "pat-from-stale-read"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 after stale provider read, got %d: %s", w.Code, w.Body.String())
+	}
+
+	email := "test@example.com"
+	secretName := "user-" + gp.Name + "-token-" + hex.EncodeToString([]byte(email))
+	var s corev1.Secret
+	if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: "mortise-system", Name: secretName}, &s); err != nil {
+		t.Fatalf("token secret not found: %v", err)
+	}
+	if string(s.Data["token"]) != "pat-from-stale-read" {
+		t.Errorf("expected stored token %q, got %q", "pat-from-stale-read", string(s.Data["token"]))
+	}
+}
+
 // TestStorePATAutoCreatesGitLabProvider verifies that StorePAT with a "gitlab"
 // provider name auto-creates a GitProvider with Type=gitlab (not github) when
 // no GitProvider CRD exists and a client ID env var is set.
@@ -444,6 +490,24 @@ func TestStorePATAutoCreatesGitLabProvider(t *testing.T) {
 	if string(s.Data["token"]) != "glpat-test123" {
 		t.Errorf("expected stored token %q, got %q", "glpat-test123", string(s.Data["token"]))
 	}
+}
+
+type staleGitProviderClient struct {
+	ctrlclient.Client
+	providerName string
+	missesLeft   int
+}
+
+func (c *staleGitProviderClient) Get(ctx context.Context, key ctrlclient.ObjectKey, obj ctrlclient.Object, opts ...ctrlclient.GetOption) error {
+	if gp, ok := obj.(*mortisev1alpha1.GitProvider); ok && key.Name == c.providerName && c.missesLeft > 0 {
+		c.missesLeft--
+		*gp = mortisev1alpha1.GitProvider{}
+		return k8serrors.NewNotFound(schema.GroupResource{
+			Group:    "mortise.mortise.dev",
+			Resource: "gitproviders",
+		}, key.Name)
+	}
+	return c.Client.Get(ctx, key, obj, opts...)
 }
 
 // TestPerUserTokenStorage verifies that different users get different tokens stored.

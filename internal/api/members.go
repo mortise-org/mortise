@@ -201,7 +201,7 @@ func (s *Server) AddMember(w http.ResponseWriter, r *http.Request) {
 // UpdateMember changes the role of an existing project member.
 //
 // @Summary Update a project member's role
-// @Description Changes the role of an existing project member
+// @Description Changes the role of an existing project member. Returns 400 when the change would demote the last project owner.
 // @Tags members
 // @Accept json
 // @Produce json
@@ -245,6 +245,26 @@ func (s *Server) UpdateMember(w http.ResponseWriter, r *http.Request) {
 	if err := s.client.Get(r.Context(), types.NamespacedName{Name: name, Namespace: ns}, &member); err != nil {
 		writeError(w, r, err)
 		return
+	}
+	if member.Spec.Role == mortisev1alpha1.ProjectRoleOwner && mortisev1alpha1.ProjectRole(req.Role) != mortisev1alpha1.ProjectRoleOwner {
+		var allMembers mortisev1alpha1.ProjectMemberList
+		if err := s.client.List(r.Context(), &allMembers,
+			client.InNamespace(ns),
+			client.MatchingLabels{"mortise.dev/member": "true"},
+		); err != nil {
+			writeError(w, r, err)
+			return
+		}
+		ownerCount := 0
+		for _, m := range allMembers.Items {
+			if m.Spec.Role == mortisev1alpha1.ProjectRoleOwner {
+				ownerCount++
+			}
+		}
+		if ownerCount <= 1 {
+			writeJSON(w, http.StatusBadRequest, errorResponse{"cannot demote the last owner of a project"})
+			return
+		}
 	}
 
 	member.Spec.Role = mortisev1alpha1.ProjectRole(req.Role)
