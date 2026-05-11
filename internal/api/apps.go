@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/go-chi/chi/v5"
-	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -18,7 +17,6 @@ import (
 
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
 	"github.com/mortise-org/mortise/internal/authz"
-	"github.com/mortise-org/mortise/internal/constants"
 )
 
 // normalizeRepoURL expands short-form "owner/repo" strings to a full git URL.
@@ -320,14 +318,6 @@ func (s *Server) DeleteApp(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
-	project, ok := s.getProject(w, r)
-	if !ok {
-		return
-	}
-	if err := s.deleteAppPullSecrets(r.Context(), project, app.Name); err != nil {
-		writeError(w, r, err)
-		return
-	}
 
 	if err := s.client.Delete(r.Context(), &app); err != nil {
 		writeError(w, r, err)
@@ -337,28 +327,6 @@ func (s *Server) DeleteApp(w http.ResponseWriter, r *http.Request) {
 	s.recordActivity(r, projectName, "delete", "app", app.Name, "Deleted app "+app.Name, "")
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
-}
-
-func (s *Server) deleteAppPullSecrets(ctx context.Context, project *mortisev1alpha1.Project, appName string) error {
-	secretName := pullSecretName(appName)
-	for _, env := range project.Spec.Environments {
-		envNs := constants.EnvNamespace(project.Name, env.Name)
-		var secret corev1.Secret
-		err := s.client.Get(ctx, types.NamespacedName{Name: secretName, Namespace: envNs}, &secret)
-		if errors.IsNotFound(err) {
-			continue
-		}
-		if err != nil {
-			return err
-		}
-		if secret.Labels["app.kubernetes.io/managed-by"] != "mortise" {
-			continue
-		}
-		if err := s.client.Delete(ctx, &secret); err != nil && !errors.IsNotFound(err) {
-			return err
-		}
-	}
-	return nil
 }
 
 // writeError maps k8s API errors to HTTP status codes.

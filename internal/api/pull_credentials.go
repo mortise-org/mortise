@@ -11,6 +11,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/retry"
 
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
 	"github.com/mortise-org/mortise/internal/authz"
@@ -112,6 +113,18 @@ func (s *Server) SetPullCredentials(w http.ResponseWriter, r *http.Request) {
 	secretName := pullSecretName(appName)
 	dockerJSON := buildDockerConfigJSON(req.Registry, req.Username, req.Password)
 
+	for _, env := range project.Spec.Environments {
+		envNs := constants.EnvNamespace(projectName, env.Name)
+		if err := s.ensureReservedPullSecretAvailable(r, envNs, secretName); err != nil {
+			if errors.Is(err, errPullSecretOwnedByUser) {
+				writeJSON(w, http.StatusConflict, errorResponse{err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusInternalServerError, errorResponse{"failed to validate pull secret in " + envNs + ": " + err.Error()})
+			return
+		}
+	}
+
 	// Create or update the pull secret in each env namespace.
 	for _, env := range project.Spec.Environments {
 		envNs := constants.EnvNamespace(projectName, env.Name)
@@ -126,8 +139,13 @@ func (s *Server) SetPullCredentials(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Set PullSecretRef on the App CRD.
-	app.Spec.Source.PullSecretRef = secretName
-	if err := s.client.Update(r.Context(), &app); err != nil {
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		if err := s.client.Get(r.Context(), types.NamespacedName{Name: appName, Namespace: ns}, &app); err != nil {
+			return err
+		}
+		app.Spec.Source.PullSecretRef = secretName
+		return s.client.Update(r.Context(), &app)
+	}); err != nil {
 		writeError(w, r, err)
 		return
 	}
@@ -252,6 +270,21 @@ func (s *Server) DeletePullCredentials(w http.ResponseWriter, r *http.Request) {
 		"Removed pull credentials for "+appName, "")
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+func (s *Server) ensureReservedPullSecretAvailable(r *http.Request, namespace, name string) error {
+	var existing corev1.Secret
+	err := s.client.Get(r.Context(), types.NamespacedName{Name: name, Namespace: namespace}, &existing)
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if existing.Labels["app.kubernetes.io/managed-by"] != "mortise" {
+		return errPullSecretOwnedByUser
+	}
+	return nil
 }
 
 // upsertPullSecret creates or updates a dockerconfigjson Secret.
