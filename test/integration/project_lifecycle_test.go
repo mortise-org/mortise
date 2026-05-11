@@ -272,8 +272,8 @@ func TestRenameProjectEnvironmentPreservesSecretEnvVarsViaAPI(t *testing.T) {
 		for _, ev := range env.Env {
 			envMap[ev.Name] = ev.Value
 		}
-		if envMap["LOG_LEVEL"] != "debug" || envMap["EXTRA_FLAG"] != "one" {
-			t.Fatalf("expected renamed override to preserve env vars, got %+v", env.Env)
+		if envMap["LOG_LEVEL"] != "debug" || len(envMap) != 1 {
+			t.Fatalf("expected only CRD env vars on the renamed override, got %+v", env.Env)
 		}
 	}
 	if !foundCanary {

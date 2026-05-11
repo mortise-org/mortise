@@ -338,11 +338,23 @@ func TestUpdateProjectEnvironmentRenamePreservesSecretEnvVars(t *testing.T) {
 	if envMap["LOG_LEVEL"] != "debug" {
 		t.Fatalf("expected LOG_LEVEL to be preserved, got %+v", got.Spec.Environments[0].Env)
 	}
-	if envMap["EXTRA_FLAG"] != "one" {
-		t.Fatalf("expected EXTRA_FLAG to be preserved, got %+v", got.Spec.Environments[0].Env)
+	if len(envMap) != 1 {
+		t.Fatalf("expected only CRD env vars on the renamed override, got %+v", got.Spec.Environments[0].Env)
 	}
-	if _, found := envMap["BINDING_ONLY"]; found {
-		t.Fatalf("expected binding-sourced vars to stay out of CRD env, got %+v", got.Spec.Environments[0].Env)
+
+	renamedVars, err := store.Get(context.Background(), constants.EnvNamespace(projectName, "stage"), "web")
+	if err != nil {
+		t.Fatalf("get renamed env secret: %v", err)
+	}
+	secretMap := map[string]string{}
+	for _, env := range renamedVars {
+		secretMap[env.Name] = env.Value
+	}
+	if secretMap["EXTRA_FLAG"] != "one" {
+		t.Fatalf("expected EXTRA_FLAG to move with the env secret, got %+v", renamedVars)
+	}
+	if _, found := secretMap["BINDING_ONLY"]; found {
+		t.Fatalf("expected binding-sourced vars to stay out of cloned env secrets, got %+v", renamedVars)
 	}
 }
 
@@ -673,6 +685,76 @@ func TestCloneProjectEnvironmentCopiesCustomSecrets(t *testing.T) {
 	}
 	if string(copied.Data["TOKEN"]) != "abc123" {
 		t.Fatalf("expected copied secret data, got %+v", copied.Data)
+	}
+}
+
+func TestCloneProjectEnvironmentCopiesSecretEnvVarsWithoutLeakingIntoAppSpec(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+	const projectName = "demo-clone-secret-env"
+	ns := seedProject(t, k8sClient, projectName)
+
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: ns},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: "nginx:1.25.0"},
+			Environments: []mortisev1alpha1.Environment{{
+				Name: "production",
+				Env:  []mortisev1alpha1.EnvVar{{Name: "LOG_LEVEL", Value: "debug"}},
+			}},
+		},
+	}
+	if err := k8sClient.Create(context.Background(), app); err != nil {
+		t.Fatalf("create app: %v", err)
+	}
+
+	store := &envstore.Store{Client: k8sClient}
+	if err := store.Set(context.Background(), constants.EnvNamespace(projectName, "production"), "web", []envstore.Env{
+		{Name: "EXTRA_FLAG", Value: "one", Source: "user"},
+		{Name: "BINDING_ONLY", Value: "skip-me", Source: "binding"},
+	}, nil); err != nil {
+		t.Fatalf("seed env secret: %v", err)
+	}
+
+	w := doRequest(h, http.MethodPost, "/api/projects/"+projectName+"/environments/production/clone", map[string]any{
+		"name": "staging",
+	})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var got mortisev1alpha1.App
+	if err := k8sClient.Get(context.Background(), types.NamespacedName{Namespace: ns, Name: "web"}, &got); err != nil {
+		t.Fatalf("get app: %v", err)
+	}
+	var cloned *mortisev1alpha1.Environment
+	for i := range got.Spec.Environments {
+		if got.Spec.Environments[i].Name == "staging" {
+			cloned = &got.Spec.Environments[i]
+			break
+		}
+	}
+	if cloned == nil {
+		t.Fatal("staging env override not found on app")
+	}
+	if len(cloned.Env) != 1 || cloned.Env[0].Name != "LOG_LEVEL" || cloned.Env[0].Value != "debug" {
+		t.Fatalf("expected only CRD env vars on cloned override, got %+v", cloned.Env)
+	}
+
+	clonedVars, err := store.Get(context.Background(), constants.EnvNamespace(projectName, "staging"), "web")
+	if err != nil {
+		t.Fatalf("get cloned env secret: %v", err)
+	}
+	secretMap := map[string]string{}
+	for _, env := range clonedVars {
+		secretMap[env.Name] = env.Value
+	}
+	if secretMap["EXTRA_FLAG"] != "one" {
+		t.Fatalf("expected EXTRA_FLAG in cloned env secret, got %+v", clonedVars)
+	}
+	if _, found := secretMap["BINDING_ONLY"]; found {
+		t.Fatalf("expected binding-sourced vars to stay out of cloned env secret, got %+v", clonedVars)
 	}
 }
 
