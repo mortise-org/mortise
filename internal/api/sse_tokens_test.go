@@ -17,6 +17,39 @@ import (
 	"github.com/mortise-org/mortise/internal/authz"
 )
 
+type stagedCurrentPrincipalProvider struct {
+	principal auth.Principal
+	calls     int
+}
+
+func (s *stagedCurrentPrincipalProvider) Authenticate(context.Context, auth.Credentials) (auth.Principal, error) {
+	return auth.Principal{}, nil
+}
+
+func (s *stagedCurrentPrincipalProvider) Principal(context.Context, auth.SessionToken) (auth.Principal, error) {
+	return s.principal, nil
+}
+
+func (s *stagedCurrentPrincipalProvider) ListUsers(context.Context) ([]auth.User, error) {
+	return nil, nil
+}
+
+func (s *stagedCurrentPrincipalProvider) InviteUser(context.Context, string, auth.Role) (auth.InviteLink, error) {
+	return auth.InviteLink{}, nil
+}
+
+func (s *stagedCurrentPrincipalProvider) RevokeUser(context.Context, string) error {
+	return nil
+}
+
+func (s *stagedCurrentPrincipalProvider) CurrentPrincipal(context.Context, string, int64) (auth.Principal, error) {
+	s.calls++
+	if s.calls == 1 {
+		return s.principal, nil
+	}
+	return auth.Principal{}, auth.ErrUserNotFound
+}
+
 func TestIssueSSEToken(t *testing.T) {
 	k8sClient := setupEnvtest(t)
 	srv, token := newTestServer(t, k8sClient)
@@ -176,6 +209,41 @@ func TestIssueSSETokenRejectsRevokedUser(t *testing.T) {
 	}
 }
 
+func TestIssueSSETokenRejectsProviderWithoutCurrentPrincipal(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	ctx := context.Background()
+	_ = k8sClient.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "mortise-system"}})
+
+	jwtHelper := auth.NewJWTHelper(k8sClient)
+	principal := auth.Principal{
+		ID:          "user@example.com",
+		Email:       "user@example.com",
+		Role:        auth.RoleAdmin,
+		PasswordGen: 0,
+	}
+	token, err := jwtHelper.GenerateToken(ctx, principal)
+	if err != nil {
+		t.Fatalf("generate token: %v", err)
+	}
+
+	srv := api.NewServer(
+		k8sClient,
+		fake.NewClientset(),
+		nil,
+		nil,
+		staticAuthProvider{principal: principal},
+		jwtHelper,
+		nil,
+		authz.NewNativePolicyEngine(k8sClient),
+	)
+	h := srv.Handler()
+
+	w := doRequestWithToken(h, http.MethodPost, "/api/auth/sse-token", nil, token)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 when provider cannot revalidate SSE issue, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
 func TestRefreshToken(t *testing.T) {
 	k8sClient := setupEnvtest(t)
 	ctx := context.Background()
@@ -265,12 +333,14 @@ func TestSSETokenRedeemRejectsProviderWithoutCurrentPrincipal(t *testing.T) {
 		t.Fatalf("generate token: %v", err)
 	}
 
+	authProvider := &stagedCurrentPrincipalProvider{principal: principal}
+
 	srv := api.NewServer(
 		k8sClient,
 		fake.NewClientset(),
 		nil,
 		nil,
-		staticAuthProvider{principal: principal},
+		authProvider,
 		jwtHelper,
 		nil,
 		authz.NewNativePolicyEngine(k8sClient),

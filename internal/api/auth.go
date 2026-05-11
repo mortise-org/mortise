@@ -84,8 +84,7 @@ func (s *Server) Status(w http.ResponseWriter, r *http.Request) {
 // @Failure 501 {object} errorResponse
 // @Router /auth/setup [post]
 //
-// Setup creates the first admin user and the `default` Project. Returns 409 if
-// any user already exists.
+// Setup creates the first admin user. Returns 409 if any user already exists.
 func (s *Server) Setup(w http.ResponseWriter, r *http.Request) {
 	var req setupRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {

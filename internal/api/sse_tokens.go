@@ -3,6 +3,7 @@ package api
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"net/http"
 	"sync"
 	"time"
@@ -132,7 +133,25 @@ func (s *Server) IssueSSEToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, err := s.sseTokens.Issue(*p)
+	revalidated, err := s.revalidatePrincipal(r.Context(), p.Email, p.PasswordGen)
+	if err != nil {
+		switch {
+		case errors.Is(err, errCurrentPrincipalUnavailable):
+			writeJSON(w, http.StatusUnauthorized, errorResponse{"SSE token unavailable for this auth provider"})
+			return
+		case errors.Is(err, auth.ErrPasswordChangeInvalidated):
+			writeJSON(w, http.StatusUnauthorized, errorResponse{"session invalidated by password change"})
+			return
+		case errors.Is(err, auth.ErrUserNotFound):
+			writeJSON(w, http.StatusUnauthorized, errorResponse{"user no longer exists"})
+			return
+		default:
+			writeJSON(w, http.StatusInternalServerError, errorResponse{err.Error()})
+			return
+		}
+	}
+
+	token, err := s.sseTokens.Issue(revalidated)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, errorResponse{"failed to generate SSE token"})
 		return
