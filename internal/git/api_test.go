@@ -5,6 +5,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/http"
 	"testing"
@@ -228,6 +229,64 @@ func TestFactory(t *testing.T) {
 		if got != tt.wantType {
 			t.Errorf("NewGitAPIFromProvider(%s): got type %s, want %s", tt.t, got, tt.wantType)
 		}
+	}
+}
+
+func TestWebhookOperationErrorClassification(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		err        error
+		wantClass  WebhookErrorClass
+		wantAuth   bool
+		statusCode int
+	}{
+		{
+			name:      "unauthorized",
+			err:       wrapWebhookOperationError("github", WebhookOperationRegister, http.StatusForbidden, fmt.Errorf("forbidden")),
+			wantClass: WebhookErrorClassUnauthorized,
+			wantAuth:  true,
+		},
+		{
+			name:      "not found",
+			err:       wrapWebhookOperationError("gitlab", WebhookOperationList, http.StatusNotFound, fmt.Errorf("missing")),
+			wantClass: WebhookErrorClassNotFound,
+		},
+		{
+			name:      "conflict",
+			err:       wrapWebhookOperationError("gitea", WebhookOperationRegister, http.StatusUnprocessableEntity, fmt.Errorf("duplicate")),
+			wantClass: WebhookErrorClassConflict,
+		},
+		{
+			name:      "transient",
+			err:       wrapWebhookOperationError("github", WebhookOperationDelete, http.StatusServiceUnavailable, fmt.Errorf("down")),
+			wantClass: WebhookErrorClassTransient,
+		},
+		{
+			name:      "rate limited",
+			err:       wrapWebhookOperationError("github", WebhookOperationList, http.StatusTooManyRequests, fmt.Errorf("slow down")),
+			wantClass: WebhookErrorClassRateLimited,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ClassifyWebhookError(tt.err); got != tt.wantClass {
+				t.Fatalf("ClassifyWebhookError() = %q, want %q", got, tt.wantClass)
+			}
+			if got := errors.Is(tt.err, ErrAuthFailed); got != tt.wantAuth {
+				t.Fatalf("errors.Is(err, ErrAuthFailed) = %t, want %t", got, tt.wantAuth)
+			}
+
+			var opErr *WebhookOperationError
+			if !errors.As(tt.err, &opErr) {
+				t.Fatal("expected WebhookOperationError")
+			}
+			if opErr.Provider == "" || opErr.Operation == "" {
+				t.Fatalf("missing webhook error metadata: %+v", opErr)
+			}
+		})
 	}
 }
 

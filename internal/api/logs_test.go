@@ -613,6 +613,88 @@ func TestHandleBuildLogsFallsBackToConfigMap(t *testing.T) {
 	}
 }
 
+func TestHandleBuildLogsUsesBuildRunLogRef(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+	nsName := seedProject(t, k8sClient, "default")
+	ctx := context.Background()
+
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "buildrun-app", Namespace: nsName},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeGit, Repo: "https://example.com/repo.git", Branch: "main"},
+		},
+	}
+	if err := k8sClient.Create(ctx, app); err != nil {
+		t.Fatalf("create app: %v", err)
+	}
+
+	finishedAt := metav1.NewTime(time.Date(2026, 5, 9, 17, 0, 0, 0, time.UTC))
+	run := &mortisev1alpha1.BuildRun{
+		ObjectMeta: metav1.ObjectMeta{Name: "app-run-1", Namespace: nsName},
+		Spec: mortisev1alpha1.BuildRunSpec{
+			TargetRef:   mortisev1alpha1.BuildRunTargetRef{Kind: mortisev1alpha1.BuildRunTargetAppEnvironment, Name: "buildrun-app", Namespace: nsName},
+			Environment: "production",
+			Revision:    "deadbeef",
+			Repo:        "https://example.com/repo.git",
+		},
+	}
+	if err := k8sClient.Create(ctx, run); err != nil {
+		t.Fatalf("create buildrun: %v", err)
+	}
+	run.Status.Phase = mortisev1alpha1.BuildRunPhaseFailed
+	run.Status.FinishedAt = &finishedAt
+	run.Status.FailureReason = "BuildFailed"
+	run.Status.FailureMessage = "docker build failed"
+	run.Status.LogRef = &corev1.LocalObjectReference{Name: "buildrun-app-run-1"}
+	if err := k8sClient.Status().Update(ctx, run); err != nil {
+		t.Fatalf("update buildrun status: %v", err)
+	}
+
+	app.Status.LastBuildRunName = run.Name
+	if err := k8sClient.Status().Update(ctx, app); err != nil {
+		t.Fatalf("update app status: %v", err)
+	}
+
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "buildrun-app-run-1",
+			Namespace: nsName,
+			Annotations: map[string]string{
+				"mortise.dev/build-timestamp": "2026-05-09T17:00:00Z",
+				"mortise.dev/build-commit":    "deadbeef",
+				"mortise.dev/build-status":    "Failed",
+				"mortise.dev/build-error":     "docker build failed",
+			},
+		},
+		Data: map[string]string{"lines": "step 1\nstep 2"},
+	}
+	if err := k8sClient.Create(ctx, cm); err != nil {
+		t.Fatalf("create log configmap: %v", err)
+	}
+
+	w := doRequest(h, http.MethodGet, "/api/projects/default/apps/buildrun-app/build-logs", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp["building"] != false {
+		t.Fatalf("expected building=false, got %v", resp["building"])
+	}
+	if resp["status"] != "Failed" || resp["commitSHA"] != "deadbeef" || resp["error"] != "docker build failed" {
+		t.Fatalf("unexpected metadata: %+v", resp)
+	}
+	linesAny, ok := resp["lines"].([]any)
+	if !ok || len(linesAny) != 2 {
+		t.Fatalf("expected 2 lines, got %T %#v", resp["lines"], resp["lines"])
+	}
+}
+
 // TestHandleBuildLogsFallbackSurfacesFailedStatus verifies the Failed path
 // reports the build-error annotation in the `error` response field.
 func TestHandleBuildLogsFallbackSurfacesFailedStatus(t *testing.T) {
@@ -694,5 +776,53 @@ func TestHandleBuildLogsNoTrackerNoConfigMap(t *testing.T) {
 	}
 	if len(linesAny) != 0 {
 		t.Errorf("expected empty lines, got %v", linesAny)
+	}
+}
+
+func TestHandleBuildLogsMissingAppReturns404EvenWithLegacyConfigMap(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+	nsName := seedProject(t, k8sClient, "default")
+
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "buildlogs-ghost",
+			Namespace: nsName,
+			Annotations: map[string]string{
+				"mortise.dev/build-status": "Succeeded",
+			},
+		},
+		Data: map[string]string{"lines": "stale line"},
+	}
+	if err := k8sClient.Create(context.Background(), cm); err != nil {
+		t.Fatalf("create stale configmap: %v", err)
+	}
+
+	w := doRequest(h, http.MethodGet, "/api/projects/default/apps/ghost/build-logs", nil)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for missing app, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestHandleLogsRejectsUndeclaredEnvironment(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+	ns := seedProject(t, k8sClient, "default")
+
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "logs-env-app", Namespace: ns},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: "nginx:1.25.0"},
+		},
+	}
+	if err := k8sClient.Create(context.Background(), app); err != nil {
+		t.Fatalf("create app: %v", err)
+	}
+
+	w := doRequest(h, http.MethodGet, "/api/projects/default/apps/logs-env-app/logs?env=staging", nil)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for undeclared env, got %d: %s", w.Code, w.Body.String())
 	}
 }

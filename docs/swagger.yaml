@@ -1283,6 +1283,11 @@ definitions:
         items:
           $ref: '#/definitions/v1.Condition'
         type: array
+      currentBuildRunName:
+        description: |-
+          CurrentBuildRunName is the active durable build execution for the app.
+          +optional
+        type: string
       detectedPort:
         description: |-
           DetectedPort is the container port auto-detected from EXPOSE directives
@@ -1294,6 +1299,11 @@ definitions:
         items:
           $ref: '#/definitions/v1alpha1.EnvironmentStatus'
         type: array
+      lastBuildRunName:
+        description: |-
+          LastBuildRunName is the most recent terminal durable build execution.
+          +optional
+        type: string
       lastBuiltImage:
         description: |-
           LastBuiltImage is the full image reference (including digest) produced by the
@@ -1348,6 +1358,25 @@ definitions:
     - BuildModeAuto
     - BuildModeDockerfile
     - BuildModeRailpack
+  v1alpha1.BuildRunPhase:
+    enum:
+    - Pending
+    - Running
+    - Succeeded
+    - Failed
+    type: string
+    x-enum-varnames:
+    - BuildRunPhasePending
+    - BuildRunPhaseRunning
+    - BuildRunPhaseSucceeded
+    - BuildRunPhaseFailed
+  v1alpha1.BuildRunReference:
+    properties:
+      name:
+        type: string
+      phase:
+        $ref: '#/definitions/v1alpha1.BuildRunPhase'
+    type: object
   v1alpha1.ConcurrencyPolicy:
     enum:
     - Allow
@@ -1575,6 +1604,13 @@ definitions:
           values: "Ready", "Pending", "Failed".
           +optional
         type: string
+      currentBuildRunRef:
+        allOf:
+        - $ref: '#/definitions/v1alpha1.BuildRunReference'
+        description: |-
+          CurrentBuildRunRef points at the currently selected BuildRun for this
+          environment, whether it is pending, running, failed, or succeeded.
+          +optional
       currentDigest:
         type: string
       currentImage:
@@ -1617,6 +1653,13 @@ definitions:
           redeploy has actually rolled out.
           +optional
         type: string
+      lastSuccessfulBuildRunRef:
+        allOf:
+        - $ref: '#/definitions/v1alpha1.BuildRunReference'
+        description: |-
+          LastSuccessfulBuildRunRef points at the most recent successful BuildRun
+          for this environment.
+          +optional
       message:
         type: string
       name:
@@ -3974,8 +4017,8 @@ paths:
   /projects/{project}/apps/{app}/rebuild:
     post:
       description: Resolve the current branch head, sync mortise.dev/revision to that
-        SHA, and clear build freshness state so the reconciler triggers a fresh no-cache
-        build. Only supported for git-source apps.
+        SHA, and record explicit rebuild request markers so the reconciler triggers
+        a fresh no-cache build. Only supported for git-source apps.
       parameters:
       - description: Project name
         in: path

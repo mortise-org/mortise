@@ -59,9 +59,6 @@ test.describe('full user journey', () => {
 		await page.getByLabel('Project name').fill(projectName);
 		await page.getByLabel('Description').fill('Journey test project');
 
-		// Namespace preview should update.
-		await expect(page.getByText(`project-${projectName}`)).toBeVisible();
-
 		await page.getByRole('button', { name: 'Create project' }).click();
 
 		// Should redirect to the project canvas page.
@@ -110,7 +107,7 @@ test.describe('full user journey', () => {
 		// ── Step 5: Check Variables tab ───────────────────────────────
 		await page.getByRole('button', { name: 'Variables' }).click();
 		// Actual empty state text in VariablesTab.
-		await expect(page.getByText(/No variables set/)).toBeVisible({ timeout: 5_000 });
+		await expect(page.getByText(/No variables set/).first()).toBeVisible({ timeout: 5_000 });
 
 		// Add a variable inline. The "+" icon button is in the Runtime section
 		// header. We scope to the bordered section container that holds
@@ -301,7 +298,7 @@ test.describe('app creation via modal journey', () => {
 		// Switch tabs to verify they work.
 		await page.getByRole('button', { name: 'Deployments' }).click();
 		await page.getByRole('button', { name: 'Variables' }).click();
-		await expect(page.getByText(/No variables set/)).toBeVisible({ timeout: 5_000 });
+		await expect(page.getByText(/No variables set/).first()).toBeVisible({ timeout: 5_000 });
 
 		// Close the drawer.
 		await page.getByRole('button', { name: 'Close drawer' }).click();

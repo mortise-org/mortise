@@ -12,6 +12,9 @@ operator:
   # ingressClassName sets the Kubernetes IngressClass on App Ingresses.
   # When empty, the cluster default is used.
   ingressClassName: ""
+  # tmpSizeLimit optionally sets a sizeLimit on the operator /tmp emptyDir.
+  # Leave unset to let Kubernetes choose the default behavior.
+  tmpSizeLimit: null
 
 service:
   type: ClusterIP

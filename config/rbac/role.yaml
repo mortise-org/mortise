@@ -7,6 +7,7 @@ rules:
 - apiGroups:
   - ""
   resources:
+  - configmaps
   - namespaces
   - persistentvolumeclaims
   - secrets
@@ -79,6 +80,7 @@ rules:
   - mortise.mortise.dev
   resources:
   - apps
+  - buildruns
   - gitproviders
   - platformconfigs
   - previewenvironments
@@ -95,6 +97,7 @@ rules:
   - mortise.mortise.dev
   resources:
   - apps/finalizers
+  - buildruns/finalizers
   - gitproviders/finalizers
   - platformconfigs/finalizers
   - previewenvironments/finalizers
@@ -105,6 +108,7 @@ rules:
   - mortise.mortise.dev
   resources:
   - apps/status
+  - buildruns/status
   - gitproviders/status
   - platformconfigs/status
   - previewenvironments/status

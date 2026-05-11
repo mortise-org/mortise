@@ -127,16 +127,18 @@ func (t *buildTracker) setFailed(msg string) {
 	t.errMsg = msg
 }
 
-// buildTrackerStore is a concurrency-safe map of active builds keyed by App.
+// BuildTrackerStore is a concurrency-safe map of active builds keyed by build
+// identity. It backs live log streaming while the durable BuildRun object holds
+// source-of-truth build state.
 // Operator restarts lose the map; that's acceptable because builds are
 // idempotent (same revision → same image) and the next reconcile will
 // re-launch.
-type buildTrackerStore struct {
+type BuildTrackerStore struct {
 	trackers sync.Map // map[types.NamespacedName]*buildTracker
 }
 
 // get returns the tracker for the given App, or nil if none exists.
-func (s *buildTrackerStore) get(key types.NamespacedName) *buildTracker {
+func (s *BuildTrackerStore) get(key types.NamespacedName) *buildTracker {
 	v, ok := s.trackers.Load(key)
 	if !ok {
 		return nil
@@ -145,18 +147,18 @@ func (s *buildTrackerStore) get(key types.NamespacedName) *buildTracker {
 }
 
 // set stores the tracker under the given key.
-func (s *buildTrackerStore) set(key types.NamespacedName, t *buildTracker) {
+func (s *BuildTrackerStore) set(key types.NamespacedName, t *buildTracker) {
 	s.trackers.Store(key, t)
 }
 
 // delete removes the tracker for the given App.
-func (s *buildTrackerStore) delete(key types.NamespacedName) {
+func (s *BuildTrackerStore) delete(key types.NamespacedName) {
 	s.trackers.Delete(key)
 }
 
 // GetBuildLogs returns the current build log lines for the given App, or nil
 // if no build is in progress. Exported for use by the API layer.
-func (s *buildTrackerStore) GetBuildLogs(key types.NamespacedName) []string {
+func (s *BuildTrackerStore) GetBuildLogs(key types.NamespacedName) []string {
 	t := s.get(key)
 	if t == nil {
 		return nil
@@ -166,7 +168,7 @@ func (s *buildTrackerStore) GetBuildLogs(key types.NamespacedName) []string {
 
 // GetBuildLogsSince returns build log lines from offset onward, plus the total
 // line count. Returns (nil, 0) if no build exists for the key.
-func (s *buildTrackerStore) GetBuildLogsSince(key types.NamespacedName, offset int) ([]string, int) {
+func (s *BuildTrackerStore) GetBuildLogsSince(key types.NamespacedName, offset int) ([]string, int) {
 	t := s.get(key)
 	if t == nil {
 		return nil, 0

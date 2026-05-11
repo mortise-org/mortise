@@ -96,29 +96,46 @@ func (s *Server) Deploy(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	var app mortisev1alpha1.App
-	if err := s.client.Get(r.Context(), types.NamespacedName{Name: appName, Namespace: ns}, &app); err != nil {
-		writeError(w, r, err)
+	project, ok := s.getProject(w, r)
+	if !ok {
 		return
 	}
-
 	if req.Environment != "" {
 		if msg := validateDNSLabel("environment", req.Environment, 63); msg != "" {
 			writeJSON(w, http.StatusBadRequest, errorResponse{msg})
 			return
 		}
-		found := false
-		for i := range app.Spec.Environments {
-			if app.Spec.Environments[i].Name == req.Environment {
-				app.Spec.Environments[i].Image = req.Image
-				found = true
-				break
-			}
-		}
-		if !found {
-			writeJSON(w, http.StatusNotFound, errorResponse{fmt.Sprintf("environment %q not found in app spec", req.Environment)})
+		if indexOfEnv(project, req.Environment) < 0 {
+			writeJSON(w, http.StatusBadRequest, errorResponse{fmt.Sprintf(
+				"environment %q is not declared on project %q — add it via POST /api/projects/%s/environments first",
+				req.Environment, project.Name, project.Name)})
 			return
 		}
+	}
+
+	var app mortisev1alpha1.App
+	if err := s.client.Get(r.Context(), types.NamespacedName{Name: appName, Namespace: ns}, &app); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	if p := PrincipalFromContext(r.Context()); p != nil && req.Environment == "" {
+		for _, env := range project.Spec.Environments {
+			if !appParticipatesInEnv(&app, env.Name) {
+				continue
+			}
+			if !s.authorize(w, r, authz.Resource{Kind: "app", Namespace: ns, Project: projectName, Environment: env.Name}, authz.ActionUpdate) {
+				return
+			}
+		}
+	}
+	if req.Environment != "" && !appParticipatesInEnv(&app, req.Environment) {
+		writeJSON(w, http.StatusNotFound, errorResponse{fmt.Sprintf("app %q is not enabled in environment %q", app.Name, req.Environment)})
+		return
+	}
+
+	if req.Environment != "" {
+		env := ensureEnvironment(&app, req.Environment)
+		env.Image = req.Image
 	} else {
 		app.Spec.Source.Image = req.Image
 	}

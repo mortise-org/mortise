@@ -4,28 +4,28 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.20.1
-  name: previewenvironments.mortise.mortise.dev
+  name: buildruns.mortise.mortise.dev
 spec:
   group: mortise.mortise.dev
   names:
-    kind: PreviewEnvironment
-    listKind: PreviewEnvironmentList
-    plural: previewenvironments
-    singular: previewenvironment
+    kind: BuildRun
+    listKind: BuildRunList
+    plural: buildruns
+    singular: buildrun
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .spec.appRef
-      name: App
+    - jsonPath: .spec.targetRef.name
+      name: Target
       type: string
-    - jsonPath: .spec.pullRequest.number
-      name: PR
-      type: integer
+    - jsonPath: .spec.environment
+      name: Env
+      type: string
     - jsonPath: .status.phase
       name: Phase
       type: string
-    - jsonPath: .status.url
-      name: URL
+    - jsonPath: .spec.revision
+      name: Revision
       type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
@@ -33,8 +33,7 @@ spec:
     name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: PreviewEnvironment is the Schema for the previewenvironments
-          API
+        description: BuildRun is the Schema for durable build executions.
         properties:
           apiVersion:
             description: |-
@@ -54,96 +53,108 @@ spec:
           metadata:
             type: object
           spec:
-            description: spec defines the desired state of PreviewEnvironment
+            description: BuildRunSpec defines the desired state of BuildRun.
             properties:
-              appRef:
-                description: AppRef is the name of the parent App this previews (same
-                  namespace).
+              appName:
                 type: string
-              bindings:
-                description: Bindings inherited from the staging environment.
-                items:
-                  properties:
-                    ref:
-                      description: Ref is the name of the bound App within the same
-                        project.
-                      type: string
-                  required:
-                  - ref
-                  type: object
-                type: array
-              domain:
-                description: Domain for this preview (resolved from App.spec.preview.domain
-                  template).
+              branch:
                 type: string
-              env:
-                description: Env vars for the preview Deployment. Inherited from staging,
-                  overridable.
-                items:
-                  properties:
-                    name:
-                      description: Name is the environment variable name.
-                      maxLength: 253
-                      pattern: ^[a-zA-Z_][a-zA-Z0-9_]*$
-                      type: string
-                    value:
-                      type: string
-                    valueFrom:
-                      properties:
-                        secretRef:
-                          type: string
-                      type: object
-                  required:
-                  - name
-                  type: object
-                type: array
-              pullRequest:
-                description: PullRequest identifies the PR that triggered this preview.
+              buildArgs:
+                additionalProperties:
+                  type: string
+                type: object
+              buildContext:
+                description: |-
+                  BuildContext selects the BuildKit build-context root when source.path is set.
+                  "root" forces the repo root (monorepo Dockerfile referencing sibling dirs).
+                  "subdir" forces the subdirectory (self-contained, Railway-style).
+                  Unset = auto: pick subdir if a Dockerfile lives there, unless that Dockerfile
+                  references the subdir prefix in COPY/ADD sources, in which case fall back to
+                  repo root.
+                enum:
+                - root
+                - subdir
+                type: string
+              buildMode:
+                type: string
+              createdBy:
+                type: string
+              dockerfile:
+                type: string
+              dockerfilePath:
+                type: string
+              environment:
+                type: string
+              inputHash:
+                type: string
+              noCache:
+                type: boolean
+              path:
+                type: string
+              providerRef:
+                type: string
+              pullImage:
+                type: string
+              pullTarget:
+                type: string
+              pushImage:
+                type: string
+              pushTarget:
+                type: string
+              repo:
+                type: string
+              requestID:
+                type: string
+              revision:
+                type: string
+              sourcePath:
+                type: string
+              targetRef:
+                description: BuildRunTargetRef identifies the resource requesting
+                  the build.
                 properties:
-                  branch:
+                  kind:
                     type: string
-                  number:
-                    type: integer
-                  sha:
+                  name:
+                    type: string
+                  namespace:
                     type: string
                 required:
-                - branch
-                - number
-                - sha
+                - kind
+                - name
                 type: object
-              replicas:
-                description: Replicas for the preview Deployment. Inherited from staging,
-                  overridable.
-                format: int32
-                type: integer
-              resources:
-                description: Resources for the preview Deployment. Inherited from
-                  staging, overridable.
-                properties:
-                  cpu:
-                    type: string
-                  memory:
-                    type: string
-                type: object
-              sourceEnv:
-                description: |-
-                  SourceEnv is the project environment name the preview was forked from
-                  (typically `staging`). Bindings declared in the preview resolve against
-                  this env's namespace, so previews share the backing services of their
-                  source env rather than spinning up their own.
+              tokenOwner:
                 type: string
-              ttl:
-                description: TTL after which the preview is auto-deleted if the PR
-                  is still open.
+              tokenSecretRef:
+                description: SecretRef is a reference to a key in a Kubernetes Secret.
+                properties:
+                  key:
+                    description: Key within the secret.
+                    type: string
+                  name:
+                    description: Name of the secret.
+                    type: string
+                  namespace:
+                    description: Namespace of the secret.
+                    type: string
+                required:
+                - key
+                - name
+                - namespace
+                type: object
+              trigger:
+                description: BuildRunTrigger describes why a BuildRun exists.
                 type: string
             required:
-            - appRef
-            - pullRequest
-            - sourceEnv
+            - repo
+            - targetRef
             type: object
           status:
-            description: status defines the observed state of PreviewEnvironment
+            description: BuildRunStatus defines the observed state of BuildRun.
             properties:
+              completedAt:
+                format: date-time
+                type: string
               conditions:
                 items:
                   description: Condition contains details for one aspect of the current
@@ -203,68 +214,65 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
-              currentBuildRunName:
-                description: CurrentBuildRunName is the active durable build execution
-                  for this preview.
+              detectedPort:
+                format: int32
+                type: integer
+              digest:
                 type: string
-              currentBuildRunRef:
-                description: CurrentBuildRunRef points at the currently selected BuildRun
-                  for this preview.
-                properties:
-                  name:
-                    type: string
-                  phase:
-                    description: BuildRunPhase is the durable lifecycle state of a
-                      git build execution.
-                    enum:
-                    - Pending
-                    - Running
-                    - Succeeded
-                    - Failed
-                    type: string
-                required:
-                - name
-                type: object
-              expiresAt:
-                description: ExpiresAt is when this preview will be auto-deleted.
+              error:
+                type: string
+              failureMessage:
+                type: string
+              failureReason:
+                type: string
+              finishedAt:
                 format: date-time
                 type: string
               image:
-                description: Image is the built container image reference.
                 type: string
-              lastBuildRunName:
-                description: LastBuildRunName is the most recent terminal durable
-                  build execution.
-                type: string
-              lastSuccessfulBuildRunRef:
-                description: LastSuccessfulBuildRunRef points at the most recent successful
-                  BuildRun.
+              jobRef:
+                description: |-
+                  LocalObjectReference contains enough information to let you locate the
+                  referenced object inside the same namespace.
                 properties:
                   name:
+                    default: ""
+                    description: |-
+                      Name of the referent.
+                      This field is effectively required, but due to backwards compatibility is
+                      allowed to be empty. Instances of this type with an empty value here are
+                      almost certainly wrong.
+                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
                     type: string
-                  phase:
-                    description: BuildRunPhase is the durable lifecycle state of a
-                      git build execution.
-                    enum:
-                    - Pending
-                    - Running
-                    - Succeeded
-                    - Failed
-                    type: string
-                required:
-                - name
                 type: object
+                x-kubernetes-map-type: atomic
+              logRef:
+                description: |-
+                  LocalObjectReference contains enough information to let you locate the
+                  referenced object inside the same namespace.
+                properties:
+                  name:
+                    default: ""
+                    description: |-
+                      Name of the referent.
+                      This field is effectively required, but due to backwards compatibility is
+                      allowed to be empty. Instances of this type with an empty value here are
+                      almost certainly wrong.
+                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                    type: string
+                type: object
+                x-kubernetes-map-type: atomic
               phase:
-                description: Phase is the current lifecycle phase.
+                description: BuildRunPhase is the durable lifecycle state of a git
+                  build execution.
                 enum:
                 - Pending
-                - Building
-                - Ready
+                - Running
+                - Succeeded
                 - Failed
-                - Expired
                 type: string
-              url:
-                description: URL is the HTTPS endpoint for the preview.
+              startedAt:
+                format: date-time
                 type: string
             type: object
         required:

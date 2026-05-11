@@ -19,12 +19,13 @@ import (
 
 // Rebuild triggers a fresh build from the latest git commit.
 // It resolves the current branch head, syncs mortise.dev/revision to that SHA,
-// and clears build freshness state so the reconciler must run a fresh no-cache build.
+// and records explicit rebuild request markers so the reconciler creates a new
+// BuildRun even when the SHA is unchanged.
 //
 // POST /api/projects/{project}/apps/{app}/rebuild
 //
 // @Summary Rebuild an app from source
-// @Description Resolve the current branch head, sync mortise.dev/revision to that SHA, and clear build freshness state so the reconciler triggers a fresh no-cache build. Only supported for git-source apps.
+// @Description Resolve the current branch head, sync mortise.dev/revision to that SHA, and record explicit rebuild request markers so the reconciler triggers a fresh no-cache build. Only supported for git-source apps.
 // @Tags deploy
 // @Produce json
 // @Security BearerAuth
@@ -60,36 +61,17 @@ func (s *Server) Rebuild(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Sync git state first, then force a no-cache build so BuildKit rebuilds
-	// all layers from the resolved commit SHA.
+	// Sync git state first, then record a new explicit request ID so the
+	// controller creates a fresh durable BuildRun even for the same SHA.
+	patch := client.MergeFrom(app.DeepCopy())
+	requestedAt := time.Now().UTC().Format(time.RFC3339Nano)
 	if app.Annotations == nil {
 		app.Annotations = make(map[string]string)
 	}
 	app.Annotations["mortise.dev/revision"] = revision
-	app.Annotations["mortise.dev/no-cache-build"] = "true"
-	if err := s.client.Update(r.Context(), &app); err != nil {
-		writeError(w, r, err)
-		return
-	}
-
-	// Re-fetch so the status update uses the current resourceVersion. A
-	// controller reconcile between the annotation write and this point would
-	// bump the resourceVersion, causing a stale-object conflict otherwise.
-	if err := s.client.Get(r.Context(), types.NamespacedName{Name: appName, Namespace: ns}, &app); err != nil {
-		writeError(w, r, err)
-		return
-	}
-
-	// Clear app-level and per-environment build freshness so rebuild cannot
-	// no-op even when an older build stored a branch-name fallback.
-	app.Status.LastBuiltSHA = ""
-	app.Status.LastBuiltImage = ""
-	for i := range app.Status.Environments {
-		app.Status.Environments[i].LastBuiltSHA = ""
-	}
-	app.Status.Phase = mortisev1alpha1.AppPhaseBuilding
-	app.Status.Conditions = nil
-	if err := s.client.Status().Update(r.Context(), &app); err != nil {
+	app.Annotations["mortise.dev/rebuild-requested-at"] = requestedAt
+	app.Annotations["mortise.dev/rebuild-no-cache-requested-at"] = requestedAt
+	if err := s.client.Patch(r.Context(), &app, patch); err != nil {
 		writeError(w, r, err)
 		return
 	}
@@ -253,7 +235,7 @@ func (s *Server) RedeployStale(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		envNs := constants.EnvNamespace(projectName, es.Name)
-	if err := restartDeployment(r.Context(), s.client, envNs, appName, es.PendingEnvHash, s.clock().Now()); err != nil {
+		if err := restartDeployment(r.Context(), s.client, envNs, appName, es.PendingEnvHash, s.clock().Now()); err != nil {
 			writeError(w, r, err)
 			return
 		}
