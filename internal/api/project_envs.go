@@ -3,15 +3,17 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"sort"
 
 	"github.com/go-chi/chi/v5"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/errors"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
@@ -49,6 +51,15 @@ type projectEnvResponse struct {
 type createProjectEnvRequest struct {
 	Name         string `json:"name"`
 	DisplayOrder int    `json:"displayOrder,omitempty"`
+}
+
+type projectEnvExistsError struct {
+	project string
+	name    string
+}
+
+func (e *projectEnvExistsError) Error() string {
+	return fmt.Sprintf("environment %q already exists on project %q", e.name, e.project)
 }
 
 // patchProjectEnvRequest is the JSON body for PATCH .../environments/{name}.
@@ -150,16 +161,18 @@ func (s *Server) CreateProjectEnvironment(w http.ResponseWriter, r *http.Request
 			return
 		}
 	}
-
-	project.Spec.Environments = append(project.Spec.Environments, mortisev1alpha1.ProjectEnvironment{
-		Name:         req.Name,
-		DisplayOrder: req.DisplayOrder,
-	})
 	if err := s.ensureProjectEnvNamespace(r.Context(), project, req.Name, false); err != nil {
 		writeError(w, r, err)
 		return
 	}
-	if err := s.client.Update(r.Context(), project); err != nil {
+
+	created, err := s.createProjectEnvironment(r.Context(), project.Name, req)
+	if err != nil {
+		var existsErr *projectEnvExistsError
+		if errors.As(err, &existsErr) {
+			writeJSON(w, http.StatusConflict, errorResponse{existsErr.Error()})
+			return
+		}
 		_ = s.deleteProjectEnvNamespace(r.Context(), project, req.Name)
 		writeError(w, r, err)
 		return
@@ -172,10 +185,33 @@ func (s *Server) CreateProjectEnvironment(w http.ResponseWriter, r *http.Request
 	s.recordActivity(r, projectName, "create", "environment", req.Name, "Created project environment "+req.Name, "")
 
 	writeJSON(w, http.StatusCreated, projectEnvResponse{
-		Name:         req.Name,
-		DisplayOrder: req.DisplayOrder,
+		Name:         created.Name,
+		DisplayOrder: created.DisplayOrder,
 		Health:       EnvHealthUnknown,
 	})
+}
+
+func (s *Server) createProjectEnvironment(ctx context.Context, projectName string, req createProjectEnvRequest) (mortisev1alpha1.ProjectEnvironment, error) {
+	created := mortisev1alpha1.ProjectEnvironment{
+		Name:         req.Name,
+		DisplayOrder: req.DisplayOrder,
+	}
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var current mortisev1alpha1.Project
+		if err := s.client.Get(ctx, types.NamespacedName{Name: projectName}, &current); err != nil {
+			return err
+		}
+		for _, existing := range current.Spec.Environments {
+			if existing.Name == req.Name {
+				return &projectEnvExistsError{project: current.Name, name: req.Name}
+			}
+		}
+		current.Spec.Environments = append(current.Spec.Environments, created)
+		return s.client.Update(ctx, &current)
+	}); err != nil {
+		return mortisev1alpha1.ProjectEnvironment{}, err
+	}
+	return created, nil
 }
 
 // UpdateProjectEnvironment edits the display order and/or renames an env.
@@ -348,7 +384,7 @@ func (s *Server) DeleteProjectEnvironment(w http.ResponseWriter, r *http.Request
 
 	project.Spec.Environments = append(project.Spec.Environments[:idx], project.Spec.Environments[idx+1:]...)
 	if err := s.client.Update(r.Context(), project); err != nil {
-		if errors.IsForbidden(err) {
+		if apierrors.IsForbidden(err) {
 			writeJSON(w, http.StatusConflict, errorResponse{err.Error()})
 			return
 		}
@@ -568,7 +604,7 @@ func (s *Server) cloneEnvToApp(ctx context.Context, ns, appName, sourceName, tar
 		if updateErr == nil {
 			return nil
 		}
-		if !errors.IsConflict(updateErr) || attempt == maxConflictRetries-1 {
+		if !apierrors.IsConflict(updateErr) || attempt == maxConflictRetries-1 {
 			return fmt.Errorf("clone env overrides for app %q: %w", appName, updateErr)
 		}
 	}
@@ -586,7 +622,7 @@ func (s *Server) getProject(w http.ResponseWriter, r *http.Request) (*mortisev1a
 
 	var project mortisev1alpha1.Project
 	err := s.client.Get(r.Context(), types.NamespacedName{Name: projectName}, &project)
-	if errors.IsNotFound(err) {
+	if apierrors.IsNotFound(err) {
 		writeJSON(w, http.StatusNotFound, errorResponse{fmt.Sprintf("project %q not found", projectName)})
 		return nil, false
 	}
@@ -666,7 +702,7 @@ func (s *Server) renameEnvOnApp(ctx context.Context, ns, appName, oldName, newNa
 		if updateErr == nil {
 			return nil
 		}
-		if !errors.IsConflict(updateErr) || attempt == maxConflictRetries-1 {
+		if !apierrors.IsConflict(updateErr) || attempt == maxConflictRetries-1 {
 			return fmt.Errorf("rename env override for app %q: %w", appName, updateErr)
 		}
 	}
@@ -738,7 +774,7 @@ func (s *Server) ensureProjectEnvNamespace(ctx context.Context, project *mortise
 
 	var existing corev1.Namespace
 	err := s.client.Get(ctx, types.NamespacedName{Name: nsName}, &existing)
-	if errors.IsNotFound(err) {
+	if apierrors.IsNotFound(err) {
 		isController := true
 		blockOwnerDeletion := true
 		return s.client.Create(ctx, &corev1.Namespace{
@@ -802,7 +838,7 @@ func (s *Server) ensureProjectEnvNamespace(ctx context.Context, project *mortise
 func (s *Server) deleteProjectEnvNamespace(ctx context.Context, project *mortisev1alpha1.Project, envName string) error {
 	var ns corev1.Namespace
 	if err := s.client.Get(ctx, types.NamespacedName{Name: constants.EnvNamespace(project.Name, envName)}, &ns); err != nil {
-		if errors.IsNotFound(err) {
+		if apierrors.IsNotFound(err) {
 			return nil
 		}
 		return err
@@ -828,7 +864,7 @@ func (s *Server) cloneCustomSecrets(ctx context.Context, sourceEnvNs, targetEnvN
 
 		var existing corev1.Secret
 		getErr := s.client.Get(ctx, types.NamespacedName{Namespace: targetEnvNs, Name: src.Name}, &existing)
-		if errors.IsNotFound(getErr) {
+		if apierrors.IsNotFound(getErr) {
 			copied := &corev1.Secret{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:        src.Name,
@@ -839,7 +875,7 @@ func (s *Server) cloneCustomSecrets(ctx context.Context, sourceEnvNs, targetEnvN
 				Type: src.Type,
 				Data: copyBytesMap(src.Data),
 			}
-			if err := s.client.Create(ctx, copied); err != nil && !errors.IsAlreadyExists(err) {
+			if err := s.client.Create(ctx, copied); err != nil && !apierrors.IsAlreadyExists(err) {
 				return err
 			}
 			continue

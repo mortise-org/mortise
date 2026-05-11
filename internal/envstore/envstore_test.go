@@ -1,7 +1,18 @@
 package envstore
 
 import (
+	"context"
+	"errors"
 	"testing"
+
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
 
 func TestAppEnvSecretName(t *testing.T) {
@@ -144,5 +155,100 @@ func TestBuildSecretDataEncoding(t *testing.T) {
 
 	if string(secret.Data["PASSWORD"]) != "s3cret!@#$" {
 		t.Errorf("password roundtrip failed: got %q", string(secret.Data["PASSWORD"]))
+	}
+}
+
+func TestStoreMergeRetriesOnConflict(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+
+	existing := buildSecret("ns", AppEnvSecretName("app"), []Env{{Name: "A", Value: "1", Source: "user"}}, nil)
+	updateCalls := 0
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(existing).WithInterceptorFuncs(interceptor.Funcs{
+		Update: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+			updateCalls++
+			if updateCalls == 1 {
+				return apierrors.NewConflict(schema.GroupResource{Group: "", Resource: "secrets"}, obj.GetName(), errors.New("conflict"))
+			}
+			return c.Update(ctx, obj, opts...)
+		},
+	}).Build()
+
+	store := &Store{Client: c}
+	if err := store.Merge(context.Background(), "ns", "app", []Env{{Name: "B", Value: "2", Source: "generated"}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if updateCalls < 2 {
+		t.Fatalf("expected retry after conflict, got %d update calls", updateCalls)
+	}
+
+	got, err := store.Get(context.Background(), "ns", "app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 vars after merge, got %d", len(got))
+	}
+}
+
+func TestDeleteVarRetriesOnConflict(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+
+	existing := buildSecret("ns", AppEnvSecretName("app"), []Env{
+		{Name: "A", Value: "1", Source: "user"},
+		{Name: "B", Value: "2", Source: "binding"},
+	}, nil)
+	updateCalls := 0
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(existing).WithInterceptorFuncs(interceptor.Funcs{
+		Update: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+			updateCalls++
+			if updateCalls == 1 {
+				return apierrors.NewConflict(schema.GroupResource{Group: "", Resource: "secrets"}, obj.GetName(), errors.New("conflict"))
+			}
+			return c.Update(ctx, obj, opts...)
+		},
+	}).Build()
+
+	store := &Store{Client: c}
+	if err := store.Delete(context.Background(), "ns", "app", "A"); err != nil {
+		t.Fatal(err)
+	}
+	if updateCalls < 2 {
+		t.Fatalf("expected retry after conflict, got %d update calls", updateCalls)
+	}
+
+	var secret corev1.Secret
+	if err := c.Get(context.Background(), client.ObjectKey{Name: AppEnvSecretName("app"), Namespace: "ns"}, &secret); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := secret.Data["A"]; ok {
+		t.Fatal("expected A to be deleted")
+	}
+	if secret.Annotations[AnnotationBindingKeys] != "B" {
+		t.Fatalf("binding annotation = %q, want B", secret.Annotations[AnnotationBindingKeys])
+	}
+}
+
+func TestUpdateWithConflictRetryStopsWhenUnchanged(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+
+	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "s", Namespace: "ns"}}
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(secret).Build()
+
+	err := UpdateWithConflictRetry(context.Background(), c, client.ObjectKey{Name: "s", Namespace: "ns"}, func() *corev1.Secret {
+		return &corev1.Secret{}
+	}, func(secret *corev1.Secret) (bool, error) {
+		return false, nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }

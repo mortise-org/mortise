@@ -7,26 +7,33 @@ import (
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
 )
+
+func seedTokenApp(t *testing.T, k8sClient client.Client, projectNS, appName string, envs ...mortisev1alpha1.Environment) {
+	t.Helper()
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: appName, Namespace: projectNS},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{Type: "image", Image: "nginx:1.25.0"},
+		},
+	}
+	if len(envs) > 0 {
+		app.Spec.Environments = envs
+	}
+	if err := k8sClient.Create(context.Background(), app); err != nil {
+		t.Fatalf("create app: %v", err)
+	}
+}
 
 func TestTokenCRUDHappyPath(t *testing.T) {
 	k8sClient := setupEnvtest(t)
 	srv := newAdminServer(t, k8sClient)
 	h := srv.Handler()
 	ns := seedProject(t, k8sClient, "default")
-
-	ctx := context.Background()
-	app := &mortisev1alpha1.App{
-		ObjectMeta: metav1.ObjectMeta{Name: "webapp", Namespace: ns},
-		Spec: mortisev1alpha1.AppSpec{
-			Source: mortisev1alpha1.AppSource{Type: "image", Image: "nginx:1.25.0"},
-		},
-	}
-	if err := k8sClient.Create(ctx, app); err != nil {
-		t.Fatalf("create app: %v", err)
-	}
+	seedTokenApp(t, k8sClient, ns, "webapp")
 
 	// Create token.
 	w := doRequest(h, http.MethodPost, "/api/projects/default/apps/webapp/tokens", map[string]any{
@@ -113,6 +120,38 @@ func TestCreateTokenInvalidJSON(t *testing.T) {
 	}
 }
 
+func TestCreateTokenInvalidName(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+	ns := seedProject(t, k8sClient, "default")
+	seedTokenApp(t, k8sClient, ns, "webapp")
+
+	w := doRequest(h, http.MethodPost, "/api/projects/default/apps/webapp/tokens", map[string]any{
+		"name":        "CI Deploy",
+		"environment": "production",
+	})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for invalid name, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestCreateTokenAllowsDeclaredEnvWithoutAppOverride(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+	ns := seedProject(t, k8sClient, "default", "staging", "production")
+	seedTokenApp(t, k8sClient, ns, "webapp")
+
+	w := doRequest(h, http.MethodPost, "/api/projects/default/apps/webapp/tokens", map[string]any{
+		"name":        "ci-staging",
+		"environment": "staging",
+	})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201 for declared env without override, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
 func TestDeleteTokenNotFound(t *testing.T) {
 	k8sClient := setupEnvtest(t)
 	srv := newAdminServer(t, k8sClient)
@@ -136,5 +175,65 @@ func TestCreateTokenMissingProject(t *testing.T) {
 	})
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("expected 404 for missing project, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestCreateTokenMissingAppReturns404(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+	seedProject(t, k8sClient, "default")
+
+	w := doRequest(h, http.MethodPost, "/api/projects/default/apps/ghost/tokens", map[string]any{
+		"name":        "ci",
+		"environment": "production",
+	})
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for missing app, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestCreateTokenRejectsUndeclaredEnvironment(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+	ns := seedProject(t, k8sClient, "default", "production")
+	seedTokenApp(t, k8sClient, ns, "webapp")
+
+	w := doRequest(h, http.MethodPost, "/api/projects/default/apps/webapp/tokens", map[string]any{
+		"name":        "ci",
+		"environment": "staging",
+	})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for undeclared env, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestCreateTokenRejectsDisabledAppEnvironment(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+	ns := seedProject(t, k8sClient, "default", "production", "staging")
+	disabled := false
+	seedTokenApp(t, k8sClient, ns, "webapp", mortisev1alpha1.Environment{Name: "staging", Enabled: &disabled})
+
+	w := doRequest(h, http.MethodPost, "/api/projects/default/apps/webapp/tokens", map[string]any{
+		"name":        "ci",
+		"environment": "staging",
+	})
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for disabled app env, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestListTokensMissingAppReturns404(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+	seedProject(t, k8sClient, "default")
+
+	w := doRequest(h, http.MethodGet, "/api/projects/default/apps/ghost/tokens", nil)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for missing app, got %d: %s", w.Code, w.Body.String())
 	}
 }

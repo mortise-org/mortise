@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/go-chi/chi/v5"
+	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
 	"github.com/mortise-org/mortise/internal/authz"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -60,10 +61,12 @@ type createProjectTokenRequest struct {
 // @Failure 409 {object} errorResponse
 // @Router /projects/{project}/apps/{app}/tokens [post]
 func (s *Server) CreateToken(w http.ResponseWriter, r *http.Request) {
-	ns, projectName, ok := s.resolveProject(w, r)
+	project, ok := s.getProject(w, r)
 	if !ok {
 		return
 	}
+	ns := projectNs(project)
+	projectName := project.Name
 	if !s.authorize(w, r, authz.Resource{Kind: "token", Namespace: ns, Project: projectName}, authz.ActionCreate) {
 		return
 	}
@@ -78,8 +81,28 @@ func (s *Server) CreateToken(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errorResponse{"name is required"})
 		return
 	}
+	if msg := validateDNSLabel("name", req.Name, 63); msg != "" {
+		writeJSON(w, http.StatusBadRequest, errorResponse{msg})
+		return
+	}
 	if req.Environment == "" {
 		writeJSON(w, http.StatusBadRequest, errorResponse{"environment is required"})
+		return
+	}
+	if indexOfEnv(project, req.Environment) < 0 {
+		writeJSON(w, http.StatusBadRequest, errorResponse{fmt.Sprintf(
+			"environment %q is not declared on project %q — add it via POST /api/projects/%s/environments first",
+			req.Environment, project.Name, project.Name)})
+		return
+	}
+
+	var app mortisev1alpha1.App
+	if err := s.client.Get(r.Context(), types.NamespacedName{Name: appName, Namespace: ns}, &app); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	if !appParticipatesInEnv(&app, req.Environment) {
+		writeJSON(w, http.StatusNotFound, errorResponse{fmt.Sprintf("app %q is not enabled in environment %q", app.Name, req.Environment)})
 		return
 	}
 
@@ -147,6 +170,11 @@ func (s *Server) ListTokens(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	appName := chi.URLParam(r, "app")
+	var app mortisev1alpha1.App
+	if err := s.client.Get(r.Context(), types.NamespacedName{Name: appName, Namespace: ns}, &app); err != nil {
+		writeError(w, r, err)
+		return
+	}
 
 	var list corev1.SecretList
 	if err := s.client.List(r.Context(), &list,

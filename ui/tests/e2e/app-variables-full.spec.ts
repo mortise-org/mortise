@@ -171,6 +171,13 @@ async function clickPlusButton(
   await header.locator('button:has(svg)').last().click();
 }
 
+function variableSection(
+  page: import('@playwright/test').Page,
+  sectionText: string
+) {
+  return page.locator('.rounded-lg.border').filter({ hasText: sectionText }).first();
+}
+
 // ---------------------------------------------------------------------------
 // Tests 1-7, 10: single-env app (production only)
 // ---------------------------------------------------------------------------
@@ -241,11 +248,13 @@ test.describe('variables tab - env vars (production)', () => {
 
     // Click the + button in the Runtime section to show the new variable row.
     await clickPlusButton(page, 'Runtime - production');
+    const runtimeSection = variableSection(page, 'Runtime - production');
+    await expect(runtimeSection.getByPlaceholder('VARIABLE_NAME')).toBeVisible({ timeout: 10_000 });
 
-    await page.getByPlaceholder('VARIABLE_NAME').first().fill('MY_NEW_VAR');
-    await page.getByPlaceholder('value', { exact: true }).first().fill('hello-world');
+    await runtimeSection.getByPlaceholder('VARIABLE_NAME').fill('MY_NEW_VAR');
+    await runtimeSection.getByPlaceholder('value or binding ref').fill('hello-world');
 
-    await page.getByRole('button', { name: 'Add', exact: true }).first().click();
+    await runtimeSection.getByRole('button', { name: 'Add', exact: true }).click();
 
     // Verify via API.
     await expect(async () => {
@@ -341,10 +350,10 @@ test.describe('variables tab - env vars (production)', () => {
     await expect(page.getByText('Runtime - production')).toBeVisible({ timeout: 8_000 });
 
     // Click the "Raw" toggle button in the Runtime section.
-    const runtimeSection = page.locator('.rounded-lg.border').filter({ hasText: 'Runtime - production' }).first();
-    await runtimeSection.getByText('Raw', { exact: true }).click();
+    const runtimeSection = variableSection(page, 'Runtime - production');
+    await runtimeSection.getByRole('button', { name: 'Raw', exact: true }).click();
 
-    const textarea = page.getByPlaceholder(/DATABASE_URL/);
+    const textarea = runtimeSection.getByPlaceholder(/KEY=value/);
     await expect(textarea).toBeVisible({ timeout: 5_000 });
 
     // The save button in raw mode is labeled "Save" (not "Import").
@@ -365,10 +374,10 @@ test.describe('variables tab - env vars (production)', () => {
     await expect(page.getByText('Runtime - production')).toBeVisible({ timeout: 8_000 });
 
     // Click the "Raw" toggle button in the Runtime section.
-    const runtimeSection = page.locator('.rounded-lg.border').filter({ hasText: 'Runtime - production' }).first();
-    await runtimeSection.getByText('Raw', { exact: true }).click();
+    const runtimeSection = variableSection(page, 'Runtime - production');
+    await runtimeSection.getByRole('button', { name: 'Raw', exact: true }).click();
 
-    const textarea = page.getByPlaceholder(/DATABASE_URL/);
+    const textarea = runtimeSection.getByPlaceholder(/KEY=value/);
     await expect(textarea).toBeVisible({ timeout: 5_000 });
     await textarea.fill('KEY=value\nFOO=bar');
 
@@ -494,10 +503,12 @@ test.describe('variables tab - project variables', () => {
 
     // Click the + button in the Project section.
     await clickPlusButton(page, 'all apps & environments');
+    const projectSection = variableSection(page, 'all apps & environments');
+    await expect(projectSection.getByPlaceholder('VARIABLE_NAME')).toBeVisible({ timeout: 10_000 });
 
-    await page.getByPlaceholder('VARIABLE_NAME').last().fill('GLOBAL_FLAG');
-    await page.getByPlaceholder('value', { exact: true }).last().fill('true');
-    await page.getByRole('button', { name: 'Add', exact: true }).last().click();
+    await projectSection.getByPlaceholder('VARIABLE_NAME').fill('GLOBAL_FLAG');
+    await projectSection.getByPlaceholder('value or binding ref').fill('true');
+    await projectSection.getByRole('button', { name: 'Add', exact: true }).click();
 
     // Verify via project shared vars API.
     await expect(async () => {
@@ -588,11 +599,10 @@ test.describe('variables tab - project variables', () => {
     await expect(page.getByText('all apps & environments')).toBeVisible({ timeout: 8_000 });
 
     // Click the Raw button in the Project section (last Raw button on the page).
-    const projectSection = page.locator('.rounded-lg.border').filter({ hasText: 'all apps & environments' }).first();
-    await projectSection.getByText('Raw', { exact: true }).click();
+    const projectSection = variableSection(page, 'all apps & environments');
+    await projectSection.getByRole('button', { name: 'Raw', exact: true }).click();
 
-    // The shared/project raw textarea has placeholder containing "JWT_SECRET".
-    const textarea = page.getByPlaceholder(/JWT_SECRET/).last();
+    const textarea = projectSection.getByPlaceholder(/KEY=value/);
     await expect(textarea).toBeVisible({ timeout: 5_000 });
     await textarea.fill('SHARED_IMPORT=abc');
 

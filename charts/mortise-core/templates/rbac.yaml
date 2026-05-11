@@ -39,9 +39,9 @@ rules:
     resources: ["projects", "projects/status", "projects/finalizers"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 
-  # App CRD: namespaced inside pj-* namespaces.
+  # App and BuildRun CRDs: namespaced inside pj-* namespaces.
   - apiGroups: ["mortise.mortise.dev"]
-    resources: ["apps", "apps/status", "apps/finalizers"]
+    resources: ["apps", "buildruns"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 
   # Supporting CRDs: PlatformConfig, GitProvider, PreviewEnvironment, ProjectMember.
@@ -49,7 +49,10 @@ rules:
     resources: ["platformconfigs", "gitproviders", "previewenvironments", "projectmembers"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: ["mortise.mortise.dev"]
-    resources: ["platformconfigs/status", "gitproviders/status", "previewenvironments/status", "previewenvironments/finalizers", "projectmembers/status"]
+    resources: ["apps/finalizers", "buildruns/finalizers"]
+    verbs: ["update"]
+  - apiGroups: ["mortise.mortise.dev"]
+    resources: ["apps/status", "buildruns/status", "gitproviders/status", "platformconfigs/status", "previewenvironments/status"]
     verbs: ["get", "update", "patch"]
 
   # ---------------------------------------------------------------------------
@@ -114,6 +117,11 @@ rules:
   - apiGroups: ["batch"]
     resources: ["cronjobs"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # Jobs: watched by the build flow for durable execution state.
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "watch"]
 
   # cert-manager Certificates: read-only for TLS status surfacing.
   - apiGroups: ["cert-manager.io"]

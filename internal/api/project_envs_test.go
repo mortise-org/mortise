@@ -3,18 +3,56 @@ package api_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
 	"github.com/mortise-org/mortise/internal/auth"
 	"github.com/mortise-org/mortise/internal/constants"
 	"github.com/mortise-org/mortise/internal/envstore"
 )
+
+type projectCreateConflictClient struct {
+	client.Client
+	fired bool
+}
+
+func (c *projectCreateConflictClient) Update(ctx context.Context, obj client.Object, opts ...client.UpdateOption) error {
+	project, ok := obj.(*mortisev1alpha1.Project)
+	if !ok || project.Name != "demo" || c.fired {
+		return c.Client.Update(ctx, obj, opts...)
+	}
+
+	c.fired = true
+
+	var live mortisev1alpha1.Project
+	if err := c.Client.Get(ctx, types.NamespacedName{Name: project.Name}, &live); err != nil {
+		return err
+	}
+	for i := range live.Spec.Environments {
+		if live.Spec.Environments[i].Name == "production" {
+			live.Spec.Environments[i].Restricted = true
+			break
+		}
+	}
+	if err := c.Client.Update(ctx, &live); err != nil {
+		return err
+	}
+
+	return apierrors.NewConflict(
+		schema.GroupResource{Group: mortisev1alpha1.GroupVersion.Group, Resource: "projects"},
+		project.Name,
+		fmt.Errorf("simulated conflict"),
+	)
+}
 
 // TestListProjectEnvironmentsEmptyProject verifies that listing envs on a
 // project with no apps returns the project's env list with unknown health.
@@ -172,6 +210,57 @@ func TestCreateProjectEnvironment(t *testing.T) {
 	added := proj.Spec.Environments[1]
 	if added.Name != "staging" || added.DisplayOrder != 5 {
 		t.Errorf("unexpected env on spec: %+v", added)
+	}
+}
+
+func TestCreateProjectEnvironmentPreservesConcurrentProjectUpdate(t *testing.T) {
+	baseClient := setupEnvtest(t)
+	seedProject(t, baseClient, "demo")
+
+	conflictClient := &projectCreateConflictClient{Client: baseClient}
+	srv := newAdminServer(t, conflictClient)
+	h := srv.Handler()
+
+	w := doRequest(h, http.MethodPost, "/api/projects/demo/environments", map[string]any{
+		"name":         "staging",
+		"displayOrder": 5,
+	})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	if !conflictClient.fired {
+		t.Fatalf("expected simulated conflict to fire")
+	}
+
+	var proj mortisev1alpha1.Project
+	if err := baseClient.Get(context.Background(), types.NamespacedName{Name: "demo"}, &proj); err != nil {
+		t.Fatalf("get project: %v", err)
+	}
+	if len(proj.Spec.Environments) != 2 {
+		t.Fatalf("expected 2 envs in spec, got %d", len(proj.Spec.Environments))
+	}
+
+	var production, staging *mortisev1alpha1.ProjectEnvironment
+	for i := range proj.Spec.Environments {
+		env := &proj.Spec.Environments[i]
+		switch env.Name {
+		case "production":
+			production = env
+		case "staging":
+			staging = env
+		}
+	}
+	if production == nil {
+		t.Fatalf("production env missing: %+v", proj.Spec.Environments)
+	}
+	if staging == nil {
+		t.Fatalf("staging env missing: %+v", proj.Spec.Environments)
+	}
+	if !production.Restricted {
+		t.Errorf("expected concurrent production update to be preserved")
+	}
+	if staging.DisplayOrder != 5 {
+		t.Errorf("staging displayOrder = %d, want 5", staging.DisplayOrder)
 	}
 }
 

@@ -493,6 +493,34 @@ func (s *Server) resolveAppEnv(w http.ResponseWriter, r *http.Request) (*mortise
 	return &app, env, true
 }
 
+// resolveDefaultedAppEnv validates the defaulted env query against the
+// project declaration and the app's explicit opt-out rules.
+func (s *Server) resolveDefaultedAppEnv(w http.ResponseWriter, r *http.Request) (*mortisev1alpha1.App, string, bool) {
+	project, ok := s.getProject(w, r)
+	if !ok {
+		return nil, "", false
+	}
+	appName := chi.URLParam(r, "app")
+	env := envFromQuery(r)
+	if indexOfEnv(project, env) < 0 {
+		writeJSON(w, http.StatusBadRequest, errorResponse{fmt.Sprintf(
+			"environment %q is not declared on project %q — add it via POST /api/projects/%s/environments first",
+			env, project.Name, project.Name)})
+		return nil, "", false
+	}
+
+	var app mortisev1alpha1.App
+	if err := s.client.Get(r.Context(), types.NamespacedName{Name: appName, Namespace: projectNs(project)}, &app); err != nil {
+		writeError(w, r, err)
+		return nil, "", false
+	}
+	if !appParticipatesInEnv(&app, env) {
+		writeJSON(w, http.StatusNotFound, errorResponse{fmt.Sprintf("environment %q is disabled for app %q", env, appName)})
+		return nil, "", false
+	}
+	return &app, env, true
+}
+
 // ensureEnvironment returns a pointer to the named environment, creating it if
 // it doesn't exist.
 func ensureEnvironment(app *mortisev1alpha1.App, name string) *mortisev1alpha1.Environment {

@@ -86,11 +86,27 @@ type PreviewEnvironmentStatus struct {
 	// Phase is the current lifecycle phase.
 	Phase PreviewPhase `json:"phase,omitempty"`
 
+	// CurrentBuildRunName is the active durable build execution for this preview.
+	// +optional
+	CurrentBuildRunName string `json:"currentBuildRunName,omitempty"`
+
+	// LastBuildRunName is the most recent terminal durable build execution.
+	// +optional
+	LastBuildRunName string `json:"lastBuildRunName,omitempty"`
+
 	// URL is the HTTPS endpoint for the preview.
 	URL string `json:"url,omitempty"`
 
 	// Image is the built container image reference.
 	Image string `json:"image,omitempty"`
+
+	// CurrentBuildRunRef points at the currently selected BuildRun for this preview.
+	// +optional
+	CurrentBuildRunRef *BuildRunReference `json:"currentBuildRunRef,omitempty"`
+
+	// LastSuccessfulBuildRunRef points at the most recent successful BuildRun.
+	// +optional
+	LastSuccessfulBuildRunRef *BuildRunReference `json:"lastSuccessfulBuildRunRef,omitempty"`
 
 	// ExpiresAt is when this preview will be auto-deleted.
 	// +optional

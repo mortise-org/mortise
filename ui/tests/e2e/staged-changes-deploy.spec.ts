@@ -83,7 +83,8 @@ test.describe('staged changes deploy flow', () => {
 			const app = await getAppViaAPI(request, adminToken, projectName, appName);
 			const spec = app.spec as Record<string, unknown>;
 			const envs = spec.environments as Array<{ name: string; replicas: number }>;
-			expect(envs[0].replicas).toBe(3);
+			const production = envs.find((env) => env.name === 'production');
+			expect(production?.replicas).toBe(3);
 		}).toPass({ timeout: 10_000 });
 
 		await deleteAppViaAPI(request, adminToken, projectName, appName);

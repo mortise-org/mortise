@@ -215,6 +215,61 @@ func TestListPlatformActivityMergedAcrossProjects(t *testing.T) {
 	}
 }
 
+func TestListPlatformActivityReturnsNewestEventsGlobally(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+
+	seedProject(t, k8sClient, "alpha")
+	seedProject(t, k8sClient, "beta")
+	store := activity.NewConfigMapStore(k8sClient)
+	base := time.Now()
+	for i := 0; i < 10; i++ {
+		if err := store.Append(context.Background(), activity.Event{
+			Timestamp:    base.Add(time.Duration(10-i) * time.Minute),
+			Actor:        "a@example.com",
+			Action:       "deploy",
+			ResourceKind: "app",
+			ResourceName: "api",
+			Project:      "alpha",
+			Message:      "Alpha event",
+		}); err != nil {
+			t.Fatalf("append alpha event %d: %v", i, err)
+		}
+	}
+	for i := 0; i < 10; i++ {
+		if err := store.Append(context.Background(), activity.Event{
+			Timestamp:    base.Add(time.Duration(-(i + 1)) * time.Hour),
+			Actor:        "b@example.com",
+			Action:       "deploy",
+			ResourceKind: "app",
+			ResourceName: "web",
+			Project:      "beta",
+			Message:      "Beta event",
+		}); err != nil {
+			t.Fatalf("append beta event %d: %v", i, err)
+		}
+	}
+
+	w := doRequest(h, http.MethodGet, "/api/activity?limit=10", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var events []activityEventResponse
+	if err := json.NewDecoder(w.Body).Decode(&events); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(events) != 10 {
+		t.Fatalf("expected 10 events, got %d", len(events))
+	}
+	for i, event := range events {
+		if event.Project != "alpha" {
+			t.Fatalf("event %d project = %q, want alpha for all newest events", i, event.Project)
+		}
+	}
+}
+
 func TestListPlatformActivityHonorsProjectAccess(t *testing.T) {
 	k8sClient := setupEnvtest(t)
 	srv, _ := newTestServerAs(t, k8sClient, auth.RoleMember)

@@ -60,8 +60,11 @@ func (g *GitHubAPI) RegisterWebhook(ctx context.Context, repo string, cfg Webhoo
 		},
 		Active: gogithub.Bool(true),
 	}
-	_, _, err = g.client.Repositories.CreateHook(ctx, owner, name, hook)
-	return err
+	_, resp, err := g.client.Repositories.CreateHook(ctx, owner, name, hook)
+	if err != nil {
+		return wrapWebhookOperationError("github", WebhookOperationRegister, githubStatusCode(resp), fmt.Errorf("register github hook: %w", err))
+	}
+	return nil
 }
 
 func (g *GitHubAPI) ListWebhooks(ctx context.Context, repo string) ([]WebhookInfo, error) {
@@ -69,9 +72,9 @@ func (g *GitHubAPI) ListWebhooks(ctx context.Context, repo string) ([]WebhookInf
 	if err != nil {
 		return nil, err
 	}
-	hooks, _, err := g.client.Repositories.ListHooks(ctx, owner, name, nil)
+	hooks, resp, err := g.client.Repositories.ListHooks(ctx, owner, name, nil)
 	if err != nil {
-		return nil, fmt.Errorf("list github hooks: %w", err)
+		return nil, wrapWebhookOperationError("github", WebhookOperationList, githubStatusCode(resp), fmt.Errorf("list github hooks: %w", err))
 	}
 	result := make([]WebhookInfo, 0, len(hooks))
 	for _, h := range hooks {
@@ -93,8 +96,11 @@ func (g *GitHubAPI) DeleteWebhook(ctx context.Context, repo string, hookID int64
 	if err != nil {
 		return err
 	}
-	_, err = g.client.Repositories.DeleteHook(ctx, owner, name, hookID)
-	return err
+	resp, err := g.client.Repositories.DeleteHook(ctx, owner, name, hookID)
+	if err != nil {
+		return wrapWebhookOperationError("github", WebhookOperationDelete, githubStatusCode(resp), fmt.Errorf("delete github hook: %w", err))
+	}
+	return nil
 }
 
 func (g *GitHubAPI) PostCommitStatus(ctx context.Context, repo, sha string, status CommitStatus) error {
@@ -265,6 +271,13 @@ func wrapGitHubError(err error) error {
 		}
 	}
 	return err
+}
+
+func githubStatusCode(resp *gogithub.Response) int {
+	if resp == nil || resp.Response == nil {
+		return 0
+	}
+	return resp.Response.StatusCode
 }
 
 // splitRepo splits "owner/repo" into two parts.
