@@ -325,6 +325,9 @@ func (r *ProjectReconciler) ensureNamespace(ctx context.Context, project *mortis
 			return fmt.Errorf("set owner ref on namespace: %w", err)
 		}
 		if err := r.Create(ctx, desired); err != nil {
+			if errors.IsAlreadyExists(err) {
+				return r.ensureNamespace(ctx, project, nsName, spec)
+			}
 			return fmt.Errorf("create namespace: %w", err)
 		}
 		return nil

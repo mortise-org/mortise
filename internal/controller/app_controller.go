@@ -145,15 +145,14 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 			if err := r.gcAppAcrossEnvs(ctx, &app); err != nil {
 				return ctrl.Result{}, fmt.Errorf("gc app across envs: %w", err)
 			}
-			controllerutil.RemoveFinalizer(&app, appFinalizer)
-			if err := r.Update(ctx, &app); err != nil {
+			if err := r.removeAppFinalizerWithRetry(ctx, req.NamespacedName); err != nil {
 				return ctrl.Result{}, fmt.Errorf("remove finalizer: %w", err)
 			}
 		}
 		return ctrl.Result{}, nil
 	}
 	if controllerutil.AddFinalizer(&app, appFinalizer) {
-		if err := r.Update(ctx, &app); err != nil {
+		if err := r.addAppFinalizerWithRetry(ctx, req.NamespacedName); err != nil {
 			return ctrl.Result{}, fmt.Errorf("add finalizer: %w", err)
 		}
 	}
@@ -367,6 +366,34 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 // appFinalizer is the finalizer string applied to every App. Cleared only
 // after cross-namespace cleanup of workload resources completes.
 const appFinalizer = "mortise.dev/app-finalizer"
+
+func (r *AppReconciler) addAppFinalizerWithRetry(ctx context.Context, key types.NamespacedName) error {
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var fresh mortisev1alpha1.App
+		if err := r.Get(ctx, key, &fresh); err != nil {
+			return err
+		}
+		if controllerutil.ContainsFinalizer(&fresh, appFinalizer) {
+			return nil
+		}
+		controllerutil.AddFinalizer(&fresh, appFinalizer)
+		return r.Update(ctx, &fresh)
+	})
+}
+
+func (r *AppReconciler) removeAppFinalizerWithRetry(ctx context.Context, key types.NamespacedName) error {
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var fresh mortisev1alpha1.App
+		if err := r.Get(ctx, key, &fresh); err != nil {
+			return err
+		}
+		if !controllerutil.ContainsFinalizer(&fresh, appFinalizer) {
+			return nil
+		}
+		controllerutil.RemoveFinalizer(&fresh, appFinalizer)
+		return r.Update(ctx, &fresh)
+	})
+}
 
 // reconcileGitSource handles the build-from-source path for source.type=git apps
 // without blocking the reconcile worker. On the first reconcile of a new
