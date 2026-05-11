@@ -3,18 +3,22 @@ package api
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/errors"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/retry"
 
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
 	"github.com/mortise-org/mortise/internal/authz"
 	"github.com/mortise-org/mortise/internal/constants"
 )
+
+var errPullSecretOwnedByUser = errors.New("reserved pull secret already exists and is not Mortise-managed")
 
 // pullCredentialsRequest is the JSON body for setting pull credentials.
 type pullCredentialsRequest struct {
@@ -65,6 +69,22 @@ func buildDockerConfigJSON(registry, username, password string) []byte {
 
 // SetPullCredentials creates or updates a dockerconfigjson Secret in every env
 // namespace for the app, then sets PullSecretRef on the App CRD.
+// @Summary Set pull credentials for an app
+// @Description Creates or updates Mortise-managed registry pull credentials for every project environment and records the reserved pull secret on the App
+// @Tags apps
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param project path string true "Project name"
+// @Param app path string true "App name"
+// @Param body body pullCredentialsRequest true "Registry pull credentials"
+// @Success 200 {object} pullCredentialsResponse
+// @Failure 400 {object} errorResponse
+// @Failure 401 {object} errorResponse
+// @Failure 403 {object} errorResponse
+// @Failure 404 {object} errorResponse
+// @Failure 409 {object} errorResponse
+// @Router /projects/{project}/apps/{app}/pull-credentials [post]
 func (s *Server) SetPullCredentials(w http.ResponseWriter, r *http.Request) {
 	ns, projectName, ok := s.resolveProject(w, r)
 	if !ok {
@@ -109,18 +129,39 @@ func (s *Server) SetPullCredentials(w http.ResponseWriter, r *http.Request) {
 	secretName := pullSecretName(appName)
 	dockerJSON := buildDockerConfigJSON(req.Registry, req.Username, req.Password)
 
+	for _, env := range project.Spec.Environments {
+		envNs := constants.EnvNamespace(projectName, env.Name)
+		if err := s.ensureReservedPullSecretAvailable(r, envNs, secretName); err != nil {
+			if errors.Is(err, errPullSecretOwnedByUser) {
+				writeJSON(w, http.StatusConflict, errorResponse{err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusInternalServerError, errorResponse{"failed to validate pull secret in " + envNs + ": " + err.Error()})
+			return
+		}
+	}
+
 	// Create or update the pull secret in each env namespace.
 	for _, env := range project.Spec.Environments {
 		envNs := constants.EnvNamespace(projectName, env.Name)
-		if err := s.upsertPullSecret(r, envNs, secretName, appName, dockerJSON); err != nil {
+		if err := s.upsertPullSecret(r, envNs, secretName, projectName, appName, env.Name, dockerJSON); err != nil {
+			if errors.Is(err, errPullSecretOwnedByUser) {
+				writeJSON(w, http.StatusConflict, errorResponse{err.Error()})
+				return
+			}
 			writeJSON(w, http.StatusInternalServerError, errorResponse{"failed to create pull secret in " + envNs + ": " + err.Error()})
 			return
 		}
 	}
 
 	// Set PullSecretRef on the App CRD.
-	app.Spec.Source.PullSecretRef = secretName
-	if err := s.client.Update(r.Context(), &app); err != nil {
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		if err := s.client.Get(r.Context(), types.NamespacedName{Name: appName, Namespace: ns}, &app); err != nil {
+			return err
+		}
+		app.Spec.Source.PullSecretRef = secretName
+		return s.client.Update(r.Context(), &app)
+	}); err != nil {
 		writeError(w, r, err)
 		return
 	}
@@ -136,6 +177,18 @@ func (s *Server) SetPullCredentials(w http.ResponseWriter, r *http.Request) {
 }
 
 // GetPullCredentials returns pull credential metadata (never the password).
+// @Summary Get pull credentials for an app
+// @Description Returns registry pull credential metadata for an app without returning the password value
+// @Tags apps
+// @Produce json
+// @Security BearerAuth
+// @Param project path string true "Project name"
+// @Param app path string true "App name"
+// @Success 200 {object} pullCredentialsResponse
+// @Failure 401 {object} errorResponse
+// @Failure 403 {object} errorResponse
+// @Failure 404 {object} errorResponse
+// @Router /projects/{project}/apps/{app}/pull-credentials [get]
 func (s *Server) GetPullCredentials(w http.ResponseWriter, r *http.Request) {
 	ns, projectName, ok := s.resolveProject(w, r)
 	if !ok {
@@ -145,6 +198,11 @@ func (s *Server) GetPullCredentials(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	appName := chi.URLParam(r, "app")
+	var app mortisev1alpha1.App
+	if err := s.client.Get(r.Context(), types.NamespacedName{Name: appName, Namespace: ns}, &app); err != nil {
+		writeError(w, r, err)
+		return
+	}
 
 	// Get project to find an env namespace to read the secret from.
 	project, ok := s.getProject(w, r)
@@ -161,7 +219,7 @@ func (s *Server) GetPullCredentials(w http.ResponseWriter, r *http.Request) {
 
 	var secret corev1.Secret
 	err := s.client.Get(r.Context(), types.NamespacedName{Name: secretName, Namespace: envNs}, &secret)
-	if errors.IsNotFound(err) {
+	if apierrors.IsNotFound(err) {
 		writeJSON(w, http.StatusOK, pullCredentialsResponse{})
 		return
 	}
@@ -183,6 +241,18 @@ func (s *Server) GetPullCredentials(w http.ResponseWriter, r *http.Request) {
 
 // DeletePullCredentials removes the Mortise-managed pull secret from all env
 // namespaces and clears PullSecretRef on the App CRD.
+// @Summary Delete pull credentials for an app
+// @Description Removes Mortise-managed registry pull credentials from every project environment and clears the App pull secret reference
+// @Tags apps
+// @Produce json
+// @Security BearerAuth
+// @Param project path string true "Project name"
+// @Param app path string true "App name"
+// @Success 200 {object} map[string]string
+// @Failure 401 {object} errorResponse
+// @Failure 403 {object} errorResponse
+// @Failure 404 {object} errorResponse
+// @Router /projects/{project}/apps/{app}/pull-credentials [delete]
 func (s *Server) DeletePullCredentials(w http.ResponseWriter, r *http.Request) {
 	ns, projectName, ok := s.resolveProject(w, r)
 	if !ok {
@@ -211,7 +281,7 @@ func (s *Server) DeletePullCredentials(w http.ResponseWriter, r *http.Request) {
 		envNs := constants.EnvNamespace(projectName, env.Name)
 		var secret corev1.Secret
 		err := s.client.Get(r.Context(), types.NamespacedName{Name: secretName, Namespace: envNs}, &secret)
-		if errors.IsNotFound(err) {
+		if apierrors.IsNotFound(err) {
 			continue
 		}
 		if err != nil {
@@ -221,7 +291,7 @@ func (s *Server) DeletePullCredentials(w http.ResponseWriter, r *http.Request) {
 		if secret.Labels["app.kubernetes.io/managed-by"] != "mortise" {
 			continue
 		}
-		if err := s.client.Delete(r.Context(), &secret); err != nil && !errors.IsNotFound(err) {
+		if err := s.client.Delete(r.Context(), &secret); err != nil && !apierrors.IsNotFound(err) {
 			writeJSON(w, http.StatusInternalServerError, errorResponse{"failed to delete pull secret: " + err.Error()})
 			return
 		}
@@ -242,14 +312,31 @@ func (s *Server) DeletePullCredentials(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
+func (s *Server) ensureReservedPullSecretAvailable(r *http.Request, namespace, name string) error {
+	var existing corev1.Secret
+	err := s.client.Get(r.Context(), types.NamespacedName{Name: name, Namespace: namespace}, &existing)
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if existing.Labels["app.kubernetes.io/managed-by"] != "mortise" {
+		return errPullSecretOwnedByUser
+	}
+	return nil
+}
+
 // upsertPullSecret creates or updates a dockerconfigjson Secret.
-func (s *Server) upsertPullSecret(r *http.Request, namespace, name, appName string, dockerJSON []byte) error {
+func (s *Server) upsertPullSecret(r *http.Request, namespace, name, projectName, appName, envName string, dockerJSON []byte) error {
 	desired := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: namespace,
 			Labels: map[string]string{
 				constants.AppNameLabel:         appName,
+				constants.ProjectLabel:         projectName,
+				constants.EnvironmentLabel:     envName,
 				"app.kubernetes.io/managed-by": "mortise",
 			},
 		},
@@ -261,11 +348,14 @@ func (s *Server) upsertPullSecret(r *http.Request, namespace, name, appName stri
 
 	var existing corev1.Secret
 	err := s.client.Get(r.Context(), types.NamespacedName{Name: name, Namespace: namespace}, &existing)
-	if errors.IsNotFound(err) {
+	if apierrors.IsNotFound(err) {
 		return s.client.Create(r.Context(), desired)
 	}
 	if err != nil {
 		return err
+	}
+	if existing.Labels["app.kubernetes.io/managed-by"] != "mortise" {
+		return errPullSecretOwnedByUser
 	}
 
 	existing.Data = desired.Data
