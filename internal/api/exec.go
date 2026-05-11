@@ -63,7 +63,7 @@ func (lb *limitedBuffer) String() string { return lb.buf.String() }
 func (lb *limitedBuffer) Len() int       { return lb.buf.Len() }
 
 // @Summary Execute a command in an app pod
-// @Description Runs a command in the first running pod of the specified app and returns stdout/stderr
+// @Description Runs a command in a running pod of the specified app and targets the app container explicitly, returning stdout/stderr
 // @Tags exec
 // @Accept json
 // @Produce json
@@ -88,8 +88,7 @@ func (s *Server) ExecInApp(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	projectName, ok = constants.ProjectFromControlNs(app.Namespace)
-	if !ok {
+	if _, ok := constants.ProjectFromControlNs(app.Namespace); !ok {
 		writeJSON(w, http.StatusInternalServerError, errorResponse{fmt.Sprintf("app %q not in a control namespace (%q)", app.Name, app.Namespace)})
 		return
 	}
@@ -115,7 +114,7 @@ func (s *Server) ExecInApp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Find the first running pod for this app in the env namespace.
+	// Find a running pod for this app in the env namespace and target the app container explicitly.
 	podName, containerName, err := s.findAppPod(r.Context(), envNs, app.Name, env)
 	if err != nil {
 		slog.Error("exec: failed to find app pod", "namespace", envNs, "app", app.Name, "err", err)
@@ -154,7 +153,7 @@ func (s *Server) findAppPod(ctx context.Context, ns, appName, env string) (strin
 		if pod.Status.Phase != corev1.PodRunning {
 			continue
 		}
-		containerName, ok := firstAppContainerName(pod)
+		containerName, ok := firstAppContainerName(pod, appName)
 		if !ok {
 			continue
 		}
@@ -163,11 +162,16 @@ func (s *Server) findAppPod(ctx context.Context, ns, appName, env string) (strin
 	return "", "", fmt.Errorf("%w for app %q", errExecPodNotRunning, appName)
 }
 
-func firstAppContainerName(pod *corev1.Pod) (string, bool) {
-	if len(pod.Spec.Containers) == 0 {
-		return "", false
+func firstAppContainerName(pod *corev1.Pod, appName string) (string, bool) {
+	for i := range pod.Spec.Containers {
+		if pod.Spec.Containers[i].Name == appName {
+			return pod.Spec.Containers[i].Name, true
+		}
 	}
-	return pod.Spec.Containers[0].Name, true
+	if len(pod.Spec.Containers) == 1 {
+		return pod.Spec.Containers[0].Name, true
+	}
+	return "", false
 }
 
 // execInPod runs a command in the selected container of the named pod.

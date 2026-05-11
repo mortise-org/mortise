@@ -3605,8 +3605,8 @@ paths:
     post:
       consumes:
       - application/json
-      description: Runs a command in the first running pod of the specified app and
-        returns stdout/stderr
+      description: Runs a command in a running pod of the specified app and targets
+        the app container explicitly, returning stdout/stderr
       parameters:
       - description: Project name
         in: path
