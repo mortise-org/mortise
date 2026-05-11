@@ -19,7 +19,8 @@ func PrincipalFromContext(ctx context.Context) *auth.Principal {
 }
 
 // jwtAuthMiddleware validates a Bearer JWT via the server's JWTHelper.
-// Applied only to protected /api routes — not to UI paths or /api/auth/*.
+// Applied only to protected routes; public auth endpoints bypass it, while
+// protected auth subroutes opt in explicitly where mounted.
 func (s *Server) jwtAuthMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if PrincipalFromContext(r.Context()) != nil {
