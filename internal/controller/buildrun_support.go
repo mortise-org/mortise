@@ -24,18 +24,20 @@ const (
 	buildRunEnvironmentLabel            = "mortise.dev/buildrun-environment"
 	rebuildRequestedAtAnnotation        = "mortise.dev/rebuild-requested-at"
 	rebuildNoCacheRequestedAtAnnotation = "mortise.dev/rebuild-no-cache-requested-at"
+	maxK8sNameLength                    = 63
 )
 
 func buildRunName(kind, targetName, environment, revision, inputHash, requestID string) string {
 	base := fmt.Sprintf("%s-%s-%s-%s", strings.ToLower(kind), targetName, environment, shortTag(revision))
+	suffix := shortHash(inputHash)
 	if requestID != "" {
-		return sanitizeK8sName(base + "-" + shortHash(requestID))
+		suffix = shortHash(requestID)
 	}
-	return sanitizeK8sName(base + "-" + shortHash(inputHash))
+	return sanitizeK8sNameWithSuffix(base, suffix, "buildrun")
 }
 
 func buildRunLogConfigMapName(runName string) string {
-	return sanitizeK8sName("buildrun-" + runName)
+	return sanitizeK8sNameWithSuffix("buildrun-"+runName, shortHash(runName), "buildrun")
 }
 
 func shortHash(v string) string {
@@ -44,18 +46,49 @@ func shortHash(v string) string {
 }
 
 func sanitizeK8sName(v string) string {
-	v = strings.ToLower(v)
-	repl := strings.NewReplacer("/", "-", "_", "-", ".", "-", ":", "-", "@", "-")
-	v = repl.Replace(v)
-	v = strings.Trim(v, "-")
-	if len(v) > 63 {
-		v = v[:63]
+	v = sanitizeK8sNamePart(v)
+	if len(v) > maxK8sNameLength {
+		v = v[:maxK8sNameLength]
 	}
 	v = strings.Trim(v, "-")
 	if v == "" {
 		return "buildrun"
 	}
 	return v
+}
+
+func sanitizeK8sNameWithSuffix(prefix, suffix, fallback string) string {
+	suffix = sanitizeK8sNamePart(suffix)
+	if suffix == "" {
+		return sanitizeK8sName(prefix)
+	}
+
+	prefix = sanitizeK8sNamePart(prefix)
+	maxPrefixLen := maxK8sNameLength - len(suffix) - 1
+	if maxPrefixLen <= 0 {
+		return suffix[:maxK8sNameLength]
+	}
+
+	if len(prefix) > maxPrefixLen {
+		prefix = strings.Trim(prefix[:maxPrefixLen], "-")
+	}
+	if prefix == "" {
+		prefix = sanitizeK8sNamePart(fallback)
+		if len(prefix) > maxPrefixLen {
+			prefix = strings.Trim(prefix[:maxPrefixLen], "-")
+		}
+	}
+	if prefix == "" {
+		return suffix
+	}
+	return prefix + "-" + suffix
+}
+
+func sanitizeK8sNamePart(v string) string {
+	v = strings.ToLower(v)
+	repl := strings.NewReplacer("/", "-", "_", "-", ".", "-", ":", "-", "@", "-")
+	v = repl.Replace(v)
+	return strings.Trim(v, "-")
 }
 
 func buildRunInputHash(spec mortisev1alpha1.BuildRunSpec) string {

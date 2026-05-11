@@ -2,12 +2,15 @@ package controller
 
 import (
 	"context"
+	"strings"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	clocktesting "k8s.io/utils/clock/testing"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -80,6 +83,52 @@ func TestParseImageRefSplitsRegistryPathAndTag(t *testing.T) {
 	}
 	if ref.Tag != "sha-prod" {
 		t.Fatalf("tag = %q", ref.Tag)
+	}
+}
+
+func TestBuildRunNamePreservesUniquenessSuffixForLongNames(t *testing.T) {
+	targetName := strings.Repeat("demo-app-", 8)
+	first := buildRunName("app", targetName, "production", "abcdef1234567890", "input-one", "request-one")
+	second := buildRunName("app", targetName, "production", "abcdef1234567890", "input-two", "request-two")
+
+	if len(first) > maxK8sNameLength {
+		t.Fatalf("first buildrun name too long: %d", len(first))
+	}
+	if len(second) > maxK8sNameLength {
+		t.Fatalf("second buildrun name too long: %d", len(second))
+	}
+	if first == second {
+		t.Fatalf("expected distinct buildrun names, got %q", first)
+	}
+	if !strings.HasSuffix(first, "-"+shortHash("request-one")) {
+		t.Fatalf("expected first buildrun name to preserve request suffix, got %q", first)
+	}
+	if !strings.HasSuffix(second, "-"+shortHash("request-two")) {
+		t.Fatalf("expected second buildrun name to preserve request suffix, got %q", second)
+	}
+}
+
+func TestBuildRunLogConfigMapNamePreservesUniquenessForLongRunNames(t *testing.T) {
+	runOne := buildRunName("app", strings.Repeat("service-", 8), "production", "abcdef1234567890", "input-one", "request-one")
+	runTwo := buildRunName("app", strings.Repeat("service-", 8), "production", "abcdef1234567890", "input-two", "request-two")
+
+	logOne := buildRunLogConfigMapName(runOne)
+	logTwo := buildRunLogConfigMapName(runTwo)
+
+	if len(logOne) > maxK8sNameLength {
+		t.Fatalf("first buildrun log configmap name too long: %d", len(logOne))
+	}
+	if len(logTwo) > maxK8sNameLength {
+		t.Fatalf("second buildrun log configmap name too long: %d", len(logTwo))
+	}
+	if logOne == logTwo {
+		t.Fatalf("expected distinct log configmap names, got %q", logOne)
+	}
+	if !strings.HasSuffix(logOne, "-"+shortHash(runOne)) {
+		t.Fatalf("expected first configmap name to preserve run hash suffix, got %q", logOne)
+	}
+	if !strings.HasSuffix(logTwo, "-"+shortHash(runTwo)) {
+		t.Fatalf("expected second configmap name to preserve run hash suffix, got %q", logTwo)
 	}
 }
 
@@ -557,7 +606,8 @@ func TestPersistBuildRunLogKeepsLegacyAppConfigMap(t *testing.T) {
 		},
 	}
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(app).Build()
-	r := &BuildRunReconciler{Client: c, Scheme: scheme}
+	fakeClock := clocktesting.NewFakeClock(time.Date(2026, 5, 10, 18, 45, 0, 123456789, time.UTC))
+	r := &BuildRunReconciler{Client: c, Scheme: scheme, Clock: fakeClock}
 
 	run := &mortisev1alpha1.BuildRun{
 		ObjectMeta: metav1.ObjectMeta{
@@ -589,6 +639,9 @@ func TestPersistBuildRunLogKeepsLegacyAppConfigMap(t *testing.T) {
 	}
 	if durable.OwnerReferences[0].Kind != "BuildRun" {
 		t.Fatalf("expected durable log owner BuildRun, got %+v", durable.OwnerReferences)
+	}
+	if got := durable.Annotations[buildLogAnnotationTimestamp]; got != fakeClock.Now().UTC().Format(time.RFC3339Nano) {
+		t.Fatalf("expected durable log timestamp %q, got %q", fakeClock.Now().UTC().Format(time.RFC3339Nano), got)
 	}
 
 	var legacy corev1.ConfigMap
