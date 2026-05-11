@@ -36,6 +36,31 @@ const BASE = '/api';
 
 const REFRESH_WINDOW_MS = 4 * 60 * 60 * 1000; // refresh when <4h remaining
 
+export type AuthUser = {
+	email: string;
+	role: 'admin' | 'member' | 'viewer';
+};
+
+export function normalizeAuthUser(value: unknown): AuthUser | null {
+	if (!value || typeof value !== 'object') return null;
+	const record = value as Record<string, unknown>;
+	const email =
+		typeof record.email === 'string'
+			? record.email
+			: typeof record.Email === 'string'
+				? record.Email
+				: null;
+	const role =
+		typeof record.role === 'string'
+			? record.role
+			: typeof record.Role === 'string'
+				? record.Role
+				: null;
+	if (!email) return null;
+	if (role !== 'admin' && role !== 'member' && role !== 'viewer') return null;
+	return { email, role };
+}
+
 function tokenExpiresAt(): number | null {
 	const token = localStorage.getItem('mortise_token');
 	if (!token) return null;
@@ -71,9 +96,15 @@ function forceReauth(message = 'Unauthorized'): never {
 }
 
 async function maybeRefreshToken(): Promise<boolean> {
-	const exp = tokenExpiresAt();
-	if (!exp) return false;
-	if (exp - Date.now() > REFRESH_WINDOW_MS) return false;
+	return refreshSession();
+}
+
+async function refreshSession(force = false): Promise<boolean> {
+	if (!force) {
+		const exp = tokenExpiresAt();
+		if (!exp) return false;
+		if (exp - Date.now() > REFRESH_WINDOW_MS) return false;
+	}
 	if (refreshPromise) return refreshPromise;
 
 	refreshPromise = (async () => {
@@ -94,9 +125,10 @@ async function maybeRefreshToken(): Promise<boolean> {
 				const data = await res.json();
 				if (data.token) {
 					localStorage.setItem('mortise_token', data.token);
-					if (data.user) {
-						localStorage.setItem('mortise_user', JSON.stringify(data.user));
-						window.dispatchEvent(new CustomEvent('mortise:user-updated', { detail: data.user }));
+					const user = normalizeAuthUser(data.user);
+					if (user) {
+						localStorage.setItem('mortise_user', JSON.stringify(user));
+						window.dispatchEvent(new CustomEvent('mortise:user-updated', { detail: user }));
 					}
 					return true;
 				}
@@ -386,6 +418,7 @@ export const api = {
 	},
 
 	fetchSSEToken,
+	refreshSession,
 
 	getBuildLogs: (project: string, app: string) =>
 		request<BuildLogsResponse>(`/projects/${enc(project)}/apps/${enc(app)}/build-logs`),

@@ -17,6 +17,39 @@ import (
 	"github.com/mortise-org/mortise/internal/authz"
 )
 
+type stagedCurrentPrincipalProvider struct {
+	principal auth.Principal
+	calls     int
+}
+
+func (s *stagedCurrentPrincipalProvider) Authenticate(context.Context, auth.Credentials) (auth.Principal, error) {
+	return auth.Principal{}, nil
+}
+
+func (s *stagedCurrentPrincipalProvider) Principal(context.Context, auth.SessionToken) (auth.Principal, error) {
+	return s.principal, nil
+}
+
+func (s *stagedCurrentPrincipalProvider) ListUsers(context.Context) ([]auth.User, error) {
+	return nil, nil
+}
+
+func (s *stagedCurrentPrincipalProvider) InviteUser(context.Context, string, auth.Role) (auth.InviteLink, error) {
+	return auth.InviteLink{}, nil
+}
+
+func (s *stagedCurrentPrincipalProvider) RevokeUser(context.Context, string) error {
+	return nil
+}
+
+func (s *stagedCurrentPrincipalProvider) CurrentPrincipal(context.Context, string, int64) (auth.Principal, error) {
+	s.calls++
+	if s.calls == 1 {
+		return s.principal, nil
+	}
+	return auth.Principal{}, auth.ErrUserNotFound
+}
+
 func TestIssueSSEToken(t *testing.T) {
 	k8sClient := setupEnvtest(t)
 	srv, token := newTestServer(t, k8sClient)
@@ -79,6 +112,78 @@ func TestSSETokenRedeemAndSingleUse(t *testing.T) {
 	}
 }
 
+func TestSSETokenRedeemRejectsRevokedUserAfterIssue(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	ctx := context.Background()
+	_ = k8sClient.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "mortise-system"}})
+	seedProject(t, k8sClient, "default")
+
+	authProvider := auth.NewNativeAuthProvider(k8sClient)
+	jwtHelper := auth.NewJWTHelper(k8sClient)
+	if err := authProvider.CreateUser(ctx, "revoked@example.com", "pass1234", auth.RoleAdmin); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	principal, _ := authProvider.Authenticate(ctx, auth.Credentials{Email: "revoked@example.com", Password: "pass1234"})
+	token, _ := jwtHelper.GenerateToken(ctx, principal)
+
+	srv := api.NewServer(k8sClient, fake.NewClientset(), nil, nil, authProvider, jwtHelper, nil, authz.NewNativePolicyEngine(k8sClient))
+	h := srv.Handler()
+
+	w := doRequestWithToken(h, http.MethodPost, "/api/auth/sse-token", nil, token)
+	if w.Code != http.StatusOK {
+		t.Fatalf("issue: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]any
+	json.NewDecoder(w.Body).Decode(&resp)
+	sseToken := resp["token"].(string)
+
+	if err := authProvider.RevokeUser(ctx, "revoked@example.com"); err != nil {
+		t.Fatalf("revoke user: %v", err)
+	}
+
+	path := "/api/projects/default/apps/missing/logs?env=production&token=" + url.QueryEscape(sseToken)
+	redeem := doRequestWithToken(h, http.MethodGet, path, nil, "")
+	if redeem.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for revoked user redeem, got %d: %s", redeem.Code, redeem.Body.String())
+	}
+}
+
+func TestSSETokenRedeemRejectsPasswordChangeAfterIssue(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	ctx := context.Background()
+	_ = k8sClient.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "mortise-system"}})
+	seedProject(t, k8sClient, "default")
+
+	authProvider := auth.NewNativeAuthProvider(k8sClient)
+	jwtHelper := auth.NewJWTHelper(k8sClient)
+	if err := authProvider.CreateUser(ctx, "password@example.com", "pass1234", auth.RoleAdmin); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	principal, _ := authProvider.Authenticate(ctx, auth.Credentials{Email: "password@example.com", Password: "pass1234"})
+	token, _ := jwtHelper.GenerateToken(ctx, principal)
+
+	srv := api.NewServer(k8sClient, fake.NewClientset(), nil, nil, authProvider, jwtHelper, nil, authz.NewNativePolicyEngine(k8sClient))
+	h := srv.Handler()
+
+	w := doRequestWithToken(h, http.MethodPost, "/api/auth/sse-token", nil, token)
+	if w.Code != http.StatusOK {
+		t.Fatalf("issue: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]any
+	json.NewDecoder(w.Body).Decode(&resp)
+	sseToken := resp["token"].(string)
+
+	if err := authProvider.UpdatePassword(ctx, "password@example.com", "newpass1234"); err != nil {
+		t.Fatalf("update password: %v", err)
+	}
+
+	path := "/api/projects/default/apps/missing/logs?env=production&token=" + url.QueryEscape(sseToken)
+	redeem := doRequestWithToken(h, http.MethodGet, path, nil, "")
+	if redeem.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 after password change, got %d: %s", redeem.Code, redeem.Body.String())
+	}
+}
+
 func TestIssueSSETokenRejectsRevokedUser(t *testing.T) {
 	k8sClient := setupEnvtest(t)
 	ctx := context.Background()
@@ -101,5 +206,192 @@ func TestIssueSSETokenRejectsRevokedUser(t *testing.T) {
 	w := doRequestWithToken(h, http.MethodPost, "/api/auth/sse-token", nil, token)
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401 for revoked user SSE token issue, got %d: %s", w.Code, w.Body.String())
+	}
+}
+func TestIssueSSETokenRejectsProviderWithoutCurrentPrincipal(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	ctx := context.Background()
+	_ = k8sClient.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "mortise-system"}})
+
+	jwtHelper := auth.NewJWTHelper(k8sClient)
+	principal := auth.Principal{
+		ID:          "user@example.com",
+		Email:       "user@example.com",
+		Role:        auth.RoleAdmin,
+		PasswordGen: 0,
+	}
+	token, err := jwtHelper.GenerateToken(ctx, principal)
+	if err != nil {
+		t.Fatalf("generate token: %v", err)
+	}
+
+	srv := api.NewServer(
+		k8sClient,
+		fake.NewClientset(),
+		nil,
+		nil,
+		staticAuthProvider{principal: principal},
+		jwtHelper,
+		nil,
+		authz.NewNativePolicyEngine(k8sClient),
+	)
+	h := srv.Handler()
+
+	w := doRequestWithToken(h, http.MethodPost, "/api/auth/sse-token", nil, token)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 when provider cannot revalidate SSE issue, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestRefreshToken(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	ctx := context.Background()
+	_ = k8sClient.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "mortise-system"}})
+
+	authProvider := auth.NewNativeAuthProvider(k8sClient)
+	jwtHelper := auth.NewJWTHelper(k8sClient)
+	if err := authProvider.CreateUser(ctx, "refresh@example.com", "pass1234", auth.RoleAdmin); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	principal, _ := authProvider.Authenticate(ctx, auth.Credentials{Email: "refresh@example.com", Password: "pass1234"})
+	token, _ := jwtHelper.GenerateToken(ctx, principal)
+
+	srv := api.NewServer(k8sClient, fake.NewClientset(), nil, nil, authProvider, jwtHelper, nil, authz.NewNativePolicyEngine(k8sClient))
+	h := srv.Handler()
+
+	w := doRequestWithToken(h, http.MethodPost, "/api/auth/refresh", nil, token)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]any
+	json.NewDecoder(w.Body).Decode(&resp)
+	newToken, _ := resp["token"].(string)
+	if newToken == "" {
+		t.Fatal("expected non-empty refreshed token")
+	}
+
+	// New token should work for authenticated requests.
+	w2 := doRequestWithToken(h, http.MethodGet, "/api/projects", nil, newToken)
+	if w2.Code != http.StatusOK {
+		t.Fatalf("refreshed token should work, got %d", w2.Code)
+	}
+}
+
+func TestRefreshTokenRequiresAuth(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+
+	w := doRequestWithToken(h, http.MethodPost, "/api/auth/refresh", nil, "")
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 without token, got %d", w.Code)
+	}
+}
+
+func TestRefreshTokenRejectsRevokedUser(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	ctx := context.Background()
+	_ = k8sClient.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "mortise-system"}})
+
+	authProvider := auth.NewNativeAuthProvider(k8sClient)
+	jwtHelper := auth.NewJWTHelper(k8sClient)
+	if err := authProvider.CreateUser(ctx, "refresh@example.com", "pass1234", auth.RoleAdmin); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	principal, _ := authProvider.Authenticate(ctx, auth.Credentials{Email: "refresh@example.com", Password: "pass1234"})
+	token, _ := jwtHelper.GenerateToken(ctx, principal)
+	if err := authProvider.RevokeUser(ctx, "refresh@example.com"); err != nil {
+		t.Fatalf("revoke user: %v", err)
+	}
+
+	srv := api.NewServer(k8sClient, fake.NewClientset(), nil, nil, authProvider, jwtHelper, nil, authz.NewNativePolicyEngine(k8sClient))
+	h := srv.Handler()
+
+	w := doRequestWithToken(h, http.MethodPost, "/api/auth/refresh", nil, token)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for revoked user refresh, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestSSETokenRedeemRejectsProviderWithoutCurrentPrincipal(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	ctx := context.Background()
+	_ = k8sClient.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "mortise-system"}})
+	seedProject(t, k8sClient, "default")
+
+	jwtHelper := auth.NewJWTHelper(k8sClient)
+	principal := auth.Principal{
+		ID:          "user@example.com",
+		Email:       "user@example.com",
+		Role:        auth.RoleAdmin,
+		PasswordGen: 0,
+	}
+	token, err := jwtHelper.GenerateToken(ctx, principal)
+	if err != nil {
+		t.Fatalf("generate token: %v", err)
+	}
+
+	authProvider := &stagedCurrentPrincipalProvider{principal: principal}
+
+	srv := api.NewServer(
+		k8sClient,
+		fake.NewClientset(),
+		nil,
+		nil,
+		authProvider,
+		jwtHelper,
+		nil,
+		authz.NewNativePolicyEngine(k8sClient),
+	)
+	h := srv.Handler()
+
+	w := doRequestWithToken(h, http.MethodPost, "/api/auth/sse-token", nil, token)
+	if w.Code != http.StatusOK {
+		t.Fatalf("issue: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]any
+	json.NewDecoder(w.Body).Decode(&resp)
+	sseToken := resp["token"].(string)
+
+	path := "/api/projects/default/apps/missing/logs?env=production&token=" + url.QueryEscape(sseToken)
+	redeem := doRequestWithToken(h, http.MethodGet, path, nil, "")
+	if redeem.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 when provider cannot revalidate SSE redeem, got %d: %s", redeem.Code, redeem.Body.String())
+	}
+}
+
+func TestRefreshTokenRejectsProviderWithoutCurrentPrincipal(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	ctx := context.Background()
+	_ = k8sClient.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "mortise-system"}})
+
+	jwtHelper := auth.NewJWTHelper(k8sClient)
+	principal := auth.Principal{
+		ID:          "user@example.com",
+		Email:       "user@example.com",
+		Role:        auth.RoleAdmin,
+		PasswordGen: 0,
+	}
+	token, err := jwtHelper.GenerateToken(ctx, principal)
+	if err != nil {
+		t.Fatalf("generate token: %v", err)
+	}
+
+	srv := api.NewServer(
+		k8sClient,
+		fake.NewClientset(),
+		nil,
+		nil,
+		staticAuthProvider{principal: principal},
+		jwtHelper,
+		nil,
+		authz.NewNativePolicyEngine(k8sClient),
+	)
+	h := srv.Handler()
+
+	w := doRequestWithToken(h, http.MethodPost, "/api/auth/refresh", nil, token)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 when provider cannot revalidate refresh, got %d: %s", w.Code, w.Body.String())
 	}
 }

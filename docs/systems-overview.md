@@ -102,7 +102,8 @@ The HTTP server is mounted by `internal/api/server.go`.
   - `/api/webhooks/{provider}`
 - Authenticated routes use JWT bearer auth middleware
 - Deploy endpoint supports JWT **or** deploy token (`mrt_*`)
-- SSE routes support JWT query-token fallback (`?token=`) for EventSource clients
+- Browser SSE routes use short-lived, single-use opaque tokens minted by `POST /api/auth/sse-token`
+- JWT refresh revalidates current user state before minting the replacement token
 
 See `docs/api-endpoints.md` and `docs/openapi.yaml` for the full surface.
 

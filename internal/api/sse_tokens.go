@@ -3,6 +3,7 @@ package api
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"net/http"
 	"sync"
 	"time"
@@ -18,8 +19,12 @@ const (
 	cleanupEvery   = 60 * time.Second
 )
 
+type sseTokenPrincipal struct {
+	email       string
+	passwordGen int64
+}
 type sseTokenEntry struct {
-	principal auth.Principal
+	principal sseTokenPrincipal
 	expiresAt time.Time
 }
 
@@ -50,7 +55,10 @@ func (s *sseTokenStore) Issue(p auth.Principal) (string, error) {
 
 	s.mu.Lock()
 	s.tokens[token] = sseTokenEntry{
-		principal: p,
+		principal: sseTokenPrincipal{
+			email:       p.Email,
+			passwordGen: p.PasswordGen,
+		},
 		expiresAt: s.clock.Now().Add(sseTokenTTL),
 	}
 	s.mu.Unlock()
@@ -59,18 +67,18 @@ func (s *sseTokenStore) Issue(p auth.Principal) (string, error) {
 }
 
 // Redeem validates and consumes an SSE token (single-use).
-func (s *sseTokenStore) Redeem(token string) (auth.Principal, bool) {
+func (s *sseTokenStore) Redeem(token string) (sseTokenPrincipal, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	entry, ok := s.tokens[token]
 	if !ok {
-		return auth.Principal{}, false
+		return sseTokenPrincipal{}, false
 	}
 	delete(s.tokens, token)
 
 	if s.clock.Now().After(entry.expiresAt) {
-		return auth.Principal{}, false
+		return sseTokenPrincipal{}, false
 	}
 	return entry.principal, true
 }
@@ -104,6 +112,16 @@ func (s *sseTokenStore) Stop() {
 	}
 }
 
+// @Summary Issue short-lived SSE token
+// @Description Exchanges a bearer-authenticated session for a short-lived, single-use opaque SSE token. Redeem revalidates the user against the auth provider before opening the stream.
+// @Tags auth
+// @Produce json
+// @Security BearerAuth
+// @Success 200 {object} sseTokenResponse
+// @Failure 401 {object} errorResponse
+// @Failure 500 {object} errorResponse
+// @Router /auth/sse-token [post]
+//
 // IssueSSEToken handles POST /api/auth/sse-token. It returns a short-lived,
 // single-use opaque token that the client can pass as ?token= on SSE endpoints
 // instead of the full JWT.
@@ -114,7 +132,25 @@ func (s *Server) IssueSSEToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, err := s.sseTokens.Issue(*p)
+	revalidated, err := s.revalidatePrincipal(r.Context(), p.Email, p.PasswordGen)
+	if err != nil {
+		switch {
+		case errors.Is(err, errCurrentPrincipalUnavailable):
+			writeJSON(w, http.StatusUnauthorized, errorResponse{"SSE token unavailable for this auth provider"})
+			return
+		case errors.Is(err, auth.ErrPasswordChangeInvalidated):
+			writeJSON(w, http.StatusUnauthorized, errorResponse{"session invalidated by password change"})
+			return
+		case errors.Is(err, auth.ErrUserNotFound):
+			writeJSON(w, http.StatusUnauthorized, errorResponse{"user no longer exists"})
+			return
+		default:
+			writeJSON(w, http.StatusInternalServerError, errorResponse{err.Error()})
+			return
+		}
+	}
+
+	token, err := s.sseTokens.Issue(revalidated)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, errorResponse{"failed to generate SSE token"})
 		return
