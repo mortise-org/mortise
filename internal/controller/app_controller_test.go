@@ -229,6 +229,199 @@ func TestPreviewSyncStateIncludesBackfillInputs(t *testing.T) {
 	}
 }
 
+func TestSyncOpenPreviewsReusesPrepareGitSourceTokenCacheKey(t *testing.T) {
+	ctx := context.Background()
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add core scheme: %v", err)
+	}
+	if err := mortisev1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add mortise scheme: %v", err)
+	}
+
+	provider := &mortisev1alpha1.GitProvider{
+		ObjectMeta: metav1.ObjectMeta{Name: "gh-preview-cache"},
+		Spec: mortisev1alpha1.GitProviderSpec{
+			Type: mortisev1alpha1.GitProviderTypeGitHub,
+			Host: "https://github.com",
+		},
+	}
+	app := makeGitSourceApp("web", "pj-alpha", provider.Name)
+	tokenSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      git.UserTokenSecretName(provider.Name, "test@example.com"),
+			Namespace: git.TokenSecretNamespace,
+		},
+		Data: map[string][]byte{"token": []byte("token-alpha")},
+	}
+	project := &mortisev1alpha1.Project{
+		ObjectMeta: metav1.ObjectMeta{Name: "alpha"},
+		Spec: mortisev1alpha1.ProjectSpec{
+			Preview:      &mortisev1alpha1.PreviewConfig{Enabled: true, Domain: "pr-{number}.example.com"},
+			Environments: []mortisev1alpha1.ProjectEnvironment{{Name: "staging"}},
+		},
+	}
+
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(provider, app, tokenSecret).
+		Build()
+
+	usedTokens := make([]string, 0, 1)
+	r := &AppReconciler{
+		Client:          c,
+		Scheme:          scheme,
+		BuildClient:     &fakeBuildClient{},
+		GitClient:       &fakeGitClient{},
+		RegistryBackend: &fakeRegistryBackend{},
+		GitAPIFactory: func(_ *mortisev1alpha1.GitProvider, token, _ string) (git.GitAPI, error) {
+			usedTokens = append(usedTokens, token)
+			return &fakeWebhookAPI{}, nil
+		},
+	}
+
+	if _, proceed, err := r.prepareGitSource(ctx, app); err != nil {
+		t.Fatalf("prepareGitSource: %v", err)
+	} else if !proceed {
+		t.Fatal("prepareGitSource did not proceed")
+	}
+
+	cacheKey := gitTokenCacheKey(app)
+	cachedToken, ok := r.gitTokenCache.Load(cacheKey)
+	if !ok {
+		t.Fatalf("expected cached token under key %q", cacheKey)
+	}
+	if got := cachedToken.(string); got != "token-alpha" {
+		t.Fatalf("cached token = %q, want %q", got, "token-alpha")
+	}
+	if _, ok := r.gitTokenCache.Load(app.Name); ok {
+		t.Fatalf("unexpected bare app-name cache entry %q after prepare", app.Name)
+	}
+
+	if err := c.Delete(ctx, tokenSecret); err != nil {
+		t.Fatalf("delete token secret: %v", err)
+	}
+
+	if err := r.syncOpenPreviews(ctx, app, project); err != nil {
+		t.Fatalf("syncOpenPreviews: %v", err)
+	}
+
+	if len(usedTokens) != 1 {
+		t.Fatalf("GitAPIFactory called %d times, want 1", len(usedTokens))
+	}
+	if usedTokens[0] != "token-alpha" {
+		t.Fatalf("preview sync used token %q, want %q", usedTokens[0], "token-alpha")
+	}
+	if _, ok := r.gitTokenCache.Load(app.Name); ok {
+		t.Fatalf("unexpected bare app-name cache entry %q after preview sync", app.Name)
+	}
+}
+
+func TestSyncOpenPreviewsIsolatesGitTokenCacheKeysByNamespace(t *testing.T) {
+	ctx := context.Background()
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add core scheme: %v", err)
+	}
+	if err := mortisev1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add mortise scheme: %v", err)
+	}
+
+	provider := &mortisev1alpha1.GitProvider{
+		ObjectMeta: metav1.ObjectMeta{Name: "gh-preview-isolation"},
+		Spec: mortisev1alpha1.GitProviderSpec{
+			Type: mortisev1alpha1.GitProviderTypeGitHub,
+			Host: "https://github.com",
+		},
+	}
+	appA := makeGitSourceApp("web", "pj-a", provider.Name)
+	appA.Annotations["mortise.dev/created-by"] = "alpha@example.com"
+	appB := makeGitSourceApp("web", "pj-b", provider.Name)
+	appB.Annotations["mortise.dev/created-by"] = "bravo@example.com"
+
+	secretA := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      git.UserTokenSecretName(provider.Name, "alpha@example.com"),
+			Namespace: git.TokenSecretNamespace,
+		},
+		Data: map[string][]byte{"token": []byte("token-alpha")},
+	}
+	secretB := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      git.UserTokenSecretName(provider.Name, "bravo@example.com"),
+			Namespace: git.TokenSecretNamespace,
+		},
+		Data: map[string][]byte{"token": []byte("token-bravo")},
+	}
+	projectA := &mortisev1alpha1.Project{
+		ObjectMeta: metav1.ObjectMeta{Name: "alpha"},
+		Spec: mortisev1alpha1.ProjectSpec{
+			Preview:      &mortisev1alpha1.PreviewConfig{Enabled: true, Domain: "pr-{number}.alpha.example.com"},
+			Environments: []mortisev1alpha1.ProjectEnvironment{{Name: "staging"}},
+		},
+	}
+	projectB := &mortisev1alpha1.Project{
+		ObjectMeta: metav1.ObjectMeta{Name: "bravo"},
+		Spec: mortisev1alpha1.ProjectSpec{
+			Preview:      &mortisev1alpha1.PreviewConfig{Enabled: true, Domain: "pr-{number}.bravo.example.com"},
+			Environments: []mortisev1alpha1.ProjectEnvironment{{Name: "staging"}},
+		},
+	}
+
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(provider, appA, appB, secretA, secretB).
+		Build()
+
+	usedTokens := make([]string, 0, 2)
+	r := &AppReconciler{
+		Client:          c,
+		Scheme:          scheme,
+		BuildClient:     &fakeBuildClient{},
+		GitClient:       &fakeGitClient{},
+		RegistryBackend: &fakeRegistryBackend{},
+		GitAPIFactory: func(_ *mortisev1alpha1.GitProvider, token, _ string) (git.GitAPI, error) {
+			usedTokens = append(usedTokens, token)
+			return &fakeWebhookAPI{}, nil
+		},
+	}
+
+	if _, proceed, err := r.prepareGitSource(ctx, appA); err != nil {
+		t.Fatalf("prepareGitSource appA: %v", err)
+	} else if !proceed {
+		t.Fatal("prepareGitSource appA did not proceed")
+	}
+	if _, proceed, err := r.prepareGitSource(ctx, appB); err != nil {
+		t.Fatalf("prepareGitSource appB: %v", err)
+	} else if !proceed {
+		t.Fatal("prepareGitSource appB did not proceed")
+	}
+
+	if err := c.Delete(ctx, secretB); err != nil {
+		t.Fatalf("delete appB token secret: %v", err)
+	}
+
+	if err := r.syncOpenPreviews(ctx, appA, projectA); err != nil {
+		t.Fatalf("syncOpenPreviews appA: %v", err)
+	}
+	if err := r.syncOpenPreviews(ctx, appB, projectB); err != nil {
+		t.Fatalf("syncOpenPreviews appB: %v", err)
+	}
+
+	if len(usedTokens) != 2 {
+		t.Fatalf("GitAPIFactory called %d times, want 2", len(usedTokens))
+	}
+	if usedTokens[0] != "token-alpha" {
+		t.Fatalf("appA preview sync used token %q, want %q", usedTokens[0], "token-alpha")
+	}
+	if usedTokens[1] != "token-bravo" {
+		t.Fatalf("appB preview sync used token %q, want %q", usedTokens[1], "token-bravo")
+	}
+	if _, ok := r.gitTokenCache.Load(appA.Name); ok {
+		t.Fatalf("unexpected bare app-name cache entry %q after isolated preview sync", appA.Name)
+	}
+}
+
 var _ = Describe("App Controller", func() {
 	const namespace = "pj-default-project"
 	const envNsProduction = "pj-default-project-production"

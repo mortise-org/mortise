@@ -99,7 +99,8 @@ type AppReconciler struct {
 	Builds *BuildTrackerStore
 
 	// gitTokenCache holds the resolved git token for the current reconcile
-	// iteration so per-env builds don't re-resolve credentials. Keyed by app name.
+	// iteration so per-env builds don't re-resolve credentials. Keyed by the
+	// app's control-namespace/name pair.
 	gitTokenCache sync.Map
 
 	GitAPIFactory func(*mortisev1alpha1.GitProvider, string, string) (git.GitAPI, error)
@@ -433,9 +434,13 @@ func (r *AppReconciler) prepareGitSource(ctx context.Context, app *mortisev1alph
 	}
 
 	// Stash the token transiently for per-env builds during this reconcile.
-	r.gitTokenCache.Store(app.Namespace+"/"+app.Name, tokenResult.Token)
+	r.gitTokenCache.Store(gitTokenCacheKey(app), tokenResult.Token)
 
 	return ctrl.Result{}, true, nil
+}
+
+func gitTokenCacheKey(app *mortisev1alpha1.App) string {
+	return app.Namespace + "/" + app.Name
 }
 
 func (r *AppReconciler) syncOpenPreviews(ctx context.Context, app *mortisev1alpha1.App, project *mortisev1alpha1.Project) error {
@@ -451,7 +456,7 @@ func (r *AppReconciler) syncOpenPreviews(ctx context.Context, app *mortisev1alph
 		return nil
 	}
 
-	tokenVal, _ := r.gitTokenCache.Load(app.Name)
+	tokenVal, _ := r.gitTokenCache.Load(gitTokenCacheKey(app))
 	token, _ := tokenVal.(string)
 
 	var gp mortisev1alpha1.GitProvider
@@ -466,7 +471,7 @@ func (r *AppReconciler) syncOpenPreviews(ctx context.Context, app *mortisev1alph
 			return fmt.Errorf("resolve git token for preview sync: %w", err)
 		}
 		token = tokenResult.Token
-		r.gitTokenCache.Store(app.Name, token)
+		r.gitTokenCache.Store(gitTokenCacheKey(app), token)
 	}
 
 	api, err := r.newGitAPI(&gp, token, "")
