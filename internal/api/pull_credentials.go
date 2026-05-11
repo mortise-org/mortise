@@ -69,6 +69,22 @@ func buildDockerConfigJSON(registry, username, password string) []byte {
 
 // SetPullCredentials creates or updates a dockerconfigjson Secret in every env
 // namespace for the app, then sets PullSecretRef on the App CRD.
+// @Summary Set pull credentials for an app
+// @Description Creates or updates Mortise-managed registry pull credentials for every project environment and records the reserved pull secret on the App
+// @Tags apps
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param project path string true "Project name"
+// @Param app path string true "App name"
+// @Param body body pullCredentialsRequest true "Registry pull credentials"
+// @Success 200 {object} pullCredentialsResponse
+// @Failure 400 {object} errorResponse
+// @Failure 401 {object} errorResponse
+// @Failure 403 {object} errorResponse
+// @Failure 404 {object} errorResponse
+// @Failure 409 {object} errorResponse
+// @Router /projects/{project}/apps/{app}/pull-credentials [post]
 func (s *Server) SetPullCredentials(w http.ResponseWriter, r *http.Request) {
 	ns, projectName, ok := s.resolveProject(w, r)
 	if !ok {
@@ -161,6 +177,18 @@ func (s *Server) SetPullCredentials(w http.ResponseWriter, r *http.Request) {
 }
 
 // GetPullCredentials returns pull credential metadata (never the password).
+// @Summary Get pull credentials for an app
+// @Description Returns registry pull credential metadata for an app without returning the password value
+// @Tags apps
+// @Produce json
+// @Security BearerAuth
+// @Param project path string true "Project name"
+// @Param app path string true "App name"
+// @Success 200 {object} pullCredentialsResponse
+// @Failure 401 {object} errorResponse
+// @Failure 403 {object} errorResponse
+// @Failure 404 {object} errorResponse
+// @Router /projects/{project}/apps/{app}/pull-credentials [get]
 func (s *Server) GetPullCredentials(w http.ResponseWriter, r *http.Request) {
 	ns, projectName, ok := s.resolveProject(w, r)
 	if !ok {
@@ -213,6 +241,18 @@ func (s *Server) GetPullCredentials(w http.ResponseWriter, r *http.Request) {
 
 // DeletePullCredentials removes the Mortise-managed pull secret from all env
 // namespaces and clears PullSecretRef on the App CRD.
+// @Summary Delete pull credentials for an app
+// @Description Removes Mortise-managed registry pull credentials from every project environment and clears the App pull secret reference
+// @Tags apps
+// @Produce json
+// @Security BearerAuth
+// @Param project path string true "Project name"
+// @Param app path string true "App name"
+// @Success 200 {object} map[string]string
+// @Failure 401 {object} errorResponse
+// @Failure 403 {object} errorResponse
+// @Failure 404 {object} errorResponse
+// @Router /projects/{project}/apps/{app}/pull-credentials [delete]
 func (s *Server) DeletePullCredentials(w http.ResponseWriter, r *http.Request) {
 	ns, projectName, ok := s.resolveProject(w, r)
 	if !ok {
