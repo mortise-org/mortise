@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -309,6 +311,14 @@ func TestOpenAPISpecIncludesBuildRunRoutes(t *testing.T) {
 		if !strings.Contains(spec, route) {
 			t.Fatalf("expected openapi spec to include %q", route)
 		}
+	}
+
+	docsSpec, err := os.ReadFile(filepath.Join("..", "..", "docs", "swagger.yaml"))
+	if err != nil {
+		t.Fatalf("read docs swagger: %v", err)
+	}
+	if string(docsSpec) != spec {
+		t.Fatal("expected embedded openapi spec to match docs/swagger.yaml")
 	}
 }
 
