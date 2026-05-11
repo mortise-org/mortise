@@ -129,6 +129,49 @@ func TestListProjectsAsMember(t *testing.T) {
 	}
 }
 
+func TestListProjectsAsViewerWithMembership(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	const visibleProject = "viewer-visible-316"
+	const hiddenProject = "viewer-hidden-316"
+	seedProject(t, k8sClient, visibleProject)
+	seedProject(t, k8sClient, hiddenProject)
+	srv, _ := newTestServerAs(t, k8sClient, auth.RoleViewer)
+	h := srv.Handler()
+
+	seedProjectMember(t, k8sClient, visibleProject, "test@example.com", mortisev1alpha1.ProjectRoleViewer)
+
+	w := doRequest(h, http.MethodGet, "/api/projects", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 for viewer listing projects, got %d: %s", w.Code, w.Body.String())
+	}
+	var projects []map[string]any
+	_ = json.NewDecoder(w.Body).Decode(&projects)
+	if len(projects) != 1 {
+		t.Fatalf("expected 1 project (only the one with membership), got %d", len(projects))
+	}
+	if projects[0]["name"] != visibleProject {
+		t.Fatalf("expected visible project, got %+v", projects)
+	}
+}
+
+func TestListProjectsAsViewerWithoutMembership(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	seedProject(t, k8sClient, "viewer-empty-visible-316")
+	seedProject(t, k8sClient, "viewer-empty-hidden-316")
+	srv, _ := newTestServerAs(t, k8sClient, auth.RoleViewer)
+	h := srv.Handler()
+
+	w := doRequest(h, http.MethodGet, "/api/projects", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 for viewer listing projects, got %d: %s", w.Code, w.Body.String())
+	}
+	var projects []map[string]any
+	_ = json.NewDecoder(w.Body).Decode(&projects)
+	if len(projects) != 0 {
+		t.Fatalf("expected 0 projects without membership, got %d", len(projects))
+	}
+}
+
 // TestGetProjectAsMember verifies project members can read a single project.
 func TestGetProjectAsMember(t *testing.T) {
 	k8sClient := setupEnvtest(t)
