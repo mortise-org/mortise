@@ -514,6 +514,7 @@ var _ = Describe("App Controller", func() {
 	const envNsProduction = "pj-default-project-production"
 
 	AfterEach(func() {
+		purgeAllPreviewsIn(context.Background(), namespace)
 		purgeAllAppsIn(context.Background(), namespace)
 	})
 
@@ -792,6 +793,78 @@ var _ = Describe("App Controller", func() {
 			}, &ing)).To(Succeed())
 			Expect(ing.Annotations["linkerd.io/inject"]).To(Equal("enabled"))
 			Expect(ing.Annotations["cert-manager.io/cluster-issuer"]).To(Equal("user-wins"))
+		})
+	})
+
+	Context("app deletion with previews", func() {
+		It("should block app finalizer removal until matching previews are deleted", func() {
+			ctx := context.Background()
+			const appName = "preview-owner"
+			const prNumber = 17
+
+			app := makeGitSourceApp(appName, namespace, "github-main")
+			app.Finalizers = []string{appFinalizer}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			var storedApp mortisev1alpha1.App
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: appName, Namespace: namespace}, &storedApp)).To(Succeed())
+			Expect(storedApp.Finalizers).To(ContainElement(appFinalizer))
+
+			pe := &mortisev1alpha1.PreviewEnvironment{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       fmt.Sprintf("%s-preview-pr-%d", appName, prNumber),
+					Namespace:  namespace,
+					Finalizers: []string{previewFinalizer},
+				},
+				Spec: mortisev1alpha1.PreviewEnvironmentSpec{
+					AppRef:    appName,
+					SourceEnv: "production",
+					PullRequest: mortisev1alpha1.PullRequestRef{
+						Number: prNumber,
+						Branch: "feature/delete-app",
+						SHA:    "deadbeef",
+					},
+					TTL: metav1.Duration{Duration: time.Hour},
+				},
+			}
+			Expect(k8sClient.Create(ctx, pe)).To(Succeed())
+
+			Expect(k8sClient.Delete(ctx, &storedApp)).To(Succeed())
+
+			res, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res.RequeueAfter).ToNot(BeZero())
+
+			var deletingPreview mortisev1alpha1.PreviewEnvironment
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: pe.Name, Namespace: namespace}, &deletingPreview)).To(Succeed())
+			Expect(deletingPreview.DeletionTimestamp).ToNot(BeNil())
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: appName, Namespace: namespace}, &storedApp)).To(Succeed())
+			Expect(storedApp.DeletionTimestamp).ToNot(BeNil())
+			Expect(storedApp.Finalizers).To(ContainElement(appFinalizer))
+
+			deletingPreview.Finalizers = nil
+			Expect(k8sClient.Update(ctx, &deletingPreview)).To(Succeed())
+			err = k8sClient.Delete(ctx, &deletingPreview)
+			Expect(err == nil || kerrors.IsNotFound(err)).To(BeTrue())
+			Eventually(func() bool {
+				var gone mortisev1alpha1.PreviewEnvironment
+				return kerrors.IsNotFound(k8sClient.Get(ctx, types.NamespacedName{Name: pe.Name, Namespace: namespace}, &gone))
+			}).Should(BeTrue())
+
+			Eventually(func() bool {
+				_, err := reconciler.Reconcile(ctx, reconcile.Request{
+					NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+				})
+				if err != nil {
+					return false
+				}
+				var gone mortisev1alpha1.App
+				return kerrors.IsNotFound(k8sClient.Get(ctx, types.NamespacedName{Name: appName, Namespace: namespace}, &gone))
+			}, 5*time.Second, 100*time.Millisecond).Should(BeTrue())
 		})
 	})
 
@@ -3084,6 +3157,7 @@ var _ = Describe("App Controller — git source", func() {
 	const envNsProduction = "pj-default-project-production"
 
 	AfterEach(func() {
+		purgeAllPreviewsIn(context.Background(), namespace)
 		purgeAllAppsIn(context.Background(), namespace)
 	})
 
@@ -5115,6 +5189,7 @@ var _ = Describe("App Controller — git source", func() {
 		ctx := context.Background()
 
 		AfterEach(func() {
+			purgeAllPreviewsIn(ctx, namespace)
 			purgeAllAppsIn(ctx, namespace)
 		})
 
@@ -5815,6 +5890,64 @@ var _ = Describe("App Controller — git source", func() {
 
 			Expect(prodArgs).To(Equal(map[string]string{"ENV": "prod", "DEBUG": "false"}))
 			Expect(stagingArgs).To(Equal(map[string]string{"ENV": "staging", "DEBUG": "true"}))
+		})
+	})
+
+	Context("app deletion with previews", func() {
+		It("should request deletion of matching PreviewEnvironments before removing the app finalizer", func() {
+			ctx := context.Background()
+			app := &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       "preview-owner",
+					Namespace:  namespace,
+					Finalizers: []string{appFinalizer},
+				},
+				Spec: mortisev1alpha1.AppSpec{
+					Source: mortisev1alpha1.AppSource{
+						Type:  mortisev1alpha1.SourceTypeImage,
+						Image: testImageNginx,
+					},
+					Environments: []mortisev1alpha1.Environment{{Name: "production"}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+
+			preview := &mortisev1alpha1.PreviewEnvironment{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       "preview-owner-pr-1",
+					Namespace:  namespace,
+					Finalizers: []string{previewFinalizer},
+				},
+				Spec: mortisev1alpha1.PreviewEnvironmentSpec{
+					AppRef: "preview-owner",
+					PullRequest: mortisev1alpha1.PullRequestRef{
+						Number: 1,
+						Branch: "feature",
+						SHA:    "abc123",
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, preview)).To(Succeed())
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			req := reconcile.Request{NamespacedName: client.ObjectKeyFromObject(app)}
+			Expect(k8sClient.Delete(ctx, app)).To(Succeed())
+			res, err := reconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res.RequeueAfter).ToNot(BeZero())
+
+			var deletingPreview mortisev1alpha1.PreviewEnvironment
+			err = k8sClient.Get(ctx, client.ObjectKeyFromObject(preview), &deletingPreview)
+			if kerrors.IsNotFound(err) {
+				// Preview reconcile may have already finished the delete path.
+			} else {
+				Expect(err).NotTo(HaveOccurred())
+				Expect(deletingPreview.DeletionTimestamp.IsZero()).To(BeFalse())
+			}
+
+			var deletingApp mortisev1alpha1.App
+			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(app), &deletingApp)).To(Succeed())
+			Expect(deletingApp.Finalizers).To(ContainElement(appFinalizer))
 		})
 	})
 })
