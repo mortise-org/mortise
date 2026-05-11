@@ -129,7 +129,7 @@ func (s *Server) CreateUser(w http.ResponseWriter, r *http.Request) {
 }
 
 // @Summary Update a user's role
-// @Description Changes a platform user's role. Admin-only.
+// @Description Changes a platform user's role. Admin-only. Returns 400 when the change would demote the last platform admin.
 // @Tags users
 // @Accept json
 // @Produce json
@@ -175,6 +175,23 @@ func (s *Server) UpdateUserRole(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
+	if auth.Role(secret.Data["role"]) == auth.RoleAdmin && auth.Role(req.Role) != auth.RoleAdmin {
+		users, err := s.auth.ListUsers(r.Context())
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, errorResponse{err.Error()})
+			return
+		}
+		adminCount := 0
+		for _, user := range users {
+			if user.Role == auth.RoleAdmin {
+				adminCount++
+			}
+		}
+		if adminCount <= 1 {
+			writeJSON(w, http.StatusBadRequest, errorResponse{"cannot demote the last platform admin"})
+			return
+		}
+	}
 
 	secret.Data["role"] = []byte(req.Role)
 	if err := s.client.Update(r.Context(), &secret); err != nil {
@@ -190,7 +207,7 @@ func (s *Server) UpdateUserRole(w http.ResponseWriter, r *http.Request) {
 }
 
 // @Summary Delete a user
-// @Description Removes a platform user. Admin-only.
+// @Description Removes a platform user. Admin-only. Returns 400 when the target user is the last platform admin.
 // @Tags users
 // @Security BearerAuth
 // @Param email path string true "User email"
@@ -210,6 +227,26 @@ func (s *Server) DeleteUser(w http.ResponseWriter, r *http.Request) {
 	email := chi.URLParam(r, "email")
 	if email == "" {
 		writeJSON(w, http.StatusBadRequest, errorResponse{"email is required"})
+		return
+	}
+	users, err := s.auth.ListUsers(r.Context())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorResponse{err.Error()})
+		return
+	}
+	adminCount := 0
+	targetIsAdmin := false
+	for _, user := range users {
+		if user.Role != auth.RoleAdmin {
+			continue
+		}
+		adminCount++
+		if user.Email == email || user.ID == email {
+			targetIsAdmin = true
+		}
+	}
+	if targetIsAdmin && adminCount <= 1 {
+		writeJSON(w, http.StatusBadRequest, errorResponse{"cannot delete the last platform admin"})
 		return
 	}
 

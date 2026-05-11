@@ -55,6 +55,9 @@ func (s *Server) ListPreviews(w http.ResponseWriter, r *http.Request) {
 	resp := make([]previewSummaryResponse, 0, len(list.Items))
 	for i := range list.Items {
 		pe := &list.Items[i]
+		if !pe.DeletionTimestamp.IsZero() {
+			continue
+		}
 		var item previewSummaryResponse
 		item.Name = pe.Name
 		item.AppRef = pe.Spec.AppRef
