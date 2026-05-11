@@ -68,7 +68,10 @@ func newProxyRaceServer(t *testing.T) *Server {
 	project := &mortisev1alpha1.Project{
 		ObjectMeta: metav1.ObjectMeta{Name: "default"},
 		Spec: mortisev1alpha1.ProjectSpec{
-			Environments: []mortisev1alpha1.ProjectEnvironment{{Name: "production", DisplayOrder: 0}},
+			Environments: []mortisev1alpha1.ProjectEnvironment{
+				{Name: "production", DisplayOrder: 0},
+				{Name: "staging", DisplayOrder: 1},
+			},
 		},
 		Status: mortisev1alpha1.ProjectStatus{Namespace: constants.ControlNamespace("default")},
 	}
@@ -79,15 +82,22 @@ func newProxyRaceServer(t *testing.T) *Server {
 			Network: mortisev1alpha1.NetworkConfig{Port: 8080},
 		},
 	}
+	apiApp := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "api", Namespace: constants.ControlNamespace("default")},
+		Spec: mortisev1alpha1.AppSpec{
+			Source:  mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: "nginx:1.25.0"},
+			Network: mortisev1alpha1.NetworkConfig{Port: 9090},
+		},
+	}
 
-	return NewServer(fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(project, app).Build(), nil, nil, nil, nil, nil, nil, allowAllPolicy{})
+	return NewServer(fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(project, app, apiApp).Build(), nil, nil, nil, nil, nil, nil, allowAllPolicy{})
 }
 
-func proxyRaceRequest(method, target string) *http.Request {
+func proxyRaceRequest(method, target, app string) *http.Request {
 	req := httptest.NewRequest(method, target, nil)
 	routeCtx := chi.NewRouteContext()
 	routeCtx.URLParams.Add("project", "default")
-	routeCtx.URLParams.Add("app", "web")
+	routeCtx.URLParams.Add("app", app)
 	ctx := context.WithValue(req.Context(), chi.RouteCtxKey, routeCtx)
 	ctx = context.WithValue(ctx, principalKey, &auth.Principal{Email: "test@example.com", Role: auth.RoleAdmin})
 	return req.WithContext(ctx)
@@ -141,7 +151,7 @@ func TestHandleConnectCreatesOneListenerPerKey(t *testing.T) {
 	rec2 := httptest.NewRecorder()
 	go func() {
 		defer wg.Done()
-		srv.handleConnect(rec1, proxyRaceRequest(http.MethodPost, "/api/projects/default/apps/web/connect?env=production"))
+		srv.handleConnect(rec1, proxyRaceRequest(http.MethodPost, "/api/projects/default/apps/web/connect?env=production", "web"))
 	}()
 
 	select {
@@ -152,7 +162,7 @@ func TestHandleConnectCreatesOneListenerPerKey(t *testing.T) {
 
 	go func() {
 		defer wg.Done()
-		srv.handleConnect(rec2, proxyRaceRequest(http.MethodPost, "/api/projects/default/apps/web/connect?env=production"))
+		srv.handleConnect(rec2, proxyRaceRequest(http.MethodPost, "/api/projects/default/apps/web/connect?env=production", "web"))
 	}()
 
 	time.Sleep(150 * time.Millisecond)
@@ -184,5 +194,90 @@ func TestHandleConnectCreatesOneListenerPerKey(t *testing.T) {
 	}
 	if resp1.URL != resp2.URL {
 		t.Fatalf("expected one shared proxy URL, got %q and %q", resp1.URL, resp2.URL)
+	}
+}
+
+func TestHandleConnectDoesNotSerializeDifferentKeys(t *testing.T) {
+	srv := newProxyRaceServer(t)
+	t.Cleanup(func() { closeProxyEntries(srv) })
+
+	origListen := proxyListen
+	firstEntered := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	secondEntered := make(chan struct{})
+	var listenCalls atomic.Int32
+	var listenersMu sync.Mutex
+	var listeners []net.Listener
+	proxyListen = func(network, addr string) (net.Listener, error) {
+		call := listenCalls.Add(1)
+		switch call {
+		case 1:
+			close(firstEntered)
+			<-releaseFirst
+		case 2:
+			close(secondEntered)
+		}
+		ln, err := origListen(network, addr)
+		if err == nil {
+			listenersMu.Lock()
+			listeners = append(listeners, ln)
+			listenersMu.Unlock()
+		}
+		return ln, err
+	}
+	defer func() {
+		proxyListen = origListen
+		listenersMu.Lock()
+		defer listenersMu.Unlock()
+		for _, ln := range listeners {
+			_ = ln.Close()
+		}
+	}()
+
+	rec1 := httptest.NewRecorder()
+	rec2 := httptest.NewRecorder()
+	done1 := make(chan struct{})
+	done2 := make(chan struct{})
+	go func() {
+		defer close(done1)
+		srv.handleConnect(rec1, proxyRaceRequest(http.MethodPost, "/api/projects/default/apps/web/connect?env=production", "web"))
+	}()
+	select {
+	case <-firstEntered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first key did not begin listener creation")
+	}
+
+	go func() {
+		defer close(done2)
+		srv.handleConnect(rec2, proxyRaceRequest(http.MethodPost, "/api/projects/default/apps/api/connect?env=staging", "api"))
+	}()
+
+	select {
+	case <-secondEntered:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("different proxy key was blocked by unrelated in-flight connect")
+	}
+	if got := listenCalls.Load(); got != 2 {
+		t.Fatalf("expected two listener creations for different keys, got %d", got)
+	}
+
+	select {
+	case <-done2:
+	case <-time.After(2 * time.Second):
+		t.Fatal("different-key connect did not complete independently")
+	}
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("expected different-key connect to return 200, got %d", rec2.Code)
+	}
+
+	close(releaseFirst)
+	select {
+	case <-done1:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first connect did not complete after release")
+	}
+	if rec1.Code != http.StatusOK {
+		t.Fatalf("expected first-key connect to return 200, got %d", rec1.Code)
 	}
 }
