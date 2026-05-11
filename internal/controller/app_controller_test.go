@@ -47,6 +47,7 @@ import (
 
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
 	"github.com/mortise-org/mortise/internal/build"
+	"github.com/mortise-org/mortise/internal/constants"
 	"github.com/mortise-org/mortise/internal/envstore"
 	"github.com/mortise-org/mortise/internal/git"
 	"github.com/mortise-org/mortise/internal/ingress"
@@ -592,6 +593,44 @@ var _ = Describe("App Controller", func() {
 			Expect(svc.Spec.Ports[0].Port).To(Equal(int32(8080)))
 		})
 
+		It("removes app deploy token secrets during finalizer GC without touching project tokens", func() {
+			appToken := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "deploy-token-test-nginx-ci",
+					Namespace: namespace,
+					Labels: map[string]string{
+						"mortise.dev/deploy-token": "true",
+						"mortise.dev/app":          appName,
+						"mortise.dev/environment":  "production",
+						"mortise.dev/token-name":   "ci",
+					},
+				},
+				Data: map[string][]byte{"token-hash": []byte("hash")},
+			}
+			Expect(k8sClient.Create(ctx, appToken)).To(Succeed())
+
+			projectToken := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "deploy-token-pj-keep",
+					Namespace: namespace,
+					Labels: map[string]string{
+						"mortise.dev/deploy-token":  "true",
+						"mortise.dev/project-token": "true",
+					},
+				},
+				Data: map[string][]byte{"token-hash": []byte("hash")},
+			}
+			Expect(k8sClient.Create(ctx, projectToken)).To(Succeed())
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			Expect(reconciler.gcAppAcrossEnvs(ctx, app)).To(Succeed())
+
+			var got corev1.Secret
+			err := k8sClient.Get(ctx, types.NamespacedName{Name: appToken.Name, Namespace: namespace}, &got)
+			Expect(kerrors.IsNotFound(err)).To(BeTrue(), "expected app deploy token secret to be deleted, got %v", err)
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: projectToken.Name, Namespace: namespace}, &got)).To(Succeed())
+		})
+
 		It("should not rewrite a volume-less Deployment on repeated reconcile", func() {
 			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
 			req := reconcile.Request{
@@ -617,6 +656,31 @@ var _ = Describe("App Controller", func() {
 			}, &dep)).To(Succeed())
 			Expect(dep.ResourceVersion).To(Equal(rvBefore))
 			Expect(dep.Spec.Template.Spec.Volumes).To(BeNil())
+		})
+
+		It("collects Mortise-managed pull secrets during finalizer GC", func() {
+			secret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      appName + "-pull-secret",
+					Namespace: envNsProduction,
+					Labels: map[string]string{
+						constants.AppNameLabel:         appName,
+						constants.ProjectLabel:         "default-project",
+						constants.EnvironmentLabel:     "production",
+						"app.kubernetes.io/managed-by": "mortise",
+					},
+				},
+				Type: corev1.SecretTypeDockerConfigJson,
+				Data: map[string][]byte{".dockerconfigjson": []byte(`{"auths":{"ghcr.io":{"username":"octo","password":"pw"}}}`)},
+			}
+			Expect(k8sClient.Create(ctx, secret)).To(Succeed())
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			Expect(reconciler.gcAppAcrossEnvs(ctx, app)).To(Succeed())
+
+			var got corev1.Secret
+			err := k8sClient.Get(ctx, types.NamespacedName{Name: secret.Name, Namespace: envNsProduction}, &got)
+			Expect(kerrors.IsNotFound(err)).To(BeTrue(), "expected pull secret to be deleted, got %v", err)
 		})
 
 		It("should create an Ingress with TLS for the domain", func() {

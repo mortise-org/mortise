@@ -588,6 +588,24 @@ definitions:
       to:
         type: string
     type: object
+  api.pullCredentialsRequest:
+    properties:
+      password:
+        type: string
+      registry:
+        type: string
+      username:
+        type: string
+    type: object
+  api.pullCredentialsResponse:
+    properties:
+      hasPassword:
+        type: boolean
+      registry:
+        type: string
+      username:
+        type: string
+    type: object
   api.resetPasswordRequest:
     properties:
       password:
@@ -4293,6 +4311,139 @@ paths:
       summary: Promote an app between environments
       tags:
       - rollback
+  /projects/{project}/apps/{app}/pull-credentials:
+    delete:
+      description: Removes Mortise-managed registry pull credentials from every project
+        environment and clears the App pull secret reference
+      parameters:
+      - description: Project name
+        in: path
+        name: project
+        required: true
+        type: string
+      - description: App name
+        in: path
+        name: app
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/api.errorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/api.errorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.errorResponse'
+      security:
+      - BearerAuth: []
+      summary: Delete pull credentials for an app
+      tags:
+      - apps
+    get:
+      description: Returns registry pull credential metadata for an app without returning
+        the password value
+      parameters:
+      - description: Project name
+        in: path
+        name: project
+        required: true
+        type: string
+      - description: App name
+        in: path
+        name: app
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.pullCredentialsResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/api.errorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/api.errorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.errorResponse'
+      security:
+      - BearerAuth: []
+      summary: Get pull credentials for an app
+      tags:
+      - apps
+    post:
+      consumes:
+      - application/json
+      description: Creates or updates Mortise-managed registry pull credentials for
+        every project environment and records the reserved pull secret on the App
+      parameters:
+      - description: Project name
+        in: path
+        name: project
+        required: true
+        type: string
+      - description: App name
+        in: path
+        name: app
+        required: true
+        type: string
+      - description: Registry pull credentials
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/api.pullCredentialsRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.pullCredentialsResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.errorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/api.errorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/api.errorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.errorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/api.errorResponse'
+      security:
+      - BearerAuth: []
+      summary: Set pull credentials for an app
+      tags:
+      - apps
   /projects/{project}/apps/{app}/rebuild:
     post:
       description: Resolve the current branch head, sync mortise.dev/revision to that
@@ -5080,8 +5231,9 @@ paths:
       consumes:
       - application/json
       description: 'Creates a new environment pre-populated with the source''s config
-        (CRD overrides + Secret-level env vars) for every app. Retry-safe: returns
-        200 if the target already exists.'
+        for every app. CRD overrides are cloned on the App, while Secret-backed env
+        vars remain in the Secret layer. Retry-safe: returns 200 if the target already
+        exists.'
       parameters:
       - description: Project name
         in: path

@@ -50,6 +50,10 @@ func (r *AppReconciler) gcAppAcrossEnvs(ctx context.Context, app *mortisev1alpha
 		constants.AppNameLabel: app.Name,
 		constants.ProjectLabel: projectName,
 	}
+	tokenSelector := client.MatchingLabels{
+		"mortise.dev/deploy-token": "true",
+		"mortise.dev/app":          app.Name,
+	}
 
 	if err := r.deleteMatching(ctx, &appsv1.DeploymentList{}, selector); err != nil {
 		return fmt.Errorf("gc deployments: %w", err)
@@ -74,6 +78,9 @@ func (r *AppReconciler) gcAppAcrossEnvs(ctx context.Context, app *mortisev1alpha
 	}
 	if err := r.deleteMatching(ctx, &corev1.PersistentVolumeClaimList{}, selector); err != nil {
 		return fmt.Errorf("gc pvcs: %w", err)
+	}
+	if err := r.deleteMatching(ctx, &corev1.SecretList{}, tokenSelector, client.InNamespace(app.Namespace)); err != nil {
+		return fmt.Errorf("gc app deploy tokens: %w", err)
 	}
 	return nil
 }
