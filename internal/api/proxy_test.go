@@ -281,3 +281,36 @@ func TestHandleConnectDoesNotSerializeDifferentKeys(t *testing.T) {
 		t.Fatalf("expected first-key connect to return 200, got %d", rec1.Code)
 	}
 }
+
+func TestHandleDisconnectRemovesStaleProxyAfterProjectEnvChange(t *testing.T) {
+	project := seedProxyProject("default", "staging", "production")
+	srv := newProxyTestServer(t, project, seedProxyApp("default", "web"))
+	listener, err := net.Listen("tcp", proxyBindAddress+":0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = listener.Close()
+		closeProxyListeners(srv)
+	})
+	srv.proxies.proxies[proxyKey("default", "web", "staging")] = &appProxyEntry{
+		Port:     listener.Addr().(*net.TCPAddr).Port,
+		URL:      "http://localhost:test",
+		listener: listener,
+	}
+
+	project.Spec.Environments = []mortisev1alpha1.ProjectEnvironment{{Name: "production", DisplayOrder: 0}}
+	if err := srv.client.Update(context.Background(), project); err != nil {
+		t.Fatalf("update project environments: %v", err)
+	}
+
+	w := httptest.NewRecorder()
+	srv.handleDisconnect(w, proxyRequest(http.MethodPost, "/api/projects/default/apps/web/disconnect?env=staging", "default", "web"))
+
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d: %s", w.Code, w.Body.String())
+	}
+	if _, ok := srv.proxies.proxies[proxyKey("default", "web", "staging")]; ok {
+		t.Fatal("expected stale staging proxy to be removed")
+	}
+}

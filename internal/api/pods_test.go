@@ -178,6 +178,33 @@ func TestHandlePodsReturnsSummaries(t *testing.T) {
 	}
 }
 
+func TestHandlePodsRejectsUndeclaredEnvironment(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+	ns := seedProject(t, k8sClient, "default")
+	seedImageApp(t, k8sClient, ns, "pods-app")
+
+	w := doRequest(h, http.MethodGet, "/api/projects/default/apps/pods-app/pods?env=staging", nil)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for undeclared env, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestHandlePodsRejectsDisabledAppEnvironment(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+	ns := seedProject(t, k8sClient, "default", "staging", "production")
+	disabled := false
+	seedImageApp(t, k8sClient, ns, "pods-app", mortisev1alpha1.Environment{Name: "staging", Enabled: &disabled})
+
+	w := doRequest(h, http.MethodGet, "/api/projects/default/apps/pods-app/pods?env=staging", nil)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for disabled env, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
 // TestHandlePodsRequiresAuth: /pods sits under the authenticated group, so
 // unauthenticated requests must 401.
 func TestHandlePodsRequiresAuth(t *testing.T) {

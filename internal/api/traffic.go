@@ -5,10 +5,6 @@ import (
 	"net/url"
 	"strconv"
 
-	"github.com/go-chi/chi/v5"
-	"k8s.io/apimachinery/pkg/types"
-
-	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
 	"github.com/mortise-org/mortise/internal/authz"
 	"github.com/mortise-org/mortise/internal/constants"
 	"github.com/mortise-org/mortise/internal/platformconfig"
@@ -42,19 +38,16 @@ func (s *Server) handleTrafficHistory(w http.ResponseWriter, r *http.Request) {
 	if !s.authorize(w, r, authz.Resource{Kind: "app", Namespace: ns, Project: projectName}, authz.ActionRead) {
 		return
 	}
-	name := chi.URLParam(r, "app")
-	env := envFromQuery(r)
+	app, env, ok := s.resolveDefaultedAppEnv(w, r)
+	if !ok {
+		return
+	}
+	name := app.Name
 
 	start := r.URL.Query().Get("start")
 	end := r.URL.Query().Get("end")
 	if start == "" || end == "" {
 		writeJSON(w, http.StatusBadRequest, errorResponse{"start and end are required"})
-		return
-	}
-
-	var app mortisev1alpha1.App
-	if err := s.client.Get(r.Context(), types.NamespacedName{Name: name, Namespace: ns}, &app); err != nil {
-		writeError(w, r, err)
 		return
 	}
 
@@ -99,6 +92,7 @@ func (s *Server) handleTrafficHistory(w http.ResponseWriter, r *http.Request) {
 // @Param app path string true "App name"
 // @Param env query string false "Environment name (default: production)"
 // @Success 200 {object} map[string]any "Traffic data or availability status"
+// @Failure 400 {object} errorResponse
 // @Failure 403 {object} errorResponse
 // @Failure 404 {object} errorResponse
 // @Router /projects/{project}/apps/{app}/traffic/current [get]
@@ -110,14 +104,11 @@ func (s *Server) handleTrafficCurrent(w http.ResponseWriter, r *http.Request) {
 	if !s.authorize(w, r, authz.Resource{Kind: "app", Namespace: ns, Project: projectName}, authz.ActionRead) {
 		return
 	}
-	name := chi.URLParam(r, "app")
-	env := envFromQuery(r)
-
-	var app mortisev1alpha1.App
-	if err := s.client.Get(r.Context(), types.NamespacedName{Name: name, Namespace: ns}, &app); err != nil {
-		writeError(w, r, err)
+	app, env, ok := s.resolveDefaultedAppEnv(w, r)
+	if !ok {
 		return
 	}
+	name := app.Name
 
 	cfg, err := platformconfig.Load(r.Context(), s.client)
 	if err != nil {

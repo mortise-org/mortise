@@ -131,8 +131,9 @@ func (s *Server) resolveGitBranchHead(ctx context.Context, app *mortisev1alpha1.
 // @Security BearerAuth
 // @Param project path string true "Project name"
 // @Param app path string true "App name"
-// @Param environment query string false "Environment name (defaults to first env)"
+// @Param environment query string false "Environment name (defaults to production)"
 // @Success 200 {object} map[string]string
+// @Failure 400 {object} errorResponse
 // @Failure 404 {object} errorResponse
 // @Router /projects/{project}/apps/{app}/redeploy [post]
 func (s *Server) Redeploy(w http.ResponseWriter, r *http.Request) {
@@ -146,11 +147,13 @@ func (s *Server) Redeploy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	envNs := constants.EnvNamespace(projectName, env)
-
-	var app mortisev1alpha1.App
-	if err := s.client.Get(r.Context(), types.NamespacedName{Name: appName, Namespace: ns}, &app); err != nil {
-		writeError(w, r, err)
+	app, env, ok := s.resolveDefaultedAppEnv(w, r)
+	if !ok {
+		return
+	}
+	envNs, err := envNamespace(app, env)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorResponse{err.Error()})
 		return
 	}
 
@@ -160,7 +163,7 @@ func (s *Server) Redeploy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.client.Get(r.Context(), types.NamespacedName{Name: appName, Namespace: ns}, &app); err != nil {
+	if err := s.client.Get(r.Context(), types.NamespacedName{Name: appName, Namespace: ns}, app); err != nil {
 		writeError(w, r, err)
 		return
 	}
@@ -172,7 +175,7 @@ func (s *Server) Redeploy(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 	}
-	if err := s.client.Status().Update(r.Context(), &app); err != nil {
+	if err := s.client.Status().Update(r.Context(), app); err != nil {
 		writeError(w, r, err)
 		return
 	}
