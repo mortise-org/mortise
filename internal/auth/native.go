@@ -77,10 +77,6 @@ func (n *NativeAuthProvider) Principal(ctx context.Context, session SessionToken
 	return n.CurrentPrincipal(ctx, principal.Email, tokenGen)
 }
 
-func (n *NativeAuthProvider) RefreshPrincipal(ctx context.Context, email string, tokenGen int64) (Principal, error) {
-	return n.CurrentPrincipal(ctx, email, tokenGen)
-}
-
 func (n *NativeAuthProvider) ListUsers(ctx context.Context) ([]User, error) {
 	var secrets corev1.SecretList
 	err := n.client.List(ctx, &secrets,

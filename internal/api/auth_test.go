@@ -6,9 +6,12 @@ import (
 	"fmt"
 	"net/http"
 	"testing"
+	"time"
 
+	"github.com/golang-jwt/jwt/v5"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/fake"
 
 	"github.com/mortise-org/mortise/internal/api"
@@ -243,6 +246,77 @@ func TestRefreshValidToken(t *testing.T) {
 	w = doRequestWithToken(h, http.MethodGet, "/api/projects", nil, newToken)
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200 with refreshed token, got %d", w.Code)
+	}
+}
+
+func TestRefreshAllowsRecentlyExpiredToken(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	ctx := context.Background()
+	_ = k8sClient.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "mortise-system"}})
+
+	authProvider := auth.NewNativeAuthProvider(k8sClient)
+	jwtHelper := auth.NewJWTHelper(k8sClient)
+	if err := authProvider.CreateUser(ctx, "user@example.com", "pass1234", auth.RoleMember); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	principal, err := authProvider.Authenticate(ctx, auth.Credentials{Email: "user@example.com", Password: "pass1234"})
+	if err != nil {
+		t.Fatalf("authenticate user: %v", err)
+	}
+
+	// Generate one token first so the signing key secret exists, then mint an
+	// already-expired token that is still within the refresh leeway window.
+	if _, err := jwtHelper.GenerateToken(ctx, principal); err != nil {
+		t.Fatalf("generate baseline token: %v", err)
+	}
+	var secret corev1.Secret
+	if err := k8sClient.Get(ctx, types.NamespacedName{Name: "mortise-jwt-key", Namespace: "mortise-system"}, &secret); err != nil {
+		t.Fatalf("read jwt signing key: %v", err)
+	}
+
+	now := time.Now()
+	claims := jwt.MapClaims{
+		"sub":     principal.ID,
+		"email":   principal.Email,
+		"role":    string(principal.Role),
+		"pwd_gen": principal.PasswordGen,
+		"iss":     "mortise",
+		"aud":     "mortise-api",
+		"iat":     now.Add(-2 * time.Hour).Unix(),
+		"exp":     now.Add(-1 * time.Hour).Unix(),
+	}
+	expiredToken, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(secret.Data["signing-key"])
+	if err != nil {
+		t.Fatalf("sign expired token: %v", err)
+	}
+
+	srv := api.NewServer(k8sClient, fake.NewClientset(), nil, nil, authProvider, jwtHelper, nil, authz.NewNativePolicyEngine(k8sClient))
+	h := srv.Handler()
+
+	w := doRequestWithToken(h, http.MethodPost, "/api/auth/refresh", nil, expiredToken)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 refreshing recently expired token, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp struct {
+		Token string         `json:"token"`
+		User  auth.Principal `json:"user"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode refresh response: %v", err)
+	}
+	if resp.Token == "" {
+		t.Fatal("expected refreshed token")
+	}
+	refreshed, _, err := jwtHelper.ValidateToken(ctx, resp.Token)
+	if err != nil {
+		t.Fatalf("validate refreshed token: %v", err)
+	}
+	if refreshed.Email != principal.Email {
+		t.Fatalf("expected refreshed JWT for %q, got %q", principal.Email, refreshed.Email)
+	}
+	if resp.User.Email != principal.Email {
+		t.Fatalf("expected refreshed principal %q, got %q", principal.Email, resp.User.Email)
 	}
 }
 

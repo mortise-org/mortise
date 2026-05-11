@@ -1,11 +1,9 @@
 package api
 
 import (
-	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 
@@ -19,10 +17,6 @@ const (
 	sseTokenPrefix = "msse_"
 	cleanupEvery   = 60 * time.Second
 )
-
-type refreshTokenProvider interface {
-	RefreshPrincipal(ctx context.Context, email string, tokenGen int64) (auth.Principal, error)
-}
 
 type sseTokenEntry struct {
 	principal auth.Principal
@@ -135,42 +129,4 @@ func (s *Server) IssueSSEToken(w http.ResponseWriter, r *http.Request) {
 type sseTokenResponse struct {
 	Token     string `json:"token"`
 	ExpiresIn int    `json:"expiresIn"`
-}
-
-// RefreshToken handles POST /api/auth/refresh. It returns a new JWT if the
-// current token is valid (the caller is already authenticated via middleware).
-// Re-validates user state from the auth provider before issuing a new token
-// to ensure the user has not been revoked or disabled since initial auth.
-func (s *Server) RefreshToken(w http.ResponseWriter, r *http.Request) {
-	p := PrincipalFromContext(r.Context())
-	if p == nil {
-		writeJSON(w, http.StatusUnauthorized, errorResponse{"authentication required"})
-		return
-	}
-
-	if header := r.Header.Get("Authorization"); header == "" || !strings.HasPrefix(header, "Bearer ") {
-		writeJSON(w, http.StatusUnauthorized, errorResponse{"authentication required"})
-		return
-	}
-
-	refresher, ok := s.auth.(refreshTokenProvider)
-	if !ok {
-		writeJSON(w, http.StatusUnauthorized, errorResponse{"token refresh unavailable for this auth provider"})
-		return
-	}
-
-	current, err := refresher.RefreshPrincipal(r.Context(), p.Email, p.PasswordGen)
-	if err != nil {
-		writeJSON(w, http.StatusUnauthorized, errorResponse{"user session is no longer valid"})
-		return
-	}
-	p = &current
-
-	token, err := s.jwt.GenerateToken(r.Context(), *p)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorResponse{"failed to generate token"})
-		return
-	}
-
-	writeJSON(w, http.StatusOK, authResponse{Token: token, User: *p})
 }

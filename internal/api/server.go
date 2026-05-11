@@ -182,7 +182,6 @@ func (s *Server) Handler() http.Handler {
 			r.Use(s.jwtAuthMiddleware)
 
 			r.Post("/auth/sse-token", s.IssueSSEToken)
-			r.Post("/auth/refresh", s.RefreshToken)
 
 			// Device flow: provider-parameterized routes for per-user git auth.
 			r.Post("/auth/git/{provider}/device", s.deviceFlow.RequestCode)
