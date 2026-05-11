@@ -184,7 +184,8 @@ func (r *PreviewEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.R
 
 	// Env vars are independent of the build — reconcile them as soon as the
 	// namespace exists so they're available even while a build is in progress.
-	if err := r.reconcilePreviewEnvSecret(ctx, &pe, &app, previewNs); err != nil {
+	envHash, err := r.reconcilePreviewEnvSecret(ctx, &pe, &app, previewNs)
+	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("reconcile preview env secret: %w", err)
 	}
 
@@ -204,7 +205,7 @@ func (r *PreviewEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.R
 	}
 
 	// Build succeeded: reconcile Deployment + Service + Ingress in the preview ns.
-	if err := r.reconcilePreviewDeployment(ctx, &pe, &app, previewNs); err != nil {
+	if err := r.reconcilePreviewDeployment(ctx, &pe, &app, previewNs, envHash); err != nil {
 		return ctrl.Result{}, fmt.Errorf("reconcile preview deployment: %w", err)
 	}
 	if err := r.reconcilePreviewService(ctx, &pe, &app, previewNs); err != nil {
@@ -366,7 +367,7 @@ func (r *PreviewEnvironmentReconciler) reconcilePreviewBuild(ctx context.Context
 	return ctrl.Result{RequeueAfter: previewBuildPollInterval}, false, nil
 }
 
-func (r *PreviewEnvironmentReconciler) reconcilePreviewDeployment(ctx context.Context, pe *mortisev1alpha1.PreviewEnvironment, app *mortisev1alpha1.App, previewNs string) error {
+func (r *PreviewEnvironmentReconciler) reconcilePreviewDeployment(ctx context.Context, pe *mortisev1alpha1.PreviewEnvironment, app *mortisev1alpha1.App, previewNs, envHash string) error {
 	name := pe.Spec.AppRef
 	replicas := int32(1)
 	if pe.Spec.Replicas != nil {
@@ -409,13 +410,17 @@ func (r *PreviewEnvironmentReconciler) reconcilePreviewDeployment(ctx context.Co
 			},
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
-					Labels: labels,
+					Labels:      labels,
+					Annotations: map[string]string{"mortise.dev/env-hash": envHash},
 				},
 				Spec: corev1.PodSpec{
 					Containers: containers,
 				},
 			},
 		},
+	}
+	if envHash == "" {
+		desired.Spec.Template.Annotations = nil
 	}
 
 	var existing appsv1.Deployment
@@ -440,10 +445,10 @@ func (r *PreviewEnvironmentReconciler) reconcilePreviewDeployment(ctx context.Co
 //  2. {app}-env from source env namespace (user + binding vars)
 //  3. bindings resolved against source env (pe.Spec.Bindings)
 //  4. pe.Spec.Env overrides
-func (r *PreviewEnvironmentReconciler) reconcilePreviewEnvSecret(ctx context.Context, pe *mortisev1alpha1.PreviewEnvironment, app *mortisev1alpha1.App, previewNs string) error {
+func (r *PreviewEnvironmentReconciler) reconcilePreviewEnvSecret(ctx context.Context, pe *mortisev1alpha1.PreviewEnvironment, app *mortisev1alpha1.App, previewNs string) (string, error) {
 	projectName, ok := constants.ProjectFromControlNs(pe.Namespace)
 	if !ok {
-		return fmt.Errorf("preview %q not in a control namespace (%q)", pe.Name, pe.Namespace)
+		return "", fmt.Errorf("preview %q not in a control namespace (%q)", pe.Name, pe.Namespace)
 	}
 	sourceEnvNs := constants.EnvNamespace(projectName, pe.Spec.SourceEnv)
 	store := &envstore.Store{Client: r.Client}
@@ -458,22 +463,22 @@ func (r *PreviewEnvironmentReconciler) reconcilePreviewEnvSecret(ctx context.Con
 	// Copy shared-env from source env namespace into the preview namespace.
 	sourceShared, err := store.GetShared(ctx, sourceEnvNs)
 	if err != nil {
-		return fmt.Errorf("read shared-env from source env %q: %w", sourceEnvNs, err)
+		return "", fmt.Errorf("read shared-env from source env %q: %w", sourceEnvNs, err)
 	}
 	if len(sourceShared) > 0 {
 		if err := store.SetShared(ctx, previewNs, sourceShared, labels); err != nil {
-			return fmt.Errorf("copy shared-env to preview ns: %w", err)
+			return "", fmt.Errorf("copy shared-env to preview ns: %w", err)
 		}
 	} else {
 		if err := store.EnsureSharedExists(ctx, previewNs, labels); err != nil {
-			return fmt.Errorf("ensure shared-env in preview ns: %w", err)
+			return "", fmt.Errorf("ensure shared-env in preview ns: %w", err)
 		}
 	}
 
 	// Read inherited per-app env vars from the source environment.
 	inherited, err := store.Get(ctx, sourceEnvNs, app.Name)
 	if err != nil {
-		return fmt.Errorf("read app env vars from source env %q: %w", sourceEnvNs, err)
+		return "", fmt.Errorf("read app env vars from source env %q: %w", sourceEnvNs, err)
 	}
 	merged := make(map[string]envstore.Env, len(inherited))
 	for _, e := range inherited {
@@ -485,7 +490,7 @@ func (r *PreviewEnvironmentReconciler) reconcilePreviewEnvSecret(ctx context.Con
 		resolver := &bindings.Resolver{Client: r.Client}
 		boundVars, err := resolver.Resolve(ctx, projectName, pe.Spec.SourceEnv, pe.Spec.Bindings)
 		if err != nil {
-			return fmt.Errorf("resolve bindings: %w", err)
+			return "", fmt.Errorf("resolve bindings: %w", err)
 		}
 		for _, bv := range boundVars {
 			merged[bv.Name] = envstore.Env{Name: bv.Name, Value: bv.Value, Source: "binding"}
@@ -501,7 +506,24 @@ func (r *PreviewEnvironmentReconciler) reconcilePreviewEnvSecret(ctx context.Con
 	for _, e := range merged {
 		flat = append(flat, e)
 	}
-	return store.Set(ctx, previewNs, app.Name, flat, labels)
+	if err := store.Set(ctx, previewNs, app.Name, flat, labels); err != nil {
+		return "", err
+	}
+	return hashPreviewEnvData(sourceShared, flat), nil
+}
+
+func hashPreviewEnvData(shared, appVars []envstore.Env) string {
+	if len(shared) == 0 && len(appVars) == 0 {
+		return ""
+	}
+	combined := make(map[string][]byte, len(shared)+len(appVars))
+	for _, env := range shared {
+		combined[env.Name] = []byte(env.Value)
+	}
+	for _, env := range appVars {
+		combined[env.Name] = []byte(env.Value)
+	}
+	return hashCredentialData(combined)
 }
 
 func (r *PreviewEnvironmentReconciler) reconcilePreviewService(ctx context.Context, pe *mortisev1alpha1.PreviewEnvironment, app *mortisev1alpha1.App, previewNs string) error {

@@ -9,14 +9,18 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/retry"
+	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
 	"github.com/mortise-org/mortise/internal/constants"
@@ -264,7 +268,7 @@ func TestPreviewEnvironmentRefreshesAfterEnvAPIUpdate(t *testing.T) {
 		}, &latest); err != nil {
 			return err
 		}
-		latest.Status.Image = "registry.example.com/mortise/refresh:pr-101-abc123r"
+		latest.Status.Image = "nginx:1.27"
 		latest.Status.Phase = mortisev1alpha1.PreviewPhaseReady
 		return k8sClient.Status().Update(context.Background(), &latest)
 	})
@@ -282,6 +286,33 @@ func TestPreviewEnvironmentRefreshesAfterEnvAPIUpdate(t *testing.T) {
 			return false
 		}
 		return string(envSecret.Data["LOG_LEVEL"]) == "info"
+	})
+	helpers.AssertPodsRunning(t, k8sClient, previewNs, app.Name, 1)
+
+	var initialEnvHash string
+	helpers.RequireEventually(t, 2*time.Minute, func() bool {
+		var dep appsv1.Deployment
+		if err := k8sClient.Get(context.Background(), types.NamespacedName{
+			Name: app.Name, Namespace: previewNs,
+		}, &dep); err != nil {
+			return false
+		}
+		initialEnvHash = dep.Spec.Template.Annotations["mortise.dev/env-hash"]
+		return initialEnvHash != ""
+	})
+
+	var initialPodUID types.UID
+	helpers.RequireEventually(t, 2*time.Minute, func() bool {
+		podName, podUID, ok := readyPreviewPod(previewNs, projectName, app.Name, 101)
+		if !ok {
+			return false
+		}
+		logLevel, err := podEnvValue(previewNs, podName, app.Name, "LOG_LEVEL")
+		if err != nil {
+			return false
+		}
+		initialPodUID = podUID
+		return logLevel == "info"
 	})
 
 	mortisePort := helpers.PortForward(t, "mortise-system", "mortise", 80)
@@ -303,6 +334,27 @@ func TestPreviewEnvironmentRefreshesAfterEnvAPIUpdate(t *testing.T) {
 			return false
 		}
 		return string(envSecret.Data["LOG_LEVEL"]) == "debug"
+	})
+	helpers.RequireEventually(t, 2*time.Minute, func() bool {
+		var dep appsv1.Deployment
+		if err := k8sClient.Get(context.Background(), types.NamespacedName{
+			Name: app.Name, Namespace: previewNs,
+		}, &dep); err != nil {
+			return false
+		}
+		return dep.Spec.Template.Annotations["mortise.dev/env-hash"] != "" &&
+			dep.Spec.Template.Annotations["mortise.dev/env-hash"] != initialEnvHash
+	})
+	helpers.RequireEventually(t, 2*time.Minute, func() bool {
+		podName, podUID, ok := readyPreviewPod(previewNs, projectName, app.Name, 101)
+		if !ok || podUID == initialPodUID {
+			return false
+		}
+		logLevel, err := podEnvValue(previewNs, podName, app.Name, "LOG_LEVEL")
+		if err != nil {
+			return false
+		}
+		return logLevel == "debug"
 	})
 }
 
@@ -451,4 +503,50 @@ func doCloneJSON(t *testing.T, method, url, token string, body any) cloneHTTPRes
 	defer resp.Body.Close()
 	b, _ := io.ReadAll(resp.Body)
 	return cloneHTTPResult{StatusCode: resp.StatusCode, Body: string(b)}
+}
+
+func readyPreviewPod(namespace, projectName, appName string, prNumber int) (string, types.UID, bool) {
+	var pods corev1.PodList
+	if err := k8sClient.List(context.Background(), &pods,
+		ctrlclient.InNamespace(namespace),
+		ctrlclient.MatchingLabels{
+			constants.AppNameLabel:  appName,
+			constants.ProjectLabel:  projectName,
+			"mortise.dev/pr-number": fmt.Sprintf("%d", prNumber),
+		},
+	); err != nil {
+		return "", "", false
+	}
+	for i := range pods.Items {
+		pod := &pods.Items[i]
+		if pod.Status.Phase != corev1.PodRunning {
+			continue
+		}
+		for _, status := range pod.Status.ContainerStatuses {
+			if status.Name == appName && status.Ready {
+				return pod.Name, pod.UID, true
+			}
+		}
+	}
+	return "", "", false
+}
+
+func podEnvValue(namespace, podName, containerName, envName string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "kubectl",
+		"-n", namespace,
+		"exec",
+		"pod/"+podName,
+		"-c", containerName,
+		"--",
+		"printenv",
+		envName,
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("kubectl exec %s/%s: %w (%s)", namespace, podName, err, strings.TrimSpace(string(out)))
+	}
+	return strings.TrimSpace(string(out)), nil
 }

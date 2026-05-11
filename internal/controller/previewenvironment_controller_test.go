@@ -449,6 +449,11 @@ var _ = Describe("PreviewEnvironment Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(sharedVars).To(ContainElement(envstore.Env{Name: "SENTRY_DSN", Value: "https://sentry.io/123", Source: "shared"}))
 
+			var initialDeployment appsv1.Deployment
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "refresh-app", Namespace: previewNs}, &initialDeployment)).To(Succeed())
+			initialEnvHash := initialDeployment.Spec.Template.Annotations["mortise.dev/env-hash"]
+			Expect(initialEnvHash).NotTo(BeEmpty())
+
 			Expect(store.Set(ctx, sourceEnvNs, "refresh-app", []envstore.Env{
 				{Name: "LOG_LEVEL", Value: "debug", Source: "user"},
 			}, nil)).To(Succeed())
@@ -468,6 +473,11 @@ var _ = Describe("PreviewEnvironment Controller", func() {
 			sharedVars, err = store.GetShared(ctx, previewNs)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(sharedVars).To(ContainElement(envstore.Env{Name: "SENTRY_DSN", Value: "https://sentry.io/456", Source: "shared"}))
+
+			var refreshedDeployment appsv1.Deployment
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "refresh-app", Namespace: previewNs}, &refreshedDeployment)).To(Succeed())
+			Expect(refreshedDeployment.Spec.Template.Annotations["mortise.dev/env-hash"]).NotTo(BeEmpty())
+			Expect(refreshedDeployment.Spec.Template.Annotations["mortise.dev/env-hash"]).NotTo(Equal(initialEnvHash))
 		})
 
 		It("should let pe.Spec.Env overrides win over inherited vars", func() {
