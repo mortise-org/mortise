@@ -21,6 +21,7 @@ import (
 	"encoding/hex"
 	stderrors "errors"
 	"fmt"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -36,6 +37,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
+	"github.com/mortise-org/mortise/internal/activity"
 	"github.com/mortise-org/mortise/internal/constants"
 )
 
@@ -73,6 +75,8 @@ const ProjectEnvsRevAnnotation = "mortise.dev/project-envs-rev"
 // bumps when the Project spec changes so preview backfill can rerun on the
 // next App reconcile.
 const ProjectPreviewRevAnnotation = "mortise.dev/project-preview-rev"
+
+const projectCreateActivityRecordedAnnotation = "mortise.dev/project-create-activity-recorded"
 
 // ProjectNamespace returns the control namespace for a Project. Kept for
 // callers outside this package that used to rely on `project-{name}`.
@@ -193,6 +197,9 @@ func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	// Auto-create an owner ProjectMember for the project creator.
 	if err := r.ensureOwnerMember(ctx, &project, controlNs); err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensure owner member: %w", err)
+	}
+	if err := r.ensureProjectCreateActivity(ctx, &project); err != nil {
+		return ctrl.Result{}, fmt.Errorf("ensure project create activity: %w", err)
 	}
 
 	// Ensure one namespace per declared env.
@@ -632,6 +639,77 @@ func (r *ProjectReconciler) ensureOwnerMember(ctx context.Context, project *mort
 		return fmt.Errorf("create owner ProjectMember: %w", err)
 	}
 	return nil
+}
+
+func (r *ProjectReconciler) ensureProjectCreateActivity(ctx context.Context, project *mortisev1alpha1.Project) error {
+	if project.Annotations[projectCreateActivityRecordedAnnotation] == "true" {
+		return nil
+	}
+
+	store := activity.NewConfigMapStore(r.Client)
+	events, err := store.List(ctx, project.Name, activity.Cap)
+	if err != nil {
+		return fmt.Errorf("list project activity: %w", err)
+	}
+	if !hasProjectCreateActivity(events, project.Name) {
+		ts := time.Now().UTC()
+		if !project.CreationTimestamp.IsZero() {
+			ts = project.CreationTimestamp.UTC()
+		}
+		if err := store.Append(ctx, activity.Event{
+			Timestamp:    ts,
+			Actor:        firstNonEmpty(project.Annotations["mortise.dev/created-by"], "system"),
+			Action:       "create",
+			ResourceKind: "project",
+			ResourceName: project.Name,
+			Project:      project.Name,
+			Message:      "Created project " + project.Name,
+		}); err != nil {
+			return fmt.Errorf("append project activity: %w", err)
+		}
+	}
+
+	return r.markProjectCreateActivityRecorded(ctx, project.Name)
+}
+
+func hasProjectCreateActivity(events []activity.Event, projectName string) bool {
+	for _, event := range events {
+		if event.Project == projectName &&
+			event.Action == "create" &&
+			event.ResourceKind == "project" &&
+			event.ResourceName == projectName {
+			return true
+		}
+	}
+	return false
+}
+
+func (r *ProjectReconciler) markProjectCreateActivityRecorded(ctx context.Context, name string) error {
+	const maxConflictRetries = 5
+	for attempt := 0; attempt < maxConflictRetries; attempt++ {
+		var fresh mortisev1alpha1.Project
+		if err := r.Get(ctx, types.NamespacedName{Name: name}, &fresh); err != nil {
+			if errors.IsNotFound(err) {
+				return nil
+			}
+			return err
+		}
+		if fresh.Annotations == nil {
+			fresh.Annotations = map[string]string{}
+		}
+		if fresh.Annotations[projectCreateActivityRecordedAnnotation] == "true" {
+			return nil
+		}
+		fresh.Annotations[projectCreateActivityRecordedAnnotation] = "true"
+		if err := r.Update(ctx, &fresh); err != nil {
+			if errors.IsConflict(err) && attempt < maxConflictRetries-1 {
+				continue
+			}
+			return err
+		}
+		return nil
+	}
+	return fmt.Errorf("could not record project activity annotation for Project %q after retries", name)
 }
 
 // SetupWithManager wires the controller. Watches Apps (to keep appCount fresh)

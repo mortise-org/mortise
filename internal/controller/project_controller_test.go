@@ -30,6 +30,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
+	"github.com/mortise-org/mortise/internal/activity"
 )
 
 var _ = Describe("Project Controller", func() {
@@ -78,6 +79,61 @@ var _ = Describe("Project Controller", func() {
 			Expect(updated.Status.Phase).To(Equal(mortisev1alpha1.ProjectPhaseReady))
 			Expect(updated.Status.Namespace).To(Equal(nsName))
 			Expect(updated.Finalizers).To(ContainElement(projectFinalizer))
+		})
+	})
+
+	Context("project create activity backfill", func() {
+		const projectName = "activity-backfill"
+
+		AfterEach(func() {
+			proj := &mortisev1alpha1.Project{}
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: projectName}, proj); err == nil {
+				proj.Finalizers = nil
+				_ = k8sClient.Update(ctx, proj)
+				_ = k8sClient.Delete(ctx, proj)
+			}
+			_ = k8sClient.Delete(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ProjectNamespace(projectName)}})
+		})
+
+		It("records exactly one create event after the control namespace exists", func() {
+			project := &mortisev1alpha1.Project{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:        projectName,
+					Annotations: map[string]string{"mortise.dev/created-by": "owner@example.com"},
+				},
+			}
+			Expect(k8sClient.Create(ctx, project)).To(Succeed())
+
+			store := activity.NewConfigMapStore(k8sClient)
+			Expect(store.Append(ctx, activity.Event{
+				Timestamp:    metav1.Now().Time,
+				Actor:        "owner@example.com",
+				Action:       "create",
+				ResourceKind: "project",
+				ResourceName: projectName,
+				Project:      projectName,
+				Message:      "Created project " + projectName,
+			})).To(Succeed())
+
+			r := &ProjectReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: projectName}})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: projectName}})
+			Expect(err).NotTo(HaveOccurred())
+
+			events, err := store.List(ctx, projectName, activity.Cap)
+			Expect(err).NotTo(HaveOccurred())
+			createEvents := 0
+			for _, event := range events {
+				if event.Action == "create" && event.ResourceKind == "project" && event.ResourceName == projectName {
+					createEvents++
+				}
+			}
+			Expect(createEvents).To(Equal(1))
+
+			var updated mortisev1alpha1.Project
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: projectName}, &updated)).To(Succeed())
+			Expect(updated.Annotations[projectCreateActivityRecordedAnnotation]).To(Equal("true"))
 		})
 	})
 
