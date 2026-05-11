@@ -145,15 +145,13 @@ func (r *AppReconciler) gcOptedOutEnvs(ctx context.Context, app *mortisev1alpha1
 		if err := r.deleteMatching(ctx, &corev1.ConfigMapList{}, selector, inNs); err != nil {
 			return fmt.Errorf("gc opted-out configmaps in %s: %w", envNs, err)
 		}
-		if err := r.deleteMatching(ctx, &corev1.SecretList{}, selector, inNs); err != nil {
-			return fmt.Errorf("gc opted-out secrets in %s: %w", envNs, err)
-		}
 		if err := r.deleteMatching(ctx, &corev1.ServiceAccountList{}, selector, inNs); err != nil {
 			return fmt.Errorf("gc opted-out serviceaccounts in %s: %w", envNs, err)
 		}
-		// PVCs deliberately excluded from opt-out GC: the user disabling an
-		// env override is reversible; dropping the storage claim loses data.
-		// Project-level env delete still cascades PVCs via ns delete.
+		// Secrets and PVCs are deliberately excluded from opt-out GC: disabling
+		// an env override is reversible, and preserving user/config data makes
+		// re-enabling the env lossless. Project-level env delete still cascades
+		// both via namespace deletion.
 	}
 	return nil
 }
