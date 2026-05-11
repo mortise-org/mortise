@@ -643,7 +643,7 @@ func TestDeleteAppRemovesPreviewsFromAPIAndCluster(t *testing.T) {
 	})
 }
 
-func TestOptOutEnvCleansUpCustomSecretsViaAPI(t *testing.T) {
+func TestOptOutEnvPreservesCustomSecretsWhileAPIHidesDisabledEnv(t *testing.T) {
 	t.Parallel()
 	projectName := "proj-secret-optout-" + randSuffix()
 	createProjectForTest(t, projectName)
@@ -743,8 +743,19 @@ func TestOptOutEnvCleansUpCustomSecretsViaAPI(t *testing.T) {
 	}
 
 	helpers.RequireEventually(t, 60*time.Second, func() bool {
+		var secret corev1.Secret
+		err := k8sClient.Get(context.Background(), types.NamespacedName{
+			Name:      "stage-secret",
+			Namespace: stagingNs,
+		}, &secret)
+		if err != nil {
+			return false
+		}
+		if secret.Labels[constants.AppNameLabel] != appName {
+			return false
+		}
 		resp := doProjectLifecycleJSON(t, http.MethodGet, stagingSecretURL, token, nil)
-		return resp.StatusCode == http.StatusOK && !strings.Contains(resp.Body, "stage-secret")
+		return resp.StatusCode == http.StatusNotFound
 	})
 }
 

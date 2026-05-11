@@ -3535,6 +3535,10 @@ paths:
           description: OK
           schema:
             $ref: '#/definitions/api.appProxyEntry'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.errorResponse'
         "404":
           description: Not Found
           schema:
@@ -3608,9 +3612,17 @@ paths:
         name: app
         required: true
         type: string
+      - description: Environment name (defaults to first env)
+        in: query
+        name: environment
+        type: string
       responses:
         "204":
           description: No Content
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.errorResponse'
         "404":
           description: Not Found
           schema:
@@ -4233,6 +4245,10 @@ paths:
             items:
               $ref: '#/definitions/api.podSummary'
             type: array
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.errorResponse'
         "403":
           description: Forbidden
           schema:
@@ -4477,7 +4493,7 @@ paths:
         name: app
         required: true
         type: string
-      - description: Environment name (defaults to first env)
+      - description: Environment name (defaults to production)
         in: query
         name: environment
         type: string
@@ -4490,6 +4506,10 @@ paths:
             additionalProperties:
               type: string
             type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.errorResponse'
         "404":
           description: Not Found
           schema:
@@ -4605,6 +4625,10 @@ paths:
             items:
               $ref: '#/definitions/api.secretResponse'
             type: array
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.errorResponse'
         "404":
           description: Not Found
           schema:
@@ -4650,6 +4674,10 @@ paths:
           description: Bad Request
           schema:
             $ref: '#/definitions/api.errorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.errorResponse'
         "409":
           description: Conflict
           schema:
@@ -4691,6 +4719,10 @@ paths:
             additionalProperties:
               type: string
             type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.errorResponse'
         "403":
           description: Forbidden
           schema:
@@ -4900,6 +4932,10 @@ paths:
           schema:
             additionalProperties: true
             type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.errorResponse'
         "403":
           description: Forbidden
           schema:

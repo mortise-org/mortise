@@ -12,11 +12,9 @@ import (
 	"github.com/go-chi/chi/v5"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/remotecommand"
 
-	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
 	"github.com/mortise-org/mortise/internal/authz"
 	"github.com/mortise-org/mortise/internal/constants"
 )
@@ -84,7 +82,7 @@ func (s *Server) ExecInApp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	app, env, ok := s.resolveExecTarget(w, r)
+	app, env, ok := s.resolveDefaultedAppEnv(w, r)
 	if !ok {
 		return
 	}
@@ -204,26 +202,4 @@ func (s *Server) execInPod(ctx context.Context, ns, podName, containerName strin
 
 	truncated := stdout.Len() >= maxExecOutputBytes || stderr.Len() >= maxExecOutputBytes
 	return stdout.String(), stderr.String(), truncated, nil
-}
-
-func (s *Server) resolveExecTarget(w http.ResponseWriter, r *http.Request) (*mortisev1alpha1.App, string, bool) {
-	project, ok := s.getProject(w, r)
-	if !ok {
-		return nil, "", false
-	}
-	appName := chi.URLParam(r, "app")
-	env := envFromQuery(r)
-	if indexOfEnv(project, env) < 0 {
-		writeJSON(w, http.StatusBadRequest, errorResponse{fmt.Sprintf(
-			"environment %q is not declared on project %q — add it via POST /api/projects/%s/environments first",
-			env, project.Name, project.Name)})
-		return nil, "", false
-	}
-
-	var app mortisev1alpha1.App
-	if err := s.client.Get(r.Context(), types.NamespacedName{Name: appName, Namespace: projectNs(project)}, &app); err != nil {
-		writeError(w, r, err)
-		return nil, "", false
-	}
-	return &app, env, true
 }
