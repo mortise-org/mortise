@@ -86,7 +86,9 @@ func maxBytesMiddleware(maxBytes int64) func(http.Handler) http.Handler {
 }
 
 // sseAuthMiddleware handles authentication for SSE endpoints. It accepts only
-// a short-lived, single-use SSE token in the ?token= query parameter.
+// a short-lived, single-use SSE token in the ?token= query parameter and
+// revalidates the user against the auth provider before attaching principal
+// context.
 func (s *Server) sseAuthMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// If Authorization header is already set, let jwtAuthMiddleware handle it.
@@ -102,8 +104,13 @@ func (s *Server) sseAuthMiddleware(next http.Handler) http.Handler {
 		}
 
 		if strings.HasPrefix(tok, sseTokenPrefix) {
-			principal, ok := s.sseTokens.Redeem(tok)
+			redeemed, ok := s.sseTokens.Redeem(tok)
 			if !ok {
+				writeJSON(w, http.StatusUnauthorized, errorResponse{"invalid or expired SSE token"})
+				return
+			}
+			principal, err := s.revalidatePrincipal(r.Context(), redeemed.email, redeemed.passwordGen)
+			if err != nil {
 				writeJSON(w, http.StatusUnauthorized, errorResponse{"invalid or expired SSE token"})
 				return
 			}

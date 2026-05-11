@@ -127,6 +127,7 @@ func (s *Server) authorize(w http.ResponseWriter, r *http.Request, resource auth
 // URL scheme:
 //
 //	/api/auth/{status|setup|login|refresh}                          unauthenticated
+//	/api/auth/sse-token                                             authenticated — exchanges Bearer auth for short-lived SSE token
 //	/api/webhooks/{provider}                                       unauthenticated — HMAC-verified
 //	/api/auth/git/{provider}/device                                authenticated — device flow initiation
 //	/api/auth/git/{provider}/device/poll                           authenticated — device flow polling
@@ -182,7 +183,6 @@ func (s *Server) Handler() http.Handler {
 			r.Use(s.jwtAuthMiddleware)
 
 			r.Post("/auth/sse-token", s.IssueSSEToken)
-			r.Post("/auth/refresh", s.RefreshToken)
 
 			// Device flow: provider-parameterized routes for per-user git auth.
 			r.Post("/auth/git/{provider}/device", s.deviceFlow.RequestCode)
@@ -314,9 +314,10 @@ func (s *Server) Handler() http.Handler {
 			r.Post("/projects/{project}/apps/{app}/deploy", s.Deploy)
 		})
 
-		// SSE endpoints: authenticated via short-lived SSE token (?token=msse_...)
-		// or Authorization bearer token. sseAuthMiddleware handles SSE-token
-		// query auth, then jwtAuthMiddleware handles bearer-token auth.
+		// SSE endpoints: authenticated via short-lived SSE token
+		// (?token=msse_...) or Authorization bearer token. sseAuthMiddleware
+		// revalidates redeemed SSE tokens, then jwtAuthMiddleware handles bearer
+		// header auth for non-browser clients.
 		r.Group(func(r chi.Router) {
 			r.Use(s.sseAuthMiddleware)
 			r.Use(s.jwtAuthMiddleware)

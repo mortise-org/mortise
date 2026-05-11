@@ -1,5 +1,5 @@
 import { browser } from '$app/environment';
-import { api } from './api';
+import { api, normalizeAuthUser, type AuthUser } from './api';
 import type { App, AppSpec, PreviewSummary, Project, ProjectEnvironment, ProjectMember } from './types';
 
 export type ProjectRole = 'owner' | 'developer' | 'viewer';
@@ -13,7 +13,7 @@ interface StagedChange {
 class MortiseStore {
 	// Auth
 	token = $state<string | null>(null);
-	user = $state<{ email: string; role: 'admin' | 'member' } | null>(null);
+	user = $state<AuthUser | null>(null);
 	githubConnected = $state<boolean | null>(null);
 
 	get isAdmin(): boolean { return this.user?.role === 'admin'; }
@@ -75,21 +75,14 @@ class MortiseStore {
 			}
 			const savedUser = localStorage.getItem('mortise_user');
 			if (savedUser) {
-				try { this.user = JSON.parse(savedUser); } catch { /* ignore */ }
+				try { this.user = normalizeAuthUser(JSON.parse(savedUser)); } catch { /* ignore */ }
 			}
-			// JWT decode fallback when token exists but no persisted user.
-			// The server still enforces authorization on every request.
 			if (!this.user && this.token) {
-				try {
-					const payload = JSON.parse(atob(this.token.split('.')[1]));
-					if (payload.email) {
-						this.user = { email: payload.email, role: payload.role ?? 'member' };
-					}
-				} catch { /* ignore */ }
+				void api.refreshSession(true);
 			}
 
 			window.addEventListener('mortise:user-updated', (event: Event) => {
-				const detail = (event as CustomEvent<{ email: string; role: 'admin' | 'member' }>).detail;
+				const detail = normalizeAuthUser((event as CustomEvent<unknown>).detail);
 				if (detail) {
 					this.user = detail;
 				}
@@ -97,7 +90,7 @@ class MortiseStore {
 		}
 	}
 
-	login(token: string, user: { email: string; role: 'admin' | 'member' }) {
+	login(token: string, user: AuthUser) {
 		this.token = token;
 		this.user = user;
 		if (browser) {

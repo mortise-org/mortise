@@ -87,6 +87,22 @@ test.describe('login page', () => {
 		await expect(page.getByTitle('Settings')).toBeVisible({ timeout: 5_000 });
 	});
 
+	test('reload without persisted user rehydrates user state from the server', async ({ page }) => {
+		await loginViaUI(page);
+		await expect(page.getByTitle('Settings')).toBeVisible({ timeout: 5_000 });
+
+		await page.evaluate(() => {
+			localStorage.removeItem('mortise_user');
+		});
+		await page.reload();
+
+		await expect(page.getByTitle('Settings')).toBeVisible({ timeout: 10_000 });
+
+		const savedUser = await page.evaluate(() => localStorage.getItem('mortise_user'));
+		expect(savedUser).toContain('"email"');
+		expect(savedUser).toContain('"role":"admin"');
+	});
+
 	test('invalid credentials show error message', async ({ page }) => {
 		await page.goto('/login');
 

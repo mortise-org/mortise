@@ -604,6 +604,13 @@ definitions:
       password:
         type: string
     type: object
+  api.sseTokenResponse:
+    properties:
+      expiresIn:
+        type: integer
+      token:
+        type: string
+    type: object
   api.statusResponse:
     properties:
       setupRequired:
@@ -2340,8 +2347,8 @@ paths:
       - auth
   /auth/refresh:
     post:
-      description: Issues a new JWT from an existing token (valid or expired within
-        7 days)
+      description: Revalidates the current user against the auth provider and issues
+        a new JWT from an existing token (valid or expired within 7 days)
       produces:
       - application/json
       responses:
@@ -2398,6 +2405,31 @@ paths:
           schema:
             $ref: '#/definitions/api.errorResponse'
       summary: First-time setup
+      tags:
+      - auth
+  /auth/sse-token:
+    post:
+      description: Exchanges a bearer-authenticated session for a short-lived, single-use
+        opaque SSE token. Redeem revalidates the user against the auth provider before
+        opening the stream.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.sseTokenResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/api.errorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.errorResponse'
+      security:
+      - BearerAuth: []
+      summary: Issue short-lived SSE token
       tags:
       - auth
   /auth/status:
