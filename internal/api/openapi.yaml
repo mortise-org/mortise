@@ -2656,8 +2656,8 @@ paths:
       - platform
   /projects:
     get:
-      description: Returns projects the caller has access to. Admins see all; members
-        see only their projects.
+      description: Returns projects the caller has access to. Admins see all; other
+        users see only their projects.
       produces:
       - application/json
       responses:

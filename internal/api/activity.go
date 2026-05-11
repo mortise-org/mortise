@@ -133,7 +133,7 @@ func (s *Server) readableProjects(r *http.Request) ([]string, error) {
 	}
 
 	principal := PrincipalFromContext(r.Context())
-	if principal != nil && (principal.Role == auth.RoleAdmin || principal.Role == auth.RoleViewer) {
+	if principal != nil && principal.Role == auth.RoleAdmin {
 		out := make([]string, 0, len(projectList.Items))
 		for i := range projectList.Items {
 			out = append(out, projectList.Items[i].Name)
