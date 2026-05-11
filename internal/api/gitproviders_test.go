@@ -273,6 +273,52 @@ func TestGetWebhookSecretForbiddenForMember(t *testing.T) {
 	}
 }
 
+func TestGetWebhookSecretMissingReferencedKeyReturns404(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+	ctx := context.Background()
+
+	_ = k8sClient.Create(ctx, &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: "mortise-system"},
+	})
+
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "custom-webhook",
+			Namespace: "mortise-system",
+		},
+		Data: map[string][]byte{
+			"other-key": []byte("present-but-wrong"),
+		},
+	}
+	if err := k8sClient.Create(ctx, secret); err != nil {
+		t.Fatalf("create secret: %v", err)
+	}
+
+	gp := &mortisev1alpha1.GitProvider{
+		ObjectMeta: metav1.ObjectMeta{Name: "github-main"},
+		Spec: mortisev1alpha1.GitProviderSpec{
+			Type:     mortisev1alpha1.GitProviderTypeGitHub,
+			Host:     "https://github.com",
+			ClientID: "test-id",
+			WebhookSecretRef: &mortisev1alpha1.SecretRef{
+				Namespace: "mortise-system",
+				Name:      "custom-webhook",
+				Key:       "webhookSecret",
+			},
+		},
+	}
+	if err := k8sClient.Create(ctx, gp); err != nil {
+		t.Fatalf("create gitprovider: %v", err)
+	}
+
+	w := doRequest(h, http.MethodGet, "/api/gitproviders/github-main/webhook-secret", nil)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
 // TestDeleteGitProviderHappyPath verifies that deletion removes the CRD and
 // the managed webhook secret.
 func TestDeleteGitProviderHappyPath(t *testing.T) {

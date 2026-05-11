@@ -2028,7 +2028,8 @@ paths:
       - users
   /admin/users/{email}:
     delete:
-      description: Removes a platform user. Admin-only.
+      description: Removes a platform user. Admin-only. Returns 400 when the target
+        user is the last platform admin.
       parameters:
       - description: User email
         in: path
@@ -2062,7 +2063,8 @@ paths:
     patch:
       consumes:
       - application/json
-      description: Changes a platform user's role. Admin-only.
+      description: Changes a platform user's role. Admin-only. Returns 400 when the
+        change would demote the last platform admin.
       parameters:
       - description: User email
         in: path
@@ -4934,7 +4936,8 @@ paths:
     patch:
       consumes:
       - application/json
-      description: Changes the role of an existing project member
+      description: Changes the role of an existing project member. Returns 400 when
+        the change would demote the last project owner.
       parameters:
       - description: Project name
         in: path

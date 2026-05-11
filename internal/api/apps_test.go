@@ -1,15 +1,24 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
+	"github.com/go-chi/chi/v5"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/scheme"
+	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
+	"github.com/mortise-org/mortise/internal/auth"
+	"github.com/mortise-org/mortise/internal/authz"
 )
 
 func TestNormalizeRepoURL(t *testing.T) {
@@ -193,4 +202,86 @@ func TestCreateAppRequestUnmarshalJSON_WrappedTakesPrecedence(t *testing.T) {
 	if req.Spec.Source.Image != "nginx:1.27" {
 		t.Errorf("source.image: got %q, want %q", req.Spec.Source.Image, "nginx:1.27")
 	}
+}
+
+func TestUpdateAppRetriesConflict(t *testing.T) {
+	if err := mortisev1alpha1.AddToScheme(scheme.Scheme); err != nil {
+		t.Fatal(err)
+	}
+
+	project := &mortisev1alpha1.Project{
+		ObjectMeta: metav1.ObjectMeta{Name: "default"},
+		Status:     mortisev1alpha1.ProjectStatus{Namespace: "pj-default"},
+	}
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "update-conflict",
+			Namespace: "pj-default",
+		},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{
+				Type:  mortisev1alpha1.SourceTypeImage,
+				Image: "nginx:1.25.0",
+			},
+		},
+	}
+
+	fired := false
+	baseClient := fake.NewClientBuilder().WithScheme(scheme.Scheme).WithObjects(project, app).Build()
+	s := &Server{
+		client: &appUpdateConflictClient{Client: baseClient, fired: &fired},
+		authz:  allowAllAppsPolicy{},
+	}
+
+	req := httptest.NewRequest(http.MethodPut, "/api/projects/default/apps/update-conflict", bytes.NewBufferString(`{"source":{"type":"image","image":"nginx:1.26.0"}}`))
+	routeCtx := chi.NewRouteContext()
+	routeCtx.URLParams.Add("project", "default")
+	routeCtx.URLParams.Add("app", "update-conflict")
+	ctx := context.WithValue(req.Context(), chi.RouteCtxKey, routeCtx)
+	ctx = context.WithValue(ctx, principalKey, &auth.Principal{Email: "test@example.com", Role: auth.RoleAdmin})
+	req = req.WithContext(ctx)
+
+	w := httptest.NewRecorder()
+	s.UpdateApp(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("update app with retried conflict: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if !fired {
+		t.Fatal("expected synthetic conflict to fire on first update")
+	}
+
+	var updated mortisev1alpha1.App
+	if err := baseClient.Get(context.Background(), ctrlclient.ObjectKey{Name: "update-conflict", Namespace: "pj-default"}, &updated); err != nil {
+		t.Fatalf("get app after update: %v", err)
+	}
+	if updated.Spec.Source.Image != "nginx:1.26.0" {
+		t.Fatalf("expected updated image after conflict retry, got %q", updated.Spec.Source.Image)
+	}
+}
+
+type allowAllAppsPolicy struct{}
+
+func (allowAllAppsPolicy) Authorize(context.Context, auth.Principal, authz.Resource, authz.Action) (bool, error) {
+	return true, nil
+}
+
+type appUpdateConflictClient struct {
+	ctrlclient.Client
+	fired *bool
+}
+
+func (c *appUpdateConflictClient) Update(ctx context.Context, obj ctrlclient.Object, opts ...ctrlclient.UpdateOption) error {
+	if app, ok := obj.(*mortisev1alpha1.App); ok && !*c.fired {
+		*c.fired = true
+		if err := c.Client.Update(ctx, obj, opts...); err != nil {
+			return err
+		}
+		return apierrors.NewConflict(
+			mortisev1alpha1.GroupVersion.WithResource("apps").GroupResource(),
+			app.Name,
+			fmt.Errorf("synthetic conflict"),
+		)
+	}
+	return c.Client.Update(ctx, obj, opts...)
 }
