@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -11,6 +12,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
 	"github.com/mortise-org/mortise/internal/authz"
 	"github.com/mortise-org/mortise/internal/constants"
 )
@@ -25,6 +27,13 @@ type createSecretRequest struct {
 type secretResponse struct {
 	Name string   `json:"name"`
 	Keys []string `json:"keys"`
+}
+
+type secretTarget struct {
+	project *mortisev1alpha1.Project
+	app     *mortisev1alpha1.App
+	envName string
+	envNs   string
 }
 
 // queryEnv returns the environment query parameter, checking "env" first and
@@ -63,16 +72,15 @@ func envFromQuery(r *http.Request) string {
 // @Failure 409 {object} errorResponse
 // @Router /projects/{project}/apps/{app}/secrets [post]
 func (s *Server) CreateSecret(w http.ResponseWriter, r *http.Request) {
-	_, projectName, ok := s.resolveProject(w, r)
+	target, ok := s.resolveSecretTarget(w, r)
 	if !ok {
 		return
 	}
+	projectName := target.project.Name
 	if !s.authorize(w, r, authz.Resource{Kind: "secret", Project: projectName, Environment: envFromQuery(r)}, authz.ActionCreate) {
 		return
 	}
-	appName := chi.URLParam(r, "app")
-	envName := envFromQuery(r)
-	envNs := constants.EnvNamespace(projectName, envName)
+	appName := target.app.Name
 
 	var req createSecretRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -87,9 +95,10 @@ func (s *Server) CreateSecret(w http.ResponseWriter, r *http.Request) {
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      req.Name,
-			Namespace: envNs,
+			Namespace: target.envNs,
 			Labels: map[string]string{
 				constants.AppNameLabel:         appName,
+				constants.ProjectLabel:         projectName,
 				"app.kubernetes.io/managed-by": "mortise",
 			},
 		},
@@ -101,7 +110,7 @@ func (s *Server) CreateSecret(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.recordActivity(r, projectName, "create", "secret", req.Name, "Created secret "+req.Name+" for "+appName+" in "+envName, "")
+	s.recordActivity(r, projectName, "create", "secret", req.Name, "Created secret "+req.Name+" for "+appName+" in "+target.envName, "")
 
 	writeJSON(w, http.StatusCreated, toSecretResponse(secret))
 }
@@ -118,19 +127,19 @@ func (s *Server) CreateSecret(w http.ResponseWriter, r *http.Request) {
 // @Failure 404 {object} errorResponse
 // @Router /projects/{project}/apps/{app}/secrets [get]
 func (s *Server) ListSecrets(w http.ResponseWriter, r *http.Request) {
-	_, projectName, ok := s.resolveProject(w, r)
+	target, ok := s.resolveSecretTarget(w, r)
 	if !ok {
 		return
 	}
+	projectName := target.project.Name
 	if !s.authorize(w, r, authz.Resource{Kind: "secret", Project: projectName}, authz.ActionRead) {
 		return
 	}
-	appName := chi.URLParam(r, "app")
-	envNs := constants.EnvNamespace(projectName, envFromQuery(r))
+	appName := target.app.Name
 
 	var list corev1.SecretList
 	if err := s.client.List(r.Context(), &list,
-		client.InNamespace(envNs),
+		client.InNamespace(target.envNs),
 		client.MatchingLabels{
 			constants.AppNameLabel:         appName,
 			"app.kubernetes.io/managed-by": "mortise",
@@ -142,6 +151,9 @@ func (s *Server) ListSecrets(w http.ResponseWriter, r *http.Request) {
 
 	resp := make([]secretResponse, 0, len(list.Items))
 	for i := range list.Items {
+		if isInternalAppEnvSecret(appName, &list.Items[i]) {
+			continue
+		}
 		resp = append(resp, toSecretResponse(&list.Items[i]))
 	}
 
@@ -162,20 +174,19 @@ func (s *Server) ListSecrets(w http.ResponseWriter, r *http.Request) {
 // @Failure 404 {object} errorResponse
 // @Router /projects/{project}/apps/{app}/secrets/{secretName} [delete]
 func (s *Server) DeleteSecret(w http.ResponseWriter, r *http.Request) {
-	_, projectName, ok := s.resolveProject(w, r)
+	target, ok := s.resolveSecretTarget(w, r)
 	if !ok {
 		return
 	}
+	projectName := target.project.Name
 	if !s.authorize(w, r, authz.Resource{Kind: "secret", Project: projectName, Environment: envFromQuery(r)}, authz.ActionDelete) {
 		return
 	}
-	appName := chi.URLParam(r, "app")
+	appName := target.app.Name
 	secretName := chi.URLParam(r, "secretName")
-	envName := envFromQuery(r)
-	envNs := constants.EnvNamespace(projectName, envName)
 
 	var secret corev1.Secret
-	if err := s.client.Get(r.Context(), types.NamespacedName{Name: secretName, Namespace: envNs}, &secret); err != nil {
+	if err := s.client.Get(r.Context(), types.NamespacedName{Name: secretName, Namespace: target.envNs}, &secret); err != nil {
 		writeError(w, r, err)
 		return
 	}
@@ -191,6 +202,10 @@ func (s *Server) DeleteSecret(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, errorResponse{"secret not found for this app"})
 		return
 	}
+	if isInternalAppEnvSecret(appName, &secret) {
+		writeJSON(w, http.StatusForbidden, errorResponse{"secret is reserved for mortise runtime state"})
+		return
+	}
 
 	if err := s.client.Delete(r.Context(), &secret); err != nil {
 		if errors.IsNotFound(err) {
@@ -201,9 +216,41 @@ func (s *Server) DeleteSecret(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.recordActivity(r, projectName, "delete", "secret", secretName, "Deleted secret "+secretName+" for "+appName+" in "+envName, "")
+	s.recordActivity(r, projectName, "delete", "secret", secretName, "Deleted secret "+secretName+" for "+appName+" in "+target.envName, "")
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+func (s *Server) resolveSecretTarget(w http.ResponseWriter, r *http.Request) (*secretTarget, bool) {
+	project, ok := s.getProject(w, r)
+	if !ok {
+		return nil, false
+	}
+	appName := chi.URLParam(r, "app")
+	envName := envFromQuery(r)
+	if indexOfEnv(project, envName) < 0 {
+		writeJSON(w, http.StatusBadRequest, errorResponse{fmt.Sprintf(
+			"environment %q is not declared on project %q — add it via POST /api/projects/%s/environments first",
+			envName, project.Name, project.Name)})
+		return nil, false
+	}
+
+	var app mortisev1alpha1.App
+	if err := s.client.Get(r.Context(), types.NamespacedName{Name: appName, Namespace: projectNs(project)}, &app); err != nil {
+		writeError(w, r, err)
+		return nil, false
+	}
+
+	return &secretTarget{
+		project: project,
+		app:     &app,
+		envName: envName,
+		envNs:   constants.EnvNamespace(project.Name, envName),
+	}, true
+}
+
+func isInternalAppEnvSecret(appName string, secret *corev1.Secret) bool {
+	return secret.Name == appName+"-env"
 }
 
 func toSecretResponse(s *corev1.Secret) secretResponse {
