@@ -316,6 +316,9 @@ domain" concept does not exist.
 | `GET /api/projects/{p}/apps/{a}/logs` | SSE multi-pod log stream |
 | `GET /api/projects/{p}/apps/{a}/logs/history` | historical log lines |
 | `GET /api/projects/{p}/apps/{a}/build-logs` | build log lines |
+| `GET /api/projects/{p}/apps/{a}/build-runs` | durable build execution history for an app |
+| `GET /api/projects/{p}/build-runs/{name}` | durable build execution detail |
+| `GET /api/projects/{p}/build-runs/{name}/logs` | durable build execution logs |
 | `GET /api/projects/{p}/apps/{a}/pods` | list pods |
 | `GET /api/projects/{p}/apps/{a}/metrics/current` | current pod metrics |
 | `GET /api/projects/{p}/apps/{a}/metrics` | metrics history |
