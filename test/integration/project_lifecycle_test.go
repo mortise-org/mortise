@@ -206,6 +206,11 @@ func TestRenameProjectEnvironmentPreservesSecretEnvVarsViaAPI(t *testing.T) {
 	if err := k8sClient.Update(context.Background(), proj); err != nil {
 		t.Fatalf("add staging env: %v", err)
 	}
+	stagingNs := constants.EnvNamespace(projectName, "staging")
+	helpers.RequireEventually(t, 2*time.Minute, func() bool {
+		var ns corev1.Namespace
+		return k8sClient.Get(context.Background(), types.NamespacedName{Name: stagingNs}, &ns) == nil
+	})
 
 	app := helpers.LoadFixture(t, filepath.Join(fixturesDir(), "image-basic.yaml"))
 	app.Namespace = ns
