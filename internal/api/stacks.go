@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
@@ -163,6 +164,7 @@ func (s *Server) CreateStack(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if err := s.client.Create(r.Context(), app); err != nil {
+			s.rollbackStackApps(r.Context(), ns, created)
 			writeError(w, r, err)
 			return
 		}
@@ -199,6 +201,24 @@ func (s *Server) CreateStack(w http.ResponseWriter, r *http.Request) {
 	s.recordActivity(r, project, "create", "stack", stackName, fmt.Sprintf("Created stack %s with %d apps", stackName, len(created)), "")
 
 	writeJSON(w, http.StatusCreated, createStackResponse{Apps: created})
+}
+
+func (s *Server) rollbackStackApps(ctx context.Context, namespace string, names []string) {
+	if len(names) == 0 {
+		return
+	}
+	log := logf.FromContext(ctx)
+	for _, name := range names {
+		app := &mortisev1alpha1.App{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: namespace,
+			},
+		}
+		if err := s.client.Delete(ctx, app); err != nil {
+			log.Error(err, "rollback stack app", "app", name, "namespace", namespace)
+		}
+	}
 }
 
 // filterDependsOn removes references to services not in the keep set.
