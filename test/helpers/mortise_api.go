@@ -128,7 +128,4 @@ func LoginAsAdmin(t *testing.T, baseURL, email, password string) string {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-
-	t.Fatal("mortise: unable to login with available admin credentials")
-	return ""
 }
