@@ -14,9 +14,11 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
 	"github.com/mortise-org/mortise/internal/authz"
+	"github.com/mortise-org/mortise/internal/constants"
 )
 
 // normalizeRepoURL expands short-form "owner/repo" strings to a full git URL.
@@ -159,6 +161,7 @@ func (s *Server) CreateApp(w http.ResponseWriter, r *http.Request) {
 		},
 		Spec: req.Spec,
 	}
+	controllerutil.AddFinalizer(app, constants.AppFinalizer)
 
 	if err := s.client.Create(r.Context(), app); err != nil {
 		writeError(w, r, err)

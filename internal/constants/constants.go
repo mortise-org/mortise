@@ -20,6 +20,9 @@ const (
 
 	// MaxNamespaceLen is the Kubernetes DNS-label cap for namespace names.
 	MaxNamespaceLen = 63
+
+	// AppFinalizer gates App deletion until cross-namespace cleanup completes.
+	AppFinalizer = "mortise.dev/app-finalizer"
 )
 
 // ControlNamespace returns the control-namespace name for a Project

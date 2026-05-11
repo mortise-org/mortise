@@ -505,9 +505,12 @@ func TestDeleteApp(t *testing.T) {
 		t.Fatalf("delete app: expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 
-	w = doRequest(h, http.MethodGet, "/api/projects/default/apps/delete-me", nil)
-	if w.Code != http.StatusNotFound {
-		t.Errorf("expected 404 after delete, got %d", w.Code)
+	var app mortisev1alpha1.App
+	if err := k8sClient.Get(context.Background(), types.NamespacedName{Name: "delete-me", Namespace: "pj-default"}, &app); err != nil {
+		t.Fatalf("get app after delete: %v", err)
+	}
+	if app.DeletionTimestamp == nil || app.DeletionTimestamp.IsZero() {
+		t.Error("expected app to be pending deletion after delete")
 	}
 }
 

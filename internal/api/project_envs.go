@@ -530,7 +530,7 @@ func (s *Server) cloneAppOverrides(ctx context.Context, projectName, ns, sourceN
 
 	for i := range apps.Items {
 		appName := apps.Items[i].Name
-		if err := s.cloneEnvToApp(ctx, ns, appName, sourceName, targetName); err != nil {
+		if err := s.cloneEnvToApp(ctx, ns, appName, sourceName, targetName, sourceEnvNs, store); err != nil {
 			return err
 		}
 		if err := cloneAppEnvSecret(ctx, appName, sourceEnvNs, targetEnvNs, store); err != nil {
@@ -542,7 +542,24 @@ func (s *Server) cloneAppOverrides(ctx context.Context, projectName, ns, sourceN
 
 const maxConflictRetries = 5
 
-func (s *Server) cloneEnvToApp(ctx context.Context, ns, appName, sourceName, targetName string) error {
+func (s *Server) cloneEnvToApp(ctx context.Context, ns, appName, sourceName, targetName, sourceEnvNs string, store *envstore.Store) error {
+	var secretVars []envstore.Env
+	if s.clientset != nil {
+		secret, err := s.clientset.CoreV1().Secrets(sourceEnvNs).Get(ctx, envstore.AppEnvSecretName(appName), metav1.GetOptions{})
+		if err == nil {
+			secretVars = envstore.SecretToEnvs(secret)
+		} else if !apierrors.IsNotFound(err) {
+			return fmt.Errorf("read source env vars for app %q: %w", appName, err)
+		}
+	}
+	if secretVars == nil {
+		var err error
+		secretVars, err = store.Get(ctx, sourceEnvNs, appName)
+		if err != nil {
+			return fmt.Errorf("read source env vars for app %q: %w", appName, err)
+		}
+	}
+
 	for attempt := range maxConflictRetries {
 		var app mortisev1alpha1.App
 		if err := s.client.Get(ctx, types.NamespacedName{Namespace: ns, Name: appName}, &app); err != nil {
@@ -565,6 +582,19 @@ func (s *Server) cloneEnvToApp(ctx context.Context, ns, appName, sourceName, tar
 			if app.Spec.Environments[j].Name == sourceName {
 				sourceEnv = &app.Spec.Environments[j]
 				break
+			}
+		}
+
+		envMap := make(map[string]mortisev1alpha1.EnvVar)
+		for _, ev := range secretVars {
+			if ev.Source == "binding" {
+				continue
+			}
+			envMap[ev.Name] = mortisev1alpha1.EnvVar{Name: ev.Name, Value: ev.Value}
+		}
+		if sourceEnv != nil {
+			for _, ev := range sourceEnv.Env {
+				envMap[ev.Name] = ev
 			}
 		}
 
@@ -593,10 +623,13 @@ func (s *Server) cloneEnvToApp(ctx context.Context, ns, appName, sourceName, tar
 					cloned.BuildArgs[k] = v
 				}
 			}
-			if len(sourceEnv.Env) > 0 {
-				cloned.Env = make([]mortisev1alpha1.EnvVar, len(sourceEnv.Env))
-				copy(cloned.Env, sourceEnv.Env)
+		}
+		if len(envMap) > 0 {
+			cloned.Env = make([]mortisev1alpha1.EnvVar, 0, len(envMap))
+			for _, ev := range envMap {
+				cloned.Env = append(cloned.Env, ev)
 			}
+			sort.Slice(cloned.Env, func(a, b int) bool { return cloned.Env[a].Name < cloned.Env[b].Name })
 		}
 
 		app.Spec.Environments = append(app.Spec.Environments, cloned)
@@ -772,67 +805,73 @@ func (s *Server) ensureProjectEnvNamespace(ctx context.Context, project *mortise
 		labels[constants.EnvironmentLabel] = envName
 	}
 
-	var existing corev1.Namespace
-	err := s.client.Get(ctx, types.NamespacedName{Name: nsName}, &existing)
-	if apierrors.IsNotFound(err) {
-		isController := true
-		blockOwnerDeletion := true
-		return s.client.Create(ctx, &corev1.Namespace{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:   nsName,
-				Labels: labels,
-				OwnerReferences: []metav1.OwnerReference{{
-					APIVersion:         mortisev1alpha1.GroupVersion.String(),
-					Kind:               "Project",
-					Name:               project.Name,
-					UID:                project.UID,
-					Controller:         &isController,
-					BlockOwnerDeletion: &blockOwnerDeletion,
-				}},
-			},
-		})
-	}
-	if err != nil {
-		return err
-	}
-
-	ownedByUs := false
-	ownedByOther := ""
-	for _, ref := range existing.OwnerReferences {
-		if ref.APIVersion == mortisev1alpha1.GroupVersion.String() && ref.Kind == "Project" {
-			if ref.UID == project.UID {
-				ownedByUs = true
-				break
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var existing corev1.Namespace
+		err := s.client.Get(ctx, types.NamespacedName{Name: nsName}, &existing)
+		if apierrors.IsNotFound(err) {
+			isController := true
+			blockOwnerDeletion := true
+			createErr := s.client.Create(ctx, &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:   nsName,
+					Labels: labels,
+					OwnerReferences: []metav1.OwnerReference{{
+						APIVersion:         mortisev1alpha1.GroupVersion.String(),
+						Kind:               "Project",
+						Name:               project.Name,
+						UID:                project.UID,
+						Controller:         &isController,
+						BlockOwnerDeletion: &blockOwnerDeletion,
+					}},
+				},
+			})
+			if apierrors.IsAlreadyExists(createErr) {
+				return apierrors.NewConflict(corev1.Resource("namespaces"), nsName, createErr)
 			}
-			ownedByOther = ref.Name
+			return createErr
 		}
-	}
-	if !ownedByUs {
-		if existing.Labels["app.kubernetes.io/managed-by"] == "mortise" && existing.Labels[constants.ProjectLabel] == project.Name {
-			ownedByUs = true
+		if err != nil {
+			return err
 		}
-	}
-	if !ownedByUs {
-		if ownedByOther != "" {
-			return fmt.Errorf("namespace %q is already owned by Project %q", nsName, ownedByOther)
-		}
-		return fmt.Errorf("namespace %q already exists and is not managed by mortise", nsName)
-	}
 
-	changed := false
-	if existing.Labels == nil {
-		existing.Labels = map[string]string{}
-	}
-	for k, v := range labels {
-		if existing.Labels[k] != v {
-			existing.Labels[k] = v
-			changed = true
+		ownedByUs := false
+		ownedByOther := ""
+		for _, ref := range existing.OwnerReferences {
+			if ref.APIVersion == mortisev1alpha1.GroupVersion.String() && ref.Kind == "Project" {
+				if ref.UID == project.UID {
+					ownedByUs = true
+					break
+				}
+				ownedByOther = ref.Name
+			}
 		}
-	}
-	if !changed {
-		return nil
-	}
-	return s.client.Update(ctx, &existing)
+		if !ownedByUs {
+			if existing.Labels["app.kubernetes.io/managed-by"] == "mortise" && existing.Labels[constants.ProjectLabel] == project.Name {
+				ownedByUs = true
+			}
+		}
+		if !ownedByUs {
+			if ownedByOther != "" {
+				return fmt.Errorf("namespace %q is already owned by Project %q", nsName, ownedByOther)
+			}
+			return fmt.Errorf("namespace %q already exists and is not managed by mortise", nsName)
+		}
+
+		changed := false
+		if existing.Labels == nil {
+			existing.Labels = map[string]string{}
+		}
+		for k, v := range labels {
+			if existing.Labels[k] != v {
+				existing.Labels[k] = v
+				changed = true
+			}
+		}
+		if !changed {
+			return nil
+		}
+		return s.client.Update(ctx, &existing)
+	})
 }
 
 func (s *Server) deleteProjectEnvNamespace(ctx context.Context, project *mortisev1alpha1.Project, envName string) error {

@@ -827,8 +827,18 @@ func TestCloneProjectEnvironmentCopiesSecretEnvVarsWithoutLeakingIntoAppSpec(t *
 	if cloned == nil {
 		t.Fatal("staging env override not found on app")
 	}
-	if len(cloned.Env) != 1 || cloned.Env[0].Name != "LOG_LEVEL" || cloned.Env[0].Value != "debug" {
-		t.Fatalf("expected only CRD env vars on cloned override, got %+v", cloned.Env)
+	envMap := map[string]string{}
+	for _, ev := range cloned.Env {
+		envMap[ev.Name] = ev.Value
+	}
+	if envMap["LOG_LEVEL"] != "debug" {
+		t.Fatalf("expected LOG_LEVEL on cloned override, got %+v", cloned.Env)
+	}
+	if envMap["EXTRA_FLAG"] != "one" {
+		t.Fatalf("expected EXTRA_FLAG preserved on cloned override, got %+v", cloned.Env)
+	}
+	if len(envMap) != 2 {
+		t.Fatalf("expected merged CRD + secret env vars on cloned override, got %+v", cloned.Env)
 	}
 
 	clonedVars, err := store.Get(context.Background(), constants.EnvNamespace(projectName, "staging"), "web")

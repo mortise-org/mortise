@@ -373,7 +373,7 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 
 // appFinalizer is the finalizer string applied to every App. Cleared only
 // after cross-namespace cleanup of workload resources completes.
-const appFinalizer = "mortise.dev/app-finalizer"
+const appFinalizer = constants.AppFinalizer
 
 func (r *AppReconciler) addAppFinalizerWithRetry(ctx context.Context, key types.NamespacedName) error {
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
