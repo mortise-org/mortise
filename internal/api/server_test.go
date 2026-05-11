@@ -42,6 +42,17 @@ type gitfake struct {
 	branchHead string
 }
 
+type appDeleteFailingClient struct {
+	client.Client
+}
+
+func (c *appDeleteFailingClient) Delete(ctx context.Context, obj client.Object, opts ...client.DeleteOption) error {
+	if _, ok := obj.(*mortisev1alpha1.App); ok {
+		return apierrors.NewInternalError(fmt.Errorf("forced app delete failure"))
+	}
+	return c.Client.Delete(ctx, obj, opts...)
+}
+
 func (g *gitfake) RegisterWebhook(context.Context, string, git.WebhookConfig) error { return nil }
 func (g *gitfake) ListWebhooks(context.Context, string) ([]git.WebhookInfo, error)  { return nil, nil }
 func (g *gitfake) DeleteWebhook(context.Context, string, int64) error               { return nil }
@@ -511,6 +522,109 @@ func TestDeleteApp(t *testing.T) {
 	}
 	if app.DeletionTimestamp == nil || app.DeletionTimestamp.IsZero() {
 		t.Error("expected app to be pending deletion after delete")
+	}
+}
+
+func TestDeleteAppRemovesAppDeployTokensOnly(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+	ns := seedProject(t, k8sClient, "default")
+
+	doRequest(h, http.MethodPost, "/api/projects/default/apps", map[string]any{
+		"name": "delete-me",
+		"spec": map[string]any{
+			"source": map[string]any{"type": "image", "image": "nginx:1.25.0"},
+		},
+	})
+
+	projectToken := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "deploy-token-pj-keep",
+			Namespace: ns,
+			Labels: map[string]string{
+				"mortise.dev/deploy-token":  "true",
+				"mortise.dev/project-token": "true",
+			},
+		},
+		Data: map[string][]byte{"token-hash": []byte("hash")},
+	}
+	if err := k8sClient.Create(context.Background(), projectToken); err != nil {
+		t.Fatalf("create project token secret: %v", err)
+	}
+
+	appToken := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "deploy-token-delete-me-ci",
+			Namespace: ns,
+			Labels: map[string]string{
+				"mortise.dev/deploy-token": "true",
+				"mortise.dev/app":          "delete-me",
+				"mortise.dev/environment":  "production",
+				"mortise.dev/token-name":   "ci",
+			},
+		},
+		Data: map[string][]byte{"token-hash": []byte("hash")},
+	}
+	if err := k8sClient.Create(context.Background(), appToken); err != nil {
+		t.Fatalf("create app token secret: %v", err)
+	}
+
+	w := doRequest(h, http.MethodDelete, "/api/projects/default/apps/delete-me", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("delete app with tokens: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	if err := k8sClient.Get(context.Background(), types.NamespacedName{Name: appToken.Name, Namespace: ns}, &corev1.Secret{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("expected app token secret to be deleted, got %v", err)
+	}
+	if err := k8sClient.Get(context.Background(), types.NamespacedName{Name: projectToken.Name, Namespace: ns}, &corev1.Secret{}); err != nil {
+		t.Fatalf("expected project token secret to remain, got %v", err)
+	}
+}
+
+func TestDeleteAppPreservesDeployTokensWhenAppDeleteFails(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, &appDeleteFailingClient{Client: k8sClient})
+	h := srv.Handler()
+	ns := seedProject(t, k8sClient, "default")
+
+	doRequest(h, http.MethodPost, "/api/projects/default/apps", map[string]any{
+		"name": "delete-me",
+		"spec": map[string]any{
+			"source": map[string]any{"type": "image", "image": "nginx:1.25.0"},
+		},
+	})
+
+	appToken := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "deploy-token-delete-me-ci",
+			Namespace: ns,
+			Labels: map[string]string{
+				"mortise.dev/deploy-token": "true",
+				"mortise.dev/app":          "delete-me",
+				"mortise.dev/environment":  "production",
+				"mortise.dev/token-name":   "ci",
+			},
+		},
+		Data: map[string][]byte{"token-hash": []byte("hash")},
+	}
+	if err := k8sClient.Create(context.Background(), appToken); err != nil {
+		t.Fatalf("create app token secret: %v", err)
+	}
+
+	w := doRequest(h, http.MethodDelete, "/api/projects/default/apps/delete-me", nil)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("delete app with forced failure: expected 500, got %d: %s", w.Code, w.Body.String())
+	}
+
+	if err := k8sClient.Get(context.Background(), types.NamespacedName{Name: appToken.Name, Namespace: ns}, &corev1.Secret{}); err != nil {
+		t.Fatalf("expected app token secret to remain after failed delete, got %v", err)
+	}
+
+	var app mortisev1alpha1.App
+	if err := k8sClient.Get(context.Background(), types.NamespacedName{Name: "delete-me", Namespace: ns}, &app); err != nil {
+		t.Fatalf("expected app to remain after failed delete, got %v", err)
 	}
 }
 
