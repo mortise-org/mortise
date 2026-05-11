@@ -18,6 +18,21 @@ type refreshPrincipalProvider interface {
 	CurrentPrincipal(ctx context.Context, email string, tokenGen int64) (auth.Principal, error)
 }
 
+var errCurrentPrincipalUnavailable = errors.New("current principal unavailable for this auth provider")
+
+func (s *Server) revalidatePrincipal(ctx context.Context, email string, tokenGen int64) (auth.Principal, error) {
+	if native, ok := s.auth.(*auth.NativeAuthProvider); ok && s.clientset != nil && s.restConfig != nil {
+		return native.CurrentPrincipalLive(ctx, s.clientset, email, tokenGen)
+	}
+
+	refresher, ok := s.auth.(refreshPrincipalProvider)
+	if !ok {
+		return auth.Principal{}, errCurrentPrincipalUnavailable
+	}
+
+	return refresher.CurrentPrincipal(ctx, email, tokenGen)
+}
+
 type setupRequest struct {
 	Email    string `json:"email"`
 	Password string `json:"password"`
@@ -69,8 +84,7 @@ func (s *Server) Status(w http.ResponseWriter, r *http.Request) {
 // @Failure 501 {object} errorResponse
 // @Router /auth/setup [post]
 //
-// Setup creates the first admin user and the `default` Project. Returns 409 if
-// any user already exists.
+// Setup creates the first admin user. Returns 409 if any user already exists.
 func (s *Server) Setup(w http.ResponseWriter, r *http.Request) {
 	var req setupRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -135,7 +149,7 @@ func (s *Server) Setup(w http.ResponseWriter, r *http.Request) {
 }
 
 // @Summary Refresh JWT token
-// @Description Issues a new JWT from an existing token (valid or expired within 7 days)
+// @Description Revalidates the current user against the auth provider and issues a new JWT from an existing token (valid or expired within 7 days)
 // @Tags auth
 // @Produce json
 // @Security BearerAuth
@@ -144,8 +158,9 @@ func (s *Server) Setup(w http.ResponseWriter, r *http.Request) {
 // @Failure 500 {object} errorResponse
 // @Router /auth/refresh [post]
 //
-// Refresh issues a new JWT from a valid or recently-expired token. The token
-// may be expired for up to 7 days and still be eligible for refresh.
+// Refresh revalidates the current user against the auth provider and issues a
+// new JWT from a valid or recently-expired token. The token may be expired for
+// up to 7 days and still be eligible for refresh.
 func (s *Server) Refresh(w http.ResponseWriter, r *http.Request) {
 	header := r.Header.Get("Authorization")
 	if header == "" || !strings.HasPrefix(header, "Bearer ") {
@@ -164,26 +179,22 @@ func (s *Server) Refresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if native, ok := s.auth.(*auth.NativeAuthProvider); ok && s.clientset != nil && s.restConfig != nil {
-		principal, err = native.CurrentPrincipalLive(r.Context(), s.clientset, principal.Email, tokenGen)
-	} else {
-		refresher, ok := s.auth.(refreshPrincipalProvider)
-		if !ok {
-			writeJSON(w, http.StatusUnauthorized, errorResponse{"token refresh unavailable for this auth provider"})
-			return
-		}
-		principal, err = refresher.CurrentPrincipal(r.Context(), principal.Email, tokenGen)
-	}
+	principal, err = s.revalidatePrincipal(r.Context(), principal.Email, tokenGen)
 	if err != nil {
 		switch {
+		case errors.Is(err, errCurrentPrincipalUnavailable):
+			writeJSON(w, http.StatusUnauthorized, errorResponse{"token refresh unavailable for this auth provider"})
+			return
 		case errors.Is(err, auth.ErrPasswordChangeInvalidated):
 			writeJSON(w, http.StatusUnauthorized, errorResponse{"session invalidated by password change"})
+			return
 		case errors.Is(err, auth.ErrUserNotFound):
 			writeJSON(w, http.StatusUnauthorized, errorResponse{"user no longer exists"})
+			return
 		default:
 			writeJSON(w, http.StatusInternalServerError, errorResponse{err.Error()})
+			return
 		}
-		return
 	}
 
 	newToken, err := s.jwt.GenerateToken(r.Context(), principal)

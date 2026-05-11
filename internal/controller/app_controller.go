@@ -99,7 +99,8 @@ type AppReconciler struct {
 	Builds *BuildTrackerStore
 
 	// gitTokenCache holds the resolved git token for the current reconcile
-	// iteration so per-env builds don't re-resolve credentials. Keyed by app name.
+	// iteration so per-env builds don't re-resolve credentials. Keyed by the
+	// app's control-namespace/name pair.
 	gitTokenCache sync.Map
 
 	GitAPIFactory func(*mortisev1alpha1.GitProvider, string, string) (git.GitAPI, error)
@@ -136,12 +137,22 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		}
 		return ctrl.Result{}, err
 	}
+	cacheKey := gitTokenCacheKey(&app)
+	r.gitTokenCache.Delete(cacheKey)
+	defer r.gitTokenCache.Delete(cacheKey)
 
 	// Finalizer flow — owner references can't cross namespaces, so the only
 	// way to clean up per-env-ns resources on App delete is via a finalizer
 	// that enumerates them and deletes by label.
 	if !app.DeletionTimestamp.IsZero() {
 		if controllerutil.ContainsFinalizer(&app, appFinalizer) {
+			remainingPreviews, err := r.deleteAppPreviews(ctx, &app)
+			if err != nil {
+				return ctrl.Result{}, fmt.Errorf("delete previews for app: %w", err)
+			}
+			if remainingPreviews {
+				return ctrl.Result{RequeueAfter: time.Second}, nil
+			}
 			if err := r.gcAppAcrossEnvs(ctx, &app); err != nil {
 				return ctrl.Result{}, fmt.Errorf("gc app across envs: %w", err)
 			}
@@ -366,7 +377,7 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 
 // appFinalizer is the finalizer string applied to every App. Cleared only
 // after cross-namespace cleanup of workload resources completes.
-const appFinalizer = "mortise.dev/app-finalizer"
+const appFinalizer = constants.AppFinalizer
 
 func (r *AppReconciler) addAppFinalizerWithRetry(ctx context.Context, key types.NamespacedName) error {
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
@@ -478,9 +489,13 @@ func (r *AppReconciler) prepareGitSource(ctx context.Context, app *mortisev1alph
 	}
 
 	// Stash the token transiently for per-env builds during this reconcile.
-	r.gitTokenCache.Store(app.Namespace+"/"+app.Name, tokenResult.Token)
+	r.gitTokenCache.Store(gitTokenCacheKey(app), tokenResult.Token)
 
 	return ctrl.Result{}, true, nil
+}
+
+func gitTokenCacheKey(app *mortisev1alpha1.App) string {
+	return app.Namespace + "/" + app.Name
 }
 
 func (r *AppReconciler) syncOpenPreviews(ctx context.Context, app *mortisev1alpha1.App, project *mortisev1alpha1.Project) error {
@@ -496,7 +511,7 @@ func (r *AppReconciler) syncOpenPreviews(ctx context.Context, app *mortisev1alph
 		return nil
 	}
 
-	tokenVal, _ := r.gitTokenCache.Load(app.Name)
+	tokenVal, _ := r.gitTokenCache.Load(gitTokenCacheKey(app))
 	token, _ := tokenVal.(string)
 
 	var gp mortisev1alpha1.GitProvider
@@ -511,7 +526,7 @@ func (r *AppReconciler) syncOpenPreviews(ctx context.Context, app *mortisev1alph
 			return fmt.Errorf("resolve git token for preview sync: %w", err)
 		}
 		token = tokenResult.Token
-		r.gitTokenCache.Store(app.Name, token)
+		r.gitTokenCache.Store(gitTokenCacheKey(app), token)
 	}
 
 	api, err := r.newGitAPI(&gp, token, "")
@@ -2249,24 +2264,28 @@ func hashCredentialData(data map[string][]byte) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-func (r *AppReconciler) hashEnvSecretData(ctx context.Context, appName, envNs string) string {
+func hashEnvSecretData(ctx context.Context, reader client.Reader, appName, envNs string) string {
 	combined := make(map[string][]byte)
 
 	var appSecret corev1.Secret
-	if err := r.Get(ctx, types.NamespacedName{Name: envstore.AppEnvSecretName(appName), Namespace: envNs}, &appSecret); err == nil {
+	if err := reader.Get(ctx, types.NamespacedName{Name: envstore.AppEnvSecretName(appName), Namespace: envNs}, &appSecret); err == nil {
 		for k, v := range appSecret.Data {
 			combined[k] = v
 		}
 	}
 
 	var sharedSecret corev1.Secret
-	if err := r.Get(ctx, types.NamespacedName{Name: envstore.SharedEnvName, Namespace: envNs}, &sharedSecret); err == nil {
+	if err := reader.Get(ctx, types.NamespacedName{Name: envstore.SharedEnvName, Namespace: envNs}, &sharedSecret); err == nil {
 		for k, v := range sharedSecret.Data {
 			combined[k] = v
 		}
 	}
 
 	return hashCredentialData(combined)
+}
+
+func (r *AppReconciler) hashEnvSecretData(ctx context.Context, appName, envNs string) string {
+	return hashEnvSecretData(ctx, r.Client, appName, envNs)
 }
 
 // isMortiseManaged returns true iff the object carries the standard

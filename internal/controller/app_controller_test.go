@@ -230,11 +230,292 @@ func TestPreviewSyncStateIncludesBackfillInputs(t *testing.T) {
 	}
 }
 
+func TestSyncOpenPreviewsReusesPrepareGitSourceTokenCacheKey(t *testing.T) {
+	ctx := context.Background()
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add core scheme: %v", err)
+	}
+	if err := mortisev1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add mortise scheme: %v", err)
+	}
+
+	provider := &mortisev1alpha1.GitProvider{
+		ObjectMeta: metav1.ObjectMeta{Name: "gh-preview-cache"},
+		Spec: mortisev1alpha1.GitProviderSpec{
+			Type: mortisev1alpha1.GitProviderTypeGitHub,
+			Host: "https://github.com",
+		},
+	}
+	app := makeGitSourceApp("web", "pj-alpha", provider.Name)
+	tokenSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      git.UserTokenSecretName(provider.Name, "test@example.com"),
+			Namespace: git.TokenSecretNamespace,
+		},
+		Data: map[string][]byte{"token": []byte("token-alpha")},
+	}
+	project := &mortisev1alpha1.Project{
+		ObjectMeta: metav1.ObjectMeta{Name: "alpha"},
+		Spec: mortisev1alpha1.ProjectSpec{
+			Preview:      &mortisev1alpha1.PreviewConfig{Enabled: true, Domain: "pr-{number}.example.com"},
+			Environments: []mortisev1alpha1.ProjectEnvironment{{Name: "staging"}},
+		},
+	}
+
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(provider, app, tokenSecret).
+		Build()
+
+	usedTokens := make([]string, 0, 1)
+	r := &AppReconciler{
+		Client:          c,
+		Scheme:          scheme,
+		BuildClient:     &fakeBuildClient{},
+		GitClient:       &fakeGitClient{},
+		RegistryBackend: &fakeRegistryBackend{},
+		GitAPIFactory: func(_ *mortisev1alpha1.GitProvider, token, _ string) (git.GitAPI, error) {
+			usedTokens = append(usedTokens, token)
+			return &fakeWebhookAPI{}, nil
+		},
+	}
+
+	if _, proceed, err := r.prepareGitSource(ctx, app); err != nil {
+		t.Fatalf("prepareGitSource: %v", err)
+	} else if !proceed {
+		t.Fatal("prepareGitSource did not proceed")
+	}
+
+	cacheKey := gitTokenCacheKey(app)
+	cachedToken, ok := r.gitTokenCache.Load(cacheKey)
+	if !ok {
+		t.Fatalf("expected cached token under key %q", cacheKey)
+	}
+	if got := cachedToken.(string); got != "token-alpha" {
+		t.Fatalf("cached token = %q, want %q", got, "token-alpha")
+	}
+	if _, ok := r.gitTokenCache.Load(app.Name); ok {
+		t.Fatalf("unexpected bare app-name cache entry %q after prepare", app.Name)
+	}
+
+	if err := c.Delete(ctx, tokenSecret); err != nil {
+		t.Fatalf("delete token secret: %v", err)
+	}
+
+	if err := r.syncOpenPreviews(ctx, app, project); err != nil {
+		t.Fatalf("syncOpenPreviews: %v", err)
+	}
+
+	if len(usedTokens) != 1 {
+		t.Fatalf("GitAPIFactory called %d times, want 1", len(usedTokens))
+	}
+	if usedTokens[0] != "token-alpha" {
+		t.Fatalf("preview sync used token %q, want %q", usedTokens[0], "token-alpha")
+	}
+	if _, ok := r.gitTokenCache.Load(app.Name); ok {
+		t.Fatalf("unexpected bare app-name cache entry %q after preview sync", app.Name)
+	}
+}
+
+func TestSyncOpenPreviewsIsolatesGitTokenCacheKeysByNamespace(t *testing.T) {
+	ctx := context.Background()
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add core scheme: %v", err)
+	}
+	if err := mortisev1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add mortise scheme: %v", err)
+	}
+
+	provider := &mortisev1alpha1.GitProvider{
+		ObjectMeta: metav1.ObjectMeta{Name: "gh-preview-isolation"},
+		Spec: mortisev1alpha1.GitProviderSpec{
+			Type: mortisev1alpha1.GitProviderTypeGitHub,
+			Host: "https://github.com",
+		},
+	}
+	appA := makeGitSourceApp("web", "pj-a", provider.Name)
+	appA.Annotations["mortise.dev/created-by"] = "alpha@example.com"
+	appB := makeGitSourceApp("web", "pj-b", provider.Name)
+	appB.Annotations["mortise.dev/created-by"] = "bravo@example.com"
+
+	secretA := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      git.UserTokenSecretName(provider.Name, "alpha@example.com"),
+			Namespace: git.TokenSecretNamespace,
+		},
+		Data: map[string][]byte{"token": []byte("token-alpha")},
+	}
+	secretB := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      git.UserTokenSecretName(provider.Name, "bravo@example.com"),
+			Namespace: git.TokenSecretNamespace,
+		},
+		Data: map[string][]byte{"token": []byte("token-bravo")},
+	}
+	projectA := &mortisev1alpha1.Project{
+		ObjectMeta: metav1.ObjectMeta{Name: "alpha"},
+		Spec: mortisev1alpha1.ProjectSpec{
+			Preview:      &mortisev1alpha1.PreviewConfig{Enabled: true, Domain: "pr-{number}.alpha.example.com"},
+			Environments: []mortisev1alpha1.ProjectEnvironment{{Name: "staging"}},
+		},
+	}
+	projectB := &mortisev1alpha1.Project{
+		ObjectMeta: metav1.ObjectMeta{Name: "bravo"},
+		Spec: mortisev1alpha1.ProjectSpec{
+			Preview:      &mortisev1alpha1.PreviewConfig{Enabled: true, Domain: "pr-{number}.bravo.example.com"},
+			Environments: []mortisev1alpha1.ProjectEnvironment{{Name: "staging"}},
+		},
+	}
+
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(provider, appA, appB, secretA, secretB).
+		Build()
+
+	usedTokens := make([]string, 0, 2)
+	r := &AppReconciler{
+		Client:          c,
+		Scheme:          scheme,
+		BuildClient:     &fakeBuildClient{},
+		GitClient:       &fakeGitClient{},
+		RegistryBackend: &fakeRegistryBackend{},
+		GitAPIFactory: func(_ *mortisev1alpha1.GitProvider, token, _ string) (git.GitAPI, error) {
+			usedTokens = append(usedTokens, token)
+			return &fakeWebhookAPI{}, nil
+		},
+	}
+
+	if _, proceed, err := r.prepareGitSource(ctx, appA); err != nil {
+		t.Fatalf("prepareGitSource appA: %v", err)
+	} else if !proceed {
+		t.Fatal("prepareGitSource appA did not proceed")
+	}
+	if _, proceed, err := r.prepareGitSource(ctx, appB); err != nil {
+		t.Fatalf("prepareGitSource appB: %v", err)
+	} else if !proceed {
+		t.Fatal("prepareGitSource appB did not proceed")
+	}
+
+	if err := c.Delete(ctx, secretB); err != nil {
+		t.Fatalf("delete appB token secret: %v", err)
+	}
+
+	if err := r.syncOpenPreviews(ctx, appA, projectA); err != nil {
+		t.Fatalf("syncOpenPreviews appA: %v", err)
+	}
+	if err := r.syncOpenPreviews(ctx, appB, projectB); err != nil {
+		t.Fatalf("syncOpenPreviews appB: %v", err)
+	}
+
+	if len(usedTokens) != 2 {
+		t.Fatalf("GitAPIFactory called %d times, want 2", len(usedTokens))
+	}
+	if usedTokens[0] != "token-alpha" {
+		t.Fatalf("appA preview sync used token %q, want %q", usedTokens[0], "token-alpha")
+	}
+	if usedTokens[1] != "token-bravo" {
+		t.Fatalf("appB preview sync used token %q, want %q", usedTokens[1], "token-bravo")
+	}
+	if _, ok := r.gitTokenCache.Load(appA.Name); ok {
+		t.Fatalf("unexpected bare app-name cache entry %q after isolated preview sync", appA.Name)
+	}
+}
+
+func TestReconcileClearsStaleGitTokenCacheBetweenReconciles(t *testing.T) {
+	ctx := context.Background()
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add core scheme: %v", err)
+	}
+	if err := appsv1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add apps scheme: %v", err)
+	}
+	if err := batchv1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add batch scheme: %v", err)
+	}
+	if err := networkingv1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add networking scheme: %v", err)
+	}
+	if err := storagev1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add storage scheme: %v", err)
+	}
+	if err := mortisev1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add mortise scheme: %v", err)
+	}
+
+	provider := &mortisev1alpha1.GitProvider{
+		ObjectMeta: metav1.ObjectMeta{Name: "gh-preview-stale-cache"},
+		Spec: mortisev1alpha1.GitProviderSpec{
+			Type: mortisev1alpha1.GitProviderTypeGitHub,
+			Host: "https://github.com",
+		},
+	}
+	project := &mortisev1alpha1.Project{
+		ObjectMeta: metav1.ObjectMeta{Name: "alpha"},
+		Spec: mortisev1alpha1.ProjectSpec{
+			Preview:      &mortisev1alpha1.PreviewConfig{Enabled: true, Domain: "pr-{number}.example.com"},
+			Environments: []mortisev1alpha1.ProjectEnvironment{{Name: "production"}},
+		},
+	}
+	app := makeGitSourceApp("web", "pj-alpha", provider.Name)
+	app.Spec.Source.Image = testImageNginx
+	app.Status.Environments = []mortisev1alpha1.EnvironmentStatus{{
+		Name:           "production",
+		LastBuiltSHA:   "main",
+		LastBuiltImage: "registry.example.com/mortise/web:main-production",
+	}}
+
+	tokenSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      git.UserTokenSecretName(provider.Name, "test@example.com"),
+			Namespace: git.TokenSecretNamespace,
+		},
+		Data: map[string][]byte{"token": []byte("fresh-token")},
+	}
+
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(app).
+		WithObjects(provider, project, app, tokenSecret).
+		Build()
+
+	usedTokens := make([]string, 0, 1)
+	r := &AppReconciler{
+		Client: c,
+		Scheme: scheme,
+		GitAPIFactory: func(_ *mortisev1alpha1.GitProvider, token, _ string) (git.GitAPI, error) {
+			usedTokens = append(usedTokens, token)
+			return &fakeWebhookAPI{}, nil
+		},
+	}
+	cacheKey := gitTokenCacheKey(app)
+	r.gitTokenCache.Store(cacheKey, "stale-token")
+
+	if _, err := r.Reconcile(ctx, reconcile.Request{
+		NamespacedName: types.NamespacedName{Name: app.Name, Namespace: app.Namespace},
+	}); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	if len(usedTokens) != 1 {
+		t.Fatalf("GitAPIFactory called %d times, want 1", len(usedTokens))
+	}
+	if usedTokens[0] != "fresh-token" {
+		t.Fatalf("preview sync used token %q, want %q", usedTokens[0], "fresh-token")
+	}
+	if _, ok := r.gitTokenCache.Load(cacheKey); ok {
+		t.Fatalf("expected reconcile to clear cache entry %q", cacheKey)
+	}
+}
+
 var _ = Describe("App Controller", func() {
 	const namespace = "pj-default-project"
 	const envNsProduction = "pj-default-project-production"
 
 	AfterEach(func() {
+		purgeAllPreviewsIn(context.Background(), namespace)
 		purgeAllAppsIn(context.Background(), namespace)
 	})
 
@@ -538,6 +819,78 @@ var _ = Describe("App Controller", func() {
 			}, &ing)).To(Succeed())
 			Expect(ing.Annotations["linkerd.io/inject"]).To(Equal("enabled"))
 			Expect(ing.Annotations["cert-manager.io/cluster-issuer"]).To(Equal("user-wins"))
+		})
+	})
+
+	Context("app deletion with previews", func() {
+		It("should block app finalizer removal until matching previews are deleted", func() {
+			ctx := context.Background()
+			const appName = "preview-owner"
+			const prNumber = 17
+
+			app := makeGitSourceApp(appName, namespace, "github-main")
+			app.Finalizers = []string{appFinalizer}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			var storedApp mortisev1alpha1.App
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: appName, Namespace: namespace}, &storedApp)).To(Succeed())
+			Expect(storedApp.Finalizers).To(ContainElement(appFinalizer))
+
+			pe := &mortisev1alpha1.PreviewEnvironment{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       fmt.Sprintf("%s-preview-pr-%d", appName, prNumber),
+					Namespace:  namespace,
+					Finalizers: []string{previewFinalizer},
+				},
+				Spec: mortisev1alpha1.PreviewEnvironmentSpec{
+					AppRef:    appName,
+					SourceEnv: "production",
+					PullRequest: mortisev1alpha1.PullRequestRef{
+						Number: prNumber,
+						Branch: "feature/delete-app",
+						SHA:    "deadbeef",
+					},
+					TTL: metav1.Duration{Duration: time.Hour},
+				},
+			}
+			Expect(k8sClient.Create(ctx, pe)).To(Succeed())
+
+			Expect(k8sClient.Delete(ctx, &storedApp)).To(Succeed())
+
+			res, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res.RequeueAfter).ToNot(BeZero())
+
+			var deletingPreview mortisev1alpha1.PreviewEnvironment
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: pe.Name, Namespace: namespace}, &deletingPreview)).To(Succeed())
+			Expect(deletingPreview.DeletionTimestamp).ToNot(BeNil())
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: appName, Namespace: namespace}, &storedApp)).To(Succeed())
+			Expect(storedApp.DeletionTimestamp).ToNot(BeNil())
+			Expect(storedApp.Finalizers).To(ContainElement(appFinalizer))
+
+			deletingPreview.Finalizers = nil
+			Expect(k8sClient.Update(ctx, &deletingPreview)).To(Succeed())
+			err = k8sClient.Delete(ctx, &deletingPreview)
+			Expect(err == nil || kerrors.IsNotFound(err)).To(BeTrue())
+			Eventually(func() bool {
+				var gone mortisev1alpha1.PreviewEnvironment
+				return kerrors.IsNotFound(k8sClient.Get(ctx, types.NamespacedName{Name: pe.Name, Namespace: namespace}, &gone))
+			}).Should(BeTrue())
+
+			Eventually(func() bool {
+				_, err := reconciler.Reconcile(ctx, reconcile.Request{
+					NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+				})
+				if err != nil {
+					return false
+				}
+				var gone mortisev1alpha1.App
+				return kerrors.IsNotFound(k8sClient.Get(ctx, types.NamespacedName{Name: appName, Namespace: namespace}, &gone))
+			}, 5*time.Second, 100*time.Millisecond).Should(BeTrue())
 		})
 	})
 
@@ -2830,6 +3183,7 @@ var _ = Describe("App Controller — git source", func() {
 	const envNsProduction = "pj-default-project-production"
 
 	AfterEach(func() {
+		purgeAllPreviewsIn(context.Background(), namespace)
 		purgeAllAppsIn(context.Background(), namespace)
 	})
 
@@ -4861,6 +5215,7 @@ var _ = Describe("App Controller — git source", func() {
 		ctx := context.Background()
 
 		AfterEach(func() {
+			purgeAllPreviewsIn(ctx, namespace)
 			purgeAllAppsIn(ctx, namespace)
 		})
 
@@ -5561,6 +5916,64 @@ var _ = Describe("App Controller — git source", func() {
 
 			Expect(prodArgs).To(Equal(map[string]string{"ENV": "prod", "DEBUG": "false"}))
 			Expect(stagingArgs).To(Equal(map[string]string{"ENV": "staging", "DEBUG": "true"}))
+		})
+	})
+
+	Context("app deletion with previews", func() {
+		It("should request deletion of matching PreviewEnvironments before removing the app finalizer", func() {
+			ctx := context.Background()
+			app := &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       "preview-owner",
+					Namespace:  namespace,
+					Finalizers: []string{appFinalizer},
+				},
+				Spec: mortisev1alpha1.AppSpec{
+					Source: mortisev1alpha1.AppSource{
+						Type:  mortisev1alpha1.SourceTypeImage,
+						Image: testImageNginx,
+					},
+					Environments: []mortisev1alpha1.Environment{{Name: "production"}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+
+			preview := &mortisev1alpha1.PreviewEnvironment{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       "preview-owner-pr-1",
+					Namespace:  namespace,
+					Finalizers: []string{previewFinalizer},
+				},
+				Spec: mortisev1alpha1.PreviewEnvironmentSpec{
+					AppRef: "preview-owner",
+					PullRequest: mortisev1alpha1.PullRequestRef{
+						Number: 1,
+						Branch: "feature",
+						SHA:    "abc123",
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, preview)).To(Succeed())
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			req := reconcile.Request{NamespacedName: client.ObjectKeyFromObject(app)}
+			Expect(k8sClient.Delete(ctx, app)).To(Succeed())
+			res, err := reconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res.RequeueAfter).ToNot(BeZero())
+
+			var deletingPreview mortisev1alpha1.PreviewEnvironment
+			err = k8sClient.Get(ctx, client.ObjectKeyFromObject(preview), &deletingPreview)
+			if kerrors.IsNotFound(err) {
+				// Preview reconcile may have already finished the delete path.
+			} else {
+				Expect(err).NotTo(HaveOccurred())
+				Expect(deletingPreview.DeletionTimestamp.IsZero()).To(BeFalse())
+			}
+
+			var deletingApp mortisev1alpha1.App
+			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(app), &deletingApp)).To(Succeed())
+			Expect(deletingApp.Finalizers).To(ContainElement(appFinalizer))
 		})
 	})
 })

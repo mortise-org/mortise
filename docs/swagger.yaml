@@ -101,6 +101,25 @@ definitions:
       value:
         type: string
     type: object
+  api.buildRunLogsResponse:
+    properties:
+      building:
+        type: boolean
+      commitSHA:
+        type: string
+      error:
+        type: string
+      lines:
+        items:
+          type: string
+        type: array
+      offset:
+        type: integer
+      status:
+        type: string
+      timestamp:
+        type: string
+    type: object
   api.changePasswordRequest:
     properties:
       current_password:
@@ -604,6 +623,13 @@ definitions:
       password:
         type: string
     type: object
+  api.sseTokenResponse:
+    properties:
+      expiresIn:
+        type: integer
+      token:
+        type: string
+    type: object
   api.statusResponse:
     properties:
       setupRequired:
@@ -834,6 +860,21 @@ definitions:
         type: string
     type: object
   v1.FieldsV1:
+    type: object
+  v1.LocalObjectReference:
+    properties:
+      name:
+        description: |-
+          Name of the referent.
+          This field is effectively required, but due to backwards compatibility is
+          allowed to be empty. Instances of this type with an empty value here are
+          almost certainly wrong.
+          More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+          +optional
+          +default=""
+          +kubebuilder:default=""
+          TODO: Drop `kubebuilder:default` when controller-gen doesn't need it https://github.com/kubernetes-sigs/kubebuilder/issues/3896.
+        type: string
     type: object
   v1.ManagedFieldsEntry:
     properties:
@@ -1358,6 +1399,36 @@ definitions:
     - BuildModeAuto
     - BuildModeDockerfile
     - BuildModeRailpack
+  v1alpha1.BuildRun:
+    properties:
+      apiVersion:
+        description: |-
+          APIVersion defines the versioned schema of this representation of an object.
+          Servers should convert recognized schemas to the latest internal value, and
+          may reject unrecognized values.
+          More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+          +optional
+        type: string
+      kind:
+        description: |-
+          Kind is a string value representing the REST resource this object represents.
+          Servers may infer this from the endpoint the client submits requests to.
+          Cannot be updated.
+          In CamelCase.
+          More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+          +optional
+        type: string
+      metadata:
+        allOf:
+        - $ref: '#/definitions/v1.ObjectMeta'
+        description: +optional
+      spec:
+        $ref: '#/definitions/v1alpha1.BuildRunSpec'
+      status:
+        allOf:
+        - $ref: '#/definitions/v1alpha1.BuildRunStatus'
+        description: +optional
+    type: object
   v1alpha1.BuildRunPhase:
     enum:
     - Pending
@@ -1377,6 +1448,117 @@ definitions:
       phase:
         $ref: '#/definitions/v1alpha1.BuildRunPhase'
     type: object
+  v1alpha1.BuildRunSpec:
+    properties:
+      appName:
+        type: string
+      branch:
+        type: string
+      buildArgs:
+        additionalProperties:
+          type: string
+        type: object
+      buildContext:
+        $ref: '#/definitions/v1alpha1.BuildContext'
+      buildMode:
+        type: string
+      createdBy:
+        type: string
+      dockerfile:
+        type: string
+      dockerfilePath:
+        type: string
+      environment:
+        type: string
+      inputHash:
+        type: string
+      noCache:
+        type: boolean
+      path:
+        type: string
+      providerRef:
+        type: string
+      pullImage:
+        type: string
+      pullTarget:
+        type: string
+      pushImage:
+        type: string
+      pushTarget:
+        type: string
+      repo:
+        type: string
+      requestID:
+        type: string
+      revision:
+        type: string
+      sourcePath:
+        type: string
+      targetRef:
+        $ref: '#/definitions/v1alpha1.BuildRunTargetRef'
+      tokenOwner:
+        type: string
+      tokenSecretRef:
+        $ref: '#/definitions/v1alpha1.SecretRef'
+      trigger:
+        $ref: '#/definitions/v1alpha1.BuildRunTrigger'
+    type: object
+  v1alpha1.BuildRunStatus:
+    properties:
+      completedAt:
+        type: string
+      conditions:
+        description: |-
+          +listType=map
+          +listMapKey=type
+          +optional
+        items:
+          $ref: '#/definitions/v1.Condition'
+        type: array
+      detectedPort:
+        type: integer
+      digest:
+        type: string
+      error:
+        type: string
+      failureMessage:
+        type: string
+      failureReason:
+        type: string
+      finishedAt:
+        type: string
+      image:
+        type: string
+      jobRef:
+        $ref: '#/definitions/v1.LocalObjectReference'
+      logRef:
+        $ref: '#/definitions/v1.LocalObjectReference'
+      phase:
+        $ref: '#/definitions/v1alpha1.BuildRunPhase'
+      startedAt:
+        type: string
+    type: object
+  v1alpha1.BuildRunTargetRef:
+    properties:
+      kind:
+        type: string
+      name:
+        type: string
+      namespace:
+        type: string
+    type: object
+  v1alpha1.BuildRunTrigger:
+    enum:
+    - auto
+    - manual
+    - preview
+    - webhook
+    type: string
+    x-enum-varnames:
+    - BuildRunTriggerAuto
+    - BuildRunTriggerManual
+    - BuildRunTriggerPreview
+    - BuildRunTriggerWebhook
   v1alpha1.ConcurrencyPolicy:
     enum:
     - Allow
@@ -1874,6 +2056,24 @@ definitions:
           +kubebuilder:validation:Required
         type: string
     type: object
+  v1alpha1.SecretRef:
+    properties:
+      key:
+        description: |-
+          Key within the secret.
+          +required
+        type: string
+      name:
+        description: |-
+          Name of the secret.
+          +required
+        type: string
+      namespace:
+        description: |-
+          Namespace of the secret.
+          +required
+        type: string
+    type: object
   v1alpha1.SourceType:
     enum:
     - git
@@ -2342,8 +2542,8 @@ paths:
       - auth
   /auth/refresh:
     post:
-      description: Issues a new JWT from an existing token (valid or expired within
-        7 days)
+      description: Revalidates the current user against the auth provider and issues
+        a new JWT from an existing token (valid or expired within 7 days)
       produces:
       - application/json
       responses:
@@ -2400,6 +2600,31 @@ paths:
           schema:
             $ref: '#/definitions/api.errorResponse'
       summary: First-time setup
+      tags:
+      - auth
+  /auth/sse-token:
+    post:
+      description: Exchanges a bearer-authenticated session for a short-lived, single-use
+        opaque SSE token. Redeem revalidates the user against the auth provider before
+        opening the stream.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.sseTokenResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/api.errorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.errorResponse'
+      security:
+      - BearerAuth: []
+      summary: Issue short-lived SSE token
       tags:
       - auth
   /auth/status:
@@ -2656,8 +2881,8 @@ paths:
       - platform
   /projects:
     get:
-      description: Returns projects the caller has access to. Admins see all; members
-        see only their projects.
+      description: Returns projects the caller has access to. Admins see all; other
+        users see only their projects.
       produces:
       - application/json
       responses:
@@ -3230,6 +3455,42 @@ paths:
       summary: Get build logs for an app
       tags:
       - logs
+  /projects/{project}/apps/{app}/build-runs:
+    get:
+      description: Returns durable build executions for an app, newest first
+      parameters:
+      - description: Project name
+        in: path
+        name: project
+        required: true
+        type: string
+      - description: App name
+        in: path
+        name: app
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/v1alpha1.BuildRun'
+            type: array
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/api.errorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.errorResponse'
+      security:
+      - BearerAuth: []
+      summary: List BuildRuns for an app
+      tags:
+      - buildruns
   /projects/{project}/apps/{app}/connect:
     post:
       description: Start a reverse proxy listener on an auto-allocated local port
@@ -3650,8 +3911,8 @@ paths:
     post:
       consumes:
       - application/json
-      description: Runs a command in the first running pod of the specified app and
-        returns stdout/stderr
+      description: Runs a command in a running pod of the specified app and targets
+        the app container explicitly, returning stdout/stderr
       parameters:
       - description: Project name
         in: path
@@ -4538,6 +4799,74 @@ paths:
       summary: List bindings for a project environment
       tags:
       - bindings
+  /projects/{project}/build-runs/{name}:
+    get:
+      description: Returns a single durable build execution within a project
+      parameters:
+      - description: Project name
+        in: path
+        name: project
+        required: true
+        type: string
+      - description: BuildRun name
+        in: path
+        name: name
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/v1alpha1.BuildRun'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/api.errorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.errorResponse'
+      security:
+      - BearerAuth: []
+      summary: Get a BuildRun
+      tags:
+      - buildruns
+  /projects/{project}/build-runs/{name}/logs:
+    get:
+      description: Returns durable build logs for a specific BuildRun
+      parameters:
+      - description: Project name
+        in: path
+        name: project
+        required: true
+        type: string
+      - description: BuildRun name
+        in: path
+        name: name
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.buildRunLogsResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/api.errorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.errorResponse'
+      security:
+      - BearerAuth: []
+      summary: Get BuildRun logs
+      tags:
+      - buildruns
   /projects/{project}/environments:
     get:
       description: Returns the project's ordered environment list with aggregated

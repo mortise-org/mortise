@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
+	import { normalizeAuthUser } from '$lib/api';
 	import { store } from '$lib/store.svelte';
 
 	let email = $state('');
@@ -24,8 +25,12 @@
 				const data = await res.json().catch(() => ({}));
 				throw new Error(data.error || 'Setup failed');
 			}
-			const data = await res.json() as { token: string; user: { Email: string; Role: string } };
-			store.login(data.token, { email: data.user.Email, role: (data.user.Role as 'admin' | 'member') });
+			const data = await res.json() as { token: string; user: unknown };
+			const user = normalizeAuthUser(data.user);
+			if (!user) {
+				throw new Error('Setup response missing user details');
+			}
+			store.login(data.token, user);
 			await goto('/setup/wizard');
 		} catch(e) {
 			error = e instanceof Error ? e.message : 'Setup failed';

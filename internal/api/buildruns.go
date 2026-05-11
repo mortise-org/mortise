@@ -335,6 +335,18 @@ func (s *Server) readBuildRunLogSnapshot(ctx context.Context, namespace string, 
 }
 
 // handleListBuildRuns returns durable build executions for an app, newest first.
+//
+// @Summary List BuildRuns for an app
+// @Description Returns durable build executions for an app, newest first
+// @Tags buildruns
+// @Produce json
+// @Security BearerAuth
+// @Param project path string true "Project name"
+// @Param app path string true "App name"
+// @Success 200 {array} v1alpha1.BuildRun
+// @Failure 403 {object} errorResponse
+// @Failure 404 {object} errorResponse
+// @Router /projects/{project}/apps/{app}/build-runs [get]
 func (s *Server) handleListBuildRuns(w http.ResponseWriter, r *http.Request) {
 	ns, projectName, ok := s.resolveProject(w, r)
 	if !ok {
@@ -357,6 +369,18 @@ func (s *Server) handleListBuildRuns(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleGetBuildRun returns a single durable build execution within a project.
+//
+// @Summary Get a BuildRun
+// @Description Returns a single durable build execution within a project
+// @Tags buildruns
+// @Produce json
+// @Security BearerAuth
+// @Param project path string true "Project name"
+// @Param name path string true "BuildRun name"
+// @Success 200 {object} v1alpha1.BuildRun
+// @Failure 403 {object} errorResponse
+// @Failure 404 {object} errorResponse
+// @Router /projects/{project}/build-runs/{name} [get]
 func (s *Server) handleGetBuildRun(w http.ResponseWriter, r *http.Request) {
 	ns, projectName, ok := s.resolveProject(w, r)
 	if !ok {
@@ -387,6 +411,18 @@ func (s *Server) handleGetBuildRun(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleBuildRunLogs returns build logs for a specific BuildRun.
+//
+// @Summary Get BuildRun logs
+// @Description Returns durable build logs for a specific BuildRun
+// @Tags buildruns
+// @Produce json
+// @Security BearerAuth
+// @Param project path string true "Project name"
+// @Param name path string true "BuildRun name"
+// @Success 200 {object} buildRunLogsResponse
+// @Failure 403 {object} errorResponse
+// @Failure 404 {object} errorResponse
+// @Router /projects/{project}/build-runs/{name}/logs [get]
 func (s *Server) handleBuildRunLogs(w http.ResponseWriter, r *http.Request) {
 	ns, projectName, ok := s.resolveProject(w, r)
 	if !ok {

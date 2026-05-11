@@ -9,14 +9,18 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/retry"
+	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
 	"github.com/mortise-org/mortise/internal/constants"
@@ -42,7 +46,6 @@ func TestPreviewEnvironmentInheritsSourceEnvVars(t *testing.T) {
 
 	envName := app.Spec.Environments[0].Name
 	envNs := constants.EnvNamespace(projectName, envName)
-
 	helpers.WaitForAppReady(t, k8sClient, ns, app.Name, 5*time.Minute)
 
 	// Seed per-app env vars in the source environment.
@@ -174,6 +177,183 @@ func TestPreviewEnvironmentInheritsSourceEnvVars(t *testing.T) {
 	if got := string(sharedSecret.Data["SENTRY_DSN"]); got != "https://sentry.io/123" {
 		t.Errorf("SENTRY_DSN in shared-env: got %q, want %q", got, "https://sentry.io/123")
 	}
+}
+
+func TestPreviewEnvironmentRefreshesAfterEnvAPIUpdate(t *testing.T) {
+	t.Parallel()
+	projectName := "prev-refresh-" + randSuffix()
+	ns := createProjectForTest(t, projectName)
+
+	giteaLocalPort := helpers.PortForward(t, "mortise-test-deps", "gitea", 3000)
+	giteaLocalURL := fmt.Sprintf("http://127.0.0.1:%d", giteaLocalPort)
+	giteaInClusterURL := "http://gitea.mortise-test-deps.svc:3000"
+
+	repoName := "repo-prev-refresh-" + randSuffix()
+	boot := (&helpers.GiteaBootstrap{
+		BaseURL:  giteaLocalURL,
+		Username: "mortise-test",
+		Password: "mortise-test-pw",
+	}).Ensure(t, giteaInClusterURL, "mortise-test", repoName,
+		map[string]string{
+			"Dockerfile": testDockerfile,
+			"README.md":  testReadme,
+		},
+	)
+
+	providerName := "gitea-prev-refresh-" + randSuffix()
+	testEmail := "test@example.com"
+	stubSecret(t, "mortise-system", "prev-refresh-webhook-"+providerName, map[string]string{
+		"secret": "stub",
+	})
+	stubSecret(t, "mortise-system", "user-"+providerName+"-token-74657374406578616d706c652e636f6d", map[string]string{
+		"token": boot.Token,
+	})
+
+	gp := &mortisev1alpha1.GitProvider{
+		ObjectMeta: metav1.ObjectMeta{Name: providerName},
+		Spec: mortisev1alpha1.GitProviderSpec{
+			Type:     mortisev1alpha1.GitProviderTypeGitea,
+			Host:     giteaInClusterURL,
+			ClientID: "test-client-id",
+			WebhookSecretRef: &mortisev1alpha1.SecretRef{
+				Namespace: "mortise-system", Name: "prev-refresh-webhook-" + providerName, Key: "secret",
+			},
+		},
+	}
+	if err := k8sClient.Create(context.Background(), gp); err != nil {
+		t.Fatalf("create GitProvider: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = k8sClient.Delete(context.Background(), &mortisev1alpha1.GitProvider{
+			ObjectMeta: metav1.ObjectMeta{Name: providerName},
+		})
+	})
+
+	enableProjectPreview(t, projectName, &mortisev1alpha1.PreviewConfig{
+		Enabled: true,
+		Domain:  "pr-{number}-{app}.test.local",
+		TTL:     "1h",
+	})
+
+	app := helpers.LoadFixture(t, filepath.Join(fixturesDir(), "git-preview.yaml"))
+	app.Namespace = ns
+	app.Name = "refresh-app-" + randSuffix()
+	app.Spec.Source.Repo = boot.CloneURL
+	app.Spec.Source.ProviderRef = providerName
+	if app.Annotations == nil {
+		app.Annotations = map[string]string{}
+	}
+	app.Annotations["mortise.dev/revision"] = "main"
+	app.Annotations["mortise.dev/created-by"] = testEmail
+
+	if err := k8sClient.Create(context.Background(), app); err != nil {
+		t.Fatalf("create App: %v", err)
+	}
+
+	envName := app.Spec.Environments[0].Name
+	envNs := constants.EnvNamespace(projectName, envName)
+
+	helpers.WaitForAppReady(t, k8sClient, ns, app.Name, 5*time.Minute)
+	helpers.RequireEventually(t, 2*time.Minute, func() bool {
+		var envNamespace corev1.Namespace
+		return k8sClient.Get(context.Background(), types.NamespacedName{Name: envNs}, &envNamespace) == nil
+	})
+
+	store := &envstore.Store{Client: k8sClient}
+	if err := store.Merge(context.Background(), envNs, app.Name, []envstore.Env{
+		{Name: "LOG_LEVEL", Value: "info", Source: "user"},
+	}, nil); err != nil {
+		t.Fatalf("seed env vars: %v", err)
+	}
+
+	headSHA := getGiteaBranchSHA(t, giteaLocalURL, boot.Token, boot.Owner, boot.Name, "main")
+	pe := createPreviewEnvironment(t, ns, app.Name, 101, headSHA, "pr-101-"+app.Name+".test.local")
+	pe.Spec.SourceEnv = envName
+	if err := k8sClient.Create(context.Background(), pe); err != nil {
+		t.Fatalf("create PreviewEnvironment: %v", err)
+	}
+	t.Cleanup(func() { _ = k8sClient.Delete(context.Background(), pe) })
+
+	previewNs := constants.PreviewNamespace(projectName, 101)
+	waitForPreviewReady(t, ns, pe.Name, 5*time.Minute)
+	helpers.RequireEventually(t, 2*time.Minute, func() bool {
+		var envSecret corev1.Secret
+		if err := k8sClient.Get(context.Background(), types.NamespacedName{
+			Name: app.Name + "-env", Namespace: previewNs,
+		}, &envSecret); err != nil {
+			return false
+		}
+		return string(envSecret.Data["LOG_LEVEL"]) == "info"
+	})
+	helpers.AssertPodsRunning(t, k8sClient, previewNs, app.Name, 1)
+
+	var initialEnvHash string
+	helpers.RequireEventually(t, 2*time.Minute, func() bool {
+		var dep appsv1.Deployment
+		if err := k8sClient.Get(context.Background(), types.NamespacedName{
+			Name: app.Name, Namespace: previewNs,
+		}, &dep); err != nil {
+			return false
+		}
+		initialEnvHash = dep.Spec.Template.Annotations["mortise.dev/env-hash"]
+		return initialEnvHash != ""
+	})
+
+	var initialPodUID types.UID
+	helpers.RequireEventually(t, 2*time.Minute, func() bool {
+		podName, podUID, ok := readyPreviewPod(previewNs, projectName, app.Name, 101)
+		if !ok {
+			return false
+		}
+		logLevel, err := podEnvValue(previewNs, podName, app.Name, "LOG_LEVEL")
+		if err != nil {
+			return false
+		}
+		initialPodUID = podUID
+		return logLevel == "info"
+	})
+
+	mortisePort := helpers.PortForward(t, "mortise-system", "mortise", 80)
+	mortiseURL := fmt.Sprintf("http://127.0.0.1:%d", mortisePort)
+	token := helpers.LoginAsAdmin(t, mortiseURL, "admin-integ@example.invalid", "integ-admin-pw-01")
+
+	envResp := doJSON(t, http.MethodPut, fmt.Sprintf("%s/api/projects/%s/apps/%s/env?env=%s", mortiseURL, projectName, app.Name, envName), token, []map[string]string{
+		{"name": "LOG_LEVEL", "value": "debug"},
+	})
+	if envResp.StatusCode != http.StatusOK {
+		t.Fatalf("put env: expected 200, got %d: %s", envResp.StatusCode, envResp.Body)
+	}
+
+	helpers.RequireEventually(t, 2*time.Minute, func() bool {
+		var envSecret corev1.Secret
+		if err := k8sClient.Get(context.Background(), types.NamespacedName{
+			Name: app.Name + "-env", Namespace: previewNs,
+		}, &envSecret); err != nil {
+			return false
+		}
+		return string(envSecret.Data["LOG_LEVEL"]) == "debug"
+	})
+	helpers.RequireEventually(t, 2*time.Minute, func() bool {
+		var dep appsv1.Deployment
+		if err := k8sClient.Get(context.Background(), types.NamespacedName{
+			Name: app.Name, Namespace: previewNs,
+		}, &dep); err != nil {
+			return false
+		}
+		return dep.Spec.Template.Annotations["mortise.dev/env-hash"] != "" &&
+			dep.Spec.Template.Annotations["mortise.dev/env-hash"] != initialEnvHash
+	})
+	helpers.RequireEventually(t, 2*time.Minute, func() bool {
+		podName, podUID, ok := readyPreviewPod(previewNs, projectName, app.Name, 101)
+		if !ok || podUID == initialPodUID {
+			return false
+		}
+		logLevel, err := podEnvValue(previewNs, podName, app.Name, "LOG_LEVEL")
+		if err != nil {
+			return false
+		}
+		return logLevel == "debug"
+	})
 }
 
 // TestEnvironmentCloneCreatesEnvWithConfig creates a project with production
@@ -321,4 +501,50 @@ func doCloneJSON(t *testing.T, method, url, token string, body any) cloneHTTPRes
 	defer resp.Body.Close()
 	b, _ := io.ReadAll(resp.Body)
 	return cloneHTTPResult{StatusCode: resp.StatusCode, Body: string(b)}
+}
+
+func readyPreviewPod(namespace, projectName, appName string, prNumber int) (string, types.UID, bool) {
+	var pods corev1.PodList
+	if err := k8sClient.List(context.Background(), &pods,
+		ctrlclient.InNamespace(namespace),
+		ctrlclient.MatchingLabels{
+			constants.AppNameLabel:  appName,
+			constants.ProjectLabel:  projectName,
+			"mortise.dev/pr-number": fmt.Sprintf("%d", prNumber),
+		},
+	); err != nil {
+		return "", "", false
+	}
+	for i := range pods.Items {
+		pod := &pods.Items[i]
+		if pod.Status.Phase != corev1.PodRunning {
+			continue
+		}
+		for _, status := range pod.Status.ContainerStatuses {
+			if status.Name == appName && status.Ready {
+				return pod.Name, pod.UID, true
+			}
+		}
+	}
+	return "", "", false
+}
+
+func podEnvValue(namespace, podName, containerName, envName string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "kubectl",
+		"-n", namespace,
+		"exec",
+		"pod/"+podName,
+		"-c", containerName,
+		"--",
+		"printenv",
+		envName,
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("kubectl exec %s/%s: %w (%s)", namespace, podName, err, strings.TrimSpace(string(out)))
+	}
+	return strings.TrimSpace(string(out)), nil
 }

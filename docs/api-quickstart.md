@@ -155,8 +155,14 @@ curl -s "$BASE/api/projects/$PROJECT/apps/$APP/metrics/current?env=$ENV" \
 Stream logs (SSE):
 
 ```bash
-curl -N "$BASE/api/projects/$PROJECT/apps/$APP/logs?env=$ENV&follow=true&token=$TOKEN"
+SSE_TOKEN=$(curl -s -X POST "$BASE/api/auth/sse-token" \
+  -H "Authorization: Bearer $TOKEN" | jq -r .token)
+
+curl -N "$BASE/api/projects/$PROJECT/apps/$APP/logs?env=$ENV&follow=true&token=$SSE_TOKEN"
 ```
+
+`POST /api/auth/sse-token` returns a short-lived, single-use opaque token for one
+SSE connection. Do not pass full JWTs in SSE query params.
 
 ## 9) Optional: create deploy token for CI
 

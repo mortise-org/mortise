@@ -320,6 +320,58 @@ func TestListPlatformActivityHonorsProjectAccess(t *testing.T) {
 	}
 }
 
+func TestListPlatformActivityAsViewerHonorsProjectMembership(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv, _ := newTestServerAs(t, k8sClient, auth.RoleViewer)
+	h := srv.Handler()
+
+	const allowedProject = "viewer-allowed-316"
+	const blockedProject = "viewer-blocked-316"
+	seedProject(t, k8sClient, allowedProject)
+	seedProject(t, k8sClient, blockedProject)
+	seedProjectMember(t, k8sClient, allowedProject, "test@example.com", mortisev1alpha1.ProjectRoleViewer)
+
+	store := activity.NewConfigMapStore(k8sClient)
+	if err := store.Append(context.Background(), activity.Event{
+		Timestamp:    time.Now().Add(-2 * time.Minute),
+		Actor:        "test@example.com",
+		Action:       "deploy",
+		ResourceKind: "app",
+		ResourceName: "ok",
+		Project:      allowedProject,
+		Message:      "Allowed event",
+	}); err != nil {
+		t.Fatalf("append allowed event: %v", err)
+	}
+	if err := store.Append(context.Background(), activity.Event{
+		Timestamp:    time.Now().Add(-1 * time.Minute),
+		Actor:        "other@example.com",
+		Action:       "deploy",
+		ResourceKind: "app",
+		ResourceName: "nope",
+		Project:      blockedProject,
+		Message:      "Blocked event",
+	}); err != nil {
+		t.Fatalf("append blocked event: %v", err)
+	}
+
+	w := doRequest(h, http.MethodGet, "/api/activity?limit=10", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var events []activityEventResponse
+	if err := json.NewDecoder(w.Body).Decode(&events); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 visible event, got %d", len(events))
+	}
+	if events[0].Project != allowedProject {
+		t.Fatalf("expected only allowed project event, got project=%q", events[0].Project)
+	}
+}
+
 func TestListPlatformActivityLimitValidation(t *testing.T) {
 	k8sClient := setupEnvtest(t)
 	srv := newAdminServer(t, k8sClient)

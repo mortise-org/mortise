@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -286,6 +289,36 @@ func TestBuildLogsUsesCurrentBuildRunTrackerAndPersistedRunLogs(t *testing.T) {
 	}
 	if len(terminalResp.Lines) != 2 || terminalResp.Lines[0] != "final 1" {
 		t.Fatalf("unexpected terminal build-logs lines: %+v", terminalResp.Lines)
+	}
+}
+
+func TestOpenAPISpecIncludesBuildRunRoutes(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+
+	w := doRequest(h, http.MethodGet, "/api/openapi.yaml", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("openapi: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	spec := w.Body.String()
+	for _, route := range []string{
+		"/projects/{project}/apps/{app}/build-runs:",
+		"/projects/{project}/build-runs/{name}:",
+		"/projects/{project}/build-runs/{name}/logs:",
+	} {
+		if !strings.Contains(spec, route) {
+			t.Fatalf("expected openapi spec to include %q", route)
+		}
+	}
+
+	docsSpec, err := os.ReadFile(filepath.Join("..", "..", "docs", "swagger.yaml"))
+	if err != nil {
+		t.Fatalf("read docs swagger: %v", err)
+	}
+	if string(docsSpec) != spec {
+		t.Fatal("expected embedded openapi spec to match docs/swagger.yaml")
 	}
 }
 
