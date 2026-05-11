@@ -13,6 +13,7 @@ import (
 
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
 	"github.com/mortise-org/mortise/internal/constants"
+	"github.com/mortise-org/mortise/internal/envstore"
 )
 
 func TestCreateSecretLabelsProject(t *testing.T) {
@@ -114,6 +115,22 @@ func TestDeleteSecretRejectsInternalEnvSecret(t *testing.T) {
 	w := doRequest(h, http.MethodDelete, "/api/projects/default/apps/webapp/secrets/webapp-env?environment=production", nil)
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("delete internal env secret: expected 403, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestCreateSecretRejectsReservedRuntimeSecretName(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+	seedProject(t, k8sClient, "default")
+	seedAppForEnv(t, h)
+
+	w := doRequest(h, http.MethodPost, "/api/projects/default/apps/webapp/secrets?environment=production", map[string]any{
+		"name": envstore.AppEnvSecretName("webapp"),
+		"data": map[string]string{"TOP": "secret"},
+	})
+	if w.Code != http.StatusConflict {
+		t.Fatalf("create reserved secret: expected 409, got %d: %s", w.Code, w.Body.String())
 	}
 }
 

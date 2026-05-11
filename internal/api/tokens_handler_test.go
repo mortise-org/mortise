@@ -152,6 +152,47 @@ func TestCreateTokenAllowsDeclaredEnvWithoutAppOverride(t *testing.T) {
 	}
 }
 
+func TestDeployTokenCanDeployToDeclaredEnvWithoutExplicitAppOverride(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+	ns := seedProject(t, k8sClient, "default", "staging", "production")
+	seedTokenApp(t, k8sClient, ns, "webapp")
+
+	create := doRequest(h, http.MethodPost, "/api/projects/default/apps/webapp/tokens", map[string]any{
+		"name":        "ci-staging",
+		"environment": "staging",
+	})
+	if create.Code != http.StatusCreated {
+		t.Fatalf("create token: expected 201, got %d: %s", create.Code, create.Body.String())
+	}
+	var created struct {
+		Token string `json:"token"`
+	}
+	if err := json.NewDecoder(create.Body).Decode(&created); err != nil {
+		t.Fatalf("decode token response: %v", err)
+	}
+	if created.Token == "" {
+		t.Fatal("expected raw deploy token")
+	}
+
+	deploy := doRequestWithToken(h, http.MethodPost, "/api/projects/default/apps/webapp/deploy", map[string]any{
+		"environment": "staging",
+		"image":       "nginx:1.27.0",
+	}, created.Token)
+	if deploy.Code != http.StatusOK {
+		t.Fatalf("deploy with token: expected 200, got %d: %s", deploy.Code, deploy.Body.String())
+	}
+
+	var app mortisev1alpha1.App
+	if err := k8sClient.Get(context.Background(), client.ObjectKey{Name: "webapp", Namespace: ns}, &app); err != nil {
+		t.Fatalf("get app: %v", err)
+	}
+	if len(app.Spec.Environments) != 1 || app.Spec.Environments[0].Name != "staging" || app.Spec.Environments[0].Image != "nginx:1.27.0" {
+		t.Fatalf("expected staging override to be created by deploy token, got %+v", app.Spec.Environments)
+	}
+}
+
 func TestDeleteTokenNotFound(t *testing.T) {
 	k8sClient := setupEnvtest(t)
 	srv := newAdminServer(t, k8sClient)

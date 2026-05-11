@@ -15,6 +15,7 @@ import (
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
 	"github.com/mortise-org/mortise/internal/authz"
 	"github.com/mortise-org/mortise/internal/constants"
+	"github.com/mortise-org/mortise/internal/envstore"
 )
 
 // createSecretRequest is the JSON body for upserting a secret.
@@ -89,6 +90,10 @@ func (s *Server) CreateSecret(w http.ResponseWriter, r *http.Request) {
 	}
 	if msg := validateDNSLabel("name", req.Name, 253); msg != "" {
 		writeJSON(w, http.StatusBadRequest, errorResponse{msg})
+		return
+	}
+	if req.Name == envstore.AppEnvSecretName(target.app.Name) {
+		writeJSON(w, http.StatusConflict, errorResponse{fmt.Sprintf("secret name %q is reserved for mortise runtime state", req.Name)})
 		return
 	}
 

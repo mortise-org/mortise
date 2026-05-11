@@ -122,6 +122,14 @@ func (s *Server) authorize(w http.ResponseWriter, r *http.Request, resource auth
 	return true
 }
 
+func (s *Server) canAuthorize(r *http.Request, resource authz.Resource, action authz.Action) (bool, error) {
+	p := PrincipalFromContext(r.Context())
+	if p == nil {
+		return false, nil
+	}
+	return s.authz.Authorize(r.Context(), *p, resource, action)
+}
+
 // Handler returns the root HTTP handler with all routes mounted.
 //
 // URL scheme:
