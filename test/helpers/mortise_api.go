@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 )
 
 // LoginAsAdmin returns a Mortise JWT for an admin principal identified by
@@ -95,21 +96,37 @@ func LoginAsAdmin(t *testing.T, baseURL, email, password string) string {
 		return out.Token, status, "", nil
 	}
 
-	for i, c := range loginOrder {
-		token, status, body, err := tryLogin(c)
-		if err != nil {
-			t.Fatalf("mortise: POST /api/auth/login: %v", err)
-		}
-		if status == http.StatusOK {
-			if token == "" {
-				t.Fatal("mortise: empty token in login response")
+	// When another parallel test wins /api/auth/setup first, the loser can
+	// briefly observe 409 from setup before the new admin secret is readable by
+	// /api/auth/login. Retry boundedly instead of failing on that transient 401.
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		lastStatus := 0
+		lastBody := ""
+		for i, c := range loginOrder {
+			token, status, body, err := tryLogin(c)
+			if err != nil {
+				t.Fatalf("mortise: POST /api/auth/login: %v", err)
 			}
-			return token
+			if status == http.StatusOK {
+				if token == "" {
+					t.Fatal("mortise: empty token in login response")
+				}
+				return token
+			}
+			lastStatus = status
+			lastBody = body
+			if status == http.StatusUnauthorized && i < len(loginOrder)-1 {
+				continue
+			}
+			if status != http.StatusUnauthorized {
+				t.Fatalf("mortise: POST /api/auth/login status %d: %s", status, body)
+			}
 		}
-		if status == http.StatusUnauthorized && i < len(loginOrder)-1 {
-			continue
+		if time.Now().After(deadline) {
+			t.Fatalf("mortise: POST /api/auth/login status %d: %s", lastStatus, lastBody)
 		}
-		t.Fatalf("mortise: POST /api/auth/login status %d: %s", status, body)
+		time.Sleep(100 * time.Millisecond)
 	}
 
 	t.Fatal("mortise: unable to login with available admin credentials")
