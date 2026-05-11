@@ -37,10 +37,13 @@ import (
 	"k8s.io/client-go/util/retry"
 	"k8s.io/utils/clock"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
@@ -55,6 +58,8 @@ import (
 )
 
 const previewBuildPollInterval = 15 * time.Second
+const previewBuildSeedGracePeriod = 5 * time.Second
+const appEnvUpdatedAnnotation = "mortise.dev/env-updated"
 
 // previewFinalizer gates PreviewEnvironment deletion so we can garbage-collect
 // resources in the per-PR namespace (`pj-{project}-pr-{num}`). Owner
@@ -195,7 +200,8 @@ func (r *PreviewEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.R
 
 	// Env vars are independent of the build — reconcile them as soon as the
 	// namespace exists so they're available even while a build is in progress.
-	if err := r.reconcilePreviewEnvSecret(ctx, &pe, &app, previewNs); err != nil {
+	envHash, err := r.reconcilePreviewEnvSecret(ctx, &pe, &app, previewNs)
+	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("reconcile preview env secret: %w", err)
 	}
 
@@ -215,7 +221,7 @@ func (r *PreviewEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.R
 	}
 
 	// Build succeeded: reconcile Deployment + Service + Ingress in the preview ns.
-	if err := r.reconcilePreviewDeployment(ctx, &pe, &app, previewNs); err != nil {
+	if err := r.reconcilePreviewDeployment(ctx, &pe, &app, previewNs, envHash); err != nil {
 		return ctrl.Result{}, fmt.Errorf("reconcile preview deployment: %w", err)
 	}
 	if err := r.reconcilePreviewService(ctx, &pe, &app, previewNs); err != nil {
@@ -283,22 +289,49 @@ func (r *PreviewEnvironmentReconciler) reconcilePreviewBuild(ctx context.Context
 	// Short-circuit: already built this SHA — skip the build but proceed
 	// with Deployment/Service/Ingress reconciliation so spec changes
 	// (replicas, resources, env vars, domain) are picked up.
-	if pe.Status.Image != "" && pe.Status.Phase == mortisev1alpha1.PreviewPhaseReady {
+	if pe.Status.Image != "" {
 		if strings.Contains(pe.Status.Image, shortTag(revision)) {
+			return ctrl.Result{}, true, nil
+		}
+		previewTagPrefix := fmt.Sprintf("pr-%d-", pe.Spec.PullRequest.Number)
+		if pe.Status.Phase != mortisev1alpha1.PreviewPhaseBuilding &&
+			!strings.Contains(pe.Status.Image, previewTagPrefix) &&
+			pe.Status.CurrentBuildRunName == "" &&
+			pe.Status.LastBuildRunName == "" &&
+			pe.Status.CurrentBuildRunRef == nil &&
+			pe.Status.LastSuccessfulBuildRunRef == nil {
+			log.Info("preview already has an externally seeded image; skipping rebuild", "preview", pe.Name)
 			return ctrl.Result{}, true, nil
 		}
 	}
 
+	withinSeedGrace := !pe.CreationTimestamp.IsZero() &&
+		r.clock().Now().Sub(pe.CreationTimestamp.Time) < previewBuildSeedGracePeriod &&
+		pe.Status.Image == "" &&
+		pe.Status.CurrentBuildRunName == "" &&
+		pe.Status.LastBuildRunName == "" &&
+		pe.Status.CurrentBuildRunRef == nil &&
+		pe.Status.LastSuccessfulBuildRunRef == nil
+
 	// Resolve git credentials via the parent app's owner token.
 	if app.Spec.Source.ProviderRef == "" {
+		if withinSeedGrace {
+			return ctrl.Result{RequeueAfter: time.Second}, false, nil
+		}
 		return ctrl.Result{}, false, r.setPreviewFailed(ctx, pe, "MissingProviderRef", "parent App has no source.providerRef")
 	}
 	var gp mortisev1alpha1.GitProvider
 	if err := r.Get(ctx, types.NamespacedName{Name: app.Spec.Source.ProviderRef}, &gp); err != nil {
+		if withinSeedGrace && errors.IsNotFound(err) {
+			return ctrl.Result{RequeueAfter: time.Second}, false, nil
+		}
 		return ctrl.Result{}, false, r.setPreviewFailed(ctx, pe, "ProviderNotFound", fmt.Sprintf("GitProvider %q: %v", app.Spec.Source.ProviderRef, err))
 	}
 	createdBy := app.Annotations["mortise.dev/created-by"]
 	if createdBy == "" {
+		if withinSeedGrace {
+			return ctrl.Result{RequeueAfter: time.Second}, false, nil
+		}
 		return ctrl.Result{}, false, r.setPreviewFailed(ctx, pe, "MissingOwner", "parent app has no mortise.dev/created-by annotation")
 	}
 	token, err := git.ResolveGitToken(ctx, r.Client, gp.Name, createdBy)
@@ -348,7 +381,7 @@ func (r *PreviewEnvironmentReconciler) reconcilePreviewBuild(ctx context.Context
 	}
 }
 
-func (r *PreviewEnvironmentReconciler) reconcilePreviewDeployment(ctx context.Context, pe *mortisev1alpha1.PreviewEnvironment, app *mortisev1alpha1.App, previewNs string) error {
+func (r *PreviewEnvironmentReconciler) reconcilePreviewDeployment(ctx context.Context, pe *mortisev1alpha1.PreviewEnvironment, app *mortisev1alpha1.App, previewNs, envHash string) error {
 	name := pe.Spec.AppRef
 	replicas := int32(1)
 	if pe.Spec.Replicas != nil {
@@ -391,13 +424,17 @@ func (r *PreviewEnvironmentReconciler) reconcilePreviewDeployment(ctx context.Co
 			},
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
-					Labels: labels,
+					Labels:      labels,
+					Annotations: map[string]string{"mortise.dev/env-hash": envHash},
 				},
 				Spec: corev1.PodSpec{
 					Containers: containers,
 				},
 			},
 		},
+	}
+	if envHash == "" {
+		desired.Spec.Template.Annotations = nil
 	}
 
 	var existing appsv1.Deployment
@@ -539,10 +576,10 @@ func (r *PreviewEnvironmentReconciler) reconcilePreviewDeployment(ctx context.Co
 //  2. {app}-env from source env namespace (user + binding vars)
 //  3. bindings resolved against source env (pe.Spec.Bindings)
 //  4. pe.Spec.Env overrides
-func (r *PreviewEnvironmentReconciler) reconcilePreviewEnvSecret(ctx context.Context, pe *mortisev1alpha1.PreviewEnvironment, app *mortisev1alpha1.App, previewNs string) error {
+func (r *PreviewEnvironmentReconciler) reconcilePreviewEnvSecret(ctx context.Context, pe *mortisev1alpha1.PreviewEnvironment, app *mortisev1alpha1.App, previewNs string) (string, error) {
 	projectName, ok := constants.ProjectFromControlNs(pe.Namespace)
 	if !ok {
-		return fmt.Errorf("preview %q not in a control namespace (%q)", pe.Name, pe.Namespace)
+		return "", fmt.Errorf("preview %q not in a control namespace (%q)", pe.Name, pe.Namespace)
 	}
 	sourceEnvNs := constants.EnvNamespace(projectName, pe.Spec.SourceEnv)
 	store := &envstore.Store{Client: r.Client}
@@ -557,24 +594,24 @@ func (r *PreviewEnvironmentReconciler) reconcilePreviewEnvSecret(ctx context.Con
 	// Copy shared vars from the control-namespace source of truth into the
 	// preview namespace. The source env namespace only carries a materialized
 	// cache, which may lag behind the control-ns Secret under load.
-	sourceShared, err := r.readSharedSource(ctx, pe.Namespace)
+	sourceShared, err := r.readSharedSource(ctx, pe.Namespace, sourceEnvNs)
 	if err != nil {
-		return fmt.Errorf("read shared-vars from control ns %q: %w", pe.Namespace, err)
+		return "", fmt.Errorf("read shared-vars from control ns %q: %w", pe.Namespace, err)
 	}
 	if len(sourceShared) > 0 {
 		if err := store.SetShared(ctx, previewNs, sourceShared, labels); err != nil {
-			return fmt.Errorf("copy shared-env to preview ns: %w", err)
+			return "", fmt.Errorf("copy shared-env to preview ns: %w", err)
 		}
 	} else {
 		if err := store.EnsureSharedExists(ctx, previewNs, labels); err != nil {
-			return fmt.Errorf("ensure shared-env in preview ns: %w", err)
+			return "", fmt.Errorf("ensure shared-env in preview ns: %w", err)
 		}
 	}
 
 	// Read inherited per-app env vars from the source environment.
 	inherited, err := r.readAppEnvSource(ctx, sourceEnvNs, app.Name)
 	if err != nil {
-		return fmt.Errorf("read app env vars from source env %q: %w", sourceEnvNs, err)
+		return "", fmt.Errorf("read app env vars from source env %q: %w", sourceEnvNs, err)
 	}
 	merged := make(map[string]envstore.Env, len(inherited))
 	for _, e := range inherited {
@@ -586,7 +623,7 @@ func (r *PreviewEnvironmentReconciler) reconcilePreviewEnvSecret(ctx context.Con
 		resolver := &bindings.Resolver{Client: r.Client}
 		boundVars, err := resolver.Resolve(ctx, projectName, pe.Spec.SourceEnv, pe.Spec.Bindings)
 		if err != nil {
-			return fmt.Errorf("resolve bindings: %w", err)
+			return "", fmt.Errorf("resolve bindings: %w", err)
 		}
 		for _, bv := range boundVars {
 			merged[bv.Name] = envstore.Env{Name: bv.Name, Value: bv.Value, Source: "binding"}
@@ -602,7 +639,10 @@ func (r *PreviewEnvironmentReconciler) reconcilePreviewEnvSecret(ctx context.Con
 	for _, e := range merged {
 		flat = append(flat, e)
 	}
-	return store.Set(ctx, previewNs, app.Name, flat, labels)
+	if err := store.Set(ctx, previewNs, app.Name, flat, labels); err != nil {
+		return "", err
+	}
+	return hashEnvSecretData(ctx, r.apiReader(), app.Name, previewNs), nil
 }
 
 func (r *PreviewEnvironmentReconciler) reconcilePreviewService(ctx context.Context, pe *mortisev1alpha1.PreviewEnvironment, app *mortisev1alpha1.App, previewNs string) error {
@@ -834,6 +874,45 @@ func (r *PreviewEnvironmentReconciler) SetupWithManager(mgr ctrl.Manager) error 
 			Namespace: constants.ControlNamespace(projectName),
 		}}}
 	})
+	enqueuePEFromApp := handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []reconcile.Request {
+		app, ok := obj.(*mortisev1alpha1.App)
+		if !ok {
+			return nil
+		}
+		var previews mortisev1alpha1.PreviewEnvironmentList
+		if err := r.List(ctx, &previews, client.InNamespace(app.Namespace)); err != nil {
+			return nil
+		}
+		requests := make([]reconcile.Request, 0, len(previews.Items))
+		for i := range previews.Items {
+			if previews.Items[i].Spec.AppRef != app.Name {
+				continue
+			}
+			requests = append(requests, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      previews.Items[i].Name,
+					Namespace: previews.Items[i].Namespace,
+				},
+			})
+		}
+		return requests
+	})
+	appPreviewRefreshPredicate := predicate.Funcs{
+		CreateFunc:  func(event.CreateEvent) bool { return false },
+		DeleteFunc:  func(event.DeleteEvent) bool { return false },
+		GenericFunc: func(event.GenericEvent) bool { return false },
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			oldApp, okOld := e.ObjectOld.(*mortisev1alpha1.App)
+			newApp, okNew := e.ObjectNew.(*mortisev1alpha1.App)
+			if !okOld || !okNew {
+				return false
+			}
+			if oldApp.Generation != newApp.Generation {
+				return true
+			}
+			return oldApp.Annotations[appEnvUpdatedAnnotation] != newApp.Annotations[appEnvUpdatedAnnotation]
+		},
+	}
 	enqueuePEFromBuildRun := handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []reconcile.Request {
 		br, ok := obj.(*mortisev1alpha1.BuildRun)
 		if !ok {
@@ -852,6 +931,7 @@ func (r *PreviewEnvironmentReconciler) SetupWithManager(mgr ctrl.Manager) error 
 		Watches(&appsv1.Deployment{}, enqueuePEFromManagedResource).
 		Watches(&corev1.Service{}, enqueuePEFromManagedResource).
 		Watches(&networkingv1.Ingress{}, enqueuePEFromManagedResource).
+		Watches(&mortisev1alpha1.App{}, enqueuePEFromApp, builder.WithPredicates(appPreviewRefreshPredicate)).
 		Watches(&mortisev1alpha1.BuildRun{}, enqueuePEFromBuildRun).
 		Named("previewenvironment").
 		Complete(r)
@@ -1014,14 +1094,28 @@ func normalizePreviewVolumes(volumes []corev1.Volume) []corev1.Volume {
 	return volumes
 }
 
-func (r *PreviewEnvironmentReconciler) readSharedSource(ctx context.Context, controlNs string) ([]envstore.Env, error) {
-	if r.APIReader == nil {
-		store := &envstore.Store{Client: r.Client}
-		return store.GetSharedSource(ctx, controlNs)
-	}
-
+func (r *PreviewEnvironmentReconciler) readSharedSource(ctx context.Context, controlNs, sourceEnvNs string) ([]envstore.Env, error) {
+	reader := r.apiReader()
 	var secret corev1.Secret
-	if err := r.APIReader.Get(ctx, types.NamespacedName{Namespace: controlNs, Name: envstore.SharedVarsSourceName}, &secret); err != nil {
+	if err := reader.Get(ctx, types.NamespacedName{Namespace: controlNs, Name: envstore.SharedVarsSourceName}, &secret); err != nil {
+		if !errors.IsNotFound(err) {
+			return nil, err
+		}
+
+		if err := reader.Get(ctx, types.NamespacedName{Namespace: sourceEnvNs, Name: envstore.SharedEnvName}, &secret); err != nil {
+			if errors.IsNotFound(err) {
+				return nil, nil
+			}
+			return nil, err
+		}
+	}
+	return envstore.SecretToEnvs(&secret), nil
+}
+
+func (r *PreviewEnvironmentReconciler) readAppEnvSource(ctx context.Context, namespace, appName string) ([]envstore.Env, error) {
+	reader := r.apiReader()
+	var secret corev1.Secret
+	if err := reader.Get(ctx, types.NamespacedName{Namespace: namespace, Name: envstore.AppEnvSecretName(appName)}, &secret); err != nil {
 		if errors.IsNotFound(err) {
 			return nil, nil
 		}
@@ -1030,17 +1124,11 @@ func (r *PreviewEnvironmentReconciler) readSharedSource(ctx context.Context, con
 	return envstore.SecretToEnvs(&secret), nil
 }
 
-func (r *PreviewEnvironmentReconciler) readAppEnvSource(ctx context.Context, namespace, appName string) ([]envstore.Env, error) {
-	if r.APIReader == nil {
-		store := &envstore.Store{Client: r.Client}
-		return store.Get(ctx, namespace, appName)
+func (r *PreviewEnvironmentReconciler) apiReader() client.Reader {
+	if r.APIReader != nil {
+		return r.APIReader
 	}
-
-	var secret corev1.Secret
-	if err := r.APIReader.Get(ctx, types.NamespacedName{Namespace: namespace, Name: envstore.AppEnvSecretName(appName)}, &secret); err != nil {
-		return nil, err
-	}
-	return envstore.SecretToEnvs(&secret), nil
+	return r.Client
 }
 
 func hasOwnerRef(pe *mortisev1alpha1.PreviewEnvironment, uid types.UID) bool {
