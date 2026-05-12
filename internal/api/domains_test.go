@@ -633,6 +633,48 @@ func TestAddDomain_RejectsAutoDomainCollision(t *testing.T) {
 	}
 }
 
+func TestAddDomain_RejectsOwnAutoDomain(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+	ns := seedProject(t, k8sClient, "default")
+
+	ctx := context.Background()
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "webapp", Namespace: ns},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{Type: "image", Image: "nginx:1.25.0"},
+			Environments: []mortisev1alpha1.Environment{
+				{Name: "production"},
+			},
+		},
+	}
+	if err := k8sClient.Create(ctx, app); err != nil {
+		t.Fatalf("create app: %v", err)
+	}
+	app.Status.Environments = []mortisev1alpha1.EnvironmentStatus{
+		{Name: "production", AutoDomain: "webapp-default.apps.example.com"},
+	}
+	if err := k8sClient.Status().Update(ctx, app); err != nil {
+		t.Fatalf("update status: %v", err)
+	}
+
+	w := doRequest(h, http.MethodPost, "/api/projects/default/apps/webapp/domains?environment=production", map[string]string{
+		"domain": "webapp-default.apps.example.com",
+	})
+	if w.Code != http.StatusConflict {
+		t.Fatalf("expected 409 for app auto-domain duplicate, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var updated mortisev1alpha1.App
+	if err := k8sClient.Get(ctx, types.NamespacedName{Name: "webapp", Namespace: ns}, &updated); err != nil {
+		t.Fatalf("get app: %v", err)
+	}
+	if len(updated.Spec.Environments[0].CustomDomains) != 0 {
+		t.Fatalf("expected no custom domains to be added, got %v", updated.Spec.Environments[0].CustomDomains)
+	}
+}
+
 func TestValidateDomain_ConflictAutoDomain(t *testing.T) {
 	k8sClient := setupEnvtest(t)
 	srv := newAdminServer(t, k8sClient)
