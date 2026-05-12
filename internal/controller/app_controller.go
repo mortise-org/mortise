@@ -909,6 +909,14 @@ func isTerminalBuildFailureCondition(cond *metav1.Condition) bool {
 	}
 }
 
+func degradedBuildFailureMessage(detail string) string {
+	detail = strings.TrimSpace(detail)
+	if detail == "" || detail == buildFailedDegradedMessage || strings.HasPrefix(detail, buildFailedDegradedMessage+":") {
+		return buildFailedDegradedMessage
+	}
+	return buildFailedDegradedMessage + ": " + detail
+}
+
 // dockerfilePath returns the configured Dockerfile path or the default.
 func dockerfilePath(app *mortisev1alpha1.App) string {
 	if app.Spec.Source.Build != nil && app.Spec.Source.Build.DockerfilePath != "" {
@@ -2845,7 +2853,7 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 					Type:               "BuildSucceeded",
 					Status:             metav1.ConditionFalse,
 					Reason:             reason,
-					Message:            buildFailedDegradedMessage,
+					Message:            degradedBuildFailureMessage(buildFailureCond.Message),
 					LastTransitionTime: buildFailureCond.LastTransitionTime,
 					ObservedGeneration: app.Generation,
 				})

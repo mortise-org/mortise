@@ -39,8 +39,8 @@
 	const envPhase = $derived.by<string | null>(() => {
 		const agg = liveApp?.status?.phase ?? null;
 		if (agg === 'Building') return 'Building';
-		if (agg === 'Degraded') return 'Degraded';
 		if (agg === 'Failed') return 'Failed';
+		if (agg === 'Degraded' && envStatusEntry?.phase === 'Ready') return 'Degraded';
 		return envStatusEntry?.phase ?? agg;
 	});
 

@@ -272,8 +272,9 @@ func TestUpdateStatusMarksDegradedWhenLatestBuildFailsButPreviousImageStillServe
 		t.Fatalf("expected serving env to remain Ready, got %+v", fresh.Status.Environments)
 	}
 	cond := findStatusCondition(fresh.Status.Conditions, "BuildSucceeded")
-	if cond == nil || cond.Message != buildFailedDegradedMessage {
-		t.Fatalf("expected degraded build message %q, got %+v", buildFailedDegradedMessage, cond)
+	wantMessage := degradedBuildFailureMessage("dockerfile missing")
+	if cond == nil || cond.Message != wantMessage {
+		t.Fatalf("expected degraded build message %q, got %+v", wantMessage, cond)
 	}
 }
 
@@ -369,7 +370,7 @@ func TestUpdateStatusClearsDegradedAfterSuccessfulRecovery(t *testing.T) {
 				Type:    "BuildSucceeded",
 				Status:  metav1.ConditionFalse,
 				Reason:  "BuildFailed",
-				Message: buildFailedDegradedMessage,
+				Message: degradedBuildFailureMessage("dockerfile missing"),
 			}},
 			Environments: []mortisev1alpha1.EnvironmentStatus{{
 				Name:           "production",
@@ -3680,7 +3681,7 @@ var _ = Describe("App Controller — git source", func() {
 			cond := meta.FindStatusCondition(app.Status.Conditions, "BuildSucceeded")
 			Expect(cond).NotTo(BeNil())
 			Expect(cond.Status).To(Equal(metav1.ConditionFalse))
-			Expect(cond.Message).To(Equal(buildFailedDegradedMessage))
+			Expect(cond.Message).To(Equal(degradedBuildFailureMessage("dockerfile not found")))
 		})
 
 	})

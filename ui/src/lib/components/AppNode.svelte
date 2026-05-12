@@ -24,8 +24,8 @@
 	// per-env from EnvironmentStatus.phase.
 	const phase = $derived.by<AppPhase | undefined>(() => {
 		if (app.status?.phase === 'Building') return 'Building';
-		if (app.status?.phase === 'Degraded') return 'Degraded';
 		if (app.status?.phase === 'Failed') return 'Failed';
+		if (app.status?.phase === 'Degraded' && envStatusEntry?.phase === 'Ready') return 'Degraded';
 		return envStatusEntry?.phase ?? app.status?.phase;
 	});
 	const isExternal = $derived(app.spec.source.type === 'external' as string);
