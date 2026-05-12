@@ -8,8 +8,12 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
+	"github.com/mortise-org/mortise/internal/api"
+	"github.com/mortise-org/mortise/internal/auth"
+	"github.com/mortise-org/mortise/internal/authz"
 	"github.com/mortise-org/mortise/internal/constants"
 	"github.com/mortise-org/mortise/internal/envstore"
 )
@@ -373,6 +377,109 @@ func TestPatchEnvRejectsManagedVarUnset(t *testing.T) {
 	})
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200 when unsetting user var, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestGetEnvAndSharedVarsRedactionForDeveloperAndViewer(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	ctx := context.Background()
+	ns := seedProject(t, k8sClient, "default", "production", "staging")
+	seedImageApp(t, k8sClient, ns, "webapp", mortisev1alpha1.Environment{Name: "production"}, mortisev1alpha1.Environment{Name: "staging"})
+
+	newServerForUser := func(t *testing.T, email string, role auth.Role) (*api.Server, string) {
+		t.Helper()
+		authProvider := auth.NewNativeAuthProvider(k8sClient)
+		jwtHelper := auth.NewJWTHelper(k8sClient)
+		if err := authProvider.CreateUser(ctx, email, "testpass", role); err != nil {
+			t.Fatalf("create user %s: %v", email, err)
+		}
+		principal, err := authProvider.Authenticate(ctx, auth.Credentials{Email: email, Password: "testpass"})
+		if err != nil {
+			t.Fatalf("authenticate %s: %v", email, err)
+		}
+		token, err := jwtHelper.GenerateToken(ctx, principal)
+		if err != nil {
+			t.Fatalf("token for %s: %v", email, err)
+		}
+		return api.NewServer(k8sClient, nil, nil, nil, authProvider, jwtHelper, nil, authz.NewNativePolicyEngine(k8sClient)), token
+	}
+
+	var project mortisev1alpha1.Project
+	if err := k8sClient.Get(ctx, client.ObjectKey{Name: "default"}, &project); err != nil {
+		t.Fatalf("get project: %v", err)
+	}
+	project.Spec.Environments = []mortisev1alpha1.ProjectEnvironment{
+		{Name: "production", Restricted: true},
+		{Name: "staging"},
+	}
+	if err := k8sClient.Update(ctx, &project); err != nil {
+		t.Fatalf("update project restrictions: %v", err)
+	}
+
+	store := &envstore.Store{Client: k8sClient}
+	if err := store.Set(ctx, constants.EnvNamespace("default", "production"), "webapp", []envstore.Env{{Name: "DB_URL", Value: "postgres://prod", Source: "user"}}, nil); err != nil {
+		t.Fatalf("seed prod env: %v", err)
+	}
+	if err := store.Set(ctx, constants.EnvNamespace("default", "staging"), "webapp", []envstore.Env{{Name: "DB_URL", Value: "postgres://staging", Source: "user"}}, nil); err != nil {
+		t.Fatalf("seed staging env: %v", err)
+	}
+	if err := store.SetSharedSource(ctx, constants.ControlNamespace("default"), []envstore.Env{{Name: "SHARED_KEY", Value: "shared-value", Source: "shared"}}, nil); err != nil {
+		t.Fatalf("seed shared vars: %v", err)
+	}
+
+	adminSrv, adminToken := newServerForUser(t, "admin@example.com", auth.RoleAdmin)
+	developerSrv, developerToken := newServerForUser(t, "developer@example.com", auth.RoleMember)
+	viewerSrv, viewerToken := newServerForUser(t, "viewer@example.com", auth.RoleMember)
+	seedProjectMember(t, k8sClient, "default", "developer@example.com", mortisev1alpha1.ProjectRoleDeveloper)
+	seedProjectMember(t, k8sClient, "default", "viewer@example.com", mortisev1alpha1.ProjectRoleViewer)
+
+	type envVar struct {
+		Name     string `json:"name"`
+		Value    string `json:"value"`
+		Source   string `json:"source"`
+		Redacted bool   `json:"redacted"`
+	}
+	readVars := func(t *testing.T, h http.Handler, token, path string) []envVar {
+		t.Helper()
+		w := doRequestWithToken(h, http.MethodGet, path, nil, token)
+		if w.Code != http.StatusOK {
+			t.Fatalf("GET %s: expected 200, got %d: %s", path, w.Code, w.Body.String())
+		}
+		var got []envVar
+		if err := json.NewDecoder(w.Body).Decode(&got); err != nil {
+			t.Fatalf("decode %s: %v", path, err)
+		}
+		return got
+	}
+
+	adminProd := readVars(t, adminSrv.Handler(), adminToken, "/api/projects/default/apps/webapp/env?environment=production")
+	if len(adminProd) != 1 || adminProd[0].Value != "postgres://prod" || adminProd[0].Redacted {
+		t.Fatalf("admin should see plaintext production env, got %+v", adminProd)
+	}
+
+	developerStaging := readVars(t, developerSrv.Handler(), developerToken, "/api/projects/default/apps/webapp/env?environment=staging")
+	if len(developerStaging) != 1 || developerStaging[0].Value != "postgres://staging" || developerStaging[0].Redacted {
+		t.Fatalf("developer should see plaintext staging env, got %+v", developerStaging)
+	}
+
+	developerProd := readVars(t, developerSrv.Handler(), developerToken, "/api/projects/default/apps/webapp/env?environment=production")
+	if len(developerProd) != 1 || developerProd[0].Value != "" || !developerProd[0].Redacted || developerProd[0].Source != "user" {
+		t.Fatalf("developer should receive redacted production env metadata, got %+v", developerProd)
+	}
+
+	developerShared := readVars(t, developerSrv.Handler(), developerToken, "/api/projects/default/shared-vars")
+	if len(developerShared) != 1 || developerShared[0].Value != "shared-value" || developerShared[0].Redacted {
+		t.Fatalf("developer should see plaintext shared vars, got %+v", developerShared)
+	}
+
+	viewerStaging := readVars(t, viewerSrv.Handler(), viewerToken, "/api/projects/default/apps/webapp/env?environment=staging")
+	if len(viewerStaging) != 1 || viewerStaging[0].Value != "" || !viewerStaging[0].Redacted {
+		t.Fatalf("viewer should receive redacted app env metadata, got %+v", viewerStaging)
+	}
+
+	viewerShared := readVars(t, viewerSrv.Handler(), viewerToken, "/api/projects/default/shared-vars")
+	if len(viewerShared) != 1 || viewerShared[0].Value != "" || !viewerShared[0].Redacted {
+		t.Fatalf("viewer should receive redacted shared var metadata, got %+v", viewerShared)
 	}
 }
 
