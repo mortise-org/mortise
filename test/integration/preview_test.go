@@ -125,7 +125,14 @@ func TestPreviewEnvironmentLifecycle(t *testing.T) {
 	// --- Step 4: Verify preview resources exist.
 	previewResourceName := app.Name
 
-	// Deployment
+	// Deployment — PE is Ready once the env entry is added; the app
+	// controller still needs time to create the workload resources.
+	helpers.RequireEventually(t, 3*time.Minute, func() bool {
+		var d appsv1.Deployment
+		return k8sClient.Get(context.Background(), types.NamespacedName{
+			Name: previewResourceName, Namespace: previewNs,
+		}, &d) == nil
+	})
 	var dep appsv1.Deployment
 	if err := k8sClient.Get(context.Background(), types.NamespacedName{
 		Name: previewResourceName, Namespace: previewNs,
@@ -135,6 +142,12 @@ func TestPreviewEnvironmentLifecycle(t *testing.T) {
 	t.Logf("preview deployment image: %s", dep.Spec.Template.Spec.Containers[0].Image)
 
 	// Service
+	helpers.RequireEventually(t, 3*time.Minute, func() bool {
+		var s corev1.Service
+		return k8sClient.Get(context.Background(), types.NamespacedName{
+			Name: previewResourceName, Namespace: previewNs,
+		}, &s) == nil
+	})
 	var svc corev1.Service
 	if err := k8sClient.Get(context.Background(), types.NamespacedName{
 		Name: previewResourceName, Namespace: previewNs,
@@ -143,6 +156,12 @@ func TestPreviewEnvironmentLifecycle(t *testing.T) {
 	}
 
 	// Ingress with correct host
+	helpers.RequireEventually(t, 3*time.Minute, func() bool {
+		var i networkingv1.Ingress
+		return k8sClient.Get(context.Background(), types.NamespacedName{
+			Name: previewResourceName, Namespace: previewNs,
+		}, &i) == nil
+	})
 	var ing networkingv1.Ingress
 	if err := k8sClient.Get(context.Background(), types.NamespacedName{
 		Name: previewResourceName, Namespace: previewNs,

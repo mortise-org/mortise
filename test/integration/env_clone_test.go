@@ -150,8 +150,9 @@ func TestPreviewEnvironmentInheritsSourceEnvVars(t *testing.T) {
 		envMap[k] = string(v)
 	}
 
-	// pe.Spec.Env override wins for DATABASE_URL.
-	if got, want := envMap["DATABASE_URL"], "postgres://preview:5432/test"; got != want {
+	// Preview clones the source env vars — DATABASE_URL comes from the
+	// source environment, not from pe.Spec.Env (removed in the rework).
+	if got, want := envMap["DATABASE_URL"], "postgres://prod:5432/app"; got != want {
 		t.Errorf("DATABASE_URL: got %q, want %q", got, want)
 	}
 	// Inherited per-env var preserved.
@@ -267,7 +268,14 @@ func TestPreviewEnvironmentRefreshesAfterEnvAPIUpdate(t *testing.T) {
 
 	previewNs := constants.PreviewNamespace(projectName, 101)
 	waitForPreviewReady(t, ns, pe.Name, 5*time.Minute)
-	helpers.RequireEventually(t, 2*time.Minute, func() bool {
+	// Wait for the app controller to deploy into the preview env.
+	helpers.RequireEventually(t, 3*time.Minute, func() bool {
+		var dep appsv1.Deployment
+		return k8sClient.Get(context.Background(), types.NamespacedName{
+			Name: app.Name, Namespace: previewNs,
+		}, &dep) == nil
+	})
+	helpers.RequireEventually(t, 3*time.Minute, func() bool {
 		var envSecret corev1.Secret
 		if err := k8sClient.Get(context.Background(), types.NamespacedName{
 			Name: app.Name + "-env", Namespace: previewNs,

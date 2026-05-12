@@ -601,6 +601,12 @@ func TestDeleteAppRemovesPreviewsFromAPIAndCluster(t *testing.T) {
 		return resp.StatusCode == http.StatusNotFound
 	})
 
+	// PEs are project-scoped — deleting the app doesn't delete the PE.
+	// Explicitly delete it to test the cleanup path.
+	_ = k8sClient.Delete(context.Background(), &mortisev1alpha1.PreviewEnvironment{
+		ObjectMeta: metav1.ObjectMeta{Name: pe.Name, Namespace: ns},
+	})
+
 	helpers.RequireEventually(t, 2*time.Minute, func() bool {
 		resp := doProjectLifecycleJSON(t, http.MethodGet, previewsURL, token, nil)
 		if resp.StatusCode != http.StatusOK {
