@@ -21,15 +21,13 @@ import (
 )
 
 // PreviewPhase represents the lifecycle phase of a preview environment.
-// +kubebuilder:validation:Enum=Pending;Building;Ready;Failed;Expired
+// +kubebuilder:validation:Enum=Pending;Ready;Failed
 type PreviewPhase string
 
 const (
-	PreviewPhasePending  PreviewPhase = "Pending"
-	PreviewPhaseBuilding PreviewPhase = "Building"
-	PreviewPhaseReady    PreviewPhase = "Ready"
-	PreviewPhaseFailed   PreviewPhase = "Failed"
-	PreviewPhaseExpired  PreviewPhase = "Expired"
+	PreviewPhasePending PreviewPhase = "Pending"
+	PreviewPhaseReady   PreviewPhase = "Ready"
+	PreviewPhaseFailed  PreviewPhase = "Failed"
 )
 
 // PullRequestRef identifies the PR that triggered this preview.
@@ -41,44 +39,17 @@ type PullRequestRef struct {
 
 // PreviewEnvironmentSpec defines the desired state of PreviewEnvironment.
 type PreviewEnvironmentSpec struct {
-	// AppRef is the name of the parent App this previews (same namespace).
+	// ProjectRef is the name of the parent Project (cluster-scoped).
 	// +kubebuilder:validation:Required
-	AppRef string `json:"appRef"`
+	ProjectRef string `json:"projectRef"`
 
-	// SourceEnv is the project environment name the preview was forked from
-	// (typically `staging`). Bindings declared in the preview resolve against
-	// this env's namespace, so previews share the backing services of their
-	// source env rather than spinning up their own.
+	// SourceEnv is the project environment name to clone from.
 	// +kubebuilder:validation:Required
 	SourceEnv string `json:"sourceEnv"`
 
 	// PullRequest identifies the PR that triggered this preview.
 	// +kubebuilder:validation:Required
 	PullRequest PullRequestRef `json:"pullRequest"`
-
-	// Replicas for the preview Deployment. Inherited from staging, overridable.
-	// +optional
-	Replicas *int32 `json:"replicas,omitempty"`
-
-	// Resources for the preview Deployment. Inherited from staging, overridable.
-	// +optional
-	Resources ResourceRequirements `json:"resources,omitempty"`
-
-	// Env vars for the preview Deployment. Inherited from staging, overridable.
-	// +optional
-	Env []EnvVar `json:"env,omitempty"`
-
-	// Bindings inherited from the staging environment.
-	// +optional
-	Bindings []Binding `json:"bindings,omitempty"`
-
-	// Domain for this preview (resolved from App.spec.preview.domain template).
-	// +optional
-	Domain string `json:"domain,omitempty"`
-
-	// TTL after which the preview is auto-deleted if the PR is still open.
-	// +optional
-	TTL metav1.Duration `json:"ttl,omitempty"`
 }
 
 // PreviewEnvironmentStatus defines the observed state of PreviewEnvironment.
@@ -86,31 +57,9 @@ type PreviewEnvironmentStatus struct {
 	// Phase is the current lifecycle phase.
 	Phase PreviewPhase `json:"phase,omitempty"`
 
-	// CurrentBuildRunName is the active durable build execution for this preview.
+	// EnvironmentName is the name of the created ProjectEnvironment (e.g. "pr-42").
 	// +optional
-	CurrentBuildRunName string `json:"currentBuildRunName,omitempty"`
-
-	// LastBuildRunName is the most recent terminal durable build execution.
-	// +optional
-	LastBuildRunName string `json:"lastBuildRunName,omitempty"`
-
-	// URL is the HTTPS endpoint for the preview.
-	URL string `json:"url,omitempty"`
-
-	// Image is the built container image reference.
-	Image string `json:"image,omitempty"`
-
-	// CurrentBuildRunRef points at the currently selected BuildRun for this preview.
-	// +optional
-	CurrentBuildRunRef *BuildRunReference `json:"currentBuildRunRef,omitempty"`
-
-	// LastSuccessfulBuildRunRef points at the most recent successful BuildRun.
-	// +optional
-	LastSuccessfulBuildRunRef *BuildRunReference `json:"lastSuccessfulBuildRunRef,omitempty"`
-
-	// ExpiresAt is when this preview will be auto-deleted.
-	// +optional
-	ExpiresAt *metav1.Time `json:"expiresAt,omitempty"`
+	EnvironmentName string `json:"environmentName,omitempty"`
 
 	// +listType=map
 	// +listMapKey=type
@@ -120,10 +69,9 @@ type PreviewEnvironmentStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:printcolumn:name="App",type=string,JSONPath=`.spec.appRef`
 // +kubebuilder:printcolumn:name="PR",type=integer,JSONPath=`.spec.pullRequest.number`
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
-// +kubebuilder:printcolumn:name="URL",type=string,JSONPath=`.status.url`
+// +kubebuilder:printcolumn:name="Environment",type=string,JSONPath=`.status.environmentName`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // PreviewEnvironment is the Schema for the previewenvironments API

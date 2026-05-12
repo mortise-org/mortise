@@ -101,8 +101,6 @@ func TestPreviewEnvironmentInheritsSourceEnvVars(t *testing.T) {
 	// Enable project-level preview.
 	enableProjectPreview(t, projectName, &mortisev1alpha1.PreviewConfig{
 		Enabled: true,
-		Domain:  "pr-{number}-{app}.test.local",
-		TTL:     "1h",
 	})
 
 	// Create a PreviewEnvironment against the source env.
@@ -112,17 +110,12 @@ func TestPreviewEnvironmentInheritsSourceEnvVars(t *testing.T) {
 			Namespace: ns,
 		},
 		Spec: mortisev1alpha1.PreviewEnvironmentSpec{
-			AppRef:    app.Name,
-			SourceEnv: envName,
+			ProjectRef: projectName,
+			SourceEnv:  envName,
 			PullRequest: mortisev1alpha1.PullRequestRef{
 				Number: 100,
 				Branch: "feat-test",
 				SHA:    "abc123inherit",
-			},
-			Domain: "pr-100-" + app.Name + ".test.local",
-			TTL:    metav1.Duration{Duration: 1 * time.Hour},
-			Env: []mortisev1alpha1.EnvVar{
-				{Name: "DATABASE_URL", Value: "postgres://preview:5432/test"},
 			},
 		},
 	}
@@ -231,8 +224,6 @@ func TestPreviewEnvironmentRefreshesAfterEnvAPIUpdate(t *testing.T) {
 
 	enableProjectPreview(t, projectName, &mortisev1alpha1.PreviewConfig{
 		Enabled: true,
-		Domain:  "pr-{number}-{app}.test.local",
-		TTL:     "1h",
 	})
 
 	app := helpers.LoadFixture(t, filepath.Join(fixturesDir(), "git-preview.yaml"))
@@ -267,7 +258,7 @@ func TestPreviewEnvironmentRefreshesAfterEnvAPIUpdate(t *testing.T) {
 	}
 
 	headSHA := getGiteaBranchSHA(t, giteaLocalURL, boot.Token, boot.Owner, boot.Name, "main")
-	pe := createPreviewEnvironment(t, ns, app.Name, 101, headSHA, "pr-101-"+app.Name+".test.local")
+	pe := createPreviewEnvironment(t, ns, projectName, 101, headSHA)
 	pe.Spec.SourceEnv = envName
 	if err := k8sClient.Create(context.Background(), pe); err != nil {
 		t.Fatalf("create PreviewEnvironment: %v", err)

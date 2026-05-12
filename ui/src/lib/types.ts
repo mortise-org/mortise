@@ -181,8 +181,8 @@ export type ProjectPhase = 'Pending' | 'Ready' | 'Terminating' | 'Failed';
 
 export interface PreviewConfig {
 	enabled: boolean;
-	domain?: string;
-	ttl?: string;
+	sourceEnvironment?: string;
+	botPR?: boolean;
 }
 
 export interface Project {
@@ -266,16 +266,13 @@ export interface DevicePollResponse {
 }
 
 // Preview environment
-export type PreviewPhase = 'Pending' | 'Building' | 'Ready' | 'Failed' | 'Expired';
+export type PreviewPhase = 'Pending' | 'Ready' | 'Failed';
 
 export interface PreviewEnvironment {
 	name: string;
-	appRef: string;
+	environmentName: string;
 	pr: { number: number; branch: string; sha: string };
 	phase: PreviewPhase;
-	url?: string;
-	ttl?: string;
-	expiresAt?: string;
 }
 
 // Activity event (§5.11)
@@ -332,11 +329,9 @@ export interface PlatformUser {
 // Preview environment list item
 export interface PreviewSummary {
 	name: string;
-	appRef: string;
+	environmentName: string;
 	pr: { number: number; branch: string; sha: string };
 	phase: PreviewPhase;
-	url?: string;
-	expiresAt?: string;
 }
 
 // Notification item

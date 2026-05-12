@@ -556,8 +556,6 @@ func TestDeleteAppRemovesPreviewsFromAPIAndCluster(t *testing.T) {
 
 	enableProjectPreview(t, projectName, &mortisev1alpha1.PreviewConfig{
 		Enabled: true,
-		Domain:  fmt.Sprintf("pr-{number}-%s.test.local", app.Name),
-		TTL:     "24h",
 	})
 
 	if err := k8sClient.Create(context.Background(), app); err != nil {
@@ -566,8 +564,7 @@ func TestDeleteAppRemovesPreviewsFromAPIAndCluster(t *testing.T) {
 	helpers.WaitForAppReady(t, k8sClient, ns, app.Name, 5*time.Minute)
 
 	headSHA := getGiteaBranchSHA(t, giteaLocalURL, boot.Token, boot.Owner, boot.Name, "main")
-	previewDomain := fmt.Sprintf("pr-11-%s.test.local", app.Name)
-	pe := createPreviewEnvironment(t, ns, app.Name, 11, headSHA, previewDomain)
+	pe := createPreviewEnvironment(t, ns, projectName, 11, headSHA)
 	pe.Spec.SourceEnv = app.Spec.Environments[0].Name
 	if err := k8sClient.Create(context.Background(), pe); err != nil {
 		t.Fatalf("create PreviewEnvironment: %v", err)

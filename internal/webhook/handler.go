@@ -10,18 +10,19 @@ package webhook
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
 	"github.com/mortise-org/mortise/internal/constants"
 	"github.com/mortise-org/mortise/internal/git"
-	"github.com/mortise-org/mortise/internal/previewsync"
 )
 
 // Handler handles inbound git forge webhooks.
@@ -38,11 +39,10 @@ type k8sReader interface {
 	getProject(ctx context.Context, name string) (*mortisev1alpha1.Project, error)
 	listGitApps(ctx context.Context) ([]mortisev1alpha1.App, error)
 	patchAppRevision(ctx context.Context, app *mortisev1alpha1.App, sha string) error
-	listPreviewEnvironments(ctx context.Context, namespace string) ([]mortisev1alpha1.PreviewEnvironment, error)
+	getPreviewEnvironment(ctx context.Context, namespace, name string) (*mortisev1alpha1.PreviewEnvironment, error)
 	createPreviewEnvironment(ctx context.Context, pe *mortisev1alpha1.PreviewEnvironment) error
 	updatePreviewEnvironment(ctx context.Context, pe *mortisev1alpha1.PreviewEnvironment) error
-	deletePreviewEnvironment(ctx context.Context, pe *mortisev1alpha1.PreviewEnvironment) error
-	resolveGitTokenForApp(ctx context.Context, providerName, controlNamespace, createdBy, cachedOwner string) (git.TokenResult, error)
+	deletePreviewEnvironment(ctx context.Context, namespace, name string) error
 }
 
 // New creates a Handler.
@@ -194,8 +194,8 @@ func (h *Handler) dispatchToApps(ctx context.Context, br BuildRequest) {
 	}
 }
 
-// dispatchPREvent handles pull_request events by reconciling previews against
-// the forge's current open-PR list for each matching App.
+// dispatchPREvent handles pull_request events by creating, updating, or
+// deleting one PreviewEnvironment per affected project.
 func (h *Handler) dispatchPREvent(ctx context.Context, pr PREvent) {
 	log := logf.FromContext(ctx)
 
@@ -205,13 +205,11 @@ func (h *Handler) dispatchPREvent(ctx context.Context, pr PREvent) {
 		return
 	}
 
-	// Cache the parent Project once per PR — preview gating, staging lookup,
-	// and env-set validation all hang off the same record.
+	// Collect the set of projects that have at least one app matching the
+	// PR's repo and provider. We only need one PE per project.
 	projectCache := make(map[string]*mortisev1alpha1.Project)
 	projectKnown := make(map[string]bool)
-	openPRCache := make(map[string][]git.PullRequestSnapshot)
 
-	matched := 0
 	for i := range apps {
 		app := &apps[i]
 		src := app.Spec.Source
@@ -230,110 +228,122 @@ func (h *Handler) dispatchPREvent(ctx context.Context, pr PREvent) {
 			log.Info("skipping app not in control namespace", "app", app.Name, "namespace", app.Namespace)
 			continue
 		}
-
-		var project *mortisev1alpha1.Project
 		if projectKnown[projectName] {
-			project = projectCache[projectName]
-		} else {
-			fetched, err := h.k8s.getProject(ctx, projectName)
-			projectKnown[projectName] = true
-			if err != nil {
-				log.Error(err, "get Project for PR dispatch", "project", projectName)
-				projectCache[projectName] = nil
-				continue
-			}
-			projectCache[projectName] = fetched
-			project = fetched
-		}
-		if project == nil {
 			continue
 		}
+		projectKnown[projectName] = true
+
+		fetched, err := h.k8s.getProject(ctx, projectName)
+		if err != nil {
+			log.Error(err, "get Project for PR dispatch", "project", projectName)
+			continue
+		}
+		projectCache[projectName] = fetched
+	}
+
+	if len(projectCache) == 0 {
+		log.Info("no matching projects for PR event", "repo", pr.Repo, "number", pr.Number)
+		return
+	}
+
+	for projectName, project := range projectCache {
+		controlNs := constants.ControlNamespace(projectName)
+		peName := previewEnvName(pr.Number)
+
+		if pr.Action == "closed" {
+			h.deletePreviewForPR(ctx, controlNs, peName, projectName, pr.Number)
+			continue
+		}
+
+		// opened or synchronize
 		preview := project.Spec.Preview
 		if preview == nil || !preview.Enabled {
-			if pr.Action == "closed" {
-				if err := h.deletePreviewForPR(ctx, app, pr.Number); err != nil {
-					log.Error(err, "delete preview after close with previews disabled", "app", app.Name, "project", projectName, "number", pr.Number)
-					continue
-				}
-				matched++
-			}
 			continue
 		}
 
-		cacheKey := gpRepoKey(pr.Provider, app.Namespace, src.Repo)
-		openPRs, ok := openPRCache[cacheKey]
-		if !ok {
-			gp, err := h.k8s.getGitProvider(ctx, app.Spec.Source.ProviderRef)
-			if err != nil {
-				log.Error(err, "get GitProvider for preview sync", "provider", app.Spec.Source.ProviderRef)
-				continue
-			}
-			createdBy := app.Annotations["mortise.dev/created-by"]
-			cachedOwner := app.Annotations["mortise.dev/git-token-owner"]
-			tokenResult, err := h.k8s.resolveGitTokenForApp(ctx, gp.Name, app.Namespace, createdBy, cachedOwner)
-			if err != nil {
-				log.Error(err, "resolve git token for preview sync", "app", app.Name, "provider", gp.Name)
-				continue
-			}
-			api, err := h.gitAPIFromProvider(gp, tokenResult.Token, "")
-			if err != nil {
-				log.Error(err, "create git API for preview sync", "app", app.Name)
-				continue
-			}
-			openPRs, err = api.ListOpenPullRequests(ctx, app.Spec.Source.Repo)
-			if err != nil {
-				log.Error(err, "list open pull requests for preview sync", "app", app.Name, "repo", app.Spec.Source.Repo)
-				continue
-			}
-			openPRCache[cacheKey] = openPRs
+		// BotPR defaults to true when nil.
+		if preview.BotPR != nil && !*preview.BotPR {
+			// BotPR is explicitly false — but we don't have author info
+			// in the webhook payload, so we can't gate here. The PE
+			// controller can enforce this if needed.
 		}
-		if pr.Action == "closed" {
-			openPRs = filterClosedPR(openPRs, pr.Number)
-		}
-		if err := previewsync.ReconcileAppPreviews(ctx, previewStore{reader: h.k8s}, app, project, preview, openPRs); err != nil {
-			log.Error(err, "reconcile previews from webhook", "app", app.Name, "project", project.Name)
+
+		sourceEnv := resolveSourceEnv(project)
+		if sourceEnv == "" {
+			log.Info("no non-production env to clone from, skipping preview", "project", projectName)
 			continue
 		}
-		matched++
-	}
 
-	if matched == 0 {
-		log.Info("no matching apps for PR event", "repo", pr.Repo, "number", pr.Number)
+		existing, err := h.k8s.getPreviewEnvironment(ctx, controlNs, peName)
+		if err != nil {
+			// Not found — create.
+			pe := &mortisev1alpha1.PreviewEnvironment{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      peName,
+					Namespace: controlNs,
+				},
+				Spec: mortisev1alpha1.PreviewEnvironmentSpec{
+					ProjectRef: projectName,
+					SourceEnv:  sourceEnv,
+					PullRequest: mortisev1alpha1.PullRequestRef{
+						Number: pr.Number,
+						Branch: pr.Branch,
+						SHA:    pr.SHA,
+					},
+				},
+			}
+			if err := h.k8s.createPreviewEnvironment(ctx, pe); err != nil {
+				log.Error(err, "create PreviewEnvironment", "project", projectName, "pe", peName)
+				continue
+			}
+			log.Info("created PreviewEnvironment", "project", projectName, "pe", peName, "pr", pr.Number)
+			continue
+		}
+
+		// PE exists — update SHA (and branch if changed).
+		if existing.Spec.PullRequest.SHA == pr.SHA && existing.Spec.PullRequest.Branch == pr.Branch {
+			continue // no change
+		}
+		updated := existing.DeepCopy()
+		updated.Spec.PullRequest.SHA = pr.SHA
+		updated.Spec.PullRequest.Branch = pr.Branch
+		if err := h.k8s.updatePreviewEnvironment(ctx, updated); err != nil {
+			log.Error(err, "update PreviewEnvironment", "project", projectName, "pe", peName)
+			continue
+		}
+		log.Info("updated PreviewEnvironment", "project", projectName, "pe", peName, "sha", pr.SHA)
 	}
 }
 
-func (h *Handler) deletePreviewForPR(ctx context.Context, app *mortisev1alpha1.App, number int) error {
-	if app == nil || number == 0 {
-		return nil
+// deletePreviewForPR deletes a preview environment by name. Idempotent — a
+// missing PE is not an error.
+func (h *Handler) deletePreviewForPR(ctx context.Context, namespace, name, projectName string, prNumber int) {
+	log := logf.FromContext(ctx)
+	if err := h.k8s.deletePreviewEnvironment(ctx, namespace, name); err != nil {
+		log.Error(err, "delete PreviewEnvironment", "project", projectName, "pe", name, "pr", prNumber)
+		return
 	}
-	existing, err := h.k8s.listPreviewEnvironments(ctx, app.Namespace)
-	if err != nil {
-		return err
-	}
-	for i := range existing {
-		pe := &existing[i]
-		if pe.Spec.AppRef != app.Name || pe.Spec.PullRequest.Number != number {
-			continue
-		}
-		if err := h.k8s.deletePreviewEnvironment(ctx, pe); err != nil {
-			return err
-		}
-	}
-	return nil
+	log.Info("deleted PreviewEnvironment", "project", projectName, "pe", name, "pr", prNumber)
 }
 
-func filterClosedPR(openPRs []git.PullRequestSnapshot, closedNumber int) []git.PullRequestSnapshot {
-	if closedNumber == 0 || len(openPRs) == 0 {
-		return openPRs
+func previewEnvName(prNumber int) string {
+	return fmt.Sprintf("preview-pr-%d", prNumber)
+}
+
+func resolveSourceEnv(project *mortisev1alpha1.Project) string {
+	if project.Spec.Preview != nil && project.Spec.Preview.SourceEnvironment != "" {
+		return project.Spec.Preview.SourceEnvironment
 	}
-	filtered := openPRs[:0]
-	for _, pr := range openPRs {
-		if pr.Number == closedNumber {
-			continue
+	var firstNonProd string
+	for _, env := range project.Spec.Environments {
+		if env.Name == "staging" {
+			return "staging"
 		}
-		filtered = append(filtered, pr)
+		if env.Name != "production" && firstNonProd == "" {
+			firstNonProd = env.Name
+		}
 	}
-	return filtered
+	return firstNonProd
 }
 
 // branchFromRef strips the "refs/heads/" prefix from a git ref string.
@@ -675,28 +685,4 @@ func matchesWatchPaths(watchPaths, changedPaths []string) bool {
 		}
 	}
 	return false
-}
-
-func gpRepoKey(providerName, namespace, repo string) string {
-	return providerName + "|" + namespace + "|" + repo
-}
-
-type previewStore struct {
-	reader k8sReader
-}
-
-func (p previewStore) ListPreviewEnvironments(ctx context.Context, namespace string) ([]mortisev1alpha1.PreviewEnvironment, error) {
-	return p.reader.listPreviewEnvironments(ctx, namespace)
-}
-
-func (p previewStore) CreatePreviewEnvironment(ctx context.Context, pe *mortisev1alpha1.PreviewEnvironment) error {
-	return p.reader.createPreviewEnvironment(ctx, pe)
-}
-
-func (p previewStore) UpdatePreviewEnvironment(ctx context.Context, pe *mortisev1alpha1.PreviewEnvironment) error {
-	return p.reader.updatePreviewEnvironment(ctx, pe)
-}
-
-func (p previewStore) DeletePreviewEnvironment(ctx context.Context, pe *mortisev1alpha1.PreviewEnvironment) error {
-	return p.reader.deletePreviewEnvironment(ctx, pe)
 }

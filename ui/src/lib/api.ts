@@ -599,10 +599,10 @@ export const api = {
 		request<PreviewSummary[]>(`/projects/${enc(project)}/previews`),
 
 	// --- project preview settings ---
-	setProjectPreview: (project: string, enabled: boolean, domainTemplate?: string, ttl?: string) =>
+	setProjectPreview: (project: string, enabled: boolean, sourceEnvironment?: string) =>
 		request<Project>(`/projects/${enc(project)}`, {
 			method: 'PATCH',
-			body: JSON.stringify({ preview: { enabled, domainTemplate, ttl } })
+			body: JSON.stringify({ preview: { enabled, sourceEnvironment } })
 		}),
 
 	// --- project members ---

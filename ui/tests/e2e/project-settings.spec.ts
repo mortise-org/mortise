@@ -16,7 +16,7 @@ import {
 // Tests cover:
 //   - Viewing the project settings page structure (General section)
 //   - Updating the project description via Save changes
-//   - PR Environments section visibility and toggle
+//   - PR Environments section visibility, toggle, and source env selector
 //   - Danger Zone tab (delete button disabled state)
 //   - Tab navigation switching visible content panes
 // ---------------------------------------------------------------------------
