@@ -227,6 +227,18 @@ func TestPreviewEnvironmentRefreshesAfterEnvAPIUpdate(t *testing.T) {
 		Enabled: true,
 	})
 
+	// Enable autoRedeploy so env-hash changes trigger rolling updates.
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var project mortisev1alpha1.Project
+		if err := k8sClient.Get(context.Background(), types.NamespacedName{Name: projectName}, &project); err != nil {
+			return err
+		}
+		project.Spec.AutoRedeploy = true
+		return k8sClient.Update(context.Background(), &project)
+	}); err != nil {
+		t.Fatalf("enable autoRedeploy: %v", err)
+	}
+
 	app := helpers.LoadFixture(t, filepath.Join(fixturesDir(), "git-preview.yaml"))
 	app.Namespace = ns
 	app.Name = "refresh-app-" + randSuffix()
@@ -334,27 +346,7 @@ func TestPreviewEnvironmentRefreshesAfterEnvAPIUpdate(t *testing.T) {
 		return string(envSecret.Data["LOG_LEVEL"]) == "debug"
 	})
 
-	// Poke the app again from the test client to ensure the controller
-	// reconciles with fresh informer cache data (the in-cluster API poke
-	// may race with cache propagation).
-	pokeErr := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		var latest mortisev1alpha1.App
-		if err := k8sClient.Get(context.Background(), types.NamespacedName{
-			Namespace: ns, Name: app.Name,
-		}, &latest); err != nil {
-			return err
-		}
-		if latest.Annotations == nil {
-			latest.Annotations = map[string]string{}
-		}
-		latest.Annotations["mortise.dev/env-updated"] = fmt.Sprintf("%d", time.Now().UnixMilli())
-		return k8sClient.Update(context.Background(), &latest)
-	})
-	if pokeErr != nil {
-		t.Fatalf("poke app for reconcile: %v", pokeErr)
-	}
-
-	helpers.RequireEventually(t, 3*time.Minute, func() bool {
+	helpers.RequireEventually(t, 2*time.Minute, func() bool {
 		var dep appsv1.Deployment
 		if err := k8sClient.Get(context.Background(), types.NamespacedName{
 			Name: app.Name, Namespace: previewNs,
