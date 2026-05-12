@@ -24,6 +24,7 @@
 	// per-env from EnvironmentStatus.phase.
 	const phase = $derived.by<AppPhase | undefined>(() => {
 		if (app.status?.phase === 'Building') return 'Building';
+		if (app.status?.phase === 'Degraded') return 'Degraded';
 		if (app.status?.phase === 'Failed') return 'Failed';
 		return envStatusEntry?.phase ?? app.status?.phase;
 	});
@@ -35,6 +36,7 @@
 		Ready: 'bg-success/10 text-success',
 		Building: 'bg-warning/10 text-warning',
 		Deploying: 'bg-warning/10 text-warning',
+		Degraded: 'bg-warning/10 text-warning',
 		CrashLooping: 'bg-danger/10 text-danger',
 		Failed: 'bg-danger/10 text-danger',
 		Pending: 'bg-info/10 text-info'
@@ -46,13 +48,13 @@
 	const replicas = $derived(envEntry?.replicas ?? 1);
 	const volumes = $derived(app.spec.storage ?? []);
 
-	function failedReason(a: App, envMsg: string | undefined): string | null {
-		if (phase !== 'Failed' && phase !== 'CrashLooping') return null;
+	function phaseMessage(a: App, envMsg: string | undefined): string | null {
+		if (phase !== 'Degraded' && phase !== 'Failed' && phase !== 'CrashLooping') return null;
 		if (envMsg) return envMsg;
 		const cond = a.status?.conditions?.find(c => c.status === 'False');
 		return cond?.message ?? null;
 	}
-	const errorMsg = $derived(failedReason(app, envStatusEntry?.message));
+	const errorMsg = $derived(phaseMessage(app, envStatusEntry?.message));
 
 	// Build timer - synced to the BuildStarted condition timestamp from k8s.
 	let buildElapsed = $state('');
@@ -126,16 +128,16 @@
 			{#if phase === 'Building' && buildElapsed}
 				<span class="text-xs font-mono text-warning/70">{buildElapsed}</span>
 			{/if}
-			{#if (phase === 'Failed' || phase === 'CrashLooping') && errorMsg}
-				<span class="h-3 w-3 shrink-0 text-danger" title={errorMsg}>
+			{#if (phase === 'Degraded' || phase === 'Failed' || phase === 'CrashLooping') && errorMsg}
+				<span class="h-3 w-3 shrink-0 {phase === 'Degraded' ? 'text-warning' : 'text-danger'}" title={errorMsg}>
 					<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="h-3 w-3">
 						<path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a.75.75 0 000 1.5h.253a.25.25 0 01.244.304l-.459 2.066A1.75 1.75 0 0010.747 15H11a.75.75 0 000-1.5h-.253a.25.25 0 01-.244-.304l.459-2.066A1.75 1.75 0 009.253 9H9z" clip-rule="evenodd" />
 					</svg>
 				</span>
 			{/if}
 		</div>
-	{#if (phase === 'Failed' || phase === 'CrashLooping') && errorMsg}
-		<span class="line-clamp-2 text-xs text-danger/80">{errorMsg}</span>
+	{#if (phase === 'Degraded' || phase === 'Failed' || phase === 'CrashLooping') && errorMsg}
+		<span class="line-clamp-2 text-xs {phase === 'Degraded' ? 'text-warning/80' : 'text-danger/80'}">{errorMsg}</span>
 	{/if}
 
 	{#if needsRedeploy && enabled}

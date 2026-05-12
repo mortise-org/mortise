@@ -52,6 +52,7 @@
 		Ready: 'bg-success/10 text-success',
 		Building: 'bg-warning/10 text-warning',
 		Deploying: 'bg-warning/10 text-warning',
+		Degraded: 'bg-warning/10 text-warning',
 		Failed: 'bg-danger/10 text-danger',
 		Pending: 'bg-info/10 text-info'
 	};

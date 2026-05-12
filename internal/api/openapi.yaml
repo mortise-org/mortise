@@ -1225,6 +1225,7 @@ definitions:
     - Building
     - Deploying
     - Ready
+    - Degraded
     - CrashLooping
     - Failed
     type: string
@@ -1233,6 +1234,7 @@ definitions:
     - AppPhaseBuilding
     - AppPhaseDeploying
     - AppPhaseReady
+    - AppPhaseDegraded
     - AppPhaseCrashLooping
     - AppPhaseFailed
   v1alpha1.AppSource:

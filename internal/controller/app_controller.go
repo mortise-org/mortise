@@ -443,12 +443,12 @@ func (r *AppReconciler) prepareGitSource(ctx context.Context, app *mortisev1alph
 		return ctrl.Result{}, true, nil
 	}
 
-	// Don't retry builds that already failed for this revision.
-	if app.Status.Phase == mortisev1alpha1.AppPhaseFailed {
-		cond := meta.FindStatusCondition(app.Status.Conditions, "BuildSucceeded")
-		if cond != nil && cond.Status == metav1.ConditionFalse && cond.Reason == "BuildFailed" {
-			return ctrl.Result{}, false, nil
-		}
+	// Don't retry the same failed build unless the user explicitly requested one.
+	// We still continue the reconcile/status pass so the app can roll forward
+	// from a stale Building phase into Degraded or Failed based on what is
+	// actually serving in-cluster.
+	if !hasPendingRebuildRequest(app) && isTerminalBuildFailureCondition(meta.FindStatusCondition(app.Status.Conditions, "BuildSucceeded")) {
+		return ctrl.Result{}, true, nil
 	}
 
 	// Resolve git credentials via the user's per-provider token.
@@ -656,7 +656,9 @@ func (r *AppReconciler) reconcileEnvBuild(ctx context.Context, app *mortisev1alp
 				r.applyEnvBuildSuccess(ctx, app, envName, revision, current.Status.Image, current.Status.Digest, current.Status.DetectedPort)
 				return current.Status.Image, false, true, false, nil
 			case mortisev1alpha1.BuildRunPhaseFailed:
-				_ = r.setFailedCondition(ctx, app, firstNonEmpty(current.Status.FailureReason, "BuildFailed"), current.Status.FailureMessage)
+				if err := r.setBuildFailureCondition(ctx, app, firstNonEmpty(current.Status.FailureReason, "BuildFailed"), current.Status.FailureMessage); err != nil {
+					return "", false, false, false, err
+				}
 				return "", false, false, false, nil
 			default:
 				app.Status.Phase = mortisev1alpha1.AppPhaseBuilding
@@ -694,7 +696,9 @@ func (r *AppReconciler) reconcileEnvBuild(ctx context.Context, app *mortisev1alp
 		r.applyEnvBuildSuccess(ctx, app, envName, revision, run.Status.Image, run.Status.Digest, run.Status.DetectedPort)
 		return run.Status.Image, false, true, false, nil
 	case mortisev1alpha1.BuildRunPhaseFailed:
-		_ = r.setFailedCondition(ctx, app, firstNonEmpty(run.Status.FailureReason, "BuildFailed"), run.Status.FailureMessage)
+		if err := r.setBuildFailureCondition(ctx, app, firstNonEmpty(run.Status.FailureReason, "BuildFailed"), run.Status.FailureMessage); err != nil {
+			return "", false, false, false, err
+		}
 		return "", false, false, false, nil
 	default:
 		app.Status.Phase = mortisev1alpha1.AppPhaseBuilding
@@ -775,6 +779,7 @@ const (
 	buildLogAnnotationCommit    = "mortise.dev/build-commit"
 	buildLogAnnotationStatus    = "mortise.dev/build-status"
 	buildLogAnnotationError     = "mortise.dev/build-error"
+	buildFailedDegradedMessage  = "Serving previous image; latest build failed"
 )
 
 // maxBuildLogConfigMapBytes is a soft cap on the `lines` payload written into
@@ -892,6 +897,18 @@ func firstNonEmpty(a, b string) string {
 	return b
 }
 
+func isTerminalBuildFailureCondition(cond *metav1.Condition) bool {
+	if cond == nil || cond.Type != "BuildSucceeded" || cond.Status != metav1.ConditionFalse {
+		return false
+	}
+	switch cond.Reason {
+	case "BuildFailed", "BuildInterrupted":
+		return true
+	default:
+		return false
+	}
+}
+
 // dockerfilePath returns the configured Dockerfile path or the default.
 func dockerfilePath(app *mortisev1alpha1.App) string {
 	if app.Spec.Source.Build != nil && app.Spec.Source.Build.DockerfilePath != "" {
@@ -945,6 +962,29 @@ func (r *AppReconciler) setFailedCondition(ctx context.Context, app *mortisev1al
 		LastTransitionTime: transitionTime,
 	})
 	return fmt.Errorf("%s: %s", reason, msg)
+}
+
+func (r *AppReconciler) setBuildFailureCondition(ctx context.Context, app *mortisev1alpha1.App, reason, msg string) error {
+	transitionTime := metav1.NewTime(r.clock().Now())
+	if err := r.updateAppStatus(ctx, app, func(status *mortisev1alpha1.AppStatus) {
+		meta.SetStatusCondition(&status.Conditions, metav1.Condition{
+			Type:               "BuildSucceeded",
+			Status:             metav1.ConditionFalse,
+			Reason:             reason,
+			Message:            msg,
+			LastTransitionTime: transitionTime,
+		})
+	}); err != nil {
+		return err
+	}
+	meta.SetStatusCondition(&app.Status.Conditions, metav1.Condition{
+		Type:               "BuildSucceeded",
+		Status:             metav1.ConditionFalse,
+		Reason:             reason,
+		Message:            msg,
+		LastTransitionTime: transitionTime,
+	})
+	return nil
 }
 
 func (r *AppReconciler) reconcileResolvedEnvSecrets(ctx context.Context, app *mortisev1alpha1.App, resolvedEnvs []mortisev1alpha1.Environment) error {
@@ -2767,6 +2807,16 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 			envStatuses = append(envStatuses, es)
 		}
 
+		buildFailureCond := meta.FindStatusCondition(fresh.Status.Conditions, "BuildSucceeded")
+		buildFailed := isTerminalBuildFailureCondition(buildFailureCond)
+		anyServing := false
+		for _, es := range envStatuses {
+			if es.Phase == mortisev1alpha1.AppPhaseReady {
+				anyServing = true
+				break
+			}
+		}
+
 		// Aggregate phase across envs (kept for backward compat + top-level UI).
 		phase := mortisev1alpha1.AppPhaseDeploying
 		if !anyNotReady && len(envStatuses) > 0 {
@@ -2783,6 +2833,25 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 			})
 		} else {
 			meta.RemoveStatusCondition(&fresh.Status.Conditions, "PodHealthy")
+		}
+		if buildFailed {
+			if anyServing {
+				reason := buildFailureCond.Reason
+				if reason == "" {
+					reason = "BuildFailed"
+				}
+				phase = mortisev1alpha1.AppPhaseDegraded
+				meta.SetStatusCondition(&fresh.Status.Conditions, metav1.Condition{
+					Type:               "BuildSucceeded",
+					Status:             metav1.ConditionFalse,
+					Reason:             reason,
+					Message:            buildFailedDegradedMessage,
+					LastTransitionTime: buildFailureCond.LastTransitionTime,
+					ObservedGeneration: app.Generation,
+				})
+			} else if !anyCrash {
+				phase = mortisev1alpha1.AppPhaseFailed
+			}
 		}
 
 		fresh.Status.Phase = phase

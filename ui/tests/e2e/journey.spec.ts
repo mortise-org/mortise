@@ -100,7 +100,7 @@ test.describe('full user journey', () => {
 
 		// Phase badge is visible.
 		const phaseBadge = page.locator('span', {
-			hasText: /Ready|Pending|Deploying|Building|Failed|CrashLooping/
+			hasText: /Ready|Pending|Deploying|Building|Degraded|Failed|CrashLooping/
 		});
 		await expect(phaseBadge.first()).toBeVisible({ timeout: 15_000 });
 

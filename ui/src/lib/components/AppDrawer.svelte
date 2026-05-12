@@ -39,6 +39,7 @@
 	const envPhase = $derived.by<string | null>(() => {
 		const agg = liveApp?.status?.phase ?? null;
 		if (agg === 'Building') return 'Building';
+		if (agg === 'Degraded') return 'Degraded';
 		if (agg === 'Failed') return 'Failed';
 		return envStatusEntry?.phase ?? agg;
 	});
@@ -49,13 +50,13 @@
 	let lastAutoSwitchPhase = $state<string | null>(null);
 	$effect(() => {
 		const phase = liveApp?.status?.phase ?? null;
-		if ((phase === 'Building' || phase === 'Failed') && phase !== lastAutoSwitchPhase) {
+		if ((phase === 'Building' || phase === 'Degraded' || phase === 'Failed') && phase !== lastAutoSwitchPhase) {
 			if (liveApp!.spec.source.type !== 'image') {
 				lastAutoSwitchPhase = phase;
 				store.setDrawerTab('buildLogs');
 			}
 		}
-		if (phase !== 'Building' && phase !== 'Failed') {
+		if (phase !== 'Building' && phase !== 'Degraded' && phase !== 'Failed') {
 			lastAutoSwitchPhase = null;
 		}
 	});
@@ -74,6 +75,11 @@
 	let optimisticPhase = $state<string | null>(null);
 	const effectivePhase = $derived(
 		optimisticPhase ?? envPhase
+	);
+	const phaseMessage = $derived(
+		effectivePhase === 'Degraded'
+			? liveApp?.status?.conditions?.find(c => c.status === 'False')?.message ?? ''
+			: ''
 	);
 
 	// Clear optimistic override once the real polled phase catches up.
@@ -175,6 +181,7 @@
 		Ready: 'bg-success/10 text-success',
 		Building: 'bg-warning/10 text-warning',
 		Deploying: 'bg-warning/10 text-warning',
+		Degraded: 'bg-warning/10 text-warning',
 		CrashLooping: 'bg-danger/10 text-danger',
 		Failed: 'bg-danger/10 text-danger',
 		Pending: 'bg-info/10 text-info'
@@ -232,7 +239,7 @@
 					{reloading ? 'Redeploying…' : 'Redeploy'}
 				</button>
 			{/if}
-			{#if envEnabled && effectivePhase === 'Ready' && appDomain}
+			{#if envEnabled && (effectivePhase === 'Ready' || effectivePhase === 'Degraded') && appDomain}
 				<button
 					type="button"
 					onclick={openApp}
@@ -272,6 +279,9 @@
 	<div class="flex-1 overflow-y-auto px-4 pb-4 {(store.drawerTab === 'deployLogs' || store.drawerTab === 'metrics') ? 'pt-0' : 'pt-4'}">
 		{#if errorMsg}
 			<div class="rounded-md bg-danger/10 px-3 py-2 text-sm text-danger mb-2">{errorMsg}</div>
+		{/if}
+		{#if phaseMessage}
+			<div class="rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-sm text-warning mb-2">{phaseMessage}</div>
 		{/if}
 		{#if !liveApp}
 			<div class="space-y-3 animate-pulse">

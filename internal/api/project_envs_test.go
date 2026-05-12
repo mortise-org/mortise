@@ -138,6 +138,43 @@ func TestListProjectEnvironmentsHealthRollup(t *testing.T) {
 	}
 }
 
+func TestListProjectEnvironmentsHealthRollupTreatsDegradedAsWarning(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+	ns := seedProject(t, k8sClient, "demo", "production")
+
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "app-degraded", Namespace: ns},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: "nginx:1.25.0"},
+		},
+	}
+	if err := k8sClient.Create(context.Background(), app); err != nil {
+		t.Fatalf("create app: %v", err)
+	}
+	app.Status.Phase = mortisev1alpha1.AppPhaseDegraded
+	if err := k8sClient.Status().Update(context.Background(), app); err != nil {
+		t.Fatalf("update status: %v", err)
+	}
+
+	w := doRequest(h, http.MethodGet, "/api/projects/demo/environments", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var envs []map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&envs); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(envs) != 1 {
+		t.Fatalf("expected 1 env, got %d", len(envs))
+	}
+	if envs[0]["health"] != "warning" {
+		t.Fatalf("expected degraded app to roll up as warning, got %v", envs[0]["health"])
+	}
+}
+
 // TestListProjectEnvironmentsPerEnvPhase verifies that env health uses per-env
 // phase rather than the aggregate app phase. An app deploying in production
 // should not make staging show as warning when staging is Ready.

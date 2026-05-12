@@ -1007,7 +1007,7 @@ func aggregateEnvHealth(envName string, apps []mortisev1alpha1.App) EnvHealth {
 		switch phaseForEnv(app, envName) {
 		case mortisev1alpha1.AppPhaseFailed, mortisev1alpha1.AppPhaseCrashLooping:
 			danger++
-		case mortisev1alpha1.AppPhaseBuilding, mortisev1alpha1.AppPhaseDeploying, mortisev1alpha1.AppPhasePending:
+		case mortisev1alpha1.AppPhaseBuilding, mortisev1alpha1.AppPhaseDeploying, mortisev1alpha1.AppPhasePending, mortisev1alpha1.AppPhaseDegraded:
 			warn++
 		case mortisev1alpha1.AppPhaseReady:
 			healthy++
