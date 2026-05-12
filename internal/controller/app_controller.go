@@ -2337,11 +2337,14 @@ func (r *AppReconciler) ensureWebhook(ctx context.Context, app *mortisev1alpha1.
 	if webhookConditionInputHash(app) == inputHash {
 		return nil
 	}
+	if webhookConditionPermanentFailureInputHash(app) == inputHash {
+		return nil
+	}
 
 	// Build GitAPI and register.
 	api, err := r.newGitAPI(gp, token, webhookSecret)
 	if err != nil {
-		r.setWebhookCondition(ctx, app, metav1.ConditionFalse, webhookConditionReason(err), err.Error())
+		r.setWebhookFailureCondition(ctx, app, inputHash, err)
 		return fmt.Errorf("create git API: %w", err)
 	}
 
@@ -2374,7 +2377,7 @@ func (r *AppReconciler) ensureWebhook(ctx context.Context, app *mortisev1alpha1.
 		Secret: webhookSecret,
 		Events: []string{"push", "pull_request"},
 	}); err != nil {
-		r.setWebhookCondition(ctx, app, metav1.ConditionFalse, webhookConditionReason(err), err.Error())
+		r.setWebhookFailureCondition(ctx, app, inputHash, err)
 		return fmt.Errorf("register webhook: %w", err)
 	}
 
@@ -2407,10 +2410,38 @@ func webhookInputHashMessage(hash string) string {
 
 func webhookConditionInputHash(app *mortisev1alpha1.App) string {
 	cond := meta.FindStatusCondition(app.Status.Conditions, webhookConditionType)
-	if cond == nil || cond.Status != metav1.ConditionTrue || !strings.HasPrefix(cond.Message, webhookInputHashMessageKey) {
+	if cond == nil || cond.Status != metav1.ConditionTrue {
 		return ""
 	}
-	return strings.TrimPrefix(cond.Message, webhookInputHashMessageKey)
+	return webhookConditionInputHashValue(cond.Message)
+}
+
+func webhookConditionPermanentFailureInputHash(app *mortisev1alpha1.App) string {
+	cond := meta.FindStatusCondition(app.Status.Conditions, webhookConditionType)
+	if cond == nil || cond.Status != metav1.ConditionFalse || !isWebhookPermanentReason(cond.Reason) {
+		return ""
+	}
+	return webhookConditionInputHashValue(cond.Message)
+}
+
+func webhookConditionInputHashValue(message string) string {
+	if !strings.HasPrefix(message, webhookInputHashMessageKey) {
+		return ""
+	}
+	hash := strings.TrimPrefix(message, webhookInputHashMessageKey)
+	if idx := strings.IndexByte(hash, '\n'); idx >= 0 {
+		hash = hash[:idx]
+	}
+	return hash
+}
+
+func isWebhookPermanentReason(reason string) bool {
+	switch reason {
+	case "WebhookAuthFailed", "WebhookRepoNotFound", "WebhookConflict":
+		return true
+	default:
+		return false
+	}
 }
 
 func webhookConditionReason(err error) string {
@@ -2467,6 +2498,15 @@ func (r *AppReconciler) setWebhookCondition(ctx context.Context, app *mortisev1a
 			LastTransitionTime: transitionTime,
 		})
 	})
+}
+
+func (r *AppReconciler) setWebhookFailureCondition(ctx context.Context, app *mortisev1alpha1.App, inputHash string, err error) error {
+	reason := webhookConditionReason(err)
+	message := err.Error()
+	if isWebhookPermanentReason(reason) {
+		message = webhookInputHashMessage(inputHash) + "\n" + message
+	}
+	return r.setWebhookCondition(ctx, app, metav1.ConditionFalse, reason, message)
 }
 
 // checkPodCrashLoopInEnv checks pods for CrashLoopBackOff within a single env

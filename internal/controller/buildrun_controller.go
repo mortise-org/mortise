@@ -39,7 +39,11 @@ import (
 	"github.com/mortise-org/mortise/internal/registry"
 )
 
-const buildRunPollInterval = 15 * time.Second
+const (
+	buildRunPollInterval        = 15 * time.Second
+	buildRunTrackerLossGrace    = 5 * time.Second
+	maxBuildRunRecoveryAttempts = 2
+)
 
 // BuildRunReconciler reconciles durable BuildRun objects.
 type BuildRunReconciler struct {
@@ -80,7 +84,7 @@ func (r *BuildRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		switch phase {
 		case buildPhaseRunning:
 			if br.Status.Phase != mortisev1alpha1.BuildRunPhaseRunning {
-				now := metav1.Now()
+				now := metav1.NewTime(r.clock().Now())
 				br.Status.Phase = mortisev1alpha1.BuildRunPhaseRunning
 				if br.Status.StartedAt == nil {
 					br.Status.StartedAt = &now
@@ -98,7 +102,7 @@ func (r *BuildRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 				return ctrl.Result{}, err
 			}
 
-			now := metav1.Now()
+			now := metav1.NewTime(r.clock().Now())
 			br.Status.FinishedAt = &now
 			br.Status.CompletedAt = &now
 			br.Status.LogRef = logRef
@@ -126,34 +130,79 @@ func (r *BuildRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		}
 	}
 
+	if br.Status.Phase == mortisev1alpha1.BuildRunPhaseRunning {
+		return r.handleLostBuildRunTracker(ctx, &br, key)
+	}
+
+	attempt := br.Status.Attempt
+	if attempt < 1 {
+		attempt = 1
+	}
+	return r.startBuildRunAttempt(ctx, &br, key, attempt, "")
+}
+
+func (r *BuildRunReconciler) handleLostBuildRunTracker(ctx context.Context, br *mortisev1alpha1.BuildRun, key types.NamespacedName) (ctrl.Result, error) {
+	if br.Status.StartedAt == nil {
+		return ctrl.Result{RequeueAfter: buildRunTrackerLossGrace}, nil
+	}
+
+	elapsed := r.clock().Now().Sub(br.Status.StartedAt.Time)
+	if elapsed < buildRunTrackerLossGrace {
+		return ctrl.Result{RequeueAfter: buildRunTrackerLossGrace - elapsed}, nil
+	}
+
+	attempt := br.Status.Attempt
+	if attempt < 1 {
+		attempt = 1
+	}
+	if attempt < maxBuildRunRecoveryAttempts {
+		marker := fmt.Sprintf("[recovery] build tracker lost; restarting attempt %d", attempt+1)
+		if err := r.appendBuildRunLogMarker(ctx, br, marker); err != nil {
+			return ctrl.Result{}, err
+		}
+		return r.startBuildRunAttempt(ctx, br, key, attempt+1, marker)
+	}
+
+	message := fmt.Sprintf("build tracker lost after recovery attempt %d", attempt)
+	if err := r.appendBuildRunLogMarker(ctx, br, "[interrupted] "+message); err != nil {
+		return ctrl.Result{}, err
+	}
+	if err := r.failBuildRun(ctx, br, attempt, "BuildInterrupted", message); err != nil {
+		return ctrl.Result{}, err
+	}
+	if err := r.projectTerminalBuildRunStatus(ctx, br); err != nil {
+		return ctrl.Result{}, err
+	}
+	r.Builds.delete(key)
+	return ctrl.Result{}, nil
+}
+
+func (r *BuildRunReconciler) startBuildRunAttempt(ctx context.Context, br *mortisev1alpha1.BuildRun, key types.NamespacedName, attempt int32, marker string) (ctrl.Result, error) {
 	if r.BuildClient == nil || r.GitClient == nil || r.RegistryBackend == nil {
-		now := metav1.Now()
-		br.Status.Phase = mortisev1alpha1.BuildRunPhaseFailed
-		br.Status.FailureReason = "BuildInfraUnavailable"
-		br.Status.FailureMessage = "build infrastructure is not configured"
-		br.Status.FinishedAt = &now
-		setBuildRunCondition(&br.Status.Conditions, mortisev1alpha1.BuildRunPhaseFailed, br.Generation, br.Status.FailureMessage, now)
-		return ctrl.Result{}, r.Status().Update(ctx, &br)
+		return ctrl.Result{}, r.failBuildRun(ctx, br, attempt, "BuildInfraUnavailable", "build infrastructure is not configured")
 	}
 
-	token, err := r.resolveBuildRunGitToken(ctx, &br)
+	token, err := r.resolveBuildRunGitToken(ctx, br)
 	if err != nil {
-		now := metav1.Now()
-		br.Status.Phase = mortisev1alpha1.BuildRunPhaseFailed
-		br.Status.FailureReason = "GitAuthFailed"
-		br.Status.FailureMessage = err.Error()
-		br.Status.FinishedAt = &now
-		setBuildRunCondition(&br.Status.Conditions, mortisev1alpha1.BuildRunPhaseFailed, br.Generation, br.Status.FailureMessage, now)
-		return ctrl.Result{}, r.Status().Update(ctx, &br)
+		return ctrl.Result{}, r.failBuildRun(ctx, br, attempt, "GitAuthFailed", err.Error())
 	}
 
-	now := metav1.Now()
+	now := metav1.NewTime(r.clock().Now())
+	br.Status.Attempt = attempt
 	br.Status.Phase = mortisev1alpha1.BuildRunPhaseRunning
 	if br.Status.StartedAt == nil {
 		br.Status.StartedAt = &now
 	}
-	setBuildRunCondition(&br.Status.Conditions, mortisev1alpha1.BuildRunPhaseRunning, br.Generation, "build is running", now)
-	if err := r.Status().Update(ctx, &br); err != nil {
+	br.Status.CompletedAt = nil
+	br.Status.FinishedAt = nil
+	br.Status.FailureReason = ""
+	br.Status.FailureMessage = ""
+	message := "build is running"
+	if attempt > 1 {
+		message = fmt.Sprintf("build recovered after tracker loss (attempt %d)", attempt)
+	}
+	setBuildRunCondition(&br.Status.Conditions, mortisev1alpha1.BuildRunPhaseRunning, br.Generation, message, now)
+	if err := r.Status().Update(ctx, br); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -162,6 +211,9 @@ func (r *BuildRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		revision: br.Spec.Revision,
 		phase:    buildPhaseRunning,
 		cancel:   cancel,
+	}
+	if marker != "" {
+		tracker.appendLog(marker)
 	}
 	r.Builds.set(key, tracker)
 
@@ -188,6 +240,18 @@ func (r *BuildRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	return ctrl.Result{RequeueAfter: buildRunPollInterval}, nil
 }
 
+func (r *BuildRunReconciler) failBuildRun(ctx context.Context, br *mortisev1alpha1.BuildRun, attempt int32, reason, message string) error {
+	now := metav1.NewTime(r.clock().Now())
+	br.Status.Attempt = attempt
+	br.Status.Phase = mortisev1alpha1.BuildRunPhaseFailed
+	br.Status.FailureReason = reason
+	br.Status.FailureMessage = message
+	br.Status.CompletedAt = &now
+	br.Status.FinishedAt = &now
+	setBuildRunCondition(&br.Status.Conditions, mortisev1alpha1.BuildRunPhaseFailed, br.Generation, message, now)
+	return r.Status().Update(ctx, br)
+}
+
 func (r *BuildRunReconciler) resolveBuildRunGitToken(ctx context.Context, br *mortisev1alpha1.BuildRun) (string, error) {
 	if br.Spec.TokenSecretRef == nil {
 		return "", fmt.Errorf("token secret ref is required")
@@ -206,7 +270,10 @@ func (r *BuildRunReconciler) resolveBuildRunGitToken(ctx context.Context, br *mo
 
 func (r *BuildRunReconciler) persistBuildRunLog(ctx context.Context, br *mortisev1alpha1.BuildRun, tracker *buildTracker) (*corev1.LocalObjectReference, error) {
 	phase, _, _, _, errMsg, _ := tracker.snapshot()
-	lines := tracker.snapshotLogs()
+	lines, err := r.mergedBuildRunLogLines(ctx, br, tracker.snapshotLogs())
+	if err != nil {
+		return nil, err
+	}
 	joined := strings.Join(lines, "\n")
 	for len(joined) > maxBuildLogConfigMapBytes && len(lines) > 0 {
 		lines = lines[1:]
@@ -266,6 +333,58 @@ func (r *BuildRunReconciler) persistBuildRunLog(ctx context.Context, br *mortise
 	}
 
 	return &corev1.LocalObjectReference{Name: runLog.Name}, nil
+}
+
+func (r *BuildRunReconciler) mergedBuildRunLogLines(ctx context.Context, br *mortisev1alpha1.BuildRun, current []string) ([]string, error) {
+	key := types.NamespacedName{Name: buildRunLogConfigMapName(br.Name), Namespace: br.Namespace}
+	var existing corev1.ConfigMap
+	if err := r.Get(ctx, key, &existing); err != nil {
+		if errors.IsNotFound(err) {
+			return current, nil
+		}
+		return nil, err
+	}
+	merged := []string{}
+	if existing.Data["lines"] != "" {
+		merged = append(merged, strings.Split(existing.Data["lines"], "\n")...)
+	}
+	if len(merged) > 0 && len(current) > 0 && merged[len(merged)-1] == current[0] {
+		current = current[1:]
+	}
+	merged = append(merged, current...)
+	return merged, nil
+}
+
+func (r *BuildRunReconciler) appendBuildRunLogMarker(ctx context.Context, br *mortisev1alpha1.BuildRun, marker string) error {
+	if marker == "" {
+		return nil
+	}
+	lines, err := r.mergedBuildRunLogLines(ctx, br, []string{marker})
+	if err != nil {
+		return err
+	}
+	joined := strings.Join(lines, "\n")
+	for len(joined) > maxBuildLogConfigMapBytes && len(lines) > 0 {
+		lines = lines[1:]
+		joined = strings.Join(lines, "\n")
+	}
+	runLog := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      buildRunLogConfigMapName(br.Name),
+			Namespace: br.Namespace,
+			Labels:    map[string]string{"app.kubernetes.io/managed-by": "mortise"},
+			Annotations: map[string]string{
+				buildLogAnnotationTimestamp: r.clock().Now().UTC().Format(time.RFC3339Nano),
+				buildLogAnnotationCommit:    br.Spec.Revision,
+				buildLogAnnotationStatus:    string(br.Status.Phase),
+			},
+		},
+		Data: map[string]string{"lines": joined},
+	}
+	if err := controllerutil.SetControllerReference(br, runLog, r.Scheme); err != nil {
+		return err
+	}
+	return upsertConfigMap(ctx, r.Client, runLog)
 }
 
 func (r *BuildRunReconciler) projectTerminalBuildRunStatus(ctx context.Context, br *mortisev1alpha1.BuildRun) error {
