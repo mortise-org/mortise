@@ -726,7 +726,6 @@ definitions:
       id:
         type: string
       passwordGen:
-        format: int64
         type: integer
       role:
         $ref: '#/definitions/auth.Role'

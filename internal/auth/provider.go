@@ -16,10 +16,10 @@ type Credentials struct {
 }
 
 type Principal struct {
-	ID          string
-	Email       string
-	Role        Role
-	PasswordGen int64
+	ID          string `json:"id"`
+	Email       string `json:"email"`
+	Role        Role   `json:"role"`
+	PasswordGen int64  `json:"passwordGen"`
 }
 
 type SessionToken string
