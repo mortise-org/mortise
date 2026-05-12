@@ -136,6 +136,20 @@ func TestLoginValid(t *testing.T) {
 	if token == "" {
 		t.Error("expected a non-empty token")
 	}
+	user, ok := resp["user"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected user object in login response, got %#v", resp["user"])
+	}
+	for _, key := range []string{"id", "email", "role", "passwordGen"} {
+		if _, ok := user[key]; !ok {
+			t.Fatalf("expected login response user.%s, got %#v", key, user)
+		}
+	}
+	for _, key := range []string{"ID", "Email", "Role", "PasswordGen"} {
+		if _, ok := user[key]; ok {
+			t.Fatalf("unexpected legacy login response key %q in %#v", key, user)
+		}
+	}
 }
 
 // TestLoginInvalidCredentials verifies wrong password returns 401.

@@ -113,10 +113,12 @@ make test-integration-fast  # run suite against existing dev cluster (requires m
   tears down.
 - `make test-integration-fast` runs the same Go tests against whatever
   cluster your kubeconfig points at (typically the `make dev-up` cluster).
-- Tests live in `test/integration/`: `app_image_source_test.go`,
-  `app_git_source_test.go`, `bindings_test.go`, `ingress_test.go`,
-  `project_lifecycle_test.go`, `preview_test.go`, `gitprovider_admin_test.go`,
-  `observer_test.go`.
+- Tests live in `test/integration/`: currently 19 `_test.go` files
+  (including `suite_test.go`). Coverage spans app image/git sources,
+  config files, cron jobs, external/full-stack/multi-service apps,
+  bindings, domains, environment cloning, previews + preview webhooks,
+  storage, ingress, observer, git provider admin flows, and overall
+  project lifecycle behavior.
 - `TestMain` in `suite_test.go` asserts the cluster is reachable, the
   Mortise Deployment is available, and the observer is healthy (soft
   check — observer tests skip if unavailable) before any test runs.
@@ -140,21 +142,23 @@ make test-e2e               # requires make dev-up: handles port-forward, admin 
 - **All tests hit the real API**: no mocking of business logic. This
   verifies the full UI → API integration path. Each test creates its own
   projects/apps and cleans up after itself.
-- 64 tests across 7 files:
-
-| File | Tests | What it covers |
-|------|-------|----------------|
-| `auth.spec.ts` | 14 | Setup page validation, login, auth redirects, setup wizard |
-| `projects.spec.ts` | 7 | Dashboard, project CRUD via UI, name validation |
-| `apps.spec.ts` | 8 | New-app page, Docker deploy, template deploys (Postgres, Redis) |
-| `app-detail.spec.ts` | 12 | Deploy, env vars, secrets, domains, logs, delete: all via real API |
-| `navigation.spec.ts` | 18 | Header, project switcher, extensions, breadcrumbs |
-| `git-providers.spec.ts` | 1 | Git provider CRUD |
-| `journey.spec.ts` | 4 | Full user lifecycle journeys (login → deploy → manage → delete) |
-
-- The `journey.spec.ts` file contains end-to-end user journeys that chain
-  multiple pages and API operations in sequence: the most valuable tests
-  for catching real integration bugs.
+- Current snapshot: 20 Playwright spec files with roughly 152
+  `test(...)` cases. Exact counts change frequently, so treat this as a
+  moving inventory rather than a fixed contract.
+- The suite now splits app-detail coverage across focused specs such as
+  `app-settings-sections.spec.ts`, `app-variables-full.spec.ts`,
+  `deployments.spec.ts`, `domains.spec.ts`, `volumes.spec.ts`, and
+  `staged-changes-deploy.spec.ts`; `app-detail.spec.ts` no longer exists.
+- The remaining spec layout is broad rather than monolithic:
+  `auth.spec.ts`, `navigation.spec.ts`, `projects.spec.ts`,
+  `project-settings.spec.ts`, `project-members-and-envs.spec.ts`,
+  `admin-settings.spec.ts`, `platform-settings-actions.spec.ts`,
+  `apps.spec.ts`, `build-and-deploy.spec.ts`, `bindings.spec.ts`,
+  `deploy-tokens.spec.ts`, `environments.spec.ts`,
+  `git-providers.spec.ts`, and `journey.spec.ts`, plus the focused app
+  management specs above.
+- `journey.spec.ts` still provides the chained login → deploy → manage →
+  delete flows that are most valuable for catching cross-page regressions.
 
 ### Live cluster (manual smoke test)
 

@@ -83,8 +83,11 @@ curl -s -X POST "$BASE/api/projects/$PROJECT/apps" \
         {\"name\":\"$ENV\",\"replicas\":1,\"resources\":{\"cpu\":\"100m\",\"memory\":\"128Mi\"}}
       ]
     }
-  }" | jq '{name: .metadata.name, phase: .status.phase, source: .spec.source.type}'
+  }" | jq '{name: .metadata.name, source: .spec.source.type, environments: [.spec.environments[].name]}'
 ```
+
+The create response is the App object. `.status` is populated asynchronously by
+the controller, so it may be absent immediately after create.
 
 ## 5) Set env vars and a secret
 
@@ -94,16 +97,16 @@ Set environment variables:
 curl -s -X PATCH "$BASE/api/projects/$PROJECT/apps/$APP/env?environment=$ENV" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"set":{"PORT":"8080","LOG_LEVEL":"info"},"unset":[]}' | jq
+  -d '{"set":{"PORT":"8080","LOG_LEVEL":"info"},"unset":[]}' | jq '{status}'
 ```
 
 Create a secret:
 
 ```bash
-curl -s -X POST "$BASE/api/projects/$PROJECT/apps/$APP/secrets?env=$ENV" \
+curl -s -X POST "$BASE/api/projects/$PROJECT/apps/$APP/secrets?environment=$ENV" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"name":"web-secret","data":{"API_KEY":"supersecret"}}' | jq
+  -d '{"name":"web-secret","data":{"API_KEY":"supersecret"}}' | jq '{name, keys}'
 ```
 
 ## 6) Clone an environment
@@ -135,7 +138,7 @@ curl -s "$BASE/api/projects/$PROJECT/environments" \
 curl -s -X POST "$BASE/api/projects/$PROJECT/apps/$APP/deploy" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d "{\"environment\":\"$ENV\",\"image\":\"nginx:1.27.1\"}" | jq
+  -d "{\"environment\":\"$ENV\",\"image\":\"nginx:1.27.1\"}" | jq '{status, app, image}'
 ```
 
 ## 8) Inspect runtime state
