@@ -3,6 +3,7 @@ package api_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -10,7 +11,12 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
+	corev1typed "k8s.io/client-go/kubernetes/typed/core/v1"
+	"k8s.io/client-go/kubernetes/scheme"
+	restclient "k8s.io/client-go/rest"
+	fakerest "k8s.io/client-go/rest/fake"
 	clienttesting "k8s.io/client-go/testing"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -24,7 +30,7 @@ import (
 // newLogsServer returns a Server wired with the supplied fake clientset and a
 // bearer token, so tests can both seed pod objects and inspect which
 // PodLogOptions the handler forwarded to GetLogs.
-func newLogsServer(t *testing.T, k8sClient client.Client, cs *fake.Clientset) (*api.Server, string) {
+func newLogsServer(t *testing.T, k8sClient client.Client, cs kubernetes.Interface) (*api.Server, string) {
 	t.Helper()
 	ctx := context.Background()
 
@@ -49,6 +55,42 @@ func newLogsServer(t *testing.T, k8sClient client.Client, cs *fake.Clientset) (*
 
 	srv := api.NewServer(k8sClient, cs, nil, nil, authProvider, jwtHelper, nil, authz.NewNativePolicyEngine(k8sClient))
 	return srv, token
+}
+
+type streamOpenFailingClientset struct {
+	kubernetes.Interface
+}
+
+func (c *streamOpenFailingClientset) CoreV1() corev1typed.CoreV1Interface {
+	return &streamOpenFailingCoreV1{CoreV1Interface: c.Interface.CoreV1()}
+}
+
+type streamOpenFailingCoreV1 struct {
+	corev1typed.CoreV1Interface
+}
+
+func (c *streamOpenFailingCoreV1) Pods(namespace string) corev1typed.PodInterface {
+	return &streamOpenFailingPods{
+		PodInterface: c.CoreV1Interface.Pods(namespace),
+		namespace:    namespace,
+	}
+}
+
+type streamOpenFailingPods struct {
+	corev1typed.PodInterface
+	namespace string
+}
+
+func (p *streamOpenFailingPods) GetLogs(name string, _ *corev1.PodLogOptions) *restclient.Request {
+	fakeClient := &fakerest.RESTClient{
+		Client: fakerest.CreateHTTPClient(func(*http.Request) (*http.Response, error) {
+			return nil, fmt.Errorf("boom")
+		}),
+		NegotiatedSerializer: scheme.Codecs.WithoutConversion(),
+		GroupVersion:         corev1.SchemeGroupVersion,
+		VersionedAPIPath:     fmt.Sprintf("/api/v1/namespaces/%s/pods/%s/log", p.namespace, name),
+	}
+	return fakeClient.Request()
 }
 
 // lastPodLogOptions returns the PodLogOptions passed to the most recent
@@ -280,6 +322,35 @@ func TestLogsSSEHeadersWithPod(t *testing.T) {
 	}
 	if _, ok := ev["stream"]; !ok {
 		t.Errorf("expected stream field in SSE event, got %v", ev)
+	}
+}
+
+func TestLogsStreamOpenFailureUsesStructuredErrorPayload(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	cs := &streamOpenFailingClientset{Interface: fake.NewClientset()}
+	srv, _ := newLogsServer(t, k8sClient, cs)
+	h := srv.Handler()
+	ns := seedProject(t, k8sClient, "default")
+	seedAppAndPod(t, k8sClient, ns, "stream-fail-app", "production", "stream-fail-pod-1")
+
+	w := doRequest(h, http.MethodGet, "/api/projects/default/apps/stream-fail-app/logs?env=production", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if ct := w.Header().Get("Content-Type"); ct != "text/event-stream" {
+		t.Fatalf("expected text/event-stream, got %s", ct)
+	}
+
+	line := strings.TrimPrefix(w.Body.String(), "data: ")
+	if idx := strings.Index(line, "\n"); idx > 0 {
+		line = line[:idx]
+	}
+	var ev map[string]any
+	if err := json.Unmarshal([]byte(line), &ev); err != nil {
+		t.Fatalf("decode structured error event: %v", err)
+	}
+	if ev["kind"] != "error" || ev["code"] != "stream_open_failed" || ev["fatal"] != true {
+		t.Fatalf("expected structured stream-open failure payload, got %+v", ev)
 	}
 }
 

@@ -53,6 +53,44 @@ func (c *appDeleteFailingClient) Delete(ctx context.Context, obj client.Object, 
 	return c.Client.Delete(ctx, obj, opts...)
 }
 
+type appUpdateConflictClient struct {
+	client.Client
+}
+
+func (c *appUpdateConflictClient) Update(ctx context.Context, obj client.Object, opts ...client.UpdateOption) error {
+	if app, ok := obj.(*mortisev1alpha1.App); ok {
+		return apierrors.NewConflict(
+			mortisev1alpha1.GroupVersion.WithResource("apps").GroupResource(),
+			app.Name,
+			fmt.Errorf("Operation cannot be fulfilled on apps.mortise.dev %q: the object has been modified; apply your changes to the latest version and try again", app.Name),
+		)
+	}
+	return c.Client.Update(ctx, obj, opts...)
+}
+
+type appStatusConflictClient struct {
+	client.Client
+}
+
+func (c *appStatusConflictClient) Status() client.SubResourceWriter {
+	return &appStatusConflictWriter{SubResourceWriter: c.Client.Status()}
+}
+
+type appStatusConflictWriter struct {
+	client.SubResourceWriter
+}
+
+func (w *appStatusConflictWriter) Update(ctx context.Context, obj client.Object, opts ...client.SubResourceUpdateOption) error {
+	if app, ok := obj.(*mortisev1alpha1.App); ok {
+		return apierrors.NewConflict(
+			mortisev1alpha1.GroupVersion.WithResource("apps").GroupResource(),
+			app.Name,
+			fmt.Errorf("Operation cannot be fulfilled on apps.mortise.dev %q: the object has been modified; apply your changes to the latest version and try again", app.Name),
+		)
+	}
+	return w.SubResourceWriter.Update(ctx, obj, opts...)
+}
+
 func (g *gitfake) RegisterWebhook(context.Context, string, git.WebhookConfig) error { return nil }
 func (g *gitfake) ListWebhooks(context.Context, string) ([]git.WebhookInfo, error)  { return nil, nil }
 func (g *gitfake) DeleteWebhook(context.Context, string, int64) error               { return nil }
@@ -528,8 +566,8 @@ func TestDeleteApp(t *testing.T) {
 	})
 
 	w := doRequest(h, http.MethodDelete, "/api/projects/default/apps/delete-me", nil)
-	if w.Code != http.StatusOK {
-		t.Fatalf("delete app: expected 200, got %d: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("delete app: expected 202, got %d: %s", w.Code, w.Body.String())
 	}
 
 	var app mortisev1alpha1.App
@@ -538,6 +576,26 @@ func TestDeleteApp(t *testing.T) {
 	}
 	if app.DeletionTimestamp == nil || app.DeletionTimestamp.IsZero() {
 		t.Error("expected app to be pending deletion after delete")
+	}
+
+	get := doRequest(h, http.MethodGet, "/api/projects/default/apps/delete-me", nil)
+	if get.Code != http.StatusOK {
+		t.Fatalf("get terminating app: expected 200, got %d: %s", get.Code, get.Body.String())
+	}
+
+	list := doRequest(h, http.MethodGet, "/api/projects/default/apps", nil)
+	if list.Code != http.StatusOK {
+		t.Fatalf("list terminating app: expected 200, got %d: %s", list.Code, list.Body.String())
+	}
+	var apps []mortisev1alpha1.App
+	if err := json.NewDecoder(list.Body).Decode(&apps); err != nil {
+		t.Fatalf("decode app list: %v", err)
+	}
+	if len(apps) != 1 || apps[0].Name != "delete-me" {
+		t.Fatalf("expected terminating app to remain listed, got %+v", apps)
+	}
+	if apps[0].DeletionTimestamp == nil || apps[0].DeletionTimestamp.IsZero() {
+		t.Fatalf("expected listed app to be marked terminating, got %+v", apps[0].ObjectMeta)
 	}
 }
 
@@ -587,8 +645,8 @@ func TestDeleteAppRemovesAppDeployTokensOnly(t *testing.T) {
 	}
 
 	w := doRequest(h, http.MethodDelete, "/api/projects/default/apps/delete-me", nil)
-	if w.Code != http.StatusOK {
-		t.Fatalf("delete app with tokens: expected 200, got %d: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("delete app with tokens: expected 202, got %d: %s", w.Code, w.Body.String())
 	}
 
 	if err := k8sClient.Get(context.Background(), types.NamespacedName{Name: appToken.Name, Namespace: ns}, &corev1.Secret{}); !apierrors.IsNotFound(err) {
@@ -641,6 +699,105 @@ func TestDeleteAppPreservesDeployTokensWhenAppDeleteFails(t *testing.T) {
 	var app mortisev1alpha1.App
 	if err := k8sClient.Get(context.Background(), types.NamespacedName{Name: "delete-me", Namespace: ns}, &app); err != nil {
 		t.Fatalf("expected app to remain after failed delete, got %v", err)
+	}
+}
+
+func TestCreateAppRejectedWhileSameNameIsTerminating(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+	seedProject(t, k8sClient, "default")
+
+	doRequest(h, http.MethodPost, "/api/projects/default/apps", map[string]any{
+		"name": "delete-me",
+		"spec": map[string]any{
+			"source": map[string]any{"type": "image", "image": "nginx:1.25.0"},
+		},
+	})
+
+	del := doRequest(h, http.MethodDelete, "/api/projects/default/apps/delete-me", nil)
+	if del.Code != http.StatusAccepted {
+		t.Fatalf("delete app: expected 202, got %d: %s", del.Code, del.Body.String())
+	}
+
+	create := doRequest(h, http.MethodPost, "/api/projects/default/apps", map[string]any{
+		"name": "delete-me",
+		"spec": map[string]any{
+			"source": map[string]any{"type": "image", "image": "nginx:1.26.0"},
+		},
+	})
+	if create.Code != http.StatusConflict {
+		t.Fatalf("recreate terminating app: expected 409, got %d: %s", create.Code, create.Body.String())
+	}
+}
+
+func TestUpdateAppConflictIsNormalized(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	seedProject(t, k8sClient, "default")
+	seedImageApp(t, k8sClient, "pj-default", "conflict-app")
+
+	srv := newAdminServer(t, &appUpdateConflictClient{Client: k8sClient})
+	h := srv.Handler()
+
+	w := doRequest(h, http.MethodPut, "/api/projects/default/apps/conflict-app", map[string]any{
+		"source": map[string]any{"type": "image", "image": "nginx:1.26.0"},
+	})
+	if w.Code != http.StatusConflict {
+		t.Fatalf("update app conflict: expected 409, got %d: %s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "object has been modified") {
+		t.Fatalf("expected normalized conflict message, got %s", w.Body.String())
+	}
+}
+
+func TestDeployConflictIsNormalized(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	seedProject(t, k8sClient, "default")
+	seedImageApp(t, k8sClient, "pj-default", "deploy-conflict")
+
+	srv := newAdminServer(t, &appUpdateConflictClient{Client: k8sClient})
+	h := srv.Handler()
+
+	w := doRequest(h, http.MethodPost, "/api/projects/default/apps/deploy-conflict/deploy", map[string]any{
+		"image": "nginx:1.26.0",
+	})
+	if w.Code != http.StatusConflict {
+		t.Fatalf("deploy conflict: expected 409, got %d: %s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "object has been modified") {
+		t.Fatalf("expected normalized conflict message, got %s", w.Body.String())
+	}
+}
+
+func TestRedeployConflictIsNormalized(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	ns := seedProject(t, k8sClient, "default")
+	seedImageApp(t, k8sClient, ns, "redeploy-conflict")
+
+	envNs := constants.EnvNamespace("default", "production")
+	dep := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: "redeploy-conflict", Namespace: envNs},
+		Spec: appsv1.DeploymentSpec{
+			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "redeploy-conflict"}},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "redeploy-conflict"}},
+				Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "app", Image: "nginx:1.25.0"}}},
+			},
+		},
+	}
+	if err := k8sClient.Create(context.Background(), dep); err != nil {
+		t.Fatalf("create deployment: %v", err)
+	}
+
+	srv := newAdminServer(t, &appStatusConflictClient{Client: k8sClient})
+	h := srv.Handler()
+
+	w := doRequest(h, http.MethodPost, "/api/projects/default/apps/redeploy-conflict/redeploy?environment=production", nil)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("redeploy conflict: expected 409, got %d: %s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "object has been modified") {
+		t.Fatalf("expected normalized conflict message, got %s", w.Body.String())
 	}
 }
 

@@ -13,6 +13,7 @@ import (
 
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
 	"github.com/mortise-org/mortise/internal/constants"
+	"github.com/mortise-org/mortise/internal/envstore"
 )
 
 func TestCreateSecretLabelsProject(t *testing.T) {
@@ -114,6 +115,84 @@ func TestDeleteSecretRejectsInternalEnvSecret(t *testing.T) {
 	w := doRequest(h, http.MethodDelete, "/api/projects/default/apps/webapp/secrets/webapp-env?environment=production", nil)
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("delete internal env secret: expected 403, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestCreateSecretRejectsReservedRuntimeSecretName(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+	ns := seedProject(t, k8sClient, "reserved-secret-create")
+	seedImageApp(t, k8sClient, ns, "reserved-app")
+
+	for _, name := range []string{envstore.AppEnvSecretName("reserved-app"), "reserved-app-pull-secret"} {
+		w := doRequest(h, http.MethodPost, "/api/projects/reserved-secret-create/apps/reserved-app/secrets?environment=production", map[string]any{
+			"name": name,
+			"data": map[string]string{"TOP": "secret"},
+		})
+		if w.Code != http.StatusConflict {
+			t.Fatalf("create reserved secret %q: expected 409, got %d: %s", name, w.Code, w.Body.String())
+		}
+	}
+}
+
+func TestListSecretsHidesReservedRuntimeSecrets(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+	ns := seedProject(t, k8sClient, "reserved-secret-list")
+	seedImageApp(t, k8sClient, ns, "reserved-app")
+
+	create := doRequest(h, http.MethodPost, "/api/projects/reserved-secret-list/apps/reserved-app/secrets?environment=production", map[string]any{
+		"name": "user-secret",
+		"data": map[string]string{"TOP": "secret"},
+	})
+	if create.Code != http.StatusCreated {
+		t.Fatalf("create user secret: expected 201, got %d: %s", create.Code, create.Body.String())
+	}
+
+	setPull := doRequest(h, http.MethodPost, "/api/projects/reserved-secret-list/apps/reserved-app/pull-credentials", map[string]any{
+		"registry": "ghcr.io",
+		"username": "octo",
+		"password": "secret",
+	})
+	if setPull.Code != http.StatusOK {
+		t.Fatalf("set pull credentials: expected 200, got %d: %s", setPull.Code, setPull.Body.String())
+	}
+
+	w := doRequest(h, http.MethodGet, "/api/projects/reserved-secret-list/apps/reserved-app/secrets?environment=production", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("list secrets: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp []map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode secrets response: %v", err)
+	}
+	if len(resp) != 1 || resp[0]["name"] != "user-secret" {
+		t.Fatalf("expected only user-secret in response, got %+v", resp)
+	}
+}
+
+func TestDeleteSecretRejectsReservedPullSecret(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+	ns := seedProject(t, k8sClient, "reserved-secret-delete")
+	seedImageApp(t, k8sClient, ns, "reserved-app")
+
+	setPull := doRequest(h, http.MethodPost, "/api/projects/reserved-secret-delete/apps/reserved-app/pull-credentials", map[string]any{
+		"registry": "ghcr.io",
+		"username": "octo",
+		"password": "secret",
+	})
+	if setPull.Code != http.StatusOK {
+		t.Fatalf("set pull credentials: expected 200, got %d: %s", setPull.Code, setPull.Body.String())
+	}
+
+	w := doRequest(h, http.MethodDelete, "/api/projects/reserved-secret-delete/apps/reserved-app/secrets/reserved-app-pull-secret?environment=production", nil)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("delete reserved pull secret: expected 403, got %d: %s", w.Code, w.Body.String())
 	}
 }
 

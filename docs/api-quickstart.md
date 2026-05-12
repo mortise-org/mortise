@@ -36,9 +36,11 @@ curl -s "$BASE/api/auth/status" | jq
 If `setupRequired` is `true`, run setup:
 
 ```bash
-curl -s -X POST "$BASE/api/auth/setup" \
+TOKEN=$(curl -s -X POST "$BASE/api/auth/setup" \
   -H "Content-Type: application/json" \
-  -d "{\"email\":\"$EMAIL\",\"password\":\"$PASSWORD\"}" | jq
+  -d "{\"email\":\"$EMAIL\",\"password\":\"$PASSWORD\"}" | jq -r .token)
+
+echo "$TOKEN" | cut -c1-24
 ```
 
 If setup already exists, login:

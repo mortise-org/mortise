@@ -441,8 +441,8 @@ func TestDeleteAppCleansUpCustomSecretsViaAPI(t *testing.T) {
 
 	deleteURL := fmt.Sprintf("%s/api/projects/%s/apps/%s", mortiseURL, projectName, appName)
 	resp = doProjectLifecycleJSON(t, http.MethodDelete, deleteURL, token, nil)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("delete app: expected 200, got %d: %s", resp.StatusCode, resp.Body)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("delete app: expected 202, got %d: %s", resp.StatusCode, resp.Body)
 	}
 
 	helpers.RequireEventually(t, 60*time.Second, func() bool {
@@ -595,8 +595,8 @@ func TestDeleteAppRemovesPreviewsFromAPIAndCluster(t *testing.T) {
 
 	deleteURL := fmt.Sprintf("%s/api/projects/%s/apps/%s", mortiseURL, projectName, app.Name)
 	resp := doProjectLifecycleJSON(t, http.MethodDelete, deleteURL, token, nil)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("delete app: expected 200, got %d: %s", resp.StatusCode, resp.Body)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("delete app: expected 202, got %d: %s", resp.StatusCode, resp.Body)
 	}
 
 	helpers.RequireEventually(t, 90*time.Second, func() bool {

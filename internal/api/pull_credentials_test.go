@@ -67,8 +67,15 @@ func TestPullCredentialsCRUDAndDeleteAppDefersCleanupToController(t *testing.T) 
 	}
 
 	del := doRequest(h, http.MethodDelete, "/api/projects/default/apps/web", nil)
-	if del.Code != http.StatusOK {
-		t.Fatalf("delete app: expected 200, got %d: %s", del.Code, del.Body.String())
+	if del.Code != http.StatusAccepted {
+		t.Fatalf("delete app: expected 202, got %d: %s", del.Code, del.Body.String())
+	}
+	var deleted map[string]any
+	if err := json.NewDecoder(del.Body).Decode(&deleted); err != nil {
+		t.Fatalf("decode delete response: %v", err)
+	}
+	if deleted["status"] != "terminating" || deleted["app"] != "web" {
+		t.Fatalf("unexpected delete response: %+v", deleted)
 	}
 
 	for _, env := range []string{"staging", "production"} {
