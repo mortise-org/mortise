@@ -328,8 +328,8 @@ curl -s -X POST "$BASE/api/projects/$PROJECT/environments/$SOURCE_ENV/clone" \
   -d "{\"name\":\"staging\",\"displayOrder\":1}" | jq
 ```
 
-The operation is retry-safe: if a previous call partially completed, a
-repeat call finishes the remaining work without duplicating anything.
+If the target environment already exists on the project, the API returns
+`409 Conflict` instead of treating the call as a retry-safe replay.
 
 ### Preview environments
 

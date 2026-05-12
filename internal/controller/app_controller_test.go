@@ -3445,6 +3445,103 @@ var _ = Describe("App Controller — git source", func() {
 			Expect(cond.Reason).To(Equal("WebhookAuthFailed"))
 			Expect(cond.Message).To(ContainSubstring("missing webhook scope"))
 		})
+
+		It("latches permanent webhook failures by input hash", func() {
+			ctx := context.Background()
+
+			pc := &mortisev1alpha1.PlatformConfig{
+				ObjectMeta: metav1.ObjectMeta{Name: "platform"},
+				Spec:       mortisev1alpha1.PlatformConfigSpec{Domain: "example.com"},
+			}
+			Expect(k8sClient.Create(ctx, pc)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, pc)).To(Succeed()) }()
+
+			gp := &mortisev1alpha1.GitProvider{
+				ObjectMeta: metav1.ObjectMeta{Name: "gh-webhook-permanent"},
+				Spec: mortisev1alpha1.GitProviderSpec{
+					Type: mortisev1alpha1.GitProviderTypeGitHub,
+					Host: "https://github.com",
+				},
+			}
+			Expect(k8sClient.Create(ctx, gp)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, gp)).To(Succeed()) }()
+
+			app := makeGitSourceApp("git-webhook-permanent", namespace, gp.Name)
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: namespace}, app)).To(Succeed())
+
+			api := &fakeWebhookAPI{
+				registerErr: &git.WebhookOperationError{
+					Provider:   "github",
+					Operation:  git.WebhookOperationRegister,
+					StatusCode: http.StatusForbidden,
+					Err:        fmt.Errorf("%w: missing webhook scope", git.ErrAuthFailed),
+				},
+			}
+			r := gitSourceReconciler(&fakeBuildClient{digest: "sha256:latch"}, &fakeGitClient{}, &fakeRegistryBackend{})
+			r.GitAPIFactory = func(_ *mortisev1alpha1.GitProvider, _, _ string) (git.GitAPI, error) {
+				return api, nil
+			}
+
+			Expect(r.ensureWebhook(ctx, app, gp, "tok")).To(HaveOccurred())
+			Expect(api.listCount).To(Equal(1))
+			Expect(api.registerCount).To(Equal(1))
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: namespace}, app)).To(Succeed())
+			cond := meta.FindStatusCondition(app.Status.Conditions, webhookConditionType)
+			Expect(cond).NotTo(BeNil())
+			Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(cond.Message).To(HavePrefix(webhookInputHashMessageKey))
+
+			Expect(r.ensureWebhook(ctx, app, gp, "tok")).To(Succeed())
+			Expect(api.listCount).To(Equal(1))
+			Expect(api.registerCount).To(Equal(1))
+		})
+
+		It("retries transient webhook failures even when inputs are unchanged", func() {
+			ctx := context.Background()
+
+			pc := &mortisev1alpha1.PlatformConfig{
+				ObjectMeta: metav1.ObjectMeta{Name: "platform"},
+				Spec:       mortisev1alpha1.PlatformConfigSpec{Domain: "example.com"},
+			}
+			Expect(k8sClient.Create(ctx, pc)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, pc)).To(Succeed()) }()
+
+			gp := &mortisev1alpha1.GitProvider{
+				ObjectMeta: metav1.ObjectMeta{Name: "gh-webhook-transient"},
+				Spec: mortisev1alpha1.GitProviderSpec{
+					Type: mortisev1alpha1.GitProviderTypeGitHub,
+					Host: "https://github.com",
+				},
+			}
+			Expect(k8sClient.Create(ctx, gp)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, gp)).To(Succeed()) }()
+
+			app := makeGitSourceApp("git-webhook-transient", namespace, gp.Name)
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: namespace}, app)).To(Succeed())
+
+			api := &fakeWebhookAPI{
+				registerErr: &git.WebhookOperationError{
+					Provider:   "github",
+					Operation:  git.WebhookOperationRegister,
+					StatusCode: http.StatusServiceUnavailable,
+					Err:        fmt.Errorf("temporary outage"),
+				},
+			}
+			r := gitSourceReconciler(&fakeBuildClient{digest: "sha256:latch"}, &fakeGitClient{}, &fakeRegistryBackend{})
+			r.GitAPIFactory = func(_ *mortisev1alpha1.GitProvider, _, _ string) (git.GitAPI, error) {
+				return api, nil
+			}
+
+			Expect(r.ensureWebhook(ctx, app, gp, "tok")).To(HaveOccurred())
+			Expect(r.ensureWebhook(ctx, app, gp, "tok")).To(HaveOccurred())
+			Expect(api.listCount).To(Equal(2))
+			Expect(api.registerCount).To(Equal(2))
+		})
 	})
 
 	Context("happy path", func() {

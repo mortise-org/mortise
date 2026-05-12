@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	stderrors "errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -164,6 +165,17 @@ func (s *Server) CreateApp(w http.ResponseWriter, r *http.Request) {
 	}
 	controllerutil.AddFinalizer(app, constants.AppFinalizer)
 
+	var existing mortisev1alpha1.App
+	if err := s.client.Get(r.Context(), types.NamespacedName{Name: req.Name, Namespace: ns}, &existing); err == nil {
+		if !existing.DeletionTimestamp.IsZero() {
+			writeJSON(w, http.StatusConflict, errorResponse{fmt.Sprintf("app %q is still terminating; wait for deletion to complete before recreating it", req.Name)})
+			return
+		}
+	} else if !errors.IsNotFound(err) {
+		writeError(w, r, err)
+		return
+	}
+
 	if err := s.client.Create(r.Context(), app); err != nil {
 		writeError(w, r, err)
 		return
@@ -302,7 +314,7 @@ func (s *Server) UpdateApp(w http.ResponseWriter, r *http.Request) {
 // @Security BearerAuth
 // @Param project path string true "Project name"
 // @Param app path string true "App name"
-// @Success 200 {object} map[string]string
+// @Success 202 {object} map[string]string "Termination accepted"
 // @Failure 401 {object} errorResponse
 // @Failure 403 {object} errorResponse
 // @Failure 404 {object} errorResponse
@@ -325,9 +337,12 @@ func (s *Server) DeleteApp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.client.Delete(r.Context(), &app); err != nil {
-		writeError(w, r, err)
-		return
+	firstDelete := app.DeletionTimestamp.IsZero()
+	if firstDelete {
+		if err := s.client.Delete(r.Context(), &app); err != nil {
+			writeError(w, r, err)
+			return
+		}
 	}
 
 	if err := s.deleteAppDeployTokens(r.Context(), ns, app.Name); err != nil {
@@ -335,9 +350,11 @@ func (s *Server) DeleteApp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.recordActivity(r, projectName, "delete", "app", app.Name, "Deleted app "+app.Name, "")
+	if firstDelete {
+		s.recordActivity(r, projectName, "delete", "app", app.Name, "Deleted app "+app.Name, "")
+	}
 
-	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "terminating", "app": app.Name})
 }
 
 func (s *Server) deleteAppDeployTokens(ctx context.Context, ns, appName string) error {
@@ -362,15 +379,15 @@ func (s *Server) deleteAppDeployTokens(ctx context.Context, ns, appName string) 
 // writeError maps k8s API errors to HTTP status codes.
 func writeError(w http.ResponseWriter, r *http.Request, err error) {
 	if errors.IsNotFound(err) {
-		writeJSON(w, http.StatusNotFound, errorResponse{err.Error()})
+		writeJSON(w, http.StatusNotFound, errorResponse{normalizeNotFoundError(err)})
 		return
 	}
 	if errors.IsConflict(err) {
-		writeJSON(w, http.StatusConflict, errorResponse{err.Error()})
+		writeJSON(w, http.StatusConflict, errorResponse{normalizeConflictError(err)})
 		return
 	}
 	if errors.IsAlreadyExists(err) {
-		writeJSON(w, http.StatusConflict, errorResponse{err.Error()})
+		writeJSON(w, http.StatusConflict, errorResponse{normalizeAlreadyExistsError(err)})
 		return
 	}
 	if errors.IsInvalid(err) {
@@ -379,4 +396,80 @@ func writeError(w http.ResponseWriter, r *http.Request, err error) {
 	}
 	slog.Error("internal API error", "error", err, "method", r.Method, "path", r.URL.Path, "request_id", r.Header.Get("X-Request-ID"))
 	writeJSON(w, http.StatusInternalServerError, errorResponse{"internal server error"})
+}
+
+func normalizeNotFoundError(err error) string {
+	kind, name := errorResource(err)
+	switch {
+	case kind != "" && name != "":
+		return fmt.Sprintf("%s %q not found", kind, name)
+	case name != "":
+		return fmt.Sprintf("resource %q not found", name)
+	default:
+		return "resource not found"
+	}
+}
+
+func normalizeConflictError(err error) string {
+	kind, name := errorResource(err)
+	if strings.Contains(strings.ToLower(err.Error()), "the object has been modified") {
+		if kind == "" {
+			kind = "resource"
+		}
+		if name != "" {
+			return fmt.Sprintf("%s %q was modified by another operation; retry the request", kind, name)
+		}
+		return fmt.Sprintf("%s was modified by another operation; retry the request", kind)
+	}
+	if kind != "" && name != "" {
+		return fmt.Sprintf("%s %q is in conflict with another operation; retry the request", kind, name)
+	}
+	return "request conflicts with another operation; retry the request"
+}
+
+func normalizeAlreadyExistsError(err error) string {
+	kind, name := errorResource(err)
+	if kind != "" && name != "" {
+		return fmt.Sprintf("%s %q already exists", kind, name)
+	}
+	return "resource already exists"
+}
+
+func errorResource(err error) (kind, name string) {
+	var statusErr *errors.StatusError
+	if !stderrors.As(err, &statusErr) || statusErr.ErrStatus.Details == nil {
+		return "", ""
+	}
+	details := statusErr.ErrStatus.Details
+	return normalizeErrorKind(details.Kind), details.Name
+}
+
+func normalizeErrorKind(kind string) string {
+	kind = strings.TrimSpace(strings.ToLower(kind))
+	if kind == "" {
+		return ""
+	}
+	if idx := strings.IndexByte(kind, '.'); idx > 0 {
+		kind = kind[:idx]
+	}
+	switch kind {
+	case "apps", "app":
+		return "app"
+	case "projects", "project":
+		return "project"
+	case "secrets", "secret":
+		return "secret"
+	case "gitproviders", "gitprovider":
+		return "git provider"
+	case "projectmembers", "projectmember":
+		return "project member"
+	case "buildruns", "buildrun":
+		return "build run"
+	case "previewenvironments", "previewenvironment":
+		return "preview environment"
+	case "namespaces", "namespace":
+		return "namespace"
+	default:
+		return strings.TrimSuffix(kind, "s")
+	}
 }

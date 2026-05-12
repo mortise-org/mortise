@@ -867,8 +867,8 @@ cluster's default SC). For v1:
   Copies per-app CRD overrides (replicas, resources, probes, bindings,
   schedule, annotations) and Secret-level env vars (set via the UI/API).
   Binding-sourced vars are excluded — the controller re-resolves them
-  in the new namespace. The operation is retry-safe: partial failures
-  can be retried without duplication.
+  in the new namespace. If the target environment already exists on the
+  project, the API returns `409 Conflict`.
 - **Preview environments (project-level toggle, §5.0 `spec.preview.enabled`).**
   When enabled on the parent Project, PR opens → operator creates one
   `PreviewEnvironment` per App in the project. The preview controller

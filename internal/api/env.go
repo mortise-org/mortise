@@ -23,9 +23,10 @@ import (
 
 // envVarResponse is the JSON shape for a single env var.
 type envVarResponse struct {
-	Name   string `json:"name"`
-	Value  string `json:"value"`
-	Source string `json:"source,omitempty"`
+	Name     string `json:"name"`
+	Value    string `json:"value"`
+	Source   string `json:"source,omitempty"`
+	Redacted bool   `json:"redacted,omitempty"`
 }
 
 // patchEnvRequest is the JSON body for PATCH .../env.
@@ -70,10 +71,15 @@ func (s *Server) GetEnv(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
+	plaintext, err := s.canAuthorize(r, authz.Resource{Kind: "app", Project: projectName, Environment: envName}, authz.ActionUpdate)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorResponse{"authorization check failed"})
+		return
+	}
 
 	resp := make([]envVarResponse, 0, len(envs))
 	for _, e := range envs {
-		resp = append(resp, envVarResponse{Name: e.Name, Value: e.Value, Source: e.Source})
+		resp = append(resp, envResponseVar(e, plaintext))
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -381,12 +387,27 @@ func (s *Server) GetSharedVars(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
+	plaintext, err := s.canAuthorize(r, authz.Resource{Kind: "app", Project: projectName}, authz.ActionUpdate)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorResponse{"authorization check failed"})
+		return
+	}
 
 	resp := make([]envVarResponse, 0, len(envs))
 	for _, e := range envs {
-		resp = append(resp, envVarResponse{Name: e.Name, Value: e.Value, Source: e.Source})
+		resp = append(resp, envResponseVar(e, plaintext))
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+func envResponseVar(e envstore.Env, plaintext bool) envVarResponse {
+	resp := envVarResponse{Name: e.Name, Source: e.Source}
+	if plaintext {
+		resp.Value = e.Value
+		return resp
+	}
+	resp.Redacted = true
+	return resp
 }
 
 // PutSharedVars replaces all shared env vars for a project.
