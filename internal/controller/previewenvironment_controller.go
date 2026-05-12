@@ -31,7 +31,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
-	"sort"
 
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
 	"github.com/mortise-org/mortise/internal/constants"
@@ -102,12 +101,6 @@ func (r *PreviewEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.R
 	}
 
 	sourceEnv := pe.Spec.SourceEnv
-	if sourceEnv == "" {
-		sourceEnv = resolveSourceEnv(&project)
-		if sourceEnv == "" {
-			return ctrl.Result{}, r.setFailed(ctx, &pe, "MissingSourceEnv", "cannot resolve source environment for preview")
-		}
-	}
 
 	for _, env := range project.Spec.Environments {
 		if env.Name == sourceEnv && env.Restricted {
@@ -214,6 +207,13 @@ func (r *PreviewEnvironmentReconciler) ensureAppEnvOverride(ctx context.Context,
 // cloneEnvironment deep-copies the source env override from the app and returns
 // a new Environment with the target name. If the source env has no override on
 // the app, returns a bare entry.
+//
+// Intentionally excluded fields (preview gets its own via other mechanisms):
+//   - Domain, CustomDomains: preview uses the domain template with pr-{number} as env name
+//   - TLS: preview uses default TLS settings
+//   - SecretMounts: not cloned; file issue for PVC/mount clone support
+//   - Image: preview builds from the PR branch, not a pinned image
+//   - Enabled: previews are always enabled
 func cloneEnvironment(sourceName, targetName string, app *mortisev1alpha1.App) mortisev1alpha1.Environment {
 	cloned := mortisev1alpha1.Environment{Name: targetName}
 
@@ -255,14 +255,14 @@ func cloneEnvironment(sourceName, targetName string, app *mortisev1alpha1.App) m
 	if len(source.Env) > 0 {
 		cloned.Env = make([]mortisev1alpha1.EnvVar, len(source.Env))
 		copy(cloned.Env, source.Env)
-		sort.Slice(cloned.Env, func(a, b int) bool { return cloned.Env[a].Name < cloned.Env[b].Name })
 	}
 
 	return cloned
 }
 
 // copySharedEnvSecret copies the shared-env Secret from the source env namespace
-// to the preview env namespace.
+// to the preview env namespace. This is a snapshot: subsequent changes to the
+// source Secret do not propagate to the preview.
 func (r *PreviewEnvironmentReconciler) copySharedEnvSecret(ctx context.Context, projectName, sourceEnv, envName string) error {
 	sourceNs := constants.EnvNamespace(projectName, sourceEnv)
 	targetNs := constants.EnvNamespace(projectName, envName)
@@ -304,6 +304,9 @@ func (r *PreviewEnvironmentReconciler) copySharedEnvSecret(ctx context.Context, 
 	return nil
 }
 
+// copyAppEnvSecret copies the per-app env Secret from the source env namespace
+// to the preview env namespace. This is a snapshot: subsequent changes to the
+// source Secret do not propagate to the preview.
 func (r *PreviewEnvironmentReconciler) copyAppEnvSecret(ctx context.Context, projectName, sourceEnv, envName, appName string) error {
 	sourceNs := constants.EnvNamespace(projectName, sourceEnv)
 	targetNs := constants.EnvNamespace(projectName, envName)
@@ -369,7 +372,9 @@ func copySourceAnnotations(src map[string]string) map[string]string {
 }
 
 // cleanupPreview removes the preview env entry from the Project and strips
-// per-app env overrides for the preview env name.
+// per-app env overrides for the preview env name. Copied Secrets in the preview
+// namespace are not explicitly deleted — the Project controller garbage-collects
+// the entire env namespace when the env entry is removed.
 func (r *PreviewEnvironmentReconciler) cleanupPreview(ctx context.Context, pe *mortisev1alpha1.PreviewEnvironment, projectName, envName string) error {
 	if err := r.removeProjectEnv(ctx, projectName, envName); err != nil {
 		return err
@@ -469,27 +474,6 @@ func (r *PreviewEnvironmentReconciler) clock() clock.Clock {
 		return r.Clock
 	}
 	return clock.RealClock{}
-}
-
-// resolveSourceEnv picks the source environment for preview cloning: prefers
-// "staging", falls back to first non-production env.
-func resolveSourceEnv(project *mortisev1alpha1.Project) string {
-	if project == nil {
-		return ""
-	}
-	if project.Spec.Preview != nil && project.Spec.Preview.SourceEnvironment != "" {
-		return project.Spec.Preview.SourceEnvironment
-	}
-	var firstNonProd string
-	for _, env := range project.Spec.Environments {
-		if env.Name == "staging" {
-			return "staging"
-		}
-		if env.Name != "production" && firstNonProd == "" {
-			firstNonProd = env.Name
-		}
-	}
-	return firstNonProd
 }
 
 func (r *PreviewEnvironmentReconciler) SetupWithManager(mgr ctrl.Manager) error {

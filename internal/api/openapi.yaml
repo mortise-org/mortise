@@ -1566,13 +1566,11 @@ definitions:
     enum:
     - auto
     - manual
-    - preview
     - webhook
     type: string
     x-enum-varnames:
     - BuildRunTriggerAuto
     - BuildRunTriggerManual
-    - BuildRunTriggerPreview
     - BuildRunTriggerWebhook
   v1alpha1.ConcurrencyPolicy:
     enum:

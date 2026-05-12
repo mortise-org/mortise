@@ -519,12 +519,10 @@ func (r *AppReconciler) reconcileEnvBuild(ctx context.Context, app *mortisev1alp
 	log := logf.FromContext(ctx)
 
 	revision := app.Annotations["mortise.dev/revision"]
-	if revision == "" {
-		if envBranch != "" {
-			revision = envBranch
-		} else {
-			revision = app.Spec.Source.Branch
-		}
+	if envBranch != "" {
+		revision = envBranch
+	} else if revision == "" {
+		revision = app.Spec.Source.Branch
 	}
 	if revision == "" {
 		revision = "main"
@@ -772,12 +770,10 @@ func (r *AppReconciler) allEnvBuildsCurrentForRevision(app *mortisev1alpha1.App,
 	}
 	for _, env := range envs {
 		revision := app.Annotations["mortise.dev/revision"]
-		if revision == "" {
-			if env.Branch != "" {
-				revision = env.Branch
-			} else {
-				revision = app.Spec.Source.Branch
-			}
+		if env.Branch != "" {
+			revision = env.Branch
+		} else if revision == "" {
+			revision = app.Spec.Source.Branch
 		}
 		if revision == "" {
 			revision = "main"

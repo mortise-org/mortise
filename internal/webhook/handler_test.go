@@ -15,7 +15,9 @@ import (
 
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
 	"github.com/mortise-org/mortise/internal/git"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
 // fakeK8sReader is a test double for k8sReader.
@@ -92,7 +94,7 @@ func (f *fakeK8sReader) getPreviewEnvironment(_ context.Context, namespace, name
 	if pe, ok := f.previewEnvs[key]; ok {
 		return pe, nil
 	}
-	return nil, fmt.Errorf("not found: %s/%s", namespace, name)
+	return nil, apierrors.NewNotFound(schema.GroupResource{Group: "mortise.dev", Resource: "previewenvironments"}, name)
 }
 
 func (f *fakeK8sReader) createPreviewEnvironment(_ context.Context, pe *mortisev1alpha1.PreviewEnvironment) error {

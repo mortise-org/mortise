@@ -69,6 +69,7 @@ type PreviewEnvironmentStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:resource:scope=Namespaced
 // +kubebuilder:printcolumn:name="PR",type=integer,JSONPath=`.spec.pullRequest.number`
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
 // +kubebuilder:printcolumn:name="Environment",type=string,JSONPath=`.status.environmentName`

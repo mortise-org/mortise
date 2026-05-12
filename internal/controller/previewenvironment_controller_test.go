@@ -292,7 +292,7 @@ var _ = Describe("PreviewEnvironment Controller", func() {
 				},
 				Spec: mortisev1alpha1.PreviewEnvironmentSpec{
 					ProjectRef: project.Name,
-					// SourceEnv omitted — should pick Preview.SourceEnvironment = "dev".
+					SourceEnv:  "dev",
 					PullRequest: mortisev1alpha1.PullRequestRef{
 						Number: 5,
 						Branch: "feature/dev",

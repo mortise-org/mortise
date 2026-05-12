@@ -17,6 +17,7 @@ import (
 	"strings"
 
 	"github.com/go-chi/chi/v5"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -261,12 +262,8 @@ func (h *Handler) dispatchPREvent(ctx context.Context, pr PREvent) {
 			continue
 		}
 
-		// BotPR defaults to true when nil.
-		if preview.BotPR != nil && !*preview.BotPR {
-			// BotPR is explicitly false — but we don't have author info
-			// in the webhook payload, so we can't gate here. The PE
-			// controller can enforce this if needed.
-		}
+		// BotPR gating is not enforced here — the webhook payload doesn't
+		// carry author info. The PE controller can enforce this if needed.
 
 		sourceEnv := resolveSourceEnv(project)
 		if sourceEnv == "" {
@@ -276,6 +273,10 @@ func (h *Handler) dispatchPREvent(ctx context.Context, pr PREvent) {
 
 		existing, err := h.k8s.getPreviewEnvironment(ctx, controlNs, peName)
 		if err != nil {
+			if !apierrors.IsNotFound(err) {
+				log.Error(err, "get PreviewEnvironment", "project", projectName, "pe", peName)
+				continue
+			}
 			// Not found — create.
 			pe := &mortisev1alpha1.PreviewEnvironment{
 				ObjectMeta: metav1.ObjectMeta{

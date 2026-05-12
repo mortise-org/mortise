@@ -187,6 +187,54 @@ func TestUpdateStatusRecomputesTopLevelBuildRunNamesFromTerminalEnvRef(t *testin
 	}
 }
 
+func TestAllEnvBuildsCurrentForRevision_EnvBranchOverridesAnnotation(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := mortisev1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add scheme: %v", err)
+	}
+
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "demo",
+			Namespace: "pj-default-project",
+			Annotations: map[string]string{
+				"mortise.dev/revision": "abc123",
+			},
+		},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{
+				Type:   mortisev1alpha1.SourceTypeGit,
+				Branch: "main",
+			},
+			Environments: []mortisev1alpha1.Environment{
+				{Name: "staging", Branch: "feature/x"},
+			},
+		},
+		Status: mortisev1alpha1.AppStatus{
+			Environments: []mortisev1alpha1.EnvironmentStatus{{
+				Name:           "staging",
+				LastBuiltSHA:   "feature/x",
+				LastBuiltImage: "registry/demo:feature-x-staging",
+			}},
+		},
+	}
+
+	r := &AppReconciler{Scheme: scheme}
+	envs := []mortisev1alpha1.Environment{{Name: "staging", Branch: "feature/x"}}
+
+	// With the env branch matching LastBuiltSHA, should return true.
+	if !r.allEnvBuildsCurrentForRevision(app, envs) {
+		t.Fatal("expected allEnvBuildsCurrentForRevision=true when env branch matches LastBuiltSHA")
+	}
+
+	// If LastBuiltSHA matches the annotation instead of the env branch, should return false
+	// (env branch must win over annotation).
+	app.Status.Environments[0].LastBuiltSHA = "abc123"
+	if r.allEnvBuildsCurrentForRevision(app, envs) {
+		t.Fatal("expected allEnvBuildsCurrentForRevision=false when LastBuiltSHA matches annotation but not env branch")
+	}
+}
+
 var _ = Describe("App Controller", func() {
 	const namespace = "pj-default-project"
 	const envNsProduction = "pj-default-project-production"

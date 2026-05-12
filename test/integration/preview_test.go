@@ -480,8 +480,8 @@ func waitForPreviewFailed(t *testing.T, namespace, name string, timeout time.Dur
 	})
 }
 
-// assertPreviewHasURL checks that the PreviewEnvironment status carries a URL.
-func assertPreviewHasURL(t *testing.T, pe *mortisev1alpha1.PreviewEnvironment) {
+// assertPreviewReady checks that the PreviewEnvironment has reached a non-empty phase.
+func assertPreviewReady(t *testing.T, pe *mortisev1alpha1.PreviewEnvironment) {
 	t.Helper()
 	if pe.Status.Phase == "" {
 		t.Error("PreviewEnvironment status.phase is empty; expected a phase")

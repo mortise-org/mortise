@@ -268,13 +268,6 @@ export interface DevicePollResponse {
 // Preview environment
 export type PreviewPhase = 'Pending' | 'Ready' | 'Failed';
 
-export interface PreviewEnvironment {
-	name: string;
-	environmentName: string;
-	pr: { number: number; branch: string; sha: string };
-	phase: PreviewPhase;
-}
-
 // Activity event (§5.11)
 export interface ActivityEvent {
 	ts: string;

@@ -489,7 +489,7 @@ func TestDeleteAppCleansUpCustomSecretsViaAPI(t *testing.T) {
 	}
 }
 
-func TestDeleteAppRemovesPreviewsFromAPIAndCluster(t *testing.T) {
+func TestDeleteAppAndPECleanup(t *testing.T) {
 	t.Parallel()
 	projectName := "proj-preview-delete-" + randSuffix()
 	ns := createProjectForTest(t, projectName)
