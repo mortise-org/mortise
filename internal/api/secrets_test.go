@@ -125,12 +125,74 @@ func TestCreateSecretRejectsReservedRuntimeSecretName(t *testing.T) {
 	seedProject(t, k8sClient, "default")
 	seedAppForEnv(t, h)
 
-	w := doRequest(h, http.MethodPost, "/api/projects/default/apps/webapp/secrets?environment=production", map[string]any{
-		"name": envstore.AppEnvSecretName("webapp"),
+	for _, name := range []string{envstore.AppEnvSecretName("webapp"), "webapp-pull-secret"} {
+		w := doRequest(h, http.MethodPost, "/api/projects/default/apps/webapp/secrets?environment=production", map[string]any{
+			"name": name,
+			"data": map[string]string{"TOP": "secret"},
+		})
+		if w.Code != http.StatusConflict {
+			t.Fatalf("create reserved secret %q: expected 409, got %d: %s", name, w.Code, w.Body.String())
+		}
+	}
+}
+
+func TestListSecretsHidesReservedRuntimeSecrets(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+	seedProject(t, k8sClient, "default")
+	seedAppForEnv(t, h)
+
+	create := doRequest(h, http.MethodPost, "/api/projects/default/apps/webapp/secrets?environment=production", map[string]any{
+		"name": "user-secret",
 		"data": map[string]string{"TOP": "secret"},
 	})
-	if w.Code != http.StatusConflict {
-		t.Fatalf("create reserved secret: expected 409, got %d: %s", w.Code, w.Body.String())
+	if create.Code != http.StatusCreated {
+		t.Fatalf("create user secret: expected 201, got %d: %s", create.Code, create.Body.String())
+	}
+
+	setPull := doRequest(h, http.MethodPost, "/api/projects/default/apps/webapp/pull-credentials", map[string]any{
+		"registry": "ghcr.io",
+		"username": "octo",
+		"password": "secret",
+	})
+	if setPull.Code != http.StatusOK {
+		t.Fatalf("set pull credentials: expected 200, got %d: %s", setPull.Code, setPull.Body.String())
+	}
+
+	w := doRequest(h, http.MethodGet, "/api/projects/default/apps/webapp/secrets?environment=production", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("list secrets: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp []map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode secrets response: %v", err)
+	}
+	if len(resp) != 1 || resp[0]["name"] != "user-secret" {
+		t.Fatalf("expected only user-secret in response, got %+v", resp)
+	}
+}
+
+func TestDeleteSecretRejectsReservedPullSecret(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+	seedProject(t, k8sClient, "default")
+	seedAppForEnv(t, h)
+
+	setPull := doRequest(h, http.MethodPost, "/api/projects/default/apps/webapp/pull-credentials", map[string]any{
+		"registry": "ghcr.io",
+		"username": "octo",
+		"password": "secret",
+	})
+	if setPull.Code != http.StatusOK {
+		t.Fatalf("set pull credentials: expected 200, got %d: %s", setPull.Code, setPull.Body.String())
+	}
+
+	w := doRequest(h, http.MethodDelete, "/api/projects/default/apps/webapp/secrets/webapp-pull-secret?environment=production", nil)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("delete reserved pull secret: expected 403, got %d: %s", w.Code, w.Body.String())
 	}
 }
 

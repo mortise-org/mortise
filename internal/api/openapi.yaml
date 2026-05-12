@@ -297,6 +297,8 @@ definitions:
     properties:
       name:
         type: string
+      redacted:
+        type: boolean
       source:
         type: string
       value:
