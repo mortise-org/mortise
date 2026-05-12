@@ -10,7 +10,28 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
+	"github.com/mortise-org/mortise/internal/auth"
 )
+
+func issueViewerToken(t *testing.T, k8sClient client.Client, email string) string {
+	t.Helper()
+	ctx := context.Background()
+	authProvider := auth.NewNativeAuthProvider(k8sClient)
+	jwtHelper := auth.NewJWTHelper(k8sClient)
+
+	if err := authProvider.CreateUser(ctx, email, "testpass", auth.RoleViewer); err != nil {
+		t.Fatalf("create viewer user: %v", err)
+	}
+	principal, err := authProvider.Authenticate(ctx, auth.Credentials{Email: email, Password: "testpass"})
+	if err != nil {
+		t.Fatalf("authenticate viewer user: %v", err)
+	}
+	token, err := jwtHelper.GenerateToken(ctx, principal)
+	if err != nil {
+		t.Fatalf("generate viewer token: %v", err)
+	}
+	return token
+}
 
 func seedTokenApp(t *testing.T, k8sClient client.Client, projectNS, appName string, envs ...mortisev1alpha1.Environment) {
 	t.Helper()
@@ -276,5 +297,51 @@ func TestListTokensMissingAppReturns404(t *testing.T) {
 	w := doRequest(h, http.MethodGet, "/api/projects/default/apps/ghost/tokens", nil)
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("expected 404 for missing app, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestListTokensViewerForbidden(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	adminSrv, adminToken := newTestServer(t, k8sClient)
+	h := adminSrv.Handler()
+	ns := seedProject(t, k8sClient, "default")
+	viewerEmail := "viewer@example.com"
+	viewerToken := issueViewerToken(t, k8sClient, viewerEmail)
+	seedProjectMember(t, k8sClient, "default", viewerEmail, mortisev1alpha1.ProjectRoleViewer)
+	seedTokenApp(t, k8sClient, ns, "webapp")
+
+	create := doRequestWithToken(h, http.MethodPost, "/api/projects/default/apps/webapp/tokens", map[string]any{
+		"name":        "ci-deploy",
+		"environment": "production",
+	}, adminToken)
+	if create.Code != http.StatusCreated {
+		t.Fatalf("create token: expected 201, got %d: %s", create.Code, create.Body.String())
+	}
+
+	w := doRequestWithToken(h, http.MethodGet, "/api/projects/default/apps/webapp/tokens", nil, viewerToken)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for viewer token inventory read, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestListProjectTokensViewerForbidden(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	adminSrv, adminToken := newTestServer(t, k8sClient)
+	h := adminSrv.Handler()
+	seedProject(t, k8sClient, "default")
+	viewerEmail := "viewer@example.com"
+	viewerToken := issueViewerToken(t, k8sClient, viewerEmail)
+	seedProjectMember(t, k8sClient, "default", viewerEmail, mortisev1alpha1.ProjectRoleViewer)
+
+	create := doRequestWithToken(h, http.MethodPost, "/api/projects/default/tokens", map[string]any{
+		"description": "ci inventory",
+	}, adminToken)
+	if create.Code != http.StatusCreated {
+		t.Fatalf("create project token: expected 201, got %d: %s", create.Code, create.Body.String())
+	}
+
+	w := doRequestWithToken(h, http.MethodGet, "/api/projects/default/tokens", nil, viewerToken)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for viewer project token inventory read, got %d: %s", w.Code, w.Body.String())
 	}
 }

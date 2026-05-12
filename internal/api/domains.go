@@ -108,8 +108,9 @@ func (s *Server) AddDomain(w http.ResponseWriter, r *http.Request) {
 	}
 
 	env := ensureEnvironment(app, envName)
+	autoDomain := statusAutoDomain(app, envName)
 
-	if slices.Contains(env.CustomDomains, req.Domain) {
+	if req.Domain == env.Domain || req.Domain == autoDomain || slices.Contains(env.CustomDomains, req.Domain) {
 		writeJSON(w, http.StatusConflict, errorResponse{"domain already exists"})
 		return
 	}
@@ -155,7 +156,7 @@ func (s *Server) AddDomain(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, domainsResponse{
 		Primary: env.Domain,
 		Custom:  env.CustomDomains,
-		Auto:    statusAutoDomain(app, envName),
+		Auto:    autoDomain,
 	})
 }
 

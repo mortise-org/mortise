@@ -2,12 +2,17 @@ package api_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
 	"testing"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+
+	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
 	"github.com/mortise-org/mortise/internal/api"
 )
 
@@ -191,5 +196,37 @@ func TestCreateStackFilterExcludesAll(t *testing.T) {
 		if !strings.Contains(resp["error"], want) {
 			t.Errorf("expected error %q to mention %q", resp["error"], want)
 		}
+	}
+}
+
+func TestCreateStackRollsBackCreatedAppsOnConflict(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+	ns := seedProject(t, k8sClient, "default")
+
+	existing := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "stack-collide", Namespace: ns},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{Type: "image", Image: "nginx:1.25.0"},
+		},
+	}
+	if err := k8sClient.Create(context.Background(), existing); err != nil {
+		t.Fatalf("create existing app: %v", err)
+	}
+
+	body := map[string]any{
+		"compose": "services:\n  bravo:\n    image: nginx:1.25\n  collide:\n    image: nginx:1.25\n",
+		"name":    "stack",
+	}
+	w := doRequest(h, http.MethodPost, "/api/projects/default/stacks", body)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("expected 409 when one app already exists, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var created mortisev1alpha1.App
+	err := k8sClient.Get(context.Background(), types.NamespacedName{Name: "stack-bravo", Namespace: ns}, &created)
+	if err == nil {
+		t.Fatalf("expected stack-bravo to be rolled back after failure")
 	}
 }

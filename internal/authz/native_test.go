@@ -279,6 +279,27 @@ func TestViewerWithProjectMembership(t *testing.T) {
 	}
 }
 
+func TestViewerWithProjectMembershipCannotReadTokens(t *testing.T) {
+	const email = "viewer@example.com"
+	const project = "my-project"
+
+	c := fake.NewClientBuilder().
+		WithScheme(authzScheme(t)).
+		WithObjects(memberForProject(email, project, mortisev1alpha1.ProjectRoleViewer)).
+		Build()
+	engine := NewNativePolicyEngine(c)
+	ctx := context.Background()
+	viewer := auth.Principal{ID: email, Email: email, Role: auth.RoleViewer}
+
+	ok, err := engine.Authorize(ctx, viewer, Resource{Kind: "token", Project: project}, ActionRead)
+	if err != nil {
+		t.Fatalf("Authorize(token, read): %v", err)
+	}
+	if ok {
+		t.Error("project-viewer should not be allowed to read project token inventory")
+	}
+}
+
 func TestViewerMembershipDoesNotGrantWrite(t *testing.T) {
 	const email = "viewer@example.com"
 	const project = "my-project"
