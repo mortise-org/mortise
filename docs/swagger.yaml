@@ -1523,6 +1523,8 @@ definitions:
     type: object
   v1alpha1.BuildRunStatus:
     properties:
+      attempt:
+        type: integer
       completedAt:
         type: string
       conditions:
