@@ -129,12 +129,18 @@ DEV_IMG ?= mortise:dev
 DEV_OBSERVER_IMG ?= mortise-observer:dev
 GITHUB_CLIENT_ID ?= Ov23lizLTd25E32VrWwl
 K3D_RUNTIME_ULIMIT ?= nofile=1048576:1048576
+DEV_HELM_TIMEOUT ?= 300s
+DEV_PORT_FORWARD_LOG ?= /tmp/$(DEV_CLUSTER)-port-forward.log
+DEV_PORT_FORWARD_READY_URL ?= http://localhost:8090/api/auth/status
 
 .PHONY: dev-up
 dev-up: build-ui ## Create k3d dev cluster with build infra, install Mortise, port-forward
 	@echo "==> Creating k3d cluster $(DEV_CLUSTER) (with registry mirror)..."
-	@k3d cluster list | grep -q $(DEV_CLUSTER) || k3d cluster create \
-		--config test/dev/k3d-config.yaml --runtime-ulimit $(K3D_RUNTIME_ULIMIT) --wait
+	@tmp_config=$$(mktemp); \
+	trap 'rm -f "$$tmp_config"' EXIT; \
+	sed 's/name: mortise-dev/name: $(DEV_CLUSTER)/' test/dev/k3d-config.yaml > "$$tmp_config"; \
+	k3d cluster list | grep -q "^$(DEV_CLUSTER)\\b" || k3d cluster create \
+		--config "$$tmp_config" --runtime-ulimit $(K3D_RUNTIME_ULIMIT) --wait
 	@echo "==> Building Docker images..."
 	$(CONTAINER_TOOL) build --target operator -t $(DEV_IMG) .
 	$(CONTAINER_TOOL) build --target observer -t $(DEV_OBSERVER_IMG) .
@@ -158,11 +164,15 @@ dev-up: build-ui ## Create k3d dev cluster with build infra, install Mortise, po
 	helm repo update
 	helm dependency build charts/mortise
 	@echo "==> Installing Mortise via Helm..."
+	@dev_img_repo='$(DEV_IMG)'; \
+	dev_img_repo=$${dev_img_repo%:*}; \
+	dev_img_tag='$(DEV_IMG)'; \
+	dev_img_tag=$${dev_img_tag##*:}; \
 	helm upgrade --install mortise charts/mortise \
 		--namespace mortise-system --create-namespace \
 		--skip-crds \
-		--set mortise-core.image.repository=mortise \
-		--set mortise-core.image.tag=dev \
+		--set mortise-core.image.repository=$$dev_img_repo \
+		--set mortise-core.image.tag=$$dev_img_tag \
 		--set mortise-core.image.pullPolicy=Never \
 		--set observer.enabled=true \
 		--set observer.image=$(DEV_OBSERVER_IMG) \
@@ -174,7 +184,7 @@ dev-up: build-ui ## Create k3d dev cluster with build infra, install Mortise, po
 		--set cert-manager.enabled=false \
 		--set metricsServer.args='{--kubelet-insecure-tls}' \
 		--set mortise-core.github.clientID=$(GITHUB_CLIENT_ID) \
-		--wait --timeout 180s
+		--wait --timeout $(DEV_HELM_TIMEOUT)
 	@echo "==> Applying dev PlatformConfig..."
 	kubectl apply -f test/dev/platform-config.yaml
 	@echo "==> Restarting operator to pick up config..."
@@ -182,8 +192,22 @@ dev-up: build-ui ## Create k3d dev cluster with build infra, install Mortise, po
 	kubectl -n mortise-system rollout status deployment/mortise --timeout=60s
 	@echo "==> Starting port-forward..."
 	@-pkill -f "[k]ubectl port-forward.*8090" >/dev/null 2>&1
-	@kubectl port-forward -n mortise-system svc/mortise 8090:80 >/dev/null 2>&1 &
-	@sleep 2
+	@if command -v setsid >/dev/null 2>&1; then \
+		nohup setsid kubectl port-forward -n mortise-system svc/mortise 8090:80 >$(DEV_PORT_FORWARD_LOG) 2>&1 </dev/null & \
+	else \
+		nohup kubectl port-forward -n mortise-system svc/mortise 8090:80 >$(DEV_PORT_FORWARD_LOG) 2>&1 </dev/null & \
+	fi
+	@for i in $$(seq 1 15); do \
+		if curl -fsS $(DEV_PORT_FORWARD_READY_URL) >/dev/null 2>&1; then \
+			break; \
+		fi; \
+		if [ $$i -eq 15 ]; then \
+			echo "ERROR: port-forward failed to become reachable; see $(DEV_PORT_FORWARD_LOG)"; \
+			tail -n 20 $(DEV_PORT_FORWARD_LOG) >/dev/null 2>&1 && tail -n 20 $(DEV_PORT_FORWARD_LOG); \
+			exit 1; \
+		fi; \
+		sleep 1; \
+	done
 	@echo ""
 	@echo "✓ Mortise dev cluster is running at http://localhost:8090"
 	@echo "  Test infra: Gitea + BuildKit + registry (with node-local mirror)"
@@ -352,10 +376,14 @@ dev-reload: build-ui ## Rebuild image, re-apply CRDs + chart, restart Mortise in
 	$(CONTAINER_TOOL) build --target observer -t $(DEV_OBSERVER_IMG) .
 	k3d image import $(DEV_IMG) $(DEV_OBSERVER_IMG) -c $(DEV_CLUSTER)
 	kubectl apply -f charts/mortise-core/crds/
+	@dev_img_repo='$(DEV_IMG)'; \
+	dev_img_repo=$${dev_img_repo%:*}; \
+	dev_img_tag='$(DEV_IMG)'; \
+	dev_img_tag=$${dev_img_tag##*:}; \
 	helm upgrade mortise charts/mortise \
 		--namespace mortise-system \
-		--set mortise-core.image.repository=mortise \
-		--set mortise-core.image.tag=dev \
+		--set mortise-core.image.repository=$$dev_img_repo \
+		--set mortise-core.image.tag=$$dev_img_tag \
 		--set mortise-core.image.pullPolicy=Never \
 		--set observer.enabled=true \
 		--set observer.image=$(DEV_OBSERVER_IMG) \
@@ -369,8 +397,22 @@ dev-reload: build-ui ## Rebuild image, re-apply CRDs + chart, restart Mortise in
 	kubectl rollout restart deployment/mortise -n mortise-system
 	kubectl rollout status deployment/mortise -n mortise-system --timeout 60s
 	@-pkill -f "[k]ubectl port-forward.*8090" >/dev/null 2>&1
-	@kubectl port-forward -n mortise-system svc/mortise 8090:80 >/dev/null 2>&1 &
-	@sleep 2
+	@if command -v setsid >/dev/null 2>&1; then \
+		nohup setsid kubectl port-forward -n mortise-system svc/mortise 8090:80 >$(DEV_PORT_FORWARD_LOG) 2>&1 </dev/null & \
+	else \
+		nohup kubectl port-forward -n mortise-system svc/mortise 8090:80 >$(DEV_PORT_FORWARD_LOG) 2>&1 </dev/null & \
+	fi
+	@for i in $$(seq 1 15); do \
+		if curl -fsS $(DEV_PORT_FORWARD_READY_URL) >/dev/null 2>&1; then \
+			break; \
+		fi; \
+		if [ $$i -eq 15 ]; then \
+			echo "ERROR: port-forward failed to become reachable; see $(DEV_PORT_FORWARD_LOG)"; \
+			tail -n 20 $(DEV_PORT_FORWARD_LOG) >/dev/null 2>&1 && tail -n 20 $(DEV_PORT_FORWARD_LOG); \
+			exit 1; \
+		fi; \
+		sleep 1; \
+	done
 	@echo "Reloaded — http://localhost:8090"
 
 # If you wish to build the manager image targeting other platforms you can use the --platform flag.
