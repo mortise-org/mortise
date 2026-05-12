@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"encoding/hex"
+	"sync"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -30,6 +31,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
+	"github.com/mortise-org/mortise/internal/activity"
 )
 
 var _ = Describe("Project Controller", func() {
@@ -78,6 +80,136 @@ var _ = Describe("Project Controller", func() {
 			Expect(updated.Status.Phase).To(Equal(mortisev1alpha1.ProjectPhaseReady))
 			Expect(updated.Status.Namespace).To(Equal(nsName))
 			Expect(updated.Finalizers).To(ContainElement(projectFinalizer))
+		})
+	})
+
+	Context("project create activity backfill", func() {
+		const projectName = "activity-backfill"
+
+		AfterEach(func() {
+			proj := &mortisev1alpha1.Project{}
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: projectName}, proj); err == nil {
+				proj.Finalizers = nil
+				_ = k8sClient.Update(ctx, proj)
+				_ = k8sClient.Delete(ctx, proj)
+			}
+			_ = k8sClient.Delete(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ProjectNamespace(projectName)}})
+		})
+
+		It("records exactly one create event after the control namespace exists", func() {
+			project := &mortisev1alpha1.Project{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:        projectName,
+					Annotations: map[string]string{"mortise.dev/created-by": "owner@example.com"},
+				},
+			}
+			Expect(k8sClient.Create(ctx, project)).To(Succeed())
+			Expect(k8sClient.Create(ctx, &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{Name: ProjectNamespace(projectName)},
+			})).To(Succeed())
+
+			store := activity.NewConfigMapStore(k8sClient)
+			Expect(store.Append(ctx, activity.Event{
+				Timestamp:    metav1.Now().Time,
+				Actor:        "owner@example.com",
+				Action:       "create",
+				ResourceKind: "project",
+				ResourceName: projectName,
+				Project:      projectName,
+				Message:      "Created project " + projectName,
+			})).To(Succeed())
+
+			r := &ProjectReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			Expect(r.ensureProjectCreateActivity(ctx, project)).To(Succeed())
+			var stale mortisev1alpha1.Project
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: projectName}, &stale)).To(Succeed())
+			Expect(r.ensureProjectCreateActivity(ctx, &stale)).To(Succeed())
+
+			events, err := store.List(ctx, projectName, activity.Cap)
+			Expect(err).NotTo(HaveOccurred())
+			createEvents := 0
+			for _, event := range events {
+				if event.Action == "create" && event.ResourceKind == "project" && event.ResourceName == projectName {
+					createEvents++
+				}
+			}
+			Expect(createEvents).To(Equal(1))
+
+			var updated mortisev1alpha1.Project
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: projectName}, &updated)).To(Succeed())
+			Expect(updated.Annotations[projectCreateActivityRecordedAnnotation]).To(Equal("true"))
+		})
+
+		It("dedupes concurrent stale backfill attempts", func() {
+			const concurrentProjectName = "activity-backfill-concurrent"
+			DeferCleanup(func() {
+				proj := &mortisev1alpha1.Project{}
+				if err := k8sClient.Get(ctx, types.NamespacedName{Name: concurrentProjectName}, proj); err == nil {
+					proj.Finalizers = nil
+					_ = k8sClient.Update(ctx, proj)
+					_ = k8sClient.Delete(ctx, proj)
+				}
+				_ = k8sClient.Delete(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ProjectNamespace(concurrentProjectName)}})
+			})
+
+			project := &mortisev1alpha1.Project{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:        concurrentProjectName,
+					Annotations: map[string]string{"mortise.dev/created-by": "owner@example.com"},
+				},
+			}
+			Expect(k8sClient.Create(ctx, project)).To(Succeed())
+			Expect(k8sClient.Create(ctx, &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{Name: ProjectNamespace(concurrentProjectName)},
+			})).To(Succeed())
+
+			var staleA, staleB mortisev1alpha1.Project
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: concurrentProjectName}, &staleA)).To(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: concurrentProjectName}, &staleB)).To(Succeed())
+
+			r := &ProjectReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			start := make(chan struct{})
+			errCh := make(chan error, 2)
+
+			run := func(stale *mortisev1alpha1.Project) {
+				defer GinkgoRecover()
+				<-start
+				errCh <- r.ensureProjectCreateActivity(ctx, stale)
+			}
+
+			var wg sync.WaitGroup
+			wg.Add(2)
+			go func() {
+				defer wg.Done()
+				run(&staleA)
+			}()
+			go func() {
+				defer wg.Done()
+				run(&staleB)
+			}()
+
+			close(start)
+			wg.Wait()
+			close(errCh)
+			for err := range errCh {
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			store := activity.NewConfigMapStore(k8sClient)
+			events, err := store.List(ctx, concurrentProjectName, activity.Cap)
+			Expect(err).NotTo(HaveOccurred())
+
+			createEvents := 0
+			for _, event := range events {
+				if event.Action == "create" && event.ResourceKind == "project" && event.ResourceName == concurrentProjectName {
+					createEvents++
+				}
+			}
+			Expect(createEvents).To(Equal(1))
+
+			var updated mortisev1alpha1.Project
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: concurrentProjectName}, &updated)).To(Succeed())
+			Expect(updated.Annotations[projectCreateActivityRecordedAnnotation]).To(Equal("true"))
 		})
 	})
 

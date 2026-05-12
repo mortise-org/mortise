@@ -30,6 +30,9 @@ type logLine struct {
 	Ts     string `json:"ts,omitempty"`
 	Line   string `json:"line"`
 	Stream string `json:"stream"`
+	Kind   string `json:"kind,omitempty"`
+	Code   string `json:"code,omitempty"`
+	Fatal  bool   `json:"fatal,omitempty"`
 }
 
 // parseLogLine splits a kubelet log line of the form
@@ -325,7 +328,14 @@ func (s *Server) streamPodLogs(ctx context.Context, w *sseWriter, ns, podName st
 	stream, err := s.clientset.CoreV1().Pods(ns).GetLogs(podName, opts).Stream(ctx)
 	if err != nil {
 		if ctx.Err() == nil {
-			w.writeEvent(logLine{Pod: podName, Line: fmt.Sprintf("error opening log stream: %v", err), Stream: "stderr"})
+			w.writeEvent(logLine{
+				Pod:    podName,
+				Line:   fmt.Sprintf("error opening log stream: %v", err),
+				Stream: "stderr",
+				Kind:   "error",
+				Code:   "stream_open_failed",
+				Fatal:  true,
+			})
 		}
 		return
 	}
