@@ -135,10 +135,16 @@ func (r *PreviewEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.R
 		}
 	}
 
-	// Copy shared-env Secret from source env namespace to preview env namespace.
+	// Copy shared-env and per-app env Secrets from source env namespace to preview namespace.
 	if err := r.copySharedEnvSecret(ctx, projectName, sourceEnv, envName); err != nil {
 		log.Error(err, "copy shared-env secret")
 		return ctrl.Result{}, err
+	}
+	for i := range apps.Items {
+		if err := r.copyAppEnvSecret(ctx, projectName, sourceEnv, envName, apps.Items[i].Name); err != nil {
+			log.Error(err, "copy app env secret", "app", apps.Items[i].Name)
+			return ctrl.Result{}, err
+		}
 	}
 
 	// Set status to Ready.
@@ -282,6 +288,46 @@ func (r *PreviewEnvironmentReconciler) copySharedEnvSecret(ctx context.Context, 
 	copied := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      envstore.SharedEnvName,
+			Namespace: targetNs,
+			Labels: map[string]string{
+				constants.ProjectLabel:         projectName,
+				"app.kubernetes.io/managed-by": "mortise",
+			},
+		},
+		Data: source.Data,
+	}
+	if err := r.Create(ctx, copied); err != nil && !errors.IsAlreadyExists(err) {
+		return err
+	}
+	return nil
+}
+
+func (r *PreviewEnvironmentReconciler) copyAppEnvSecret(ctx context.Context, projectName, sourceEnv, envName, appName string) error {
+	sourceNs := constants.EnvNamespace(projectName, sourceEnv)
+	targetNs := constants.EnvNamespace(projectName, envName)
+	secretName := envstore.AppEnvSecretName(appName)
+
+	var source corev1.Secret
+	err := r.Get(ctx, types.NamespacedName{Namespace: sourceNs, Name: secretName}, &source)
+	if errors.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+
+	var existing corev1.Secret
+	err = r.Get(ctx, types.NamespacedName{Namespace: targetNs, Name: secretName}, &existing)
+	if err == nil {
+		return nil
+	}
+	if !errors.IsNotFound(err) {
+		return err
+	}
+
+	copied := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      secretName,
 			Namespace: targetNs,
 			Labels: map[string]string{
 				constants.ProjectLabel:         projectName,

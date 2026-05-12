@@ -316,7 +316,8 @@ func TestPreviewEnvironmentRefreshesAfterEnvAPIUpdate(t *testing.T) {
 	mortiseURL := fmt.Sprintf("http://127.0.0.1:%d", mortisePort)
 	token := helpers.LoginAsAdmin(t, mortiseURL, "admin-integ@example.invalid", "integ-admin-pw-01")
 
-	envResp := doJSON(t, http.MethodPut, fmt.Sprintf("%s/api/projects/%s/apps/%s/env?env=%s", mortiseURL, projectName, app.Name, envName), token, []map[string]string{
+	previewEnvName := fmt.Sprintf("pr-%d", 101)
+	envResp := doJSON(t, http.MethodPut, fmt.Sprintf("%s/api/projects/%s/apps/%s/env?env=%s", mortiseURL, projectName, app.Name, previewEnvName), token, []map[string]string{
 		{"name": "LOG_LEVEL", "value": "debug"},
 	})
 	if envResp.StatusCode != http.StatusOK {
@@ -503,14 +504,13 @@ func doCloneJSON(t *testing.T, method, url, token string, body any) cloneHTTPRes
 	return cloneHTTPResult{StatusCode: resp.StatusCode, Body: string(b)}
 }
 
-func readyPreviewPod(namespace, projectName, appName string, prNumber int) (string, types.UID, bool) {
+func readyPreviewPod(namespace, projectName, appName string, _ int) (string, types.UID, bool) {
 	var pods corev1.PodList
 	if err := k8sClient.List(context.Background(), &pods,
 		ctrlclient.InNamespace(namespace),
 		ctrlclient.MatchingLabels{
-			constants.AppNameLabel:  appName,
-			constants.ProjectLabel:  projectName,
-			"mortise.dev/pr-number": fmt.Sprintf("%d", prNumber),
+			constants.AppNameLabel: appName,
+			constants.ProjectLabel: projectName,
 		},
 	); err != nil {
 		return "", "", false
