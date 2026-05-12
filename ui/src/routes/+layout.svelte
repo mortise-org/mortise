@@ -7,7 +7,7 @@
 	import { store } from '$lib/store.svelte';
 	import { currentProject } from '$lib/context.svelte';
 	// Lucide icons
-	import { Folder, Puzzle, Settings, LayoutDashboard, List, Bell, Activity, User, LogOut, ChevronDown, Users, Rocket } from 'lucide-svelte';
+	import { Folder, Puzzle, Settings, LayoutDashboard, List, Bell, Activity, User, LogOut, ChevronDown, Users, Rocket, ExternalLink } from 'lucide-svelte';
 	import ActivityRail from '$lib/components/ActivityRail.svelte';
 	import NotificationDropdown from '$lib/components/NotificationDropdown.svelte';
 	import type { EnvHealth, PreviewSummary } from '$lib/types';
@@ -178,6 +178,12 @@
 		history.replaceState(history.state, '', url.toString());
 	}
 
+	function openPreview(preview: PreviewSummary) {
+		envSwitcherOpen = false;
+		if (!preview.url) return;
+		window.open(preview.url, '_blank', 'noopener,noreferrer');
+	}
+
 	function logout() {
 		store.logout();
 		goto('/login');
@@ -300,13 +306,12 @@
 										{#each activePreviews as preview}
 											<button
 												type="button"
-												onclick={() => selectEnv('preview:' + preview.name)}
-												class="flex w-full items-center gap-2 px-3 py-2 text-sm {currentEnv === 'preview:' + preview.name
-													? 'bg-surface-600 text-white'
-													: 'text-gray-300 hover:bg-surface-700 hover:text-white'}"
+												onclick={() => openPreview(preview)}
+												class="flex w-full items-center gap-2 px-3 py-2 text-sm text-gray-300 hover:bg-surface-700 hover:text-white"
 											>
 												<span class="inline-flex items-center rounded px-1 py-0.5 text-[10px] font-semibold leading-none bg-purple-500/20 text-purple-400">PR</span>
-												<span class="truncate">#{preview.pr.number} &middot; {preview.pr.branch}</span>
+												<span class="min-w-0 flex-1 truncate">#{preview.pr.number} &middot; {preview.appRef}</span>
+												<ExternalLink class="h-3.5 w-3.5 shrink-0 text-gray-500" />
 											</button>
 										{/each}
 									{/if}
