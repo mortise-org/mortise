@@ -377,6 +377,9 @@ export interface LogLineEvent {
 	ts: string;       // RFC3339; may be empty for synthetic (e.g. build) events
 	line: string;
 	stream?: string;  // "stdout" | "stderr"
+	kind?: string;
+	code?: string;
+	fatal?: boolean;
 }
 
 export interface MetricsCurrentResponse {
