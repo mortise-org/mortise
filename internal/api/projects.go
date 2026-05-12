@@ -117,6 +117,28 @@ func productionHealth(p *mortisev1alpha1.Project, apps []mortisev1alpha1.App) En
 	return aggregateEnvHealth(prodName, projectApps)
 }
 
+func writeProjectNotFound(w http.ResponseWriter, projectName string) {
+	writeJSON(w, http.StatusNotFound, errorResponse{fmt.Sprintf("project %q not found", projectName)})
+}
+
+func (s *Server) lookupProject(w http.ResponseWriter, r *http.Request, projectName string) (*mortisev1alpha1.Project, bool) {
+	if projectName == "" {
+		writeJSON(w, http.StatusBadRequest, errorResponse{"project is required"})
+		return nil, false
+	}
+
+	var project mortisev1alpha1.Project
+	if err := s.client.Get(r.Context(), types.NamespacedName{Name: projectName}, &project); err != nil {
+		if errors.IsNotFound(err) {
+			writeProjectNotFound(w, projectName)
+			return nil, false
+		}
+		writeError(w, r, err)
+		return nil, false
+	}
+	return &project, true
+}
+
 // @Summary Create a project
 // @Description Creates a new Project. Admin-only.
 // @Tags projects
@@ -286,13 +308,12 @@ func (s *Server) GetProject(w http.ResponseWriter, r *http.Request) {
 	if !s.authorize(w, r, authz.Resource{Kind: "project", Project: projectName}, authz.ActionRead) {
 		return
 	}
-	name := projectName
 
-	var project mortisev1alpha1.Project
-	if err := s.client.Get(r.Context(), types.NamespacedName{Name: name}, &project); err != nil {
-		writeError(w, r, err)
+	project, ok := s.lookupProject(w, r, projectName)
+	if !ok {
 		return
 	}
+
 	ns := project.Status.Namespace
 	if ns == "" {
 		ns = projectNamespace(project.Name)
@@ -302,7 +323,7 @@ func (s *Server) GetProject(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, toProjectResponse(&project, apps.Items))
+	writeJSON(w, http.StatusOK, toProjectResponse(project, apps.Items))
 }
 
 // @Summary Delete a project
@@ -326,22 +347,19 @@ func (s *Server) DeleteProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	name := projectName
+	project, ok := s.lookupProject(w, r, projectName)
+	if !ok {
+		return
+	}
 
-	var project mortisev1alpha1.Project
-	if err := s.client.Get(r.Context(), types.NamespacedName{Name: name}, &project); err != nil {
+	if err := s.client.Delete(r.Context(), project); err != nil {
 		writeError(w, r, err)
 		return
 	}
 
-	if err := s.client.Delete(r.Context(), &project); err != nil {
-		writeError(w, r, err)
-		return
-	}
+	s.recordActivity(r, projectName, "delete", "project", projectName, "Deleted project "+projectName, "")
 
-	s.recordActivity(r, name, "delete", "project", name, "Deleted project "+name, "")
-
-	writeJSON(w, http.StatusAccepted, map[string]string{"status": "terminating", "project": name})
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "terminating", "project": projectName})
 }
 
 type updateProjectPreview struct {
@@ -382,9 +400,8 @@ func (s *Server) UpdateProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var project mortisev1alpha1.Project
-	if err := s.client.Get(r.Context(), types.NamespacedName{Name: projectName}, &project); err != nil {
-		writeError(w, r, err)
+	project, ok := s.lookupProject(w, r, projectName)
+	if !ok {
 		return
 	}
 
@@ -409,7 +426,7 @@ func (s *Server) UpdateProject(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if err := s.client.Update(r.Context(), &project); err != nil {
+	if err := s.client.Update(r.Context(), project); err != nil {
 		writeError(w, r, err)
 		return
 	}
@@ -423,7 +440,7 @@ func (s *Server) UpdateProject(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, toProjectResponse(&project, apps.Items))
+	writeJSON(w, http.StatusOK, toProjectResponse(project, apps.Items))
 }
 
 // resolveProject is called at the top of every app/secret/log/deploy handler
@@ -438,19 +455,8 @@ func (s *Server) UpdateProject(w http.ResponseWriter, r *http.Request) {
 // ok=false; the caller should simply return.
 func (s *Server) resolveProject(w http.ResponseWriter, r *http.Request) (namespace, projectName string, ok bool) {
 	projectName = chi.URLParam(r, "project")
-	if projectName == "" {
-		writeJSON(w, http.StatusBadRequest, errorResponse{"project is required"})
-		return "", "", false
-	}
-
-	var project mortisev1alpha1.Project
-	err := s.client.Get(r.Context(), types.NamespacedName{Name: projectName}, &project)
-	if errors.IsNotFound(err) {
-		writeJSON(w, http.StatusNotFound, errorResponse{fmt.Sprintf("project %q not found", projectName)})
-		return "", "", false
-	}
-	if err != nil {
-		writeError(w, r, err)
+	project, ok := s.lookupProject(w, r, projectName)
+	if !ok {
 		return "", "", false
 	}
 
