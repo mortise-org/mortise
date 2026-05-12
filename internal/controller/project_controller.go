@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"encoding/hex"
+	"encoding/json"
 	stderrors "errors"
 	"fmt"
 	"time"
@@ -646,30 +647,104 @@ func (r *ProjectReconciler) ensureProjectCreateActivity(ctx context.Context, pro
 		return nil
 	}
 
-	store := activity.NewConfigMapStore(r.Client)
-	events, err := store.List(ctx, project.Name, activity.Cap)
-	if err != nil {
-		return fmt.Errorf("list project activity: %w", err)
+	if err := r.appendProjectCreateActivityIfMissing(ctx, projectCreateActivityEvent(project)); err != nil {
+		return fmt.Errorf("append project activity: %w", err)
 	}
-	if !hasProjectCreateActivity(events, project.Name) {
-		ts := time.Now().UTC()
-		if !project.CreationTimestamp.IsZero() {
-			ts = project.CreationTimestamp.UTC()
+	return r.markProjectCreateActivityRecorded(ctx, project.Name)
+}
+
+func projectCreateActivityEvent(project *mortisev1alpha1.Project) activity.Event {
+	ts := time.Now().UTC()
+	if !project.CreationTimestamp.IsZero() {
+		ts = project.CreationTimestamp.UTC()
+	}
+	return activity.Event{
+		Timestamp:    ts,
+		Actor:        firstNonEmpty(project.Annotations["mortise.dev/created-by"], "system"),
+		Action:       "create",
+		ResourceKind: "project",
+		ResourceName: project.Name,
+		Project:      project.Name,
+		Message:      "Created project " + project.Name,
+	}
+}
+
+// appendProjectCreateActivityIfMissing keeps the project-create backfill
+// exactly-once across concurrent reconciles by re-reading the latest ConfigMap
+// state before every create/update attempt and bailing out once the semantic
+// create event is already present.
+func (r *ProjectReconciler) appendProjectCreateActivityIfMissing(ctx context.Context, event activity.Event) error {
+	const (
+		maxConflictRetries = 5
+		activityEventsKey  = "events"
+	)
+
+	ns := constants.ControlNamespace(event.Project)
+	name := "activity-" + event.Project
+
+	for attempt := 0; attempt < maxConflictRetries; attempt++ {
+		var cm corev1.ConfigMap
+		err := r.Get(ctx, types.NamespacedName{Namespace: ns, Name: name}, &cm)
+		if errors.IsNotFound(err) {
+			data, err := json.Marshal([]activity.Event{event})
+			if err != nil {
+				return fmt.Errorf("marshal initial activity events: %w", err)
+			}
+			createErr := r.Create(ctx, &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      name,
+					Namespace: ns,
+					Labels: map[string]string{
+						"app.kubernetes.io/managed-by": "mortise",
+						"mortise.dev/kind":             "activity",
+					},
+				},
+				Data: map[string]string{activityEventsKey: string(data)},
+			})
+			if createErr == nil {
+				return nil
+			}
+			if errors.IsAlreadyExists(createErr) || errors.IsConflict(createErr) {
+				continue
+			}
+			return createErr
 		}
-		if err := store.Append(ctx, activity.Event{
-			Timestamp:    ts,
-			Actor:        firstNonEmpty(project.Annotations["mortise.dev/created-by"], "system"),
-			Action:       "create",
-			ResourceKind: "project",
-			ResourceName: project.Name,
-			Project:      project.Name,
-			Message:      "Created project " + project.Name,
-		}); err != nil {
-			return fmt.Errorf("append project activity: %w", err)
+		if err != nil {
+			return err
 		}
+
+		var events []activity.Event
+		if raw := cm.Data[activityEventsKey]; raw != "" {
+			if err := json.Unmarshal([]byte(raw), &events); err != nil {
+				return fmt.Errorf("unmarshal project activity: %w", err)
+			}
+		}
+		if hasProjectCreateActivity(events, event.Project) {
+			return nil
+		}
+
+		events = append(events, event)
+		if len(events) > activity.Cap {
+			events = events[len(events)-activity.Cap:]
+		}
+		data, err := json.Marshal(events)
+		if err != nil {
+			return fmt.Errorf("marshal project activity: %w", err)
+		}
+		if cm.Data == nil {
+			cm.Data = map[string]string{}
+		}
+		cm.Data[activityEventsKey] = string(data)
+		if err := r.Update(ctx, &cm); err != nil {
+			if errors.IsConflict(err) {
+				continue
+			}
+			return err
+		}
+		return nil
 	}
 
-	return r.markProjectCreateActivityRecorded(ctx, project.Name)
+	return fmt.Errorf("could not ensure create activity for Project %q after retries", event.Project)
 }
 
 func hasProjectCreateActivity(events []activity.Event, projectName string) bool {
