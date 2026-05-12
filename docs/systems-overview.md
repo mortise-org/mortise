@@ -46,7 +46,7 @@ For project `myproj`:
   - `pj-myproj-staging`
   - etc.
 
-Preview namespaces follow a PR pattern (controller-managed) and are isolated from control namespace resources.
+Preview environments create `pj-myproj-pr-{number}` namespaces, following the same pattern as permanent environments.
 
 ## Controllers and responsibilities
 
@@ -75,9 +75,12 @@ Preview namespaces follow a PR pattern (controller-managed) and are isolated fro
 
 `internal/controller/previewenvironment_controller.go`
 
-- Handles PR preview lifecycle
-- Creates/updates/deletes preview resources
-- Applies TTL expiration behavior
+- Thin coordinator for PR preview lifecycle (one PE per PR, project-scoped)
+- Adds `pr-{number}` environment to Project via `cloneEnvironment`
+- Copies per-app env overrides and env Secrets from the source environment
+- Sets per-env branch override on each git-source app
+- App controller handles all deployment via normal `resolveEnvs()` fan-out
+- Cleans up environment entry and app overrides on PE deletion
 
 ### PlatformConfig controller
 
