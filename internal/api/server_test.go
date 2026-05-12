@@ -582,6 +582,21 @@ func TestDeleteApp(t *testing.T) {
 	if get.Code != http.StatusOK {
 		t.Fatalf("get terminating app: expected 200, got %d: %s", get.Code, get.Body.String())
 	}
+
+	list := doRequest(h, http.MethodGet, "/api/projects/default/apps", nil)
+	if list.Code != http.StatusOK {
+		t.Fatalf("list terminating app: expected 200, got %d: %s", list.Code, list.Body.String())
+	}
+	var apps []mortisev1alpha1.App
+	if err := json.NewDecoder(list.Body).Decode(&apps); err != nil {
+		t.Fatalf("decode app list: %v", err)
+	}
+	if len(apps) != 1 || apps[0].Name != "delete-me" {
+		t.Fatalf("expected terminating app to remain listed, got %+v", apps)
+	}
+	if apps[0].DeletionTimestamp == nil || apps[0].DeletionTimestamp.IsZero() {
+		t.Fatalf("expected listed app to be marked terminating, got %+v", apps[0].ObjectMeta)
+	}
 }
 
 func TestDeleteAppRemovesAppDeployTokensOnly(t *testing.T) {

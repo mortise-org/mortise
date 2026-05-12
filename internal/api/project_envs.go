@@ -462,15 +462,10 @@ type cloneProjectEnvRequest struct {
 // Binding-sourced vars are excluded because the controller re-resolves them in
 // the new namespace.
 //
-// The operation is retry-safe: if a previous call partially completed
-// (project env created but app overrides not fully applied), a repeat
-// call skips the project update and continues cloning app overrides,
-// returning 200 instead of 201.
-//
 // POST /api/projects/{project}/environments/{source}/clone  { "name": "staging" }
 //
 // @Summary Clone a project environment
-// @Description Creates a new environment pre-populated with the source's config for every app. CRD overrides are cloned on the App, while Secret-backed env vars remain in the Secret layer. Retry-safe: returns 200 if the target already exists.
+// @Description Creates a new environment pre-populated with the source's config for every app. CRD overrides are cloned on the App, while Secret-backed env vars remain in the Secret layer. Returns 409 Conflict if the target environment already exists on the project.
 // @Tags environments
 // @Accept json
 // @Produce json
@@ -478,11 +473,11 @@ type cloneProjectEnvRequest struct {
 // @Param project path string true "Project name"
 // @Param source path string true "Source environment name"
 // @Param body body cloneProjectEnvRequest true "Target environment name and display order"
-// @Success 200 {object} projectEnvResponse "Retry: target env already existed"
 // @Success 201 {object} projectEnvResponse "Created"
 // @Failure 400 {object} errorResponse
 // @Failure 403 {object} errorResponse
 // @Failure 404 {object} errorResponse
+// @Failure 409 {object} errorResponse
 // @Router /projects/{project}/environments/{source}/clone [post]
 func (s *Server) CloneProjectEnvironment(w http.ResponseWriter, r *http.Request) {
 	projectName := chi.URLParam(r, "project")

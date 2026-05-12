@@ -3237,8 +3237,8 @@ paths:
       produces:
       - application/json
       responses:
-        "200":
-          description: OK
+        "202":
+          description: Termination accepted
           schema:
             additionalProperties:
               type: string
@@ -5230,10 +5230,10 @@ paths:
     post:
       consumes:
       - application/json
-      description: 'Creates a new environment pre-populated with the source''s config
+      description: Creates a new environment pre-populated with the source's config
         for every app. CRD overrides are cloned on the App, while Secret-backed env
-        vars remain in the Secret layer. Retry-safe: returns 200 if the target already
-        exists.'
+        vars remain in the Secret layer. Returns 409 Conflict if the target environment
+        already exists on the project.
       parameters:
       - description: Project name
         in: path
@@ -5254,10 +5254,6 @@ paths:
       produces:
       - application/json
       responses:
-        "200":
-          description: 'Retry: target env already existed'
-          schema:
-            $ref: '#/definitions/api.projectEnvResponse'
         "201":
           description: Created
           schema:
@@ -5272,6 +5268,10 @@ paths:
             $ref: '#/definitions/api.errorResponse'
         "404":
           description: Not Found
+          schema:
+            $ref: '#/definitions/api.errorResponse'
+        "409":
+          description: Conflict
           schema:
             $ref: '#/definitions/api.errorResponse'
       security:

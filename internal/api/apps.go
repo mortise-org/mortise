@@ -314,7 +314,7 @@ func (s *Server) UpdateApp(w http.ResponseWriter, r *http.Request) {
 // @Security BearerAuth
 // @Param project path string true "Project name"
 // @Param app path string true "App name"
-// @Success 200 {object} map[string]string
+// @Success 202 {object} map[string]string "Termination accepted"
 // @Failure 401 {object} errorResponse
 // @Failure 403 {object} errorResponse
 // @Failure 404 {object} errorResponse
