@@ -359,7 +359,8 @@ func TestPreviewEnvironmentRefreshesAfterEnvAPIUpdate(t *testing.T) {
 // TestEnvironmentCloneCreatesEnvWithConfig creates a project with production
 // env + an app with Secret-level env vars, then calls the clone API endpoint
 // to clone production→staging, and verifies the controller reconciles the new
-// env with the cloned env vars. Also verifies retry-safety (second call → 200).
+// env with the cloned env vars. Also verifies strict duplicate handling
+// (second call -> 409).
 func TestEnvironmentCloneCreatesEnvWithConfig(t *testing.T) {
 	t.Parallel()
 	projectName := "clone-" + randSuffix()
@@ -401,13 +402,13 @@ func TestEnvironmentCloneCreatesEnvWithConfig(t *testing.T) {
 		t.Fatalf("clone: expected 201, got %d: %s", resp.StatusCode, resp.Body)
 	}
 
-	// Verify retry-safety: second call returns 200.
+	// Verify strict duplicate handling: second call returns 409.
 	resp = doCloneJSON(t, http.MethodPost, cloneURL, token, map[string]any{
 		"name":         "staging",
 		"displayOrder": 1,
 	})
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("retry clone: expected 200, got %d: %s", resp.StatusCode, resp.Body)
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("retry clone: expected 409, got %d: %s", resp.StatusCode, resp.Body)
 	}
 
 	// Verify the project now has both envs.

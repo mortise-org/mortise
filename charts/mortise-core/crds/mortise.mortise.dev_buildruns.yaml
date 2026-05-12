@@ -152,6 +152,9 @@ spec:
           status:
             description: BuildRunStatus defines the observed state of BuildRun.
             properties:
+              attempt:
+                format: int32
+                type: integer
               completedAt:
                 format: date-time
                 type: string

@@ -15,6 +15,7 @@ import (
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
 	"github.com/mortise-org/mortise/internal/authz"
 	"github.com/mortise-org/mortise/internal/constants"
+	"github.com/mortise-org/mortise/internal/envstore"
 )
 
 // createSecretRequest is the JSON body for upserting a secret.
@@ -91,6 +92,10 @@ func (s *Server) CreateSecret(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errorResponse{msg})
 		return
 	}
+	if isReservedRuntimeSecretName(target.app.Name, req.Name) {
+		writeJSON(w, http.StatusConflict, errorResponse{fmt.Sprintf("secret name %q is reserved for mortise runtime state", req.Name)})
+		return
+	}
 
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
@@ -151,7 +156,7 @@ func (s *Server) ListSecrets(w http.ResponseWriter, r *http.Request) {
 
 	resp := make([]secretResponse, 0, len(list.Items))
 	for i := range list.Items {
-		if isInternalAppEnvSecret(target.app.Name, &list.Items[i]) {
+		if isReservedRuntimeSecret(target.app.Name, &list.Items[i]) {
 			continue
 		}
 		resp = append(resp, toSecretResponse(&list.Items[i]))
@@ -202,7 +207,7 @@ func (s *Server) DeleteSecret(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, errorResponse{"secret not found for this app"})
 		return
 	}
-	if isInternalAppEnvSecret(target.app.Name, &secret) {
+	if isReservedRuntimeSecret(target.app.Name, &secret) {
 		writeJSON(w, http.StatusForbidden, errorResponse{"secret is reserved for mortise runtime state"})
 		return
 	}
@@ -260,6 +265,14 @@ func (s *Server) resolveSecretTarget(w http.ResponseWriter, r *http.Request) (*s
 
 func isInternalAppEnvSecret(appName string, secret *corev1.Secret) bool {
 	return secret.Name == appName+"-env"
+}
+
+func isReservedRuntimeSecret(appName string, secret *corev1.Secret) bool {
+	return isReservedRuntimeSecretName(appName, secret.Name)
+}
+
+func isReservedRuntimeSecretName(appName, secretName string) bool {
+	return secretName == envstore.AppEnvSecretName(appName) || secretName == pullSecretName(appName)
 }
 
 func toSecretResponse(s *corev1.Secret) secretResponse {
