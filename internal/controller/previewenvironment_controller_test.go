@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"testing"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -529,6 +530,79 @@ var _ = Describe("PreviewEnvironment Controller", func() {
 		})
 	})
 
+	Context("when the project has multiple apps", func() {
+		It("should clone env overrides and set branch for all apps", func() {
+			ctx := context.Background()
+			project, ns := createPreviewTestProject(ctx, true)
+			project.Spec.Environments = []mortisev1alpha1.ProjectEnvironment{{Name: "staging"}}
+			Expect(k8sClient.Update(ctx, project)).To(Succeed())
+
+			staging := &mortisev1alpha1.Environment{
+				Name:     "staging",
+				Replicas: ptr.To(int32(2)),
+				Env:      []mortisev1alpha1.EnvVar{{Name: "ENV", Value: "staging"}},
+			}
+			createPreviewApp(ctx, "frontend", ns, staging)
+			createPreviewApp(ctx, "backend", ns, &mortisev1alpha1.Environment{
+				Name:     "staging",
+				Replicas: ptr.To(int32(3)),
+				Env:      []mortisev1alpha1.EnvVar{{Name: "SVC", Value: "backend"}},
+			})
+
+			pe := createPreviewEnv(ctx, "multi-preview-pr-55", ns, project.Name, 55, "sha55", "feat-multi")
+
+			reconciler := newPEReconciler()
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: pe.Name, Namespace: ns},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Verify PE is Ready.
+			var updated mortisev1alpha1.PreviewEnvironment
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: pe.Name, Namespace: ns}, &updated)).To(Succeed())
+			Expect(updated.Status.Phase).To(Equal(mortisev1alpha1.PreviewPhaseReady))
+
+			// Verify pr-55 env entry on Project.
+			var proj mortisev1alpha1.Project
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: project.Name}, &proj)).To(Succeed())
+			envNames := make([]string, len(proj.Spec.Environments))
+			for i, e := range proj.Spec.Environments {
+				envNames[i] = e.Name
+			}
+			Expect(envNames).To(ContainElement("pr-55"))
+
+			// Verify frontend app got pr-55 override.
+			var frontend mortisev1alpha1.App
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "frontend", Namespace: ns}, &frontend)).To(Succeed())
+			var feEnv *mortisev1alpha1.Environment
+			for i := range frontend.Spec.Environments {
+				if frontend.Spec.Environments[i].Name == "pr-55" {
+					feEnv = &frontend.Spec.Environments[i]
+					break
+				}
+			}
+			Expect(feEnv).NotTo(BeNil())
+			Expect(feEnv.Replicas).To(Equal(ptr.To(int32(2))))
+			Expect(feEnv.Env).To(ContainElement(mortisev1alpha1.EnvVar{Name: "ENV", Value: "staging"}))
+			Expect(feEnv.Branch).To(Equal("feat-multi"))
+
+			// Verify backend app got pr-55 override.
+			var backend mortisev1alpha1.App
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "backend", Namespace: ns}, &backend)).To(Succeed())
+			var beEnv *mortisev1alpha1.Environment
+			for i := range backend.Spec.Environments {
+				if backend.Spec.Environments[i].Name == "pr-55" {
+					beEnv = &backend.Spec.Environments[i]
+					break
+				}
+			}
+			Expect(beEnv).NotTo(BeNil())
+			Expect(beEnv.Replicas).To(Equal(ptr.To(int32(3))))
+			Expect(beEnv.Env).To(ContainElement(mortisev1alpha1.EnvVar{Name: "SVC", Value: "backend"}))
+			Expect(beEnv.Branch).To(Equal("feat-multi"))
+		})
+	})
+
 	Context("when SHA changes (re-reconcile)", func() {
 		It("should remain Ready (idempotent)", func() {
 			ctx := context.Background()
@@ -666,3 +740,144 @@ var _ = Describe("PreviewEnvironment Controller", func() {
 		})
 	})
 })
+
+func TestCloneEnvironment_DeepCopiesAllFields(t *testing.T) {
+	app := &mortisev1alpha1.App{
+		Spec: mortisev1alpha1.AppSpec{
+			Environments: []mortisev1alpha1.Environment{
+				{
+					Name:     "staging",
+					Replicas: ptr.To(int32(3)),
+					Resources: mortisev1alpha1.ResourceRequirements{
+						CPU:    "500m",
+						Memory: "512Mi",
+					},
+					Env: []mortisev1alpha1.EnvVar{
+						{Name: "APP_ENV", Value: "staging"},
+						{Name: "DEBUG", Value: "false"},
+					},
+					Bindings: []mortisev1alpha1.Binding{
+						{Ref: "my-db"},
+						{Ref: "cache"},
+					},
+					Annotations: map[string]string{
+						"team": "platform",
+					},
+					BuildArgs: map[string]string{
+						"GO_VERSION": "1.22",
+					},
+					LivenessProbe: &mortisev1alpha1.ProbeConfig{
+						Path:                "/healthz",
+						Port:                8080,
+						InitialDelaySeconds: 10,
+						PeriodSeconds:       30,
+						TimeoutSeconds:      5,
+					},
+					ReadinessProbe: &mortisev1alpha1.ProbeConfig{
+						Path: "/ready",
+						Port: 8080,
+					},
+					StartupProbe: &mortisev1alpha1.ProbeConfig{
+						Path:                "/startup",
+						Port:                8080,
+						InitialDelaySeconds: 5,
+					},
+					Schedule:          "*/5 * * * *",
+					ConcurrencyPolicy: mortisev1alpha1.ConcurrencyPolicy("Forbid"),
+				},
+			},
+		},
+	}
+
+	cloned := cloneEnvironment("staging", "pr-1", app)
+
+	// Verify name is set to target.
+	if cloned.Name != "pr-1" {
+		t.Fatalf("expected name pr-1, got %q", cloned.Name)
+	}
+
+	// Verify scalar fields.
+	if cloned.Replicas == nil || *cloned.Replicas != 3 {
+		t.Fatalf("expected replicas=3, got %v", cloned.Replicas)
+	}
+	if cloned.Resources.CPU != "500m" || cloned.Resources.Memory != "512Mi" {
+		t.Fatalf("resources mismatch: %+v", cloned.Resources)
+	}
+	if cloned.Schedule != "*/5 * * * *" {
+		t.Fatalf("expected schedule '*/5 * * * *', got %q", cloned.Schedule)
+	}
+	if cloned.ConcurrencyPolicy != mortisev1alpha1.ConcurrencyPolicy("Forbid") {
+		t.Fatalf("expected concurrencyPolicy Forbid, got %q", cloned.ConcurrencyPolicy)
+	}
+
+	// Verify probes.
+	if cloned.LivenessProbe == nil || cloned.LivenessProbe.Path != "/healthz" || cloned.LivenessProbe.Port != 8080 {
+		t.Fatalf("liveness probe mismatch: %+v", cloned.LivenessProbe)
+	}
+	if cloned.ReadinessProbe == nil || cloned.ReadinessProbe.Path != "/ready" {
+		t.Fatalf("readiness probe mismatch: %+v", cloned.ReadinessProbe)
+	}
+	if cloned.StartupProbe == nil || cloned.StartupProbe.Path != "/startup" {
+		t.Fatalf("startup probe mismatch: %+v", cloned.StartupProbe)
+	}
+
+	// Verify slices.
+	if len(cloned.Env) != 2 {
+		t.Fatalf("expected 2 env vars, got %d", len(cloned.Env))
+	}
+	if len(cloned.Bindings) != 2 {
+		t.Fatalf("expected 2 bindings, got %d", len(cloned.Bindings))
+	}
+
+	// Verify maps.
+	if cloned.Annotations["team"] != "platform" {
+		t.Fatalf("annotations mismatch: %v", cloned.Annotations)
+	}
+	if cloned.BuildArgs["GO_VERSION"] != "1.22" {
+		t.Fatalf("buildArgs mismatch: %v", cloned.BuildArgs)
+	}
+
+	// Verify independence of deep-copied fields (slices and maps).
+	// Note: pointer fields (Replicas, probes) are shallow-copied by cloneEnvironment.
+	source := &app.Spec.Environments[0]
+	source.Env[0].Value = "mutated"
+	source.Bindings[0].Ref = "mutated-db"
+	source.Annotations["team"] = "mutated"
+	source.BuildArgs["GO_VERSION"] = "9.99"
+
+	for _, ev := range cloned.Env {
+		if ev.Name == "APP_ENV" && ev.Value != "staging" {
+			t.Errorf("clone env affected by source mutation: %s", ev.Value)
+		}
+	}
+	if cloned.Bindings[0].Ref != "my-db" {
+		t.Errorf("clone bindings affected by source mutation: %s", cloned.Bindings[0].Ref)
+	}
+	if cloned.Annotations["team"] != "platform" {
+		t.Errorf("clone annotations affected by source mutation: %s", cloned.Annotations["team"])
+	}
+	if cloned.BuildArgs["GO_VERSION"] != "1.22" {
+		t.Errorf("clone buildArgs affected by source mutation: %s", cloned.BuildArgs["GO_VERSION"])
+	}
+}
+
+func TestCloneEnvironment_NoSourceEnv_ReturnsBare(t *testing.T) {
+	app := &mortisev1alpha1.App{
+		Spec: mortisev1alpha1.AppSpec{
+			Environments: []mortisev1alpha1.Environment{
+				{Name: "production"},
+			},
+		},
+	}
+
+	cloned := cloneEnvironment("staging", "pr-1", app)
+	if cloned.Name != "pr-1" {
+		t.Fatalf("expected name pr-1, got %q", cloned.Name)
+	}
+	if cloned.Replicas != nil {
+		t.Errorf("expected nil replicas for bare clone, got %v", cloned.Replicas)
+	}
+	if len(cloned.Env) != 0 {
+		t.Errorf("expected no env vars for bare clone, got %d", len(cloned.Env))
+	}
+}

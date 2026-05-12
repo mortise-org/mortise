@@ -760,6 +760,60 @@ func TestGitHubPREvent_Opened_CreatesPreviewEnvironment(t *testing.T) {
 	}
 }
 
+func TestGitHubPREvent_Reopened_CreatesPreviewEnvironment(t *testing.T) {
+	const secret = "prsecret"
+	const providerName = "github-main"
+
+	body := githubPRPayloadJSON("reopened", 42, "feature/x", "shareopened", "org/repo")
+
+	gp := makeGitProvider(mortisev1alpha1.GitProviderTypeGitHub, "mortise-system", "wh-secret", "value")
+	app, proj := makePreviewGitApp("my-app", "pj-default", "https://github.com/org/repo", "main", "", "")
+	kr := &fakeK8sReader{
+		provider: gp,
+		secrets:  map[string]string{"mortise-system/wh-secret/value": secret},
+		apps:     []mortisev1alpha1.App{app},
+		projects: map[string]*mortisev1alpha1.Project{"default": proj},
+	}
+	h := newTestHandler(kr)
+
+	req := httptest.NewRequest(http.MethodPost, "/"+providerName, bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-GitHub-Event", "pull_request")
+	req.Header.Set("X-Hub-Signature-256", githubSignature(body, secret))
+
+	rr := httptest.NewRecorder()
+	h.Routes().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if len(kr.createdPreviews) != 1 {
+		t.Fatalf("expected 1 PE created, got %d", len(kr.createdPreviews))
+	}
+	pe := kr.createdPreviews[0]
+	if pe.Name != "preview-pr-42" {
+		t.Errorf("unexpected PE name: %q", pe.Name)
+	}
+	if pe.Namespace != "pj-default" {
+		t.Errorf("unexpected PE namespace: %q", pe.Namespace)
+	}
+	if pe.Spec.ProjectRef != "default" {
+		t.Errorf("projectRef mismatch: %q", pe.Spec.ProjectRef)
+	}
+	if pe.Spec.SourceEnv != "staging" {
+		t.Errorf("sourceEnv mismatch: %q", pe.Spec.SourceEnv)
+	}
+	if pe.Spec.PullRequest.Number != 42 {
+		t.Errorf("PR number mismatch: %d", pe.Spec.PullRequest.Number)
+	}
+	if pe.Spec.PullRequest.Branch != "feature/x" {
+		t.Errorf("branch mismatch: %q", pe.Spec.PullRequest.Branch)
+	}
+	if pe.Spec.PullRequest.SHA != "shareopened" {
+		t.Errorf("sha mismatch: %q", pe.Spec.PullRequest.SHA)
+	}
+}
+
 func TestGiteaPREvent_Opened_CreatesPreviewEnvironment(t *testing.T) {
 	const secret = "giteaprsecret"
 	const providerName = "gitea-homelab"

@@ -500,7 +500,7 @@ func assertPreviewHasFailedCondition(t *testing.T, pe *mortisev1alpha1.PreviewEn
 	}
 	// Look for a condition with status=False or reason indicating project-level preview is disabled.
 	for _, c := range pe.Status.Conditions {
-		if c.Status == metav1.ConditionFalse || c.Reason == "PreviewDisabledOnProject" {
+		if c.Status == metav1.ConditionFalse || c.Reason == "PreviewDisabled" {
 			t.Logf("found expected condition: type=%s reason=%s message=%s", c.Type, c.Reason, c.Message)
 			return
 		}
