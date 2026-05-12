@@ -291,8 +291,10 @@ func (r *PreviewEnvironmentReconciler) copySharedEnvSecret(ctx context.Context, 
 			Namespace: targetNs,
 			Labels: map[string]string{
 				constants.ProjectLabel:         projectName,
+				constants.EnvironmentLabel:     envName,
 				"app.kubernetes.io/managed-by": "mortise",
 			},
+			Annotations: copySourceAnnotations(source.Annotations),
 		},
 		Data: source.Data,
 	}
@@ -331,8 +333,11 @@ func (r *PreviewEnvironmentReconciler) copyAppEnvSecret(ctx context.Context, pro
 			Namespace: targetNs,
 			Labels: map[string]string{
 				constants.ProjectLabel:         projectName,
+				constants.AppNameLabel:         appName,
+				constants.EnvironmentLabel:     envName,
 				"app.kubernetes.io/managed-by": "mortise",
 			},
+			Annotations: copySourceAnnotations(source.Annotations),
 		},
 		Data: source.Data,
 	}
@@ -340,6 +345,27 @@ func (r *PreviewEnvironmentReconciler) copyAppEnvSecret(ctx context.Context, pro
 		return err
 	}
 	return nil
+}
+
+func copySourceAnnotations(src map[string]string) map[string]string {
+	if src == nil {
+		return nil
+	}
+	keys := []string{
+		envstore.AnnotationBindingKeys,
+		envstore.AnnotationGeneratedKeys,
+		envstore.AnnotationSharedKeys,
+	}
+	out := make(map[string]string)
+	for _, k := range keys {
+		if v, ok := src[k]; ok {
+			out[k] = v
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // cleanupPreview removes the preview env entry from the Project and strips
