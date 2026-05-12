@@ -75,7 +75,10 @@ func (e *NativePolicyEngine) authorizeProject(ctx context.Context, p auth.Princi
 		return true, nil
 
 	case v1alpha1.ProjectRoleViewer:
-		return action == ActionRead, nil
+		if action != ActionRead {
+			return false, nil
+		}
+		return resource.Kind != "token", nil
 
 	case v1alpha1.ProjectRoleDeveloper:
 		return e.authorizeDeveloper(ctx, resource, action)
