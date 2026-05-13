@@ -2843,7 +2843,7 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 			meta.RemoveStatusCondition(&fresh.Status.Conditions, "PodHealthy")
 		}
 		if buildFailed {
-			if anyServing {
+			if anyServing && !anyCrash {
 				reason := buildFailureCond.Reason
 				if reason == "" {
 					reason = "BuildFailed"
