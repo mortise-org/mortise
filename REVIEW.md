@@ -74,7 +74,110 @@ Any unchecked box that applies is a reason to request changes.
       growing past a few hundred lines, it likely needs decomposition
       into helper methods, not abstraction layers
 
-## 5. REST API
+## 5. Correctness & Bug Hunting
+
+Look for logic errors, missed edge cases, and behavior that will
+silently produce wrong results.
+
+- [ ] **Off-by-one and boundary conditions** — loops, slices, index
+      arithmetic, pagination offsets. Trace the first iteration, last
+      iteration, and empty-input case mentally.
+- [ ] **Nil/zero-value handling** — does the code crash or behave
+      incorrectly when a pointer is nil, a slice is empty, a map is
+      uninitialized, or a string is `""`? Check every dereference of
+      a pointer that could be nil.
+- [ ] **Error paths that silently continue** — `if err != nil` blocks
+      that log but don't return, swallowed errors in goroutines,
+      `_ = someFunc()` discarding meaningful errors. Every error must
+      either be returned, cause a requeue, or have an explicit comment
+      explaining why it's safe to ignore.
+- [ ] **Partial failure cleanup** — if a function creates resources A,
+      B, C in sequence and C fails, are A and B cleaned up? Or does
+      the system leak orphaned resources?
+- [ ] **Status lies** — does the code set status to Ready/Succeeded
+      before the operation is actually complete? Status must reflect
+      observed reality, not intent.
+- [ ] **Stale reads** — is the code acting on a cached or stale copy
+      of a resource that may have changed since it was fetched? Watch
+      for `Get` followed by much later `Update` without re-fetching.
+- [ ] **Semantic correctness** — does the code actually do what the PR
+      description says it does? Read the diff without the description
+      first, form your own understanding, then compare.
+- [ ] **Behavior change without test change** — if behavior changed
+      but no test was added or updated, either the change is untested
+      or the old tests were inadequate. Both are problems.
+
+## 6. Concurrency & Race Conditions
+
+Kubernetes controllers are inherently concurrent. Multiple reconcile
+loops, webhooks, and API handlers run in parallel.
+
+- [ ] **Shared mutable state** — any package-level variable, struct
+      field, or map accessed from multiple goroutines must be protected
+      by a mutex or be replaced with a concurrent-safe alternative.
+      Check: is there a `sync.Mutex` or `sync.RWMutex` guarding it?
+- [ ] **Read-modify-write races on k8s resources** — `Get` + modify +
+      `Update` without `retry.RetryOnConflict` is a race condition.
+      Another reconcile or API call can modify the resource between
+      Get and Update. The update will either silently overwrite changes
+      or fail with a Conflict error.
+- [ ] **Map concurrent access** — Go maps are not goroutine-safe. Any
+      map shared between goroutines (caches, stores, registries) needs
+      synchronization. This includes struct fields that are maps.
+- [ ] **Goroutine leaks** — goroutines started without a shutdown path
+      (context cancellation, done channel, or WaitGroup) will leak.
+      Every `go func()` needs a way to stop.
+- [ ] **Channel operations** — sends to unbuffered or full channels
+      block forever if nobody is receiving. Receives from channels
+      that are never closed block forever. Check for deadlock paths.
+- [ ] **Reconcile reentrancy** — a reconcile function can be called
+      again while a previous invocation's requeue is pending. The
+      function must not assume it runs to completion before being
+      called again. Watch for state set early in reconcile that gets
+      stomped by a concurrent invocation.
+- [ ] **Webhook and API handler concurrency** — multiple requests can
+      hit the same handler simultaneously. Handlers must not share
+      mutable state without synchronization.
+- [ ] **Finalizer ordering** — if multiple controllers have finalizers
+      on the same resource, does the ordering matter? Can one
+      finalizer's cleanup break another's assumptions?
+
+## 7. Unclear & Surprising Behavior
+
+Code that works but confuses future readers is a maintenance liability.
+
+- [ ] **Magic values** — hardcoded numbers, strings, or durations
+      without explanation. What does `3`, `"default"`, or
+      `5 * time.Minute` mean? Use named constants or add a comment
+      explaining the choice.
+- [ ] **Implicit ordering dependencies** — does the code rely on
+      operations happening in a specific order without making that
+      order explicit? Sequential operations that would break if
+      reordered need a comment or structural enforcement.
+- [ ] **Silent fallbacks** — code that falls through to a default
+      behavior when a condition isn't met, without logging or
+      indicating that the fallback was taken. The reader (and operator)
+      should be able to tell which path executed.
+- [ ] **Naming mismatches** — function or variable names that don't
+      match what the code actually does. A function called
+      `deleteApp()` that also deletes secrets and tokens should be
+      called `deleteAppAndDependents()` or similar.
+- [ ] **Side effects in getters** — functions named `Get*` or `Find*`
+      that modify state, create resources, or trigger reconciliation
+      as a side effect. Getters should be read-only.
+- [ ] **Boolean parameters** — `doThing(true, false, true)` is
+      unreadable at the call site. Prefer options structs, named
+      constants, or separate functions.
+- [ ] **Conditional complexity** — deeply nested if/else chains,
+      multiple negations (`!notDisabled`), or conditions that require
+      a truth table to reason about. Simplify or extract into a
+      named predicate.
+- [ ] **Undocumented preconditions** — does the function assume the
+      caller has already done something (acquired a lock, validated
+      input, checked permissions)? If yes and it's not obvious from
+      the signature, document it.
+
+## 8. REST API
 
 - [ ] Endpoints protected by auth middleware unless explicitly public
       (setup, login, health)
@@ -87,7 +190,7 @@ Any unchecked box that applies is a reason to request changes.
       annotations updated
 - [ ] No assumptions about request shape — validate, don't trust
 
-## 6. Helm Charts
+## 9. Helm Charts
 
 - [ ] `Chart.yaml` version/appVersion NOT manually edited — CI owns
       these (see RELEASING.md)
@@ -100,7 +203,7 @@ Any unchecked box that applies is a reason to request changes.
 - [ ] `make test-charts` passes (helm lint + template tests)
 - [ ] CRD YAML in `charts/mortise-core/crds/` matches `config/crd/bases/`
 
-## 7. UI
+## 10. UI
 
 - [ ] `make check-ui` passes (svelte-check, no TypeScript diagnostics)
 - [ ] No `page.route()` mocking of Mortise business logic in E2E — use
@@ -113,7 +216,7 @@ Any unchecked box that applies is a reason to request changes.
       key, `'value or binding ref'` for value
 - [ ] New interactive elements have E2E coverage
 
-## 8. Tests
+## 11. Tests
 
 - [ ] **Happy AND sad paths covered** — every new code path needs tests
       for success, expected failures, edge cases, and error conditions.
@@ -133,7 +236,7 @@ Any unchecked box that applies is a reason to request changes.
       fails, the message should make the failure obvious without reading
       the test source
 
-## 9. Code Quality
+## 12. Code Quality
 
 - [ ] Comments explain WHY, not WHAT — if the code is clear, no
       comment needed
@@ -156,7 +259,7 @@ Any unchecked box that applies is a reason to request changes.
       `staticcheck`, `svelte-check`
 - [ ] PR template checklist is filled out honestly
 
-## 10. Security
+## 13. Security
 
 - [ ] Webhook payloads verified via HMAC before processing
 - [ ] No secrets, credentials, or tokens logged or returned in API
