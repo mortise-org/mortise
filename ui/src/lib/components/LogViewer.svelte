@@ -97,7 +97,7 @@
 			next.onmessage = (ev) => {
 				if (id !== connectionID || source !== next) return;
 				const parsed = parseLogStreamEvent(ev.data);
-				if (!parsed || typeof parsed.pod !== 'string') {
+				if (!parsed) {
 					return;
 				}
 				const entry: LogEntry = {

@@ -125,4 +125,44 @@ describe('DeployLogsTab', () => {
 		expect(screen.getByText('normal line')).toBeVisible();
 		expect(screen.getAllByText('pod-1')).not.toHaveLength(0);
 	});
+
+	it('does not show the fatal banner for non-fatal error events', async () => {
+		render(DeployLogsTab, {
+			props: {
+				project: 'demo',
+				app
+			}
+		});
+
+		await waitFor(() => expect(FakeEventSource.instances.length).toBeGreaterThan(0));
+
+		const source = FakeEventSource.instances.at(-1);
+		if (!source) {
+			throw new Error('expected an EventSource instance');
+		}
+
+		source.emitOpen();
+		source.emitMessage(
+			JSON.stringify({
+				pod: 'pod-1',
+				ts: '2026-05-11T00:00:00Z',
+				line: 'some error happened',
+				stream: 'stderr',
+				kind: 'error',
+				code: 'transient_failure'
+			})
+		);
+		source.emitMessage(
+			JSON.stringify({
+				pod: 'pod-1',
+				ts: '2026-05-11T00:00:01Z',
+				line: 'normal line',
+				stream: 'stdout'
+			})
+		);
+
+		expect(await screen.findByText('normal line')).toBeVisible();
+		expect(screen.getByText('some error happened')).toBeVisible();
+		expect(screen.queryByRole('alert')).toBeNull();
+	});
 });

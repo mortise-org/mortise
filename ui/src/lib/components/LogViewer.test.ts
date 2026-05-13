@@ -90,4 +90,41 @@ describe('LogViewer', () => {
 		expect(screen.getByText('normal line')).toBeVisible();
 		expect(screen.getAllByText(/\[pod-1\]/)).toHaveLength(2);
 	});
+
+	it('does not show the fatal banner for non-fatal events', async () => {
+		render(LogViewer, {
+			props: {
+				project: 'demo',
+				appName: 'web',
+				env: 'production'
+			}
+		});
+
+		await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
+
+		const source = FakeEventSource.instances[0];
+		source.emitOpen();
+		source.emitMessage(
+			JSON.stringify({
+				pod: 'pod-1',
+				ts: '2026-05-11T00:00:00Z',
+				line: 'some error happened',
+				stream: 'stderr',
+				kind: 'error',
+				code: 'transient_failure'
+			})
+		);
+		source.emitMessage(
+			JSON.stringify({
+				pod: 'pod-1',
+				ts: '2026-05-11T00:00:01Z',
+				line: 'normal line',
+				stream: 'stdout'
+			})
+		);
+
+		expect(await screen.findByText('normal line')).toBeVisible();
+		expect(screen.getByText('some error happened')).toBeVisible();
+		expect(screen.queryByRole('alert')).toBeNull();
+	});
 });
