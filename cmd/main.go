@@ -15,7 +15,7 @@ limitations under the License.
 */
 
 // @title Mortise API
-// @version 0.1.0
+// @version 1.0.0
 // @description Self-hosted Railway-style deploy platform for Kubernetes. Manages projects, apps, deployments, env vars, secrets, domains, and git providers.
 // @host localhost:8090
 // @BasePath /api
