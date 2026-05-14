@@ -113,12 +113,9 @@ func TestPreviewEnvironmentViaWebhook(t *testing.T) {
 	app.Annotations["mortise.dev/revision"] = "main"
 	app.Annotations["mortise.dev/created-by"] = testEmail
 
-	// Project-level preview toggle (SPEC §5.8). Use a TTL well beyond the
-	// test timeout so the PE never self-expires mid-run.
+	// Project-level preview toggle (SPEC §5.8).
 	enableProjectPreview(t, projectName, &mortisev1alpha1.PreviewConfig{
 		Enabled: true,
-		Domain:  fmt.Sprintf("pr-{number}-%s.test.local", app.Name),
-		TTL:     "24h",
 	})
 
 	if err := k8sClient.Create(context.Background(), app); err != nil {
@@ -145,7 +142,7 @@ func TestPreviewEnvironmentViaWebhook(t *testing.T) {
 
 	// --- The handler creates a PE named "{app}-preview-pr-{number}" in the
 	// App's namespace. Wait for it to appear.
-	peName := fmt.Sprintf("%s-preview-pr-%d", app.Name, prNumber)
+	peName := fmt.Sprintf("preview-pr-%d", prNumber)
 	helpers.RequireEventually(t, 60*time.Second, func() bool {
 		var pe mortisev1alpha1.PreviewEnvironment
 		return k8sClient.Get(context.Background(), types.NamespacedName{
@@ -181,7 +178,15 @@ func TestPreviewEnvironmentViaWebhook(t *testing.T) {
 	previewNs := constants.PreviewNamespace(projectName, prNumber)
 
 	// --- Verify the preview Deployment exists and has a built image.
+	// PE is Ready once the env entry is added; the app controller still
+	// needs time to create the workload resources.
 	previewResourceName := app.Name
+	helpers.RequireEventually(t, 3*time.Minute, func() bool {
+		var d appsv1.Deployment
+		return k8sClient.Get(context.Background(), types.NamespacedName{
+			Name: previewResourceName, Namespace: previewNs,
+		}, &d) == nil
+	})
 	var dep appsv1.Deployment
 	if err := k8sClient.Get(context.Background(), types.NamespacedName{
 		Name: previewResourceName, Namespace: previewNs,
@@ -310,8 +315,6 @@ func TestPreviewEnvironmentViaWebhook_PreviewDisabled(t *testing.T) {
 
 	enableProjectPreview(t, projectName, &mortisev1alpha1.PreviewConfig{
 		Enabled: false,
-		Domain:  fmt.Sprintf("pr-{number}-%s.test.local", app.Name),
-		TTL:     "24h",
 	})
 
 	if err := k8sClient.Create(context.Background(), app); err != nil {
@@ -327,7 +330,7 @@ func TestPreviewEnvironmentViaWebhook_PreviewDisabled(t *testing.T) {
 	postWebhook(t, mortiseURL, providerName, payload, http.StatusAccepted)
 
 	// Give the controller generous time to (not) act, then assert nothing.
-	peName := fmt.Sprintf("%s-preview-pr-%d", app.Name, prNumber)
+	peName := fmt.Sprintf("preview-pr-%d", prNumber)
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		var pe mortisev1alpha1.PreviewEnvironment

@@ -1,0 +1,275 @@
+# Changelog
+
+All notable changes to Mortise are documented in this file.
+
+Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [1.0.1] - 2026-05-12
+
+Bug fix release addressing issues found after the 1.0.0 GA launch. All 49
+commits are stability, security, and correctness fixes with no new features.
+
+### Fixed
+
+- **Reserved runtime secrets**: prevent user writes to operator-managed secrets
+  (`PORT`, `DATABASE_URL`, etc.) via the env-var API.
+- **Stack create rollback**: partial failures during multi-app stack creation
+  now roll back already-created apps instead of leaving orphans.
+- **Domain self-collision**: auto-generated domains no longer conflict with
+  themselves when re-reconciling an unchanged app.
+- **Viewer token leak**: project viewers can no longer list deploy token
+  inventories (previously returned full token metadata).
+- **Deploy token cleanup**: deleting an app now removes its deploy tokens;
+  ordering fixed so token secrets are gone before the app finalizer completes.
+- **Pull credential ownership**: mutation ordering and cleanup fixed so stale
+  pull secrets don't block app deletion or cause dangling image-pull references.
+- **Exec container targeting**: `POST /api/.../exec` now targets the correct
+  container when pods have sidecars.
+- **Env clone secret ownership**: cloned environment secrets are now owned by
+  the correct environment, preventing cross-env garbage collection.
+- **Preview shared-env fallback**: preview environments correctly inherit from
+  the source environment when shared env vars are missing.
+- **Preview rebuild on seeded images**: previews with a pre-seeded ready image
+  no longer skip the build step on refresh.
+- **Preview env reconcile without source secrets**: previews no longer fail when
+  the source environment has no secrets configured.
+- **SSE token revalidation**: token issue-time is checked on refresh, rejecting
+  tokens minted before a password change.
+- **Git token cache**: stale git provider tokens are no longer reused across
+  preview reconcile loops.
+- **GitProvider webhook secrets**: webhook HMAC secrets are now read from the
+  correct key in the provider Secret.
+- **BuildRun recovery**: orphaned BuildRuns from a crashed operator are
+  detected and re-adopted on startup.
+- **Webhook latching**: duplicate webhook deliveries within a short window
+  are deduplicated instead of creating duplicate builds.
+- **Activity backfill**: project creation no longer produces duplicate
+  "project created" activity entries.
+- **Log stream stability**: SSE log streams handle observer connection errors
+  gracefully instead of dropping the client connection.
+- **Env redaction**: secret values in env-var API responses are redacted;
+  reserved keys are rejected on write.
+- **API conflict handling**: k8s Conflict errors now map to HTTP 409 instead
+  of 500; delete operations return 202 Accepted with a `"terminating"` status.
+- **Proxy teardown**: `mortise proxy disconnect` now passes the environment
+  parameter correctly.
+- **Dev cluster reliability**: `make dev-up` now polls for readiness instead
+  of a fixed sleep, and handles fresh clusters without pre-existing state.
+
+## [1.0.0] - 2026-05-08
+
+First general-availability release.
+
+### Added
+
+#### BuildRun CRD
+- New `BuildRun` custom resource for durable build execution tracking. Each
+  build produces a BuildRun object with full lifecycle (Pending, Running,
+  Succeeded, Failed), retry attempts, log references, and image digest.
+- `BuildRunReconciler` controller manages build jobs and updates status.
+- REST API: `GET /projects/{p}/build-runs`, `GET /projects/{p}/build-runs/{name}`,
+  `GET /projects/{p}/build-runs/{name}/logs`.
+
+#### Preview environment sync
+- State-reconciliation model replaces the old event-driven webhook dispatch.
+  The operator now queries the git forge for open PRs and converges preview
+  state, making previews self-healing after missed webhooks.
+- New `previewsync` package implements the reconciliation loop.
+- `ListOpenPullRequests` method added to GitHub, GitLab, and Gitea providers.
+- GitLab MR `reopened` action now correctly maps to `opened`, enabling
+  preview recreation on PR reopen.
+
+#### SSE token system
+- Server-sent event streams now authenticate via short-lived, single-use
+  opaque tokens obtained from `POST /api/auth/sse-token`. Replaces direct
+  JWT-in-query-param pattern.
+
+#### Pull credentials API
+- `GET/POST/DELETE /projects/{p}/apps/{a}/pull-credentials` for managing
+  private registry image-pull credentials per app.
+
+#### Environment cloning
+- `POST /projects/{p}/environments/{env}/clone` creates a copy of an
+  environment with all its env vars and configuration. Returns 409 Conflict
+  if the target already exists.
+
+#### Domain validation
+- `POST /api/domains/validate` checks domain availability and detects
+  cross-app collisions before assignment.
+
+#### Per-environment build args and image overrides
+- `spec.environments[].buildArgs` allows per-env build arguments.
+- `spec.environments[].image` allows per-env image override (set by the
+  deploy handler for environment-specific deploys).
+
+#### Certificate status tracking
+- `EnvironmentStatus` now surfaces `certificateStatus` (Ready, Pending,
+  Failed) and `certificateMessage` from cert-manager Certificate resources.
+- Operator RBAC expanded with read access to `cert-manager.io/certificates`.
+
+#### Platform configuration
+- `PlatformConfig.spec.externalDomain`: separate hostname for where the
+  Mortise API is publicly reachable (webhook callbacks, deploy tokens, UI).
+  Falls back to `spec.domain` when unset.
+- Platform-level default CPU and memory (`PATCH /api/platform`).
+- Platform-level GitHub OAuth client ID configuration.
+- Platform-level domain template customization.
+
+#### Auth improvements
+- JWT tokens now carry `iss: mortise` and `aud: mortise-api` claims.
+- Token refresh endpoint (`POST /api/auth/refresh`) with 7-day leeway.
+- Password management: `POST /api/me/password` (self-service),
+  `POST /api/admin/users/{email}/password` (admin reset).
+- Minimum 8-character password enforcement.
+- Last-admin protection: API rejects demoting or deleting the sole
+  remaining admin.
+
+#### Viewer role
+- `viewer` role added alongside `admin` and `member`. Viewers can read
+  project resources but cannot modify apps, secrets, or settings.
+
+#### Auto-redeploy with stale detection
+- Per-environment hash tracking (`pendingEnvHash` / `deployedEnvHash`) moved
+  from top-level AppStatus to per-environment EnvironmentStatus.
+- `POST /projects/{p}/apps/{a}/redeploy-stale` triggers redeployment only
+  for environments with unapplied env-var changes.
+- UI shows a per-environment stale banner with individual redeploy buttons.
+
+#### Helm chart
+- New `ClusterIssuer` template: set `tls.acme.email` to auto-create a
+  cert-manager ClusterIssuer for automatic TLS.
+- Security hardening defaults: `podSecurityContext` and
+  `containerSecurityContext` in mortise-core values. Observer pod also
+  hardened (non-root, read-only root FS, drop all capabilities).
+- New `operator.tmpSizeLimit` value for `/tmp` emptyDir sizing.
+
+#### CLI
+- `app delete` and `secret delete` now prompt for confirmation; use
+  `--yes`/`-y` to skip.
+- Automatic JWT refresh on 401 with `"session expired"` fallback message.
+
+#### UI
+- Settings and Variables tabs decomposed from monolithic components
+  (~1800 lines) into 12 focused section components.
+- Preview environments appear in the environment switcher dropdown.
+- Previews page wired to real API data.
+- Real-time project name availability checking on the new-project form.
+- Per-environment stale redeploy controls.
+- Platform settings expanded: external domain, domain template, default
+  resources, GitHub OAuth client ID.
+- App detail pages subscribe to SSE for live updates.
+
+#### CI / supply chain
+- Cosign keyless image signing for operator and observer images.
+- SBOM and provenance attestations on release builds.
+- Playwright E2E tests run in CI.
+
+#### Observability
+- Operator RBAC now includes read access to `batch/jobs` (for BuildRun
+  state) and `cert-manager.io/certificates` (for TLS status).
+
+### Changed
+
+- Webhook repo matching requires full owner/repo match (was suffix-based).
+- Apps only trigger from their configured `providerRef` webhook (was any
+  matching provider).
+- `DELETE /projects/{p}/apps/{a}` returns 202 Accepted with
+  `{"status":"terminating"}` instead of 200.
+- Internal server errors no longer leak raw error messages; logged via
+  `slog.Error`, user sees `"internal server error"`.
+- `X-Forwarded-Proto` validated against `"http"` or `"https"`.
+- `req.Host` HTML-escaped in OG image URLs (XSS fix).
+- Error helpers (`writeError`) now include the request for structured logging.
+- RBAC rules in Helm chart restructured for auditability (functionally
+  equivalent, split into per-resource rules with comments).
+- Secrets API query parameter renamed from `?env=` to `?environment=`.
+
+### Removed
+
+- Hardcoded GitHub OAuth client ID default (`Ov23lizLTd25E32VrWwl`) cleared
+  from chart values. Must be set explicitly if using GitHub device flow.
+
+## [0.1.4] - 2026-05-05
+
+### Added
+
+- Domain editing, password management, build args in Variables tab.
+- Preview environment inheritance and environment clone API.
+- Observer integration tests (metrics, traffic, logs).
+- Full-stack integration test with git-source backend + bindings.
+- Domain collision detection and multi-label template validation.
+- BYO Traefik access logs documentation, `llms.txt`, local-only recipe.
+
+### Fixed
+
+- Security hardening for password management and session invalidation.
+- Credential Secret NotFound retries instead of partial reconciliation.
+- Preview env secret-before-build gate.
+- Domain collision status reporting.
+- Clone reads Secret-level env vars correctly.
+- Observer traffic mismatch, SQLite contention, chart coupling.
+- Webhook `.git` suffix handling, stale hook cleanup.
+- Nil-replicas rollout detection, conflict windows.
+- Deploy history ordering, redeploy visibility, rebuild cache bypass.
+
+## [0.1.3] - 2026-05-05
+
+### Fixed
+
+- Integration test reliability: parallel execution, pre-pulled images,
+  increased timeouts, verbose output.
+- k3d install via direct binary download.
+- Helm repo + dependency build in integration target.
+- Network port in test fixtures for probe compatibility.
+
+## [0.1.2] - 2026-05-05
+
+### Added
+
+- Integration test CI job.
+- Observer poll interval tuning.
+
+### Fixed
+
+- PSA namespace labels.
+- Webhook `.git` suffix and stale hook cleanup.
+- Log channel backpressure with drop counter.
+- specOverride race and build args key collisions.
+- UI save clobber, CPU defaults, build args UI.
+
+## [0.1.1] - 2026-05-05
+
+### Fixed
+
+- Observer traffic mismatch, SQLite contention.
+- Chart coupling and CPU default handling.
+
+## [0.1.0] - 2026-05-05
+
+Initial release.
+
+### Added
+
+- Project and App CRDs with full lifecycle management.
+- Git and image source types with automatic builds via BuildKit.
+- Multi-environment support (production, staging, custom).
+- Preview environments from pull requests.
+- Domain management with automatic TLS via cert-manager.
+- Environment variables and secrets management.
+- Service bindings for backing services.
+- Bundled infrastructure: BuildKit, OCI registry, Traefik, cert-manager.
+- SvelteKit UI with canvas-based project visualization.
+- CLI (`mortise`) with login, project, app, secret, proxy commands.
+- Observer binary for metrics, logs, and traffic collection.
+- GitHub, GitLab, and Gitea git provider support.
+- Webhook-driven automatic deployments.
+- Native auth with JWT tokens and role-based access (admin, member).
+
+[1.0.1]: https://github.com/mortise-org/mortise/compare/v1.0.0...v1.0.1
+[1.0.0]: https://github.com/mortise-org/mortise/compare/v0.1.4...v1.0.0
+[0.1.4]: https://github.com/mortise-org/mortise/compare/v0.1.3...v0.1.4
+[0.1.3]: https://github.com/mortise-org/mortise/compare/v0.1.2...v0.1.3
+[0.1.2]: https://github.com/mortise-org/mortise/compare/v0.1.1...v0.1.2
+[0.1.1]: https://github.com/mortise-org/mortise/compare/v0.1.0...v0.1.1
+[0.1.0]: https://github.com/mortise-org/mortise/releases/tag/v0.1.0

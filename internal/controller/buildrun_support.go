@@ -187,25 +187,6 @@ func projectAppBuildRunStatus(app *mortisev1alpha1.App, envName string, run *mor
 	}
 }
 
-func projectPreviewBuildRunStatus(pe *mortisev1alpha1.PreviewEnvironment, run *mortisev1alpha1.BuildRun) {
-	if pe == nil || run == nil {
-		return
-	}
-
-	ref := buildRunReference(run)
-	pe.Status.CurrentBuildRunRef = ref
-	pe.Status.CurrentBuildRunName = run.Name
-	switch run.Status.Phase {
-	case mortisev1alpha1.BuildRunPhaseSucceeded:
-		pe.Status.CurrentBuildRunName = ""
-		pe.Status.LastBuildRunName = run.Name
-		pe.Status.LastSuccessfulBuildRunRef = ref
-	case mortisev1alpha1.BuildRunPhaseFailed:
-		pe.Status.CurrentBuildRunName = ""
-		pe.Status.LastBuildRunName = run.Name
-	}
-}
-
 func aggregateAppBuildRunNames(envs []mortisev1alpha1.EnvironmentStatus) (current, last string) {
 	for _, es := range envs {
 		if es.CurrentBuildRunRef == nil {
@@ -291,39 +272,6 @@ func appBuildRunSpec(app *mortisev1alpha1.App, envName, revision, pushTarget, pu
 	return spec
 }
 
-func previewBuildRunSpec(pe *mortisev1alpha1.PreviewEnvironment, app *mortisev1alpha1.App, providerName, tokenOwner, revision, pushTarget, pullTarget string) mortisev1alpha1.BuildRunSpec {
-	spec := mortisev1alpha1.BuildRunSpec{
-		TargetRef: mortisev1alpha1.BuildRunTargetRef{
-			Kind:      mortisev1alpha1.BuildRunTargetPreviewEnvironment,
-			Name:      pe.Name,
-			Namespace: pe.Namespace,
-		},
-		Environment:    pe.Spec.SourceEnv,
-		Trigger:        mortisev1alpha1.BuildRunTriggerPreview,
-		AppName:        pe.Spec.AppRef,
-		ProviderRef:    providerName,
-		CreatedBy:      tokenOwner,
-		TokenOwner:     tokenOwner,
-		Repo:           app.Spec.Source.Repo,
-		Branch:         pe.Spec.PullRequest.Branch,
-		Revision:       revision,
-		SourcePath:     app.Spec.Source.Path,
-		Path:           app.Spec.Source.Path,
-		BuildMode:      string(buildModeOf(app)),
-		DockerfilePath: previewDockerfilePath(app),
-		Dockerfile:     previewDockerfilePath(app),
-		BuildContext:   buildContextOf(app),
-		BuildArgs:      previewBuildArgs(app),
-		PushTarget:     pushTarget,
-		PushImage:      pushTarget,
-		PullTarget:     pullTarget,
-		PullImage:      pullTarget,
-		TokenSecretRef: buildRunTokenSecretRef(providerName, tokenOwner),
-	}
-	spec.InputHash = buildRunInputHash(spec)
-	return spec
-}
-
 func buildModeOf(app *mortisev1alpha1.App) mortisev1alpha1.BuildMode {
 	if app.Spec.Source.Build != nil && app.Spec.Source.Build.Mode != "" {
 		return app.Spec.Source.Build.Mode
@@ -397,49 +345,6 @@ func (r *AppReconciler) ensureAppBuildRun(ctx context.Context, app *mortisev1alp
 		if err := r.Patch(ctx, app, patch); err != nil && !errors.IsNotFound(err) {
 			return nil, err
 		}
-	}
-	return &run, nil
-}
-
-func (r *PreviewEnvironmentReconciler) ensurePreviewBuildRun(ctx context.Context, pe *mortisev1alpha1.PreviewEnvironment, app *mortisev1alpha1.App, _token, revision, pushTarget, pullTarget, providerName string) (*mortisev1alpha1.BuildRun, error) {
-	tokenOwner := app.Annotations["mortise.dev/created-by"]
-	spec := previewBuildRunSpec(pe, app, providerName, tokenOwner, revision, pushTarget, pullTarget)
-	name := buildRunName("previewenvironment", pe.Name, pe.Spec.SourceEnv, revision, spec.InputHash, "")
-	var run mortisev1alpha1.BuildRun
-	err := r.Get(ctx, client.ObjectKey{Namespace: pe.Namespace, Name: name}, &run)
-	if err == nil {
-		return &run, nil
-	}
-	if !errors.IsNotFound(err) {
-		return nil, err
-	}
-	run = mortisev1alpha1.BuildRun{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: pe.Namespace,
-		},
-		Spec: spec,
-	}
-	for k, v := range previewLabels(pe) {
-		if run.Labels == nil {
-			run.Labels = map[string]string{}
-		}
-		run.Labels[k] = v
-	}
-	for k, v := range buildRunLabels(&run) {
-		if run.Labels == nil {
-			run.Labels = map[string]string{}
-		}
-		run.Labels[k] = v
-	}
-	if err := r.Create(ctx, &run); err != nil {
-		if errors.IsAlreadyExists(err) {
-			if err := r.Get(ctx, client.ObjectKey{Namespace: pe.Namespace, Name: name}, &run); err != nil {
-				return nil, err
-			}
-			return &run, nil
-		}
-		return nil, err
 	}
 	return &run, nil
 }

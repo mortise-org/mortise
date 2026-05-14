@@ -489,7 +489,7 @@ func TestDeleteAppCleansUpCustomSecretsViaAPI(t *testing.T) {
 	}
 }
 
-func TestDeleteAppRemovesPreviewsFromAPIAndCluster(t *testing.T) {
+func TestDeleteAppAndPECleanup(t *testing.T) {
 	t.Parallel()
 	projectName := "proj-preview-delete-" + randSuffix()
 	ns := createProjectForTest(t, projectName)
@@ -556,8 +556,6 @@ func TestDeleteAppRemovesPreviewsFromAPIAndCluster(t *testing.T) {
 
 	enableProjectPreview(t, projectName, &mortisev1alpha1.PreviewConfig{
 		Enabled: true,
-		Domain:  fmt.Sprintf("pr-{number}-%s.test.local", app.Name),
-		TTL:     "24h",
 	})
 
 	if err := k8sClient.Create(context.Background(), app); err != nil {
@@ -566,8 +564,7 @@ func TestDeleteAppRemovesPreviewsFromAPIAndCluster(t *testing.T) {
 	helpers.WaitForAppReady(t, k8sClient, ns, app.Name, 5*time.Minute)
 
 	headSHA := getGiteaBranchSHA(t, giteaLocalURL, boot.Token, boot.Owner, boot.Name, "main")
-	previewDomain := fmt.Sprintf("pr-11-%s.test.local", app.Name)
-	pe := createPreviewEnvironment(t, ns, app.Name, 11, headSHA, previewDomain)
+	pe := createPreviewEnvironment(t, ns, projectName, 11, headSHA)
 	pe.Spec.SourceEnv = app.Spec.Environments[0].Name
 	if err := k8sClient.Create(context.Background(), pe); err != nil {
 		t.Fatalf("create PreviewEnvironment: %v", err)
@@ -602,6 +599,12 @@ func TestDeleteAppRemovesPreviewsFromAPIAndCluster(t *testing.T) {
 	helpers.RequireEventually(t, 90*time.Second, func() bool {
 		resp := doProjectLifecycleJSON(t, http.MethodGet, appURL, token, nil)
 		return resp.StatusCode == http.StatusNotFound
+	})
+
+	// PEs are project-scoped — deleting the app doesn't delete the PE.
+	// Explicitly delete it to test the cleanup path.
+	_ = k8sClient.Delete(context.Background(), &mortisev1alpha1.PreviewEnvironment{
+		ObjectMeta: metav1.ObjectMeta{Name: pe.Name, Namespace: ns},
 	})
 
 	helpers.RequireEventually(t, 2*time.Minute, func() bool {

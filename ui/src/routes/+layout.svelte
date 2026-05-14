@@ -77,7 +77,7 @@
 
 	const activePreviews = $derived.by<PreviewSummary[]>(() => {
 		if (!activeProject) return [];
-		return (store.previewEnvs[activeProject] ?? []).filter((p) => p.phase !== 'Expired');
+		return store.previewEnvs[activeProject] ?? [];
 	});
 
 	function dotClass(h: EnvHealth | undefined): string {
@@ -297,11 +297,12 @@
 									{/each}
 									{#if activePreviews.length > 0}
 										<div class="border-t border-surface-600 my-1"></div>
+										<div class="px-3 py-1 text-[10px] font-semibold uppercase tracking-wider text-gray-500">PR Environments</div>
 										{#each activePreviews as preview}
 											<button
 												type="button"
-												onclick={() => selectEnv('preview:' + preview.name)}
-												class="flex w-full items-center gap-2 px-3 py-2 text-sm {currentEnv === 'preview:' + preview.name
+												onclick={() => selectEnv(preview.environmentName || preview.name)}
+												class="flex w-full items-center gap-2 px-3 py-2 text-sm {currentEnv === (preview.environmentName || preview.name)
 													? 'bg-surface-600 text-white'
 													: 'text-gray-300 hover:bg-surface-700 hover:text-white'}"
 											>
