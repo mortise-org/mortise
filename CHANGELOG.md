@@ -5,6 +5,48 @@ All notable changes to Mortise are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Preview environments as clone environments**: preview environments are now
+  real project environments (`pr-{number}`) managed through the app controller's
+  existing environment fan-out. Previews appear in the environment switcher,
+  use standard domain templates, and are cleaned up immediately on PR close
+  with no TTL delay.
+- **Degraded app phase**: when the latest build fails but an older image is
+  still serving successfully, the app phase is now `Degraded` (warning) instead
+  of `Failed`. CrashLooping takes priority over Degraded when both conditions
+  are true.
+- **Fatal log stream banner**: log viewer and deploy log components now display
+  an inline error banner when the SSE stream encounters a fatal error, instead
+  of silently stopping.
+- **Preview switcher opens new tab**: preview entries in the environment
+  switcher now open in a new browser tab instead of switching the current view.
+
+### Fixed
+
+- **Normalized project not-found errors**: all project lookup API paths now
+  return a consistent `project "name" not found` message (404 JSON) instead of
+  leaking raw Kubernetes API error strings.
+
+### Changed
+
+- **PreviewEnvironment CRD simplified**: the `PreviewEnvironment` spec now
+  carries only `projectRef`, `sourceEnv`, and `pullRequest` metadata. Removed
+  fields: `appRef`, `replicas`, `resources`, `env`, `bindings`, `domain`,
+  `ttl`. Status reduced to `environmentName` and `conditions`; removed `url`,
+  `image`, `currentBuildRunRef`, `lastSuccessfulBuildRunRef`, `expiresAt`.
+  Phase enum reduced from `Pending|Building|Ready|Failed|Expired` to
+  `Pending|Ready|Failed`.
+- **PreviewConfig simplified**: removed `domain`, `ttl`, `resources` fields;
+  added `sourceEnvironment` (optional string).
+- **App environment branch override**: `spec.environments[].branch` is a new
+  optional field allowing per-environment git branch overrides (used internally
+  by preview cloning).
+- **AppPhase enum**: added `Degraded` value. Consumers of the phase enum must
+  handle this new value.
+
 ## [1.0.1] - 2026-05-12
 
 Bug fix release addressing issues found after the 1.0.0 GA launch. All 49
