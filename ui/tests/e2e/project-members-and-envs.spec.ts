@@ -15,7 +15,7 @@ import {
 //
 // Environment CRUD is covered by environments.spec.ts. This file focuses on:
 //   - Members tab (empty state, add member, role dropdown, remove)
-//   - PR environment configuration (toggle, domain template, TTL)
+//   - PR environment configuration (toggle, source environment)
 //   - Danger zone (delete project with name confirmation)
 //
 // Note: Adding/removing members requires the target user to already exist
@@ -138,7 +138,7 @@ test.describe('project settings: members tab', () => {
 });
 
 // ---------------------------------------------------------------------------
-// PR environment settings (toggle + domain template + TTL)
+// PR environment settings (toggle + source environment)
 // ---------------------------------------------------------------------------
 
 test.describe('project settings: PR environments', () => {
