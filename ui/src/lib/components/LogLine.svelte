@@ -1,6 +1,8 @@
 <script lang="ts">
 	import type { LogLineEvent } from '$lib/types';
 	import { hashPodColor } from '$lib/pod-colors';
+	import LogStreamFatalBanner from '$lib/components/LogStreamFatalBanner.svelte';
+	import { isFatalLogStreamEvent } from '$lib/log-stream-events';
 
 	let { event, showPodBadge }: { event: LogLineEvent; showPodBadge: boolean } = $props();
 
@@ -19,6 +21,7 @@
 		event.pod ? event.pod.slice(Math.max(0, event.pod.length - 5)) : ''
 	);
 	const podColor = $derived(event.pod ? hashPodColor(event.pod) : '');
+	const fatal = $derived(isFatalLogStreamEvent(event));
 
 	type Parsed = { obj: Record<string, unknown>; level?: string; message: string };
 	const parseCache = new Map<string, Parsed | null>();
@@ -118,6 +121,9 @@
 
 	<!-- Line content -->
 	<div class="min-w-0 flex-1">
+		{#if fatal}
+			<LogStreamFatalBanner code={event.code} />
+		{/if}
 		{#if parsed}
 			<button
 				type="button"

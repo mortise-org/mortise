@@ -2,6 +2,8 @@
 	import { onDestroy, tick } from 'svelte';
 	import { AuthRequiredError, api } from '$lib/api';
 	import { hashPodColor } from '$lib/pod-colors';
+	import LogStreamFatalBanner from '$lib/components/LogStreamFatalBanner.svelte';
+	import { isFatalLogStreamEvent, parseLogStreamEvent } from '$lib/log-stream-events';
 
 	interface Props {
 		project: string;
@@ -16,6 +18,9 @@
 		pod: string;
 		line: string;
 		stream?: string;
+		kind?: string;
+		code?: string;
+		fatal?: boolean;
 		receivedAt: number;
 	}
 
@@ -91,31 +96,30 @@
 
 			next.onmessage = (ev) => {
 				if (id !== connectionID || source !== next) return;
-				try {
-					const parsed = JSON.parse(ev.data);
-					if (!parsed || typeof parsed.line !== 'string' || typeof parsed.pod !== 'string') {
-						return;
-					}
-					const entry: LogEntry = {
-						pod: parsed.pod,
-						line: parsed.line,
-						stream: typeof parsed.stream === 'string' ? parsed.stream : undefined,
-						receivedAt: Date.now()
-					};
-					if (!pods.has(entry.pod)) {
-						pods = new Set([...pods, entry.pod]);
-					}
-					if (paused) {
-						pausedBuffer.push(entry);
-						if (pausedBuffer.length > MAX_ENTRIES) {
-							pausedBuffer = pausedBuffer.slice(-MAX_ENTRIES);
-						}
-						return;
-					}
-					appendEntry(entry);
-				} catch {
-					// Ignore malformed events.
+				const parsed = parseLogStreamEvent(ev.data);
+				if (!parsed) {
+					return;
 				}
+				const entry: LogEntry = {
+					pod: parsed.pod,
+					line: parsed.line,
+					stream: parsed.stream,
+					kind: parsed.kind,
+					code: parsed.code,
+					fatal: parsed.fatal,
+					receivedAt: Date.now()
+				};
+				if (entry.pod && !pods.has(entry.pod)) {
+					pods = new Set([...pods, entry.pod]);
+				}
+				if (paused) {
+					pausedBuffer.push(entry);
+					if (pausedBuffer.length > MAX_ENTRIES) {
+						pausedBuffer = pausedBuffer.slice(-MAX_ENTRIES);
+					}
+					return;
+				}
+				appendEntry(entry);
 			};
 
 			next.onerror = () => {
@@ -189,7 +193,7 @@
 
 	function downloadLogs() {
 		const text = filtered
-			.map((e) => `[${e.pod}] ${e.line}`)
+			.map((e) => (e.pod ? `[${e.pod}] ${e.line}` : e.line))
 			.join('\n');
 		const blob = new Blob([text], { type: 'text/plain' });
 		const url = URL.createObjectURL(blob);
@@ -279,11 +283,18 @@
 			</div>
 		{:else}
 			{#each filtered as entry}
-				<div class="flex gap-2 whitespace-pre-wrap break-all">
-					<span style="color: {hashPodColor(entry.pod)};" class="shrink-0 opacity-80">
-						[{entry.pod}]
-					</span>
-					<span class="text-gray-200">{entry.line}</span>
+				<div class="whitespace-pre-wrap break-all">
+					{#if isFatalLogStreamEvent(entry)}
+						<LogStreamFatalBanner code={entry.code} />
+					{/if}
+					<div class="flex gap-2">
+						{#if entry.pod}
+							<span style="color: {hashPodColor(entry.pod)};" class="shrink-0 opacity-80">
+								[{entry.pod}]
+							</span>
+						{/if}
+						<span class="text-gray-200">{entry.line}</span>
+					</div>
 				</div>
 			{/each}
 		{/if}

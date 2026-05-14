@@ -5,6 +5,7 @@
 	import { Loader2, Search } from 'lucide-svelte';
 	import type { App, LogLineEvent, Pod } from '$lib/types';
 	import LogLine from '$lib/components/LogLine.svelte';
+	import { parseLogStreamEvent } from '$lib/log-stream-events';
 
 	let {
 		project,
@@ -141,23 +142,6 @@
 		clearReconnectTimer();
 	}
 
-	function parseEvent(data: string): LogLineEvent | null {
-		try {
-			const obj = JSON.parse(data);
-			if (obj && typeof obj === 'object' && typeof obj.line === 'string') {
-				return {
-					pod: typeof obj.pod === 'string' ? obj.pod : '',
-					ts: typeof obj.ts === 'string' ? obj.ts : '',
-					line: obj.line,
-					stream: typeof obj.stream === 'string' ? obj.stream : undefined
-				};
-			}
-		} catch {
-			/* not JSON */
-		}
-		return { pod: '', ts: '', line: data, stream: undefined };
-	}
-
 	async function connectLive(fresh = false) {
 		if (isBuilding || pods.length === 0) {
 			closeStream();
@@ -206,7 +190,7 @@
 			};
 			next.onmessage = (e: MessageEvent) => {
 				if (id !== connectionID || es !== next) return;
-				const evt = parseEvent(e.data as string);
+				const evt = parseLogStreamEvent(e.data as string);
 				if (!evt) return;
 				lastMessageTime = Date.now();
 				const nextEvents =
