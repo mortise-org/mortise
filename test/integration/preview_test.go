@@ -96,8 +96,6 @@ func TestPreviewEnvironmentLifecycle(t *testing.T) {
 	// Project-level preview toggle (SPEC §5.8).
 	enableProjectPreview(t, projectName, &mortisev1alpha1.PreviewConfig{
 		Enabled: true,
-		Domain:  fmt.Sprintf("pr-{number}-%s.test.local", app.Name),
-		TTL:     "1h",
 	})
 
 	if err := k8sClient.Create(context.Background(), app); err != nil {
@@ -111,8 +109,7 @@ func TestPreviewEnvironmentLifecycle(t *testing.T) {
 	headSHA := getGiteaBranchSHA(t, giteaLocalURL, boot.Token, boot.Owner, boot.Name, "main")
 
 	// --- Step 2: Create a PreviewEnvironment CRD directly.
-	previewDomain := fmt.Sprintf("pr-42-%s.test.local", app.Name)
-	pe := createPreviewEnvironment(t, ns, app.Name, 42, headSHA, previewDomain)
+	pe := createPreviewEnvironment(t, ns, projectName, 42, headSHA)
 	previewNs := constants.PreviewNamespace(projectName, 42)
 	if err := k8sClient.Create(context.Background(), pe); err != nil {
 		t.Fatalf("create PreviewEnvironment: %v", err)
@@ -128,7 +125,14 @@ func TestPreviewEnvironmentLifecycle(t *testing.T) {
 	// --- Step 4: Verify preview resources exist.
 	previewResourceName := app.Name
 
-	// Deployment
+	// Deployment — PE is Ready once the env entry is added; the app
+	// controller still needs time to create the workload resources.
+	helpers.RequireEventually(t, 3*time.Minute, func() bool {
+		var d appsv1.Deployment
+		return k8sClient.Get(context.Background(), types.NamespacedName{
+			Name: previewResourceName, Namespace: previewNs,
+		}, &d) == nil
+	})
 	var dep appsv1.Deployment
 	if err := k8sClient.Get(context.Background(), types.NamespacedName{
 		Name: previewResourceName, Namespace: previewNs,
@@ -138,6 +142,12 @@ func TestPreviewEnvironmentLifecycle(t *testing.T) {
 	t.Logf("preview deployment image: %s", dep.Spec.Template.Spec.Containers[0].Image)
 
 	// Service
+	helpers.RequireEventually(t, 3*time.Minute, func() bool {
+		var s corev1.Service
+		return k8sClient.Get(context.Background(), types.NamespacedName{
+			Name: previewResourceName, Namespace: previewNs,
+		}, &s) == nil
+	})
 	var svc corev1.Service
 	if err := k8sClient.Get(context.Background(), types.NamespacedName{
 		Name: previewResourceName, Namespace: previewNs,
@@ -146,6 +156,12 @@ func TestPreviewEnvironmentLifecycle(t *testing.T) {
 	}
 
 	// Ingress with correct host
+	helpers.RequireEventually(t, 3*time.Minute, func() bool {
+		var i networkingv1.Ingress
+		return k8sClient.Get(context.Background(), types.NamespacedName{
+			Name: previewResourceName, Namespace: previewNs,
+		}, &i) == nil
+	})
 	var ing networkingv1.Ingress
 	if err := k8sClient.Get(context.Background(), types.NamespacedName{
 		Name: previewResourceName, Namespace: previewNs,
@@ -155,18 +171,6 @@ func TestPreviewEnvironmentLifecycle(t *testing.T) {
 	if len(ing.Spec.Rules) == 0 {
 		t.Fatal("preview Ingress has no rules")
 	}
-	if ing.Spec.Rules[0].Host != previewDomain {
-		t.Errorf("preview Ingress host: got %q, want %q", ing.Spec.Rules[0].Host, previewDomain)
-	}
-
-	// PreviewEnvironment status should have a URL.
-	var updatedPE mortisev1alpha1.PreviewEnvironment
-	if err := k8sClient.Get(context.Background(), types.NamespacedName{
-		Name: pe.Name, Namespace: ns,
-	}, &updatedPE); err != nil {
-		t.Fatalf("get PreviewEnvironment status: %v", err)
-	}
-	assertPreviewHasURL(t, &updatedPE)
 
 	// Registry should have a tag for the preview build.
 	helpers.AssertRegistryHasTags(t, registryLocalURL, "mortise", app.Name, 60*time.Second)
@@ -179,6 +183,7 @@ func TestPreviewEnvironmentLifecycle(t *testing.T) {
 	}
 
 	// Patch the PreviewEnvironment with the new SHA.
+	var updatedPE mortisev1alpha1.PreviewEnvironment
 	if err := k8sClient.Get(context.Background(), types.NamespacedName{
 		Name: pe.Name, Namespace: ns,
 	}, &updatedPE); err != nil {
@@ -245,7 +250,7 @@ func TestPreviewDisabledAppRejectsPreview(t *testing.T) {
 
 	// Create a PreviewEnvironment referencing an App whose Project has
 	// project-level preview disabled.
-	pe := createPreviewEnvironment(t, ns, app.Name, 99, "abc123deadbeef", "pr-99-no-preview.test.local")
+	pe := createPreviewEnvironment(t, ns, projectName, 99, "abc123deadbeef")
 	if err := k8sClient.Create(context.Background(), pe); err != nil {
 		t.Fatalf("create PreviewEnvironment: %v", err)
 	}
@@ -343,8 +348,6 @@ func TestPreviewInheritsStagingBindings(t *testing.T) {
 	// Project-level preview toggle (SPEC §5.8).
 	enableProjectPreview(t, projectName, &mortisev1alpha1.PreviewConfig{
 		Enabled: true,
-		Domain:  fmt.Sprintf("pr-{number}-%s.test.local", apiApp.Name),
-		TTL:     "1h",
 	})
 	// Add binding to postgres in the staging environment.
 	apiApp.Spec.Environments[0].Bindings = []mortisev1alpha1.Binding{
@@ -358,10 +361,8 @@ func TestPreviewInheritsStagingBindings(t *testing.T) {
 
 	// --- Create a preview for the API App.
 	headSHA := getGiteaBranchSHA(t, giteaLocalURL, boot.Token, boot.Owner, boot.Name, "main")
-	previewDomain := fmt.Sprintf("pr-10-%s.test.local", apiApp.Name)
-	pe := createPreviewEnvironment(t, ns, apiApp.Name, 10, headSHA, previewDomain)
+	pe := createPreviewEnvironment(t, ns, projectName, 10, headSHA)
 	pe.Spec.SourceEnv = apiApp.Spec.Environments[0].Name
-	pe.Spec.Bindings = apiApp.Spec.Environments[0].Bindings
 	if err := k8sClient.Create(context.Background(), pe); err != nil {
 		t.Fatalf("create PreviewEnvironment: %v", err)
 	}
@@ -430,22 +431,21 @@ func enableProjectPreview(t *testing.T, projectName string, cfg *mortisev1alpha1
 }
 
 // createPreviewEnvironment builds a PreviewEnvironment CRD object (not yet applied).
-func createPreviewEnvironment(t *testing.T, namespace, appName string, prNumber int, sha, domain string) *mortisev1alpha1.PreviewEnvironment {
+func createPreviewEnvironment(t *testing.T, namespace, projectRef string, prNumber int, sha string) *mortisev1alpha1.PreviewEnvironment {
 	t.Helper()
 	pe := &mortisev1alpha1.PreviewEnvironment{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      fmt.Sprintf("%s-pr-%d", appName, prNumber),
+			Name:      fmt.Sprintf("preview-pr-%d", prNumber),
 			Namespace: namespace,
 		},
 		Spec: mortisev1alpha1.PreviewEnvironmentSpec{
-			AppRef: appName,
+			ProjectRef: projectRef,
+			SourceEnv:  "production",
 			PullRequest: mortisev1alpha1.PullRequestRef{
 				Number: prNumber,
 				Branch: "main",
 				SHA:    sha,
 			},
-			Domain: domain,
-			TTL:    metav1.Duration{Duration: 1 * time.Hour},
 		},
 	}
 	pe.SetGroupVersionKind(mortisev1alpha1.GroupVersion.WithKind("PreviewEnvironment"))
@@ -480,13 +480,13 @@ func waitForPreviewFailed(t *testing.T, namespace, name string, timeout time.Dur
 	})
 }
 
-// assertPreviewHasURL checks that the PreviewEnvironment status carries a URL.
-func assertPreviewHasURL(t *testing.T, pe *mortisev1alpha1.PreviewEnvironment) {
+// assertPreviewReady checks that the PreviewEnvironment has reached a non-empty phase.
+func assertPreviewReady(t *testing.T, pe *mortisev1alpha1.PreviewEnvironment) {
 	t.Helper()
-	if pe.Status.URL == "" {
-		t.Error("PreviewEnvironment status.url is empty; expected a preview URL")
+	if pe.Status.Phase == "" {
+		t.Error("PreviewEnvironment status.phase is empty; expected a phase")
 	} else {
-		t.Logf("preview URL: %s", pe.Status.URL)
+		t.Logf("preview phase: %s", pe.Status.Phase)
 	}
 }
 
@@ -500,7 +500,7 @@ func assertPreviewHasFailedCondition(t *testing.T, pe *mortisev1alpha1.PreviewEn
 	}
 	// Look for a condition with status=False or reason indicating project-level preview is disabled.
 	for _, c := range pe.Status.Conditions {
-		if c.Status == metav1.ConditionFalse || c.Reason == "PreviewDisabledOnProject" {
+		if c.Status == metav1.ConditionFalse || c.Reason == "PreviewDisabled" {
 			t.Logf("found expected condition: type=%s reason=%s message=%s", c.Type, c.Reason, c.Message)
 			return
 		}

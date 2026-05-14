@@ -193,12 +193,15 @@ sequenceDiagram
 - **Top half** = the build and deploy reaction to a push.
 - **Bottom line** = the steady-state user traffic (Traefik handles this
   independently of the operator: the operator is not in the request path).
-- **Preview PRs** follow the same shape, plus the operator creates a
-  `PreviewEnvironment` CR at PR-open and deletes it at PR-close.
-  The preview controller inherits configuration from the source
-  environment: per-app env vars from the `{app}-env` Secret, shared
-  vars from `shared-env`, and live-resolved bindings. Explicit
-  `pe.Spec.Env` overrides win over inherited values.
+- **Preview PRs** follow the same shape. At PR-open the operator
+  creates one `PreviewEnvironment` CR (thin coordinator with PR
+  metadata) and adds a `pr-{number}` environment to the Project via
+  `cloneEnvironment`, which copies per-app env overrides and env
+  Secrets from the source environment. The App controller handles
+  all deployment through its normal `resolveEnvs()` fan-out — the
+  PE controller never creates Deployments, Services, or Ingresses.
+  PR close → PE deleted, environment removed, namespace
+  garbage-collected.
 - **External CI** skips everything down to "patch Deployment": the deploy
   webhook jumps straight there, providing a pre-built image digest.
 
@@ -381,7 +384,7 @@ when reading the code or debugging a specific interaction.
 | Operator | AuthProvider | `AuthProvider` iface | Platform auth (UI/API login) |
 | Operator | PolicyEngine | `PolicyEngine` iface | Who can do what on which App |
 | REST API (clone) | Operator | HTTPS | Clone an environment: copies CRD overrides + Secret-level env vars (excluding binding-sourced) to a new env for every App in the project |
-| Preview controller | Source env namespace | envstore read | Inherit per-app and shared env vars from source env into preview namespace; `pe.Spec.Env` overrides win |
+| Preview controller | Project CRD + source env namespace | `cloneEnvironment` | Add `pr-{number}` env to Project, clone per-app overrides + env Secrets from source env; App controller handles deployment via normal fan-out |
 
 ---
 

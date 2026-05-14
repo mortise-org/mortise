@@ -401,18 +401,6 @@ func (r *BuildRunReconciler) projectTerminalBuildRunStatus(ctx context.Context, 
 			projectAppBuildRunStatus(&app, br.Spec.Environment, br)
 			return r.Status().Update(ctx, &app)
 		})
-	case mortisev1alpha1.BuildRunTargetPreviewEnvironment:
-		return retry.RetryOnConflict(retry.DefaultRetry, func() error {
-			var pe mortisev1alpha1.PreviewEnvironment
-			if err := r.Get(ctx, types.NamespacedName{Name: br.Spec.TargetRef.Name, Namespace: br.Namespace}, &pe); err != nil {
-				if errors.IsNotFound(err) {
-					return nil
-				}
-				return err
-			}
-			projectPreviewBuildRunStatus(&pe, br)
-			return r.Status().Update(ctx, &pe)
-		})
 	default:
 		return nil
 	}

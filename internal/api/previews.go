@@ -10,16 +10,14 @@ import (
 )
 
 type previewSummaryResponse struct {
-	Name   string `json:"name"`
-	AppRef string `json:"appRef"`
-	PR     struct {
+	Name string `json:"name"`
+	PR   struct {
 		Number int    `json:"number"`
 		Branch string `json:"branch"`
 		SHA    string `json:"sha"`
 	} `json:"pr"`
-	Phase     string `json:"phase,omitempty"`
-	URL       string `json:"url,omitempty"`
-	ExpiresAt string `json:"expiresAt,omitempty"`
+	Phase           string `json:"phase,omitempty"`
+	EnvironmentName string `json:"environmentName,omitempty"`
 }
 
 // ListPreviews returns preview environment summaries for a project.
@@ -60,15 +58,11 @@ func (s *Server) ListPreviews(w http.ResponseWriter, r *http.Request) {
 		}
 		var item previewSummaryResponse
 		item.Name = pe.Name
-		item.AppRef = pe.Spec.AppRef
 		item.PR.Number = pe.Spec.PullRequest.Number
 		item.PR.Branch = pe.Spec.PullRequest.Branch
 		item.PR.SHA = pe.Spec.PullRequest.SHA
 		item.Phase = string(pe.Status.Phase)
-		item.URL = pe.Status.URL
-		if pe.Status.ExpiresAt != nil {
-			item.ExpiresAt = pe.Status.ExpiresAt.UTC().Format("2006-01-02T15:04:05Z")
-		}
+		item.EnvironmentName = pe.Status.EnvironmentName
 		resp = append(resp, item)
 	}
 

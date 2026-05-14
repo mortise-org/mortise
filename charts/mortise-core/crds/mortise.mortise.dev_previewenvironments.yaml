@@ -15,17 +15,14 @@ spec:
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .spec.appRef
-      name: App
-      type: string
     - jsonPath: .spec.pullRequest.number
       name: PR
       type: integer
     - jsonPath: .status.phase
       name: Phase
       type: string
-    - jsonPath: .status.url
-      name: URL
+    - jsonPath: .status.environmentName
+      name: Environment
       type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
@@ -56,47 +53,9 @@ spec:
           spec:
             description: spec defines the desired state of PreviewEnvironment
             properties:
-              appRef:
-                description: AppRef is the name of the parent App this previews (same
-                  namespace).
+              projectRef:
+                description: ProjectRef is the name of the parent Project (cluster-scoped).
                 type: string
-              bindings:
-                description: Bindings inherited from the staging environment.
-                items:
-                  properties:
-                    ref:
-                      description: Ref is the name of the bound App within the same
-                        project.
-                      type: string
-                  required:
-                  - ref
-                  type: object
-                type: array
-              domain:
-                description: Domain for this preview (resolved from App.spec.preview.domain
-                  template).
-                type: string
-              env:
-                description: Env vars for the preview Deployment. Inherited from staging,
-                  overridable.
-                items:
-                  properties:
-                    name:
-                      description: Name is the environment variable name.
-                      maxLength: 253
-                      pattern: ^[a-zA-Z_][a-zA-Z0-9_]*$
-                      type: string
-                    value:
-                      type: string
-                    valueFrom:
-                      properties:
-                        secretRef:
-                          type: string
-                      type: object
-                  required:
-                  - name
-                  type: object
-                type: array
               pullRequest:
                 description: PullRequest identifies the PR that triggered this preview.
                 properties:
@@ -111,33 +70,11 @@ spec:
                 - number
                 - sha
                 type: object
-              replicas:
-                description: Replicas for the preview Deployment. Inherited from staging,
-                  overridable.
-                format: int32
-                type: integer
-              resources:
-                description: Resources for the preview Deployment. Inherited from
-                  staging, overridable.
-                properties:
-                  cpu:
-                    type: string
-                  memory:
-                    type: string
-                type: object
               sourceEnv:
-                description: |-
-                  SourceEnv is the project environment name the preview was forked from
-                  (typically `staging`). Bindings declared in the preview resolve against
-                  this env's namespace, so previews share the backing services of their
-                  source env rather than spinning up their own.
-                type: string
-              ttl:
-                description: TTL after which the preview is auto-deleted if the PR
-                  is still open.
+                description: SourceEnv is the project environment name to clone from.
                 type: string
             required:
-            - appRef
+            - projectRef
             - pullRequest
             - sourceEnv
             type: object
@@ -203,68 +140,16 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
-              currentBuildRunName:
-                description: CurrentBuildRunName is the active durable build execution
-                  for this preview.
+              environmentName:
+                description: EnvironmentName is the name of the created ProjectEnvironment
+                  (e.g. "pr-42").
                 type: string
-              currentBuildRunRef:
-                description: CurrentBuildRunRef points at the currently selected BuildRun
-                  for this preview.
-                properties:
-                  name:
-                    type: string
-                  phase:
-                    description: BuildRunPhase is the durable lifecycle state of a
-                      git build execution.
-                    enum:
-                    - Pending
-                    - Running
-                    - Succeeded
-                    - Failed
-                    type: string
-                required:
-                - name
-                type: object
-              expiresAt:
-                description: ExpiresAt is when this preview will be auto-deleted.
-                format: date-time
-                type: string
-              image:
-                description: Image is the built container image reference.
-                type: string
-              lastBuildRunName:
-                description: LastBuildRunName is the most recent terminal durable
-                  build execution.
-                type: string
-              lastSuccessfulBuildRunRef:
-                description: LastSuccessfulBuildRunRef points at the most recent successful
-                  BuildRun.
-                properties:
-                  name:
-                    type: string
-                  phase:
-                    description: BuildRunPhase is the durable lifecycle state of a
-                      git build execution.
-                    enum:
-                    - Pending
-                    - Running
-                    - Succeeded
-                    - Failed
-                    type: string
-                required:
-                - name
-                type: object
               phase:
                 description: Phase is the current lifecycle phase.
                 enum:
                 - Pending
-                - Building
                 - Ready
                 - Failed
-                - Expired
-                type: string
-              url:
-                description: URL is the HTTPS endpoint for the preview.
                 type: string
             type: object
         required:

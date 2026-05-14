@@ -271,6 +271,15 @@ Code that works but confuses future readers is a maintenance liability.
 - [ ] No hardcoded secrets, passwords, or API keys anywhere in code,
       charts, or test fixtures
 
+## 14. Documentation
+
+- [ ] `CHANGELOG.md` updated if the PR introduces user-facing changes
+      (new features, behavior changes, bug fixes, deprecations, breaking
+      changes) — add an entry under the appropriate `[Unreleased]` heading
+- [ ] `docs/migration-v1.md` updated if the PR introduces breaking
+      changes, CRD schema changes, renamed fields, removed features, or
+      anything that requires action from operators upgrading Mortise
+
 ---
 
 ## Red Flags

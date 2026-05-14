@@ -363,9 +363,8 @@ func (s *Server) DeleteProject(w http.ResponseWriter, r *http.Request) {
 }
 
 type updateProjectPreview struct {
-	Enabled        *bool   `json:"enabled,omitempty"`
-	DomainTemplate *string `json:"domainTemplate,omitempty"`
-	TTL            *string `json:"ttl,omitempty"`
+	Enabled           *bool  `json:"enabled,omitempty"`
+	SourceEnvironment string `json:"sourceEnvironment,omitempty"`
 }
 
 type updateProjectRequest struct {
@@ -418,11 +417,8 @@ func (s *Server) UpdateProject(w http.ResponseWriter, r *http.Request) {
 		if req.Preview.Enabled != nil {
 			project.Spec.Preview.Enabled = *req.Preview.Enabled
 		}
-		if req.Preview.DomainTemplate != nil {
-			project.Spec.Preview.Domain = *req.Preview.DomainTemplate
-		}
-		if req.Preview.TTL != nil {
-			project.Spec.Preview.TTL = *req.Preview.TTL
+		if req.Preview.SourceEnvironment != "" {
+			project.Spec.Preview.SourceEnvironment = req.Preview.SourceEnvironment
 		}
 	}
 
