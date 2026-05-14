@@ -4,8 +4,8 @@
   import { goto } from '$app/navigation';
   import { api } from '$lib/api';
   import { store } from '$lib/store.svelte';
-  import type { Project, ProjectMember, ProjectEnvironment, App, EnvHealth } from '$lib/types';
-  import { Plus, Trash2, Check, ArrowUp, ArrowDown, Copy, AlertTriangle } from 'lucide-svelte';
+  import type { Project, ProjectMember, ProjectEnvironment, App, EnvHealth, PreviewSummary } from '$lib/types';
+  import { Plus, Trash2, Check, ArrowUp, ArrowDown, Copy, AlertTriangle, GitBranch } from 'lucide-svelte';
 
   const projectName = $derived(page.params.project ?? '');
   let project = $state<Project | null>(null);
@@ -20,8 +20,7 @@
 
   // --- PR Environments ---
   let prEnabled = $state(false);
-  let prDomainTemplate = $state('');
-  let prTtl = $state('72h');
+  let prSourceEnv = $state('');
   let savingPR = $state(false);
 
   // --- Environments ---
@@ -38,6 +37,9 @@
   let cloneSource = $state('');
   let cloneName = $state('');
   let cloningEnv = $state(false);
+
+  // --- PR Environments list ---
+  let previews = $state<PreviewSummary[]>([]);
 
   const DNS_LABEL = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/;
 
@@ -194,13 +196,13 @@
       const [proj] = await Promise.all([
         api.getProject(projectName),
         store.loadProjectRole(projectName),
+        loadEnvs(),
       ]);
       project = proj;
       editDesc = project.description ?? '';
       if (project.preview) {
         prEnabled = project.preview.enabled;
-        prDomainTemplate = project.preview.domain ?? '';
-        prTtl = project.preview.ttl || '72h';
+        prSourceEnv = project.preview.sourceEnvironment ?? '';
       }
     } catch {
       // ignore
@@ -238,8 +240,11 @@
   async function switchTab(tab: typeof activeTab) {
     activeTab = tab;
     if (tab === 'environments' && envs.length === 0 && !loadingEnvs) await loadEnvs();
+    if (tab === 'environments') {
+      api.listPreviewEnvironments(projectName).then(p => { previews = p; }).catch(() => {});
+    }
     if (tab === 'members' && members.length === 0 && !loadingMembers) await loadMembers();
-if (tab === 'danger' && projectApps.length === 0 && !loadingApps) await loadAppsForDanger();
+    if (tab === 'danger' && projectApps.length === 0 && !loadingApps) await loadAppsForDanger();
   }
 
   async function saveGeneral() {
@@ -261,7 +266,7 @@ if (tab === 'danger' && projectApps.length === 0 && !loadingApps) await loadApps
   async function savePR() {
     savingPR = true;
     try {
-      await api.setProjectPreview(projectName, prEnabled, prDomainTemplate || undefined, prTtl || undefined);
+      await api.setProjectPreview(projectName, prEnabled, prSourceEnv || undefined);
     } catch {
       // ignore
     } finally {
@@ -399,20 +404,15 @@ if (tab === 'danger' && projectApps.length === 0 && !loadingApps) await loadApps
           </div>
           <div class="mt-3 space-y-3">
             <div>
-              <label class={labelCls} for="pr-domain">Domain template</label>
-              <input id="pr-domain" type="text" bind:value={prDomainTemplate}
-                placeholder={'{app}-{project}-pr-{number}.example.com'} class={inputCls} />
-              <p class="mt-1 text-xs text-gray-500">Tokens: {'{app}'}, {'{project}'}, {'{number}'}. Leave blank for platform default.</p>
-            </div>
-            <div>
-              <label class={labelCls} for="pr-ttl">TTL after PR close</label>
-              <select id="pr-ttl" bind:value={prTtl}
+              <label class={labelCls} for="pr-source-env">Source environment</label>
+              <select id="pr-source-env" bind:value={prSourceEnv}
                 class="w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-white outline-none focus:border-accent">
-                <option value="1h">1 hour</option>
-                <option value="24h">24 hours</option>
-                <option value="72h">3 days</option>
-                <option value="168h">1 week</option>
+                <option value="">Auto (prefers staging)</option>
+                {#each envs.filter(e => !e.restricted) as env}
+                  <option value={env.name}>{env.name}</option>
+                {/each}
               </select>
+              <p class="mt-1 text-xs text-gray-500">The environment to clone when creating PR environments. Leave as Auto to prefer staging.</p>
             </div>
             <button type="button" onclick={savePR} disabled={savingPR} class={btnPrimary}>
               {savingPR ? 'Saving…' : 'Save PR config'}
@@ -530,11 +530,34 @@ if (tab === 'danger' && projectApps.length === 0 && !loadingApps) await loadApps
           </div>
         {/if}
 
-        <div class="mt-6 rounded-md border border-surface-600 bg-surface-800/50 p-4">
-          <p class="text-sm font-medium text-white">PR Environments</p>
-          <p class="mt-1 text-xs text-gray-500">Preview environments for pull requests are configured in <button type="button" onclick={() => switchTab('general')} class="text-accent hover:underline">General settings</button>.</p>
-          <a href="/projects/{projectName}/previews" class="mt-2 inline-block text-xs text-accent hover:underline">View active PR environments →</a>
-        </div>
+        {#if previews.length > 0}
+          <div class="mt-6">
+            <h3 class="mb-2 text-sm font-medium text-white">PR Environments</h3>
+            <div class="space-y-2">
+              {#each previews as pe}
+                <div class="flex items-center justify-between rounded-md border border-surface-600 bg-surface-800 px-4 py-3">
+                  <div class="flex items-center gap-3">
+                    <GitBranch class="h-4 w-4 text-gray-400" />
+                    <div>
+                      <p class="text-sm font-medium text-white">PR #{pe.pr.number} · {pe.pr.branch}</p>
+                      {#if pe.environmentName}
+                        <p class="text-xs text-gray-500">{pe.environmentName}</p>
+                      {/if}
+                    </div>
+                  </div>
+                  <span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium {pe.phase === 'Ready' ? 'bg-success/10 text-success' : pe.phase === 'Failed' ? 'bg-danger/10 text-danger' : 'bg-info/10 text-info'}">
+                    {pe.phase}
+                  </span>
+                </div>
+              {/each}
+            </div>
+          </div>
+        {:else}
+          <div class="mt-6 rounded-md border border-surface-600 bg-surface-800/50 p-4">
+            <p class="text-sm font-medium text-white">PR Environments</p>
+            <p class="mt-1 text-xs text-gray-500">Preview environments for pull requests are configured in <button type="button" onclick={() => switchTab('general')} class="text-accent hover:underline">General settings</button>.</p>
+          </div>
+        {/if}
       </div>
 
       {#if envDeleteTarget}

@@ -334,13 +334,23 @@ If the target environment already exists on the project, the API returns
 ### Preview environments
 
 When preview environments are enabled on a project (Project Settings >
-Preview), opening a pull request creates an ephemeral environment for
-every app in the project. The preview environment inherits configuration
-from its source environment:
+Preview), opening a pull request creates a `pr-{number}` clone
+environment on the project. The clone copies configuration from the
+source environment (defaults to "staging"):
 
 - **Per-app env vars** from the source env's Secret
 - **Shared env vars** from the source env's `shared-env` Secret
-- **Bindings** are live-resolved against the source environment
+- **Per-app overrides** (replicas, resources, bindings, probes) cloned from the source env
+- **Branch override** set to the PR branch for each git-source app
 
-Preview-specific overrides (`pe.Spec.Env`) win over inherited values.
-When the PR closes or the TTL expires, all preview resources are deleted.
+Every app in the project fans out into the preview environment through
+the normal deployment path — previews are real environments, not a
+separate system. You can edit env vars, replicas, and other settings on
+a preview environment the same way you would any other environment;
+edits are preserved across rebuilds.
+
+When the PR closes, the preview environment and its namespace are
+deleted. There is no TTL — previews exist until the PR is closed.
+
+To configure which environment previews clone from, set the source
+environment in Project Settings > Preview.

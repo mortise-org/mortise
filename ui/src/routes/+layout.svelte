@@ -77,7 +77,7 @@
 
 	const activePreviews = $derived.by<PreviewSummary[]>(() => {
 		if (!activeProject) return [];
-		return (store.previewEnvs[activeProject] ?? []).filter((p) => p.phase !== 'Expired');
+		return store.previewEnvs[activeProject] ?? [];
 	});
 
 	function dotClass(h: EnvHealth | undefined): string {
@@ -180,8 +180,12 @@
 
 	function openPreview(preview: PreviewSummary) {
 		envSwitcherOpen = false;
-		if (!preview.url) return;
-		window.open(preview.url, '_blank', 'noopener,noreferrer');
+		const envName = preview.environmentName || preview.name;
+		if (!activeProject) return;
+		const url = new URL(page.url);
+		url.pathname = `/projects/${encodeURIComponent(activeProject)}`;
+		url.searchParams.set('env', envName);
+		window.open(url.toString(), '_blank', 'noopener,noreferrer');
 	}
 
 	function logout() {
@@ -303,6 +307,7 @@
 									{/each}
 									{#if activePreviews.length > 0}
 										<div class="border-t border-surface-600 my-1"></div>
+										<div class="px-3 py-1 text-[10px] font-semibold uppercase tracking-wider text-gray-500">PR Environments</div>
 										{#each activePreviews as preview}
 											<button
 												type="button"
@@ -310,7 +315,7 @@
 												class="flex w-full items-center gap-2 px-3 py-2 text-sm text-gray-300 hover:bg-surface-700 hover:text-white"
 											>
 												<span class="inline-flex items-center rounded px-1 py-0.5 text-[10px] font-semibold leading-none bg-purple-500/20 text-purple-400">PR</span>
-												<span class="min-w-0 flex-1 truncate">#{preview.pr.number} &middot; {preview.appRef}</span>
+												<span class="min-w-0 flex-1 truncate">#{preview.pr.number} &middot; {preview.pr.branch}</span>
 												<ExternalLink class="h-3.5 w-3.5 shrink-0 text-gray-500" />
 											</button>
 										{/each}

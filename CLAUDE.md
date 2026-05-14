@@ -334,7 +334,8 @@ spec:
       bindings:
         - ref: my-db
         - ref: shared-cache
-  preview: { ... }           # PR-driven preview config (git source only)
+  # PR environments are configured on the parent Project (spec.preview),
+  # not on the App. There is no spec.preview on an App.
 ```
 
 ```yaml

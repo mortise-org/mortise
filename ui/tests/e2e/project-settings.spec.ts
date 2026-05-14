@@ -16,7 +16,7 @@ import {
 // Tests cover:
 //   - Viewing the project settings page structure (General section)
 //   - Updating the project description via Save changes
-//   - PR Environments section visibility and toggle
+//   - PR Environments section visibility, toggle, and source env selector
 //   - Danger Zone tab (delete button disabled state)
 //   - Tab navigation switching visible content panes
 // ---------------------------------------------------------------------------
@@ -108,6 +108,37 @@ test.describe('project settings', () => {
 		// The toggle switch for PR environments.
 		const prToggle = page.getByRole('switch', { name: 'Toggle PR environments' });
 		await expect(prToggle).toBeVisible();
+	});
+
+	test('project admin can enable PR environments and configure source env', async ({ page }) => {
+		await injectToken(page, adminToken);
+		await page.goto(`/projects/${projectName}/settings`);
+		await expect(page.getByRole('button', { name: 'General' })).toBeVisible({
+			timeout: 10_000
+		});
+
+		// Enable PR environments.
+		const prToggle = page.getByRole('switch', { name: 'Toggle PR environments' });
+		await prToggle.click();
+
+		// Source environment select should be visible.
+		const sourceEnvSelect = page.locator('#pr-source-env');
+		await expect(sourceEnvSelect).toBeVisible();
+		await expect(sourceEnvSelect).toHaveValue('');
+
+		// Save PR config.
+		await page.getByRole('button', { name: 'Save PR config', exact: true }).click();
+		await expect(page.getByRole('button', { name: 'Save PR config', exact: true })).toBeVisible({
+			timeout: 5_000
+		});
+
+		// Reload and verify toggle state persisted.
+		await page.reload();
+		await expect(page.getByRole('button', { name: 'General' })).toBeVisible({
+			timeout: 10_000
+		});
+		const toggleAfterReload = page.getByRole('switch', { name: 'Toggle PR environments' });
+		await expect(toggleAfterReload).toHaveAttribute('aria-checked', 'true');
 	});
 
 	test('project admin sees Danger Zone with delete section', async ({ page }) => {

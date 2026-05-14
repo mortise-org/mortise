@@ -170,16 +170,13 @@ spec:
   autoRedeploy: true
 
   # PR Environments are a project-level toggle (not per-App). When
-  # enabled, every git-source App in the project gets a preview per PR.
-  # See §5.8 for scope semantics; cron and non-public Apps still
-  # reconcile into the preview namespace so bindings resolve, but they
-  # don't get a public URL.
+  # enabled, PR open creates a `pr-{number}` clone environment on the
+  # project. Every App fans out into it via normal env resolution.
+  # See §5.8 for scope semantics.
   preview:
     enabled: true
-    domain: "{app}-{project}-pr-{number}.yourdomain.com"  # `{app}`, `{project}`, `{number}` render per-App
-    ttl: 72h
-    resources: { cpu: 250m, memory: 256Mi }     # preview default; apps can't override
-    botPR: false                                 # opt-in: preview bots' PRs (dependabot etc.)
+    sourceEnvironment: staging       # env to clone from; defaults to "staging" or first non-production env
+    botPR: true                      # whether bot PRs (dependabot etc.) spawn previews
 
   # v2+: team, quota, default-domain-suffix, retention policy
 status:
@@ -606,9 +603,10 @@ by default.
 **Monorepo fan-out:** one webhook per push; operator iterates every App whose
 `source.repo` matches, compares changed paths against each App's `watchPaths`
 prefixes, rebuilds only matching Apps. UI groups builds by commit ("3 of 12
-apps rebuilding from commit abc123"). Previews follow the same rule: PR
-touching `services/api/` creates a preview for the `api` App only; PR touching
-`shared/` creates previews for every App that watches `shared/`.
+apps rebuilding from commit abc123"). Previews follow the same rule: one
+`PreviewEnvironment` CR is created per PR (project-scoped), but only Apps
+whose `watchPaths` match the PR's changed files rebuild; every App in the
+project still fans out into the `pr-{number}` environment.
 
 **On push:**
 - Build logs stream to UI via SSE in real-time
@@ -870,24 +868,33 @@ cluster's default SC). For v1:
   in the new namespace. If the target environment already exists on the
   project, the API returns `409 Conflict`.
 - **Preview environments (project-level toggle, §5.0 `spec.preview.enabled`).**
-  When enabled on the parent Project, PR opens → operator creates one
-  `PreviewEnvironment` per App in the project. The preview controller
-  inherits the source environment's configuration:
-  - Per-app env vars from the source env's `{app}-env` Secret
-  - Shared env vars from the source env's `shared-env` Secret
-  - Bindings live-resolved against the source environment
-  - `pe.Spec.Env` overrides win over all inherited values
-  DNS + TLS handled automatically. PR closes or TTL expires →
-  everything deleted. URL posted as PR comment.
+  Preview environments are project-scoped, not per-App. When enabled
+  on the parent Project, PR open → operator creates one
+  `PreviewEnvironment` CR (thin coordinator with PR metadata:
+  number, branch, SHA) and adds a `pr-{number}` environment to the
+  Project's environment list via `cloneEnvironment`. This clones
+  per-app env overrides and env Secrets from the source environment.
+  Each git-source App's `pr-{number}` env entry gets a `branch`
+  override pointing at the PR branch. The App controller handles
+  all deployment through its normal `resolveEnvs()` fan-out — the
+  PE controller never creates Deployments, Services, or Ingresses.
+  DNS + TLS handled automatically. PR close → PE deleted, `pr-{number}`
+  environment removed, namespace garbage-collected. No TTL: previews
+  exist until the PR is closed. URL posted as PR comment.
 
-  **Scope semantics (option a).** *Every* App in the project reconciles
-  into the preview namespace: including `kind: cron` Apps and Apps
-  with `network.public: false`. They just don't get a public URL
-  (nothing to route to). This keeps bindings coherent: a preview API
-  can reach its preview DB and preview worker's cache without manual
-  stitching. Users whose crons hit external systems and shouldn't
-  run per-PR should split them into a sibling project with previews
-  off. A per-App opt-out may be added in v2 as a visible UI toggle.
+  **Scope semantics.** *Every* App in the project fans out into the
+  `pr-{number}` environment (it's a real project environment). Cron
+  Apps and Apps with `network.public: false` deploy but don't get a
+  public URL (nothing to route to). This keeps bindings coherent: a
+  preview API can reach its preview DB and preview worker's cache
+  without manual stitching. Users whose crons hit external systems
+  and shouldn't run per-PR should split them into a sibling project
+  with previews off. A per-App opt-out may be added in v2 as a
+  visible UI toggle.
+
+  **Orphan safety.** The PE controller periodically syncs against
+  open PRs via the GitAPI interface; any PE whose PR is no longer
+  open is cleaned up.
 
 ### 5.8a Cron Apps
 
@@ -913,11 +920,11 @@ Constraints:
 - `network.public` is ignored; no Ingress, no domain, no TLS.
 - `replicas` is ignored (CronJobs don't replicate; concurrency is controlled by `concurrencyPolicy`).
 - **Preview environments include cron Apps.** When the parent project
-  has `spec.preview.enabled: true`, cron Apps reconcile into each
-  preview namespace alongside every other App: they just don't get a
-  public URL. They *do* run per their schedule, which means real
-  side-effects if the cron hits external systems. Users with
-  heavy or side-effecting crons should split them into a sibling
+  has `spec.preview.enabled: true`, cron Apps fan out into each
+  `pr-{number}` environment alongside every other App: they just
+  don't get a public URL. They *do* run per their schedule, which
+  means real side-effects if the cron hits external systems. Users
+  with heavy or side-effecting crons should split them into a sibling
   project with previews off. A per-App preview exclusion toggle may
   arrive in v2.
 - Logs and run history are surfaced in the UI the same way as Deployment
@@ -1418,7 +1425,7 @@ successful login.
 |---|---|---|
 | `Project` | Cluster | Top-level grouping; owns a k8s namespace |
 | `App` | Namespaced | Deploy anything (git or image in v1); lives in a Project's namespace |
-| `PreviewEnvironment` | Namespaced | Ephemeral PR environments (auto-managed) |
+| `PreviewEnvironment` | Namespaced | Thin PR coordinator (one per PR, project-scoped; auto-managed) |
 | `PlatformConfig` | Cluster | Platform settings (domain, externalDomain, default SC) |
 | `GitProvider` | Cluster | One per configured git provider |
 | `ProjectMember` | Namespaced | Binds a user to a project with owner/developer/viewer role |
@@ -1950,20 +1957,25 @@ touching only one subdir rebuilds only that App.
 
 - **Project-level toggle**: `ProjectSpec.Preview.Enabled`. No per-App
   opt-in. When enabled, every App in the project participates (§5.8).
-- `PreviewEnvironment` CRD auto-managed by a dedicated controller
-- PR open → for each App in the project with previews enabled,
-  inherit source env config: per-app env vars from the `{app}-env`
-  Secret, shared vars from `shared-env`, binding refs live-resolved
-  in the preview namespace; `pe.Spec.Env` overrides win over
-  inherited values; DNS + TLS handled by existing
-  ExternalDNS/cert-manager plumbing
-- Cron and non-public Apps reconcile into the preview namespace but get
+- `PreviewEnvironment` CRD is a thin coordinator: PR metadata
+  (number, branch, SHA), `projectRef`, `sourceEnv`. No replicas,
+  resources, env, bindings, domain, ttl, or image fields.
+- PR open → PE controller creates one PE per PR (project-scoped),
+  adds `pr-{number}` to `Project.Spec.Environments` via
+  `cloneEnvironment` (copies per-app env overrides and env Secrets
+  from the source environment), sets `branch` override on each
+  git-source App's preview env entry
+- App controller handles all deployment via existing `resolveEnvs()`
+  fan-out — PE controller never creates Deployments/Services/Ingresses
+- Cron and non-public Apps fan out into the `pr-{number}` env but get
   no public URL (§5.8a, §5.8 scope semantics)
-- Bindings live-resolved within the preview namespace (no credential copy)
+- Bindings resolved by the App controller in the preview namespace
 - PR comment with preview URL(s); monorepo fan-out respected (only Apps
   whose `watchPaths` match the PR's changed files rebuild; every App in
-  the project still reconciles into the preview namespace)
-- PR close → delete; TTL fallback (72h default)
+  the project still fans out into the `pr-{number}` environment)
+- PR close → PE deleted, `pr-{number}` environment removed from project,
+  namespace garbage-collected. No TTL: previews exist until PR closes.
+- Orphan safety: PE controller periodically syncs against open PRs
 
 **Exit criteria:** open a PR on a project with `spec.preview.enabled: true`,
 get a live preview URL in the PR comment, close the PR, preview
