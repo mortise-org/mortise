@@ -206,6 +206,7 @@ export interface ProjectEnvironment {
 	displayOrder: number;
 	health?: EnvHealth;
 	restricted?: boolean;
+	preview?: boolean;
 }
 
 // Canvas edge for GET /api/projects/{p}/bindings?environment=X.

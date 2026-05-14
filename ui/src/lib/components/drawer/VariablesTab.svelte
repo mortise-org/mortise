@@ -98,6 +98,10 @@
 		if (env === lastLoadedEnv && appName === lastLoadedApp) return;
 		lastLoadedEnv = env;
 		lastLoadedApp = appName;
+		// Reset sections so stale data from the previous env doesn't linger.
+		envSection = makeSection();
+		sharedSection = makeSection();
+		buildSection = makeSection();
 		void loadEnv(env);
 		void loadShared();
 		void loadBuildArgs();

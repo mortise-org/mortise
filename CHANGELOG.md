@@ -29,6 +29,23 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Normalized project not-found errors**: all project lookup API paths now
   return a consistent `project "name" not found` message (404 JSON) instead of
   leaking raw Kubernetes API error strings.
+- **Preview envs duplicate in env switcher** (#374): preview environments
+  created via PR webhooks appeared twice in the environment switcher (once as
+  a normal env, once as a PR env). The `ProjectEnvironment` type now carries a
+  `preview` boolean so the UI can filter them from the standard env list.
+- **Env deletion blocked by app overrides** (#375): deleting a project
+  environment that had app-level overrides returned a 409 error. The API now
+  auto-strips overrides from all apps referencing the deleted environment and
+  proceeds with deletion.
+- **Drawer tabs show stale data on env switch** (#376): switching environments
+  in the app drawer left the Variables and Metrics tabs showing data from the
+  previous environment. Both tabs now reset state and re-fetch when the active
+  environment changes.
+- **Preview envs don't converge on reconcile** (#373): preview environments
+  were only created in response to webhook events; missed webhooks left the
+  cluster out of sync with the forge. A new `PreviewConvergenceReconciler`
+  periodically polls for open PRs and creates/deletes `PreviewEnvironment` CRs
+  to match.
 
 ### Changed
 

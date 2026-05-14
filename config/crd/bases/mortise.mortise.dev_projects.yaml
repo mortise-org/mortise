@@ -97,6 +97,11 @@ spec:
                       maxLength: 63
                       pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
                       type: string
+                    preview:
+                      description: |-
+                        Preview marks this environment as a preview (PR) environment. Set by the
+                        preview environment controller; filtered from the normal env list in the UI.
+                      type: boolean
                     restricted:
                       description: |-
                         Restricted, when true, limits Developers to read-only in this

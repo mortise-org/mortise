@@ -443,11 +443,19 @@ func main() {
 		setupLog.Error(err, "Failed to create controller", "controller", "GitProvider")
 		os.Exit(1)
 	}
-	if err := (&controller.PreviewEnvironmentReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-	}).SetupWithManager(mgr); err != nil {
+	peReconciler := &controller.PreviewEnvironmentReconciler{
+		Client:        mgr.GetClient(),
+		Scheme:        mgr.GetScheme(),
+		GitAPIFactory: git.NewGitAPIFromProvider,
+	}
+	if err := peReconciler.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "PreviewEnvironment")
+		os.Exit(1)
+	}
+	if err := (&controller.PreviewConvergenceReconciler{
+		PEReconciler: peReconciler,
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "Failed to create controller", "controller", "PreviewConvergence")
 		os.Exit(1)
 	}
 	// Admission webhooks — enforce cross-resource invariants (App env names

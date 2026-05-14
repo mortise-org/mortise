@@ -7,7 +7,7 @@
 	import { store } from '$lib/store.svelte';
 	import { currentProject } from '$lib/context.svelte';
 	// Lucide icons
-	import { Folder, Puzzle, Settings, LayoutDashboard, List, Bell, Activity, User, LogOut, ChevronDown, Users, Rocket, ExternalLink } from 'lucide-svelte';
+	import { Folder, Puzzle, Settings, LayoutDashboard, List, Bell, Activity, User, LogOut, ChevronDown, Users, Rocket } from 'lucide-svelte';
 	import ActivityRail from '$lib/components/ActivityRail.svelte';
 	import NotificationDropdown from '$lib/components/NotificationDropdown.svelte';
 	import type { EnvHealth, PreviewSummary } from '$lib/types';
@@ -55,8 +55,8 @@
 	const projectEnvs = $derived.by(() => {
 		if (!activeProject) return [] as typeof store.projectEnvs[string];
 		const cached = store.projectEnvs[activeProject];
-		if (cached && cached.length > 0) return cached;
-		return lastRenderedEnvs;
+		const source = (cached && cached.length > 0) ? cached : lastRenderedEnvs;
+		return source.filter((e) => !e.preview);
 	});
 	$effect(() => {
 		if (!activeProject) return;
@@ -78,6 +78,11 @@
 	const activePreviews = $derived.by<PreviewSummary[]>(() => {
 		if (!activeProject) return [];
 		return store.previewEnvs[activeProject] ?? [];
+	});
+
+	const currentPreview = $derived.by<PreviewSummary | null>(() => {
+		if (!currentEnv || activePreviews.length === 0) return null;
+		return activePreviews.find((p) => (p.environmentName || p.name) === currentEnv) ?? null;
 	});
 
 	function dotClass(h: EnvHealth | undefined): string {
@@ -182,10 +187,10 @@
 		envSwitcherOpen = false;
 		const envName = preview.environmentName || preview.name;
 		if (!activeProject) return;
+		store.setEnv(activeProject, envName);
 		const url = new URL(page.url);
-		url.pathname = `/projects/${encodeURIComponent(activeProject)}`;
 		url.searchParams.set('env', envName);
-		window.open(url.toString(), '_blank', 'noopener,noreferrer');
+		history.replaceState(history.state, '', url.toString());
 	}
 
 	function logout() {
@@ -283,8 +288,13 @@
 								onclick={() => (envSwitcherOpen = !envSwitcherOpen)}
 								class="flex items-center gap-1.5 rounded-md px-2 py-1 text-sm text-gray-400 hover:bg-surface-700 hover:text-white transition-colors"
 							>
-								<span class="h-2 w-2 rounded-full {dotClass(currentEnvHealth)}"></span>
-								<span>{currentEnv}</span>
+								{#if currentPreview}
+									<span class="inline-flex items-center rounded px-1 py-0.5 text-[10px] font-semibold leading-none bg-purple-500/20 text-purple-400">PR</span>
+									<span>#{currentPreview.pr.number} &middot; {currentPreview.pr.branch}</span>
+								{:else}
+									<span class="h-2 w-2 rounded-full {dotClass(currentEnvHealth)}"></span>
+									<span>{currentEnv}</span>
+								{/if}
 								<ChevronDown class="h-3.5 w-3.5 text-gray-500" />
 							</button>
 							{#if envSwitcherOpen}
@@ -309,14 +319,16 @@
 										<div class="border-t border-surface-600 my-1"></div>
 										<div class="px-3 py-1 text-[10px] font-semibold uppercase tracking-wider text-gray-500">PR Environments</div>
 										{#each activePreviews as preview}
+											{@const previewEnvName = preview.environmentName || preview.name}
 											<button
 												type="button"
 												onclick={() => openPreview(preview)}
-												class="flex w-full items-center gap-2 px-3 py-2 text-sm text-gray-300 hover:bg-surface-700 hover:text-white"
+												class="flex w-full items-center gap-2 px-3 py-2 text-sm {currentEnv === previewEnvName
+													? 'bg-surface-600 text-white'
+													: 'text-gray-300 hover:bg-surface-700 hover:text-white'}"
 											>
 												<span class="inline-flex items-center rounded px-1 py-0.5 text-[10px] font-semibold leading-none bg-purple-500/20 text-purple-400">PR</span>
 												<span class="min-w-0 flex-1 truncate">#{preview.pr.number} &middot; {preview.pr.branch}</span>
-												<ExternalLink class="h-3.5 w-3.5 shrink-0 text-gray-500" />
 											</button>
 										{/each}
 									{/if}

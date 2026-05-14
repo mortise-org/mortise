@@ -145,6 +145,8 @@
 	}
 
 	$effect(() => {
+		// Read env to re-trigger when the active environment changes.
+		void env;
 		setRange('live');
 		return () => { if (pollTimer) clearInterval(pollTimer); };
 	});
