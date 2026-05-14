@@ -1148,8 +1148,11 @@ func TestConvergeProjectPreviews_DeletesStale(t *testing.T) {
 		Data: map[string][]byte{"token": []byte("fake-token")},
 	}
 
+	// CreationTimestamp must be older than the convergence grace period so
+	// the stale-PE cleanup logic considers it eligible for deletion.
+	oldEnough := metav1.NewTime(time.Now().Add(-convergenceGracePeriod - time.Minute))
 	stalePE := &mortisev1alpha1.PreviewEnvironment{
-		ObjectMeta: metav1.ObjectMeta{Name: "preview-pr-5", Namespace: nsName},
+		ObjectMeta: metav1.ObjectMeta{Name: "preview-pr-5", Namespace: nsName, CreationTimestamp: oldEnough},
 		Spec: mortisev1alpha1.PreviewEnvironmentSpec{
 			ProjectRef:  projectName,
 			SourceEnv:   "staging",

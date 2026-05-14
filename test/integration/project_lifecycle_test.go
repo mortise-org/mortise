@@ -122,7 +122,7 @@ func TestProjectDeleteCascades(t *testing.T) {
 	}
 }
 
-func TestDeleteProjectEnvironmentRejectsReferencedOverrideViaAPI(t *testing.T) {
+func TestDeleteProjectEnvironmentStripsOverridesViaAPI(t *testing.T) {
 	t.Parallel()
 	projectName := "proj-env-del-" + randSuffix()
 	ns := createProjectForTest(t, projectName)
@@ -162,31 +162,30 @@ func TestDeleteProjectEnvironmentRejectsReferencedOverrideViaAPI(t *testing.T) {
 
 	deleteURL := fmt.Sprintf("%s/api/projects/%s/environments/staging", mortiseURL, projectName)
 	resp := doProjectLifecycleJSON(t, http.MethodDelete, deleteURL, token, nil)
-	if resp.StatusCode != http.StatusConflict {
-		t.Fatalf("delete env: expected 409, got %d: %s", resp.StatusCode, resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("delete env: expected 200, got %d: %s", resp.StatusCode, resp.Body)
 	}
 
+	// Verify the project no longer has "staging" in spec.environments.
 	var latestProject mortisev1alpha1.Project
 	if err := k8sClient.Get(context.Background(), types.NamespacedName{Name: projectName}, &latestProject); err != nil {
-		t.Fatalf("get project after delete attempt: %v", err)
+		t.Fatalf("get project after delete: %v", err)
 	}
-	if len(latestProject.Spec.Environments) != 2 {
-		t.Fatalf("expected project envs unchanged, got %+v", latestProject.Spec.Environments)
-	}
-
-	var latestApp mortisev1alpha1.App
-	if err := k8sClient.Get(context.Background(), types.NamespacedName{Namespace: ns, Name: app.Name}, &latestApp); err != nil {
-		t.Fatalf("get app after delete attempt: %v", err)
-	}
-	foundStaging := false
-	for _, env := range latestApp.Spec.Environments {
+	for _, env := range latestProject.Spec.Environments {
 		if env.Name == "staging" {
-			foundStaging = true
-			break
+			t.Fatalf("expected staging env to be removed from project, got %+v", latestProject.Spec.Environments)
 		}
 	}
-	if !foundStaging {
-		t.Fatalf("expected staging override to remain on app, got %+v", latestApp.Spec.Environments)
+
+	// Verify the app's "staging" override was stripped.
+	var latestApp mortisev1alpha1.App
+	if err := k8sClient.Get(context.Background(), types.NamespacedName{Namespace: ns, Name: app.Name}, &latestApp); err != nil {
+		t.Fatalf("get app after delete: %v", err)
+	}
+	for _, env := range latestApp.Spec.Environments {
+		if env.Name == "staging" {
+			t.Fatalf("expected staging override to be stripped from app, got %+v", latestApp.Spec.Environments)
+		}
 	}
 }
 

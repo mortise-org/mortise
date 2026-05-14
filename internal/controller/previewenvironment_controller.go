@@ -43,6 +43,12 @@ import (
 
 const previewFinalizer = "mortise.dev/preview-finalizer"
 
+// convergenceGracePeriod prevents deleting PEs that were just created by a
+// webhook or another controller. Without this, a convergence run that sees
+// no matching open PR (e.g. because the forge API hasn't propagated yet)
+// would race against the creator.
+const convergenceGracePeriod = 15 * time.Minute
+
 // PreviewEnvironmentReconciler coordinates preview environments as a thin layer:
 // it adds/removes a ProjectEnvironment entry on the parent Project and clones
 // per-app env overrides. The app controller handles all build/deploy work.
@@ -620,9 +626,14 @@ func (r *PreviewEnvironmentReconciler) ConvergeProjectPreviews(ctx context.Conte
 		}
 	}
 
-	// Delete PE CRs for PRs that are no longer open.
+	// Delete PE CRs for PRs that are no longer open. Skip recently-created
+	// PEs to avoid racing with webhooks or in-flight reconciles.
 	for peName, pe := range existingByPR {
 		if openPEs[peName] {
+			continue
+		}
+		if r.clock().Since(pe.CreationTimestamp.Time) < convergenceGracePeriod {
+			log.Info("convergence: skipping recent PE", "project", project.Name, "pe", peName, "age", r.clock().Since(pe.CreationTimestamp.Time))
 			continue
 		}
 		if err := r.Delete(ctx, pe); err != nil {
