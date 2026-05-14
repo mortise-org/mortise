@@ -147,6 +147,32 @@ webhook events. This is self-healing but means:
   during reconciliation. Ensure your git provider token has read access
   to pull requests.
 
+**Preview environment rework (post-1.0.1)**: Preview environments are
+now real clone environments (`pr-{number}`) managed through the app
+controller, replacing the per-app `previewsync` model. This changes the
+`PreviewEnvironment` CRD significantly:
+
+- **Removed spec fields**: `appRef`, `replicas`, `resources`, `env`,
+  `bindings`, `domain`, `ttl`. The spec now carries only `projectRef`,
+  `sourceEnv`, and `pullRequest` metadata.
+- **Removed status fields**: `url`, `image`, `currentBuildRunRef`,
+  `lastSuccessfulBuildRunRef`, `expiresAt`. Status now has only
+  `environmentName` and `conditions`.
+- **Phase enum reduced**: `Pending|Building|Ready|Failed|Expired` →
+  `Pending|Ready|Failed`.
+- **PreviewConfig changes**: `domain`, `ttl`, `resources` fields
+  removed; `sourceEnvironment` (optional string) added.
+
+Tooling that reads PreviewEnvironment resources must be updated. Existing
+PreviewEnvironment objects will be re-reconciled automatically on
+upgrade; no manual cleanup is needed.
+
+**App Degraded phase (post-1.0.1)**: The `AppPhase` enum now includes
+`Degraded`. This phase indicates a build failed but a previously-deployed
+image is still serving. Tooling or dashboards that switch on `AppPhase`
+must handle the new value — treat it as a warning state between `Ready`
+and `CrashLooping`.
+
 ### CLI changes
 
 **Confirmation prompts**: `mortise app delete` and `mortise secret delete`
