@@ -684,23 +684,7 @@ func (s *Server) cloneEnvToApp(ctx context.Context, ns, appName, sourceName, tar
 // getProject is like resolveProject but returns the full Project pointer so
 // callers can mutate and update the CRD.
 func (s *Server) getProject(w http.ResponseWriter, r *http.Request) (*mortisev1alpha1.Project, bool) {
-	projectName := chi.URLParam(r, "project")
-	if projectName == "" {
-		writeJSON(w, http.StatusBadRequest, errorResponse{"project is required"})
-		return nil, false
-	}
-
-	var project mortisev1alpha1.Project
-	err := s.client.Get(r.Context(), types.NamespacedName{Name: projectName}, &project)
-	if apierrors.IsNotFound(err) {
-		writeJSON(w, http.StatusNotFound, errorResponse{fmt.Sprintf("project %q not found", projectName)})
-		return nil, false
-	}
-	if err != nil {
-		writeError(w, r, err)
-		return nil, false
-	}
-	return &project, true
+	return s.lookupProject(w, r, chi.URLParam(r, "project"))
 }
 
 // projectNs returns the control namespace for the project's Apps.

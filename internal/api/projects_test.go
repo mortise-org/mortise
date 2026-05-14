@@ -345,6 +345,47 @@ func TestGetProjectNotFound(t *testing.T) {
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d: %s", w.Code, w.Body.String())
 	}
+	var resp map[string]string
+	_ = json.NewDecoder(w.Body).Decode(&resp)
+	if resp["error"] != `project "ghost" not found` {
+		t.Fatalf("expected exact normalized error, got %q", resp["error"])
+	}
+}
+
+func TestMissingProjectRoutesReturnNormalized404(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+
+	cases := []struct {
+		name   string
+		method string
+		path   string
+		body   any
+	}{
+		{name: "top-level patch", method: http.MethodPatch, path: "/api/projects/ghost", body: map[string]any{"description": "updated"}},
+		{name: "top-level delete", method: http.MethodDelete, path: "/api/projects/ghost"},
+		{name: "nested resolveProject", method: http.MethodGet, path: "/api/projects/ghost/apps/anything"},
+		{name: "nested getProject", method: http.MethodGet, path: "/api/projects/ghost/environments"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w := doRequest(h, tc.method, tc.path, tc.body)
+			if w.Code != http.StatusNotFound {
+				t.Fatalf("expected 404, got %d: %s", w.Code, w.Body.String())
+			}
+
+			var resp map[string]string
+			_ = json.NewDecoder(w.Body).Decode(&resp)
+			if resp["error"] != `project "ghost" not found` {
+				t.Fatalf("expected exact normalized error for %s %s, got %q", tc.method, tc.path, resp["error"])
+			}
+			if strings.Contains(resp["error"], "Project.mortise.mortise.dev") {
+				t.Fatalf("expected normalized project error for %s %s, got raw k8s string %q", tc.method, tc.path, resp["error"])
+			}
+		})
+	}
 }
 
 // TestDeleteProjectReturns202 verifies deleting a project returns 202 accepted
