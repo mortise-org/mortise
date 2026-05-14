@@ -133,7 +133,7 @@ export interface EnvironmentStatus {
 	certificateMessage?: string;
 }
 
-export type AppPhase = 'Pending' | 'Building' | 'Deploying' | 'Ready' | 'CrashLooping' | 'Failed';
+export type AppPhase = 'Pending' | 'Building' | 'Deploying' | 'Ready' | 'Degraded' | 'CrashLooping' | 'Failed';
 
 export interface Condition {
 	type: string;

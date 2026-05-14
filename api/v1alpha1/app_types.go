@@ -505,7 +505,7 @@ type EnvironmentStatus struct {
 }
 
 // AppPhase represents the overall lifecycle phase.
-// +kubebuilder:validation:Enum=Pending;Building;Deploying;Ready;CrashLooping;Failed
+// +kubebuilder:validation:Enum=Pending;Building;Deploying;Ready;Degraded;CrashLooping;Failed
 type AppPhase string
 
 const (
@@ -513,6 +513,7 @@ const (
 	AppPhaseBuilding     AppPhase = "Building"
 	AppPhaseDeploying    AppPhase = "Deploying"
 	AppPhaseReady        AppPhase = "Ready"
+	AppPhaseDegraded     AppPhase = "Degraded"
 	AppPhaseCrashLooping AppPhase = "CrashLooping"
 	AppPhaseFailed       AppPhase = "Failed"
 )

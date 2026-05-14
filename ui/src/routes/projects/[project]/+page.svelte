@@ -227,6 +227,7 @@
 		Ready: { dot: 'bg-success', text: 'text-success' },
 		Deploying: { dot: 'bg-warning animate-pulse', text: 'text-warning' },
 		Building: { dot: 'bg-warning animate-pulse', text: 'text-warning' },
+		Degraded: { dot: 'bg-warning', text: 'text-warning' },
 		CrashLooping: { dot: 'bg-danger animate-pulse', text: 'text-danger' },
 		Pending: { dot: 'bg-info', text: 'text-info' },
 		Failed: { dot: 'bg-danger', text: 'text-danger' }

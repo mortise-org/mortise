@@ -738,6 +738,7 @@ spec:
                       - Building
                       - Deploying
                       - Ready
+                      - Degraded
                       - CrashLooping
                       - Failed
                       type: string
@@ -769,6 +770,7 @@ spec:
                 - Building
                 - Deploying
                 - Ready
+                - Degraded
                 - CrashLooping
                 - Failed
                 type: string

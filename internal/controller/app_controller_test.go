@@ -187,6 +187,257 @@ func TestUpdateStatusRecomputesTopLevelBuildRunNamesFromTerminalEnvRef(t *testin
 	}
 }
 
+func TestUpdateStatusMarksDegradedWhenLatestBuildFailsButPreviousImageStillServes(t *testing.T) {
+	ctx := context.Background()
+	scheme := runtime.NewScheme()
+	if err := mortisev1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add mortise scheme: %v", err)
+	}
+	if err := appsv1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add apps scheme: %v", err)
+	}
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add core scheme: %v", err)
+	}
+
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "demo",
+			Namespace: "pj-default-project",
+		},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{
+				Type: mortisev1alpha1.SourceTypeImage,
+			},
+			Environments: []mortisev1alpha1.Environment{{Name: "production"}},
+		},
+		Status: mortisev1alpha1.AppStatus{
+			Conditions: []metav1.Condition{{
+				Type:    "BuildSucceeded",
+				Status:  metav1.ConditionFalse,
+				Reason:  "BuildFailed",
+				Message: "dockerfile missing",
+			}},
+			Environments: []mortisev1alpha1.EnvironmentStatus{{
+				Name:           "production",
+				LastBuiltImage: "registry.example/demo:old",
+			}},
+		},
+	}
+	envNs, err := appEnvNs(app, "production")
+	if err != nil {
+		t.Fatalf("app env namespace: %v", err)
+	}
+	dep := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       deploymentName(app.Name),
+			Namespace:  envNs,
+			Generation: 1,
+		},
+		Spec: appsv1.DeploymentSpec{
+			Replicas: ptr.To[int32](1),
+			Template: corev1.PodTemplateSpec{},
+		},
+		Status: appsv1.DeploymentStatus{
+			ObservedGeneration: 1,
+			Replicas:           1,
+			ReadyReplicas:      1,
+			UpdatedReplicas:    1,
+			AvailableReplicas:  1,
+		},
+	}
+
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(app, dep).
+		WithObjects(app, dep).
+		Build()
+	r := &AppReconciler{Client: c, Scheme: scheme}
+	if err := c.Status().Update(ctx, dep); err != nil {
+		t.Fatalf("seed deployment status: %v", err)
+	}
+
+	if err := r.updateStatus(ctx, app, []mortisev1alpha1.Environment{{Name: "production"}}); err != nil {
+		t.Fatalf("update status: %v", err)
+	}
+
+	var fresh mortisev1alpha1.App
+	if err := c.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: app.Namespace}, &fresh); err != nil {
+		t.Fatalf("get app: %v", err)
+	}
+	if fresh.Status.Phase != mortisev1alpha1.AppPhaseDegraded {
+		t.Fatalf("expected phase %q, got %q", mortisev1alpha1.AppPhaseDegraded, fresh.Status.Phase)
+	}
+	if len(fresh.Status.Environments) != 1 || fresh.Status.Environments[0].Phase != mortisev1alpha1.AppPhaseReady {
+		t.Fatalf("expected serving env to remain Ready, got %+v", fresh.Status.Environments)
+	}
+	cond := findStatusCondition(fresh.Status.Conditions, "BuildSucceeded")
+	wantMessage := degradedBuildFailureMessage("dockerfile missing")
+	if cond == nil || cond.Message != wantMessage {
+		t.Fatalf("expected degraded build message %q, got %+v", wantMessage, cond)
+	}
+}
+
+func TestUpdateStatusKeepsFailedWhenLatestBuildFailsAndNothingServes(t *testing.T) {
+	ctx := context.Background()
+	scheme := runtime.NewScheme()
+	if err := mortisev1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add mortise scheme: %v", err)
+	}
+	if err := appsv1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add apps scheme: %v", err)
+	}
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add core scheme: %v", err)
+	}
+
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "demo",
+			Namespace: "pj-default-project",
+		},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{
+				Type: mortisev1alpha1.SourceTypeImage,
+			},
+			Environments: []mortisev1alpha1.Environment{{Name: "production"}},
+		},
+		Status: mortisev1alpha1.AppStatus{
+			Conditions: []metav1.Condition{{
+				Type:    "BuildSucceeded",
+				Status:  metav1.ConditionFalse,
+				Reason:  "BuildFailed",
+				Message: "dockerfile missing",
+			}},
+			Environments: []mortisev1alpha1.EnvironmentStatus{{
+				Name:           "production",
+				LastBuiltImage: "registry.example/demo:old",
+			}},
+		},
+	}
+
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(app).
+		WithObjects(app).
+		Build()
+	r := &AppReconciler{Client: c, Scheme: scheme}
+
+	if err := r.updateStatus(ctx, app, []mortisev1alpha1.Environment{{Name: "production"}}); err != nil {
+		t.Fatalf("update status: %v", err)
+	}
+
+	var fresh mortisev1alpha1.App
+	if err := c.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: app.Namespace}, &fresh); err != nil {
+		t.Fatalf("get app: %v", err)
+	}
+	if fresh.Status.Phase != mortisev1alpha1.AppPhaseFailed {
+		t.Fatalf("expected phase %q, got %q", mortisev1alpha1.AppPhaseFailed, fresh.Status.Phase)
+	}
+	cond := findStatusCondition(fresh.Status.Conditions, "BuildSucceeded")
+	if cond == nil || cond.Message != "dockerfile missing" {
+		t.Fatalf("expected original build failure message preserved, got %+v", cond)
+	}
+}
+
+func TestUpdateStatusClearsDegradedAfterSuccessfulRecovery(t *testing.T) {
+	ctx := context.Background()
+	scheme := runtime.NewScheme()
+	if err := mortisev1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add mortise scheme: %v", err)
+	}
+	if err := appsv1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add apps scheme: %v", err)
+	}
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add core scheme: %v", err)
+	}
+
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "demo",
+			Namespace: "pj-default-project",
+		},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{
+				Type: mortisev1alpha1.SourceTypeImage,
+			},
+			Environments: []mortisev1alpha1.Environment{{Name: "production"}},
+		},
+		Status: mortisev1alpha1.AppStatus{
+			Phase: mortisev1alpha1.AppPhaseDegraded,
+			Conditions: []metav1.Condition{{
+				Type:    "BuildSucceeded",
+				Status:  metav1.ConditionFalse,
+				Reason:  "BuildFailed",
+				Message: degradedBuildFailureMessage("dockerfile missing"),
+			}},
+			Environments: []mortisev1alpha1.EnvironmentStatus{{
+				Name:           "production",
+				LastBuiltImage: "registry.example/demo:old",
+			}},
+		},
+	}
+	envNs, err := appEnvNs(app, "production")
+	if err != nil {
+		t.Fatalf("app env namespace: %v", err)
+	}
+	dep := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       deploymentName(app.Name),
+			Namespace:  envNs,
+			Generation: 1,
+		},
+		Spec: appsv1.DeploymentSpec{
+			Replicas: ptr.To[int32](1),
+			Template: corev1.PodTemplateSpec{},
+		},
+		Status: appsv1.DeploymentStatus{
+			ObservedGeneration: 1,
+			Replicas:           1,
+			ReadyReplicas:      1,
+			UpdatedReplicas:    1,
+			AvailableReplicas:  1,
+		},
+	}
+
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(app, dep).
+		WithObjects(app, dep).
+		Build()
+	r := &AppReconciler{Client: c, Scheme: scheme}
+	if err := c.Status().Update(ctx, dep); err != nil {
+		t.Fatalf("seed deployment status: %v", err)
+	}
+
+	app.Status.Conditions = []metav1.Condition{{
+		Type:    "BuildSucceeded",
+		Status:  metav1.ConditionTrue,
+		Reason:  "BuildComplete",
+		Message: "built registry.example/demo:new digest=sha256:new for production",
+	}}
+	app.Status.Environments = []mortisev1alpha1.EnvironmentStatus{{
+		Name:           "production",
+		LastBuiltImage: "registry.example/demo:new",
+	}}
+	if err := c.Status().Update(ctx, app); err != nil {
+		t.Fatalf("seed recovered status: %v", err)
+	}
+
+	if err := r.updateStatus(ctx, app, []mortisev1alpha1.Environment{{Name: "production"}}); err != nil {
+		t.Fatalf("update status: %v", err)
+	}
+
+	var fresh mortisev1alpha1.App
+	if err := c.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: app.Namespace}, &fresh); err != nil {
+		t.Fatalf("get app: %v", err)
+	}
+	if fresh.Status.Phase != mortisev1alpha1.AppPhaseReady {
+		t.Fatalf("expected phase %q after recovery, got %q", mortisev1alpha1.AppPhaseReady, fresh.Status.Phase)
+	}
+}
+
 func TestAllEnvBuildsCurrentForRevision_EnvBranchOverridesAnnotation(t *testing.T) {
 	scheme := runtime.NewScheme()
 	if err := mortisev1alpha1.AddToScheme(scheme); err != nil {
@@ -2884,10 +3135,13 @@ func reconcileUntilBuildDone(r *AppReconciler, ctx context.Context, req reconcil
 		var app mortisev1alpha1.App
 		if getErr := r.Get(ctx, req.NamespacedName, &app); getErr == nil {
 			phase := app.Status.Phase
+			buildFailed := isTerminalBuildFailureCondition(meta.FindStatusCondition(app.Status.Conditions, "BuildSucceeded"))
 			if phase == mortisev1alpha1.AppPhaseReady ||
+				phase == mortisev1alpha1.AppPhaseDegraded ||
 				phase == mortisev1alpha1.AppPhaseFailed ||
 				phase == mortisev1alpha1.AppPhaseDeploying ||
-				phase == mortisev1alpha1.AppPhaseCrashLooping {
+				phase == mortisev1alpha1.AppPhaseCrashLooping ||
+				(buildFailed && app.Status.CurrentBuildRunName == "") {
 				return res, nil
 			}
 		}
@@ -3041,6 +3295,101 @@ var _ = Describe("App Controller — git source", func() {
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: namespace}, app)).To(Succeed())
 			Expect(app.Status.Phase).To(Equal(mortisev1alpha1.AppPhaseFailed))
 		})
+
+		It("should set phase=Degraded when a previous deployment is still serving", func() {
+			ctx := context.Background()
+
+			gp := &mortisev1alpha1.GitProvider{
+				ObjectMeta: metav1.ObjectMeta{Name: "gh-build-degraded"},
+				Spec: mortisev1alpha1.GitProviderSpec{
+					Type:     mortisev1alpha1.GitProviderTypeGitHub,
+					Host:     "https://github.com",
+					ClientID: "test-client-id",
+				},
+			}
+			Expect(k8sClient.Create(ctx, gp)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, gp)).To(Succeed()) }()
+
+			tokenSecret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{Name: "user-gh-build-degraded-token-74657374406578616d706c652e636f6d", Namespace: "mortise-system"},
+				Data:       map[string][]byte{"token": []byte("tok")},
+			}
+			_ = k8sClient.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "mortise-system"}})
+			Expect(k8sClient.Create(ctx, tokenSecret)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, tokenSecret)).To(Succeed()) }()
+
+			app := makeGitSourceApp("git-build-degraded", namespace, "gh-build-degraded")
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+
+			const oldImage = "registry.example.com/mortise/git-build-degraded:old"
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: namespace}, app)).To(Succeed())
+			app.Status.Phase = mortisev1alpha1.AppPhaseReady
+			app.Status.Environments = []mortisev1alpha1.EnvironmentStatus{{
+				Name:           "production",
+				Phase:          mortisev1alpha1.AppPhaseReady,
+				ReadyReplicas:  1,
+				LastBuiltSHA:   "oldsha",
+				LastBuiltImage: oldImage,
+				CurrentImage:   oldImage,
+			}}
+			Expect(k8sClient.Status().Update(ctx, app)).To(Succeed())
+
+			_ = k8sClient.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: envNsProduction}})
+			dep := &appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      deploymentName(app.Name),
+					Namespace: envNsProduction,
+				},
+				Spec: appsv1.DeploymentSpec{
+					Replicas: ptr.To[int32](1),
+					Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": app.Name}},
+					Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": app.Name}},
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{{
+								Name:  "app",
+								Image: oldImage,
+							}},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, dep)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, dep)).To(Succeed()) }()
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: dep.Name, Namespace: dep.Namespace}, dep)).To(Succeed())
+			dep.Status.ObservedGeneration = dep.Generation
+			dep.Status.Replicas = 1
+			dep.Status.UpdatedReplicas = 1
+			dep.Status.ReadyReplicas = 1
+			dep.Status.AvailableReplicas = 1
+			Expect(k8sClient.Status().Update(ctx, dep)).To(Succeed())
+
+			r := gitSourceReconciler(
+				&fakeBuildClient{err: "dockerfile not found"},
+				&fakeGitClient{},
+				&fakeRegistryBackend{},
+			)
+			_, err := reconcileUntilBuildDone(r, ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: app.Name, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = r.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: app.Name, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: namespace}, app)).To(Succeed())
+			Expect(app.Status.Phase).To(Equal(mortisev1alpha1.AppPhaseDegraded))
+			Expect(app.Status.Environments).To(HaveLen(1))
+			Expect(app.Status.Environments[0].Phase).To(Equal(mortisev1alpha1.AppPhaseReady))
+			Expect(app.Status.Environments[0].CurrentImage).To(Equal(oldImage))
+			cond := meta.FindStatusCondition(app.Status.Conditions, "BuildSucceeded")
+			Expect(cond).NotTo(BeNil())
+			Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(cond.Message).To(Equal(degradedBuildFailureMessage("dockerfile not found")))
+		})
+
 	})
 
 	Context("webhook registration", func() {
