@@ -21,9 +21,6 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Fatal log stream banner**: log viewer and deploy log components now display
   an inline error banner when the SSE stream encounters a fatal error, instead
   of silently stopping.
-- **Preview switcher opens new tab**: preview entries in the environment
-  switcher now open in a new browser tab instead of switching the current view.
-
 ### Fixed
 
 - **Normalized project not-found errors**: all project lookup API paths now
@@ -44,8 +41,8 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Preview envs don't converge on reconcile** (#373): preview environments
   were only created in response to webhook events; missed webhooks left the
   cluster out of sync with the forge. A new `PreviewConvergenceReconciler`
-  periodically polls for open PRs and creates/deletes `PreviewEnvironment` CRs
-  to match.
+  watches Project changes and re-queues every 10 minutes, polling the forge
+  for open PRs and creating/deleting `PreviewEnvironment` CRs to match.
 
 ### Changed
 

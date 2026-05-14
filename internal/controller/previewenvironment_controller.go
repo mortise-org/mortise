@@ -19,6 +19,9 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strings"
+	"time"
+
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -527,17 +530,22 @@ func (r *PreviewEnvironmentReconciler) ConvergeProjectPreviews(ctx context.Conte
 		return fmt.Errorf("list preview environments: %w", err)
 	}
 
-	// Index existing PEs by PR number.
-	existingByPR := make(map[int]*mortisev1alpha1.PreviewEnvironment, len(peList.Items))
+	// Index existing PEs by name. Using PE name as the key avoids PR number
+	// collisions across different repos (multi-repo projects disambiguate
+	// with a repo slug in the PE name).
+	existingByPR := make(map[string]*mortisev1alpha1.PreviewEnvironment, len(peList.Items))
 	for i := range peList.Items {
 		pe := &peList.Items[i]
-		existingByPR[pe.Spec.PullRequest.Number] = pe
+		// Use the PE name as a unique handle; map all repo variants to it.
+		existingByPR[pe.Name] = pe
 	}
 
-	// Track which PR numbers are open across all repos.
-	openPRs := make(map[int]bool)
+	// Track which PE names are still open.
+	openPEs := make(map[string]bool)
 
 	botPR := project.Spec.Preview.BotPR == nil || *project.Spec.Preview.BotPR
+
+	sourceEnv := resolveSourceEnvFromProject(project)
 
 	for _, rk := range repos {
 		if rk.providerRef == "" {
@@ -570,26 +578,26 @@ func (r *PreviewEnvironmentReconciler) ConvergeProjectPreviews(ctx context.Conte
 			return fmt.Errorf("list open PRs for %q: %w", rk.repo, err)
 		}
 
-		sourceEnv := resolveSourceEnvFromProject(project)
-
 		for _, pr := range prs {
 			if !botPR && pr.Author.IsBot {
 				continue
 			}
-			openPRs[pr.Number] = true
 
-			if _, exists := existingByPR[pr.Number]; exists {
+			peName := convergencePEName(rk.repo, pr.Number, len(repos) > 1)
+			openPEs[peName] = true
+
+			if _, exists := existingByPR[peName]; exists {
 				continue
 			}
 
 			if sourceEnv == "" {
-				log.Info("no source env to clone from, skipping PR", "project", project.Name, "pr", pr.Number)
+				log.Info("no source env to clone from, skipping PR", "project", project.Name, "pr", pr.Number, "repo", rk.repo)
 				continue
 			}
 
 			pe := &mortisev1alpha1.PreviewEnvironment{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      fmt.Sprintf("preview-pr-%d", pr.Number),
+					Name:      peName,
 					Namespace: controlNs,
 				},
 				Spec: mortisev1alpha1.PreviewEnvironmentSpec{
@@ -606,27 +614,50 @@ func (r *PreviewEnvironmentReconciler) ConvergeProjectPreviews(ctx context.Conte
 				if errors.IsAlreadyExists(err) {
 					continue
 				}
-				return fmt.Errorf("create PE for PR #%d: %w", pr.Number, err)
+				return fmt.Errorf("create PE for PR #%d (%s): %w", pr.Number, rk.repo, err)
 			}
-			log.Info("convergence: created PE for open PR", "project", project.Name, "pr", pr.Number)
+			log.Info("convergence: created PE for open PR", "project", project.Name, "pr", pr.Number, "repo", rk.repo)
 		}
 	}
 
 	// Delete PE CRs for PRs that are no longer open.
-	for prNum, pe := range existingByPR {
-		if openPRs[prNum] {
+	for peName, pe := range existingByPR {
+		if openPEs[peName] {
 			continue
 		}
 		if err := r.Delete(ctx, pe); err != nil {
 			if errors.IsNotFound(err) {
 				continue
 			}
-			return fmt.Errorf("delete stale PE for PR #%d: %w", prNum, err)
+			return fmt.Errorf("delete stale PE %q: %w", peName, err)
 		}
-		log.Info("convergence: deleted PE for closed PR", "project", project.Name, "pr", prNum)
+		log.Info("convergence: deleted PE for closed PR", "project", project.Name, "pe", peName)
 	}
 
 	return nil
+}
+
+// convergencePEName returns the PE object name for a given repo and PR number.
+// When multiRepo is false (single git-source repo), the classic format
+// "preview-pr-{number}" is used. When true, a short repo slug is included to
+// avoid name collisions across repos.
+func convergencePEName(repo string, number int, multiRepo bool) string {
+	if !multiRepo {
+		return fmt.Sprintf("preview-pr-%d", number)
+	}
+	// Use last path segment of the repo URL as slug (e.g. "repo" from
+	// "https://github.com/org/repo"). Truncate to keep the name under 63 chars.
+	slug := repo
+	if idx := len(slug) - 1; idx >= 0 && slug[idx] == '/' {
+		slug = slug[:idx]
+	}
+	if idx := strings.LastIndex(slug, "/"); idx >= 0 {
+		slug = slug[idx+1:]
+	}
+	if len(slug) > 20 {
+		slug = slug[:20]
+	}
+	return fmt.Sprintf("preview-%s-pr-%d", slug, number)
 }
 
 // resolveSourceEnvFromProject mirrors the webhook handler's resolveSourceEnv logic.
@@ -667,7 +698,7 @@ func (r *PreviewEnvironmentReconciler) reconcileProjectConvergence(ctx context.C
 		return ctrl.Result{}, err
 	}
 
-	return ctrl.Result{}, nil
+	return ctrl.Result{RequeueAfter: 10 * time.Minute}, nil
 }
 
 func (r *PreviewEnvironmentReconciler) SetupWithManager(mgr ctrl.Manager) error {

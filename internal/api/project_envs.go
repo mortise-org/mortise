@@ -385,14 +385,14 @@ func (s *Server) updateProjectEnvironment(ctx context.Context, projectName, envN
 	return updated, nil
 }
 
-// DeleteProjectEnvironment removes an env from spec.environments. The
-// admission webhook rejects the call if any App still carries an override for
-// the env; the API surfaces that 403 verbatim.
+// DeleteProjectEnvironment removes an env from spec.environments. Any Apps
+// that carry per-env overrides for the deleted environment are automatically
+// stripped before the project update, so deletion always succeeds.
 //
 // DELETE /api/projects/{project}/environments/{name}
 //
 // @Summary Delete a project environment
-// @Description Removes an environment from the project. Fails if apps still have overrides for it.
+// @Description Removes an environment from the project. Automatically strips per-env overrides from all apps referencing the deleted environment before removing it.
 // @Tags environments
 // @Produce json
 // @Security BearerAuth
@@ -402,7 +402,6 @@ func (s *Server) updateProjectEnvironment(ctx context.Context, projectName, envN
 // @Failure 400 {object} errorResponse
 // @Failure 403 {object} errorResponse
 // @Failure 404 {object} errorResponse
-// @Failure 409 {object} errorResponse
 // @Router /projects/{project}/environments/{name} [delete]
 func (s *Server) DeleteProjectEnvironment(w http.ResponseWriter, r *http.Request) {
 	projectName := chi.URLParam(r, "project")
@@ -839,26 +838,6 @@ func (s *Server) stripAppEnvOverrides(ctx context.Context, ns, envName string) (
 		stripped = append(stripped, app.Name)
 	}
 	return stripped, nil
-}
-
-func (s *Server) appsReferencingEnv(ctx context.Context, ns, envName string) ([]string, error) {
-	var apps mortisev1alpha1.AppList
-	if err := s.client.List(ctx, &apps, client.InNamespace(ns)); err != nil {
-		return nil, err
-	}
-	var offenders []string
-	for i := range apps.Items {
-		app := &apps.Items[i]
-		for _, env := range app.Spec.Environments {
-			if env.Name != envName {
-				continue
-			}
-			offenders = append(offenders, app.Name)
-			break
-		}
-	}
-	sort.Strings(offenders)
-	return offenders, nil
 }
 
 func (s *Server) ensureProjectEnvNamespace(ctx context.Context, project *mortisev1alpha1.Project, envName string, active bool) error {

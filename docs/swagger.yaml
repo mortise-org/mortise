@@ -5126,8 +5126,9 @@ paths:
       - environments
   /projects/{project}/environments/{name}:
     delete:
-      description: Removes an environment from the project. Fails if apps still have
-        overrides for it.
+      description: Removes an environment from the project. Automatically strips per-env
+        overrides from all apps referencing the deleted environment before removing
+        it.
       parameters:
       - description: Project name
         in: path
@@ -5158,10 +5159,6 @@ paths:
             $ref: '#/definitions/api.errorResponse'
         "404":
           description: Not Found
-          schema:
-            $ref: '#/definitions/api.errorResponse'
-        "409":
-          description: Conflict
           schema:
             $ref: '#/definitions/api.errorResponse'
       security:
