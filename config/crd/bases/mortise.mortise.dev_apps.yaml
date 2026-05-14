@@ -150,6 +150,13 @@ spec:
                         - ref
                         type: object
                       type: array
+                    branch:
+                      description: |-
+                        Branch overrides the app-level source branch for this environment.
+                        When set, builds for this environment use this branch instead of
+                        spec.source.branch. Used by preview environments to build from
+                        the PR branch.
+                      type: string
                     buildArgs:
                       additionalProperties:
                         type: string

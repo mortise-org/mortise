@@ -33,8 +33,7 @@ const (
 )
 
 const (
-	BuildRunTargetAppEnvironment     = "AppEnvironment"
-	BuildRunTargetPreviewEnvironment = "PreviewEnvironment"
+	BuildRunTargetAppEnvironment = "AppEnvironment"
 )
 
 // BuildRunTargetRef identifies the resource requesting the build.
@@ -50,7 +49,6 @@ type BuildRunTrigger string
 const (
 	BuildRunTriggerAuto    BuildRunTrigger = "auto"
 	BuildRunTriggerManual  BuildRunTrigger = "manual"
-	BuildRunTriggerPreview BuildRunTrigger = "preview"
 	BuildRunTriggerWebhook BuildRunTrigger = "webhook"
 )
 

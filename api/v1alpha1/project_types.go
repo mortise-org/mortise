@@ -20,35 +20,23 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// PreviewConfig is the project-level PR environments toggle (SPEC §5.8).
-// When set with Enabled=true, every App inside the Project reconciles into
-// each open PR's preview namespace — there is no per-App opt-out.
-// Domain, TTL, and Resources act as defaults shared across every PR preview
-// spawned from this Project's Apps.
+// PreviewConfig is the project-level PR environments toggle.
+// When Enabled=true, opening a PR creates a clone of the source
+// environment with git-source apps pointed at the PR branch.
 type PreviewConfig struct {
-	// Enabled turns PR environments on for every App in the Project.
+	// Enabled turns PR environments on for this Project.
 	Enabled bool `json:"enabled,omitempty"`
 
-	// Domain is a template for preview hostnames. Supports {number} and {app}
-	// placeholders (e.g. "pr-{number}-{app}.example.com"). If empty, the
-	// controller falls back to a platform-domain-derived default.
+	// SourceEnvironment is the project environment name to clone previews from.
+	// If empty, auto-resolves: prefers "staging", falls back to first non-production env.
+	// Must not reference a restricted environment.
 	// +optional
-	Domain string `json:"domain,omitempty"`
+	SourceEnvironment string `json:"sourceEnvironment,omitempty"`
 
-	// TTL is a Go duration string (e.g. "72h") after which an idle preview is
-	// garbage-collected. Empty string means "use controller default".
+	// BotPR controls whether PRs opened by bot accounts spawn previews.
+	// Defaults to true — all PRs get previews regardless of author.
 	// +optional
-	TTL string `json:"ttl,omitempty"`
-
-	// Resources caps the CPU / memory each PR preview's Pod requests. Empty
-	// fields inherit from the staging environment of the source App.
-	// +optional
-	Resources ResourceRequirements `json:"resources,omitempty"`
-
-	// BotPR, when true, lets PRs opened by bot accounts also spawn previews.
-	// Defaults to false — previews only spawn for human-authored PRs.
-	// +optional
-	BotPR bool `json:"botPR,omitempty"`
+	BotPR *bool `json:"botPR,omitempty"`
 }
 
 // ProjectEnvironment declares a named deployment environment that belongs to
@@ -92,9 +80,10 @@ type ProjectSpec struct {
 	// +optional
 	Environments []ProjectEnvironment `json:"environments,omitempty"`
 
-	// Preview controls PR-driven preview environments at the Project scope
-	// (SPEC §5.8). When Enabled=true, every App in this Project participates
-	// in each open PR's preview namespace. There is no per-App opt-out in v1.
+	// Preview controls PR-driven preview environments. When Enabled=true,
+	// opening a PR clones the source environment with git-source apps
+	// pointed at the PR branch. The cloned environment behaves like any
+	// other project environment.
 	// +optional
 	Preview *PreviewConfig `json:"preview,omitempty"`
 

@@ -252,6 +252,13 @@ type Environment struct {
 	// +optional
 	Enabled *bool `json:"enabled,omitempty"`
 
+	// Branch overrides the app-level source branch for this environment.
+	// When set, builds for this environment use this branch instead of
+	// spec.source.branch. Used by preview environments to build from
+	// the PR branch.
+	// +optional
+	Branch string `json:"branch,omitempty"`
+
 	Replicas       *int32               `json:"replicas,omitempty"`
 	Resources      ResourceRequirements `json:"resources,omitempty"`
 	LivenessProbe  *ProbeConfig         `json:"livenessProbe,omitempty"`

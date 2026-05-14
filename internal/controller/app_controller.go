@@ -63,7 +63,6 @@ import (
 	"github.com/mortise-org/mortise/internal/envstore"
 	"github.com/mortise-org/mortise/internal/git"
 	"github.com/mortise-org/mortise/internal/ingress"
-	"github.com/mortise-org/mortise/internal/previewsync"
 	"github.com/mortise-org/mortise/internal/registry"
 )
 
@@ -107,7 +106,6 @@ type AppReconciler struct {
 }
 
 const (
-	previewSyncStateAnnotation = "mortise.dev/preview-sync-state"
 	webhookConditionType       = "WebhookConfigured"
 	webhookRegisteredReason    = "Registered"
 	webhookMissingURLReason    = "WebhookURLUnavailable"
@@ -146,13 +144,6 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	// that enumerates them and deletes by label.
 	if !app.DeletionTimestamp.IsZero() {
 		if controllerutil.ContainsFinalizer(&app, appFinalizer) {
-			remainingPreviews, err := r.deleteAppPreviews(ctx, &app)
-			if err != nil {
-				return ctrl.Result{}, fmt.Errorf("delete previews for app: %w", err)
-			}
-			if remainingPreviews {
-				return ctrl.Result{RequeueAfter: time.Second}, nil
-			}
 			if err := r.gcAppAcrossEnvs(ctx, &app); err != nil {
 				return ctrl.Result{}, fmt.Errorf("gc app across envs: %w", err)
 			}
@@ -211,11 +202,6 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		return ctrl.Result{}, nil
 	}
 
-	if app.Spec.Source.Type == mortisev1alpha1.SourceTypeGit {
-		if err := r.syncOpenPreviews(ctx, &app, project); err != nil {
-			log.Error(err, "preview sync failed", "app", app.Name)
-		}
-	}
 	// Each env gets its own namespace; per-app resources (SA, credentials
 	// Secret, ConfigMaps, PVCs) fan out once per env namespace so pods that
 	// reference them can resolve cross-ns (they can't). The controller owns
@@ -250,7 +236,7 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		// Resolve the container image for this env.
 		var image string
 		if app.Spec.Source.Type == mortisev1alpha1.SourceTypeGit && r.BuildClient != nil {
-			envImage, requeue, dirty, shouldClearNoCache, err := r.reconcileEnvBuild(ctx, &app, env.Name)
+			envImage, requeue, dirty, shouldClearNoCache, err := r.reconcileEnvBuild(ctx, &app, env.Name, env.Branch)
 			if err != nil {
 				return ctrl.Result{}, fmt.Errorf("reconcile buildrun for env %s: %w", env.Name, err)
 			}
@@ -498,94 +484,6 @@ func gitTokenCacheKey(app *mortisev1alpha1.App) string {
 	return app.Namespace + "/" + app.Name
 }
 
-func (r *AppReconciler) syncOpenPreviews(ctx context.Context, app *mortisev1alpha1.App, project *mortisev1alpha1.Project) error {
-	if project == nil || project.Spec.Preview == nil || !project.Spec.Preview.Enabled {
-		return nil
-	}
-	if app.Spec.Source.Type != mortisev1alpha1.SourceTypeGit || app.Spec.Source.ProviderRef == "" {
-		return nil
-	}
-
-	desiredState := previewSyncState(app, project)
-	if app.Annotations[previewSyncStateAnnotation] == desiredState {
-		return nil
-	}
-
-	tokenVal, _ := r.gitTokenCache.Load(gitTokenCacheKey(app))
-	token, _ := tokenVal.(string)
-
-	var gp mortisev1alpha1.GitProvider
-	if err := r.Get(ctx, types.NamespacedName{Name: app.Spec.Source.ProviderRef}, &gp); err != nil {
-		return fmt.Errorf("get GitProvider %q: %w", app.Spec.Source.ProviderRef, err)
-	}
-	if token == "" {
-		createdBy := app.Annotations["mortise.dev/created-by"]
-		cachedOwner := app.Annotations["mortise.dev/git-token-owner"]
-		tokenResult, err := git.ResolveGitTokenForApp(ctx, r.Client, gp.Name, app.Namespace, createdBy, cachedOwner)
-		if err != nil {
-			return fmt.Errorf("resolve git token for preview sync: %w", err)
-		}
-		token = tokenResult.Token
-		r.gitTokenCache.Store(gitTokenCacheKey(app), token)
-	}
-
-	api, err := r.newGitAPI(&gp, token, "")
-	if err != nil {
-		return fmt.Errorf("create git API: %w", err)
-	}
-	openPRs, err := api.ListOpenPullRequests(ctx, app.Spec.Source.Repo)
-	if err != nil {
-		return fmt.Errorf("list open pull requests: %w", err)
-	}
-	if err := previewsync.ReconcileAppPreviews(ctx, r, app, project, project.Spec.Preview, openPRs); err != nil {
-		return fmt.Errorf("reconcile preview environments: %w", err)
-	}
-
-	patch := client.MergeFrom(app.DeepCopy())
-	if app.Annotations == nil {
-		app.Annotations = map[string]string{}
-	}
-	app.Annotations[previewSyncStateAnnotation] = desiredState
-	if err := r.Patch(ctx, app, patch); err != nil {
-		return fmt.Errorf("patch preview sync state: %w", err)
-	}
-
-	return nil
-}
-
-func previewSyncState(app *mortisev1alpha1.App, project *mortisev1alpha1.Project) string {
-	h := sha256.New()
-	fmt.Fprintf(h, "repo=%s\nprovider=%s\npreview=%t\nprojectPreviewRev=%s\n",
-		app.Spec.Source.Repo,
-		app.Spec.Source.ProviderRef,
-		project.Spec.Preview != nil && project.Spec.Preview.Enabled,
-		app.Annotations[ProjectPreviewRevAnnotation],
-	)
-	writePreviewSyncHashJSON(h, "appEnvironments", app.Spec.Environments)
-	writePreviewSyncHashJSON(h, "projectEnvironments", project.Spec.Environments)
-	if project.Spec.Preview != nil {
-		fmt.Fprintf(h, "domain=%s\nttl=%s\nbot=%t\ncpu=%s\nmemory=%s\n",
-			project.Spec.Preview.Domain,
-			project.Spec.Preview.TTL,
-			project.Spec.Preview.BotPR,
-			project.Spec.Preview.Resources.CPU,
-			project.Spec.Preview.Resources.Memory,
-		)
-	}
-	return hex.EncodeToString(h.Sum(nil))
-}
-
-func writePreviewSyncHashJSON(h hashWriter, key string, value any) {
-	fmt.Fprintf(h, "%s=", key)
-	if err := json.NewEncoder(h).Encode(value); err != nil {
-		fmt.Fprintf(h, "json-error=%v\n", err)
-	}
-}
-
-type hashWriter interface {
-	Write([]byte) (int, error)
-}
-
 func (r *AppReconciler) newGitAPI(gp *mortisev1alpha1.GitProvider, token, webhookSecret string) (git.GitAPI, error) {
 	if r.GitAPIFactory != nil {
 		return r.GitAPIFactory(gp, token, webhookSecret)
@@ -617,11 +515,13 @@ func (r *AppReconciler) DeletePreviewEnvironment(ctx context.Context, pe *mortis
 // the image to use for this env's deployment, or "" if a build is still in
 // flight (caller should skip deployment and requeue). statusDirty is true when
 // applyEnvBuildSuccess mutated app.Status and the caller must flush.
-func (r *AppReconciler) reconcileEnvBuild(ctx context.Context, app *mortisev1alpha1.App, envName string) (image string, requeue bool, statusDirty bool, shouldClearNoCache bool, err error) {
+func (r *AppReconciler) reconcileEnvBuild(ctx context.Context, app *mortisev1alpha1.App, envName, envBranch string) (image string, requeue bool, statusDirty bool, shouldClearNoCache bool, err error) {
 	log := logf.FromContext(ctx)
 
 	revision := app.Annotations["mortise.dev/revision"]
-	if revision == "" {
+	if envBranch != "" {
+		revision = envBranch
+	} else if revision == "" {
 		revision = app.Spec.Source.Branch
 	}
 	if revision == "" {
@@ -870,17 +770,19 @@ func (r *AppReconciler) currentImageForEnv(app *mortisev1alpha1.App, envName str
 // environment already has a per-env build matching the current revision.
 // Used to skip prepareGitSource (auth + clone) when no new builds are needed.
 func (r *AppReconciler) allEnvBuildsCurrentForRevision(app *mortisev1alpha1.App, envs []mortisev1alpha1.Environment) bool {
-	revision := app.Annotations["mortise.dev/revision"]
-	if revision == "" {
-		revision = app.Spec.Source.Branch
-	}
-	if revision == "" {
-		revision = "main"
-	}
 	if len(envs) == 0 {
 		return false
 	}
 	for _, env := range envs {
+		revision := app.Annotations["mortise.dev/revision"]
+		if env.Branch != "" {
+			revision = env.Branch
+		} else if revision == "" {
+			revision = app.Spec.Source.Branch
+		}
+		if revision == "" {
+			revision = "main"
+		}
 		es := envStatusFor(app, env.Name)
 		if es == nil || es.LastBuiltSHA != revision || es.LastBuiltImage == "" {
 			return false
@@ -2448,7 +2350,10 @@ func webhookRegistrationInputHash(app *mortisev1alpha1.App, gp *mortisev1alpha1.
 		webhookURL,
 		webhookSecret,
 	)
-	writePreviewSyncHashJSON(h, "events", []string{"push", "pull_request"})
+	fmt.Fprintf(h, "events=")
+	if err := json.NewEncoder(h).Encode([]string{"push", "pull_request"}); err != nil {
+		fmt.Fprintf(h, "json-error=%v\n", err)
+	}
 	return hex.EncodeToString(h.Sum(nil))
 }
 

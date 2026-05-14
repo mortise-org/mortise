@@ -101,8 +101,6 @@ func TestPreviewEnvironmentInheritsSourceEnvVars(t *testing.T) {
 	// Enable project-level preview.
 	enableProjectPreview(t, projectName, &mortisev1alpha1.PreviewConfig{
 		Enabled: true,
-		Domain:  "pr-{number}-{app}.test.local",
-		TTL:     "1h",
 	})
 
 	// Create a PreviewEnvironment against the source env.
@@ -112,17 +110,12 @@ func TestPreviewEnvironmentInheritsSourceEnvVars(t *testing.T) {
 			Namespace: ns,
 		},
 		Spec: mortisev1alpha1.PreviewEnvironmentSpec{
-			AppRef:    app.Name,
-			SourceEnv: envName,
+			ProjectRef: projectName,
+			SourceEnv:  envName,
 			PullRequest: mortisev1alpha1.PullRequestRef{
 				Number: 100,
 				Branch: "feat-test",
 				SHA:    "abc123inherit",
-			},
-			Domain: "pr-100-" + app.Name + ".test.local",
-			TTL:    metav1.Duration{Duration: 1 * time.Hour},
-			Env: []mortisev1alpha1.EnvVar{
-				{Name: "DATABASE_URL", Value: "postgres://preview:5432/test"},
 			},
 		},
 	}
@@ -157,8 +150,9 @@ func TestPreviewEnvironmentInheritsSourceEnvVars(t *testing.T) {
 		envMap[k] = string(v)
 	}
 
-	// pe.Spec.Env override wins for DATABASE_URL.
-	if got, want := envMap["DATABASE_URL"], "postgres://preview:5432/test"; got != want {
+	// Preview clones the source env vars — DATABASE_URL comes from the
+	// source environment, not from pe.Spec.Env (removed in the rework).
+	if got, want := envMap["DATABASE_URL"], "postgres://prod:5432/app"; got != want {
 		t.Errorf("DATABASE_URL: got %q, want %q", got, want)
 	}
 	// Inherited per-env var preserved.
@@ -231,9 +225,19 @@ func TestPreviewEnvironmentRefreshesAfterEnvAPIUpdate(t *testing.T) {
 
 	enableProjectPreview(t, projectName, &mortisev1alpha1.PreviewConfig{
 		Enabled: true,
-		Domain:  "pr-{number}-{app}.test.local",
-		TTL:     "1h",
 	})
+
+	// Enable autoRedeploy so env-hash changes trigger rolling updates.
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var project mortisev1alpha1.Project
+		if err := k8sClient.Get(context.Background(), types.NamespacedName{Name: projectName}, &project); err != nil {
+			return err
+		}
+		project.Spec.AutoRedeploy = true
+		return k8sClient.Update(context.Background(), &project)
+	}); err != nil {
+		t.Fatalf("enable autoRedeploy: %v", err)
+	}
 
 	app := helpers.LoadFixture(t, filepath.Join(fixturesDir(), "git-preview.yaml"))
 	app.Namespace = ns
@@ -267,7 +271,7 @@ func TestPreviewEnvironmentRefreshesAfterEnvAPIUpdate(t *testing.T) {
 	}
 
 	headSHA := getGiteaBranchSHA(t, giteaLocalURL, boot.Token, boot.Owner, boot.Name, "main")
-	pe := createPreviewEnvironment(t, ns, app.Name, 101, headSHA, "pr-101-"+app.Name+".test.local")
+	pe := createPreviewEnvironment(t, ns, projectName, 101, headSHA)
 	pe.Spec.SourceEnv = envName
 	if err := k8sClient.Create(context.Background(), pe); err != nil {
 		t.Fatalf("create PreviewEnvironment: %v", err)
@@ -276,7 +280,14 @@ func TestPreviewEnvironmentRefreshesAfterEnvAPIUpdate(t *testing.T) {
 
 	previewNs := constants.PreviewNamespace(projectName, 101)
 	waitForPreviewReady(t, ns, pe.Name, 5*time.Minute)
-	helpers.RequireEventually(t, 2*time.Minute, func() bool {
+	// Wait for the app controller to deploy into the preview env.
+	helpers.RequireEventually(t, 3*time.Minute, func() bool {
+		var dep appsv1.Deployment
+		return k8sClient.Get(context.Background(), types.NamespacedName{
+			Name: app.Name, Namespace: previewNs,
+		}, &dep) == nil
+	})
+	helpers.RequireEventually(t, 3*time.Minute, func() bool {
 		var envSecret corev1.Secret
 		if err := k8sClient.Get(context.Background(), types.NamespacedName{
 			Name: app.Name + "-env", Namespace: previewNs,
@@ -317,7 +328,8 @@ func TestPreviewEnvironmentRefreshesAfterEnvAPIUpdate(t *testing.T) {
 	mortiseURL := fmt.Sprintf("http://127.0.0.1:%d", mortisePort)
 	token := helpers.LoginAsAdmin(t, mortiseURL, "admin-integ@example.invalid", "integ-admin-pw-01")
 
-	envResp := doJSON(t, http.MethodPut, fmt.Sprintf("%s/api/projects/%s/apps/%s/env?env=%s", mortiseURL, projectName, app.Name, envName), token, []map[string]string{
+	previewEnvName := fmt.Sprintf("pr-%d", 101)
+	envResp := doJSON(t, http.MethodPut, fmt.Sprintf("%s/api/projects/%s/apps/%s/env?env=%s", mortiseURL, projectName, app.Name, previewEnvName), token, []map[string]string{
 		{"name": "LOG_LEVEL", "value": "debug"},
 	})
 	if envResp.StatusCode != http.StatusOK {
@@ -333,6 +345,7 @@ func TestPreviewEnvironmentRefreshesAfterEnvAPIUpdate(t *testing.T) {
 		}
 		return string(envSecret.Data["LOG_LEVEL"]) == "debug"
 	})
+
 	helpers.RequireEventually(t, 2*time.Minute, func() bool {
 		var dep appsv1.Deployment
 		if err := k8sClient.Get(context.Background(), types.NamespacedName{
@@ -504,14 +517,13 @@ func doCloneJSON(t *testing.T, method, url, token string, body any) cloneHTTPRes
 	return cloneHTTPResult{StatusCode: resp.StatusCode, Body: string(b)}
 }
 
-func readyPreviewPod(namespace, projectName, appName string, prNumber int) (string, types.UID, bool) {
+func readyPreviewPod(namespace, projectName, appName string, _ int) (string, types.UID, bool) {
 	var pods corev1.PodList
 	if err := k8sClient.List(context.Background(), &pods,
 		ctrlclient.InNamespace(namespace),
 		ctrlclient.MatchingLabels{
-			constants.AppNameLabel:  appName,
-			constants.ProjectLabel:  projectName,
-			"mortise.dev/pr-number": fmt.Sprintf("%d", prNumber),
+			constants.AppNameLabel: appName,
+			constants.ProjectLabel: projectName,
 		},
 	); err != nil {
 		return "", "", false

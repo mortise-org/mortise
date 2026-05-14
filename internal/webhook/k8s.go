@@ -6,11 +6,11 @@ import (
 	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
-	"github.com/mortise-org/mortise/internal/git"
 )
 
 // K8sReader implements k8sReader using a controller-runtime client.
@@ -84,13 +84,14 @@ func (r *K8sReader) patchAppRevision(ctx context.Context, app *mortisev1alpha1.A
 	return r.client.Patch(ctx, app, client.RawPatch(types.MergePatchType, data))
 }
 
-// listPreviewEnvironments returns all PreviewEnvironments in the given namespace.
-func (r *K8sReader) listPreviewEnvironments(ctx context.Context, namespace string) ([]mortisev1alpha1.PreviewEnvironment, error) {
-	var list mortisev1alpha1.PreviewEnvironmentList
-	if err := r.client.List(ctx, &list, client.InNamespace(namespace)); err != nil {
-		return nil, fmt.Errorf("list preview environments in %s: %w", namespace, err)
+// getPreviewEnvironment fetches a PreviewEnvironment by namespace and name.
+// Returns nil, error when not found.
+func (r *K8sReader) getPreviewEnvironment(ctx context.Context, namespace, name string) (*mortisev1alpha1.PreviewEnvironment, error) {
+	var pe mortisev1alpha1.PreviewEnvironment
+	if err := r.client.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, &pe); err != nil {
+		return nil, err
 	}
-	return list.Items, nil
+	return &pe, nil
 }
 
 // createPreviewEnvironment creates a PreviewEnvironment CRD.
@@ -103,11 +104,20 @@ func (r *K8sReader) updatePreviewEnvironment(ctx context.Context, pe *mortisev1a
 	return r.client.Update(ctx, pe)
 }
 
-// deletePreviewEnvironment deletes a PreviewEnvironment CRD.
-func (r *K8sReader) deletePreviewEnvironment(ctx context.Context, pe *mortisev1alpha1.PreviewEnvironment) error {
-	return r.client.Delete(ctx, pe)
-}
-
-func (r *K8sReader) resolveGitTokenForApp(ctx context.Context, providerName, controlNamespace, createdBy, cachedOwner string) (git.TokenResult, error) {
-	return git.ResolveGitTokenForApp(ctx, r.client, providerName, controlNamespace, createdBy, cachedOwner)
+// deletePreviewEnvironment deletes a PreviewEnvironment by namespace and name.
+// Not-found errors are silently ignored (idempotent).
+func (r *K8sReader) deletePreviewEnvironment(ctx context.Context, namespace, name string) error {
+	pe := &mortisev1alpha1.PreviewEnvironment{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: namespace,
+			Name:      name,
+		},
+	}
+	if err := r.client.Delete(ctx, pe); err != nil {
+		if client.IgnoreNotFound(err) == nil {
+			return nil
+		}
+		return err
+	}
+	return nil
 }
