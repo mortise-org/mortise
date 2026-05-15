@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -329,6 +330,21 @@ func TestCreateProjectEnvironmentInvalidName(t *testing.T) {
 	}
 }
 
+func TestCreateProjectEnvironmentReservesPreviewNamespace(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+	seedProject(t, k8sClient, "demo")
+
+	w := doRequest(h, http.MethodPost, "/api/projects/demo/environments", map[string]any{"name": "pr-12"})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "reserved preview environment namespace") {
+		t.Fatalf("expected reserved namespace error, got %s", w.Body.String())
+	}
+}
+
 // TestCreateProjectEnvironmentAsMemberForbidden verifies members cannot create envs.
 func TestCreateProjectEnvironmentAsMemberForbidden(t *testing.T) {
 	k8sClient := setupEnvtest(t)
@@ -620,6 +636,21 @@ func TestUpdateProjectEnvironmentRenameConflict(t *testing.T) {
 	w := doRequest(h, http.MethodPatch, "/api/projects/demo/environments/staging", map[string]any{"name": "production"})
 	if w.Code != http.StatusConflict {
 		t.Fatalf("expected 409, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestUpdateProjectEnvironmentRenameReservesPreviewNamespace(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+	seedProject(t, k8sClient, "demo", "production", "staging")
+
+	w := doRequest(h, http.MethodPatch, "/api/projects/demo/environments/staging", map[string]any{"name": "pr-12"})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "reserved preview environment namespace") {
+		t.Fatalf("expected reserved namespace error, got %s", w.Body.String())
 	}
 }
 
@@ -1156,5 +1187,22 @@ func TestCloneProjectEnvironmentInvalidTargetName(t *testing.T) {
 	})
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestCloneProjectEnvironmentReservesPreviewNamespace(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+	seedProject(t, k8sClient, "demo")
+
+	w := doRequest(h, http.MethodPost, "/api/projects/demo/environments/production/clone", map[string]any{
+		"name": "pr-12",
+	})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "reserved preview environment namespace") {
+		t.Fatalf("expected reserved namespace error, got %s", w.Body.String())
 	}
 }
