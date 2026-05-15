@@ -227,10 +227,15 @@ var _ = Describe("PreviewEnvironment Controller", func() {
 			var proj mortisev1alpha1.Project
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: project.Name}, &proj)).To(Succeed())
 			envNames := make([]string, len(proj.Spec.Environments))
+			foundPreview := false
 			for i, e := range proj.Spec.Environments {
 				envNames[i] = e.Name
+				if e.Name == "pr-7" {
+					foundPreview = e.Preview
+				}
 			}
 			Expect(envNames).To(ContainElement("pr-7"))
+			Expect(foundPreview).To(BeTrue())
 		})
 	})
 
@@ -368,10 +373,15 @@ var _ = Describe("PreviewEnvironment Controller", func() {
 			var proj mortisev1alpha1.Project
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: project.Name}, &proj)).To(Succeed())
 			envNames := make([]string, len(proj.Spec.Environments))
+			foundPreview := false
 			for i, e := range proj.Spec.Environments {
 				envNames[i] = e.Name
+				if e.Name == "pr-42" {
+					foundPreview = e.Preview
+				}
 			}
 			Expect(envNames).To(ContainElement("pr-42"))
+			Expect(foundPreview).To(BeTrue())
 
 			// Verify app got pr-42 override cloned from staging.
 			var app mortisev1alpha1.App
@@ -850,6 +860,51 @@ func TestEnsureProjectEnvIdempotent(t *testing.T) {
 	}
 	if count != 1 {
 		t.Errorf("expected exactly 1 pr-11 env, got %d; envs: %+v", count, proj.Spec.Environments)
+	}
+}
+
+func TestEnsureProjectEnvBackfillsPreviewFlag(t *testing.T) {
+	ctx := context.Background()
+	s := newTestScheme(t)
+
+	project := &mortisev1alpha1.Project{
+		ObjectMeta: metav1.ObjectMeta{Name: "backfill-test"},
+		Spec: mortisev1alpha1.ProjectSpec{
+			Environments: []mortisev1alpha1.ProjectEnvironment{
+				{Name: "staging"},
+				{Name: "pr-12"},
+			},
+		},
+	}
+
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(project).Build()
+	reconciler := &PreviewEnvironmentReconciler{
+		Client: c,
+		Scheme: s,
+		Clock:  clocktesting.NewFakeClock(time.Now()),
+	}
+
+	if err := reconciler.ensureProjectEnv(ctx, "backfill-test", "pr-12"); err != nil {
+		t.Fatalf("ensureProjectEnv: %v", err)
+	}
+
+	var proj mortisev1alpha1.Project
+	if err := c.Get(ctx, types.NamespacedName{Name: "backfill-test"}, &proj); err != nil {
+		t.Fatalf("get project: %v", err)
+	}
+
+	count := 0
+	for _, env := range proj.Spec.Environments {
+		if env.Name != "pr-12" {
+			continue
+		}
+		count++
+		if !env.Preview {
+			t.Fatalf("expected Preview=true on existing pr-12 env")
+		}
+	}
+	if count != 1 {
+		t.Fatalf("expected exactly 1 pr-12 env, got %d; envs: %+v", count, proj.Spec.Environments)
 	}
 }
 
