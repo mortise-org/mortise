@@ -312,13 +312,13 @@ verify-chart-dependency-drift: ## Verify the vendored mortise-core package match
 	diff -qr charts/mortise-core/crds "$$tmpdir/mortise-core/crds"; \
 	diff -q charts/mortise-core/values.yaml "$$tmpdir/mortise-core/values.yaml"; \
 	helm template packaged-core "$$tgz" --show-only templates/rbac.yaml --namespace mortise-system \
-		| kubectl create --dry-run=client -f - -o json \
+		| kubectl create --dry-run=client --validate=false -f - -o json \
 		| jq -e 'select(.kind == "ClusterRole") | any(.rules[].resources[]; . == "buildruns")' >/dev/null; \
 	helm template packaged-core "$$tgz" --show-only templates/rbac.yaml --namespace mortise-system \
-		| kubectl create --dry-run=client -f - -o json \
+		| kubectl create --dry-run=client --validate=false -f - -o json \
 		| jq -e 'select(.kind == "ClusterRole") | any(.rules[].resources[]; . == "buildruns/finalizers")' >/dev/null; \
 	helm template packaged-core "$$tgz" --show-only templates/rbac.yaml --namespace mortise-system \
-		| kubectl create --dry-run=client -f - -o json \
+		| kubectl create --dry-run=client --validate=false -f - -o json \
 		| jq -e 'select(.kind == "ClusterRole") | any(.rules[].resources[]; . == "buildruns/status")' >/dev/null
 
 .PHONY: test-charts
