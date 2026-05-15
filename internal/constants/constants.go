@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"net/url"
 	"strings"
 )
 
@@ -66,8 +67,9 @@ func PreviewEnvironmentPrefix(repo string, multiRepo bool) string {
 	if !multiRepo {
 		return "preview-pr-"
 	}
-	slug := previewRepoSlug(repo)
-	hash := previewRepoHash(repo)
+	canonicalRepo := CanonicalRepoKey(repo)
+	slug := previewRepoSlug(canonicalRepo)
+	hash := previewRepoHash(canonicalRepo)
 	maxSlugLen := 63 - len("preview-") - len("-") - previewRepoHashLen - len("-pr-") - maxPreviewPRNumberDigits
 	if maxSlugLen < 1 {
 		maxSlugLen = 1
@@ -79,6 +81,30 @@ func PreviewEnvironmentPrefix(repo string, multiRepo bool) string {
 		}
 	}
 	return fmt.Sprintf("preview-%s-%s-pr-", slug, hash)
+}
+
+// CanonicalRepoKey returns a stable lowercased repository key suitable for
+// matching and deterministic naming across owner/repo, URL, and SSH forms.
+func CanonicalRepoKey(repo string) string {
+	repo = strings.TrimSpace(strings.TrimSuffix(repo, ".git"))
+	if repo == "" {
+		return ""
+	}
+
+	if strings.Contains(repo, "://") {
+		if u, err := url.Parse(repo); err == nil {
+			repo = strings.TrimPrefix(u.Path, "/")
+		}
+	}
+	if idx := strings.Index(repo, "@"); idx >= 0 && strings.Contains(repo[idx:], ":") {
+		repo = repo[strings.LastIndex(repo, ":")+1:]
+	}
+	repo = strings.TrimSuffix(repo, "/")
+	parts := strings.Split(repo, "/")
+	if len(parts) >= 2 {
+		return strings.ToLower(parts[len(parts)-2] + "/" + parts[len(parts)-1])
+	}
+	return strings.ToLower(repo)
 }
 
 func previewRepoSlug(repo string) string {

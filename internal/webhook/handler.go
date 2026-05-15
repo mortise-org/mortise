@@ -12,7 +12,6 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"net/url"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -395,15 +394,7 @@ func ownerRepo(normalized string) string {
 
 // normalizeRepo returns a canonical lowercased string for comparison.
 func normalizeRepo(raw string) string {
-	raw = strings.TrimSuffix(raw, ".git")
-
-	if strings.Contains(raw, "://") {
-		u, err := url.Parse(raw)
-		if err == nil {
-			return strings.ToLower(u.Host) + "/" + strings.ToLower(strings.TrimPrefix(u.Path, "/"))
-		}
-	}
-	return strings.ToLower(raw)
+	return constants.CanonicalRepoKey(raw)
 }
 
 // BuildRequest is the parsed push event payload.

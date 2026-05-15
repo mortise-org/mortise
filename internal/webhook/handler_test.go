@@ -820,14 +820,15 @@ func TestGitHubPREvent_Reopened_CreatesPreviewEnvironment(t *testing.T) {
 func TestGitHubPREvent_MultiRepoUsesConvergencePreviewNameForCreateUpdateDelete(t *testing.T) {
 	const secret = "prsecret"
 	const providerName = "github-main"
-	const repo = "org/foo.bar"
+	const eventRepo = "org/foo.bar"
+	const appRepo = "https://github.com/org/foo.bar"
 
 	gp := makeGitProvider(mortisev1alpha1.GitProviderTypeGitHub, "mortise-system", "wh-secret", "value")
-	targetApp := makeGitApp("target", "pj-default", "https://github.com/"+repo, "main")
+	targetApp := makeGitApp("target", "pj-default", appRepo, "main")
 	otherApp := makeGitApp("other", "pj-default", "https://github.com/org/other-repo", "main")
 	proj := makeProject("default", &mortisev1alpha1.PreviewConfig{Enabled: true})
 	proj.Spec.Environments = []mortisev1alpha1.ProjectEnvironment{{Name: "staging"}}
-	expectedName := constants.PreviewEnvironmentName(repo, 42, true)
+	expectedName := constants.PreviewEnvironmentName(appRepo, 42, true)
 
 	kr := &fakeK8sReader{
 		provider: gp,
@@ -837,7 +838,7 @@ func TestGitHubPREvent_MultiRepoUsesConvergencePreviewNameForCreateUpdateDelete(
 	}
 	h := newTestHandler(kr)
 
-	openedBody := githubPRPayloadJSON("opened", 42, "feature/x", "sha-opened", repo)
+	openedBody := githubPRPayloadJSON("opened", 42, "feature/x", "sha-opened", eventRepo)
 	req := httptest.NewRequest(http.MethodPost, "/"+providerName, bytes.NewReader(openedBody))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-GitHub-Event", "pull_request")
@@ -861,7 +862,7 @@ func TestGitHubPREvent_MultiRepoUsesConvergencePreviewNameForCreateUpdateDelete(
 		"pj-default/" + expectedName: &existing,
 	}
 
-	syncBody := githubPRPayloadJSON("synchronize", 42, "feature/x", "sha-sync", repo)
+	syncBody := githubPRPayloadJSON("synchronize", 42, "feature/x", "sha-sync", eventRepo)
 	req = httptest.NewRequest(http.MethodPost, "/"+providerName, bytes.NewReader(syncBody))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-GitHub-Event", "pull_request")
@@ -883,7 +884,7 @@ func TestGitHubPREvent_MultiRepoUsesConvergencePreviewNameForCreateUpdateDelete(
 		t.Fatalf("synchronize: expected SHA sha-sync, got %q", kr.updatedPreviews[0].Spec.PullRequest.SHA)
 	}
 
-	closedBody := githubPRPayloadJSON("closed", 42, "feature/x", "sha-sync", repo)
+	closedBody := githubPRPayloadJSON("closed", 42, "feature/x", "sha-sync", eventRepo)
 	req = httptest.NewRequest(http.MethodPost, "/"+providerName, bytes.NewReader(closedBody))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-GitHub-Event", "pull_request")
