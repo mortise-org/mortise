@@ -42,6 +42,7 @@ import (
 )
 
 const previewFinalizer = "mortise.dev/preview-finalizer"
+const maxPreviewPRNumberDigits = 19
 
 // convergenceGracePeriod prevents deleting PEs that were just created by a
 // webhook or another controller. Without this, a convergence run that sees
@@ -548,10 +549,12 @@ func (r *PreviewEnvironmentReconciler) ConvergeProjectPreviews(ctx context.Conte
 
 	// Track which PE names are still open.
 	openPEs := make(map[string]bool)
+	protectedPEs := make(map[string]bool)
 
 	botPR := project.Spec.Preview.BotPR == nil || *project.Spec.Preview.BotPR
 
 	sourceEnv := resolveSourceEnvFromProject(project)
+	multiRepo := len(repos) > 1
 
 	for _, rk := range repos {
 		if rk.providerRef == "" {
@@ -582,6 +585,7 @@ func (r *PreviewEnvironmentReconciler) ConvergeProjectPreviews(ctx context.Conte
 		prs, err := gitAPI.ListOpenPullRequests(ctx, rk.repo)
 		if err != nil {
 			log.Error(err, "list open PRs for convergence, skipping repo", "repo", rk.repo, "provider", rk.providerRef)
+			r.protectRepoPreviewEnvironments(protectedPEs, existingByPR, rk.repo, multiRepo)
 			continue
 		}
 
@@ -590,7 +594,7 @@ func (r *PreviewEnvironmentReconciler) ConvergeProjectPreviews(ctx context.Conte
 				continue
 			}
 
-			peName := convergencePEName(rk.repo, pr.Number, len(repos) > 1)
+			peName := convergencePEName(rk.repo, pr.Number, multiRepo)
 			openPEs[peName] = true
 
 			if _, exists := existingByPR[peName]; exists {
@@ -633,6 +637,10 @@ func (r *PreviewEnvironmentReconciler) ConvergeProjectPreviews(ctx context.Conte
 		if openPEs[peName] {
 			continue
 		}
+		if protectedPEs[peName] {
+			log.Info("convergence: preserving PE for repo with failed PR listing", "project", project.Name, "pe", peName)
+			continue
+		}
 		if r.clock().Since(pe.CreationTimestamp.Time) < convergenceGracePeriod {
 			log.Info("convergence: skipping recent PE", "project", project.Name, "pe", peName, "age", r.clock().Since(pe.CreationTimestamp.Time))
 			continue
@@ -649,6 +657,22 @@ func (r *PreviewEnvironmentReconciler) ConvergeProjectPreviews(ctx context.Conte
 	return nil
 }
 
+func (r *PreviewEnvironmentReconciler) protectRepoPreviewEnvironments(protectedPEs map[string]bool, existingByPR map[string]*mortisev1alpha1.PreviewEnvironment, repo string, multiRepo bool) {
+	if !multiRepo {
+		for peName := range existingByPR {
+			protectedPEs[peName] = true
+		}
+		return
+	}
+
+	prefix := convergencePEPrefix(repo, true)
+	for peName := range existingByPR {
+		if strings.HasPrefix(peName, prefix) {
+			protectedPEs[peName] = true
+		}
+	}
+}
+
 // convergencePEName returns the PE object name for a given repo and PR number.
 // When multiRepo is false (single git-source repo), the classic format
 // "preview-pr-{number}" is used. When true, a short repo slug is included to
@@ -657,8 +681,15 @@ func convergencePEName(repo string, number int, multiRepo bool) string {
 	if !multiRepo {
 		return fmt.Sprintf("preview-pr-%d", number)
 	}
+	return fmt.Sprintf("%s%d", convergencePEPrefix(repo, true), number)
+}
+
+func convergencePEPrefix(repo string, multiRepo bool) string {
+	if !multiRepo {
+		return "preview-pr-"
+	}
 	slug := previewRepoSlug(repo)
-	maxSlugLen := 63 - len("preview--pr-") - len(fmt.Sprintf("%d", number))
+	maxSlugLen := 63 - len("preview--pr-") - maxPreviewPRNumberDigits
 	if maxSlugLen < 1 {
 		maxSlugLen = 1
 	}
@@ -668,7 +699,7 @@ func convergencePEName(repo string, number int, multiRepo bool) string {
 			slug = "repo"
 		}
 	}
-	return fmt.Sprintf("preview-%s-pr-%d", slug, number)
+	return fmt.Sprintf("preview-%s-pr-", slug)
 }
 
 func previewRepoSlug(repo string) string {

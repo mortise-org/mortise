@@ -1601,6 +1601,7 @@ func TestConvergeProjectPreviews_ListOpenPullRequestsContinuesPerRepo(t *testing
 	s := newTestScheme(t)
 	projectName := "converge-continue"
 	nsName := constants.ControlNamespace(projectName)
+	oldEnough := metav1.NewTime(time.Now().Add(-convergenceGracePeriod - time.Minute))
 
 	project := &mortisev1alpha1.Project{
 		ObjectMeta: metav1.ObjectMeta{Name: projectName},
@@ -1659,7 +1660,20 @@ func TestConvergeProjectPreviews_ListOpenPullRequestsContinuesPerRepo(t *testing
 		Data: map[string][]byte{"token": []byte("fake-token")},
 	}
 
-	objects := append([]client.Object{project, gp, pm, tokenSecret}, apps...)
+	existingFailedRepoPE := &mortisev1alpha1.PreviewEnvironment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              "preview-fails-pr-30",
+			Namespace:         nsName,
+			CreationTimestamp: oldEnough,
+		},
+		Spec: mortisev1alpha1.PreviewEnvironmentSpec{
+			ProjectRef:  projectName,
+			SourceEnv:   "staging",
+			PullRequest: mortisev1alpha1.PullRequestRef{Number: 30, Branch: "old", SHA: "old"},
+		},
+	}
+
+	objects := append([]client.Object{project, gp, pm, tokenSecret, existingFailedRepoPE}, apps...)
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(objects...).Build()
 
 	mock := &mockGitAPI{
@@ -1688,11 +1702,21 @@ func TestConvergeProjectPreviews_ListOpenPullRequestsContinuesPerRepo(t *testing
 	if err := c.List(ctx, &peList, client.InNamespace(nsName)); err != nil {
 		t.Fatalf("list PEs: %v", err)
 	}
-	if len(peList.Items) != 1 {
-		t.Fatalf("expected 1 PE from the healthy repo, got %d", len(peList.Items))
+	if len(peList.Items) != 2 {
+		t.Fatalf("expected preserved failed-repo PE plus 1 PE from the healthy repo, got %d", len(peList.Items))
 	}
-	if peList.Items[0].Name != "preview-works-pr-31" {
-		t.Fatalf("expected PE from healthy repo, got %q", peList.Items[0].Name)
+
+	gotNames := map[string]bool{}
+	for _, pe := range peList.Items {
+		if pe.DeletionTimestamp.IsZero() {
+			gotNames[pe.Name] = true
+		}
+	}
+	if !gotNames["preview-fails-pr-30"] {
+		t.Fatalf("expected failed repo PE to be preserved, got %v", gotNames)
+	}
+	if !gotNames["preview-works-pr-31"] {
+		t.Fatalf("expected PE from healthy repo, got %v", gotNames)
 	}
 }
 
