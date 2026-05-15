@@ -304,6 +304,7 @@ verify-chart-dependency-drift: ## Verify the vendored mortise-core package match
 	@subchart_version=$$(awk -F': ' '/^version:/ {print $$2; exit}' charts/mortise-core/Chart.yaml); \
 	tgz="charts/mortise/charts/mortise-core-$${subchart_version}.tgz"; \
 	tmpdir=$$(mktemp -d); \
+	rbac_manifest="$$tmpdir/rbac.yaml"; \
 	trap 'rm -rf "$$tmpdir"' EXIT; \
 	test -f "$$tgz"; \
 	tar -xzf "$$tgz" -C "$$tmpdir"; \
@@ -311,15 +312,8 @@ verify-chart-dependency-drift: ## Verify the vendored mortise-core package match
 	diff -qr charts/mortise-core/templates "$$tmpdir/mortise-core/templates"; \
 	diff -qr charts/mortise-core/crds "$$tmpdir/mortise-core/crds"; \
 	diff -q charts/mortise-core/values.yaml "$$tmpdir/mortise-core/values.yaml"; \
-	helm template packaged-core "$$tgz" --show-only templates/rbac.yaml --namespace mortise-system \
-		| kubectl create --dry-run=client --validate=false -f - -o json \
-		| jq -e 'select(.kind == "ClusterRole") | any(.rules[].resources[]; . == "buildruns")' >/dev/null; \
-	helm template packaged-core "$$tgz" --show-only templates/rbac.yaml --namespace mortise-system \
-		| kubectl create --dry-run=client --validate=false -f - -o json \
-		| jq -e 'select(.kind == "ClusterRole") | any(.rules[].resources[]; . == "buildruns/finalizers")' >/dev/null; \
-	helm template packaged-core "$$tgz" --show-only templates/rbac.yaml --namespace mortise-system \
-		| kubectl create --dry-run=client --validate=false -f - -o json \
-		| jq -e 'select(.kind == "ClusterRole") | any(.rules[].resources[]; . == "buildruns/status")' >/dev/null
+	helm template packaged-core "$$tgz" --show-only templates/rbac.yaml --namespace mortise-system > "$$rbac_manifest"; \
+	python3 -c 'import sys,yaml; docs=[doc for doc in yaml.safe_load_all(open(sys.argv[1], encoding="utf-8")) if doc]; resources={res for doc in docs if doc.get("kind") == "ClusterRole" for rule in doc.get("rules", []) for res in rule.get("resources", [])}; required={"buildruns", "buildruns/finalizers", "buildruns/status"}; missing=sorted(required - resources); assert not missing, f"missing RBAC resources in packaged subchart: {'"'"', '"'"'.join(missing)}"' "$$rbac_manifest"
 
 .PHONY: test-charts
 test-charts: ## Lint and template-test both Helm charts (no cluster required)

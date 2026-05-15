@@ -38,9 +38,6 @@ jobs:
         with:
           version: v3.17.3
 
-      - name: Install kubectl
-        uses: azure/setup-kubectl@v4
-
       - name: Add Helm repos
         run: |
           helm repo add traefik https://traefik.github.io/charts
