@@ -19,6 +19,9 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strings"
+	"time"
+
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -35,17 +38,25 @@ import (
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
 	"github.com/mortise-org/mortise/internal/constants"
 	"github.com/mortise-org/mortise/internal/envstore"
+	"github.com/mortise-org/mortise/internal/git"
 )
 
 const previewFinalizer = "mortise.dev/preview-finalizer"
+
+// convergenceGracePeriod prevents deleting PEs that were just created by a
+// webhook or another controller. Without this, a convergence run that sees
+// no matching open PR (e.g. because the forge API hasn't propagated yet)
+// would race against the creator.
+const convergenceGracePeriod = 15 * time.Minute
 
 // PreviewEnvironmentReconciler coordinates preview environments as a thin layer:
 // it adds/removes a ProjectEnvironment entry on the parent Project and clones
 // per-app env overrides. The app controller handles all build/deploy work.
 type PreviewEnvironmentReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
-	Clock  clock.Clock
+	Scheme        *runtime.Scheme
+	Clock         clock.Clock
+	GitAPIFactory func(*mortisev1alpha1.GitProvider, string, string) (git.GitAPI, error)
 }
 
 // +kubebuilder:rbac:groups=mortise.mortise.dev,resources=previewenvironments,verbs=get;list;watch;create;update;patch;delete
@@ -168,7 +179,7 @@ func (r *PreviewEnvironmentReconciler) ensureProjectEnv(ctx context.Context, pro
 				return nil
 			}
 		}
-		project.Spec.Environments = append(project.Spec.Environments, mortisev1alpha1.ProjectEnvironment{Name: envName})
+		project.Spec.Environments = append(project.Spec.Environments, mortisev1alpha1.ProjectEnvironment{Name: envName, Preview: true})
 		return r.Update(ctx, &project)
 	})
 }
@@ -476,9 +487,251 @@ func (r *PreviewEnvironmentReconciler) clock() clock.Clock {
 	return clock.RealClock{}
 }
 
+// ConvergeProjectPreviews synchronises preview environments with the forge's
+// open-PR state. Called when a Project with previews enabled is reconciled.
+// Creates PE CRs for open PRs that lack one and deletes PE CRs for PRs that
+// are no longer open.
+func (r *PreviewEnvironmentReconciler) ConvergeProjectPreviews(ctx context.Context, project *mortisev1alpha1.Project) error {
+	log := logf.FromContext(ctx)
+
+	if project.Spec.Preview == nil || !project.Spec.Preview.Enabled {
+		return nil
+	}
+	if r.GitAPIFactory == nil {
+		return nil
+	}
+
+	controlNs := constants.ControlNamespace(project.Name)
+
+	var apps mortisev1alpha1.AppList
+	if err := r.List(ctx, &apps, client.InNamespace(controlNs)); err != nil {
+		return fmt.Errorf("list apps: %w", err)
+	}
+
+	// Collect unique repos from git-source apps with their provider refs.
+	type repoKey struct {
+		repo        string
+		providerRef string
+	}
+	seen := make(map[repoKey]bool)
+	var repos []repoKey
+	for i := range apps.Items {
+		src := apps.Items[i].Spec.Source
+		if src.Type != mortisev1alpha1.SourceTypeGit || src.Repo == "" {
+			continue
+		}
+		k := repoKey{repo: src.Repo, providerRef: src.ProviderRef}
+		if !seen[k] {
+			seen[k] = true
+			repos = append(repos, k)
+		}
+	}
+	if len(repos) == 0 {
+		return nil
+	}
+
+	// List existing PE CRs in the project control namespace.
+	var peList mortisev1alpha1.PreviewEnvironmentList
+	if err := r.List(ctx, &peList, client.InNamespace(controlNs)); err != nil {
+		return fmt.Errorf("list preview environments: %w", err)
+	}
+
+	// Index existing PEs by name. Using PE name as the key avoids PR number
+	// collisions across different repos (multi-repo projects disambiguate
+	// with a repo slug in the PE name).
+	existingByPR := make(map[string]*mortisev1alpha1.PreviewEnvironment, len(peList.Items))
+	for i := range peList.Items {
+		pe := &peList.Items[i]
+		// Use the PE name as a unique handle; map all repo variants to it.
+		existingByPR[pe.Name] = pe
+	}
+
+	// Track which PE names are still open.
+	openPEs := make(map[string]bool)
+
+	botPR := project.Spec.Preview.BotPR == nil || *project.Spec.Preview.BotPR
+
+	sourceEnv := resolveSourceEnvFromProject(project)
+
+	for _, rk := range repos {
+		if rk.providerRef == "" {
+			continue
+		}
+
+		var gp mortisev1alpha1.GitProvider
+		if err := r.Get(ctx, types.NamespacedName{Name: rk.providerRef}, &gp); err != nil {
+			if errors.IsNotFound(err) {
+				log.Info("GitProvider not found, skipping repo", "provider", rk.providerRef, "repo", rk.repo)
+				continue
+			}
+			return fmt.Errorf("get GitProvider %q: %w", rk.providerRef, err)
+		}
+
+		tokenResult, err := git.ResolveGitTokenForApp(ctx, r.Client, rk.providerRef, controlNs, "", "")
+		if err != nil {
+			log.Info("no git token available for convergence, skipping repo", "provider", rk.providerRef, "repo", rk.repo, "error", err)
+			continue
+		}
+
+		gitAPI, err := r.GitAPIFactory(&gp, tokenResult.Token, "")
+		if err != nil {
+			log.Error(err, "build GitAPI for convergence", "provider", rk.providerRef)
+			continue
+		}
+
+		prs, err := gitAPI.ListOpenPullRequests(ctx, rk.repo)
+		if err != nil {
+			return fmt.Errorf("list open PRs for %q: %w", rk.repo, err)
+		}
+
+		for _, pr := range prs {
+			if !botPR && pr.Author.IsBot {
+				continue
+			}
+
+			peName := convergencePEName(rk.repo, pr.Number, len(repos) > 1)
+			openPEs[peName] = true
+
+			if _, exists := existingByPR[peName]; exists {
+				continue
+			}
+
+			if sourceEnv == "" {
+				log.Info("no source env to clone from, skipping PR", "project", project.Name, "pr", pr.Number, "repo", rk.repo)
+				continue
+			}
+
+			pe := &mortisev1alpha1.PreviewEnvironment{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      peName,
+					Namespace: controlNs,
+				},
+				Spec: mortisev1alpha1.PreviewEnvironmentSpec{
+					ProjectRef: project.Name,
+					SourceEnv:  sourceEnv,
+					PullRequest: mortisev1alpha1.PullRequestRef{
+						Number: pr.Number,
+						Branch: pr.Branch,
+						SHA:    pr.SHA,
+					},
+				},
+			}
+			if err := r.Create(ctx, pe); err != nil {
+				if errors.IsAlreadyExists(err) {
+					continue
+				}
+				return fmt.Errorf("create PE for PR #%d (%s): %w", pr.Number, rk.repo, err)
+			}
+			log.Info("convergence: created PE for open PR", "project", project.Name, "pr", pr.Number, "repo", rk.repo)
+		}
+	}
+
+	// Delete PE CRs for PRs that are no longer open. Skip recently-created
+	// PEs to avoid racing with webhooks or in-flight reconciles.
+	for peName, pe := range existingByPR {
+		if openPEs[peName] {
+			continue
+		}
+		if r.clock().Since(pe.CreationTimestamp.Time) < convergenceGracePeriod {
+			log.Info("convergence: skipping recent PE", "project", project.Name, "pe", peName, "age", r.clock().Since(pe.CreationTimestamp.Time))
+			continue
+		}
+		if err := r.Delete(ctx, pe); err != nil {
+			if errors.IsNotFound(err) {
+				continue
+			}
+			return fmt.Errorf("delete stale PE %q: %w", peName, err)
+		}
+		log.Info("convergence: deleted PE for closed PR", "project", project.Name, "pe", peName)
+	}
+
+	return nil
+}
+
+// convergencePEName returns the PE object name for a given repo and PR number.
+// When multiRepo is false (single git-source repo), the classic format
+// "preview-pr-{number}" is used. When true, a short repo slug is included to
+// avoid name collisions across repos.
+func convergencePEName(repo string, number int, multiRepo bool) string {
+	if !multiRepo {
+		return fmt.Sprintf("preview-pr-%d", number)
+	}
+	// Use last path segment of the repo URL as slug (e.g. "repo" from
+	// "https://github.com/org/repo"). Truncate to keep the name under 63 chars.
+	slug := repo
+	if idx := len(slug) - 1; idx >= 0 && slug[idx] == '/' {
+		slug = slug[:idx]
+	}
+	if idx := strings.LastIndex(slug, "/"); idx >= 0 {
+		slug = slug[idx+1:]
+	}
+	if len(slug) > 20 {
+		slug = slug[:20]
+	}
+	return fmt.Sprintf("preview-%s-pr-%d", slug, number)
+}
+
+// resolveSourceEnvFromProject mirrors the webhook handler's resolveSourceEnv logic.
+func resolveSourceEnvFromProject(project *mortisev1alpha1.Project) string {
+	if project.Spec.Preview != nil && project.Spec.Preview.SourceEnvironment != "" {
+		return project.Spec.Preview.SourceEnvironment
+	}
+	var firstNonProd string
+	for _, env := range project.Spec.Environments {
+		if env.Preview {
+			continue
+		}
+		if env.Name == "staging" {
+			return "staging"
+		}
+		if env.Name != "production" && firstNonProd == "" {
+			firstNonProd = env.Name
+		}
+	}
+	return firstNonProd
+}
+
+// reconcileProjectConvergence is called when a Project event is received.
+// It converges preview environments for the project.
+func (r *PreviewEnvironmentReconciler) reconcileProjectConvergence(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+
+	var project mortisev1alpha1.Project
+	if err := r.Get(ctx, types.NamespacedName{Name: req.Name}, &project); err != nil {
+		if errors.IsNotFound(err) {
+			return ctrl.Result{}, nil
+		}
+		return ctrl.Result{}, err
+	}
+
+	if err := r.ConvergeProjectPreviews(ctx, &project); err != nil {
+		log.Error(err, "converge project previews", "project", project.Name)
+		return ctrl.Result{}, err
+	}
+
+	return ctrl.Result{RequeueAfter: 10 * time.Minute}, nil
+}
+
 func (r *PreviewEnvironmentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&mortisev1alpha1.PreviewEnvironment{}).
 		Named("previewenvironment").
 		Complete(r)
+}
+
+// PreviewConvergenceReconciler watches Projects and triggers PE convergence
+// against the forge's open-PR state.
+type PreviewConvergenceReconciler struct {
+	PEReconciler *PreviewEnvironmentReconciler
+}
+
+func (c *PreviewConvergenceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	return c.PEReconciler.reconcileProjectConvergence(ctx, req)
+}
+
+func (c *PreviewConvergenceReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	return ctrl.NewControllerManagedBy(mgr).
+		For(&mortisev1alpha1.Project{}).
+		Named("previewconvergence").
+		Complete(c)
 }

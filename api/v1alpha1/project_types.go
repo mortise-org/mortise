@@ -62,6 +62,11 @@ type ProjectEnvironment struct {
 	// environment. Owners are unaffected. Typical use: protect production.
 	// +optional
 	Restricted bool `json:"restricted,omitempty"`
+
+	// Preview marks this environment as a preview (PR) environment. Set by the
+	// preview environment controller; filtered from the normal env list in the UI.
+	// +optional
+	Preview bool `json:"preview,omitempty"`
 }
 
 // ProjectSpec defines the desired state of a Project — the top-level grouping

@@ -167,6 +167,18 @@ Tooling that reads PreviewEnvironment resources must be updated. Existing
 PreviewEnvironment objects will be re-reconciled automatically on
 upgrade; no manual cleanup is needed.
 
+**ProjectEnvironment `preview` field (post-1.0.1)**: The
+`ProjectEnvironment` struct now includes a `preview` boolean field.
+Preview environments created by the operator have `preview: true`, which
+allows the UI and API to distinguish them from user-created environments.
+Tooling that lists or inspects `project.spec.environments` should handle
+this new field.
+
+**Environment deletion auto-strips overrides (post-1.0.1)**: Deleting a
+project environment that has app-level overrides no longer returns a 409
+error. The API now removes overrides from all apps referencing the deleted
+environment and proceeds with the deletion.
+
 **App Degraded phase (post-1.0.1)**: The `AppPhase` enum now includes
 `Degraded`. This phase indicates a build failed but a previously-deployed
 image is still serving. Tooling or dashboards that switch on `AppPhase`

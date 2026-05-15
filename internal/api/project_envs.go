@@ -47,6 +47,7 @@ type projectEnvResponse struct {
 	DisplayOrder int       `json:"displayOrder"`
 	Health       EnvHealth `json:"health"`
 	Restricted   bool      `json:"restricted,omitempty"`
+	Preview      bool      `json:"preview,omitempty"`
 }
 
 type createProjectEnvRequest struct {
@@ -114,6 +115,7 @@ func (s *Server) ListProjectEnvironments(w http.ResponseWriter, r *http.Request)
 			DisplayOrder: env.DisplayOrder,
 			Health:       aggregateEnvHealth(env.Name, apps.Items),
 			Restricted:   env.Restricted,
+			Preview:      env.Preview,
 		})
 	}
 	writeJSON(w, http.StatusOK, resp)
@@ -383,14 +385,14 @@ func (s *Server) updateProjectEnvironment(ctx context.Context, projectName, envN
 	return updated, nil
 }
 
-// DeleteProjectEnvironment removes an env from spec.environments. The
-// admission webhook rejects the call if any App still carries an override for
-// the env; the API surfaces that 403 verbatim.
+// DeleteProjectEnvironment removes an env from spec.environments. Any Apps
+// that carry per-env overrides for the deleted environment are automatically
+// stripped before the project update, so deletion always succeeds.
 //
 // DELETE /api/projects/{project}/environments/{name}
 //
 // @Summary Delete a project environment
-// @Description Removes an environment from the project. Fails if apps still have overrides for it.
+// @Description Removes an environment from the project. Automatically strips per-env overrides from all apps referencing the deleted environment before removing it.
 // @Tags environments
 // @Produce json
 // @Security BearerAuth
@@ -400,7 +402,6 @@ func (s *Server) updateProjectEnvironment(ctx context.Context, projectName, envN
 // @Failure 400 {object} errorResponse
 // @Failure 403 {object} errorResponse
 // @Failure 404 {object} errorResponse
-// @Failure 409 {object} errorResponse
 // @Router /projects/{project}/environments/{name} [delete]
 func (s *Server) DeleteProjectEnvironment(w http.ResponseWriter, r *http.Request) {
 	projectName := chi.URLParam(r, "project")
@@ -422,15 +423,9 @@ func (s *Server) DeleteProjectEnvironment(w http.ResponseWriter, r *http.Request
 		writeJSON(w, http.StatusBadRequest, errorResponse{"cannot delete the last environment on a project — delete the project instead"})
 		return
 	}
-	offenders, err := s.appsReferencingEnv(r.Context(), projectNs(project), envName)
+	stripped, err := s.stripAppEnvOverrides(r.Context(), projectNs(project), envName)
 	if err != nil {
 		writeError(w, r, err)
-		return
-	}
-	if len(offenders) > 0 {
-		writeJSON(w, http.StatusConflict, errorResponse{
-			fmt.Sprintf("cannot remove environment %q while App overrides still reference it: %v — remove the entries from spec.environments on those Apps first", envName, offenders),
-		})
 		return
 	}
 
@@ -444,7 +439,11 @@ func (s *Server) DeleteProjectEnvironment(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	s.recordActivity(r, projectName, "delete", "environment", envName, "Deleted project environment "+envName, "")
+	msg := "Deleted project environment " + envName
+	if len(stripped) > 0 {
+		msg += fmt.Sprintf(" (stripped overrides from %v)", stripped)
+	}
+	s.recordActivity(r, projectName, "delete", "environment", envName, msg, "")
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted", "name": envName})
 }
@@ -794,24 +793,51 @@ func cloneAppEnvSecret(ctx context.Context, appName, sourceEnvNs, targetEnvNs st
 	return nil
 }
 
-func (s *Server) appsReferencingEnv(ctx context.Context, ns, envName string) ([]string, error) {
+// stripAppEnvOverrides removes the env override entry from every App in the
+// project namespace that references envName. Uses RetryOnConflict per App to
+// handle concurrent modifications. Returns the list of app names that had
+// overrides stripped.
+func (s *Server) stripAppEnvOverrides(ctx context.Context, ns, envName string) ([]string, error) {
 	var apps mortisev1alpha1.AppList
 	if err := s.client.List(ctx, &apps, client.InNamespace(ns)); err != nil {
 		return nil, err
 	}
-	var offenders []string
+	var stripped []string
 	for i := range apps.Items {
 		app := &apps.Items[i]
+		has := false
 		for _, env := range app.Spec.Environments {
-			if env.Name != envName {
-				continue
+			if env.Name == envName {
+				has = true
+				break
 			}
-			offenders = append(offenders, app.Name)
-			break
 		}
+		if !has {
+			continue
+		}
+		if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			var fresh mortisev1alpha1.App
+			if err := s.client.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: app.Namespace}, &fresh); err != nil {
+				return err
+			}
+			idx := -1
+			for j, env := range fresh.Spec.Environments {
+				if env.Name == envName {
+					idx = j
+					break
+				}
+			}
+			if idx < 0 {
+				return nil
+			}
+			fresh.Spec.Environments = append(fresh.Spec.Environments[:idx], fresh.Spec.Environments[idx+1:]...)
+			return s.client.Update(ctx, &fresh)
+		}); err != nil {
+			return stripped, fmt.Errorf("strip env override from app %q: %w", app.Name, err)
+		}
+		stripped = append(stripped, app.Name)
 	}
-	sort.Strings(offenders)
-	return offenders, nil
+	return stripped, nil
 }
 
 func (s *Server) ensureProjectEnvNamespace(ctx context.Context, project *mortisev1alpha1.Project, envName string, active bool) error {

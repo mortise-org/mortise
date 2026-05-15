@@ -655,9 +655,9 @@ func TestDeleteProjectEnvironment(t *testing.T) {
 	}
 }
 
-// TestDeleteProjectEnvironmentRejectsReferencedOverride verifies the REST API
-// enforces the same protection as the optional admission webhook.
-func TestDeleteProjectEnvironmentRejectsReferencedOverride(t *testing.T) {
+// TestDeleteProjectEnvironmentStripsOverrides verifies the REST API auto-strips
+// App env overrides when deleting an environment, instead of rejecting.
+func TestDeleteProjectEnvironmentStripsOverrides(t *testing.T) {
 	k8sClient := setupEnvtest(t)
 	srv := newAdminServer(t, k8sClient)
 	h := srv.Handler()
@@ -675,20 +675,90 @@ func TestDeleteProjectEnvironmentRejectsReferencedOverride(t *testing.T) {
 	}
 
 	w := doRequest(h, http.MethodDelete, "/api/projects/demo/environments/staging", nil)
-	if w.Code != http.StatusConflict {
-		t.Fatalf("expected 409, got %d: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Env should be removed from project.
+	var proj mortisev1alpha1.Project
+	_ = k8sClient.Get(context.Background(), types.NamespacedName{Name: "demo"}, &proj)
+	if len(proj.Spec.Environments) != 1 || proj.Spec.Environments[0].Name != "production" {
+		t.Fatalf("expected only production env, got %+v", proj.Spec.Environments)
+	}
+
+	// App override should be stripped.
+	var got mortisev1alpha1.App
+	_ = k8sClient.Get(context.Background(), types.NamespacedName{Namespace: ns, Name: "web"}, &got)
+	if len(got.Spec.Environments) != 0 {
+		t.Fatalf("expected app overrides stripped, got %+v", got.Spec.Environments)
+	}
+}
+
+// TestDeleteProjectEnvironmentStripsMultipleApps verifies deletion strips
+// overrides from multiple Apps.
+func TestDeleteProjectEnvironmentStripsMultipleApps(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+	const projectName = "demo-strip-multi"
+	ns := seedProject(t, k8sClient, projectName, "production", "staging")
+
+	for _, name := range []string{"web", "api", "worker"} {
+		app := &mortisev1alpha1.App{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+			Spec: mortisev1alpha1.AppSpec{
+				Source:       mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: "nginx:1.25.0"},
+				Environments: []mortisev1alpha1.Environment{{Name: "staging"}},
+			},
+		}
+		if err := k8sClient.Create(context.Background(), app); err != nil {
+			t.Fatalf("create app %s: %v", name, err)
+		}
+	}
+
+	w := doRequest(h, http.MethodDelete, "/api/projects/"+projectName+"/environments/staging", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	for _, name := range []string{"web", "api", "worker"} {
+		var got mortisev1alpha1.App
+		_ = k8sClient.Get(context.Background(), types.NamespacedName{Namespace: ns, Name: name}, &got)
+		if len(got.Spec.Environments) != 0 {
+			t.Errorf("app %s: expected overrides stripped, got %+v", name, got.Spec.Environments)
+		}
+	}
+}
+
+// TestDeleteProjectEnvironmentNoOverrides verifies deletion works when no Apps
+// have overrides for the env (no regression).
+func TestDeleteProjectEnvironmentNoOverrides(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+	const projectName = "demo-strip-none"
+	ns := seedProject(t, k8sClient, projectName, "production", "staging")
+
+	// App with no overrides for staging.
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: ns},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: "nginx:1.25.0"},
+		},
+	}
+	if err := k8sClient.Create(context.Background(), app); err != nil {
+		t.Fatalf("create app: %v", err)
+	}
+
+	w := doRequest(h, http.MethodDelete, "/api/projects/"+projectName+"/environments/staging", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 
 	var proj mortisev1alpha1.Project
-	_ = k8sClient.Get(context.Background(), types.NamespacedName{Name: "demo"}, &proj)
-	if len(proj.Spec.Environments) != 2 {
-		t.Fatalf("expected project envs unchanged, got %+v", proj.Spec.Environments)
-	}
-
-	var got mortisev1alpha1.App
-	_ = k8sClient.Get(context.Background(), types.NamespacedName{Namespace: ns, Name: "web"}, &got)
-	if len(got.Spec.Environments) != 1 || got.Spec.Environments[0].Name != "staging" {
-		t.Fatalf("expected app override unchanged, got %+v", got.Spec.Environments)
+	_ = k8sClient.Get(context.Background(), types.NamespacedName{Name: projectName}, &proj)
+	if len(proj.Spec.Environments) != 1 || proj.Spec.Environments[0].Name != "production" {
+		t.Fatalf("expected only production env, got %+v", proj.Spec.Environments)
 	}
 }
 
@@ -739,6 +809,58 @@ func TestAppEnvRejectsUnknownProjectEnv(t *testing.T) {
 	w := doRequest(h, http.MethodGet, "/api/projects/demo/apps/web/env?environment=ghost", nil)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestListProjectEnvironmentsPreviewField verifies that the preview flag is
+// correctly returned for normal and preview-marked environments.
+func TestListProjectEnvironmentsPreviewField(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+	seedProject(t, k8sClient, "demo-preview-flag", "production", "staging")
+
+	// Add a preview env to the project.
+	var proj mortisev1alpha1.Project
+	if err := k8sClient.Get(context.Background(), types.NamespacedName{Name: "demo-preview-flag"}, &proj); err != nil {
+		t.Fatalf("get project: %v", err)
+	}
+	proj.Spec.Environments = append(proj.Spec.Environments, mortisev1alpha1.ProjectEnvironment{
+		Name:    "pr-42",
+		Preview: true,
+	})
+	if err := k8sClient.Update(context.Background(), &proj); err != nil {
+		t.Fatalf("update project: %v", err)
+	}
+
+	w := doRequest(h, http.MethodGet, "/api/projects/demo-preview-flag/environments", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var envs []map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&envs); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(envs) != 3 {
+		t.Fatalf("expected 3 envs, got %d", len(envs))
+	}
+
+	envByName := map[string]map[string]any{}
+	for _, e := range envs {
+		envByName[e["name"].(string)] = e
+	}
+
+	// Normal envs should not have preview=true.
+	if preview, ok := envByName["production"]["preview"]; ok && preview == true {
+		t.Errorf("production should not be preview")
+	}
+	if preview, ok := envByName["staging"]["preview"]; ok && preview == true {
+		t.Errorf("staging should not be preview")
+	}
+	// Preview env should have preview=true.
+	if envByName["pr-42"]["preview"] != true {
+		t.Errorf("pr-42 should have preview=true, got %v", envByName["pr-42"]["preview"])
 	}
 }
 

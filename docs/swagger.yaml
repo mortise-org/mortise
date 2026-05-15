@@ -555,6 +555,8 @@ definitions:
         $ref: '#/definitions/api.EnvHealth'
       name:
         type: string
+      preview:
+        type: boolean
       restricted:
         type: boolean
     type: object
@@ -2124,7 +2126,7 @@ info:
   description: Self-hosted Railway-style deploy platform for Kubernetes. Manages projects,
     apps, deployments, env vars, secrets, domains, and git providers.
   title: Mortise API
-  version: 0.1.0
+  version: 1.0.0
 paths:
   /activity:
     get:
@@ -5124,8 +5126,9 @@ paths:
       - environments
   /projects/{project}/environments/{name}:
     delete:
-      description: Removes an environment from the project. Fails if apps still have
-        overrides for it.
+      description: Removes an environment from the project. Automatically strips per-env
+        overrides from all apps referencing the deleted environment before removing
+        it.
       parameters:
       - description: Project name
         in: path
@@ -5156,10 +5159,6 @@ paths:
             $ref: '#/definitions/api.errorResponse'
         "404":
           description: Not Found
-          schema:
-            $ref: '#/definitions/api.errorResponse'
-        "409":
-          description: Conflict
           schema:
             $ref: '#/definitions/api.errorResponse'
       security:
