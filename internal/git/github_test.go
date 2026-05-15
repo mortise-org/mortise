@@ -6,11 +6,15 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"sync"
 	"testing"
+
+	gogithub "github.com/google/go-github/v66/github"
 )
 
 // newTestGitHubAPI creates a GitHubAPI pointing at the given httptest server.
@@ -422,5 +426,22 @@ func TestGitHub_PostCommitStatus_InvalidRepo(t *testing.T) {
 	err := api.PostCommitStatus(context.Background(), "noslash", "abc", CommitStatus{State: StatusSuccess})
 	if err == nil {
 		t.Error("expected error for invalid repo format")
+	}
+}
+
+func TestWrapGitHubError_AuthFailure(t *testing.T) {
+	err := wrapGitHubError(fmt.Errorf("github call failed: %w", &gogithub.ErrorResponse{
+		Response: &http.Response{StatusCode: http.StatusUnauthorized},
+	}))
+	if !errors.Is(err, ErrAuthFailed) {
+		t.Fatalf("expected ErrAuthFailed, got %v", err)
+	}
+}
+
+func TestWrapGitHubError_NonGitHubErrorResponse(t *testing.T) {
+	original := fmt.Errorf("network down")
+	err := wrapGitHubError(original)
+	if err != original {
+		t.Fatalf("expected original error, got %v", err)
 	}
 }

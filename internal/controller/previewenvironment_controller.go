@@ -581,7 +581,8 @@ func (r *PreviewEnvironmentReconciler) ConvergeProjectPreviews(ctx context.Conte
 
 		prs, err := gitAPI.ListOpenPullRequests(ctx, rk.repo)
 		if err != nil {
-			return fmt.Errorf("list open PRs for %q: %w", rk.repo, err)
+			log.Error(err, "list open PRs for convergence, skipping repo", "repo", rk.repo, "provider", rk.providerRef)
+			continue
 		}
 
 		for _, pr := range prs {
@@ -656,19 +657,51 @@ func convergencePEName(repo string, number int, multiRepo bool) string {
 	if !multiRepo {
 		return fmt.Sprintf("preview-pr-%d", number)
 	}
-	// Use last path segment of the repo URL as slug (e.g. "repo" from
-	// "https://github.com/org/repo"). Truncate to keep the name under 63 chars.
-	slug := repo
-	if idx := len(slug) - 1; idx >= 0 && slug[idx] == '/' {
-		slug = slug[:idx]
+	slug := previewRepoSlug(repo)
+	maxSlugLen := 63 - len("preview--pr-") - len(fmt.Sprintf("%d", number))
+	if maxSlugLen < 1 {
+		maxSlugLen = 1
 	}
+	if len(slug) > maxSlugLen {
+		slug = strings.Trim(slug[:maxSlugLen], "-")
+		if slug == "" {
+			slug = "repo"
+		}
+	}
+	return fmt.Sprintf("preview-%s-pr-%d", slug, number)
+}
+
+func previewRepoSlug(repo string) string {
+	slug := strings.TrimSuffix(strings.TrimSpace(repo), "/")
 	if idx := strings.LastIndex(slug, "/"); idx >= 0 {
 		slug = slug[idx+1:]
 	}
-	if len(slug) > 20 {
-		slug = slug[:20]
+	if idx := strings.LastIndex(slug, ":"); idx >= 0 {
+		slug = slug[idx+1:]
 	}
-	return fmt.Sprintf("preview-%s-pr-%d", slug, number)
+	slug = strings.TrimSuffix(strings.ToLower(slug), ".git")
+
+	var b strings.Builder
+	b.Grow(len(slug))
+	lastDash := false
+	for _, r := range slug {
+		isAlphaNum := (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')
+		if isAlphaNum {
+			b.WriteRune(r)
+			lastDash = false
+			continue
+		}
+		if !lastDash {
+			b.WriteByte('-')
+			lastDash = true
+		}
+	}
+
+	slug = strings.Trim(b.String(), "-")
+	if slug == "" {
+		return "repo"
+	}
+	return slug
 }
 
 // resolveSourceEnvFromProject mirrors the webhook handler's resolveSourceEnv logic.
