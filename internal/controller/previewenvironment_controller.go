@@ -18,6 +18,8 @@ package controller
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"strings"
 	"time"
@@ -43,6 +45,7 @@ import (
 
 const previewFinalizer = "mortise.dev/preview-finalizer"
 const maxPreviewPRNumberDigits = 19
+const previewRepoHashLen = 8
 
 // convergenceGracePeriod prevents deleting PEs that were just created by a
 // webhook or another controller. Without this, a convergence run that sees
@@ -689,7 +692,8 @@ func convergencePEPrefix(repo string, multiRepo bool) string {
 		return "preview-pr-"
 	}
 	slug := previewRepoSlug(repo)
-	maxSlugLen := 63 - len("preview--pr-") - maxPreviewPRNumberDigits
+	hash := previewRepoHash(repo)
+	maxSlugLen := 63 - len("preview-") - len("-") - previewRepoHashLen - len("-pr-") - maxPreviewPRNumberDigits
 	if maxSlugLen < 1 {
 		maxSlugLen = 1
 	}
@@ -699,7 +703,7 @@ func convergencePEPrefix(repo string, multiRepo bool) string {
 			slug = "repo"
 		}
 	}
-	return fmt.Sprintf("preview-%s-pr-", slug)
+	return fmt.Sprintf("preview-%s-%s-pr-", slug, hash)
 }
 
 func previewRepoSlug(repo string) string {
@@ -733,6 +737,11 @@ func previewRepoSlug(repo string) string {
 		return "repo"
 	}
 	return slug
+}
+
+func previewRepoHash(repo string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(repo)))
+	return hex.EncodeToString(sum[:])[:previewRepoHashLen]
 }
 
 // resolveSourceEnvFromProject mirrors the webhook handler's resolveSourceEnv logic.
