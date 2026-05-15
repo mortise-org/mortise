@@ -298,12 +298,29 @@ test-integration-fast: ## Run integration tests against the existing dev cluster
 
 ##@ Chart Tests
 
+.PHONY: verify-chart-dependency-drift
+verify-chart-dependency-drift: ## Verify the vendored mortise-core package matches the local chart source
+	@echo "==> Verifying vendored mortise-core package matches local chart source..."
+	@subchart_version=$$(awk -F': ' '/^version:/ {print $$2; exit}' charts/mortise-core/Chart.yaml); \
+	tgz="charts/mortise/charts/mortise-core-$${subchart_version}.tgz"; \
+	tmpdir=$$(mktemp -d); \
+	trap 'rm -rf "$$tmpdir"' EXIT; \
+	test -f "$$tgz"; \
+	tar -xzf "$$tgz" -C "$$tmpdir"; \
+	diff -qr charts/mortise-core/templates "$$tmpdir/mortise-core/templates"; \
+	diff -qr charts/mortise-core/crds "$$tmpdir/mortise-core/crds"; \
+	diff -q charts/mortise-core/values.yaml "$$tmpdir/mortise-core/values.yaml"; \
+	tar -xOf "$$tgz" mortise-core/templates/rbac.yaml | grep -q 'resources: \["apps", "buildruns"\]'; \
+	tar -xOf "$$tgz" mortise-core/templates/rbac.yaml | grep -q 'buildruns/finalizers'; \
+	tar -xOf "$$tgz" mortise-core/templates/rbac.yaml | grep -q 'buildruns/status'
+
 .PHONY: test-charts
 test-charts: ## Lint and template-test both Helm charts (no cluster required)
 	@echo "==> Linting mortise-core..."
 	helm lint charts/mortise-core
 	@echo "==> Linting mortise (umbrella)..."
-	helm dependency build charts/mortise 2>/dev/null || true
+	helm dependency build charts/mortise
+	$(MAKE) verify-chart-dependency-drift
 	helm lint charts/mortise
 	@echo "==> Template: umbrella defaults (all enabled, PVC storage)..."
 	helm template test charts/mortise --namespace mortise-system >/dev/null
