@@ -904,6 +904,44 @@ func TestGitHubPREvent_MultiRepoUsesConvergencePreviewNameForCreateUpdateDelete(
 	}
 }
 
+func TestGitHubPREvent_MixedRepoSyntaxStaysSingleRepo(t *testing.T) {
+	const secret = "prsecret"
+	const providerName = "github-main"
+
+	gp := makeGitProvider(mortisev1alpha1.GitProviderTypeGitHub, "mortise-system", "wh-secret", "value")
+	appA := makeGitApp("target", "pj-default", "https://github.com/org/repo.git", "main")
+	appB := makeGitApp("other", "pj-default", "git@github.com:org/repo.git", "main")
+	proj := makeProject("default", &mortisev1alpha1.PreviewConfig{Enabled: true})
+	proj.Spec.Environments = []mortisev1alpha1.ProjectEnvironment{{Name: "staging"}}
+
+	kr := &fakeK8sReader{
+		provider: gp,
+		secrets:  map[string]string{"mortise-system/wh-secret/value": secret},
+		apps:     []mortisev1alpha1.App{appA, appB},
+		projects: map[string]*mortisev1alpha1.Project{"default": proj},
+	}
+	h := newTestHandler(kr)
+
+	body := githubPRPayloadJSON("opened", 42, "feature/x", "sha-opened", "org/repo")
+	req := httptest.NewRequest(http.MethodPost, "/"+providerName, bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-GitHub-Event", "pull_request")
+	req.Header.Set("X-Hub-Signature-256", githubSignature(body, secret))
+
+	rr := httptest.NewRecorder()
+	h.Routes().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("opened: expected 202, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if len(kr.createdPreviews) != 1 {
+		t.Fatalf("opened: expected 1 PE created, got %d", len(kr.createdPreviews))
+	}
+	if kr.createdPreviews[0].Name != "preview-pr-42" {
+		t.Fatalf("opened: expected legacy single-repo PE name, got %q", kr.createdPreviews[0].Name)
+	}
+}
+
 func TestGiteaPREvent_Opened_CreatesPreviewEnvironment(t *testing.T) {
 	const secret = "giteaprsecret"
 	const providerName = "gitea-homelab"

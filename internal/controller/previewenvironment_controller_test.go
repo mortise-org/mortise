@@ -1619,6 +1619,103 @@ func TestConvergeProjectPreviews_MultiRepoSanitizesNames(t *testing.T) {
 	}
 }
 
+func TestConvergeProjectPreviews_MixedRepoSyntaxStaysSingleRepo(t *testing.T) {
+	ctx := context.Background()
+	s := newTestScheme(t)
+	projectName := "converge-mixedsyntax"
+	nsName := constants.ControlNamespace(projectName)
+
+	project := &mortisev1alpha1.Project{
+		ObjectMeta: metav1.ObjectMeta{Name: projectName},
+		Spec: mortisev1alpha1.ProjectSpec{
+			Preview:      &mortisev1alpha1.PreviewConfig{Enabled: true},
+			Environments: []mortisev1alpha1.ProjectEnvironment{{Name: "staging"}},
+		},
+	}
+
+	apps := []client.Object{
+		&mortisev1alpha1.App{
+			ObjectMeta: metav1.ObjectMeta{Name: "web-a", Namespace: nsName},
+			Spec: mortisev1alpha1.AppSpec{
+				Source: mortisev1alpha1.AppSource{
+					Type:        mortisev1alpha1.SourceTypeGit,
+					Repo:        "https://github.com/org/repo.git",
+					Branch:      "main",
+					ProviderRef: "github-converge",
+				},
+			},
+		},
+		&mortisev1alpha1.App{
+			ObjectMeta: metav1.ObjectMeta{Name: "web-b", Namespace: nsName},
+			Spec: mortisev1alpha1.AppSpec{
+				Source: mortisev1alpha1.AppSource{
+					Type:        mortisev1alpha1.SourceTypeGit,
+					Repo:        "git@github.com:org/repo.git",
+					Branch:      "main",
+					ProviderRef: "github-converge",
+				},
+			},
+		},
+	}
+
+	gp := &mortisev1alpha1.GitProvider{
+		ObjectMeta: metav1.ObjectMeta{Name: "github-converge"},
+		Spec: mortisev1alpha1.GitProviderSpec{
+			Type: mortisev1alpha1.GitProviderTypeGitHub,
+			Host: "https://github.com",
+		},
+	}
+
+	pm := &mortisev1alpha1.ProjectMember{
+		ObjectMeta: metav1.ObjectMeta{Name: "member", Namespace: nsName},
+		Spec: mortisev1alpha1.ProjectMemberSpec{
+			Email: "dev@example.com",
+			Role:  "owner",
+		},
+	}
+
+	tokenSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      git.UserTokenSecretName("github-converge", "dev@example.com"),
+			Namespace: git.TokenSecretNamespace,
+		},
+		Data: map[string][]byte{"token": []byte("fake-token")},
+	}
+
+	objects := append([]client.Object{project, gp, pm, tokenSecret}, apps...)
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(objects...).Build()
+
+	mock := &mockGitAPI{
+		openPRsByRepo: map[string][]git.PullRequestSnapshot{
+			"https://github.com/org/repo.git": {{Number: 10, Branch: "feat-a", SHA: "aaa"}},
+		},
+	}
+
+	reconciler := &PreviewEnvironmentReconciler{
+		Client: c,
+		Scheme: s,
+		Clock:  clocktesting.NewFakeClock(time.Now()),
+		GitAPIFactory: func(gp *mortisev1alpha1.GitProvider, token, secret string) (git.GitAPI, error) {
+			return mock, nil
+		},
+	}
+
+	if err := reconciler.ConvergeProjectPreviews(ctx, project); err != nil {
+		t.Fatalf("converge: %v", err)
+	}
+
+	var peList mortisev1alpha1.PreviewEnvironmentList
+	if err := c.List(ctx, &peList, client.InNamespace(nsName)); err != nil {
+		t.Fatalf("list PEs: %v", err)
+	}
+	if len(peList.Items) != 1 {
+		t.Fatalf("expected 1 PE, got %d", len(peList.Items))
+	}
+	if peList.Items[0].Name != "preview-pr-10" {
+		t.Fatalf("expected legacy single-repo PE name, got %q", peList.Items[0].Name)
+	}
+}
+
 func TestConvergeProjectPreviews_MultiRepoCollisionCreatesDistinctPEs(t *testing.T) {
 	ctx := context.Background()
 	s := newTestScheme(t)

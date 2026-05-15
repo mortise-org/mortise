@@ -339,7 +339,7 @@ func projectHasMultipleGitRepos(apps []mortisev1alpha1.App, projectName string) 
 		if app.Namespace != controlNs || app.Spec.Source.Type != mortisev1alpha1.SourceTypeGit || app.Spec.Source.Repo == "" {
 			continue
 		}
-		key := app.Spec.Source.ProviderRef + "\x00" + app.Spec.Source.Repo
+		key := app.Spec.Source.ProviderRef + "\x00" + constants.CanonicalRepoKey(app.Spec.Source.Repo)
 		seen[key] = true
 		if len(seen) > 1 {
 			return true

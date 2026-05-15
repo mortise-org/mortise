@@ -520,10 +520,10 @@ func (r *PreviewEnvironmentReconciler) ConvergeProjectPreviews(ctx context.Conte
 		if src.Type != mortisev1alpha1.SourceTypeGit || src.Repo == "" {
 			continue
 		}
-		k := repoKey{repo: src.Repo, providerRef: src.ProviderRef}
+		k := repoKey{repo: constants.CanonicalRepoKey(src.Repo), providerRef: src.ProviderRef}
 		if !seen[k] {
 			seen[k] = true
-			repos = append(repos, k)
+			repos = append(repos, repoKey{repo: src.Repo, providerRef: src.ProviderRef})
 		}
 	}
 	if len(repos) == 0 {
