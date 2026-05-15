@@ -326,8 +326,8 @@ test-charts: ## Lint and template-test both Helm charts (no cluster required)
 	@echo "==> Linting mortise-core..."
 	helm lint charts/mortise-core
 	@echo "==> Linting mortise (umbrella)..."
-	helm dependency build charts/mortise
 	$(MAKE) verify-chart-dependency-drift
+	helm dependency build charts/mortise
 	helm lint charts/mortise
 	@echo "==> Template: umbrella defaults (all enabled, PVC storage)..."
 	helm template test charts/mortise --namespace mortise-system >/dev/null
