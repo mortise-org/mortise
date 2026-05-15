@@ -18,8 +18,6 @@ package controller
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"strings"
 	"time"
@@ -44,8 +42,6 @@ import (
 )
 
 const previewFinalizer = "mortise.dev/preview-finalizer"
-const maxPreviewPRNumberDigits = 19
-const previewRepoHashLen = 8
 
 // convergenceGracePeriod prevents deleting PEs that were just created by a
 // webhook or another controller. Without this, a convergence run that sees
@@ -681,67 +677,11 @@ func (r *PreviewEnvironmentReconciler) protectRepoPreviewEnvironments(protectedP
 // "preview-pr-{number}" is used. When true, a short repo slug is included to
 // avoid name collisions across repos.
 func convergencePEName(repo string, number int, multiRepo bool) string {
-	if !multiRepo {
-		return fmt.Sprintf("preview-pr-%d", number)
-	}
-	return fmt.Sprintf("%s%d", convergencePEPrefix(repo, true), number)
+	return constants.PreviewEnvironmentName(repo, number, multiRepo)
 }
 
 func convergencePEPrefix(repo string, multiRepo bool) string {
-	if !multiRepo {
-		return "preview-pr-"
-	}
-	slug := previewRepoSlug(repo)
-	hash := previewRepoHash(repo)
-	maxSlugLen := 63 - len("preview-") - len("-") - previewRepoHashLen - len("-pr-") - maxPreviewPRNumberDigits
-	if maxSlugLen < 1 {
-		maxSlugLen = 1
-	}
-	if len(slug) > maxSlugLen {
-		slug = strings.Trim(slug[:maxSlugLen], "-")
-		if slug == "" {
-			slug = "repo"
-		}
-	}
-	return fmt.Sprintf("preview-%s-%s-pr-", slug, hash)
-}
-
-func previewRepoSlug(repo string) string {
-	slug := strings.TrimSuffix(strings.TrimSpace(repo), "/")
-	if idx := strings.LastIndex(slug, "/"); idx >= 0 {
-		slug = slug[idx+1:]
-	}
-	if idx := strings.LastIndex(slug, ":"); idx >= 0 {
-		slug = slug[idx+1:]
-	}
-	slug = strings.TrimSuffix(strings.ToLower(slug), ".git")
-
-	var b strings.Builder
-	b.Grow(len(slug))
-	lastDash := false
-	for _, r := range slug {
-		isAlphaNum := (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')
-		if isAlphaNum {
-			b.WriteRune(r)
-			lastDash = false
-			continue
-		}
-		if !lastDash {
-			b.WriteByte('-')
-			lastDash = true
-		}
-	}
-
-	slug = strings.Trim(b.String(), "-")
-	if slug == "" {
-		return "repo"
-	}
-	return slug
-}
-
-func previewRepoHash(repo string) string {
-	sum := sha256.Sum256([]byte(strings.TrimSpace(repo)))
-	return hex.EncodeToString(sum[:])[:previewRepoHashLen]
+	return constants.PreviewEnvironmentPrefix(repo, multiRepo)
 }
 
 // resolveSourceEnvFromProject mirrors the webhook handler's resolveSourceEnv logic.

@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
+	"github.com/mortise-org/mortise/internal/constants"
 	"github.com/mortise-org/mortise/internal/git"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -813,6 +814,92 @@ func TestGitHubPREvent_Reopened_CreatesPreviewEnvironment(t *testing.T) {
 	}
 	if pe.Spec.PullRequest.SHA != "shareopened" {
 		t.Errorf("sha mismatch: %q", pe.Spec.PullRequest.SHA)
+	}
+}
+
+func TestGitHubPREvent_MultiRepoUsesConvergencePreviewNameForCreateUpdateDelete(t *testing.T) {
+	const secret = "prsecret"
+	const providerName = "github-main"
+	const repo = "org/foo.bar"
+
+	gp := makeGitProvider(mortisev1alpha1.GitProviderTypeGitHub, "mortise-system", "wh-secret", "value")
+	targetApp := makeGitApp("target", "pj-default", "https://github.com/"+repo, "main")
+	otherApp := makeGitApp("other", "pj-default", "https://github.com/org/other-repo", "main")
+	proj := makeProject("default", &mortisev1alpha1.PreviewConfig{Enabled: true})
+	proj.Spec.Environments = []mortisev1alpha1.ProjectEnvironment{{Name: "staging"}}
+	expectedName := constants.PreviewEnvironmentName(repo, 42, true)
+
+	kr := &fakeK8sReader{
+		provider: gp,
+		secrets:  map[string]string{"mortise-system/wh-secret/value": secret},
+		apps:     []mortisev1alpha1.App{targetApp, otherApp},
+		projects: map[string]*mortisev1alpha1.Project{"default": proj},
+	}
+	h := newTestHandler(kr)
+
+	openedBody := githubPRPayloadJSON("opened", 42, "feature/x", "sha-opened", repo)
+	req := httptest.NewRequest(http.MethodPost, "/"+providerName, bytes.NewReader(openedBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-GitHub-Event", "pull_request")
+	req.Header.Set("X-Hub-Signature-256", githubSignature(openedBody, secret))
+
+	rr := httptest.NewRecorder()
+	h.Routes().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("opened: expected 202, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if len(kr.createdPreviews) != 1 {
+		t.Fatalf("opened: expected 1 PE created, got %d", len(kr.createdPreviews))
+	}
+	if kr.createdPreviews[0].Name != expectedName {
+		t.Fatalf("opened: expected PE name %q, got %q", expectedName, kr.createdPreviews[0].Name)
+	}
+
+	existing := kr.createdPreviews[0]
+	kr.previewEnvs = map[string]*mortisev1alpha1.PreviewEnvironment{
+		"pj-default/" + expectedName: &existing,
+	}
+
+	syncBody := githubPRPayloadJSON("synchronize", 42, "feature/x", "sha-sync", repo)
+	req = httptest.NewRequest(http.MethodPost, "/"+providerName, bytes.NewReader(syncBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-GitHub-Event", "pull_request")
+	req.Header.Set("X-Hub-Signature-256", githubSignature(syncBody, secret))
+
+	rr = httptest.NewRecorder()
+	h.Routes().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("synchronize: expected 202, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if len(kr.updatedPreviews) != 1 {
+		t.Fatalf("synchronize: expected 1 PE updated, got %d", len(kr.updatedPreviews))
+	}
+	if kr.updatedPreviews[0].Name != expectedName {
+		t.Fatalf("synchronize: expected update to target %q, got %q", expectedName, kr.updatedPreviews[0].Name)
+	}
+	if kr.updatedPreviews[0].Spec.PullRequest.SHA != "sha-sync" {
+		t.Fatalf("synchronize: expected SHA sha-sync, got %q", kr.updatedPreviews[0].Spec.PullRequest.SHA)
+	}
+
+	closedBody := githubPRPayloadJSON("closed", 42, "feature/x", "sha-sync", repo)
+	req = httptest.NewRequest(http.MethodPost, "/"+providerName, bytes.NewReader(closedBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-GitHub-Event", "pull_request")
+	req.Header.Set("X-Hub-Signature-256", githubSignature(closedBody, secret))
+
+	rr = httptest.NewRecorder()
+	h.Routes().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("closed: expected 202, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if len(kr.deletedKeys) != 1 {
+		t.Fatalf("closed: expected 1 PE delete, got %d", len(kr.deletedKeys))
+	}
+	if kr.deletedKeys[0] != "pj-default/"+expectedName {
+		t.Fatalf("closed: expected delete key %q, got %q", "pj-default/"+expectedName, kr.deletedKeys[0])
 	}
 }
 
