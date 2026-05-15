@@ -307,12 +307,19 @@ verify-chart-dependency-drift: ## Verify the vendored mortise-core package match
 	trap 'rm -rf "$$tmpdir"' EXIT; \
 	test -f "$$tgz"; \
 	tar -xzf "$$tgz" -C "$$tmpdir"; \
+	diff -u <(helm show chart charts/mortise-core) <(helm show chart "$$tgz"); \
 	diff -qr charts/mortise-core/templates "$$tmpdir/mortise-core/templates"; \
 	diff -qr charts/mortise-core/crds "$$tmpdir/mortise-core/crds"; \
 	diff -q charts/mortise-core/values.yaml "$$tmpdir/mortise-core/values.yaml"; \
-	tar -xOf "$$tgz" mortise-core/templates/rbac.yaml | grep -q 'resources: \["apps", "buildruns"\]'; \
-	tar -xOf "$$tgz" mortise-core/templates/rbac.yaml | grep -q 'buildruns/finalizers'; \
-	tar -xOf "$$tgz" mortise-core/templates/rbac.yaml | grep -q 'buildruns/status'
+	helm template packaged-core "$$tgz" --show-only templates/rbac.yaml --namespace mortise-system \
+		| kubectl create --dry-run=client -f - -o json \
+		| jq -e 'select(.kind == "ClusterRole") | any(.rules[].resources[]; . == "buildruns")' >/dev/null; \
+	helm template packaged-core "$$tgz" --show-only templates/rbac.yaml --namespace mortise-system \
+		| kubectl create --dry-run=client -f - -o json \
+		| jq -e 'select(.kind == "ClusterRole") | any(.rules[].resources[]; . == "buildruns/finalizers")' >/dev/null; \
+	helm template packaged-core "$$tgz" --show-only templates/rbac.yaml --namespace mortise-system \
+		| kubectl create --dry-run=client -f - -o json \
+		| jq -e 'select(.kind == "ClusterRole") | any(.rules[].resources[]; . == "buildruns/status")' >/dev/null
 
 .PHONY: test-charts
 test-charts: ## Lint and template-test both Helm charts (no cluster required)
