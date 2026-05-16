@@ -754,6 +754,72 @@ func TestUpdateStatusStillCountsPreviewRolloutFailureInTopLevelPhase(t *testing.
 	}
 }
 
+func TestShouldRefreshFailedAppStatusForPreviewOnlyBuildFailure(t *testing.T) {
+	app := &mortisev1alpha1.App{
+		Status: mortisev1alpha1.AppStatus{
+			Phase: mortisev1alpha1.AppPhaseFailed,
+			Conditions: []metav1.Condition{{
+				Type:   "BuildSucceeded",
+				Status: metav1.ConditionFalse,
+				Reason: "BuildFailed",
+			}},
+			Environments: []mortisev1alpha1.EnvironmentStatus{
+				{Name: "production"},
+				{
+					Name: "pr-6",
+					CurrentBuildRunRef: &mortisev1alpha1.BuildRunReference{
+						Name:  "preview-failed",
+						Phase: mortisev1alpha1.BuildRunPhaseFailed,
+					},
+				},
+			},
+		},
+	}
+
+	resolvedEnvs := []mortisev1alpha1.Environment{{Name: "production"}, {Name: "pr-6"}}
+	previewEnvNames := map[string]struct{}{"pr-6": {}}
+
+	if !shouldRefreshFailedAppStatus(app, resolvedEnvs, previewEnvNames) {
+		t.Fatal("expected failed app with preview-only build failure to refresh status")
+	}
+}
+
+func TestShouldRefreshFailedAppStatusSkipsNonPreviewBuildFailure(t *testing.T) {
+	app := &mortisev1alpha1.App{
+		Status: mortisev1alpha1.AppStatus{
+			Phase: mortisev1alpha1.AppPhaseFailed,
+			Conditions: []metav1.Condition{{
+				Type:   "BuildSucceeded",
+				Status: metav1.ConditionFalse,
+				Reason: "BuildFailed",
+			}},
+			Environments: []mortisev1alpha1.EnvironmentStatus{
+				{
+					Name: "production",
+					CurrentBuildRunRef: &mortisev1alpha1.BuildRunReference{
+						Name:  "production-failed",
+						Phase: mortisev1alpha1.BuildRunPhaseFailed,
+					},
+				},
+				{
+					Name: "pr-6",
+					CurrentBuildRunRef: &mortisev1alpha1.BuildRunReference{
+						Name:  "preview-failed",
+						Phase: mortisev1alpha1.BuildRunPhaseFailed,
+					},
+				},
+			},
+		},
+	}
+
+	resolvedEnvs := []mortisev1alpha1.Environment{{Name: "production"}, {Name: "pr-6"}}
+	previewEnvNames := map[string]struct{}{"pr-6": {}}
+
+	if shouldRefreshFailedAppStatus(app, resolvedEnvs, previewEnvNames) {
+		t.Fatal("expected failed app with non-preview build failure to keep failed latch")
+	}
+}
+
 func TestAllEnvBuildsCurrentForRevision_EnvBranchOverridesAnnotation(t *testing.T) {
 	scheme := runtime.NewScheme()
 	if err := mortisev1alpha1.AddToScheme(scheme); err != nil {

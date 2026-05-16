@@ -350,7 +350,8 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		}
 	}
 
-	if !needsRequeue && app.Status.Phase != mortisev1alpha1.AppPhaseFailed {
+	if !needsRequeue && (app.Status.Phase != mortisev1alpha1.AppPhaseFailed ||
+		shouldRefreshFailedAppStatus(&app, resolvedEnvs, previewEnvNames)) {
 		if err := r.updateStatus(ctx, &app, resolvedEnvs, previewEnvNames); err != nil {
 			return ctrl.Result{}, fmt.Errorf("update status: %w", err)
 		}
@@ -908,6 +909,40 @@ func selectedEnvHasTerminalBuildFailure(envStatuses []mortisev1alpha1.Environmen
 		}
 	}
 	return false
+}
+
+func previewEnvHasTerminalBuildFailure(envStatuses []mortisev1alpha1.EnvironmentStatus, previewEnvNames map[string]struct{}) bool {
+	for _, es := range envStatuses {
+		if _, isPreview := previewEnvNames[es.Name]; !isPreview {
+			continue
+		}
+		if es.CurrentBuildRunRef != nil && isTerminalBuildFailurePhase(es.CurrentBuildRunRef.Phase) {
+			return true
+		}
+	}
+	return false
+}
+
+func shouldRefreshFailedAppStatus(app *mortisev1alpha1.App, resolvedEnvs []mortisev1alpha1.Environment, previewEnvNames map[string]struct{}) bool {
+	if app.Status.Phase != mortisev1alpha1.AppPhaseFailed {
+		return false
+	}
+
+	buildFailureCond := meta.FindStatusCondition(app.Status.Conditions, "BuildSucceeded")
+	if !isTerminalBuildFailureCondition(buildFailureCond) {
+		return false
+	}
+
+	buildAggregationEnvNames := buildFailureAggregationEnvNames(resolvedEnvs, previewEnvNames)
+	if len(buildAggregationEnvNames) == 0 || len(buildAggregationEnvNames) == len(resolvedEnvs) {
+		return false
+	}
+
+	if selectedEnvHasTerminalBuildFailure(app.Status.Environments, buildAggregationEnvNames) {
+		return false
+	}
+
+	return previewEnvHasTerminalBuildFailure(app.Status.Environments, previewEnvNames)
 }
 
 // currentImageForEnv returns the image currently deployed for the given
