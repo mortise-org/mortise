@@ -888,9 +888,10 @@ func isTerminalBuildFailurePhase(phase mortisev1alpha1.BuildRunPhase) bool {
 	return phase == mortisev1alpha1.BuildRunPhaseFailed
 }
 
-func envExcludedFromTopLevelReadinessAggregation(es mortisev1alpha1.EnvironmentStatus, previewEnvNames, buildAggregationEnvNames map[string]struct{}) bool {
+func envExcludedFromTopLevelReadinessAggregation(es mortisev1alpha1.EnvironmentStatus, previewEnvNames, buildAggregationEnvNames map[string]struct{}, workloadPresent bool) bool {
 	if !envSelectedForBuildFailureAggregation(es.Name, buildAggregationEnvNames) {
 		if _, isPreview := previewEnvNames[es.Name]; isPreview &&
+			!workloadPresent &&
 			es.CurrentBuildRunRef != nil &&
 			isTerminalBuildFailurePhase(es.CurrentBuildRunRef.Phase) {
 			return true
@@ -2814,9 +2815,11 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 			rollingOut := false
 			restartedAt := ""
 			deployedHash := ""
+			workloadPresent := false
 			if isCron {
 				var cj batchv1.CronJob
 				if err := r.Get(ctx, types.NamespacedName{Name: cronJobName(app.Name), Namespace: envNs}, &cj); err == nil {
+					workloadPresent = true
 					es.ReadyReplicas = 1
 					deployedHash = cj.Spec.JobTemplate.Spec.Template.Annotations["mortise.dev/env-hash"]
 				}
@@ -2824,6 +2827,7 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 				name := deploymentName(app.Name)
 				var dep appsv1.Deployment
 				if err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: envNs}, &dep); err == nil {
+					workloadPresent = true
 					es.ReadyReplicas = dep.Status.ReadyReplicas
 					if deploymentRollingOut(&dep) {
 						rollingOut = true
@@ -2870,7 +2874,7 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 			// completes, even if readyReplicas temporarily satisfies the check.
 			newRestart := restartedAt != "" && restartedAt != es.LastProcessedRestartedAt
 
-			excludeFromTopLevelReadiness := envExcludedFromTopLevelReadinessAggregation(es, previewEnvNames, buildAggregationEnvNames)
+			excludeFromTopLevelReadiness := envExcludedFromTopLevelReadinessAggregation(es, previewEnvNames, buildAggregationEnvNames, workloadPresent)
 
 			if ready && !newRestart {
 				if restartedAt != "" {
