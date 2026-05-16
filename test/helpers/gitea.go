@@ -460,6 +460,16 @@ func CreateBranch(t *testing.T, baseURL, token, owner, repo, newBranch, fromBran
 func UpdateBranchFile(t *testing.T, baseURL, token, owner, repo, branch, path string) string {
 	t.Helper()
 
+	newContent := fmt.Sprintf("Webhook integration test update at %d rand=%d\n",
+		time.Now().UnixNano(), rand.Int())
+	return UpdateBranchFileContent(t, baseURL, token, owner, repo, branch, path, newContent)
+}
+
+// UpdateBranchFileContent rewrites the given file on the given branch to the
+// supplied content, producing a new commit and returning the new branch HEAD.
+func UpdateBranchFileContent(t *testing.T, baseURL, token, owner, repo, branch, path, content string) string {
+	t.Helper()
+
 	// Look up the file's current blob SHA on this branch; if it doesn't exist
 	// yet we'll create it in place of the update.
 	getURL := fmt.Sprintf("%s/api/v1/repos/%s/%s/contents/%s?ref=%s",
@@ -478,9 +488,7 @@ func UpdateBranchFile(t *testing.T, baseURL, token, owner, repo, branch, path st
 	}
 	resp.Body.Close()
 
-	newContent := fmt.Sprintf("Webhook integration test update at %d rand=%d\n",
-		time.Now().UnixNano(), rand.Int())
-	encoded := base64.StdEncoding.EncodeToString([]byte(newContent))
+	encoded := base64.StdEncoding.EncodeToString([]byte(content))
 	payload := map[string]any{
 		"message": fmt.Sprintf("integration test: update %s on %s", path, branch),
 		"content": encoded,

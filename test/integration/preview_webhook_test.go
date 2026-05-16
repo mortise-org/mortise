@@ -18,6 +18,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -357,6 +358,127 @@ func TestPreviewEnvironmentViaWebhook_PreviewDisabled(t *testing.T) {
 		for _, item := range all.Items {
 			t.Errorf("unexpected PreviewEnvironment %s/%s created with preview disabled", item.Namespace, item.Name)
 		}
+	}
+}
+
+// TestPreviewBuildFailureViaWebhookDoesNotDegradeTopLevelApp proves the real
+// issue-388 path end to end: a preview PR branch fails to build, the preview
+// keeps its failed local status, and the base app stays Ready because its
+// non-preview environments are still healthy.
+func TestPreviewBuildFailureViaWebhookDoesNotDegradeTopLevelApp(t *testing.T) {
+	t.Parallel()
+	projectName := "prev-wh-fail-" + randSuffix()
+	ns := createProjectForTest(t, projectName)
+
+	giteaLocalPort := helpers.PortForward(t, "mortise-test-deps", "gitea", 3000)
+	mortisePort := helpers.PortForward(t, "mortise-system", "mortise", 80)
+
+	giteaLocalURL := fmt.Sprintf("http://127.0.0.1:%d", giteaLocalPort)
+	giteaInClusterURL := "http://gitea.mortise-test-deps.svc:3000"
+	mortiseURL := fmt.Sprintf("http://127.0.0.1:%d", mortisePort)
+
+	repoName := "repo-prev-fail-" + randSuffix()
+	boot := (&helpers.GiteaBootstrap{
+		BaseURL:  giteaLocalURL,
+		Username: "mortise-test",
+		Password: "mortise-test-pw",
+	}).Ensure(t, giteaInClusterURL, "mortise-test", repoName,
+		map[string]string{
+			"Dockerfile": testDockerfile,
+			"README.md":  testReadme,
+		},
+	)
+
+	providerName := "gitea-prev-fail-" + randSuffix()
+	testEmail := "test@example.com"
+	stubSecret(t, "mortise-system", "prev-fail-webhook-"+providerName, map[string]string{
+		"secret": webhookSecret,
+	})
+	stubSecret(t, "mortise-system", "user-"+providerName+"-token-74657374406578616d706c652e636f6d", map[string]string{
+		"token": boot.Token,
+	})
+
+	gp := &mortisev1alpha1.GitProvider{
+		ObjectMeta: metav1.ObjectMeta{Name: providerName},
+		Spec: mortisev1alpha1.GitProviderSpec{
+			Type:     mortisev1alpha1.GitProviderTypeGitea,
+			Host:     giteaInClusterURL,
+			ClientID: "test-client-id",
+			WebhookSecretRef: &mortisev1alpha1.SecretRef{
+				Namespace: "mortise-system", Name: "prev-fail-webhook-" + providerName, Key: "secret",
+			},
+		},
+	}
+	if err := k8sClient.Create(context.Background(), gp); err != nil {
+		t.Fatalf("create GitProvider: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = k8sClient.Delete(context.Background(), &mortisev1alpha1.GitProvider{
+			ObjectMeta: metav1.ObjectMeta{Name: providerName},
+		})
+	})
+
+	app := helpers.LoadFixture(t, filepath.Join(fixturesDir(), "git-preview.yaml"))
+	app.Namespace = ns
+	app.Name = "prev-fail-app-" + randSuffix()
+	app.Spec.Source.Repo = boot.CloneURL
+	app.Spec.Source.ProviderRef = providerName
+	if app.Annotations == nil {
+		app.Annotations = map[string]string{}
+	}
+	app.Annotations["mortise.dev/revision"] = "main"
+	app.Annotations["mortise.dev/created-by"] = testEmail
+
+	enableProjectPreview(t, projectName, &mortisev1alpha1.PreviewConfig{
+		Enabled: true,
+	})
+
+	if err := k8sClient.Create(context.Background(), app); err != nil {
+		t.Fatalf("create App: %v", err)
+	}
+	helpers.WaitForAppReady(t, k8sClient, ns, app.Name, 5*time.Minute)
+
+	prBranch := "feature/preview-build-fail"
+	helpers.CreateBranch(t, giteaLocalURL, boot.Token, boot.Owner, boot.Name, prBranch, "main")
+	badDockerfile := "FROM invalid@@image\n"
+	headSHA := helpers.UpdateBranchFileContent(t, giteaLocalURL, boot.Token, boot.Owner, boot.Name, prBranch, "Dockerfile", badDockerfile)
+	pr := helpers.CreatePullRequest(t, giteaLocalURL, boot.Token, boot.Owner, boot.Name, prBranch, "main", "preview build failure test")
+
+	payload := giteaPRPayload("opened", pr.Number, prBranch, headSHA, boot.Owner, boot.Name)
+	postWebhook(t, mortiseURL, providerName, payload, http.StatusAccepted)
+
+	peName := fmt.Sprintf("preview-pr-%d", pr.Number)
+	waitForPreviewFailed(t, ns, peName, 5*time.Minute)
+
+	var pe mortisev1alpha1.PreviewEnvironment
+	if err := k8sClient.Get(context.Background(), types.NamespacedName{Name: peName, Namespace: ns}, &pe); err != nil {
+		t.Fatalf("get failed preview: %v", err)
+	}
+	if len(pe.Status.Conditions) == 0 {
+		t.Fatal("expected failed preview to carry a failure condition")
+	}
+
+	helpers.RequireEventually(t, 60*time.Second, func() bool {
+		var refreshed mortisev1alpha1.App
+		if err := k8sClient.Get(context.Background(), types.NamespacedName{Name: app.Name, Namespace: ns}, &refreshed); err != nil {
+			return false
+		}
+		cond := meta.FindStatusCondition(refreshed.Status.Conditions, "BuildSucceeded")
+		return refreshed.Status.Phase == mortisev1alpha1.AppPhaseReady &&
+			cond != nil &&
+			cond.Status == metav1.ConditionTrue
+	})
+
+	var refreshed mortisev1alpha1.App
+	if err := k8sClient.Get(context.Background(), types.NamespacedName{Name: app.Name, Namespace: ns}, &refreshed); err != nil {
+		t.Fatalf("get app after preview failure: %v", err)
+	}
+	if refreshed.Status.Phase != mortisev1alpha1.AppPhaseReady {
+		t.Fatalf("expected top-level app phase Ready after preview build failure, got %q", refreshed.Status.Phase)
+	}
+	cond := meta.FindStatusCondition(refreshed.Status.Conditions, "BuildSucceeded")
+	if cond == nil || cond.Status != metav1.ConditionTrue {
+		t.Fatalf("expected top-level BuildSucceeded=true after preview build failure, got %+v", cond)
 	}
 }
 

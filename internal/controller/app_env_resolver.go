@@ -103,3 +103,56 @@ func resolvedEnvNames(envs []mortisev1alpha1.Environment) map[string]struct{} {
 	}
 	return out
 }
+
+// resolvedPreviewEnvNames returns the subset of resolved env names that are
+// marked preview=true on the parent Project.
+func resolvedPreviewEnvNames(project *mortisev1alpha1.Project, resolvedEnvs []mortisev1alpha1.Environment) map[string]struct{} {
+	if project == nil || len(project.Spec.Environments) == 0 || len(resolvedEnvs) == 0 {
+		return nil
+	}
+
+	projectPreviewByName := make(map[string]struct{}, len(project.Spec.Environments))
+	for _, env := range project.Spec.Environments {
+		if env.Preview {
+			projectPreviewByName[env.Name] = struct{}{}
+		}
+	}
+	if len(projectPreviewByName) == 0 {
+		return nil
+	}
+
+	out := make(map[string]struct{})
+	for _, env := range resolvedEnvs {
+		if _, ok := projectPreviewByName[env.Name]; ok {
+			out[env.Name] = struct{}{}
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// buildFailureAggregationEnvNames returns the env names that should contribute
+// to app-global BuildSucceeded aggregation. When at least one non-preview env
+// exists, previews are excluded so a preview-only build failure does not mark
+// the top-level app as Degraded/Failed. Preview-only apps fall back to the
+// existing all-env aggregation.
+func buildFailureAggregationEnvNames(resolvedEnvs []mortisev1alpha1.Environment, previewEnvNames map[string]struct{}) map[string]struct{} {
+	if len(resolvedEnvs) == 0 {
+		return nil
+	}
+
+	nonPreview := make(map[string]struct{}, len(resolvedEnvs))
+	for _, env := range resolvedEnvs {
+		if _, isPreview := previewEnvNames[env.Name]; isPreview {
+			continue
+		}
+		nonPreview[env.Name] = struct{}{}
+	}
+	if len(nonPreview) > 0 {
+		return nonPreview
+	}
+
+	return resolvedEnvNames(resolvedEnvs)
+}

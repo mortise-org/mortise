@@ -351,7 +351,7 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	}
 
 	if !needsRequeue && app.Status.Phase != mortisev1alpha1.AppPhaseFailed {
-		if err := r.updateStatus(ctx, &app, resolvedEnvs); err != nil {
+		if err := r.updateStatus(ctx, &app, resolvedEnvs, previewEnvNames); err != nil {
 			return ctrl.Result{}, fmt.Errorf("update status: %w", err)
 		}
 	}
@@ -873,6 +873,41 @@ func envStatusFor(app *mortisev1alpha1.App, envName string) *mortisev1alpha1.Env
 		}
 	}
 	return nil
+}
+
+func envSelectedForBuildFailureAggregation(envName string, aggregationEnvNames map[string]struct{}) bool {
+	if len(aggregationEnvNames) == 0 {
+		return false
+	}
+	_, ok := aggregationEnvNames[envName]
+	return ok
+}
+
+func isTerminalBuildFailurePhase(phase mortisev1alpha1.BuildRunPhase) bool {
+	return phase == mortisev1alpha1.BuildRunPhaseFailed
+}
+
+func envExcludedFromTopLevelReadinessAggregation(es mortisev1alpha1.EnvironmentStatus, previewEnvNames, buildAggregationEnvNames map[string]struct{}) bool {
+	if !envSelectedForBuildFailureAggregation(es.Name, buildAggregationEnvNames) {
+		if _, isPreview := previewEnvNames[es.Name]; isPreview &&
+			es.CurrentBuildRunRef != nil &&
+			isTerminalBuildFailurePhase(es.CurrentBuildRunRef.Phase) {
+			return true
+		}
+	}
+	return false
+}
+
+func selectedEnvHasTerminalBuildFailure(envStatuses []mortisev1alpha1.EnvironmentStatus, aggregationEnvNames map[string]struct{}) bool {
+	for _, es := range envStatuses {
+		if !envSelectedForBuildFailureAggregation(es.Name, aggregationEnvNames) {
+			continue
+		}
+		if es.CurrentBuildRunRef != nil && isTerminalBuildFailurePhase(es.CurrentBuildRunRef.Phase) {
+			return true
+		}
+	}
+	return false
 }
 
 // currentImageForEnv returns the image currently deployed for the given
@@ -2696,7 +2731,7 @@ func healthRequeueAfter(app *mortisev1alpha1.App, clk clock.Clock) time.Duration
 // parent project isn't reachable (nil resolvedEnvs), Status.Environments is
 // cleared rather than stale — callers have already logged the underlying
 // cause at fetch time.
-func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.App, resolvedEnvs []mortisev1alpha1.Environment) error {
+func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.App, resolvedEnvs []mortisev1alpha1.Environment, previewEnvNames map[string]struct{}) error {
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		// Re-read the App first to get the latest resourceVersion and any
 		// status written by the API (e.g. Phase=Deploying from a manual
@@ -2714,6 +2749,7 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 		}
 
 		envStatuses := make([]mortisev1alpha1.EnvironmentStatus, 0, len(resolvedEnvs))
+		buildAggregationEnvNames := buildFailureAggregationEnvNames(resolvedEnvs, previewEnvNames)
 
 		isCron := app.Spec.Kind == mortisev1alpha1.AppKindCron
 
@@ -2799,6 +2835,8 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 			// completes, even if readyReplicas temporarily satisfies the check.
 			newRestart := restartedAt != "" && restartedAt != es.LastProcessedRestartedAt
 
+			excludeFromTopLevelReadiness := envExcludedFromTopLevelReadinessAggregation(es, previewEnvNames, buildAggregationEnvNames)
+
 			if ready && !newRestart {
 				if restartedAt != "" {
 					es.LastProcessedRestartedAt = restartedAt
@@ -2810,7 +2848,9 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 					es.Phase = mortisev1alpha1.AppPhaseReady
 				} else {
 					es.Phase = mortisev1alpha1.AppPhaseDeploying
-					anyNotReady = true
+					if !excludeFromTopLevelReadiness {
+						anyNotReady = true
+					}
 				}
 			} else {
 				es.Phase = mortisev1alpha1.AppPhaseDeploying
@@ -2824,7 +2864,9 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 						}
 					}
 				}
-				anyNotReady = true
+				if !excludeFromTopLevelReadiness {
+					anyNotReady = true
+				}
 			}
 
 			if app.Spec.Network.Public && es.Domain != "" {
@@ -2840,6 +2882,10 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 
 		buildFailureCond := meta.FindStatusCondition(fresh.Status.Conditions, "BuildSucceeded")
 		buildFailed := isTerminalBuildFailureCondition(buildFailureCond)
+		previewExcludedFromBuildAggregation := len(buildAggregationEnvNames) > 0 && len(buildAggregationEnvNames) < len(envStatuses)
+		if buildFailed && previewExcludedFromBuildAggregation {
+			buildFailed = selectedEnvHasTerminalBuildFailure(envStatuses, buildAggregationEnvNames)
+		}
 		anyServing := false
 		for _, es := range envStatuses {
 			if es.Phase == mortisev1alpha1.AppPhaseReady {
@@ -2883,6 +2929,15 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 			} else if !anyCrash {
 				phase = mortisev1alpha1.AppPhaseFailed
 			}
+		} else if previewExcludedFromBuildAggregation && buildFailureCond != nil && isTerminalBuildFailureCondition(buildFailureCond) {
+			meta.SetStatusCondition(&fresh.Status.Conditions, metav1.Condition{
+				Type:               "BuildSucceeded",
+				Status:             metav1.ConditionTrue,
+				Reason:             "BuildComplete",
+				Message:            "latest non-preview builds succeeded",
+				LastTransitionTime: metav1.NewTime(r.clock().Now()),
+				ObservedGeneration: app.Generation,
+			})
 		}
 
 		fresh.Status.Phase = phase
