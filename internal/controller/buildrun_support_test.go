@@ -7,6 +7,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -473,6 +474,73 @@ func TestReconcileEnvBuildProjectsCurrentTerminalRunBeforeRevisionShortCircuit(t
 	}
 	if es := envStatusFor(app, "production"); es == nil || es.LastBuiltImage != "registry.example.com/demo:new" {
 		t.Fatalf("expected env status updated from manual run, got %+v", es)
+	}
+}
+
+func TestReconcileEnvBuildProjectsFailedCurrentRunIntoStatus(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := mortisev1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add scheme: %v", err)
+	}
+
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "demo",
+			Namespace: "pj-default-project",
+			Annotations: map[string]string{
+				"mortise.dev/revision": "same-sha",
+			},
+		},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{
+				Type:   mortisev1alpha1.SourceTypeGit,
+				Branch: "main",
+			},
+		},
+		Status: mortisev1alpha1.AppStatus{
+			CurrentBuildRunName: "manual-run",
+		},
+	}
+	run := &mortisev1alpha1.BuildRun{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "manual-run",
+			Namespace: app.Namespace,
+		},
+		Spec: appBuildRunSpec(app, "pr-6", "feature/preview-fail", "same-sha", "registry.example.com/mortise/demo:same-sh-pr-6", "registry.example.com/mortise/demo:same-sh-pr-6"),
+		Status: mortisev1alpha1.BuildRunStatus{
+			Phase:         mortisev1alpha1.BuildRunPhaseFailed,
+			FailureReason: "BuildFailed",
+			FailureMessage:"invalid reference format",
+		},
+	}
+
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(app, run).WithStatusSubresource(app).Build()
+	r := &AppReconciler{
+		Client:          c,
+		Scheme:          scheme,
+		RegistryBackend: &fakeRegistryBackend{},
+	}
+
+	image, requeue, statusDirty, _, err := r.reconcileEnvBuild(context.Background(), app, "pr-6", "feature/preview-fail", "same-sha")
+	if err != nil {
+		t.Fatalf("reconcileEnvBuild: %v", err)
+	}
+	if image != "" {
+		t.Fatalf("expected no image on failed build, got %q", image)
+	}
+	if requeue {
+		t.Fatal("expected failed current run to avoid requeue")
+	}
+	if !statusDirty {
+		t.Fatal("expected failed buildrun projection to dirty status")
+	}
+	es := envStatusFor(app, "pr-6")
+	if es == nil || es.CurrentBuildRunRef == nil || es.CurrentBuildRunRef.Phase != mortisev1alpha1.BuildRunPhaseFailed {
+		t.Fatalf("expected failed buildrun ref to be projected into env status, got %+v", es)
+	}
+	cond := meta.FindStatusCondition(app.Status.Conditions, "BuildSucceeded")
+	if cond == nil || cond.Status != metav1.ConditionFalse {
+		t.Fatalf("expected app build failure condition to be set, got %+v", cond)
 	}
 }
 

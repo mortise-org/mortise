@@ -630,7 +630,7 @@ func (r *AppReconciler) reconcileEnvBuild(ctx context.Context, app *mortisev1alp
 				if err := r.setBuildFailureCondition(ctx, app, firstNonEmpty(current.Status.FailureReason, "BuildFailed"), current.Status.FailureMessage); err != nil {
 					return "", false, false, false, err
 				}
-				return "", false, false, false, nil
+				return "", false, true, false, nil
 			default:
 				app.Status.Phase = mortisev1alpha1.AppPhaseBuilding
 				meta.SetStatusCondition(&app.Status.Conditions, metav1.Condition{
@@ -670,7 +670,7 @@ func (r *AppReconciler) reconcileEnvBuild(ctx context.Context, app *mortisev1alp
 		if err := r.setBuildFailureCondition(ctx, app, firstNonEmpty(run.Status.FailureReason, "BuildFailed"), run.Status.FailureMessage); err != nil {
 			return "", false, false, false, err
 		}
-		return "", false, false, false, nil
+		return "", false, true, false, nil
 	default:
 		app.Status.Phase = mortisev1alpha1.AppPhaseBuilding
 		meta.SetStatusCondition(&app.Status.Conditions, metav1.Condition{
