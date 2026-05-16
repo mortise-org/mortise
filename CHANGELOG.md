@@ -5,7 +5,7 @@ All notable changes to Mortise are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.0.2] - 2026-05-15
 
 ### Added
 
@@ -21,6 +21,9 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Fatal log stream banner**: log viewer and deploy log components now display
   an inline error banner when the SSE stream encounters a fatal error, instead
   of silently stopping.
+- **Preview switcher opens new tab**: preview entries in the environment
+  switcher now open in a new browser tab instead of switching the current view.
+
 ### Fixed
 
 - **Normalized project not-found errors**: all project lookup API paths now
@@ -43,6 +46,20 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   cluster out of sync with the forge. A new `PreviewConvergenceReconciler`
   watches Project changes and re-queues every 10 minutes, polling the forge
   for open PRs and creating/deleting `PreviewEnvironment` CRs to match.
+- **Preview environment flag backfill**: existing `pr-N` project environments
+  are now backfilled with `preview: true` so legacy preview entries still render
+  and behave like previews in the UI.
+- **Vendored chart drift detection**: chart tests now fail when the packaged
+  `mortise-core` dependency drifts from `charts/mortise-core`, preventing stale
+  RBAC from silently shipping in umbrella chart installs.
+- **Preview convergence stability**: multi-repo preview naming now strips
+  invalid repo suffixes, stays within DNS limits, and no longer aborts project
+  convergence when a single repo PR listing fails.
+- **GitHub error wrapping**: preview convergence no longer trips the
+  nil-sensitive GitHub error wrapping path during provider failures.
+- **DEV_CLUSTER targeting in local workflows**: `make dev-up`, `make dev-reload`,
+  and dev E2E port-forwarding now target the cluster named by `DEV_CLUSTER`
+  instead of whichever kube context happens to be active.
 
 ### Changed
 
