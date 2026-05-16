@@ -45,9 +45,6 @@ jobs:
           helm repo add metrics-server https://kubernetes-sigs.github.io/metrics-server/
           helm repo update
 
-      - name: Fetch chart dependencies
-        run: helm dependency update charts/mortise
-
       - name: Helm lint
         run: make test-charts
 

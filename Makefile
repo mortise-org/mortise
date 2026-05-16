@@ -298,12 +298,30 @@ test-integration-fast: ## Run integration tests against the existing dev cluster
 
 ##@ Chart Tests
 
+.PHONY: verify-chart-dependency-drift
+verify-chart-dependency-drift: ## Verify the vendored mortise-core package matches the local chart source
+	@echo "==> Verifying vendored mortise-core package matches local chart source..."
+	@subchart_version=$$(awk -F': ' '/^version:/ {print $$2; exit}' charts/mortise-core/Chart.yaml); \
+	tgz="charts/mortise/charts/mortise-core-$${subchart_version}.tgz"; \
+	tmpdir=$$(mktemp -d); \
+	rbac_manifest="$$tmpdir/rbac.yaml"; \
+	trap 'rm -rf "$$tmpdir"' EXIT; \
+	test -f "$$tgz"; \
+	tar -xzf "$$tgz" -C "$$tmpdir"; \
+	diff -u <(helm show chart charts/mortise-core) <(helm show chart "$$tgz"); \
+	diff -qr charts/mortise-core/templates "$$tmpdir/mortise-core/templates"; \
+	diff -qr charts/mortise-core/crds "$$tmpdir/mortise-core/crds"; \
+	diff -q charts/mortise-core/values.yaml "$$tmpdir/mortise-core/values.yaml"; \
+	helm template packaged-core "$$tgz" --show-only templates/rbac.yaml --namespace mortise-system > "$$rbac_manifest"; \
+	python3 -c 'import sys,yaml; docs=[doc for doc in yaml.safe_load_all(open(sys.argv[1], encoding="utf-8")) if doc]; resources={res for doc in docs if doc.get("kind") == "ClusterRole" for rule in doc.get("rules", []) for res in rule.get("resources", [])}; required={"buildruns", "buildruns/finalizers", "buildruns/status"}; missing=sorted(required - resources); assert not missing, f"missing RBAC resources in packaged subchart: {'"'"', '"'"'.join(missing)}"' "$$rbac_manifest"
+
 .PHONY: test-charts
 test-charts: ## Lint and template-test both Helm charts (no cluster required)
 	@echo "==> Linting mortise-core..."
 	helm lint charts/mortise-core
 	@echo "==> Linting mortise (umbrella)..."
-	helm dependency build charts/mortise 2>/dev/null || true
+	$(MAKE) verify-chart-dependency-drift
+	helm dependency build charts/mortise
 	helm lint charts/mortise
 	@echo "==> Template: umbrella defaults (all enabled, PVC storage)..."
 	helm template test charts/mortise --namespace mortise-system >/dev/null
