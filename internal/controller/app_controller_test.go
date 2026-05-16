@@ -3042,6 +3042,10 @@ func (f *fakeGitClient) Clone(_ context.Context, _, _, _ string, _ git.GitCreden
 	return f.err
 }
 
+func (f *fakeGitClient) CheckoutRevision(_ context.Context, _, _ string) error {
+	return f.err
+}
+
 func (f *fakeGitClient) Fetch(_ context.Context, _, _ string) error {
 	return f.err
 }

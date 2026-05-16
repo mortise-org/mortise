@@ -26,7 +26,6 @@ func (c *GoGitClient) Clone(ctx context.Context, repo, ref, dest string, creds G
 		URL:           repo,
 		ReferenceName: plumbing.NewBranchReferenceName(ref),
 		SingleBranch:  true,
-		Depth:         1,
 	}
 	if creds.Token != "" {
 		opts.Auth = &http.BasicAuth{
@@ -37,6 +36,26 @@ func (c *GoGitClient) Clone(ctx context.Context, repo, ref, dest string, creds G
 	_, err := gogit.PlainClone(dest, false, opts)
 	if err != nil {
 		return fmt.Errorf("clone %s@%s: %w", repo, ref, err)
+	}
+	return nil
+}
+
+func (c *GoGitClient) CheckoutRevision(ctx context.Context, dir, revision string) error {
+	_ = ctx
+	r, err := gogit.PlainOpen(dir)
+	if err != nil {
+		return fmt.Errorf("open repo %s: %w", dir, err)
+	}
+	hash, err := r.ResolveRevision(plumbing.Revision(revision))
+	if err != nil {
+		return fmt.Errorf("resolve revision %s: %w", revision, err)
+	}
+	wt, err := r.Worktree()
+	if err != nil {
+		return fmt.Errorf("worktree: %w", err)
+	}
+	if err := wt.Checkout(&gogit.CheckoutOptions{Hash: *hash, Force: true}); err != nil {
+		return fmt.Errorf("checkout revision %s: %w", revision, err)
 	}
 	return nil
 }
