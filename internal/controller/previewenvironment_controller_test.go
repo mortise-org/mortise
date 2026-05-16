@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -1031,11 +1032,19 @@ func TestCloneEnvironment_DeepCopiesAllFields(t *testing.T) {
 // --- Convergence tests (#373) ---
 
 type mockGitAPI struct {
-	openPRs []git.PullRequestSnapshot
-	err     error
+	openPRs       []git.PullRequestSnapshot
+	openPRsByRepo map[string][]git.PullRequestSnapshot
+	err           error
+	errByRepo     map[string]error
 }
 
 func (m *mockGitAPI) ListOpenPullRequests(ctx context.Context, repo string) ([]git.PullRequestSnapshot, error) {
+	if err, ok := m.errByRepo[repo]; ok {
+		return nil, err
+	}
+	if prs, ok := m.openPRsByRepo[repo]; ok {
+		return prs, nil
+	}
 	return m.openPRs, m.err
 }
 func (m *mockGitAPI) RegisterWebhook(ctx context.Context, repo string, cfg git.WebhookConfig) error {
@@ -1406,7 +1415,7 @@ func TestConvergeProjectPreviews_BotPRFiltering(t *testing.T) {
 	}
 }
 
-func TestConvergeProjectPreviews_GitAPIError(t *testing.T) {
+func TestConvergeProjectPreviews_GitAPIErrorSkipsRepo(t *testing.T) {
 	ctx := context.Background()
 	s := newTestScheme(t)
 	projectName := "converge-err"
@@ -1470,8 +1479,8 @@ func TestConvergeProjectPreviews_GitAPIError(t *testing.T) {
 	}
 
 	err := reconciler.ConvergeProjectPreviews(ctx, project)
-	if err == nil {
-		t.Fatal("expected error from GitAPI, got nil")
+	if err != nil {
+		t.Fatalf("expected nil when PR listing fails for a repo, got %v", err)
 	}
 
 	var peList mortisev1alpha1.PreviewEnvironmentList
@@ -1480,6 +1489,514 @@ func TestConvergeProjectPreviews_GitAPIError(t *testing.T) {
 	}
 	if len(peList.Items) != 0 {
 		t.Errorf("expected no PEs on error, got %d", len(peList.Items))
+	}
+}
+
+func TestConvergencePEName_MultiRepoSanitizesSlug(t *testing.T) {
+	tests := []struct {
+		name       string
+		repo       string
+		number     int
+		multiRepo  bool
+		wantPrefix string
+	}{
+		{
+			name:       "single repo keeps classic name",
+			repo:       "https://github.com/org/repo_name.git",
+			number:     42,
+			multiRepo:  false,
+			wantPrefix: "preview-pr-42",
+		},
+		{
+			name:       "underscores and git suffix are normalized",
+			repo:       "https://github.com/org/repo_name.git",
+			number:     42,
+			multiRepo:  true,
+			wantPrefix: "preview-repo-name-",
+		},
+		{
+			name:       "ssh style repo URL is normalized",
+			repo:       "git@github.com:org/another.repo_name/",
+			number:     7,
+			multiRepo:  true,
+			wantPrefix: "preview-another-repo-name-",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := convergencePEName(tt.repo, tt.number, tt.multiRepo)
+			if !strings.HasPrefix(got, tt.wantPrefix) {
+				t.Fatalf("convergencePEName(%q, %d, %t) = %q, want prefix %q", tt.repo, tt.number, tt.multiRepo, got, tt.wantPrefix)
+			}
+			if tt.multiRepo && !strings.HasSuffix(got, fmt.Sprintf("-pr-%d", tt.number)) {
+				t.Fatalf("expected PR suffix in %q", got)
+			}
+		})
+	}
+
+	longName := convergencePEName("https://github.com/org/THIS_IS_A_VERY_LONG_REPOSITORY_NAME_WITH_EXTRA_PARTS_AND_SUFFIX.git", 123456, true)
+	if len(longName) > 63 {
+		t.Fatalf("expected PE name to fit DNS label limit, got %q (%d chars)", longName, len(longName))
+	}
+	if strings.ContainsAny(longName, "_.") {
+		t.Fatalf("expected sanitized PE name without invalid DNS label chars, got %q", longName)
+	}
+}
+
+func TestConvergencePEName_MultiRepoCollisionGetsDistinctNames(t *testing.T) {
+	repos := []string{
+		"https://github.com/org/foo.bar",
+		"https://github.com/org/foo_bar",
+		"https://github.com/org/foo-bar",
+	}
+
+	got := map[string]string{}
+	for _, repo := range repos {
+		name := convergencePEName(repo, 42, true)
+		if !strings.HasPrefix(name, "preview-foo-bar-") {
+			t.Fatalf("expected normalized readable prefix for %q, got %q", repo, name)
+		}
+		if existingRepo, exists := got[name]; exists {
+			t.Fatalf("expected distinct names, but %q and %q both produced %q", existingRepo, repo, name)
+		}
+		got[name] = repo
+	}
+}
+
+func TestConvergeProjectPreviews_MultiRepoSanitizesNames(t *testing.T) {
+	ctx := context.Background()
+	s := newTestScheme(t)
+	projectName := "converge-multirepo"
+	nsName := constants.ControlNamespace(projectName)
+
+	project := &mortisev1alpha1.Project{
+		ObjectMeta: metav1.ObjectMeta{Name: projectName},
+		Spec: mortisev1alpha1.ProjectSpec{
+			Preview:      &mortisev1alpha1.PreviewConfig{Enabled: true},
+			Environments: []mortisev1alpha1.ProjectEnvironment{{Name: "staging"}},
+		},
+	}
+
+	apps := []client.Object{
+		&mortisev1alpha1.App{
+			ObjectMeta: metav1.ObjectMeta{Name: "web-a", Namespace: nsName},
+			Spec: mortisev1alpha1.AppSpec{
+				Source: mortisev1alpha1.AppSource{
+					Type:        mortisev1alpha1.SourceTypeGit,
+					Repo:        "https://github.com/org/repo_name.git",
+					Branch:      "main",
+					ProviderRef: "github-converge",
+				},
+			},
+		},
+		&mortisev1alpha1.App{
+			ObjectMeta: metav1.ObjectMeta{Name: "web-b", Namespace: nsName},
+			Spec: mortisev1alpha1.AppSpec{
+				Source: mortisev1alpha1.AppSource{
+					Type:        mortisev1alpha1.SourceTypeGit,
+					Repo:        "git@github.com:org/another.repo_name/",
+					Branch:      "main",
+					ProviderRef: "github-converge",
+				},
+			},
+		},
+	}
+
+	gp := &mortisev1alpha1.GitProvider{
+		ObjectMeta: metav1.ObjectMeta{Name: "github-converge"},
+		Spec: mortisev1alpha1.GitProviderSpec{
+			Type: mortisev1alpha1.GitProviderTypeGitHub,
+			Host: "https://github.com",
+		},
+	}
+
+	pm := &mortisev1alpha1.ProjectMember{
+		ObjectMeta: metav1.ObjectMeta{Name: "member", Namespace: nsName},
+		Spec: mortisev1alpha1.ProjectMemberSpec{
+			Email: "dev@example.com",
+			Role:  "owner",
+		},
+	}
+
+	tokenSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      git.UserTokenSecretName("github-converge", "dev@example.com"),
+			Namespace: git.TokenSecretNamespace,
+		},
+		Data: map[string][]byte{"token": []byte("fake-token")},
+	}
+
+	objects := append([]client.Object{project, gp, pm, tokenSecret}, apps...)
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(objects...).Build()
+
+	mock := &mockGitAPI{
+		openPRsByRepo: map[string][]git.PullRequestSnapshot{
+			"https://github.com/org/repo_name.git":  {{Number: 10, Branch: "feat-a", SHA: "aaa"}},
+			"git@github.com:org/another.repo_name/": {{Number: 20, Branch: "feat-b", SHA: "bbb"}},
+		},
+	}
+
+	reconciler := &PreviewEnvironmentReconciler{
+		Client: c,
+		Scheme: s,
+		Clock:  clocktesting.NewFakeClock(time.Now()),
+		GitAPIFactory: func(gp *mortisev1alpha1.GitProvider, token, secret string) (git.GitAPI, error) {
+			return mock, nil
+		},
+	}
+
+	if err := reconciler.ConvergeProjectPreviews(ctx, project); err != nil {
+		t.Fatalf("converge: %v", err)
+	}
+
+	var peList mortisev1alpha1.PreviewEnvironmentList
+	if err := c.List(ctx, &peList, client.InNamespace(nsName)); err != nil {
+		t.Fatalf("list PEs: %v", err)
+	}
+	if len(peList.Items) != 2 {
+		t.Fatalf("expected 2 PEs, got %d", len(peList.Items))
+	}
+
+	gotNames := map[string]bool{}
+	for _, pe := range peList.Items {
+		gotNames[pe.Name] = true
+		if len(pe.Name) > 63 {
+			t.Fatalf("PE name %q exceeds 63 chars", pe.Name)
+		}
+	}
+
+	if !gotNames[convergencePEName("https://github.com/org/repo_name.git", 10, true)] {
+		t.Fatalf("expected sanitized PE name for repo_name.git, got %v", gotNames)
+	}
+	if !gotNames[convergencePEName("git@github.com:org/another.repo_name/", 20, true)] {
+		t.Fatalf("expected sanitized PE name for another.repo_name, got %v", gotNames)
+	}
+}
+
+func TestConvergeProjectPreviews_MixedRepoSyntaxStaysSingleRepo(t *testing.T) {
+	ctx := context.Background()
+	s := newTestScheme(t)
+	projectName := "converge-mixedsyntax"
+	nsName := constants.ControlNamespace(projectName)
+
+	project := &mortisev1alpha1.Project{
+		ObjectMeta: metav1.ObjectMeta{Name: projectName},
+		Spec: mortisev1alpha1.ProjectSpec{
+			Preview:      &mortisev1alpha1.PreviewConfig{Enabled: true},
+			Environments: []mortisev1alpha1.ProjectEnvironment{{Name: "staging"}},
+		},
+	}
+
+	apps := []client.Object{
+		&mortisev1alpha1.App{
+			ObjectMeta: metav1.ObjectMeta{Name: "web-a", Namespace: nsName},
+			Spec: mortisev1alpha1.AppSpec{
+				Source: mortisev1alpha1.AppSource{
+					Type:        mortisev1alpha1.SourceTypeGit,
+					Repo:        "https://github.com/org/repo.git",
+					Branch:      "main",
+					ProviderRef: "github-converge",
+				},
+			},
+		},
+		&mortisev1alpha1.App{
+			ObjectMeta: metav1.ObjectMeta{Name: "web-b", Namespace: nsName},
+			Spec: mortisev1alpha1.AppSpec{
+				Source: mortisev1alpha1.AppSource{
+					Type:        mortisev1alpha1.SourceTypeGit,
+					Repo:        "git@github.com:org/repo.git",
+					Branch:      "main",
+					ProviderRef: "github-converge",
+				},
+			},
+		},
+	}
+
+	gp := &mortisev1alpha1.GitProvider{
+		ObjectMeta: metav1.ObjectMeta{Name: "github-converge"},
+		Spec: mortisev1alpha1.GitProviderSpec{
+			Type: mortisev1alpha1.GitProviderTypeGitHub,
+			Host: "https://github.com",
+		},
+	}
+
+	pm := &mortisev1alpha1.ProjectMember{
+		ObjectMeta: metav1.ObjectMeta{Name: "member", Namespace: nsName},
+		Spec: mortisev1alpha1.ProjectMemberSpec{
+			Email: "dev@example.com",
+			Role:  "owner",
+		},
+	}
+
+	tokenSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      git.UserTokenSecretName("github-converge", "dev@example.com"),
+			Namespace: git.TokenSecretNamespace,
+		},
+		Data: map[string][]byte{"token": []byte("fake-token")},
+	}
+
+	objects := append([]client.Object{project, gp, pm, tokenSecret}, apps...)
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(objects...).Build()
+
+	mock := &mockGitAPI{
+		openPRsByRepo: map[string][]git.PullRequestSnapshot{
+			"https://github.com/org/repo.git": {{Number: 10, Branch: "feat-a", SHA: "aaa"}},
+		},
+	}
+
+	reconciler := &PreviewEnvironmentReconciler{
+		Client: c,
+		Scheme: s,
+		Clock:  clocktesting.NewFakeClock(time.Now()),
+		GitAPIFactory: func(gp *mortisev1alpha1.GitProvider, token, secret string) (git.GitAPI, error) {
+			return mock, nil
+		},
+	}
+
+	if err := reconciler.ConvergeProjectPreviews(ctx, project); err != nil {
+		t.Fatalf("converge: %v", err)
+	}
+
+	var peList mortisev1alpha1.PreviewEnvironmentList
+	if err := c.List(ctx, &peList, client.InNamespace(nsName)); err != nil {
+		t.Fatalf("list PEs: %v", err)
+	}
+	if len(peList.Items) != 1 {
+		t.Fatalf("expected 1 PE, got %d", len(peList.Items))
+	}
+	if peList.Items[0].Name != "preview-pr-10" {
+		t.Fatalf("expected legacy single-repo PE name, got %q", peList.Items[0].Name)
+	}
+}
+
+func TestConvergeProjectPreviews_MultiRepoCollisionCreatesDistinctPEs(t *testing.T) {
+	ctx := context.Background()
+	s := newTestScheme(t)
+	projectName := "converge-collision"
+	nsName := constants.ControlNamespace(projectName)
+
+	project := &mortisev1alpha1.Project{
+		ObjectMeta: metav1.ObjectMeta{Name: projectName},
+		Spec: mortisev1alpha1.ProjectSpec{
+			Preview:      &mortisev1alpha1.PreviewConfig{Enabled: true},
+			Environments: []mortisev1alpha1.ProjectEnvironment{{Name: "staging"}},
+		},
+	}
+
+	repos := []string{
+		"https://github.com/org/foo.bar",
+		"https://github.com/org/foo_bar",
+		"https://github.com/org/foo-bar",
+	}
+
+	var apps []client.Object
+	for i, repo := range repos {
+		apps = append(apps, &mortisev1alpha1.App{
+			ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("web-%d", i), Namespace: nsName},
+			Spec: mortisev1alpha1.AppSpec{
+				Source: mortisev1alpha1.AppSource{
+					Type:        mortisev1alpha1.SourceTypeGit,
+					Repo:        repo,
+					Branch:      "main",
+					ProviderRef: "github-converge",
+				},
+			},
+		})
+	}
+
+	gp := &mortisev1alpha1.GitProvider{
+		ObjectMeta: metav1.ObjectMeta{Name: "github-converge"},
+		Spec: mortisev1alpha1.GitProviderSpec{
+			Type: mortisev1alpha1.GitProviderTypeGitHub,
+			Host: "https://github.com",
+		},
+	}
+
+	pm := &mortisev1alpha1.ProjectMember{
+		ObjectMeta: metav1.ObjectMeta{Name: "member", Namespace: nsName},
+		Spec: mortisev1alpha1.ProjectMemberSpec{
+			Email: "dev@example.com",
+			Role:  "owner",
+		},
+	}
+
+	tokenSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      git.UserTokenSecretName("github-converge", "dev@example.com"),
+			Namespace: git.TokenSecretNamespace,
+		},
+		Data: map[string][]byte{"token": []byte("fake-token")},
+	}
+
+	objects := append([]client.Object{project, gp, pm, tokenSecret}, apps...)
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(objects...).Build()
+
+	mock := &mockGitAPI{
+		openPRsByRepo: map[string][]git.PullRequestSnapshot{
+			repos[0]: {{Number: 42, Branch: "feat-a", SHA: "aaa"}},
+			repos[1]: {{Number: 42, Branch: "feat-b", SHA: "bbb"}},
+			repos[2]: {{Number: 42, Branch: "feat-c", SHA: "ccc"}},
+		},
+	}
+
+	reconciler := &PreviewEnvironmentReconciler{
+		Client: c,
+		Scheme: s,
+		Clock:  clocktesting.NewFakeClock(time.Now()),
+		GitAPIFactory: func(gp *mortisev1alpha1.GitProvider, token, secret string) (git.GitAPI, error) {
+			return mock, nil
+		},
+	}
+
+	if err := reconciler.ConvergeProjectPreviews(ctx, project); err != nil {
+		t.Fatalf("converge: %v", err)
+	}
+
+	var peList mortisev1alpha1.PreviewEnvironmentList
+	if err := c.List(ctx, &peList, client.InNamespace(nsName)); err != nil {
+		t.Fatalf("list PEs: %v", err)
+	}
+	if len(peList.Items) != 3 {
+		t.Fatalf("expected 3 distinct PEs, got %d", len(peList.Items))
+	}
+
+	gotNames := map[string]bool{}
+	for _, repo := range repos {
+		gotNames[convergencePEName(repo, 42, true)] = false
+	}
+	for _, pe := range peList.Items {
+		gotNames[pe.Name] = true
+	}
+	for name, present := range gotNames {
+		if !present {
+			t.Fatalf("expected PE %q to exist, got %v", name, gotNames)
+		}
+	}
+}
+
+func TestConvergeProjectPreviews_ListOpenPullRequestsContinuesPerRepo(t *testing.T) {
+	ctx := context.Background()
+	s := newTestScheme(t)
+	projectName := "converge-continue"
+	nsName := constants.ControlNamespace(projectName)
+	oldEnough := metav1.NewTime(time.Now().Add(-convergenceGracePeriod - time.Minute))
+
+	project := &mortisev1alpha1.Project{
+		ObjectMeta: metav1.ObjectMeta{Name: projectName},
+		Spec: mortisev1alpha1.ProjectSpec{
+			Preview:      &mortisev1alpha1.PreviewConfig{Enabled: true},
+			Environments: []mortisev1alpha1.ProjectEnvironment{{Name: "staging"}},
+		},
+	}
+
+	apps := []client.Object{
+		&mortisev1alpha1.App{
+			ObjectMeta: metav1.ObjectMeta{Name: "web-a", Namespace: nsName},
+			Spec: mortisev1alpha1.AppSpec{
+				Source: mortisev1alpha1.AppSource{
+					Type:        mortisev1alpha1.SourceTypeGit,
+					Repo:        "https://github.com/org/fails",
+					Branch:      "main",
+					ProviderRef: "github-converge",
+				},
+			},
+		},
+		&mortisev1alpha1.App{
+			ObjectMeta: metav1.ObjectMeta{Name: "web-b", Namespace: nsName},
+			Spec: mortisev1alpha1.AppSpec{
+				Source: mortisev1alpha1.AppSource{
+					Type:        mortisev1alpha1.SourceTypeGit,
+					Repo:        "https://github.com/org/works",
+					Branch:      "main",
+					ProviderRef: "github-converge",
+				},
+			},
+		},
+	}
+
+	gp := &mortisev1alpha1.GitProvider{
+		ObjectMeta: metav1.ObjectMeta{Name: "github-converge"},
+		Spec: mortisev1alpha1.GitProviderSpec{
+			Type: mortisev1alpha1.GitProviderTypeGitHub,
+			Host: "https://github.com",
+		},
+	}
+
+	pm := &mortisev1alpha1.ProjectMember{
+		ObjectMeta: metav1.ObjectMeta{Name: "member", Namespace: nsName},
+		Spec: mortisev1alpha1.ProjectMemberSpec{
+			Email: "dev@example.com",
+			Role:  "owner",
+		},
+	}
+
+	tokenSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      git.UserTokenSecretName("github-converge", "dev@example.com"),
+			Namespace: git.TokenSecretNamespace,
+		},
+		Data: map[string][]byte{"token": []byte("fake-token")},
+	}
+
+	existingFailedRepoPE := &mortisev1alpha1.PreviewEnvironment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              convergencePEName("https://github.com/org/fails", 30, true),
+			Namespace:         nsName,
+			CreationTimestamp: oldEnough,
+		},
+		Spec: mortisev1alpha1.PreviewEnvironmentSpec{
+			ProjectRef:  projectName,
+			SourceEnv:   "staging",
+			PullRequest: mortisev1alpha1.PullRequestRef{Number: 30, Branch: "old", SHA: "old"},
+		},
+	}
+
+	objects := append([]client.Object{project, gp, pm, tokenSecret, existingFailedRepoPE}, apps...)
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(objects...).Build()
+
+	mock := &mockGitAPI{
+		openPRsByRepo: map[string][]git.PullRequestSnapshot{
+			"https://github.com/org/works": {{Number: 31, Branch: "human-feat", SHA: "eee"}},
+		},
+		errByRepo: map[string]error{
+			"https://github.com/org/fails": fmt.Errorf("forge API unavailable"),
+		},
+	}
+
+	reconciler := &PreviewEnvironmentReconciler{
+		Client: c,
+		Scheme: s,
+		Clock:  clocktesting.NewFakeClock(time.Now()),
+		GitAPIFactory: func(gp *mortisev1alpha1.GitProvider, token, secret string) (git.GitAPI, error) {
+			return mock, nil
+		},
+	}
+
+	if err := reconciler.ConvergeProjectPreviews(ctx, project); err != nil {
+		t.Fatalf("expected convergence to continue after per-repo PR list failure, got %v", err)
+	}
+
+	var peList mortisev1alpha1.PreviewEnvironmentList
+	if err := c.List(ctx, &peList, client.InNamespace(nsName)); err != nil {
+		t.Fatalf("list PEs: %v", err)
+	}
+	if len(peList.Items) != 2 {
+		t.Fatalf("expected preserved failed-repo PE plus 1 PE from the healthy repo, got %d", len(peList.Items))
+	}
+
+	gotNames := map[string]bool{}
+	for _, pe := range peList.Items {
+		if pe.DeletionTimestamp.IsZero() {
+			gotNames[pe.Name] = true
+		}
+	}
+	if !gotNames[convergencePEName("https://github.com/org/fails", 30, true)] {
+		t.Fatalf("expected failed repo PE to be preserved, got %v", gotNames)
+	}
+	if !gotNames[convergencePEName("https://github.com/org/works", 31, true)] {
+		t.Fatalf("expected PE from healthy repo, got %v", gotNames)
 	}
 }
 

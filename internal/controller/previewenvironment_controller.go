@@ -525,10 +525,10 @@ func (r *PreviewEnvironmentReconciler) ConvergeProjectPreviews(ctx context.Conte
 		if src.Type != mortisev1alpha1.SourceTypeGit || src.Repo == "" {
 			continue
 		}
-		k := repoKey{repo: src.Repo, providerRef: src.ProviderRef}
+		k := repoKey{repo: constants.CanonicalRepoKey(src.Repo), providerRef: src.ProviderRef}
 		if !seen[k] {
 			seen[k] = true
-			repos = append(repos, k)
+			repos = append(repos, repoKey{repo: src.Repo, providerRef: src.ProviderRef})
 		}
 	}
 	if len(repos) == 0 {
@@ -553,10 +553,12 @@ func (r *PreviewEnvironmentReconciler) ConvergeProjectPreviews(ctx context.Conte
 
 	// Track which PE names are still open.
 	openPEs := make(map[string]bool)
+	protectedPEs := make(map[string]bool)
 
 	botPR := project.Spec.Preview.BotPR == nil || *project.Spec.Preview.BotPR
 
 	sourceEnv := resolveSourceEnvFromProject(project)
+	multiRepo := len(repos) > 1
 
 	for _, rk := range repos {
 		if rk.providerRef == "" {
@@ -586,7 +588,9 @@ func (r *PreviewEnvironmentReconciler) ConvergeProjectPreviews(ctx context.Conte
 
 		prs, err := gitAPI.ListOpenPullRequests(ctx, rk.repo)
 		if err != nil {
-			return fmt.Errorf("list open PRs for %q: %w", rk.repo, err)
+			log.Error(err, "list open PRs for convergence, skipping repo", "repo", rk.repo, "provider", rk.providerRef)
+			r.protectRepoPreviewEnvironments(protectedPEs, existingByPR, rk.repo, multiRepo)
+			continue
 		}
 
 		for _, pr := range prs {
@@ -594,7 +598,7 @@ func (r *PreviewEnvironmentReconciler) ConvergeProjectPreviews(ctx context.Conte
 				continue
 			}
 
-			peName := convergencePEName(rk.repo, pr.Number, len(repos) > 1)
+			peName := convergencePEName(rk.repo, pr.Number, multiRepo)
 			openPEs[peName] = true
 
 			if _, exists := existingByPR[peName]; exists {
@@ -637,6 +641,10 @@ func (r *PreviewEnvironmentReconciler) ConvergeProjectPreviews(ctx context.Conte
 		if openPEs[peName] {
 			continue
 		}
+		if protectedPEs[peName] {
+			log.Info("convergence: preserving PE for repo with failed PR listing", "project", project.Name, "pe", peName)
+			continue
+		}
 		if r.clock().Since(pe.CreationTimestamp.Time) < convergenceGracePeriod {
 			log.Info("convergence: skipping recent PE", "project", project.Name, "pe", peName, "age", r.clock().Since(pe.CreationTimestamp.Time))
 			continue
@@ -653,27 +661,32 @@ func (r *PreviewEnvironmentReconciler) ConvergeProjectPreviews(ctx context.Conte
 	return nil
 }
 
+func (r *PreviewEnvironmentReconciler) protectRepoPreviewEnvironments(protectedPEs map[string]bool, existingByPR map[string]*mortisev1alpha1.PreviewEnvironment, repo string, multiRepo bool) {
+	if !multiRepo {
+		for peName := range existingByPR {
+			protectedPEs[peName] = true
+		}
+		return
+	}
+
+	prefix := convergencePEPrefix(repo, true)
+	for peName := range existingByPR {
+		if strings.HasPrefix(peName, prefix) {
+			protectedPEs[peName] = true
+		}
+	}
+}
+
 // convergencePEName returns the PE object name for a given repo and PR number.
 // When multiRepo is false (single git-source repo), the classic format
 // "preview-pr-{number}" is used. When true, a short repo slug is included to
 // avoid name collisions across repos.
 func convergencePEName(repo string, number int, multiRepo bool) string {
-	if !multiRepo {
-		return fmt.Sprintf("preview-pr-%d", number)
-	}
-	// Use last path segment of the repo URL as slug (e.g. "repo" from
-	// "https://github.com/org/repo"). Truncate to keep the name under 63 chars.
-	slug := repo
-	if idx := len(slug) - 1; idx >= 0 && slug[idx] == '/' {
-		slug = slug[:idx]
-	}
-	if idx := strings.LastIndex(slug, "/"); idx >= 0 {
-		slug = slug[idx+1:]
-	}
-	if len(slug) > 20 {
-		slug = slug[:20]
-	}
-	return fmt.Sprintf("preview-%s-pr-%d", slug, number)
+	return constants.PreviewEnvironmentName(repo, number, multiRepo)
+}
+
+func convergencePEPrefix(repo string, multiRepo bool) string {
+	return constants.PreviewEnvironmentPrefix(repo, multiRepo)
 }
 
 // resolveSourceEnvFromProject mirrors the webhook handler's resolveSourceEnv logic.

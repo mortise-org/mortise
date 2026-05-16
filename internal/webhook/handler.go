@@ -10,10 +10,8 @@ package webhook
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -210,6 +208,7 @@ func (h *Handler) dispatchPREvent(ctx context.Context, pr PREvent) {
 	// PR's repo and provider. We only need one PE per project.
 	projectCache := make(map[string]*mortisev1alpha1.Project)
 	projectKnown := make(map[string]bool)
+	projectMultiRepo := make(map[string]bool)
 
 	for i := range apps {
 		app := &apps[i]
@@ -229,6 +228,7 @@ func (h *Handler) dispatchPREvent(ctx context.Context, pr PREvent) {
 			log.Info("skipping app not in control namespace", "app", app.Name, "namespace", app.Namespace)
 			continue
 		}
+		projectMultiRepo[projectName] = projectHasMultipleGitRepos(apps, projectName)
 		if projectKnown[projectName] {
 			continue
 		}
@@ -249,7 +249,7 @@ func (h *Handler) dispatchPREvent(ctx context.Context, pr PREvent) {
 
 	for projectName, project := range projectCache {
 		controlNs := constants.ControlNamespace(projectName)
-		peName := previewEnvName(pr.Number)
+		peName := previewEnvName(pr.Repo, pr.Number, projectMultiRepo[projectName])
 
 		if pr.Action == "closed" {
 			h.deletePreviewForPR(ctx, controlNs, peName, projectName, pr.Number)
@@ -327,8 +327,25 @@ func (h *Handler) deletePreviewForPR(ctx context.Context, namespace, name, proje
 	log.Info("deleted PreviewEnvironment", "project", projectName, "pe", name, "pr", prNumber)
 }
 
-func previewEnvName(prNumber int) string {
-	return fmt.Sprintf("preview-pr-%d", prNumber)
+func previewEnvName(repo string, prNumber int, multiRepo bool) string {
+	return constants.PreviewEnvironmentName(repo, prNumber, multiRepo)
+}
+
+func projectHasMultipleGitRepos(apps []mortisev1alpha1.App, projectName string) bool {
+	controlNs := constants.ControlNamespace(projectName)
+	seen := make(map[string]bool)
+	for i := range apps {
+		app := &apps[i]
+		if app.Namespace != controlNs || app.Spec.Source.Type != mortisev1alpha1.SourceTypeGit || app.Spec.Source.Repo == "" {
+			continue
+		}
+		key := app.Spec.Source.ProviderRef + "\x00" + constants.CanonicalRepoKey(app.Spec.Source.Repo)
+		seen[key] = true
+		if len(seen) > 1 {
+			return true
+		}
+	}
+	return false
 }
 
 func resolveSourceEnv(project *mortisev1alpha1.Project) string {
@@ -377,15 +394,7 @@ func ownerRepo(normalized string) string {
 
 // normalizeRepo returns a canonical lowercased string for comparison.
 func normalizeRepo(raw string) string {
-	raw = strings.TrimSuffix(raw, ".git")
-
-	if strings.Contains(raw, "://") {
-		u, err := url.Parse(raw)
-		if err == nil {
-			return strings.ToLower(u.Host) + "/" + strings.ToLower(strings.TrimPrefix(u.Path, "/"))
-		}
-	}
-	return strings.ToLower(raw)
+	return constants.CanonicalRepoKey(raw)
 }
 
 // BuildRequest is the parsed push event payload.

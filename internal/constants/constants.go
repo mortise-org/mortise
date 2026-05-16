@@ -4,6 +4,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"net/url"
+	"strings"
 )
 
 const (
@@ -23,6 +25,9 @@ const (
 
 	// AppFinalizer gates App deletion until cross-namespace cleanup completes.
 	AppFinalizer = "mortise.dev/app-finalizer"
+
+	maxPreviewPRNumberDigits = 19
+	previewRepoHashLen       = 8
 )
 
 // ControlNamespace returns the control-namespace name for a Project
@@ -44,6 +49,100 @@ func EnvNamespace(projectName, envName string) string {
 // (e.g. `pj-my-saas-pr-42`). Created on PR open, deleted on PR close or TTL.
 func PreviewNamespace(projectName string, prNumber int) string {
 	return fmt.Sprintf("%s%s-pr-%d", ControlNamespacePrefix, projectName, prNumber)
+}
+
+// PreviewEnvironmentName returns the PreviewEnvironment object name for a PR.
+// Single-repo projects keep the legacy preview-pr-{n} format; multi-repo
+// projects include a repo-qualified RFC1123-safe prefix.
+func PreviewEnvironmentName(repo string, prNumber int, multiRepo bool) string {
+	if !multiRepo {
+		return fmt.Sprintf("preview-pr-%d", prNumber)
+	}
+	return fmt.Sprintf("%s%d", PreviewEnvironmentPrefix(repo, true), prNumber)
+}
+
+// PreviewEnvironmentPrefix returns the prefix used for multi-repo
+// PreviewEnvironment names, excluding the PR number.
+func PreviewEnvironmentPrefix(repo string, multiRepo bool) string {
+	if !multiRepo {
+		return "preview-pr-"
+	}
+	canonicalRepo := CanonicalRepoKey(repo)
+	slug := previewRepoSlug(canonicalRepo)
+	hash := previewRepoHash(canonicalRepo)
+	maxSlugLen := 63 - len("preview-") - len("-") - previewRepoHashLen - len("-pr-") - maxPreviewPRNumberDigits
+	if maxSlugLen < 1 {
+		maxSlugLen = 1
+	}
+	if len(slug) > maxSlugLen {
+		slug = strings.Trim(slug[:maxSlugLen], "-")
+		if slug == "" {
+			slug = "repo"
+		}
+	}
+	return fmt.Sprintf("preview-%s-%s-pr-", slug, hash)
+}
+
+// CanonicalRepoKey returns a stable lowercased repository key suitable for
+// matching and deterministic naming across owner/repo, URL, and SSH forms.
+func CanonicalRepoKey(repo string) string {
+	repo = strings.TrimSpace(strings.TrimSuffix(repo, ".git"))
+	if repo == "" {
+		return ""
+	}
+
+	if strings.Contains(repo, "://") {
+		if u, err := url.Parse(repo); err == nil {
+			repo = strings.TrimPrefix(u.Path, "/")
+		}
+	}
+	if idx := strings.Index(repo, "@"); idx >= 0 && strings.Contains(repo[idx:], ":") {
+		repo = repo[strings.LastIndex(repo, ":")+1:]
+	}
+	repo = strings.TrimSuffix(repo, "/")
+	parts := strings.Split(repo, "/")
+	if len(parts) >= 2 {
+		return strings.ToLower(parts[len(parts)-2] + "/" + parts[len(parts)-1])
+	}
+	return strings.ToLower(repo)
+}
+
+func previewRepoSlug(repo string) string {
+	slug := strings.TrimSuffix(strings.TrimSpace(repo), "/")
+	if idx := strings.LastIndex(slug, "/"); idx >= 0 {
+		slug = slug[idx+1:]
+	}
+	if idx := strings.LastIndex(slug, ":"); idx >= 0 {
+		slug = slug[idx+1:]
+	}
+	slug = strings.TrimSuffix(strings.ToLower(slug), ".git")
+
+	var b strings.Builder
+	b.Grow(len(slug))
+	lastDash := false
+	for _, r := range slug {
+		isAlphaNum := (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')
+		if isAlphaNum {
+			b.WriteRune(r)
+			lastDash = false
+			continue
+		}
+		if !lastDash {
+			b.WriteByte('-')
+			lastDash = true
+		}
+	}
+
+	slug = strings.Trim(b.String(), "-")
+	if slug == "" {
+		return "repo"
+	}
+	return slug
+}
+
+func previewRepoHash(repo string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(repo)))
+	return hex.EncodeToString(sum[:])[:previewRepoHashLen]
 }
 
 // ValidateProjectEnvLengths returns an error when the combined project+env name

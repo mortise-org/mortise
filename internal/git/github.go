@@ -265,7 +265,7 @@ func wrapGitHubError(err error) error {
 		return nil
 	}
 	var ghErr *gogithub.ErrorResponse
-	if errors.Is(err, ghErr) || errors.As(err, &ghErr) {
+	if errors.As(err, &ghErr) {
 		if ghErr.Response != nil && (ghErr.Response.StatusCode == 401 || ghErr.Response.StatusCode == 403) {
 			return fmt.Errorf("%w: token may be expired or revoked (HTTP %d)", ErrAuthFailed, ghErr.Response.StatusCode)
 		}
