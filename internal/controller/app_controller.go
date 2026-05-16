@@ -532,33 +532,6 @@ type envBuildIdentity struct {
 	revision string
 }
 
-func resolvedPreviewEnvNames(project *mortisev1alpha1.Project, resolvedEnvs []mortisev1alpha1.Environment) map[string]struct{} {
-	if project == nil || len(project.Spec.Environments) == 0 || len(resolvedEnvs) == 0 {
-		return nil
-	}
-
-	projectPreviewByName := make(map[string]struct{}, len(project.Spec.Environments))
-	for _, env := range project.Spec.Environments {
-		if env.Preview {
-			projectPreviewByName[env.Name] = struct{}{}
-		}
-	}
-	if len(projectPreviewByName) == 0 {
-		return nil
-	}
-
-	out := make(map[string]struct{})
-	for _, env := range resolvedEnvs {
-		if _, ok := projectPreviewByName[env.Name]; ok {
-			out[env.Name] = struct{}{}
-		}
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
-}
-
 func (r *AppReconciler) previewBuildIdentitiesByEnv(ctx context.Context, namespace string, previewEnvNames map[string]struct{}) (map[string]previewBuildIdentity, error) {
 	if len(previewEnvNames) == 0 {
 		return nil, nil
