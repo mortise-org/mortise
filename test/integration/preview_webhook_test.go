@@ -196,6 +196,7 @@ func TestPreviewEnvironmentViaWebhook(t *testing.T) {
 	if img := dep.Spec.Template.Spec.Containers[0].Image; img == "" {
 		t.Error("preview Deployment container image is empty")
 	}
+	waitForAppEnvBuiltSHA(t, ns, app.Name, fmt.Sprintf("pr-%d", prNumber), headSHA, 3*time.Minute)
 
 	// --- Step 2: synchronize — push a new commit to the PR branch and fire
 	// a synchronize webhook. The handler should update the existing PE's SHA.
@@ -219,6 +220,7 @@ func TestPreviewEnvironmentViaWebhook(t *testing.T) {
 
 	// Wait for rebuild: status should cycle back to Ready under the new SHA.
 	waitForPreviewReady(t, ns, peName, 3*time.Minute)
+	waitForAppEnvBuiltSHA(t, ns, app.Name, fmt.Sprintf("pr-%d", prNumber), newSHA, 3*time.Minute)
 
 	// --- Step 3: closed — fire the close webhook. The handler should delete
 	// the PE, and the controller should garbage-collect owned resources.
@@ -383,6 +385,24 @@ func giteaPRPayload(action string, number int, branch, sha, owner, repo string) 
 		panic(fmt.Sprintf("marshal PR payload: %v", err)) // fixture data; not test-facing
 	}
 	return b
+}
+
+func waitForAppEnvBuiltSHA(t *testing.T, namespace, appName, envName, sha string, timeout time.Duration) {
+	t.Helper()
+	helpers.RequireEventually(t, timeout, func() bool {
+		var app mortisev1alpha1.App
+		if err := k8sClient.Get(context.Background(), types.NamespacedName{
+			Name: appName, Namespace: namespace,
+		}, &app); err != nil {
+			return false
+		}
+		for _, env := range app.Status.Environments {
+			if env.Name == envName && env.LastBuiltSHA == sha {
+				return true
+			}
+		}
+		return false
+	})
 }
 
 // postWebhook POSTs the payload to the Mortise webhook endpoint with a correct

@@ -225,7 +225,7 @@ func buildRunTokenSecretRef(providerName, email string) *mortisev1alpha1.SecretR
 	}
 }
 
-func appBuildRunSpec(app *mortisev1alpha1.App, envName, revision, pushTarget, pullTarget string) mortisev1alpha1.BuildRunSpec {
+func appBuildRunSpec(app *mortisev1alpha1.App, envName, branch, revision, pushTarget, pullTarget string) mortisev1alpha1.BuildRunSpec {
 	noCache := false
 	requestID := app.Annotations[rebuildRequestedAtAnnotation]
 	if requestID == "" {
@@ -252,7 +252,7 @@ func appBuildRunSpec(app *mortisev1alpha1.App, envName, revision, pushTarget, pu
 		CreatedBy:      app.Annotations["mortise.dev/created-by"],
 		TokenOwner:     app.Annotations["mortise.dev/git-token-owner"],
 		Repo:           app.Spec.Source.Repo,
-		Branch:         firstNonEmpty(app.Spec.Source.Branch, "main"),
+		Branch:         firstNonEmpty(branch, "main"),
 		Revision:       revision,
 		SourcePath:     app.Spec.Source.Path,
 		Path:           app.Spec.Source.Path,
@@ -290,8 +290,8 @@ func buildRunMatchesAppSpec(run *mortisev1alpha1.BuildRun, app *mortisev1alpha1.
 		buildRunSelectionHash(run.Spec) == buildRunSelectionHash(spec)
 }
 
-func (r *AppReconciler) ensureAppBuildRun(ctx context.Context, app *mortisev1alpha1.App, envName, revision, pushTarget, pullTarget string) (*mortisev1alpha1.BuildRun, error) {
-	spec := appBuildRunSpec(app, envName, revision, pushTarget, pullTarget)
+func (r *AppReconciler) ensureAppBuildRun(ctx context.Context, app *mortisev1alpha1.App, envName, branch, revision, pushTarget, pullTarget string) (*mortisev1alpha1.BuildRun, error) {
+	spec := appBuildRunSpec(app, envName, branch, revision, pushTarget, pullTarget)
 	if !hasPendingRebuildRequest(app) && app.Status.CurrentBuildRunName != "" {
 		var current mortisev1alpha1.BuildRun
 		if err := r.Get(ctx, client.ObjectKey{Namespace: app.Namespace, Name: app.Status.CurrentBuildRunName}, &current); err == nil {

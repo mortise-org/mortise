@@ -170,13 +170,22 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		return ctrl.Result{}, fmt.Errorf("fetch parent project: %w", err)
 	}
 	var resolvedEnvs []mortisev1alpha1.Environment
+	var previewEnvNames map[string]struct{}
+	var previewBuildIdentities map[string]previewBuildIdentity
 	if project != nil {
 		resolvedEnvs = resolveEnvs(project, &app)
+		previewEnvNames = resolvedPreviewEnvNames(project, resolvedEnvs)
+	}
+	if app.Spec.Source.Type == mortisev1alpha1.SourceTypeGit && len(previewEnvNames) > 0 {
+		previewBuildIdentities, err = r.previewBuildIdentitiesByEnv(ctx, app.Namespace, previewEnvNames)
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("resolve preview build identities: %w", err)
+		}
 	}
 
 	switch app.Spec.Source.Type {
 	case mortisev1alpha1.SourceTypeGit:
-		if r.BuildClient != nil && !r.allEnvBuildsCurrentForRevision(&app, resolvedEnvs) {
+		if r.BuildClient != nil && !r.allEnvBuildsCurrentForRevision(&app, resolvedEnvs, previewBuildIdentities) {
 			result, proceed, err := r.prepareGitSource(ctx, &app)
 			if !proceed || err != nil {
 				if syncErr := r.reconcileResolvedEnvSecrets(ctx, &app, resolvedEnvs); syncErr != nil {
@@ -236,7 +245,8 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		// Resolve the container image for this env.
 		var image string
 		if app.Spec.Source.Type == mortisev1alpha1.SourceTypeGit && r.BuildClient != nil {
-			envImage, requeue, dirty, shouldClearNoCache, err := r.reconcileEnvBuild(ctx, &app, env.Name, env.Branch)
+			buildIdentity := resolveEnvBuildIdentity(&app, *env, previewBuildIdentities)
+			envImage, requeue, dirty, shouldClearNoCache, err := r.reconcileEnvBuild(ctx, &app, env.Name, buildIdentity.branch, buildIdentity.revision)
 			if err != nil {
 				return ctrl.Result{}, fmt.Errorf("reconcile buildrun for env %s: %w", env.Name, err)
 			}
@@ -511,19 +521,106 @@ func (r *AppReconciler) DeletePreviewEnvironment(ctx context.Context, pe *mortis
 	return r.Delete(ctx, pe)
 }
 
+type previewBuildIdentity struct {
+	branch   string
+	revision string
+}
+
+type envBuildIdentity struct {
+	branch   string
+	revision string
+}
+
+func resolvedPreviewEnvNames(project *mortisev1alpha1.Project, resolvedEnvs []mortisev1alpha1.Environment) map[string]struct{} {
+	if project == nil || len(project.Spec.Environments) == 0 || len(resolvedEnvs) == 0 {
+		return nil
+	}
+
+	projectPreviewByName := make(map[string]struct{}, len(project.Spec.Environments))
+	for _, env := range project.Spec.Environments {
+		if env.Preview {
+			projectPreviewByName[env.Name] = struct{}{}
+		}
+	}
+	if len(projectPreviewByName) == 0 {
+		return nil
+	}
+
+	out := make(map[string]struct{})
+	for _, env := range resolvedEnvs {
+		if _, ok := projectPreviewByName[env.Name]; ok {
+			out[env.Name] = struct{}{}
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func (r *AppReconciler) previewBuildIdentitiesByEnv(ctx context.Context, namespace string, previewEnvNames map[string]struct{}) (map[string]previewBuildIdentity, error) {
+	if len(previewEnvNames) == 0 {
+		return nil, nil
+	}
+
+	previewEnvs, err := r.ListPreviewEnvironments(ctx, namespace)
+	if err != nil {
+		return nil, err
+	}
+
+	identities := make(map[string]previewBuildIdentity, len(previewEnvs))
+	for _, pe := range previewEnvs {
+		if !pe.DeletionTimestamp.IsZero() {
+			continue
+		}
+		envName := fmt.Sprintf("pr-%d", pe.Spec.PullRequest.Number)
+		if _, ok := previewEnvNames[envName]; !ok {
+			continue
+		}
+		identities[envName] = previewBuildIdentity{
+			branch:   pe.Spec.PullRequest.Branch,
+			revision: pe.Spec.PullRequest.SHA,
+		}
+	}
+	if len(identities) == 0 {
+		return nil, nil
+	}
+	return identities, nil
+}
+
+func resolveEnvBuildIdentity(app *mortisev1alpha1.App, env mortisev1alpha1.Environment, previewBuildIdentities map[string]previewBuildIdentity) envBuildIdentity {
+	identity := envBuildIdentity{branch: env.Branch}
+	if preview, ok := previewBuildIdentities[env.Name]; ok {
+		identity.branch = firstNonEmpty(preview.branch, identity.branch)
+		identity.revision = preview.revision
+	}
+	if identity.revision == "" {
+		identity.revision = app.Annotations["mortise.dev/revision"]
+		if identity.branch != "" {
+			identity.revision = identity.branch
+		} else if identity.revision == "" {
+			identity.revision = app.Spec.Source.Branch
+		}
+	}
+	identity.branch = firstNonEmpty(identity.branch, app.Spec.Source.Branch)
+	identity.branch = firstNonEmpty(identity.branch, "main")
+	identity.revision = firstNonEmpty(identity.revision, "main")
+	return identity
+}
+
 // reconcileEnvBuild handles per-environment builds for git-source apps. Returns
 // the image to use for this env's deployment, or "" if a build is still in
 // flight (caller should skip deployment and requeue). statusDirty is true when
 // applyEnvBuildSuccess mutated app.Status and the caller must flush.
-func (r *AppReconciler) reconcileEnvBuild(ctx context.Context, app *mortisev1alpha1.App, envName, envBranch string) (image string, requeue bool, statusDirty bool, shouldClearNoCache bool, err error) {
+func (r *AppReconciler) reconcileEnvBuild(ctx context.Context, app *mortisev1alpha1.App, envName, branch, revision string) (image string, requeue bool, statusDirty bool, shouldClearNoCache bool, err error) {
 	log := logf.FromContext(ctx)
 
-	revision := app.Annotations["mortise.dev/revision"]
-	if envBranch != "" {
-		revision = envBranch
-	} else if revision == "" {
-		revision = app.Spec.Source.Branch
+	branch = firstNonEmpty(branch, app.Spec.Source.Branch)
+	revision = firstNonEmpty(revision, app.Annotations["mortise.dev/revision"])
+	if revision == "" {
+		revision = branch
 	}
+	branch = firstNonEmpty(branch, "main")
 	if revision == "" {
 		revision = "main"
 	}
@@ -538,7 +635,7 @@ func (r *AppReconciler) reconcileEnvBuild(ctx context.Context, app *mortisev1alp
 		log.Error(err, "pull target failed", "env", envName)
 		return "", false, false, false, nil
 	}
-	desiredRunSpec := appBuildRunSpec(app, envName, revision, imageRef.Full, pullRef.Full)
+	desiredRunSpec := appBuildRunSpec(app, envName, branch, revision, imageRef.Full, pullRef.Full)
 
 	// Short-circuit: skip rebuild if we already built this revision for this env
 	// with the same effective build inputs.
@@ -584,7 +681,7 @@ func (r *AppReconciler) reconcileEnvBuild(ctx context.Context, app *mortisev1alp
 		}
 	}
 
-	run, err := r.ensureAppBuildRun(ctx, app, envName, revision, imageRef.Full, pullRef.Full)
+	run, err := r.ensureAppBuildRun(ctx, app, envName, branch, revision, imageRef.Full, pullRef.Full)
 	if err != nil {
 		log.Error(err, "ensure buildrun failed", "env", envName)
 		return "", false, false, false, err
@@ -734,9 +831,38 @@ func shortTag(revision string) string {
 	return revision
 }
 
+func sanitizeImageTagPart(v string) string {
+	if v == "" {
+		return "build"
+	}
+
+	var b strings.Builder
+	b.Grow(len(v))
+	for _, r := range v {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r)
+		case r >= 'A' && r <= 'Z':
+			b.WriteRune(r)
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r == '.', r == '_', r == '-':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('-')
+		}
+	}
+
+	out := strings.TrimLeft(b.String(), ".-")
+	if out == "" {
+		return "build"
+	}
+	return out
+}
+
 // envImageTag produces a per-environment image tag: "sha-envname".
 func envImageTag(revision, envName string) string {
-	return shortTag(revision) + "-" + envName
+	return sanitizeImageTagPart(shortTag(revision)) + "-" + sanitizeImageTagPart(envName)
 }
 
 // envStatusFor returns the EnvironmentStatus for envName, or nil.
@@ -769,20 +895,12 @@ func (r *AppReconciler) currentImageForEnv(app *mortisev1alpha1.App, envName str
 // allEnvBuildsCurrentForRevision returns true only when every resolved
 // environment already has a per-env build matching the current revision.
 // Used to skip prepareGitSource (auth + clone) when no new builds are needed.
-func (r *AppReconciler) allEnvBuildsCurrentForRevision(app *mortisev1alpha1.App, envs []mortisev1alpha1.Environment) bool {
+func (r *AppReconciler) allEnvBuildsCurrentForRevision(app *mortisev1alpha1.App, envs []mortisev1alpha1.Environment, previewBuildIdentities map[string]previewBuildIdentity) bool {
 	if len(envs) == 0 {
 		return false
 	}
 	for _, env := range envs {
-		revision := app.Annotations["mortise.dev/revision"]
-		if env.Branch != "" {
-			revision = env.Branch
-		} else if revision == "" {
-			revision = app.Spec.Source.Branch
-		}
-		if revision == "" {
-			revision = "main"
-		}
+		revision := resolveEnvBuildIdentity(app, env, previewBuildIdentities).revision
 		es := envStatusFor(app, env.Name)
 		if es == nil || es.LastBuiltSHA != revision || es.LastBuiltImage == "" {
 			return false
@@ -3528,6 +3646,28 @@ func (r *AppReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			Namespace: br.Namespace,
 		}}}
 	})
+	enqueueAppsFromPreviewEnvironment := handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []reconcile.Request {
+		pe, ok := obj.(*mortisev1alpha1.PreviewEnvironment)
+		if !ok || pe.Namespace == "" {
+			return nil
+		}
+
+		var apps mortisev1alpha1.AppList
+		if err := r.List(ctx, &apps, client.InNamespace(pe.Namespace)); err != nil {
+			return nil
+		}
+
+		reqs := make([]reconcile.Request, 0, len(apps.Items))
+		for i := range apps.Items {
+			reqs = append(reqs, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      apps.Items[i].Name,
+					Namespace: apps.Items[i].Namespace,
+				},
+			})
+		}
+		return reqs
+	})
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&mortisev1alpha1.App{}).
 		Watches(&appsv1.Deployment{}, enqueueAppFromManagedResource).
@@ -3538,6 +3678,7 @@ func (r *AppReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(&corev1.ServiceAccount{}, enqueueAppFromManagedResource).
 		Watches(&networkingv1.Ingress{}, enqueueAppFromManagedResource).
 		Watches(&mortisev1alpha1.BuildRun{}, enqueueAppFromBuildRun).
+		Watches(&mortisev1alpha1.PreviewEnvironment{}, enqueueAppsFromPreviewEnvironment).
 		Named("app").
 		Complete(r)
 }

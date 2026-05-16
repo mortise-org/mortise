@@ -46,7 +46,7 @@ func TestEnsureAppBuildRunCreatesAndClearsRebuildMarkers(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(app).Build()
 	r := &AppReconciler{Client: c, Scheme: scheme}
 
-	run, err := r.ensureAppBuildRun(context.Background(), app, "production", "abc1234567890", "registry/push:tag", "registry/pull:tag")
+	run, err := r.ensureAppBuildRun(context.Background(), app, "production", "main", "abc1234567890", "registry/push:tag", "registry/pull:tag")
 	if err != nil {
 		t.Fatalf("ensure buildrun: %v", err)
 	}
@@ -58,6 +58,9 @@ func TestEnsureAppBuildRunCreatesAndClearsRebuildMarkers(t *testing.T) {
 	}
 	if run.Spec.Revision != "abc1234567890" {
 		t.Fatalf("expected revision persisted, got %q", run.Spec.Revision)
+	}
+	if run.Spec.Branch != "main" {
+		t.Fatalf("expected branch persisted, got %q", run.Spec.Branch)
 	}
 	if run.Spec.TokenSecretRef == nil {
 		t.Fatal("expected token secret ref")
@@ -80,6 +83,37 @@ func TestParseImageRefSplitsRegistryPathAndTag(t *testing.T) {
 	}
 	if ref.Tag != "sha-prod" {
 		t.Fatalf("tag = %q", ref.Tag)
+	}
+}
+
+func TestAppBuildRunSpecSeparatesPreviewBranchAndRevision(t *testing.T) {
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "demo",
+			Namespace: "pj-default-project",
+		},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{
+				Type:        mortisev1alpha1.SourceTypeGit,
+				Repo:        "https://example.com/repo.git",
+				Branch:      "main",
+				ProviderRef: "github",
+			},
+		},
+	}
+
+	spec := appBuildRunSpec(app, "pr-12", "feature/preview-slash", "abcdef1234567890", "registry/push:tag", "registry/pull:tag")
+	if spec.Branch != "feature/preview-slash" {
+		t.Fatalf("branch = %q", spec.Branch)
+	}
+	if spec.Revision != "abcdef1234567890" {
+		t.Fatalf("revision = %q", spec.Revision)
+	}
+}
+
+func TestEnvImageTagSanitizesInvalidOCICharacters(t *testing.T) {
+	if got := envImageTag("fix/stripe-payment-element", "pr-6"); got != "fix-str-pr-6" {
+		t.Fatalf("envImageTag = %q", got)
 	}
 }
 
@@ -157,7 +191,7 @@ func TestEnsureAppBuildRunCreatesDistinctRunsForManualRebuildRequests(t *testing
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(app).Build()
 	r := &AppReconciler{Client: c, Scheme: scheme}
 
-	first, err := r.ensureAppBuildRun(context.Background(), app, "production", "same-sha", "registry/push:tag", "registry/pull:tag")
+	first, err := r.ensureAppBuildRun(context.Background(), app, "production", "main", "same-sha", "registry/push:tag", "registry/pull:tag")
 	if err != nil {
 		t.Fatalf("first ensure buildrun: %v", err)
 	}
@@ -166,7 +200,7 @@ func TestEnsureAppBuildRunCreatesDistinctRunsForManualRebuildRequests(t *testing
 	}
 
 	app.Annotations[rebuildNoCacheRequestedAtAnnotation] = "req-2"
-	second, err := r.ensureAppBuildRun(context.Background(), app, "production", "same-sha", "registry/push:tag", "registry/pull:tag")
+	second, err := r.ensureAppBuildRun(context.Background(), app, "production", "main", "same-sha", "registry/push:tag", "registry/pull:tag")
 	if err != nil {
 		t.Fatalf("second ensure buildrun: %v", err)
 	}
@@ -210,7 +244,7 @@ func TestEnsureAppBuildRunReusesCurrentManualRunAfterMarkersClear(t *testing.T) 
 	manualApp := app.DeepCopy()
 	manualApp.Annotations[rebuildRequestedAtAnnotation] = "req-1"
 	manualApp.Annotations[rebuildNoCacheRequestedAtAnnotation] = "req-1"
-	manualSpec := appBuildRunSpec(manualApp, "production", "same-sha", "registry/push:tag", "registry/pull:tag")
+	manualSpec := appBuildRunSpec(manualApp, "production", "main", "same-sha", "registry/push:tag", "registry/pull:tag")
 	run := &mortisev1alpha1.BuildRun{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "manual-run",
@@ -225,7 +259,7 @@ func TestEnsureAppBuildRunReusesCurrentManualRunAfterMarkersClear(t *testing.T) 
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(app, run).Build()
 	r := &AppReconciler{Client: c, Scheme: scheme}
 
-	got, err := r.ensureAppBuildRun(context.Background(), app, "production", "same-sha", "registry/push:tag", "registry/pull:tag")
+	got, err := r.ensureAppBuildRun(context.Background(), app, "production", "main", "same-sha", "registry/push:tag", "registry/pull:tag")
 	if err != nil {
 		t.Fatalf("ensure buildrun: %v", err)
 	}
@@ -271,7 +305,7 @@ func TestEnsureAppBuildRunReusesCurrentTerminalRunBeforeStatusProjection(t *test
 	manualApp := app.DeepCopy()
 	manualApp.Annotations[rebuildRequestedAtAnnotation] = "req-1"
 	manualApp.Annotations[rebuildNoCacheRequestedAtAnnotation] = "req-1"
-	manualSpec := appBuildRunSpec(manualApp, "production", "same-sha", "registry/push:tag", "registry/pull:tag")
+	manualSpec := appBuildRunSpec(manualApp, "production", "main", "same-sha", "registry/push:tag", "registry/pull:tag")
 	run := &mortisev1alpha1.BuildRun{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "manual-run",
@@ -287,7 +321,7 @@ func TestEnsureAppBuildRunReusesCurrentTerminalRunBeforeStatusProjection(t *test
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(app, run).Build()
 	r := &AppReconciler{Client: c, Scheme: scheme}
 
-	got, err := r.ensureAppBuildRun(context.Background(), app, "production", "same-sha", "registry/push:tag", "registry/pull:tag")
+	got, err := r.ensureAppBuildRun(context.Background(), app, "production", "main", "same-sha", "registry/push:tag", "registry/pull:tag")
 	if err != nil {
 		t.Fatalf("ensure buildrun: %v", err)
 	}
@@ -334,7 +368,7 @@ func TestEnsureAppBuildRunDoesNotReuseCurrentRunWhenInputHashChanges(t *testing.
 		},
 	}
 	currentApp := app.DeepCopy()
-	currentSpec := appBuildRunSpec(currentApp, "production", "same-sha", "registry/push:tag", "registry/pull:tag")
+	currentSpec := appBuildRunSpec(currentApp, "production", "main", "same-sha", "registry/push:tag", "registry/pull:tag")
 	run := &mortisev1alpha1.BuildRun{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "current-run",
@@ -351,7 +385,7 @@ func TestEnsureAppBuildRunDoesNotReuseCurrentRunWhenInputHashChanges(t *testing.
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(app, run).Build()
 	r := &AppReconciler{Client: c, Scheme: scheme}
 
-	got, err := r.ensureAppBuildRun(context.Background(), app, "production", "same-sha", "registry/push:tag", "registry/pull:tag")
+	got, err := r.ensureAppBuildRun(context.Background(), app, "production", "main", "same-sha", "registry/push:tag", "registry/pull:tag")
 	if err != nil {
 		t.Fatalf("ensure buildrun: %v", err)
 	}
@@ -396,7 +430,7 @@ func TestReconcileEnvBuildProjectsCurrentTerminalRunBeforeRevisionShortCircuit(t
 	manualApp := app.DeepCopy()
 	manualApp.Annotations[rebuildRequestedAtAnnotation] = "req-1"
 	manualApp.Annotations[rebuildNoCacheRequestedAtAnnotation] = "req-1"
-	manualSpec := appBuildRunSpec(manualApp, "production", "same-sha", "registry.example.com/mortise/demo:same-sh-production", "registry.example.com/mortise/demo:same-sh-production")
+	manualSpec := appBuildRunSpec(manualApp, "production", "main", "same-sha", "registry.example.com/mortise/demo:same-sh-production", "registry.example.com/mortise/demo:same-sh-production")
 	run := &mortisev1alpha1.BuildRun{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "manual-run",
@@ -418,7 +452,7 @@ func TestReconcileEnvBuildProjectsCurrentTerminalRunBeforeRevisionShortCircuit(t
 		RegistryBackend: &fakeRegistryBackend{},
 	}
 
-	image, requeue, statusDirty, _, err := r.reconcileEnvBuild(context.Background(), app, "production", "")
+	image, requeue, statusDirty, _, err := r.reconcileEnvBuild(context.Background(), app, "production", "main", "same-sha")
 	if err != nil {
 		t.Fatalf("reconcileEnvBuild: %v", err)
 	}
@@ -488,7 +522,7 @@ func TestReconcileEnvBuildDoesNotShortCircuitLastBuiltSHAWhenInputHashChanges(t 
 			Name:      "last-run",
 			Namespace: app.Namespace,
 		},
-		Spec: appBuildRunSpec(lastApp, "production", "same-sha", "registry.example.com/mortise/demo:same-sh-production", "registry.example.com/mortise/demo:same-sh-production"),
+		Spec: appBuildRunSpec(lastApp, "production", "main", "same-sha", "registry.example.com/mortise/demo:same-sh-production", "registry.example.com/mortise/demo:same-sh-production"),
 		Status: mortisev1alpha1.BuildRunStatus{
 			Phase: mortisev1alpha1.BuildRunPhaseSucceeded,
 			Image: "registry.example.com/demo:old",
@@ -502,7 +536,7 @@ func TestReconcileEnvBuildDoesNotShortCircuitLastBuiltSHAWhenInputHashChanges(t 
 		RegistryBackend: &fakeRegistryBackend{},
 	}
 
-	image, requeue, statusDirty, _, err := r.reconcileEnvBuild(context.Background(), app, "production", "")
+	image, requeue, statusDirty, _, err := r.reconcileEnvBuild(context.Background(), app, "production", "main", "same-sha")
 	if err != nil {
 		t.Fatalf("reconcileEnvBuild: %v", err)
 	}

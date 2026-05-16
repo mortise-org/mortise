@@ -91,6 +91,13 @@ func runBuild(
 		return
 	}
 	log.Info("cloned repo", "repo", p.repo, "branch", p.branch)
+	if p.revision != "" && p.revision != p.branch {
+		if err := gitClient.CheckoutRevision(ctx, cloneDir, p.revision); err != nil {
+			t.setFailed(fmt.Sprintf("CheckoutRevisionFailed: %v", err))
+			return
+		}
+		log.Info("checked out revision", "revision", p.revision)
+	}
 
 	dockerfileDir := cloneDir
 	if p.path != "" {
