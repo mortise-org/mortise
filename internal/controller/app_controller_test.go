@@ -474,15 +474,66 @@ func TestAllEnvBuildsCurrentForRevision_EnvBranchOverridesAnnotation(t *testing.
 	envs := []mortisev1alpha1.Environment{{Name: "staging", Branch: "feature/x"}}
 
 	// With the env branch matching LastBuiltSHA, should return true.
-	if !r.allEnvBuildsCurrentForRevision(app, envs) {
+	if !r.allEnvBuildsCurrentForRevision(app, envs, nil) {
 		t.Fatal("expected allEnvBuildsCurrentForRevision=true when env branch matches LastBuiltSHA")
 	}
 
 	// If LastBuiltSHA matches the annotation instead of the env branch, should return false
 	// (env branch must win over annotation).
 	app.Status.Environments[0].LastBuiltSHA = "abc123"
-	if r.allEnvBuildsCurrentForRevision(app, envs) {
+	if r.allEnvBuildsCurrentForRevision(app, envs, nil) {
 		t.Fatal("expected allEnvBuildsCurrentForRevision=false when LastBuiltSHA matches annotation but not env branch")
+	}
+}
+
+func TestAllEnvBuildsCurrentForRevision_PreviewUsesSHAInsteadOfBranch(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := mortisev1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add scheme: %v", err)
+	}
+
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "demo",
+			Namespace: "pj-default-project",
+			Annotations: map[string]string{
+				"mortise.dev/revision": "base-sha",
+			},
+		},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{
+				Type:   mortisev1alpha1.SourceTypeGit,
+				Branch: "main",
+			},
+			Environments: []mortisev1alpha1.Environment{
+				{Name: "pr-7", Branch: "feature/preview-slash"},
+			},
+		},
+		Status: mortisev1alpha1.AppStatus{
+			Environments: []mortisev1alpha1.EnvironmentStatus{{
+				Name:           "pr-7",
+				LastBuiltSHA:   "sha-preview-v1",
+				LastBuiltImage: "registry/demo:sha-prev-pr-7",
+			}},
+		},
+	}
+
+	r := &AppReconciler{Scheme: scheme}
+	envs := []mortisev1alpha1.Environment{{Name: "pr-7", Branch: "feature/preview-slash"}}
+	previewBuildIdentities := map[string]previewBuildIdentity{
+		"pr-7": {
+			branch:   "feature/preview-slash",
+			revision: "sha-preview-v1",
+		},
+	}
+
+	if !r.allEnvBuildsCurrentForRevision(app, envs, previewBuildIdentities) {
+		t.Fatal("expected preview env to use immutable SHA identity")
+	}
+
+	app.Status.Environments[0].LastBuiltSHA = "feature/preview-slash"
+	if r.allEnvBuildsCurrentForRevision(app, envs, previewBuildIdentities) {
+		t.Fatal("expected preview env branch to not count as current build identity")
 	}
 }
 
@@ -3765,6 +3816,7 @@ var _ = Describe("App Controller — git source", func() {
 				Spec: appBuildRunSpec(
 					app,
 					"production",
+					"main",
 					"same-sha",
 					"registry.example.com/mortise/git-shortcircuit:same-sh-production",
 					"registry.example.com/mortise/git-shortcircuit:same-sh-production",
