@@ -912,9 +912,9 @@ func selectedEnvHasTerminalBuildFailure(envStatuses []mortisev1alpha1.Environmen
 	return false
 }
 
-func previewEnvHasTerminalBuildFailure(envStatuses []mortisev1alpha1.EnvironmentStatus, previewEnvNames map[string]struct{}) bool {
+func excludedEnvHasTerminalBuildFailure(envStatuses []mortisev1alpha1.EnvironmentStatus, aggregationEnvNames map[string]struct{}) bool {
 	for _, es := range envStatuses {
-		if _, isPreview := previewEnvNames[es.Name]; !isPreview {
+		if envSelectedForBuildFailureAggregation(es.Name, aggregationEnvNames) {
 			continue
 		}
 		if es.CurrentBuildRunRef != nil && isTerminalBuildFailurePhase(es.CurrentBuildRunRef.Phase) {
@@ -935,7 +935,7 @@ func shouldRefreshFailedAppStatus(app *mortisev1alpha1.App, resolvedEnvs []morti
 	}
 
 	buildAggregationEnvNames := buildFailureAggregationEnvNames(resolvedEnvs, previewEnvNames)
-	if len(buildAggregationEnvNames) == 0 || len(buildAggregationEnvNames) == len(resolvedEnvs) {
+	if len(buildAggregationEnvNames) == 0 {
 		return false
 	}
 
@@ -943,7 +943,7 @@ func shouldRefreshFailedAppStatus(app *mortisev1alpha1.App, resolvedEnvs []morti
 		return false
 	}
 
-	return previewEnvHasTerminalBuildFailure(app.Status.Environments, previewEnvNames)
+	return excludedEnvHasTerminalBuildFailure(app.Status.Environments, buildAggregationEnvNames)
 }
 
 // currentImageForEnv returns the image currently deployed for the given
@@ -2920,9 +2920,9 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 		}
 
 		buildFailureCond := meta.FindStatusCondition(fresh.Status.Conditions, "BuildSucceeded")
+		buildFailureOutsideAggregation := excludedEnvHasTerminalBuildFailure(fresh.Status.Environments, buildAggregationEnvNames)
 		buildFailed := isTerminalBuildFailureCondition(buildFailureCond)
-		previewExcludedFromBuildAggregation := len(buildAggregationEnvNames) > 0 && len(buildAggregationEnvNames) < len(envStatuses)
-		if buildFailed && previewExcludedFromBuildAggregation {
+		if buildFailed && buildFailureOutsideAggregation {
 			buildFailed = selectedEnvHasTerminalBuildFailure(envStatuses, buildAggregationEnvNames)
 		}
 		anyServing := false
@@ -2968,7 +2968,7 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 			} else if !anyCrash {
 				phase = mortisev1alpha1.AppPhaseFailed
 			}
-		} else if previewExcludedFromBuildAggregation && buildFailureCond != nil && isTerminalBuildFailureCondition(buildFailureCond) {
+		} else if buildFailureOutsideAggregation && buildFailureCond != nil && isTerminalBuildFailureCondition(buildFailureCond) {
 			meta.SetStatusCondition(&fresh.Status.Conditions, metav1.Condition{
 				Type:               "BuildSucceeded",
 				Status:             metav1.ConditionTrue,
