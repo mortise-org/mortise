@@ -174,10 +174,15 @@ func (r *PreviewEnvironmentReconciler) ensureProjectEnv(ctx context.Context, pro
 		if err := r.Get(ctx, types.NamespacedName{Name: projectName}, &project); err != nil {
 			return err
 		}
-		for _, env := range project.Spec.Environments {
-			if env.Name == envName {
+		for i := range project.Spec.Environments {
+			if project.Spec.Environments[i].Name != envName {
+				continue
+			}
+			if project.Spec.Environments[i].Preview {
 				return nil
 			}
+			project.Spec.Environments[i].Preview = true
+			return r.Update(ctx, &project)
 		}
 		project.Spec.Environments = append(project.Spec.Environments, mortisev1alpha1.ProjectEnvironment{Name: envName, Preview: true})
 		return r.Update(ctx, &project)

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
 	"sort"
 
 	"github.com/go-chi/chi/v5"
@@ -27,6 +28,8 @@ import (
 // suffixes in Deployment names (e.g. "myapp-production"), so they must fit
 // inside k8s' 63-char label cap.
 const maxProjectEnvNameLen = 63
+
+var previewProjectEnvNameRegex = regexp.MustCompile(`^pr-[0-9]+$`)
 
 // EnvHealth reports the aggregated rollout state of a project environment
 // across every App that participates in it. The UI renders one status dot per
@@ -158,6 +161,10 @@ func (s *Server) CreateProjectEnvironment(w http.ResponseWriter, r *http.Request
 		writeJSON(w, http.StatusBadRequest, errorResponse{msg})
 		return
 	}
+	if msg := validateProjectEnvName(req.Name); msg != "" {
+		writeJSON(w, http.StatusBadRequest, errorResponse{msg})
+		return
+	}
 	for _, existing := range project.Spec.Environments {
 		if existing.Name == req.Name {
 			writeJSON(w, http.StatusConflict, errorResponse{fmt.Sprintf("environment %q already exists on project %q", req.Name, project.Name)})
@@ -264,6 +271,10 @@ func (s *Server) UpdateProjectEnvironment(w http.ResponseWriter, r *http.Request
 
 	if req.Name != nil && *req.Name != envName {
 		if msg := validateDNSLabel("name", *req.Name, maxProjectEnvNameLen); msg != "" {
+			writeJSON(w, http.StatusBadRequest, errorResponse{msg})
+			return
+		}
+		if msg := validateProjectEnvName(*req.Name); msg != "" {
 			writeJSON(w, http.StatusBadRequest, errorResponse{msg})
 			return
 		}
@@ -503,6 +514,10 @@ func (s *Server) CloneProjectEnvironment(w http.ResponseWriter, r *http.Request)
 		writeJSON(w, http.StatusBadRequest, errorResponse{msg})
 		return
 	}
+	if msg := validateProjectEnvName(req.Name); msg != "" {
+		writeJSON(w, http.StatusBadRequest, errorResponse{msg})
+		return
+	}
 
 	for _, existing := range project.Spec.Environments {
 		if existing.Name == req.Name {
@@ -547,6 +562,13 @@ func (s *Server) CloneProjectEnvironment(w http.ResponseWriter, r *http.Request)
 		DisplayOrder: req.DisplayOrder,
 		Health:       EnvHealthUnknown,
 	})
+}
+
+func validateProjectEnvName(name string) string {
+	if previewProjectEnvNameRegex.MatchString(name) {
+		return "name uses reserved preview environment namespace pr-<number>"
+	}
+	return ""
 }
 
 // cloneAppOverrides copies the source environment's CRD-level overrides
