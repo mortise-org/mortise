@@ -125,6 +125,7 @@ run: manifests generate fmt vet ## Run a controller from your host.
 ##@ Dev Cluster
 
 DEV_CLUSTER ?= mortise-dev
+DEV_KUBE_CONTEXT ?= k3d-$(DEV_CLUSTER)
 DEV_IMG ?= mortise:dev
 DEV_OBSERVER_IMG ?= mortise-observer:dev
 GITHUB_CLIENT_ID ?= Ov23lizLTd25E32VrWwl
@@ -147,16 +148,16 @@ dev-up: build-ui ## Create k3d dev cluster with build infra, install Mortise, po
 	@echo "==> Loading images into k3d..."
 	k3d image import $(DEV_IMG) $(DEV_OBSERVER_IMG) -c $(DEV_CLUSTER)
 	@echo "==> Installing CRDs..."
-	kubectl apply -f charts/mortise-core/crds/
+	kubectl --context $(DEV_KUBE_CONTEXT) apply -f charts/mortise-core/crds/
 	@echo "==> Deploying test infrastructure (registry, Gitea, BuildKit)..."
-	kubectl apply -f test/integration/manifests/00-namespace.yaml \
+	kubectl --context $(DEV_KUBE_CONTEXT) apply -f test/integration/manifests/00-namespace.yaml \
 		-f test/integration/manifests/10-registry.yaml \
 		-f test/integration/manifests/20-gitea.yaml \
 		-f test/integration/manifests/30-buildkit.yaml
 	@echo "==> Waiting for test infrastructure to become ready..."
-	kubectl -n mortise-test-deps rollout status deployment/registry  --timeout=120s
-	kubectl -n mortise-test-deps rollout status deployment/gitea     --timeout=180s
-	kubectl -n mortise-test-deps rollout status deployment/buildkitd --timeout=180s
+	kubectl --context $(DEV_KUBE_CONTEXT) -n mortise-test-deps rollout status deployment/registry  --timeout=120s
+	kubectl --context $(DEV_KUBE_CONTEXT) -n mortise-test-deps rollout status deployment/gitea     --timeout=180s
+	kubectl --context $(DEV_KUBE_CONTEXT) -n mortise-test-deps rollout status deployment/buildkitd --timeout=180s
 	@echo "==> Fetching Helm chart dependencies..."
 	helm repo add traefik https://traefik.github.io/charts --force-update
 	helm repo add jetstack https://charts.jetstack.io --force-update
@@ -168,7 +169,7 @@ dev-up: build-ui ## Create k3d dev cluster with build infra, install Mortise, po
 	dev_img_repo=$${dev_img_repo%:*}; \
 	dev_img_tag='$(DEV_IMG)'; \
 	dev_img_tag=$${dev_img_tag##*:}; \
-	helm upgrade --install mortise charts/mortise \
+	helm --kube-context $(DEV_KUBE_CONTEXT) upgrade --install mortise charts/mortise \
 		--namespace mortise-system --create-namespace \
 		--skip-crds \
 		--set mortise-core.image.repository=$$dev_img_repo \
@@ -186,16 +187,16 @@ dev-up: build-ui ## Create k3d dev cluster with build infra, install Mortise, po
 		--set mortise-core.github.clientID=$(GITHUB_CLIENT_ID) \
 		--wait --timeout $(DEV_HELM_TIMEOUT)
 	@echo "==> Applying dev PlatformConfig..."
-	kubectl apply -f test/dev/platform-config.yaml
+	kubectl --context $(DEV_KUBE_CONTEXT) apply -f test/dev/platform-config.yaml
 	@echo "==> Restarting operator to pick up config..."
-	kubectl -n mortise-system rollout restart deployment/mortise
-	kubectl -n mortise-system rollout status deployment/mortise --timeout=60s
+	kubectl --context $(DEV_KUBE_CONTEXT) -n mortise-system rollout restart deployment/mortise
+	kubectl --context $(DEV_KUBE_CONTEXT) -n mortise-system rollout status deployment/mortise --timeout=60s
 	@echo "==> Starting port-forward..."
 	@-pkill -f "[k]ubectl port-forward.*8090" >/dev/null 2>&1
 	@if command -v setsid >/dev/null 2>&1; then \
-		nohup setsid kubectl port-forward -n mortise-system svc/mortise 8090:80 >$(DEV_PORT_FORWARD_LOG) 2>&1 </dev/null & \
+		nohup setsid kubectl --context $(DEV_KUBE_CONTEXT) port-forward -n mortise-system svc/mortise 8090:80 >$(DEV_PORT_FORWARD_LOG) 2>&1 </dev/null & \
 	else \
-		nohup kubectl port-forward -n mortise-system svc/mortise 8090:80 >$(DEV_PORT_FORWARD_LOG) 2>&1 </dev/null & \
+		nohup kubectl --context $(DEV_KUBE_CONTEXT) port-forward -n mortise-system svc/mortise 8090:80 >$(DEV_PORT_FORWARD_LOG) 2>&1 </dev/null & \
 	fi
 	@for i in $$(seq 1 15); do \
 		if curl -fsS $(DEV_PORT_FORWARD_READY_URL) >/dev/null 2>&1; then \
@@ -368,9 +369,9 @@ E2E_PASSWORD ?= admin123
 
 .PHONY: test-e2e
 test-e2e: ## Run Playwright E2E suite against the dev cluster (requires make dev-up).
-	@kubectl -n mortise-system rollout status deployment/mortise --timeout=30s
+	@kubectl --context $(DEV_KUBE_CONTEXT) -n mortise-system rollout status deployment/mortise --timeout=30s
 	@cd ui && npm install --silent && npx playwright install chromium
-	@kubectl port-forward -n mortise-system svc/mortise $(E2E_PORT):80 >/dev/null 2>&1 & PF_PID=$$!; \
+	@kubectl --context $(DEV_KUBE_CONTEXT) port-forward -n mortise-system svc/mortise $(E2E_PORT):80 >/dev/null 2>&1 & PF_PID=$$!; \
 	trap "kill $$PF_PID 2>/dev/null || true" EXIT; \
 	echo "==> Waiting for API at http://localhost:$(E2E_PORT)..."; \
 	for i in $$(seq 1 30); do \
@@ -393,12 +394,12 @@ dev-reload: build-ui ## Rebuild image, re-apply CRDs + chart, restart Mortise in
 	$(CONTAINER_TOOL) build --target operator -t $(DEV_IMG) .
 	$(CONTAINER_TOOL) build --target observer -t $(DEV_OBSERVER_IMG) .
 	k3d image import $(DEV_IMG) $(DEV_OBSERVER_IMG) -c $(DEV_CLUSTER)
-	kubectl apply -f charts/mortise-core/crds/
+	kubectl --context $(DEV_KUBE_CONTEXT) apply -f charts/mortise-core/crds/
 	@dev_img_repo='$(DEV_IMG)'; \
 	dev_img_repo=$${dev_img_repo%:*}; \
 	dev_img_tag='$(DEV_IMG)'; \
 	dev_img_tag=$${dev_img_tag##*:}; \
-	helm upgrade mortise charts/mortise \
+	helm --kube-context $(DEV_KUBE_CONTEXT) upgrade mortise charts/mortise \
 		--namespace mortise-system \
 		--set mortise-core.image.repository=$$dev_img_repo \
 		--set mortise-core.image.tag=$$dev_img_tag \
@@ -412,13 +413,13 @@ dev-reload: build-ui ## Rebuild image, re-apply CRDs + chart, restart Mortise in
 		--set platformConfig.enabled=false \
 		--set cert-manager.enabled=false \
 		--set metricsServer.args='{--kubelet-insecure-tls}'
-	kubectl rollout restart deployment/mortise -n mortise-system
-	kubectl rollout status deployment/mortise -n mortise-system --timeout 60s
+	kubectl --context $(DEV_KUBE_CONTEXT) rollout restart deployment/mortise -n mortise-system
+	kubectl --context $(DEV_KUBE_CONTEXT) rollout status deployment/mortise -n mortise-system --timeout 60s
 	@-pkill -f "[k]ubectl port-forward.*8090" >/dev/null 2>&1
 	@if command -v setsid >/dev/null 2>&1; then \
-		nohup setsid kubectl port-forward -n mortise-system svc/mortise 8090:80 >$(DEV_PORT_FORWARD_LOG) 2>&1 </dev/null & \
+		nohup setsid kubectl --context $(DEV_KUBE_CONTEXT) port-forward -n mortise-system svc/mortise 8090:80 >$(DEV_PORT_FORWARD_LOG) 2>&1 </dev/null & \
 	else \
-		nohup kubectl port-forward -n mortise-system svc/mortise 8090:80 >$(DEV_PORT_FORWARD_LOG) 2>&1 </dev/null & \
+		nohup kubectl --context $(DEV_KUBE_CONTEXT) port-forward -n mortise-system svc/mortise 8090:80 >$(DEV_PORT_FORWARD_LOG) 2>&1 </dev/null & \
 	fi
 	@for i in $$(seq 1 15); do \
 		if curl -fsS $(DEV_PORT_FORWARD_READY_URL) >/dev/null 2>&1; then \
