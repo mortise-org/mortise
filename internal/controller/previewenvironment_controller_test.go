@@ -28,6 +28,7 @@ import (
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -123,6 +124,103 @@ func newPEReconciler() *PreviewEnvironmentReconciler {
 		Client: k8sClient,
 		Scheme: k8sClient.Scheme(),
 		Clock:  clocktesting.NewFakeClock(time.Now()),
+	}
+}
+
+func TestPreviewEnvironmentReconcileMarksFailedWhenPreviewAppBuildFails(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := mortisev1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add mortise scheme: %v", err)
+	}
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add core scheme: %v", err)
+	}
+
+	project := &mortisev1alpha1.Project{
+		ObjectMeta: metav1.ObjectMeta{Name: "demo"},
+		Spec: mortisev1alpha1.ProjectSpec{
+			Preview:      &mortisev1alpha1.PreviewConfig{Enabled: true},
+			Environments: []mortisev1alpha1.ProjectEnvironment{{Name: "staging"}},
+		},
+	}
+	pe := &mortisev1alpha1.PreviewEnvironment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "preview-pr-7",
+			Namespace: constants.ControlNamespace(project.Name),
+		},
+		Spec: mortisev1alpha1.PreviewEnvironmentSpec{
+			ProjectRef: project.Name,
+			SourceEnv:  "staging",
+			PullRequest: mortisev1alpha1.PullRequestRef{
+				Number: 7,
+				Branch: "feature/fail",
+				SHA:    "deadbeef",
+			},
+		},
+	}
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "demo-app",
+			Namespace: pe.Namespace,
+		},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{
+				Type:   mortisev1alpha1.SourceTypeGit,
+				Repo:   "https://github.com/example/repo",
+				Branch: "main",
+			},
+			Environments: []mortisev1alpha1.Environment{{Name: "staging"}},
+		},
+		Status: mortisev1alpha1.AppStatus{
+			Environments: []mortisev1alpha1.EnvironmentStatus{{
+				Name: "pr-7",
+				CurrentBuildRunRef: &mortisev1alpha1.BuildRunReference{
+					Name:  "buildrun-1",
+					Phase: mortisev1alpha1.BuildRunPhaseFailed,
+				},
+			}},
+		},
+	}
+	run := &mortisev1alpha1.BuildRun{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "buildrun-1",
+			Namespace: pe.Namespace,
+		},
+		Status: mortisev1alpha1.BuildRunStatus{
+			Phase:          mortisev1alpha1.BuildRunPhaseFailed,
+			FailureReason:  "BuildFailed",
+			FailureMessage: "invalid reference format",
+		},
+	}
+
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(pe).
+		WithObjects(project, pe, app, run).
+		Build()
+	r := &PreviewEnvironmentReconciler{
+		Client: c,
+		Scheme: scheme,
+		Clock:  clocktesting.NewFakeClock(time.Now()),
+	}
+
+	_, err := r.Reconcile(context.Background(), reconcile.Request{
+		NamespacedName: types.NamespacedName{Name: pe.Name, Namespace: pe.Namespace},
+	})
+	if err == nil || !strings.Contains(err.Error(), "BuildFailed") {
+		t.Fatalf("expected BuildFailed error, got %v", err)
+	}
+
+	var updated mortisev1alpha1.PreviewEnvironment
+	if err := c.Get(context.Background(), types.NamespacedName{Name: pe.Name, Namespace: pe.Namespace}, &updated); err != nil {
+		t.Fatalf("get preview environment: %v", err)
+	}
+	if updated.Status.Phase != mortisev1alpha1.PreviewPhaseFailed {
+		t.Fatalf("expected preview phase %q, got %q", mortisev1alpha1.PreviewPhaseFailed, updated.Status.Phase)
+	}
+	cond := meta.FindStatusCondition(updated.Status.Conditions, "Ready")
+	if cond == nil || cond.Status != metav1.ConditionFalse || cond.Message != "invalid reference format" {
+		t.Fatalf("expected failed Ready condition with build failure message, got %+v", cond)
 	}
 }
 

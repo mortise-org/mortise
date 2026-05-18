@@ -33,7 +33,9 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
 	"github.com/mortise-org/mortise/internal/constants"
@@ -151,6 +153,12 @@ func (r *PreviewEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.R
 		}
 	}
 
+	if reason, msg, failed, err := r.previewBuildFailure(ctx, apps.Items, envName); err != nil {
+		return ctrl.Result{}, fmt.Errorf("detect preview build failure: %w", err)
+	} else if failed {
+		return ctrl.Result{}, r.setFailed(ctx, &pe, reason, msg)
+	}
+
 	// Set status to Ready.
 	return ctrl.Result{}, r.updateStatus(ctx, &pe, func(status *mortisev1alpha1.PreviewEnvironmentStatus) {
 		status.Phase = mortisev1alpha1.PreviewPhaseReady
@@ -163,6 +171,36 @@ func (r *PreviewEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.R
 			LastTransitionTime: metav1.NewTime(r.clock().Now()),
 		})
 	})
+}
+
+func (r *PreviewEnvironmentReconciler) previewBuildFailure(ctx context.Context, apps []mortisev1alpha1.App, envName string) (reason, msg string, failed bool, err error) {
+	for i := range apps {
+		app := &apps[i]
+		es := envStatusFor(app, envName)
+		if es == nil || es.CurrentBuildRunRef == nil || es.CurrentBuildRunRef.Phase != mortisev1alpha1.BuildRunPhaseFailed {
+			continue
+		}
+
+		reason = "BuildFailed"
+		msg = fmt.Sprintf("preview build failed for app %q", app.Name)
+		if es.CurrentBuildRunRef.Name == "" {
+			return reason, msg, true, nil
+		}
+
+		var run mortisev1alpha1.BuildRun
+		if err := r.Get(ctx, types.NamespacedName{Namespace: app.Namespace, Name: es.CurrentBuildRunRef.Name}, &run); err != nil {
+			if errors.IsNotFound(err) {
+				return reason, msg, true, nil
+			}
+			return "", "", false, err
+		}
+
+		return firstNonEmpty(run.Status.FailureReason, reason),
+			firstNonEmpty(run.Status.FailureMessage, msg),
+			true,
+			nil
+	}
+	return "", "", false, nil
 }
 
 // ensureProjectEnv adds a ProjectEnvironment entry to the Project spec if one
@@ -731,8 +769,29 @@ func (r *PreviewEnvironmentReconciler) reconcileProjectConvergence(ctx context.C
 }
 
 func (r *PreviewEnvironmentReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	enqueuePreviewsFromApp := handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []reconcile.Request {
+		app, ok := obj.(*mortisev1alpha1.App)
+		if !ok {
+			return nil
+		}
+
+		var peList mortisev1alpha1.PreviewEnvironmentList
+		if err := mgr.GetClient().List(ctx, &peList, client.InNamespace(app.Namespace)); err != nil {
+			return nil
+		}
+
+		reqs := make([]reconcile.Request, 0, len(peList.Items))
+		for _, pe := range peList.Items {
+			reqs = append(reqs, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: pe.Name, Namespace: pe.Namespace},
+			})
+		}
+		return reqs
+	})
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&mortisev1alpha1.PreviewEnvironment{}).
+		Watches(&mortisev1alpha1.App{}, enqueuePreviewsFromApp).
 		Named("previewenvironment").
 		Complete(r)
 }
