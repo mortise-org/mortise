@@ -240,8 +240,12 @@ func (r *PreviewEnvironmentReconciler) ensureAppEnvOverride(ctx context.Context,
 		for idx := range fresh.Spec.Environments {
 			if fresh.Spec.Environments[idx].Name == envName {
 				// Already exists — ensure branch is correct for git-source apps.
-				if fresh.Spec.Source.Type == mortisev1alpha1.SourceTypeGit && fresh.Spec.Environments[idx].Branch != pe.Spec.PullRequest.Branch {
-					fresh.Spec.Environments[idx].Branch = pe.Spec.PullRequest.Branch
+				desiredBranch := ""
+				if fresh.Spec.Source.Type == mortisev1alpha1.SourceTypeGit && previewTargetsAppRepo(pe, &fresh) {
+					desiredBranch = pe.Spec.PullRequest.Branch
+				}
+				if fresh.Spec.Environments[idx].Branch != desiredBranch {
+					fresh.Spec.Environments[idx].Branch = desiredBranch
 					return r.Update(ctx, &fresh)
 				}
 				return nil
@@ -249,7 +253,7 @@ func (r *PreviewEnvironmentReconciler) ensureAppEnvOverride(ctx context.Context,
 		}
 
 		cloned := cloneEnvironment(sourceEnv, envName, &fresh)
-		if fresh.Spec.Source.Type == mortisev1alpha1.SourceTypeGit {
+		if fresh.Spec.Source.Type == mortisev1alpha1.SourceTypeGit && previewTargetsAppRepo(pe, &fresh) {
 			cloned.Branch = pe.Spec.PullRequest.Branch
 		}
 
@@ -519,8 +523,9 @@ func (r *PreviewEnvironmentReconciler) setFailed(ctx context.Context, pe *mortis
 		})
 	}); err != nil {
 		log.Error(err, "update failed preview status")
+		return err
 	}
-	return fmt.Errorf("%s: %s", reason, msg)
+	return nil
 }
 
 func (r *PreviewEnvironmentReconciler) updateStatus(ctx context.Context, pe *mortisev1alpha1.PreviewEnvironment, mutate func(status *mortisev1alpha1.PreviewEnvironmentStatus)) error {
@@ -671,6 +676,7 @@ func (r *PreviewEnvironmentReconciler) ConvergeProjectPreviews(ctx context.Conte
 						Number: pr.Number,
 						Branch: pr.Branch,
 						SHA:    pr.SHA,
+						Repo:   rk.repo,
 					},
 				},
 			}

@@ -63,6 +63,8 @@ spec:
                     type: string
                   number:
                     type: integer
+                  repo:
+                    type: string
                   sha:
                     type: string
                 required:

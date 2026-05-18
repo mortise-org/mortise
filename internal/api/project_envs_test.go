@@ -431,6 +431,9 @@ func TestUpdateProjectEnvironmentRename(t *testing.T) {
 	if len(got.Spec.Environments) != 1 || got.Spec.Environments[0].Name != "stage" {
 		t.Errorf("app override not renamed: %+v", got.Spec.Environments)
 	}
+	if got.Annotations["mortise.dev/env-updated"] == "" {
+		t.Fatalf("expected app reconcile poke annotation after env rename, got %+v", got.Annotations)
+	}
 }
 
 func TestUpdateProjectEnvironmentRenamePreservesConcurrentProjectUpdate(t *testing.T) {

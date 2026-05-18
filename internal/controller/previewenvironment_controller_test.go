@@ -207,8 +207,8 @@ func TestPreviewEnvironmentReconcileMarksFailedWhenPreviewAppBuildFails(t *testi
 	_, err := r.Reconcile(context.Background(), reconcile.Request{
 		NamespacedName: types.NamespacedName{Name: pe.Name, Namespace: pe.Namespace},
 	})
-	if err == nil || !strings.Contains(err.Error(), "BuildFailed") {
-		t.Fatalf("expected BuildFailed error, got %v", err)
+	if err != nil {
+		t.Fatalf("expected terminal preview failure to settle without reconcile error, got %v", err)
 	}
 
 	var updated mortisev1alpha1.PreviewEnvironment
@@ -221,6 +221,115 @@ func TestPreviewEnvironmentReconcileMarksFailedWhenPreviewAppBuildFails(t *testi
 	cond := meta.FindStatusCondition(updated.Status.Conditions, "Ready")
 	if cond == nil || cond.Status != metav1.ConditionFalse || cond.Message != "invalid reference format" {
 		t.Fatalf("expected failed Ready condition with build failure message, got %+v", cond)
+	}
+}
+
+func TestPreviewEnvironmentReconcileOnlyAppliesPRBranchToMatchingRepoApps(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := mortisev1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add mortise scheme: %v", err)
+	}
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add core scheme: %v", err)
+	}
+
+	project := &mortisev1alpha1.Project{
+		ObjectMeta: metav1.ObjectMeta{Name: "demo"},
+		Spec: mortisev1alpha1.ProjectSpec{
+			Preview:      &mortisev1alpha1.PreviewConfig{Enabled: true},
+			Environments: []mortisev1alpha1.ProjectEnvironment{{Name: "staging"}},
+		},
+	}
+	pe := &mortisev1alpha1.PreviewEnvironment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      constants.PreviewEnvironmentName("https://github.com/example/repo-a.git", 7, true),
+			Namespace: constants.ControlNamespace(project.Name),
+		},
+		Spec: mortisev1alpha1.PreviewEnvironmentSpec{
+			ProjectRef: project.Name,
+			SourceEnv:  "staging",
+			PullRequest: mortisev1alpha1.PullRequestRef{
+				Number: 7,
+				Branch: "fix/asdfsdf",
+				SHA:    "deadbeef",
+				Repo:   "git@github.com:example/repo-a.git",
+			},
+		},
+	}
+	matching := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "repo-a",
+			Namespace: pe.Namespace,
+		},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{
+				Type: mortisev1alpha1.SourceTypeGit,
+				Repo: "https://github.com/example/repo-a.git",
+			},
+			Environments: []mortisev1alpha1.Environment{{Name: "staging"}},
+		},
+	}
+	nonMatching := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "repo-b",
+			Namespace: pe.Namespace,
+		},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{
+				Type:   mortisev1alpha1.SourceTypeGit,
+				Repo:   "https://github.com/example/repo-b.git",
+				Branch: "main",
+			},
+			Environments: []mortisev1alpha1.Environment{
+				{Name: "staging"},
+				{Name: "pr-7", Branch: "wrong/old-branch"},
+			},
+		},
+	}
+
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(pe).
+		WithObjects(project, pe, matching, nonMatching).
+		Build()
+	r := &PreviewEnvironmentReconciler{
+		Client: c,
+		Scheme: scheme,
+		Clock:  clocktesting.NewFakeClock(time.Now()),
+	}
+
+	if _, err := r.Reconcile(context.Background(), reconcile.Request{
+		NamespacedName: types.NamespacedName{Name: pe.Name, Namespace: pe.Namespace},
+	}); err != nil {
+		t.Fatalf("reconcile preview environment: %v", err)
+	}
+
+	var gotMatching mortisev1alpha1.App
+	if err := c.Get(context.Background(), types.NamespacedName{Name: matching.Name, Namespace: matching.Namespace}, &gotMatching); err != nil {
+		t.Fatalf("get matching app: %v", err)
+	}
+	var matchingBranch string
+	for _, env := range gotMatching.Spec.Environments {
+		if env.Name == "pr-7" {
+			matchingBranch = env.Branch
+		}
+	}
+	if matchingBranch != "fix/asdfsdf" {
+		t.Fatalf("expected matching repo preview branch to be applied, got %q", matchingBranch)
+	}
+
+	var gotNonMatching mortisev1alpha1.App
+	if err := c.Get(context.Background(), types.NamespacedName{Name: nonMatching.Name, Namespace: nonMatching.Namespace}, &gotNonMatching); err != nil {
+		t.Fatalf("get non-matching app: %v", err)
+	}
+	var nonMatchingBranch string
+	for _, env := range gotNonMatching.Spec.Environments {
+		if env.Name == "pr-7" {
+			nonMatchingBranch = env.Branch
+		}
+	}
+	if nonMatchingBranch != "" {
+		t.Fatalf("expected non-matching repo preview branch to be cleared, got %q", nonMatchingBranch)
 	}
 }
 
@@ -330,8 +439,7 @@ var _ = Describe("PreviewEnvironment Controller", func() {
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{Name: pe.Name, Namespace: ns},
 			})
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("PreviewDisabled"))
+			Expect(err).NotTo(HaveOccurred())
 
 			var updated mortisev1alpha1.PreviewEnvironment
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: pe.Name, Namespace: ns}, &updated)).To(Succeed())
@@ -368,8 +476,7 @@ var _ = Describe("PreviewEnvironment Controller", func() {
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{Name: pe.Name, Namespace: nsName},
 			})
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("ProjectNotFound"))
+			Expect(err).NotTo(HaveOccurred())
 
 			var updated mortisev1alpha1.PreviewEnvironment
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: pe.Name, Namespace: nsName}, &updated)).To(Succeed())
@@ -462,8 +569,7 @@ var _ = Describe("PreviewEnvironment Controller", func() {
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{Name: pe.Name, Namespace: ns},
 			})
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("RestrictedSourceEnv"))
+			Expect(err).NotTo(HaveOccurred())
 
 			var updated mortisev1alpha1.PreviewEnvironment
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: pe.Name, Namespace: ns}, &updated)).To(Succeed())

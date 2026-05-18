@@ -1095,6 +1095,139 @@ func TestAllEnvBuildsCurrentForRevision_PreviewUsesSHAInsteadOfBranch(t *testing
 	}
 }
 
+func TestPreviewBuildIdentitiesByEnvSkipsForeignRepoPreview(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := mortisev1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add mortise scheme: %v", err)
+	}
+
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "demo",
+			Namespace: "pj-default-project",
+		},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{
+				Type: mortisev1alpha1.SourceTypeGit,
+				Repo: "https://github.com/example/repo-b.git",
+			},
+		},
+	}
+	pe := &mortisev1alpha1.PreviewEnvironment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      constants.PreviewEnvironmentName("https://github.com/example/repo-a.git", 7, true),
+			Namespace: app.Namespace,
+		},
+		Spec: mortisev1alpha1.PreviewEnvironmentSpec{
+			ProjectRef: "default-project",
+			SourceEnv:  "staging",
+			PullRequest: mortisev1alpha1.PullRequestRef{
+				Number: 7,
+				Branch: "fix/asdfsdf",
+				SHA:    "sha-preview-v1",
+				Repo:   "https://github.com/example/repo-a.git",
+			},
+		},
+	}
+
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(pe).Build()
+	r := &AppReconciler{Client: c, Scheme: scheme}
+
+	identities, err := r.previewBuildIdentitiesByEnv(context.Background(), app, map[string]struct{}{"pr-7": {}})
+	if err != nil {
+		t.Fatalf("previewBuildIdentitiesByEnv: %v", err)
+	}
+	if len(identities) != 0 {
+		t.Fatalf("expected no preview identities for foreign repo PE, got %+v", identities)
+	}
+}
+
+func TestReconcileDeploymentRecreatesPreviewDeploymentOnSelectorMismatch(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := mortisev1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add mortise scheme: %v", err)
+	}
+	if err := appsv1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add apps scheme: %v", err)
+	}
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add core scheme: %v", err)
+	}
+
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "demo",
+			Namespace: "pj-default-project",
+		},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{
+				Type:  mortisev1alpha1.SourceTypeImage,
+				Image: "registry.example.com/demo:old",
+			},
+		},
+	}
+	env := &mortisev1alpha1.Environment{Name: "pr-6"}
+	envNs := constants.EnvNamespace("default-project", env.Name)
+	oldSelector := map[string]string{
+		"app.kubernetes.io/component":  "preview",
+		"app.kubernetes.io/managed-by": "mortise",
+		"app.kubernetes.io/name":       app.Name,
+		"mortise.dev/pr-number":        "6",
+		"mortise.dev/project":          "default-project",
+	}
+	existing := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      deploymentName(app.Name),
+			Namespace: envNs,
+			Labels:    oldSelector,
+		},
+		Spec: appsv1.DeploymentSpec{
+			Replicas: ptr.To(int32(1)),
+			Selector: &metav1.LabelSelector{MatchLabels: oldSelector},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{Labels: oldSelector},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{
+						Name:  app.Name,
+						Image: "registry.example.com/demo:old",
+					}},
+				},
+			},
+		},
+	}
+
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(existing).Build()
+	r := &AppReconciler{Client: c, Scheme: scheme}
+
+	if err := r.reconcileDeployment(context.Background(), app, env, envNs, "registry.example.com/demo:new", "", true); err != nil {
+		t.Fatalf("first reconcileDeployment: %v", err)
+	}
+
+	var deleted appsv1.Deployment
+	err := c.Get(context.Background(), types.NamespacedName{Name: existing.Name, Namespace: envNs}, &deleted)
+	if !kerrors.IsNotFound(err) {
+		t.Fatalf("expected stale deployment to be deleted first, got err=%v", err)
+	}
+
+	if err := r.reconcileDeployment(context.Background(), app, env, envNs, "registry.example.com/demo:new", "", true); err != nil {
+		t.Fatalf("second reconcileDeployment: %v", err)
+	}
+
+	var recreated appsv1.Deployment
+	if err := c.Get(context.Background(), types.NamespacedName{Name: existing.Name, Namespace: envNs}, &recreated); err != nil {
+		t.Fatalf("get recreated deployment: %v", err)
+	}
+	if got := recreated.Spec.Selector.MatchLabels[constants.EnvironmentLabel]; got != "pr-6" {
+		t.Fatalf("expected recreated deployment selector to use current env label, got %q", got)
+	}
+	if got := recreated.Spec.Template.Labels[constants.EnvironmentLabel]; got != "pr-6" {
+		t.Fatalf("expected recreated deployment template labels to use current env label, got %q", got)
+	}
+	if _, ok := recreated.Spec.Selector.MatchLabels["mortise.dev/pr-number"]; ok {
+		t.Fatalf("expected recreated deployment selector to drop stale pr-number label, got %+v", recreated.Spec.Selector.MatchLabels)
+	}
+}
+
 var _ = Describe("App Controller", func() {
 	const namespace = "pj-default-project"
 	const envNsProduction = "pj-default-project-production"
