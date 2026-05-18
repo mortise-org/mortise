@@ -35,6 +35,8 @@ type PullRequestRef struct {
 	Number int    `json:"number"`
 	Branch string `json:"branch"`
 	SHA    string `json:"sha"`
+	// +optional
+	Repo string `json:"repo,omitempty"`
 }
 
 // PreviewEnvironmentSpec defines the desired state of PreviewEnvironment.

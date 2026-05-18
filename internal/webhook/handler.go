@@ -290,6 +290,7 @@ func (h *Handler) dispatchPREvent(ctx context.Context, pr PREvent) {
 						Number: pr.Number,
 						Branch: pr.Branch,
 						SHA:    pr.SHA,
+						Repo:   pr.Repo,
 					},
 				},
 			}
@@ -302,12 +303,14 @@ func (h *Handler) dispatchPREvent(ctx context.Context, pr PREvent) {
 		}
 
 		// PE exists — update SHA (and branch if changed).
-		if existing.Spec.PullRequest.SHA == pr.SHA && existing.Spec.PullRequest.Branch == pr.Branch {
+		if existing.Spec.PullRequest.SHA == pr.SHA && existing.Spec.PullRequest.Branch == pr.Branch &&
+			constants.CanonicalRepoKey(existing.Spec.PullRequest.Repo) == constants.CanonicalRepoKey(pr.Repo) {
 			continue // no change
 		}
 		updated := existing.DeepCopy()
 		updated.Spec.PullRequest.SHA = pr.SHA
 		updated.Spec.PullRequest.Branch = pr.Branch
+		updated.Spec.PullRequest.Repo = pr.Repo
 		if err := h.k8s.updatePreviewEnvironment(ctx, updated); err != nil {
 			log.Error(err, "update PreviewEnvironment", "project", projectName, "pe", peName)
 			continue

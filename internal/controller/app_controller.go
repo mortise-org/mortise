@@ -177,7 +177,7 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		previewEnvNames = resolvedPreviewEnvNames(project, resolvedEnvs)
 	}
 	if app.Spec.Source.Type == mortisev1alpha1.SourceTypeGit && len(previewEnvNames) > 0 {
-		previewBuildIdentities, err = r.previewBuildIdentitiesByEnv(ctx, app.Namespace, previewEnvNames)
+		previewBuildIdentities, err = r.previewBuildIdentitiesByEnv(ctx, &app, previewEnvNames)
 		if err != nil {
 			return ctrl.Result{}, fmt.Errorf("resolve preview build identities: %w", err)
 		}
@@ -532,12 +532,12 @@ type envBuildIdentity struct {
 	revision string
 }
 
-func (r *AppReconciler) previewBuildIdentitiesByEnv(ctx context.Context, namespace string, previewEnvNames map[string]struct{}) (map[string]previewBuildIdentity, error) {
+func (r *AppReconciler) previewBuildIdentitiesByEnv(ctx context.Context, app *mortisev1alpha1.App, previewEnvNames map[string]struct{}) (map[string]previewBuildIdentity, error) {
 	if len(previewEnvNames) == 0 {
 		return nil, nil
 	}
 
-	previewEnvs, err := r.ListPreviewEnvironments(ctx, namespace)
+	previewEnvs, err := r.ListPreviewEnvironments(ctx, app.Namespace)
 	if err != nil {
 		return nil, err
 	}
@@ -549,6 +549,9 @@ func (r *AppReconciler) previewBuildIdentitiesByEnv(ctx context.Context, namespa
 		}
 		envName := fmt.Sprintf("pr-%d", pe.Spec.PullRequest.Number)
 		if _, ok := previewEnvNames[envName]; !ok {
+			continue
+		}
+		if !previewTargetsAppRepo(&pe, app) {
 			continue
 		}
 		identities[envName] = previewBuildIdentity{
@@ -1201,6 +1204,13 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 		return err
 	}
 
+	if deploymentSelectorMismatch(&existing, desired) {
+		if err := r.Delete(ctx, &existing); err != nil {
+			return fmt.Errorf("delete Deployment with stale selector: %w", err)
+		}
+		return nil
+	}
+
 	if len(desired.Spec.Template.Spec.Containers) == 0 {
 		return fmt.Errorf("desired Deployment %s/%s has no containers", envNs, name)
 	}
@@ -1323,6 +1333,24 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 		existing.Annotations = desiredAnnotations
 		return true, nil
 	})
+}
+
+func deploymentSelectorMismatch(existing, desired *appsv1.Deployment) bool {
+	if existing == nil || desired == nil || desired.Spec.Selector == nil {
+		return false
+	}
+	if existing.Spec.Selector == nil {
+		return true
+	}
+	if !equality.Semantic.DeepEqual(existing.Spec.Selector.MatchLabels, desired.Spec.Selector.MatchLabels) {
+		return true
+	}
+	for key, value := range existing.Spec.Selector.MatchLabels {
+		if desired.Spec.Template.Labels[key] != value {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *AppReconciler) reconcileCronJob(ctx context.Context, app *mortisev1alpha1.App, env *mortisev1alpha1.Environment, envNs, image, credentialsHash string, autoRedeploy bool) error {
