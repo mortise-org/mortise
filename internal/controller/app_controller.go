@@ -350,8 +350,9 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		}
 	}
 
-	if !needsRequeue && app.Status.Phase != mortisev1alpha1.AppPhaseFailed {
-		if err := r.updateStatus(ctx, &app, resolvedEnvs); err != nil {
+	if !needsRequeue && (app.Status.Phase != mortisev1alpha1.AppPhaseFailed ||
+		shouldRefreshFailedAppStatus(&app, resolvedEnvs, previewEnvNames)) {
+		if err := r.updateStatus(ctx, &app, resolvedEnvs, previewEnvNames); err != nil {
 			return ctrl.Result{}, fmt.Errorf("update status: %w", err)
 		}
 	}
@@ -531,33 +532,6 @@ type envBuildIdentity struct {
 	revision string
 }
 
-func resolvedPreviewEnvNames(project *mortisev1alpha1.Project, resolvedEnvs []mortisev1alpha1.Environment) map[string]struct{} {
-	if project == nil || len(project.Spec.Environments) == 0 || len(resolvedEnvs) == 0 {
-		return nil
-	}
-
-	projectPreviewByName := make(map[string]struct{}, len(project.Spec.Environments))
-	for _, env := range project.Spec.Environments {
-		if env.Preview {
-			projectPreviewByName[env.Name] = struct{}{}
-		}
-	}
-	if len(projectPreviewByName) == 0 {
-		return nil
-	}
-
-	out := make(map[string]struct{})
-	for _, env := range resolvedEnvs {
-		if _, ok := projectPreviewByName[env.Name]; ok {
-			out[env.Name] = struct{}{}
-		}
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
-}
-
 func (r *AppReconciler) previewBuildIdentitiesByEnv(ctx context.Context, namespace string, previewEnvNames map[string]struct{}) (map[string]previewBuildIdentity, error) {
 	if len(previewEnvNames) == 0 {
 		return nil, nil
@@ -656,7 +630,7 @@ func (r *AppReconciler) reconcileEnvBuild(ctx context.Context, app *mortisev1alp
 				if err := r.setBuildFailureCondition(ctx, app, firstNonEmpty(current.Status.FailureReason, "BuildFailed"), current.Status.FailureMessage); err != nil {
 					return "", false, false, false, err
 				}
-				return "", false, false, false, nil
+				return "", false, true, false, nil
 			default:
 				app.Status.Phase = mortisev1alpha1.AppPhaseBuilding
 				meta.SetStatusCondition(&app.Status.Conditions, metav1.Condition{
@@ -696,7 +670,7 @@ func (r *AppReconciler) reconcileEnvBuild(ctx context.Context, app *mortisev1alp
 		if err := r.setBuildFailureCondition(ctx, app, firstNonEmpty(run.Status.FailureReason, "BuildFailed"), run.Status.FailureMessage); err != nil {
 			return "", false, false, false, err
 		}
-		return "", false, false, false, nil
+		return "", false, true, false, nil
 	default:
 		app.Status.Phase = mortisev1alpha1.AppPhaseBuilding
 		meta.SetStatusCondition(&app.Status.Conditions, metav1.Condition{
@@ -873,6 +847,76 @@ func envStatusFor(app *mortisev1alpha1.App, envName string) *mortisev1alpha1.Env
 		}
 	}
 	return nil
+}
+
+func envSelectedForBuildFailureAggregation(envName string, aggregationEnvNames map[string]struct{}) bool {
+	if len(aggregationEnvNames) == 0 {
+		return false
+	}
+	_, ok := aggregationEnvNames[envName]
+	return ok
+}
+
+func isTerminalBuildFailurePhase(phase mortisev1alpha1.BuildRunPhase) bool {
+	return phase == mortisev1alpha1.BuildRunPhaseFailed
+}
+
+func envExcludedFromTopLevelReadinessAggregation(es mortisev1alpha1.EnvironmentStatus, previewEnvNames, buildAggregationEnvNames map[string]struct{}, workloadPresent bool) bool {
+	if !envSelectedForBuildFailureAggregation(es.Name, buildAggregationEnvNames) {
+		if _, isPreview := previewEnvNames[es.Name]; isPreview &&
+			!workloadPresent &&
+			es.CurrentBuildRunRef != nil &&
+			isTerminalBuildFailurePhase(es.CurrentBuildRunRef.Phase) {
+			return true
+		}
+	}
+	return false
+}
+
+func selectedEnvHasTerminalBuildFailure(envStatuses []mortisev1alpha1.EnvironmentStatus, aggregationEnvNames map[string]struct{}) bool {
+	for _, es := range envStatuses {
+		if !envSelectedForBuildFailureAggregation(es.Name, aggregationEnvNames) {
+			continue
+		}
+		if es.CurrentBuildRunRef != nil && isTerminalBuildFailurePhase(es.CurrentBuildRunRef.Phase) {
+			return true
+		}
+	}
+	return false
+}
+
+func excludedEnvHasTerminalBuildFailure(envStatuses []mortisev1alpha1.EnvironmentStatus, aggregationEnvNames map[string]struct{}) bool {
+	for _, es := range envStatuses {
+		if envSelectedForBuildFailureAggregation(es.Name, aggregationEnvNames) {
+			continue
+		}
+		if es.CurrentBuildRunRef != nil && isTerminalBuildFailurePhase(es.CurrentBuildRunRef.Phase) {
+			return true
+		}
+	}
+	return false
+}
+
+func shouldRefreshFailedAppStatus(app *mortisev1alpha1.App, resolvedEnvs []mortisev1alpha1.Environment, previewEnvNames map[string]struct{}) bool {
+	if app.Status.Phase != mortisev1alpha1.AppPhaseFailed {
+		return false
+	}
+
+	buildFailureCond := meta.FindStatusCondition(app.Status.Conditions, "BuildSucceeded")
+	if !isTerminalBuildFailureCondition(buildFailureCond) {
+		return false
+	}
+
+	buildAggregationEnvNames := buildFailureAggregationEnvNames(resolvedEnvs, previewEnvNames)
+	if len(buildAggregationEnvNames) == 0 {
+		return false
+	}
+
+	if selectedEnvHasTerminalBuildFailure(app.Status.Environments, buildAggregationEnvNames) {
+		return false
+	}
+
+	return excludedEnvHasTerminalBuildFailure(app.Status.Environments, buildAggregationEnvNames)
 }
 
 // currentImageForEnv returns the image currently deployed for the given
@@ -2087,6 +2131,9 @@ func (r *AppReconciler) reconcileEnvSecret(ctx context.Context, app *mortisev1al
 			})
 		}
 	}
+	if len(existing) == 0 && len(toMerge) == 0 && len(bindingEnvs) == 0 {
+		return nil
+	}
 	return store.ReplaceSource(ctx, envNs, app.Name, "binding", bindingEnvs, labels)
 }
 
@@ -2696,7 +2743,7 @@ func healthRequeueAfter(app *mortisev1alpha1.App, clk clock.Clock) time.Duration
 // parent project isn't reachable (nil resolvedEnvs), Status.Environments is
 // cleared rather than stale — callers have already logged the underlying
 // cause at fetch time.
-func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.App, resolvedEnvs []mortisev1alpha1.Environment) error {
+func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.App, resolvedEnvs []mortisev1alpha1.Environment, previewEnvNames map[string]struct{}) error {
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		// Re-read the App first to get the latest resourceVersion and any
 		// status written by the API (e.g. Phase=Deploying from a manual
@@ -2714,6 +2761,7 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 		}
 
 		envStatuses := make([]mortisev1alpha1.EnvironmentStatus, 0, len(resolvedEnvs))
+		buildAggregationEnvNames := buildFailureAggregationEnvNames(resolvedEnvs, previewEnvNames)
 
 		isCron := app.Spec.Kind == mortisev1alpha1.AppKindCron
 
@@ -2743,9 +2791,11 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 			rollingOut := false
 			restartedAt := ""
 			deployedHash := ""
+			workloadPresent := false
 			if isCron {
 				var cj batchv1.CronJob
 				if err := r.Get(ctx, types.NamespacedName{Name: cronJobName(app.Name), Namespace: envNs}, &cj); err == nil {
+					workloadPresent = true
 					es.ReadyReplicas = 1
 					deployedHash = cj.Spec.JobTemplate.Spec.Template.Annotations["mortise.dev/env-hash"]
 				}
@@ -2753,6 +2803,7 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 				name := deploymentName(app.Name)
 				var dep appsv1.Deployment
 				if err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: envNs}, &dep); err == nil {
+					workloadPresent = true
 					es.ReadyReplicas = dep.Status.ReadyReplicas
 					if deploymentRollingOut(&dep) {
 						rollingOut = true
@@ -2799,6 +2850,8 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 			// completes, even if readyReplicas temporarily satisfies the check.
 			newRestart := restartedAt != "" && restartedAt != es.LastProcessedRestartedAt
 
+			excludeFromTopLevelReadiness := envExcludedFromTopLevelReadinessAggregation(es, previewEnvNames, buildAggregationEnvNames, workloadPresent)
+
 			if ready && !newRestart {
 				if restartedAt != "" {
 					es.LastProcessedRestartedAt = restartedAt
@@ -2810,7 +2863,9 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 					es.Phase = mortisev1alpha1.AppPhaseReady
 				} else {
 					es.Phase = mortisev1alpha1.AppPhaseDeploying
-					anyNotReady = true
+					if !excludeFromTopLevelReadiness {
+						anyNotReady = true
+					}
 				}
 			} else {
 				es.Phase = mortisev1alpha1.AppPhaseDeploying
@@ -2824,7 +2879,9 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 						}
 					}
 				}
-				anyNotReady = true
+				if !excludeFromTopLevelReadiness {
+					anyNotReady = true
+				}
 			}
 
 			if app.Spec.Network.Public && es.Domain != "" {
@@ -2839,7 +2896,11 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 		}
 
 		buildFailureCond := meta.FindStatusCondition(fresh.Status.Conditions, "BuildSucceeded")
+		buildFailureOutsideAggregation := excludedEnvHasTerminalBuildFailure(fresh.Status.Environments, buildAggregationEnvNames)
 		buildFailed := isTerminalBuildFailureCondition(buildFailureCond)
+		if buildFailed && buildFailureOutsideAggregation {
+			buildFailed = selectedEnvHasTerminalBuildFailure(envStatuses, buildAggregationEnvNames)
+		}
 		anyServing := false
 		for _, es := range envStatuses {
 			if es.Phase == mortisev1alpha1.AppPhaseReady {
@@ -2883,6 +2944,15 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 			} else if !anyCrash {
 				phase = mortisev1alpha1.AppPhaseFailed
 			}
+		} else if buildFailureOutsideAggregation && buildFailureCond != nil && isTerminalBuildFailureCondition(buildFailureCond) {
+			meta.SetStatusCondition(&fresh.Status.Conditions, metav1.Condition{
+				Type:               "BuildSucceeded",
+				Status:             metav1.ConditionTrue,
+				Reason:             "BuildComplete",
+				Message:            "latest non-preview builds succeeded",
+				LastTransitionTime: metav1.NewTime(r.clock().Now()),
+				ObservedGeneration: app.Generation,
+			})
 		}
 
 		fresh.Status.Phase = phase

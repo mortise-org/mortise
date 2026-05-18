@@ -63,6 +63,50 @@ var (
 // Hoisted to package scope so it is visible from multiple Describe blocks.
 const testImageNginx = "nginx:1.27"
 
+func newAppStatusTestScheme(t *testing.T) *runtime.Scheme {
+	t.Helper()
+
+	scheme := runtime.NewScheme()
+	if err := mortisev1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add mortise scheme: %v", err)
+	}
+	if err := appsv1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add apps scheme: %v", err)
+	}
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add core scheme: %v", err)
+	}
+	return scheme
+}
+
+func newReadyDeploymentForStatusTest(t *testing.T, app *mortisev1alpha1.App, envName string) *appsv1.Deployment {
+	t.Helper()
+
+	envNs, err := appEnvNs(app, envName)
+	if err != nil {
+		t.Fatalf("app env namespace for %s: %v", envName, err)
+	}
+
+	return &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       deploymentName(app.Name),
+			Namespace:  envNs,
+			Generation: 1,
+		},
+		Spec: appsv1.DeploymentSpec{
+			Replicas: ptr.To[int32](1),
+			Template: corev1.PodTemplateSpec{},
+		},
+		Status: appsv1.DeploymentStatus{
+			ObservedGeneration: 1,
+			Replicas:           1,
+			ReadyReplicas:      1,
+			UpdatedReplicas:    1,
+			AvailableReplicas:  1,
+		},
+	}
+}
+
 func TestUpdateStatusPreservesBuildRunRefs(t *testing.T) {
 	scheme := runtime.NewScheme()
 	if err := mortisev1alpha1.AddToScheme(scheme); err != nil {
@@ -103,7 +147,7 @@ func TestUpdateStatusPreservesBuildRunRefs(t *testing.T) {
 		Build()
 	r := &AppReconciler{Client: c, Scheme: scheme}
 
-	if err := r.updateStatus(context.Background(), app, []mortisev1alpha1.Environment{{Name: "production"}}); err != nil {
+	if err := r.updateStatus(context.Background(), app, []mortisev1alpha1.Environment{{Name: "production"}}, nil); err != nil {
 		t.Fatalf("update status: %v", err)
 	}
 
@@ -171,7 +215,7 @@ func TestUpdateStatusRecomputesTopLevelBuildRunNamesFromTerminalEnvRef(t *testin
 		Build()
 	r := &AppReconciler{Client: c, Scheme: scheme}
 
-	if err := r.updateStatus(context.Background(), app, []mortisev1alpha1.Environment{{Name: "production"}}); err != nil {
+	if err := r.updateStatus(context.Background(), app, []mortisev1alpha1.Environment{{Name: "production"}}, nil); err != nil {
 		t.Fatalf("update status: %v", err)
 	}
 
@@ -257,7 +301,7 @@ func TestUpdateStatusMarksDegradedWhenLatestBuildFailsButPreviousImageStillServe
 		t.Fatalf("seed deployment status: %v", err)
 	}
 
-	if err := r.updateStatus(ctx, app, []mortisev1alpha1.Environment{{Name: "production"}}); err != nil {
+	if err := r.updateStatus(ctx, app, []mortisev1alpha1.Environment{{Name: "production"}}, nil); err != nil {
 		t.Fatalf("update status: %v", err)
 	}
 
@@ -323,7 +367,7 @@ func TestUpdateStatusKeepsFailedWhenLatestBuildFailsAndNothingServes(t *testing.
 		Build()
 	r := &AppReconciler{Client: c, Scheme: scheme}
 
-	if err := r.updateStatus(ctx, app, []mortisev1alpha1.Environment{{Name: "production"}}); err != nil {
+	if err := r.updateStatus(ctx, app, []mortisev1alpha1.Environment{{Name: "production"}}, nil); err != nil {
 		t.Fatalf("update status: %v", err)
 	}
 
@@ -425,7 +469,7 @@ func TestUpdateStatusClearsDegradedAfterSuccessfulRecovery(t *testing.T) {
 		t.Fatalf("seed recovered status: %v", err)
 	}
 
-	if err := r.updateStatus(ctx, app, []mortisev1alpha1.Environment{{Name: "production"}}); err != nil {
+	if err := r.updateStatus(ctx, app, []mortisev1alpha1.Environment{{Name: "production"}}, nil); err != nil {
 		t.Fatalf("update status: %v", err)
 	}
 
@@ -435,6 +479,520 @@ func TestUpdateStatusClearsDegradedAfterSuccessfulRecovery(t *testing.T) {
 	}
 	if fresh.Status.Phase != mortisev1alpha1.AppPhaseReady {
 		t.Fatalf("expected phase %q after recovery, got %q", mortisev1alpha1.AppPhaseReady, fresh.Status.Phase)
+	}
+}
+
+func TestUpdateStatusMasksPreviewOnlyBuildFailureWhilePreviewStillServes(t *testing.T) {
+	ctx := context.Background()
+	scheme := newAppStatusTestScheme(t)
+
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "demo",
+			Namespace: "pj-default-project",
+		},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage},
+			Environments: []mortisev1alpha1.Environment{
+				{Name: "production"},
+				{Name: "pr-6"},
+			},
+		},
+		Status: mortisev1alpha1.AppStatus{
+			Conditions: []metav1.Condition{{
+				Type:    "BuildSucceeded",
+				Status:  metav1.ConditionFalse,
+				Reason:  "BuildFailed",
+				Message: "invalid reference format",
+			}},
+			Environments: []mortisev1alpha1.EnvironmentStatus{
+				{
+					Name:           "production",
+					LastBuiltImage: "registry.example/demo:prod",
+				},
+				{
+					Name:           "pr-6",
+					LastBuiltImage: "registry.example/demo:preview-old",
+					CurrentBuildRunRef: &mortisev1alpha1.BuildRunReference{
+						Name:  "preview-failed",
+						Phase: mortisev1alpha1.BuildRunPhaseFailed,
+					},
+				},
+			},
+		},
+	}
+	productionDep := newReadyDeploymentForStatusTest(t, app, "production")
+	previewDep := newReadyDeploymentForStatusTest(t, app, "pr-6")
+
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(app, productionDep, previewDep).
+		WithObjects(app, productionDep, previewDep).
+		Build()
+	r := &AppReconciler{Client: c, Scheme: scheme}
+	if err := c.Status().Update(ctx, productionDep); err != nil {
+		t.Fatalf("seed production deployment status: %v", err)
+	}
+	if err := c.Status().Update(ctx, previewDep); err != nil {
+		t.Fatalf("seed preview deployment status: %v", err)
+	}
+
+	resolvedEnvs := []mortisev1alpha1.Environment{{Name: "production"}, {Name: "pr-6"}}
+	previewEnvNames := map[string]struct{}{"pr-6": {}}
+	if err := r.updateStatus(ctx, app, resolvedEnvs, previewEnvNames); err != nil {
+		t.Fatalf("update status: %v", err)
+	}
+
+	var fresh mortisev1alpha1.App
+	if err := c.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: app.Namespace}, &fresh); err != nil {
+		t.Fatalf("get app: %v", err)
+	}
+	if fresh.Status.Phase != mortisev1alpha1.AppPhaseReady {
+		t.Fatalf("expected phase %q, got %q", mortisev1alpha1.AppPhaseReady, fresh.Status.Phase)
+	}
+	cond := meta.FindStatusCondition(fresh.Status.Conditions, "BuildSucceeded")
+	if cond == nil || cond.Status != metav1.ConditionTrue || cond.Message != "latest non-preview builds succeeded" {
+		t.Fatalf("expected masked top-level build success, got %+v", cond)
+	}
+	previewStatus := envStatusFor(&fresh, "pr-6")
+	if previewStatus == nil || previewStatus.CurrentBuildRunRef == nil || previewStatus.CurrentBuildRunRef.Phase != mortisev1alpha1.BuildRunPhaseFailed {
+		t.Fatalf("expected preview env to retain failed build ref, got %+v", previewStatus)
+	}
+}
+
+func TestUpdateStatusMasksPreviewBuildFailureFromTopLevelPhase(t *testing.T) {
+	ctx := context.Background()
+	scheme := newAppStatusTestScheme(t)
+
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "demo",
+			Namespace: "pj-default-project",
+		},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage},
+			Environments: []mortisev1alpha1.Environment{
+				{Name: "production"},
+				{Name: "pr-6"},
+			},
+		},
+		Status: mortisev1alpha1.AppStatus{
+			Conditions: []metav1.Condition{{
+				Type:    "BuildSucceeded",
+				Status:  metav1.ConditionFalse,
+				Reason:  "BuildFailed",
+				Message: "invalid reference format",
+			}},
+			Environments: []mortisev1alpha1.EnvironmentStatus{
+				{
+					Name:           "production",
+					LastBuiltImage: "registry.example/demo:prod",
+				},
+				{
+					Name: "pr-6",
+					CurrentBuildRunRef: &mortisev1alpha1.BuildRunReference{
+						Name:  "preview-failed",
+						Phase: mortisev1alpha1.BuildRunPhaseFailed,
+					},
+				},
+			},
+		},
+	}
+	productionDep := newReadyDeploymentForStatusTest(t, app, "production")
+
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(app, productionDep).
+		WithObjects(app, productionDep).
+		Build()
+	r := &AppReconciler{Client: c, Scheme: scheme}
+	if err := c.Status().Update(ctx, productionDep); err != nil {
+		t.Fatalf("seed production deployment status: %v", err)
+	}
+
+	resolvedEnvs := []mortisev1alpha1.Environment{{Name: "production"}, {Name: "pr-6"}}
+	previewEnvNames := map[string]struct{}{"pr-6": {}}
+	if err := r.updateStatus(ctx, app, resolvedEnvs, previewEnvNames); err != nil {
+		t.Fatalf("update status: %v", err)
+	}
+
+	var fresh mortisev1alpha1.App
+	if err := c.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: app.Namespace}, &fresh); err != nil {
+		t.Fatalf("get app: %v", err)
+	}
+	if fresh.Status.Phase != mortisev1alpha1.AppPhaseReady {
+		t.Fatalf("expected preview build failure to leave top-level phase %q, got %q", mortisev1alpha1.AppPhaseReady, fresh.Status.Phase)
+	}
+	cond := meta.FindStatusCondition(fresh.Status.Conditions, "BuildSucceeded")
+	if cond == nil || cond.Status != metav1.ConditionTrue {
+		t.Fatalf("expected top-level BuildSucceeded to ignore preview-only failure, got %+v", cond)
+	}
+}
+
+func TestUpdateStatusFallsBackToPreviewOnlyBuildFailure(t *testing.T) {
+	ctx := context.Background()
+	scheme := newAppStatusTestScheme(t)
+
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "demo",
+			Namespace: "pj-default-project",
+		},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage},
+			Environments: []mortisev1alpha1.Environment{
+				{Name: "pr-6"},
+			},
+		},
+		Status: mortisev1alpha1.AppStatus{
+			Conditions: []metav1.Condition{{
+				Type:    "BuildSucceeded",
+				Status:  metav1.ConditionFalse,
+				Reason:  "BuildFailed",
+				Message: "invalid reference format",
+			}},
+			Environments: []mortisev1alpha1.EnvironmentStatus{
+				{
+					Name: "pr-6",
+					CurrentBuildRunRef: &mortisev1alpha1.BuildRunReference{
+						Name:  "preview-failed",
+						Phase: mortisev1alpha1.BuildRunPhaseFailed,
+					},
+				},
+			},
+		},
+	}
+
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(app).
+		WithObjects(app).
+		Build()
+	r := &AppReconciler{Client: c, Scheme: scheme}
+
+	resolvedEnvs := []mortisev1alpha1.Environment{{Name: "pr-6"}}
+	previewEnvNames := map[string]struct{}{"pr-6": {}}
+	if err := r.updateStatus(ctx, app, resolvedEnvs, previewEnvNames); err != nil {
+		t.Fatalf("update status: %v", err)
+	}
+
+	var fresh mortisev1alpha1.App
+	if err := c.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: app.Namespace}, &fresh); err != nil {
+		t.Fatalf("get app: %v", err)
+	}
+	if fresh.Status.Phase != mortisev1alpha1.AppPhaseFailed {
+		t.Fatalf("expected preview-only app to keep phase %q, got %q", mortisev1alpha1.AppPhaseFailed, fresh.Status.Phase)
+	}
+	cond := meta.FindStatusCondition(fresh.Status.Conditions, "BuildSucceeded")
+	if cond == nil || cond.Status != metav1.ConditionFalse {
+		t.Fatalf("expected preview-only app to keep failed BuildSucceeded, got %+v", cond)
+	}
+}
+
+func TestUpdateStatusStillCountsPreviewRolloutFailureInTopLevelPhase(t *testing.T) {
+	ctx := context.Background()
+	scheme := newAppStatusTestScheme(t)
+
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "demo",
+			Namespace: "pj-default-project",
+		},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage},
+			Environments: []mortisev1alpha1.Environment{
+				{Name: "production"},
+				{Name: "pr-6"},
+			},
+		},
+		Status: mortisev1alpha1.AppStatus{
+			Conditions: []metav1.Condition{{
+				Type:    "BuildSucceeded",
+				Status:  metav1.ConditionTrue,
+				Reason:  "BuildComplete",
+				Message: "built registry.example/demo:prod digest=sha256:prod for production",
+			}},
+			Environments: []mortisev1alpha1.EnvironmentStatus{
+				{
+					Name:           "production",
+					LastBuiltImage: "registry.example/demo:prod",
+				},
+				{
+					Name: "pr-6",
+				},
+			},
+		},
+	}
+	productionDep := newReadyDeploymentForStatusTest(t, app, "production")
+
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(app, productionDep).
+		WithObjects(app, productionDep).
+		Build()
+	r := &AppReconciler{Client: c, Scheme: scheme}
+	if err := c.Status().Update(ctx, productionDep); err != nil {
+		t.Fatalf("seed production deployment status: %v", err)
+	}
+
+	resolvedEnvs := []mortisev1alpha1.Environment{{Name: "production"}, {Name: "pr-6"}}
+	previewEnvNames := map[string]struct{}{"pr-6": {}}
+	if err := r.updateStatus(ctx, app, resolvedEnvs, previewEnvNames); err != nil {
+		t.Fatalf("update status: %v", err)
+	}
+
+	var fresh mortisev1alpha1.App
+	if err := c.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: app.Namespace}, &fresh); err != nil {
+		t.Fatalf("get app: %v", err)
+	}
+	if fresh.Status.Phase != mortisev1alpha1.AppPhaseDeploying {
+		t.Fatalf("expected preview rollout gap to keep phase %q, got %q", mortisev1alpha1.AppPhaseDeploying, fresh.Status.Phase)
+	}
+	cond := meta.FindStatusCondition(fresh.Status.Conditions, "BuildSucceeded")
+	if cond == nil || cond.Status != metav1.ConditionTrue {
+		t.Fatalf("expected build condition to stay successful for preview rollout gap, got %+v", cond)
+	}
+}
+
+func TestUpdateStatusCountsPreviewNotReadyWhenWorkloadExistsAfterBuildFailure(t *testing.T) {
+	ctx := context.Background()
+	scheme := newAppStatusTestScheme(t)
+
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "demo",
+			Namespace: "pj-default-project",
+		},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage},
+			Environments: []mortisev1alpha1.Environment{
+				{Name: "production"},
+				{Name: "pr-6"},
+			},
+		},
+		Status: mortisev1alpha1.AppStatus{
+			Conditions: []metav1.Condition{{
+				Type:    "BuildSucceeded",
+				Status:  metav1.ConditionFalse,
+				Reason:  "BuildFailed",
+				Message: "invalid reference format",
+			}},
+			Environments: []mortisev1alpha1.EnvironmentStatus{
+				{
+					Name:           "production",
+					LastBuiltImage: "registry.example/demo:prod",
+				},
+				{
+					Name: "pr-6",
+					CurrentBuildRunRef: &mortisev1alpha1.BuildRunReference{
+						Name:  "preview-failed",
+						Phase: mortisev1alpha1.BuildRunPhaseFailed,
+					},
+				},
+			},
+		},
+	}
+	productionDep := newReadyDeploymentForStatusTest(t, app, "production")
+	previewDep := newReadyDeploymentForStatusTest(t, app, "pr-6")
+	previewDep.Status.ReadyReplicas = 0
+	previewDep.Status.AvailableReplicas = 0
+	previewDep.Status.UpdatedReplicas = 1
+
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(app, productionDep, previewDep).
+		WithObjects(app, productionDep, previewDep).
+		Build()
+	r := &AppReconciler{Client: c, Scheme: scheme}
+	if err := c.Status().Update(ctx, productionDep); err != nil {
+		t.Fatalf("seed production deployment status: %v", err)
+	}
+	if err := c.Status().Update(ctx, previewDep); err != nil {
+		t.Fatalf("seed preview deployment status: %v", err)
+	}
+
+	resolvedEnvs := []mortisev1alpha1.Environment{{Name: "production"}, {Name: "pr-6"}}
+	previewEnvNames := map[string]struct{}{"pr-6": {}}
+	if err := r.updateStatus(ctx, app, resolvedEnvs, previewEnvNames); err != nil {
+		t.Fatalf("update status: %v", err)
+	}
+
+	var fresh mortisev1alpha1.App
+	if err := c.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: app.Namespace}, &fresh); err != nil {
+		t.Fatalf("get app: %v", err)
+	}
+	if fresh.Status.Phase != mortisev1alpha1.AppPhaseDeploying {
+		t.Fatalf("expected preview workload readiness gap to keep phase %q, got %q", mortisev1alpha1.AppPhaseDeploying, fresh.Status.Phase)
+	}
+	cond := meta.FindStatusCondition(fresh.Status.Conditions, "BuildSucceeded")
+	if cond == nil || cond.Status != metav1.ConditionTrue {
+		t.Fatalf("expected top-level BuildSucceeded to ignore preview build failure while still counting readiness gap, got %+v", cond)
+	}
+}
+
+func TestUpdateStatusRecoversAfterPreviewRemoval(t *testing.T) {
+	ctx := context.Background()
+	scheme := newAppStatusTestScheme(t)
+
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "demo",
+			Namespace: "pj-default-project",
+		},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage},
+			Environments: []mortisev1alpha1.Environment{
+				{Name: "production"},
+			},
+		},
+		Status: mortisev1alpha1.AppStatus{
+			Phase: mortisev1alpha1.AppPhaseFailed,
+			Conditions: []metav1.Condition{{
+				Type:    "BuildSucceeded",
+				Status:  metav1.ConditionFalse,
+				Reason:  "BuildFailed",
+				Message: "invalid reference format",
+			}},
+			Environments: []mortisev1alpha1.EnvironmentStatus{
+				{
+					Name:           "production",
+					LastBuiltImage: "registry.example/demo:prod",
+				},
+				{
+					Name: "pr-6",
+					CurrentBuildRunRef: &mortisev1alpha1.BuildRunReference{
+						Name:  "preview-failed",
+						Phase: mortisev1alpha1.BuildRunPhaseFailed,
+					},
+				},
+			},
+		},
+	}
+	productionDep := newReadyDeploymentForStatusTest(t, app, "production")
+
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(app, productionDep).
+		WithObjects(app, productionDep).
+		Build()
+	r := &AppReconciler{Client: c, Scheme: scheme}
+	if err := c.Status().Update(ctx, productionDep); err != nil {
+		t.Fatalf("seed production deployment status: %v", err)
+	}
+
+	resolvedEnvs := []mortisev1alpha1.Environment{{Name: "production"}}
+	if err := r.updateStatus(ctx, app, resolvedEnvs, nil); err != nil {
+		t.Fatalf("update status: %v", err)
+	}
+
+	var fresh mortisev1alpha1.App
+	if err := c.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: app.Namespace}, &fresh); err != nil {
+		t.Fatalf("get app: %v", err)
+	}
+	if fresh.Status.Phase != mortisev1alpha1.AppPhaseReady {
+		t.Fatalf("expected app to recover to %q after preview removal, got %q", mortisev1alpha1.AppPhaseReady, fresh.Status.Phase)
+	}
+	cond := meta.FindStatusCondition(fresh.Status.Conditions, "BuildSucceeded")
+	if cond == nil || cond.Status != metav1.ConditionTrue {
+		t.Fatalf("expected top-level BuildSucceeded to recover after preview removal, got %+v", cond)
+	}
+	if len(fresh.Status.Environments) != 1 || fresh.Status.Environments[0].Name != "production" {
+		t.Fatalf("expected stale preview env status to be removed, got %+v", fresh.Status.Environments)
+	}
+}
+
+func TestShouldRefreshFailedAppStatusForPreviewOnlyBuildFailure(t *testing.T) {
+	app := &mortisev1alpha1.App{
+		Status: mortisev1alpha1.AppStatus{
+			Phase: mortisev1alpha1.AppPhaseFailed,
+			Conditions: []metav1.Condition{{
+				Type:   "BuildSucceeded",
+				Status: metav1.ConditionFalse,
+				Reason: "BuildFailed",
+			}},
+			Environments: []mortisev1alpha1.EnvironmentStatus{
+				{Name: "production"},
+				{
+					Name: "pr-6",
+					CurrentBuildRunRef: &mortisev1alpha1.BuildRunReference{
+						Name:  "preview-failed",
+						Phase: mortisev1alpha1.BuildRunPhaseFailed,
+					},
+				},
+			},
+		},
+	}
+
+	resolvedEnvs := []mortisev1alpha1.Environment{{Name: "production"}, {Name: "pr-6"}}
+	previewEnvNames := map[string]struct{}{"pr-6": {}}
+
+	if !shouldRefreshFailedAppStatus(app, resolvedEnvs, previewEnvNames) {
+		t.Fatal("expected failed app with preview-only build failure to refresh status")
+	}
+}
+
+func TestShouldRefreshFailedAppStatusForRemovedPreviewBuildFailure(t *testing.T) {
+	app := &mortisev1alpha1.App{
+		Status: mortisev1alpha1.AppStatus{
+			Phase: mortisev1alpha1.AppPhaseFailed,
+			Conditions: []metav1.Condition{{
+				Type:   "BuildSucceeded",
+				Status: metav1.ConditionFalse,
+				Reason: "BuildFailed",
+			}},
+			Environments: []mortisev1alpha1.EnvironmentStatus{
+				{Name: "production"},
+				{
+					Name: "pr-6",
+					CurrentBuildRunRef: &mortisev1alpha1.BuildRunReference{
+						Name:  "preview-failed",
+						Phase: mortisev1alpha1.BuildRunPhaseFailed,
+					},
+				},
+			},
+		},
+	}
+
+	resolvedEnvs := []mortisev1alpha1.Environment{{Name: "production"}}
+
+	if !shouldRefreshFailedAppStatus(app, resolvedEnvs, nil) {
+		t.Fatal("expected failed app with removed preview build failure to refresh status")
+	}
+}
+
+func TestShouldRefreshFailedAppStatusSkipsNonPreviewBuildFailure(t *testing.T) {
+	app := &mortisev1alpha1.App{
+		Status: mortisev1alpha1.AppStatus{
+			Phase: mortisev1alpha1.AppPhaseFailed,
+			Conditions: []metav1.Condition{{
+				Type:   "BuildSucceeded",
+				Status: metav1.ConditionFalse,
+				Reason: "BuildFailed",
+			}},
+			Environments: []mortisev1alpha1.EnvironmentStatus{
+				{
+					Name: "production",
+					CurrentBuildRunRef: &mortisev1alpha1.BuildRunReference{
+						Name:  "production-failed",
+						Phase: mortisev1alpha1.BuildRunPhaseFailed,
+					},
+				},
+				{
+					Name: "pr-6",
+					CurrentBuildRunRef: &mortisev1alpha1.BuildRunReference{
+						Name:  "preview-failed",
+						Phase: mortisev1alpha1.BuildRunPhaseFailed,
+					},
+				},
+			},
+		},
+	}
+
+	resolvedEnvs := []mortisev1alpha1.Environment{{Name: "production"}, {Name: "pr-6"}}
+	previewEnvNames := map[string]struct{}{"pr-6": {}}
+
+	if shouldRefreshFailedAppStatus(app, resolvedEnvs, previewEnvNames) {
+		t.Fatal("expected failed app with non-preview build failure to keep failed latch")
 	}
 }
 
@@ -1996,9 +2554,20 @@ var _ = Describe("App Controller", func() {
 
 			// Update the existing env Secret (created by reconcile) to change the env-hash.
 			var envSec corev1.Secret
-			Expect(k8sClient.Get(ctx, types.NamespacedName{
+			err = k8sClient.Get(ctx, types.NamespacedName{
 				Name: envstore.AppEnvSecretName(appName), Namespace: envNsProduction,
-			}, &envSec)).To(Succeed())
+			}, &envSec)
+			if kerrors.IsNotFound(err) {
+				envSec = corev1.Secret{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      envstore.AppEnvSecretName(appName),
+						Namespace: envNsProduction,
+					},
+				}
+				Expect(k8sClient.Create(ctx, &envSec)).To(Succeed())
+			} else {
+				Expect(err).NotTo(HaveOccurred())
+			}
 			if envSec.Data == nil {
 				envSec.Data = make(map[string][]byte)
 			}
@@ -5758,7 +6327,7 @@ var _ = Describe("App Controller — git source", func() {
 			Expect(envData).To(HaveKeyWithValue("USER_VAR", "stays"))
 		})
 
-		It("creates empty {app}-env Secret even when there are no vars and no bindings", func() {
+		It("does not create {app}-env Secret when there are no vars and no bindings", func() {
 			appName := "no-vars-app"
 			app := &mortisev1alpha1.App{
 				ObjectMeta: metav1.ObjectMeta{Name: appName, Namespace: namespace},
@@ -5783,12 +6352,14 @@ var _ = Describe("App Controller — git source", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			// Secret must exist (for envFrom Optional mount) even though it has no data.
+			// The app-env envFrom source is optional, so there is no need to
+			// materialize an empty Secret when nothing contributes env vars.
 			var sec corev1.Secret
-			Expect(k8sClient.Get(ctx, types.NamespacedName{
+			err = k8sClient.Get(ctx, types.NamespacedName{
 				Name:      envstore.AppEnvSecretName(appName),
 				Namespace: envNsProduction,
-			}, &sec)).To(Succeed(), "app-env Secret should exist even with no vars")
+			}, &sec)
+			Expect(kerrors.IsNotFound(err)).To(BeTrue(), "app-env Secret should be skipped when empty")
 		})
 
 		It("skips binding gracefully when a binding references a missing App CRD", func() {
