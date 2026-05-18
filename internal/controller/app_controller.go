@@ -2131,6 +2131,9 @@ func (r *AppReconciler) reconcileEnvSecret(ctx context.Context, app *mortisev1al
 			})
 		}
 	}
+	if len(existing) == 0 && len(toMerge) == 0 && len(bindingEnvs) == 0 {
+		return nil
+	}
 	return store.ReplaceSource(ctx, envNs, app.Name, "binding", bindingEnvs, labels)
 }
 

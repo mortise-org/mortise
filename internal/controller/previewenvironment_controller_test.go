@@ -224,6 +224,100 @@ func TestPreviewEnvironmentReconcileMarksFailedWhenPreviewAppBuildFails(t *testi
 	}
 }
 
+func TestPreviewEnvironmentReconcileHydratesEmptyPreviewAppSecret(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := mortisev1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add mortise scheme: %v", err)
+	}
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add core scheme: %v", err)
+	}
+
+	project := &mortisev1alpha1.Project{
+		ObjectMeta: metav1.ObjectMeta{Name: "demo"},
+		Spec: mortisev1alpha1.ProjectSpec{
+			Preview:      &mortisev1alpha1.PreviewConfig{Enabled: true},
+			Environments: []mortisev1alpha1.ProjectEnvironment{{Name: "staging"}},
+		},
+	}
+	controlNs := constants.ControlNamespace(project.Name)
+	pe := &mortisev1alpha1.PreviewEnvironment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "preview-pr-7",
+			Namespace: controlNs,
+		},
+		Spec: mortisev1alpha1.PreviewEnvironmentSpec{
+			ProjectRef: project.Name,
+			SourceEnv:  "staging",
+			PullRequest: mortisev1alpha1.PullRequestRef{
+				Number: 7,
+				Branch: "feature/fill-secret",
+				SHA:    "deadbeef",
+			},
+		},
+	}
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "demo-app",
+			Namespace: controlNs,
+		},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{
+				Type: mortisev1alpha1.SourceTypeGit,
+			},
+			Environments: []mortisev1alpha1.Environment{{Name: "staging"}},
+		},
+	}
+	sourceSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        envstore.AppEnvSecretName(app.Name),
+			Namespace:   constants.EnvNamespace(project.Name, "staging"),
+			Annotations: map[string]string{envstore.AnnotationGeneratedKeys: "DATABASE_URL"},
+		},
+		Data: map[string][]byte{"DATABASE_URL": []byte("postgres://source")},
+	}
+	previewSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      envstore.AppEnvSecretName(app.Name),
+			Namespace: constants.EnvNamespace(project.Name, "pr-7"),
+		},
+	}
+
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(pe).
+		WithObjects(project, pe, app, sourceSecret, previewSecret).
+		Build()
+	r := &PreviewEnvironmentReconciler{
+		Client: c,
+		Scheme: scheme,
+		Clock:  clocktesting.NewFakeClock(time.Now()),
+	}
+
+	if _, err := r.Reconcile(context.Background(), reconcile.Request{
+		NamespacedName: types.NamespacedName{Name: pe.Name, Namespace: pe.Namespace},
+	}); err != nil {
+		t.Fatalf("reconcile preview environment: %v", err)
+	}
+
+	var updated corev1.Secret
+	if err := c.Get(context.Background(), types.NamespacedName{
+		Name:      previewSecret.Name,
+		Namespace: previewSecret.Namespace,
+	}, &updated); err != nil {
+		t.Fatalf("get preview app secret: %v", err)
+	}
+	if got := string(updated.Data["DATABASE_URL"]); got != "postgres://source" {
+		t.Fatalf("expected preview app secret to be hydrated from source, got %q", got)
+	}
+	if updated.Annotations[envstore.AnnotationGeneratedKeys] != "DATABASE_URL" {
+		t.Fatalf("expected preview app secret annotations to be copied, got %+v", updated.Annotations)
+	}
+	if updated.Labels[constants.ProjectLabel] != project.Name || updated.Labels[constants.EnvironmentLabel] != "pr-7" || updated.Labels[constants.AppNameLabel] != app.Name {
+		t.Fatalf("expected preview app secret labels to be restored, got %+v", updated.Labels)
+	}
+}
+
 var _ = Describe("PreviewEnvironment Controller", func() {
 	Context("when the parent Project has project-level preview disabled", func() {
 		It("should set the PreviewEnvironment to Failed", func() {

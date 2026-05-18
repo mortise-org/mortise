@@ -2554,9 +2554,20 @@ var _ = Describe("App Controller", func() {
 
 			// Update the existing env Secret (created by reconcile) to change the env-hash.
 			var envSec corev1.Secret
-			Expect(k8sClient.Get(ctx, types.NamespacedName{
+			err = k8sClient.Get(ctx, types.NamespacedName{
 				Name: envstore.AppEnvSecretName(appName), Namespace: envNsProduction,
-			}, &envSec)).To(Succeed())
+			}, &envSec)
+			if kerrors.IsNotFound(err) {
+				envSec = corev1.Secret{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      envstore.AppEnvSecretName(appName),
+						Namespace: envNsProduction,
+					},
+				}
+				Expect(k8sClient.Create(ctx, &envSec)).To(Succeed())
+			} else {
+				Expect(err).NotTo(HaveOccurred())
+			}
 			if envSec.Data == nil {
 				envSec.Data = make(map[string][]byte)
 			}
@@ -6316,7 +6327,7 @@ var _ = Describe("App Controller — git source", func() {
 			Expect(envData).To(HaveKeyWithValue("USER_VAR", "stays"))
 		})
 
-		It("creates empty {app}-env Secret even when there are no vars and no bindings", func() {
+		It("does not create {app}-env Secret when there are no vars and no bindings", func() {
 			appName := "no-vars-app"
 			app := &mortisev1alpha1.App{
 				ObjectMeta: metav1.ObjectMeta{Name: appName, Namespace: namespace},
@@ -6341,12 +6352,14 @@ var _ = Describe("App Controller — git source", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			// Secret must exist (for envFrom Optional mount) even though it has no data.
+			// The app-env envFrom source is optional, so there is no need to
+			// materialize an empty Secret when nothing contributes env vars.
 			var sec corev1.Secret
-			Expect(k8sClient.Get(ctx, types.NamespacedName{
+			err = k8sClient.Get(ctx, types.NamespacedName{
 				Name:      envstore.AppEnvSecretName(appName),
 				Namespace: envNsProduction,
-			}, &sec)).To(Succeed(), "app-env Secret should exist even with no vars")
+			}, &sec)
+			Expect(kerrors.IsNotFound(err)).To(BeTrue(), "app-env Secret should be skipped when empty")
 		})
 
 		It("skips binding gracefully when a binding references a missing App CRD", func() {

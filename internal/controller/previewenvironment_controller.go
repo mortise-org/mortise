@@ -378,7 +378,18 @@ func (r *PreviewEnvironmentReconciler) copyAppEnvSecret(ctx context.Context, pro
 	var existing corev1.Secret
 	err = r.Get(ctx, types.NamespacedName{Namespace: targetNs, Name: secretName}, &existing)
 	if err == nil {
-		return nil
+		if len(existing.Data) > 0 {
+			return nil
+		}
+		existing.Labels = map[string]string{
+			constants.ProjectLabel:         projectName,
+			constants.AppNameLabel:         appName,
+			constants.EnvironmentLabel:     envName,
+			"app.kubernetes.io/managed-by": "mortise",
+		}
+		existing.Data = source.Data
+		existing.Annotations = copySourceAnnotations(source.Annotations)
+		return r.Update(ctx, &existing)
 	}
 	if !errors.IsNotFound(err) {
 		return err
@@ -788,10 +799,40 @@ func (r *PreviewEnvironmentReconciler) SetupWithManager(mgr ctrl.Manager) error 
 		}
 		return reqs
 	})
+	enqueuePreviewsFromSecret := handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []reconcile.Request {
+		secret, ok := obj.(*corev1.Secret)
+		if !ok {
+			return nil
+		}
+
+		projectName := secret.Labels[constants.ProjectLabel]
+		envName := secret.Labels[constants.EnvironmentLabel]
+		if projectName == "" || envName == "" || !strings.HasPrefix(envName, "pr-") {
+			return nil
+		}
+
+		controlNs := constants.ControlNamespace(projectName)
+		var peList mortisev1alpha1.PreviewEnvironmentList
+		if err := mgr.GetClient().List(ctx, &peList, client.InNamespace(controlNs)); err != nil {
+			return nil
+		}
+
+		reqs := make([]reconcile.Request, 0, len(peList.Items))
+		for _, pe := range peList.Items {
+			if fmt.Sprintf("pr-%d", pe.Spec.PullRequest.Number) != envName {
+				continue
+			}
+			reqs = append(reqs, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: pe.Name, Namespace: pe.Namespace},
+			})
+		}
+		return reqs
+	})
 
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&mortisev1alpha1.PreviewEnvironment{}).
 		Watches(&mortisev1alpha1.App{}, enqueuePreviewsFromApp).
+		Watches(&corev1.Secret{}, enqueuePreviewsFromSecret).
 		Named("previewenvironment").
 		Complete(r)
 }
