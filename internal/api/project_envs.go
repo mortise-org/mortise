@@ -330,6 +330,10 @@ func (s *Server) UpdateProjectEnvironment(w http.ResponseWriter, r *http.Request
 			writeError(w, r, err)
 			return
 		}
+		if err := s.pokeProjectAppsForReconcile(r.Context(), projectNs(project)); err != nil {
+			writeError(w, r, err)
+			return
+		}
 	}
 
 	msg := "Updated project environment " + updated.Name
@@ -811,6 +815,19 @@ func cloneAppEnvSecret(ctx context.Context, appName, sourceEnvNs, targetEnvNs st
 
 	if err := store.Set(ctx, targetEnvNs, appName, cloned, nil); err != nil {
 		return fmt.Errorf("copy env secret for app %q to %q: %w", appName, targetEnvNs, err)
+	}
+	return nil
+}
+
+func (s *Server) pokeProjectAppsForReconcile(ctx context.Context, ns string) error {
+	var apps mortisev1alpha1.AppList
+	if err := s.client.List(ctx, &apps, client.InNamespace(ns)); err != nil {
+		return fmt.Errorf("list apps for reconcile poke: %w", err)
+	}
+	for i := range apps.Items {
+		if err := pokeAppForReconcile(ctx, s.client, &apps.Items[i]); err != nil {
+			return fmt.Errorf("poke app %q for reconcile: %w", apps.Items[i].Name, err)
+		}
 	}
 	return nil
 }
