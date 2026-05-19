@@ -144,6 +144,9 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	// that enumerates them and deletes by label.
 	if !app.DeletionTimestamp.IsZero() {
 		if controllerutil.ContainsFinalizer(&app, appFinalizer) {
+			if err := r.pruneBindingsToDeletedApp(ctx, &app); err != nil {
+				return ctrl.Result{}, fmt.Errorf("prune dangling bindings: %w", err)
+			}
 			if err := r.gcAppAcrossEnvs(ctx, &app); err != nil {
 				return ctrl.Result{}, fmt.Errorf("gc app across envs: %w", err)
 			}
@@ -424,6 +427,80 @@ func (r *AppReconciler) removeAppFinalizerWithRetry(ctx context.Context, key typ
 		controllerutil.RemoveFinalizer(&fresh, appFinalizer)
 		return r.Update(ctx, &fresh)
 	})
+}
+
+func (r *AppReconciler) pruneBindingsToDeletedApp(ctx context.Context, deletedApp *mortisev1alpha1.App) error {
+	if deletedApp == nil || deletedApp.Name == "" || deletedApp.Namespace == "" {
+		return nil
+	}
+
+	var apps mortisev1alpha1.AppList
+	if err := r.List(ctx, &apps, client.InNamespace(deletedApp.Namespace)); err != nil {
+		return err
+	}
+
+	for i := range apps.Items {
+		consumer := &apps.Items[i]
+		if consumer.Name == deletedApp.Name || !consumer.DeletionTimestamp.IsZero() {
+			continue
+		}
+
+		changed := false
+		for envIdx := range consumer.Spec.Environments {
+			env := &consumer.Spec.Environments[envIdx]
+			if len(env.Bindings) == 0 {
+				continue
+			}
+			filtered := env.Bindings[:0]
+			for _, binding := range env.Bindings {
+				if binding.Ref == deletedApp.Name {
+					changed = true
+					continue
+				}
+				filtered = append(filtered, binding)
+			}
+			env.Bindings = filtered
+		}
+		if !changed {
+			continue
+		}
+
+		key := types.NamespacedName{Name: consumer.Name, Namespace: consumer.Namespace}
+		if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			var fresh mortisev1alpha1.App
+			if err := r.Get(ctx, key, &fresh); err != nil {
+				return err
+			}
+			if !fresh.DeletionTimestamp.IsZero() {
+				return nil
+			}
+
+			updated := false
+			for envIdx := range fresh.Spec.Environments {
+				env := &fresh.Spec.Environments[envIdx]
+				if len(env.Bindings) == 0 {
+					continue
+				}
+				filtered := env.Bindings[:0]
+				for _, binding := range env.Bindings {
+					if binding.Ref == deletedApp.Name {
+						updated = true
+						continue
+					}
+					filtered = append(filtered, binding)
+				}
+				env.Bindings = filtered
+			}
+			if !updated {
+				return nil
+			}
+			return r.Update(ctx, &fresh)
+		}); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 // reconcileGitSource handles the build-from-source path for source.type=git apps
@@ -2265,6 +2342,30 @@ func (r *AppReconciler) reconcileEnvSecret(ctx context.Context, app *mortisev1al
 				Value:  bv.Value,
 				Source: "binding",
 			})
+		}
+	}
+	if len(env.Bindings) > 0 && len(bindingEnvs) == 0 {
+		currentExisting, err := store.Get(ctx, envNs, app.Name)
+		if err != nil {
+			return fmt.Errorf("read existing env vars before binding cleanup: %w", err)
+		}
+		bindingOnly := len(currentExisting) > 0
+		for _, existingEnv := range currentExisting {
+			if existingEnv.Source != "binding" {
+				bindingOnly = false
+				break
+			}
+		}
+		if bindingOnly {
+			if err := r.Client.Delete(ctx, &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      envstore.AppEnvSecretName(app.Name),
+					Namespace: envNs,
+				},
+			}); err != nil && !errors.IsNotFound(err) {
+				return fmt.Errorf("delete empty binding-only env secret: %w", err)
+			}
+			return nil
 		}
 	}
 	if len(existing) == 0 && len(toMerge) == 0 && len(bindingEnvs) == 0 {
