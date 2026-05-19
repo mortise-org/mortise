@@ -66,6 +66,7 @@ type PreviewEnvironmentReconciler struct {
 // +kubebuilder:rbac:groups=mortise.mortise.dev,resources=previewenvironments/finalizers,verbs=update
 // +kubebuilder:rbac:groups=mortise.mortise.dev,resources=projects,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=mortise.mortise.dev,resources=apps,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch;delete
 
 func (r *PreviewEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
@@ -440,10 +441,9 @@ func copySourceAnnotations(src map[string]string) map[string]string {
 	return out
 }
 
-// cleanupPreview removes the preview env entry from the Project and strips
-// per-app env overrides for the preview env name. Copied Secrets in the preview
-// namespace are not explicitly deleted — the Project controller garbage-collects
-// the entire env namespace when the env entry is removed.
+// cleanupPreview removes the preview env entry from the Project, strips
+// per-app env overrides for the preview env name, and requests deletion of
+// the preview namespace before the PE finalizer is removed.
 func (r *PreviewEnvironmentReconciler) cleanupPreview(ctx context.Context, pe *mortisev1alpha1.PreviewEnvironment, projectName, envName string) error {
 	if err := r.removeProjectEnv(ctx, projectName, envName); err != nil {
 		return err
@@ -459,7 +459,49 @@ func (r *PreviewEnvironmentReconciler) cleanupPreview(ctx context.Context, pe *m
 			return err
 		}
 	}
+
+	return r.deletePreviewNamespace(ctx, projectName, envName)
+}
+
+func (r *PreviewEnvironmentReconciler) deletePreviewNamespace(ctx context.Context, projectName, envName string) error {
+	previewNS := types.NamespacedName{Name: constants.EnvNamespace(projectName, envName)}
+
+	var ns corev1.Namespace
+	if err := r.Get(ctx, previewNS, &ns); err != nil {
+		if errors.IsNotFound(err) {
+			return nil
+		}
+		return err
+	}
+
+	if !previewNamespaceOwnedByProject(&ns, projectName) {
+		return fmt.Errorf("refusing to delete namespace %q: not clearly managed by project %q", previewNS.Name, projectName)
+	}
+	if !ns.DeletionTimestamp.IsZero() {
+		return nil
+	}
+	if err := r.Delete(ctx, &ns); err != nil && !errors.IsNotFound(err) {
+		return err
+	}
 	return nil
+}
+
+func previewNamespaceOwnedByProject(ns *corev1.Namespace, projectName string) bool {
+	if ns == nil {
+		return false
+	}
+	if ns.Labels["app.kubernetes.io/managed-by"] == "mortise" &&
+		ns.Labels[constants.ProjectLabel] == projectName {
+		return true
+	}
+	for _, ref := range ns.OwnerReferences {
+		if ref.APIVersion == mortisev1alpha1.GroupVersion.String() &&
+			ref.Kind == "Project" &&
+			ref.Name == projectName {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *PreviewEnvironmentReconciler) removeProjectEnv(ctx context.Context, projectName, envName string) error {

@@ -221,6 +221,10 @@ func TestPreviewEnvironmentLifecycle(t *testing.T) {
 		}, &networkingv1.Ingress{})
 		return errors.IsNotFound(err)
 	})
+	helpers.RequireEventually(t, 2*time.Minute, func() bool {
+		err := k8sClient.Get(context.Background(), types.NamespacedName{Name: previewNs}, &corev1.Namespace{})
+		return errors.IsNotFound(err)
+	})
 
 	// Project namespace must still exist.
 	var nsObj corev1.Namespace
