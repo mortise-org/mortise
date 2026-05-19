@@ -107,6 +107,142 @@ func newReadyDeploymentForStatusTest(t *testing.T, app *mortisev1alpha1.App, env
 	}
 }
 
+func newStatusTestPod(app *mortisev1alpha1.App, envName, podName string, statuses []corev1.ContainerStatus, initStatuses []corev1.ContainerStatus) *corev1.Pod {
+	envNs, err := appEnvNs(app, envName)
+	if err != nil {
+		panic(fmt.Sprintf("app env namespace for %s: %v", envName, err))
+	}
+
+	return &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      podName,
+			Namespace: envNs,
+			Labels: map[string]string{
+				constants.AppNameLabel:         app.Name,
+				"app.kubernetes.io/managed-by": "mortise",
+				"mortise.dev/environment":      envName,
+			},
+		},
+		Status: corev1.PodStatus{
+			ContainerStatuses:     statuses,
+			InitContainerStatuses: initStatuses,
+		},
+	}
+}
+
+func TestCheckPodCrashLoopInEnvIgnoresNormalWaitingReasons(t *testing.T) {
+	ctx := context.Background()
+	scheme := newAppStatusTestScheme(t)
+
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "demo",
+			Namespace: "pj-default-project",
+		},
+	}
+	pod := newStatusTestPod(app, "production", "demo-pod", []corev1.ContainerStatus{{
+		Name: "app",
+		State: corev1.ContainerState{
+			Waiting: &corev1.ContainerStateWaiting{
+				Reason:  "ContainerCreating",
+				Message: "pulling image",
+			},
+		},
+	}}, nil)
+
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(pod).
+		Build()
+	r := &AppReconciler{Client: c, Scheme: scheme}
+
+	envNs, err := appEnvNs(app, "production")
+	if err != nil {
+		t.Fatalf("app env namespace: %v", err)
+	}
+	if got := r.checkPodCrashLoopInEnv(ctx, app, "production", envNs); got != "" {
+		t.Fatalf("expected no crash-loop message for ContainerCreating, got %q", got)
+	}
+}
+
+func TestCheckPodCrashLoopInEnvIgnoresImagePullBackOff(t *testing.T) {
+	ctx := context.Background()
+	scheme := newAppStatusTestScheme(t)
+
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "demo",
+			Namespace: "pj-default-project",
+		},
+	}
+	pod := newStatusTestPod(app, "production", "demo-pod", []corev1.ContainerStatus{{
+		Name: "app",
+		State: corev1.ContainerState{
+			Waiting: &corev1.ContainerStateWaiting{
+				Reason:  "ImagePullBackOff",
+				Message: "back-off pulling image",
+			},
+		},
+	}}, nil)
+
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(pod).
+		Build()
+	r := &AppReconciler{Client: c, Scheme: scheme}
+
+	envNs, err := appEnvNs(app, "production")
+	if err != nil {
+		t.Fatalf("app env namespace: %v", err)
+	}
+	if got := r.checkPodCrashLoopInEnv(ctx, app, "production", envNs); got != "" {
+		t.Fatalf("expected no crash-loop message for ImagePullBackOff, got %q", got)
+	}
+}
+
+func TestCheckPodCrashLoopInEnvReportsCrashLoopBackOff(t *testing.T) {
+	ctx := context.Background()
+	scheme := newAppStatusTestScheme(t)
+
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "demo",
+			Namespace: "pj-default-project",
+		},
+	}
+	pod := newStatusTestPod(app, "production", "demo-pod", []corev1.ContainerStatus{{
+		Name:         "app",
+		RestartCount: 3,
+		State: corev1.ContainerState{
+			Waiting: &corev1.ContainerStateWaiting{Reason: "CrashLoopBackOff"},
+		},
+		LastTerminationState: corev1.ContainerState{
+			Terminated: &corev1.ContainerStateTerminated{
+				ExitCode: 137,
+				Reason:   "OOMKilled",
+			},
+		},
+	}}, nil)
+
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(pod).
+		Build()
+	r := &AppReconciler{Client: c, Scheme: scheme}
+
+	envNs, err := appEnvNs(app, "production")
+	if err != nil {
+		t.Fatalf("app env namespace: %v", err)
+	}
+	got := r.checkPodCrashLoopInEnv(ctx, app, "production", envNs)
+	if !strings.Contains(got, "Container crashing (restart #3)") {
+		t.Fatalf("expected crash-loop message with restart count, got %q", got)
+	}
+	if !strings.Contains(got, "exit code 137 (OOMKilled)") {
+		t.Fatalf("expected crash-loop message with termination details, got %q", got)
+	}
+}
+
 func TestUpdateStatusPreservesBuildRunRefs(t *testing.T) {
 	scheme := runtime.NewScheme()
 	if err := mortisev1alpha1.AddToScheme(scheme); err != nil {
@@ -901,6 +1037,76 @@ func TestUpdateStatusRecoversAfterPreviewRemoval(t *testing.T) {
 	}
 }
 
+func TestUpdateStatusRecoversAfterEnvironmentRemoval(t *testing.T) {
+	ctx := context.Background()
+	scheme := newAppStatusTestScheme(t)
+
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "demo",
+			Namespace: "pj-default-project",
+		},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage},
+			Environments: []mortisev1alpha1.Environment{
+				{Name: "production"},
+			},
+		},
+		Status: mortisev1alpha1.AppStatus{
+			Phase: mortisev1alpha1.AppPhaseFailed,
+			Conditions: []metav1.Condition{{
+				Type:    "BuildSucceeded",
+				Status:  metav1.ConditionFalse,
+				Reason:  "BuildFailed",
+				Message: "staging build failed",
+			}},
+			Environments: []mortisev1alpha1.EnvironmentStatus{
+				{
+					Name:           "production",
+					LastBuiltImage: "registry.example/demo:prod",
+				},
+				{
+					Name: "staging",
+					CurrentBuildRunRef: &mortisev1alpha1.BuildRunReference{
+						Name:  "staging-failed",
+						Phase: mortisev1alpha1.BuildRunPhaseFailed,
+					},
+				},
+			},
+		},
+	}
+	productionDep := newReadyDeploymentForStatusTest(t, app, "production")
+
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(app, productionDep).
+		WithObjects(app, productionDep).
+		Build()
+	r := &AppReconciler{Client: c, Scheme: scheme}
+	if err := c.Status().Update(ctx, productionDep); err != nil {
+		t.Fatalf("seed production deployment status: %v", err)
+	}
+
+	if err := r.updateStatus(ctx, app, []mortisev1alpha1.Environment{{Name: "production"}}, nil); err != nil {
+		t.Fatalf("update status: %v", err)
+	}
+
+	var fresh mortisev1alpha1.App
+	if err := c.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: app.Namespace}, &fresh); err != nil {
+		t.Fatalf("get app: %v", err)
+	}
+	if fresh.Status.Phase != mortisev1alpha1.AppPhaseReady {
+		t.Fatalf("expected app to recover to %q after env removal, got %q", mortisev1alpha1.AppPhaseReady, fresh.Status.Phase)
+	}
+	cond := meta.FindStatusCondition(fresh.Status.Conditions, "BuildSucceeded")
+	if cond == nil || cond.Status != metav1.ConditionTrue {
+		t.Fatalf("expected top-level BuildSucceeded to recover after env removal, got %+v", cond)
+	}
+	if len(fresh.Status.Environments) != 1 || fresh.Status.Environments[0].Name != "production" {
+		t.Fatalf("expected stale env status to be removed, got %+v", fresh.Status.Environments)
+	}
+}
+
 func TestShouldRefreshFailedAppStatusForPreviewOnlyBuildFailure(t *testing.T) {
 	app := &mortisev1alpha1.App{
 		Status: mortisev1alpha1.AppStatus{
@@ -1278,6 +1484,10 @@ var _ = Describe("App Controller", func() {
 		It("should create a Deployment with correct spec", func() {
 			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -6329,7 +6539,7 @@ var _ = Describe("App Controller — git source", func() {
 			Expect(envData).To(HaveKeyWithValue("PORT", "5000"), "user-overridden value should be preserved even when CRD changes")
 		})
 
-		It("retains removed CRD spec env var keys in the Secret", func() {
+		It("removes removed CRD spec env var keys when they are still controller-owned", func() {
 			appName := "key-removal-test"
 			app := &mortisev1alpha1.App{
 				ObjectMeta: metav1.ObjectMeta{Name: appName, Namespace: namespace},
@@ -6375,11 +6585,125 @@ var _ = Describe("App Controller — git source", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			// Key removal from CRD does NOT delete from Secret — user may
-			// have set it via UI. The key remains with its last value.
 			envData = readAppEnvSecret(ctx, appName, envNsProduction)
 			Expect(envData).To(HaveKeyWithValue("KEEP_ME", "yes"))
-			Expect(envData).To(HaveKey("DROP_ME"), "removed CRD key should remain in Secret")
+			Expect(envData).NotTo(HaveKey("DROP_ME"), "removed CRD key should be pruned when still controller-owned")
+		})
+
+		It("preserves removed CRD spec env var keys when the user has overridden them", func() {
+			appName := "key-removal-override-test"
+			app := &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{Name: appName, Namespace: namespace},
+				Spec: mortisev1alpha1.AppSpec{
+					Source: mortisev1alpha1.AppSource{
+						Type:  mortisev1alpha1.SourceTypeImage,
+						Image: testImageNginx,
+					},
+					Network: mortisev1alpha1.NetworkConfig{Public: true},
+					Environments: []mortisev1alpha1.Environment{{
+						Name:   "production",
+						Domain: "keyremoval-override.example.com",
+						Env: []mortisev1alpha1.EnvVar{
+							{Name: "KEEP_ME", Value: "yes"},
+							{Name: "DROP_ME", Value: "initially"},
+						},
+					}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var sec corev1.Secret
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      envstore.AppEnvSecretName(appName),
+				Namespace: envNsProduction,
+			}, &sec)).To(Succeed())
+			sec.Data["DROP_ME"] = []byte("user-value")
+			Expect(k8sClient.Update(ctx, &sec)).To(Succeed())
+
+			var fetchedApp mortisev1alpha1.App
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: appName, Namespace: namespace}, &fetchedApp)).To(Succeed())
+			fetchedApp.Spec.Environments[0].Env = []mortisev1alpha1.EnvVar{
+				{Name: "KEEP_ME", Value: "yes"},
+			}
+			Expect(k8sClient.Update(ctx, &fetchedApp)).To(Succeed())
+
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			envData := readAppEnvSecret(ctx, appName, envNsProduction)
+			Expect(envData).To(HaveKeyWithValue("KEEP_ME", "yes"))
+			Expect(envData).To(HaveKeyWithValue("DROP_ME", "user-value"), "user-overridden removed key should be preserved")
+		})
+
+		It("preserves removed CRD spec env var keys when another source owns them", func() {
+			appName := "key-removal-other-sources-test"
+			app := &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{Name: appName, Namespace: namespace},
+				Spec: mortisev1alpha1.AppSpec{
+					Source: mortisev1alpha1.AppSource{
+						Type:  mortisev1alpha1.SourceTypeImage,
+						Image: testImageNginx,
+					},
+					Network: mortisev1alpha1.NetworkConfig{Public: true},
+					Environments: []mortisev1alpha1.Environment{{
+						Name:   "production",
+						Domain: "keyremoval-sources.example.com",
+						Env: []mortisev1alpha1.EnvVar{
+							{Name: "KEEP_ME", Value: "yes"},
+							{Name: "GENERATED_VAR", Value: "spec-generated"},
+							{Name: "SHARED_VAR", Value: "spec-shared"},
+						},
+					}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var sec corev1.Secret
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      envstore.AppEnvSecretName(appName),
+				Namespace: envNsProduction,
+			}, &sec)).To(Succeed())
+			sec.Data["GENERATED_VAR"] = []byte("generated-value")
+			sec.Data["SHARED_VAR"] = []byte("shared-value")
+			if sec.Annotations == nil {
+				sec.Annotations = map[string]string{}
+			}
+			sec.Annotations[envstore.AnnotationGeneratedKeys] = "GENERATED_VAR"
+			sec.Annotations[envstore.AnnotationSharedKeys] = "SHARED_VAR"
+			Expect(k8sClient.Update(ctx, &sec)).To(Succeed())
+
+			var fetchedApp mortisev1alpha1.App
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: appName, Namespace: namespace}, &fetchedApp)).To(Succeed())
+			fetchedApp.Spec.Environments[0].Env = []mortisev1alpha1.EnvVar{
+				{Name: "KEEP_ME", Value: "yes"},
+			}
+			Expect(k8sClient.Update(ctx, &fetchedApp)).To(Succeed())
+
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			envData := readAppEnvSecret(ctx, appName, envNsProduction)
+			Expect(envData).To(HaveKeyWithValue("KEEP_ME", "yes"))
+			Expect(envData).To(HaveKeyWithValue("GENERATED_VAR", "generated-value"))
+			Expect(envData).To(HaveKeyWithValue("SHARED_VAR", "shared-value"))
 		})
 
 		It("adds binding vars on first binding, clears them when binding is removed", func() {
@@ -6493,6 +6817,70 @@ var _ = Describe("App Controller — git source", func() {
 				Namespace: envNsProduction,
 			}, &sec)
 			Expect(kerrors.IsNotFound(err)).To(BeTrue(), "app-env Secret should be skipped when empty")
+		})
+
+		It("treats removing an environment from spec as non-destructive for existing workloads", func() {
+			withStagingEnv(ctx)
+			defer withoutStagingEnv(ctx)
+
+			appName := "env-removal-contract-guard"
+			app := &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{Name: appName, Namespace: namespace},
+				Spec: mortisev1alpha1.AppSpec{
+					Source: mortisev1alpha1.AppSource{
+						Type:  mortisev1alpha1.SourceTypeImage,
+						Image: testImageNginx,
+					},
+					Network: mortisev1alpha1.NetworkConfig{Public: true},
+					Environments: []mortisev1alpha1.Environment{
+						{
+							Name:     "production",
+							Replicas: ptr.To[int32](1),
+							Domain:   "prod-guard.example.com",
+						},
+						{
+							Name:     "staging",
+							Replicas: ptr.To[int32](1),
+							Domain:   "staging-guard.example.com",
+							Env:      []mortisev1alpha1.EnvVar{{Name: "STAGING_ONLY", Value: "1"}},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			stagingNs := "pj-default-project-staging"
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: deploymentName(appName), Namespace: stagingNs}, &appsv1.Deployment{})).To(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: serviceName(appName), Namespace: stagingNs}, &corev1.Service{})).To(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: ingressName(appName), Namespace: stagingNs}, &networkingv1.Ingress{})).To(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: envstore.AppEnvSecretName(appName), Namespace: stagingNs}, &corev1.Secret{})).To(Succeed())
+
+			var fetchedApp mortisev1alpha1.App
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: appName, Namespace: namespace}, &fetchedApp)).To(Succeed())
+			fetchedApp.Spec.Environments = fetchedApp.Spec.Environments[:1]
+			Expect(k8sClient.Update(ctx, &fetchedApp)).To(Succeed())
+
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Contract guard: spec removal is not treated as a destructive env teardown.
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: deploymentName(appName), Namespace: stagingNs}, &appsv1.Deployment{})).To(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: serviceName(appName), Namespace: stagingNs}, &corev1.Service{})).To(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: ingressName(appName), Namespace: stagingNs}, &networkingv1.Ingress{})).To(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: envstore.AppEnvSecretName(appName), Namespace: stagingNs}, &corev1.Secret{})).To(Succeed())
 		})
 
 		It("skips binding gracefully when a binding references a missing App CRD", func() {
