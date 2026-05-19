@@ -15,6 +15,16 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
 
+type countingClient struct {
+	client.Client
+	updateCalls int
+}
+
+func (c *countingClient) Update(ctx context.Context, obj client.Object, opts ...client.UpdateOption) error {
+	c.updateCalls++
+	return c.Client.Update(ctx, obj, opts...)
+}
+
 func TestAppEnvSecretName(t *testing.T) {
 	tests := []struct {
 		app  string
@@ -250,5 +260,25 @@ func TestUpdateWithConflictRetryStopsWhenUnchanged(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestReplaceSourceSkipsEmptySecretDataNilVsEmptyChurn(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+
+	existing := buildSecret("ns", AppEnvSecretName("app"), nil, nil)
+	existing.Data = nil
+	base := fake.NewClientBuilder().WithScheme(scheme).WithObjects(existing).Build()
+	c := &countingClient{Client: base}
+
+	store := &Store{Client: c}
+	if err := store.ReplaceSource(context.Background(), "ns", "app", "binding", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if c.updateCalls != 0 {
+		t.Fatalf("expected no update for logically empty secret data, got %d update calls", c.updateCalls)
 	}
 }
