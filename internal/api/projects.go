@@ -199,8 +199,6 @@ func (s *Server) CreateProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.recordActivity(r, project.Name, "create", "project", project.Name, "Created project "+project.Name, "")
-
 	writeJSON(w, http.StatusCreated, toProjectResponse(project, nil))
 }
 
