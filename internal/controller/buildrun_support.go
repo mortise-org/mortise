@@ -188,6 +188,14 @@ func projectAppBuildRunStatus(app *mortisev1alpha1.App, envName string, run *mor
 	}
 }
 
+func currentBuildRunNameForEnv(app *mortisev1alpha1.App, envName string) string {
+	es := envStatusFor(app, envName)
+	if es == nil || es.CurrentBuildRunRef == nil {
+		return ""
+	}
+	return es.CurrentBuildRunRef.Name
+}
+
 func aggregateAppBuildRunNames(envs []mortisev1alpha1.EnvironmentStatus) (current, last string) {
 	for _, es := range envs {
 		if es.CurrentBuildRunRef == nil {
@@ -293,14 +301,17 @@ func buildRunMatchesAppSpec(run *mortisev1alpha1.BuildRun, app *mortisev1alpha1.
 
 func (r *AppReconciler) ensureAppBuildRun(ctx context.Context, app *mortisev1alpha1.App, envName, branch, revision, pushTarget, pullTarget string) (*mortisev1alpha1.BuildRun, error) {
 	spec := appBuildRunSpec(app, envName, branch, revision, pushTarget, pullTarget)
-	if !hasPendingRebuildRequest(app) && app.Status.CurrentBuildRunName != "" {
-		var current mortisev1alpha1.BuildRun
-		if err := r.Get(ctx, client.ObjectKey{Namespace: app.Namespace, Name: app.Status.CurrentBuildRunName}, &current); err == nil {
-			if buildRunMatchesAppSpec(&current, app, envName, spec) {
-				return &current, nil
+	if !hasPendingRebuildRequest(app) {
+		currentRunName := currentBuildRunNameForEnv(app, envName)
+		if currentRunName != "" {
+			var current mortisev1alpha1.BuildRun
+			if err := r.Get(ctx, client.ObjectKey{Namespace: app.Namespace, Name: currentRunName}, &current); err == nil {
+				if buildRunMatchesAppSpec(&current, app, envName, spec) {
+					return &current, nil
+				}
+			} else if !errors.IsNotFound(err) {
+				return nil, err
 			}
-		} else if !errors.IsNotFound(err) {
-			return nil, err
 		}
 	}
 	name := buildRunName("app", app.Name, envName, revision, spec.InputHash, spec.RequestID)
