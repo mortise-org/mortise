@@ -66,6 +66,9 @@ func TestEnsureAppBuildRunCreatesAndClearsRebuildMarkers(t *testing.T) {
 	if run.Spec.TokenSecretRef == nil {
 		t.Fatal("expected token secret ref")
 	}
+	if len(run.OwnerReferences) != 1 || run.OwnerReferences[0].Kind != "App" || run.OwnerReferences[0].Name != app.Name {
+		t.Fatalf("expected buildrun owner App/%s, got %+v", app.Name, run.OwnerReferences)
+	}
 	if got := app.Annotations[rebuildRequestedAtAnnotation]; got != "" {
 		t.Fatalf("expected rebuild request marker cleared, got %q", got)
 	}
@@ -508,9 +511,9 @@ func TestReconcileEnvBuildProjectsFailedCurrentRunIntoStatus(t *testing.T) {
 		},
 		Spec: appBuildRunSpec(app, "pr-6", "feature/preview-fail", "same-sha", "registry.example.com/mortise/demo:same-sh-pr-6", "registry.example.com/mortise/demo:same-sh-pr-6"),
 		Status: mortisev1alpha1.BuildRunStatus{
-			Phase:         mortisev1alpha1.BuildRunPhaseFailed,
-			FailureReason: "BuildFailed",
-			FailureMessage:"invalid reference format",
+			Phase:          mortisev1alpha1.BuildRunPhaseFailed,
+			FailureReason:  "BuildFailed",
+			FailureMessage: "invalid reference format",
 		},
 	}
 

@@ -36,6 +36,7 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
@@ -959,6 +960,16 @@ var _ = Describe("PreviewEnvironment Controller", func() {
 			project, ns := createPreviewTestProject(ctx, true)
 			project.Spec.Environments = []mortisev1alpha1.ProjectEnvironment{{Name: "staging"}}
 			Expect(k8sClient.Update(ctx, project)).To(Succeed())
+			previewNsName := constants.PreviewNamespace(project.Name, 99)
+			Expect(k8sClient.Create(ctx, &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: previewNsName,
+					Labels: map[string]string{
+						"app.kubernetes.io/managed-by": "mortise",
+						constants.ProjectLabel:         project.Name,
+					},
+				},
+			})).To(Succeed())
 
 			staging := &mortisev1alpha1.Environment{
 				Name: "staging",
@@ -1022,6 +1033,14 @@ var _ = Describe("PreviewEnvironment Controller", func() {
 				appEnvNames[i] = e.Name
 			}
 			Expect(appEnvNames).NotTo(ContainElement("pr-99"))
+
+			var previewNs corev1.Namespace
+			err = k8sClient.Get(ctx, types.NamespacedName{Name: previewNsName}, &previewNs)
+			if err == nil {
+				Expect(previewNs.DeletionTimestamp).NotTo(BeNil())
+			} else {
+				Expect(errors.IsNotFound(err)).To(BeTrue())
+			}
 		})
 
 		It("should handle deletion gracefully when the Project is already gone", func() {
@@ -1051,6 +1070,42 @@ var _ = Describe("PreviewEnvironment Controller", func() {
 				NamespacedName: types.NamespacedName{Name: pe.Name, Namespace: ns},
 			})
 			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("should refuse to delete a preview namespace it cannot attribute to the project", func() {
+			ctx := context.Background()
+			project, ns := createPreviewTestProject(ctx, true)
+			project.Spec.Environments = []mortisev1alpha1.ProjectEnvironment{{Name: "staging"}}
+			Expect(k8sClient.Update(ctx, project)).To(Succeed())
+
+			createPreviewApp(ctx, "foreign-ns-app", ns, &mortisev1alpha1.Environment{Name: "staging"})
+
+			pe := createPreviewEnv(ctx, "foreign-preview-pr-17", ns, project.Name, 17, "sha17", "feat")
+			foreignNsName := constants.PreviewNamespace(project.Name, 17)
+			Expect(k8sClient.Create(ctx, &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{Name: foreignNsName},
+			})).To(Succeed())
+
+			reconciler := newPEReconciler()
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: pe.Name, Namespace: ns},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Delete(ctx, pe)).To(Succeed())
+
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: pe.Name, Namespace: ns},
+			})
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("refusing to delete namespace"))
+
+			var stuck mortisev1alpha1.PreviewEnvironment
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: pe.Name, Namespace: ns}, &stuck)).To(Succeed())
+			Expect(controllerutil.ContainsFinalizer(&stuck, previewFinalizer)).To(BeTrue())
+
+			var foreignNs corev1.Namespace
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: foreignNsName}, &foreignNs)).To(Succeed())
 		})
 	})
 })

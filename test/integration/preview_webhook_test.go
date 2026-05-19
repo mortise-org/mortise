@@ -17,6 +17,7 @@ import (
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -241,6 +242,11 @@ func TestPreviewEnvironmentViaWebhook(t *testing.T) {
 		err := k8sClient.Get(context.Background(), types.NamespacedName{
 			Name: previewResourceName, Namespace: previewNs,
 		}, &d)
+		return errors.IsNotFound(err)
+	})
+	helpers.RequireEventually(t, 2*time.Minute, func() bool {
+		var gone corev1.Namespace
+		err := k8sClient.Get(context.Background(), types.NamespacedName{Name: previewNs}, &gone)
 		return errors.IsNotFound(err)
 	})
 }

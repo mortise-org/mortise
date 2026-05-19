@@ -13,6 +13,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
 	"github.com/mortise-org/mortise/internal/git"
@@ -317,6 +318,9 @@ func (r *AppReconciler) ensureAppBuildRun(ctx context.Context, app *mortisev1alp
 			Namespace: app.Namespace,
 		},
 		Spec: spec,
+	}
+	if err := controllerutil.SetControllerReference(app, &run, r.Scheme); err != nil {
+		return nil, err
 	}
 	for k, v := range appLabels(app, envName) {
 		if run.Labels == nil {

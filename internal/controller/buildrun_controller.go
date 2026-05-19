@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -43,6 +44,7 @@ const (
 	buildRunPollInterval        = 15 * time.Second
 	buildRunTrackerLossGrace    = 5 * time.Second
 	maxBuildRunRecoveryAttempts = 2
+	buildRunHistoryLimit        = 10
 )
 
 // BuildRunReconciler reconciles durable BuildRun objects.
@@ -75,6 +77,9 @@ func (r *BuildRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	}
 
 	if isBuildRunTerminal(&br) {
+		if err := r.gcBuildRunHistory(ctx, &br); err != nil {
+			return ctrl.Result{}, err
+		}
 		return ctrl.Result{}, nil
 	}
 
@@ -124,6 +129,9 @@ func (r *BuildRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 				return ctrl.Result{}, err
 			}
 			if err := r.projectTerminalBuildRunStatus(ctx, &br); err != nil {
+				return ctrl.Result{}, err
+			}
+			if err := r.gcBuildRunHistory(ctx, &br); err != nil {
 				return ctrl.Result{}, err
 			}
 			return ctrl.Result{}, nil
@@ -404,6 +412,136 @@ func (r *BuildRunReconciler) projectTerminalBuildRunStatus(ctx context.Context, 
 	default:
 		return nil
 	}
+}
+
+func (r *BuildRunReconciler) gcBuildRunHistory(ctx context.Context, br *mortisev1alpha1.BuildRun) error {
+	if br == nil ||
+		br.Spec.TargetRef.Kind != mortisev1alpha1.BuildRunTargetAppEnvironment ||
+		br.Spec.TargetRef.Name == "" ||
+		br.Spec.Environment == "" {
+		return nil
+	}
+
+	var runs mortisev1alpha1.BuildRunList
+	if err := r.List(ctx, &runs,
+		client.InNamespace(br.Namespace),
+		client.MatchingLabels{
+			buildRunTargetKindLabel:  strings.ToLower(mortisev1alpha1.BuildRunTargetAppEnvironment),
+			buildRunTargetNameLabel:  br.Spec.TargetRef.Name,
+			buildRunEnvironmentLabel: br.Spec.Environment,
+		},
+	); err != nil {
+		return err
+	}
+
+	protected, err := r.protectedBuildRunNames(ctx, br)
+	if err != nil {
+		return err
+	}
+
+	sort.SliceStable(runs.Items, func(i, j int) bool {
+		ti := buildRunRetentionSortTime(&runs.Items[i])
+		tj := buildRunRetentionSortTime(&runs.Items[j])
+		if !ti.Equal(tj) {
+			return ti.After(tj)
+		}
+		return runs.Items[i].Name < runs.Items[j].Name
+	})
+
+	keptTerminal := 0
+	for i := range runs.Items {
+		run := &runs.Items[i]
+		if !isBuildRunTerminal(run) {
+			continue
+		}
+		if _, ok := protected[run.Name]; ok {
+			continue
+		}
+		if keptTerminal < buildRunHistoryLimit {
+			keptTerminal++
+			continue
+		}
+		if err := r.deleteRetiredBuildRun(ctx, run); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (r *BuildRunReconciler) protectedBuildRunNames(ctx context.Context, br *mortisev1alpha1.BuildRun) (map[string]struct{}, error) {
+	protected := map[string]struct{}{}
+	if br == nil || br.Spec.TargetRef.Name == "" {
+		return protected, nil
+	}
+
+	var app mortisev1alpha1.App
+	if err := r.Get(ctx, types.NamespacedName{Name: br.Spec.TargetRef.Name, Namespace: br.Namespace}, &app); err != nil {
+		if errors.IsNotFound(err) {
+			return protected, nil
+		}
+		return nil, err
+	}
+
+	if app.Status.CurrentBuildRunName != "" {
+		protected[app.Status.CurrentBuildRunName] = struct{}{}
+	}
+	if app.Status.LastBuildRunName != "" {
+		protected[app.Status.LastBuildRunName] = struct{}{}
+	}
+	for _, env := range app.Status.Environments {
+		if env.CurrentBuildRunRef != nil && env.CurrentBuildRunRef.Name != "" {
+			protected[env.CurrentBuildRunRef.Name] = struct{}{}
+		}
+		if env.LastSuccessfulBuildRunRef != nil && env.LastSuccessfulBuildRunRef.Name != "" {
+			protected[env.LastSuccessfulBuildRunRef.Name] = struct{}{}
+		}
+	}
+	return protected, nil
+}
+
+func (r *BuildRunReconciler) deleteRetiredBuildRun(ctx context.Context, br *mortisev1alpha1.BuildRun) error {
+	if br == nil {
+		return nil
+	}
+
+	logNames := map[string]struct{}{
+		buildRunLogConfigMapName(br.Name): {},
+	}
+	if br.Status.LogRef != nil && br.Status.LogRef.Name != "" {
+		logNames[br.Status.LogRef.Name] = struct{}{}
+	}
+	for name := range logNames {
+		if err := r.Delete(ctx, &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: br.Namespace,
+			},
+		}); err != nil && !errors.IsNotFound(err) {
+			return err
+		}
+	}
+
+	if err := r.Delete(ctx, br); err != nil && !errors.IsNotFound(err) {
+		return err
+	}
+	return nil
+}
+
+func buildRunRetentionSortTime(run *mortisev1alpha1.BuildRun) time.Time {
+	if run == nil {
+		return time.Time{}
+	}
+	if run.Status.CompletedAt != nil {
+		return run.Status.CompletedAt.Time
+	}
+	if run.Status.FinishedAt != nil {
+		return run.Status.FinishedAt.Time
+	}
+	if run.Status.StartedAt != nil {
+		return run.Status.StartedAt.Time
+	}
+	return run.CreationTimestamp.Time
 }
 
 func upsertConfigMap(ctx context.Context, c client.Client, desired *corev1.ConfigMap) error {
