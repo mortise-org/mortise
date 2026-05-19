@@ -7277,6 +7277,11 @@ var _ = Describe("App Controller — git source", func() {
 			for k := range envData {
 				Expect(k).NotTo(HavePrefix("DOES_NOT_EXIST_"), "no binding vars should exist for missing app")
 			}
+
+			var fresh mortisev1alpha1.App
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: appName, Namespace: namespace}, &fresh)).To(Succeed())
+			Expect(fresh.Spec.Environments).To(HaveLen(1))
+			Expect(fresh.Spec.Environments[0].Bindings).To(BeEmpty(), "consumer reconcile should self-heal dangling binding refs")
 		})
 
 		It("clears stale binding vars when bound app is deleted between reconciles", func() {

@@ -172,6 +172,9 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("fetch parent project: %w", err)
 	}
+	if _, err := r.pruneMissingBindingsForConsumer(ctx, &app); err != nil {
+		return ctrl.Result{}, fmt.Errorf("prune missing bindings: %w", err)
+	}
 	var resolvedEnvs []mortisev1alpha1.Environment
 	var previewEnvNames map[string]struct{}
 	var previewBuildIdentities map[string]previewBuildIdentity
@@ -501,6 +504,96 @@ func (r *AppReconciler) pruneBindingsToDeletedApp(ctx context.Context, deletedAp
 	}
 
 	return nil
+}
+
+func (r *AppReconciler) pruneMissingBindingsForConsumer(ctx context.Context, app *mortisev1alpha1.App) (bool, error) {
+	if app == nil || app.Name == "" || app.Namespace == "" {
+		return false, nil
+	}
+
+	key := types.NamespacedName{Name: app.Name, Namespace: app.Namespace}
+	var updated *mortisev1alpha1.App
+	pruned := false
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var fresh mortisev1alpha1.App
+		if err := r.Get(ctx, key, &fresh); err != nil {
+			return err
+		}
+		changed, err := r.removeDanglingBindings(ctx, &fresh)
+		if err != nil {
+			return err
+		}
+		if !changed {
+			updated = fresh.DeepCopy()
+			return nil
+		}
+		if err := r.Update(ctx, &fresh); err != nil {
+			return err
+		}
+		pruned = true
+		updated = fresh.DeepCopy()
+		return nil
+	}); err != nil {
+		return false, err
+	}
+	if updated != nil {
+		*app = *updated
+	}
+	return pruned, nil
+}
+
+func (r *AppReconciler) removeDanglingBindings(ctx context.Context, app *mortisev1alpha1.App) (bool, error) {
+	if app == nil || app.Namespace == "" {
+		return false, nil
+	}
+
+	refs := make(map[string]struct{})
+	for _, env := range app.Spec.Environments {
+		for _, binding := range env.Bindings {
+			if binding.Ref != "" {
+				refs[binding.Ref] = struct{}{}
+			}
+		}
+	}
+	if len(refs) == 0 {
+		return false, nil
+	}
+
+	missing := make(map[string]struct{})
+	for ref := range refs {
+		var boundApp mortisev1alpha1.App
+		if err := r.Get(ctx, types.NamespacedName{Name: ref, Namespace: app.Namespace}, &boundApp); err != nil {
+			if errors.IsNotFound(err) {
+				missing[ref] = struct{}{}
+				continue
+			}
+			return false, err
+		}
+		if !boundApp.DeletionTimestamp.IsZero() {
+			missing[ref] = struct{}{}
+		}
+	}
+	if len(missing) == 0 {
+		return false, nil
+	}
+
+	changed := false
+	for envIdx := range app.Spec.Environments {
+		env := &app.Spec.Environments[envIdx]
+		if len(env.Bindings) == 0 {
+			continue
+		}
+		filtered := env.Bindings[:0]
+		for _, binding := range env.Bindings {
+			if _, gone := missing[binding.Ref]; gone {
+				changed = true
+				continue
+			}
+			filtered = append(filtered, binding)
+		}
+		env.Bindings = filtered
+	}
+	return changed, nil
 }
 
 // reconcileGitSource handles the build-from-source path for source.type=git apps
@@ -2344,7 +2437,7 @@ func (r *AppReconciler) reconcileEnvSecret(ctx context.Context, app *mortisev1al
 			})
 		}
 	}
-	if len(env.Bindings) > 0 && len(bindingEnvs) == 0 {
+	if len(bindingEnvs) == 0 {
 		if deleted, err := r.deleteBindingOnlyEnvSecret(ctx, envNs, app.Name); err != nil {
 			return fmt.Errorf("delete empty binding-only env secret: %w", err)
 		} else if deleted {

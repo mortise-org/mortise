@@ -12,7 +12,6 @@ package envstore
 import (
 	"context"
 	"fmt"
-	"reflect"
 	"regexp"
 	"sort"
 	"strings"
@@ -393,7 +392,7 @@ update:
 		return &corev1.Secret{}
 	}, func(existing *corev1.Secret) (bool, error) {
 		changed := false
-		if !reflect.DeepEqual(existing.Data, desired.Data) {
+		if !secretDataEqual(existing.Data, desired.Data) {
 			existing.Data = desired.Data
 			changed = true
 		}
@@ -534,6 +533,22 @@ func removeKeyFromAnnotations(secret *corev1.Secret, key string) {
 			}
 		}
 	}
+}
+
+func secretDataEqual(existing, desired map[string][]byte) bool {
+	if len(existing) == 0 && len(desired) == 0 {
+		return true
+	}
+	if len(existing) != len(desired) {
+		return false
+	}
+	for key, desiredValue := range desired {
+		existingValue, ok := existing[key]
+		if !ok || string(existingValue) != string(desiredValue) {
+			return false
+		}
+	}
+	return true
 }
 
 func boolPtr(b bool) *bool { return &b }
