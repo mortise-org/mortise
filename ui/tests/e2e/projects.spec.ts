@@ -151,6 +151,25 @@ test.describe('projects', () => {
 		await expect(page.getByRole('button', { name: 'Delete project' })).toBeVisible();
 	});
 
+	test('dashboard hides namespace while project settings general shows it', async ({ page, request }) => {
+		const name = `e2e-ns-${randomSuffix()}`;
+		projectsToCleanup.push(name);
+		await createProjectViaAPI(request, adminToken, name, 'Namespace placement test');
+
+		await injectToken(page, adminToken);
+		await page.goto('/');
+
+		const card = page.locator('a').filter({ hasText: name });
+		await expect(card).toBeVisible({ timeout: 10_000 });
+		await expect(card.getByText(`pj-${name}`, { exact: true })).toHaveCount(0);
+
+		await page.goto(`/projects/${name}/settings`);
+		await expect(page.getByRole('button', { name: 'General', exact: true })).toBeVisible({
+			timeout: 10_000
+		});
+		await expect(page.getByLabel('Namespace')).toHaveValue(`pj-${name}`);
+	});
+
 	test('delete project via project settings UI', async ({ page, request }) => {
 		const name = `e2e-del-${randomSuffix()}`;
 		await createProjectViaAPI(request, adminToken, name);

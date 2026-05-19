@@ -379,6 +379,17 @@
           <p class="mt-1 text-xs text-gray-500">Names cannot be changed after creation.</p>
         </div>
         <div>
+          <label class={labelCls} for="proj-namespace">Namespace</label>
+          <input
+            id="proj-namespace"
+            type="text"
+            value={project?.namespace ?? ''}
+            disabled
+            class="w-full cursor-not-allowed rounded-md border border-surface-600 bg-surface-700 px-3 py-2 font-mono text-sm text-gray-400"
+          />
+          <p class="mt-1 text-xs text-gray-500">Backing Kubernetes namespace for this project.</p>
+        </div>
+        <div>
           <label class={labelCls} for="proj-desc">Description</label>
           <input id="proj-desc" type="text" bind:value={editDesc} placeholder="Optional description" class={inputCls} />
         </div>

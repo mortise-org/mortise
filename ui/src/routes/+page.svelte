@@ -91,8 +91,7 @@
 					{#if project.description}
 						<p class="mt-2 text-xs text-gray-500 line-clamp-2">{project.description}</p>
 					{/if}
-					<div class="mt-3 flex items-center justify-between text-xs text-gray-500">
-						<span class="font-mono">{project.namespace}</span>
+					<div class="mt-3 flex items-center justify-end text-xs text-gray-500">
 						<span>{project.appCount} app{project.appCount === 1 ? '' : 's'}</span>
 					</div>
 				</a>
