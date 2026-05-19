@@ -2345,26 +2345,9 @@ func (r *AppReconciler) reconcileEnvSecret(ctx context.Context, app *mortisev1al
 		}
 	}
 	if len(env.Bindings) > 0 && len(bindingEnvs) == 0 {
-		currentExisting, err := store.Get(ctx, envNs, app.Name)
-		if err != nil {
-			return fmt.Errorf("read existing env vars before binding cleanup: %w", err)
-		}
-		bindingOnly := len(currentExisting) > 0
-		for _, existingEnv := range currentExisting {
-			if existingEnv.Source != "binding" {
-				bindingOnly = false
-				break
-			}
-		}
-		if bindingOnly {
-			if err := r.Client.Delete(ctx, &corev1.Secret{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      envstore.AppEnvSecretName(app.Name),
-					Namespace: envNs,
-				},
-			}); err != nil && !errors.IsNotFound(err) {
-				return fmt.Errorf("delete empty binding-only env secret: %w", err)
-			}
+		if deleted, err := r.deleteBindingOnlyEnvSecret(ctx, envNs, app.Name); err != nil {
+			return fmt.Errorf("delete empty binding-only env secret: %w", err)
+		} else if deleted {
 			return nil
 		}
 	}
@@ -2372,6 +2355,52 @@ func (r *AppReconciler) reconcileEnvSecret(ctx context.Context, app *mortisev1al
 		return nil
 	}
 	return store.ReplaceSource(ctx, envNs, app.Name, "binding", bindingEnvs, labels)
+}
+
+func (r *AppReconciler) deleteBindingOnlyEnvSecret(ctx context.Context, envNs, appName string) (bool, error) {
+	secretKey := types.NamespacedName{
+		Name:      envstore.AppEnvSecretName(appName),
+		Namespace: envNs,
+	}
+
+	deleted := false
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var secret corev1.Secret
+		if err := r.Client.Get(ctx, secretKey, &secret); err != nil {
+			if errors.IsNotFound(err) {
+				return nil
+			}
+			return err
+		}
+
+		existing := envstore.SecretToEnvs(&secret)
+		if len(existing) == 0 {
+			return nil
+		}
+		for _, env := range existing {
+			if env.Source != "binding" {
+				return nil
+			}
+		}
+
+		uid := secret.UID
+		resourceVersion := secret.ResourceVersion
+		if err := r.Client.Delete(ctx, &secret, client.Preconditions{
+			UID:             &uid,
+			ResourceVersion: &resourceVersion,
+		}); err != nil {
+			if errors.IsNotFound(err) {
+				return nil
+			}
+			return err
+		}
+		deleted = true
+		return nil
+	})
+	if err != nil {
+		return false, err
+	}
+	return deleted, nil
 }
 
 func (r *AppReconciler) readLastSpecEnv(ctx context.Context, ns, appName string) map[string]string {
