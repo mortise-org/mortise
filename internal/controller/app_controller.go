@@ -2112,6 +2112,26 @@ func (r *AppReconciler) reconcileEnvSecret(ctx context.Context, app *mortisev1al
 	}
 
 	lastSpec := r.readLastSpecEnv(ctx, envNs, app.Name)
+	specEnvKeys := make(map[string]struct{}, len(env.Env))
+	for _, ev := range env.Env {
+		specEnvKeys[ev.Name] = struct{}{}
+	}
+	for _, existingEnv := range existing {
+		if existingEnv.Source != "user" {
+			continue
+		}
+		if _, stillInSpec := specEnvKeys[existingEnv.Name]; stillInSpec {
+			continue
+		}
+		lastVal, tracked := lastSpec[existingEnv.Name]
+		if !tracked || existingEnv.Value != lastVal {
+			continue
+		}
+		if err := store.Delete(ctx, envNs, app.Name, existingEnv.Name); err != nil {
+			return fmt.Errorf("remove stale spec env %q: %w", existingEnv.Name, err)
+		}
+		delete(existingByName, existingEnv.Name)
+	}
 
 	var toMerge []envstore.Env
 	for _, ev := range env.Env {
@@ -2655,7 +2675,7 @@ func (r *AppReconciler) setWebhookFailureCondition(ctx context.Context, app *mor
 	return r.setWebhookCondition(ctx, app, metav1.ConditionFalse, reason, message)
 }
 
-// checkPodCrashLoopInEnv checks pods for CrashLoopBackOff within a single env
+// checkPodCrashLoopInEnv checks pods for real crash loops within a single env
 // namespace and returns a user-facing message describing the crash, or "" if no
 // crash detected.
 //
@@ -2676,51 +2696,41 @@ func (r *AppReconciler) checkPodCrashLoopInEnv(ctx context.Context, app *mortise
 
 	for _, pod := range podList.Items {
 		for _, cs := range pod.Status.ContainerStatuses {
-			if cs.State.Waiting != nil && cs.State.Waiting.Reason != "" {
-				var msg string
-				if cs.State.Waiting.Reason == "CrashLoopBackOff" {
-					msg = fmt.Sprintf("Container crashing (restart #%d)", cs.RestartCount)
-					if cs.LastTerminationState.Terminated != nil {
-						t := cs.LastTerminationState.Terminated
-						msg += fmt.Sprintf(", exit code %d", t.ExitCode)
-						if t.Reason != "" {
-							msg += fmt.Sprintf(" (%s)", t.Reason)
-						}
-					}
-					msg += " — check logs for details"
-				} else {
-					msg = fmt.Sprintf("Container not ready: %s", cs.State.Waiting.Reason)
-					if cs.State.Waiting.Message != "" {
-						msg += fmt.Sprintf(" — %s", cs.State.Waiting.Message)
-					}
-				}
-				return msg
+			if !isCrashLoopWaitingState(cs.State.Waiting) {
+				continue
 			}
+			msg := fmt.Sprintf("Container crashing (restart #%d)", cs.RestartCount)
+			if cs.LastTerminationState.Terminated != nil {
+				t := cs.LastTerminationState.Terminated
+				msg += fmt.Sprintf(", exit code %d", t.ExitCode)
+				if t.Reason != "" {
+					msg += fmt.Sprintf(" (%s)", t.Reason)
+				}
+			}
+			msg += " — check logs for details"
+			return msg
 		}
 		for _, cs := range pod.Status.InitContainerStatuses {
-			if cs.State.Waiting != nil && cs.State.Waiting.Reason != "" {
-				var msg string
-				if cs.State.Waiting.Reason == "CrashLoopBackOff" {
-					msg = fmt.Sprintf("Init container crashing (restart #%d)", cs.RestartCount)
-					if cs.LastTerminationState.Terminated != nil {
-						t := cs.LastTerminationState.Terminated
-						msg += fmt.Sprintf(", exit code %d", t.ExitCode)
-						if t.Reason != "" {
-							msg += fmt.Sprintf(" (%s)", t.Reason)
-						}
-					}
-					msg += " — check logs for details"
-				} else {
-					msg = fmt.Sprintf("Init container not ready: %s", cs.State.Waiting.Reason)
-					if cs.State.Waiting.Message != "" {
-						msg += fmt.Sprintf(" — %s", cs.State.Waiting.Message)
-					}
-				}
-				return msg
+			if !isCrashLoopWaitingState(cs.State.Waiting) {
+				continue
 			}
+			msg := fmt.Sprintf("Init container crashing (restart #%d)", cs.RestartCount)
+			if cs.LastTerminationState.Terminated != nil {
+				t := cs.LastTerminationState.Terminated
+				msg += fmt.Sprintf(", exit code %d", t.ExitCode)
+				if t.Reason != "" {
+					msg += fmt.Sprintf(" (%s)", t.Reason)
+				}
+			}
+			msg += " — check logs for details"
+			return msg
 		}
 	}
 	return ""
+}
+
+func isCrashLoopWaitingState(waiting *corev1.ContainerStateWaiting) bool {
+	return waiting != nil && waiting.Reason == "CrashLoopBackOff"
 }
 
 func (r *AppReconciler) clock() clock.Clock {
