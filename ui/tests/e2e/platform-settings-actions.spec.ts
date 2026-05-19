@@ -275,4 +275,35 @@ test.describe('platform settings actions', () => {
 			})
 			.catch(() => {});
 	});
+
+	test('admin can set an explicit password when creating a user via settings UI', async ({ page, request }) => {
+		const memberEmail = `e2e-custompass-${randomSuffix()}@test.local`;
+		const explicitPassword = `Chosen-${randomSuffix()}-pass123`;
+
+		await injectToken(page, adminToken);
+		await page.goto('/settings');
+		await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible({ timeout: 10_000 });
+
+		await page.getByRole('button', { name: 'Add User', exact: true }).click();
+		await page.getByLabel('Username').fill(memberEmail);
+		await page.getByLabel('Initial password').fill(explicitPassword);
+		await page.getByRole('button', { name: 'Create user', exact: true }).click();
+
+		await expect(page.getByText('User created. Copy the password now', { exact: false })).toBeVisible({
+			timeout: 10_000
+		});
+		await expect(page.getByText(explicitPassword, { exact: true })).toBeVisible();
+
+		const loginRes = await request.post('/api/auth/login', {
+			data: { email: memberEmail, password: explicitPassword }
+		});
+		expect(loginRes.ok()).toBeTruthy();
+
+		await request
+			.delete(`/api/admin/users/${encodeURIComponent(memberEmail)}`, {
+				headers: { Authorization: `Bearer ${adminToken}` },
+				failOnStatusCode: false
+			})
+			.catch(() => {});
+	});
 });

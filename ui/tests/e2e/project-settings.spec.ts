@@ -47,9 +47,14 @@ test.describe('project settings', () => {
 		});
 
 		// Project name (read-only).
-		const nameInput = page.locator('input[disabled]');
+		const nameInput = page.locator('#proj-name');
 		await expect(nameInput).toBeVisible();
 		await expect(nameInput).toHaveValue(projectName);
+
+		// Backing namespace is shown in Project Settings instead of the dashboard card.
+		const namespaceInput = page.locator('#proj-namespace');
+		await expect(namespaceInput).toBeVisible();
+		await expect(namespaceInput).toHaveValue(`pj-${projectName}`);
 
 		// Description input.
 		const descInput = page.locator('input[placeholder="Optional description"]');

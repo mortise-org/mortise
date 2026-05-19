@@ -939,15 +939,16 @@
 							class="w-full rounded-md border border-surface-600 bg-surface-900 px-3 py-2 text-sm text-white placeholder-gray-500 outline-none focus:border-accent" />
 					</div>
 					<div>
-						<label class="block text-xs text-gray-500 mb-1" for="new-user-password">Password (auto-generated)</label>
+						<label class="block text-xs text-gray-500 mb-1" for="new-user-password">Initial password</label>
 						<div class="flex gap-2">
-							<input id="new-user-password" type="text" bind:value={newUserPassword} readonly
-								class="flex-1 rounded-md border border-surface-600 bg-surface-900 px-3 py-2 text-sm text-white font-mono outline-none" />
+							<input id="new-user-password" type="text" bind:value={newUserPassword} autocomplete="new-password"
+								class="flex-1 rounded-md border border-surface-600 bg-surface-900 px-3 py-2 text-sm text-white font-mono outline-none focus:border-accent" />
 							<button type="button" onclick={() => { newUserPassword = generatePassword(); }}
 								class="rounded-md border border-surface-600 px-2.5 py-1.5 text-xs text-gray-400 hover:bg-surface-600 hover:text-white">
 								Regenerate
 							</button>
 						</div>
+						<p class="mt-1 text-xs text-gray-500">You can edit the generated password before creating the user.</p>
 					</div>
 					<div>
 						<label class="block text-xs text-gray-500 mb-1" for="new-user-role">Role</label>
@@ -959,7 +960,7 @@
 						</select>
 					</div>
 					<div class="flex gap-2">
-						<button type="button" onclick={handleCreateUser} disabled={creatingUser || !newUserEmail.trim()}
+						<button type="button" onclick={handleCreateUser} disabled={creatingUser || !newUserEmail.trim() || !newUserPassword.trim()}
 							class="rounded-md bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent-hover disabled:opacity-50">
 							{creatingUser ? 'Creating...' : 'Create user'}
 						</button>
