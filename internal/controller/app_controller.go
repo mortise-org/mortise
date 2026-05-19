@@ -2979,6 +2979,26 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 			newRestart := restartedAt != "" && restartedAt != es.LastProcessedRestartedAt
 
 			excludeFromTopLevelReadiness := envExcludedFromTopLevelReadinessAggregation(es, previewEnvNames, buildAggregationEnvNames, workloadPresent)
+			crashCountsTowardTopLevel := envSelectedForBuildFailureAggregation(env.Name, buildAggregationEnvNames)
+
+			applyCrashLoopState := func() bool {
+				if isCron {
+					return false
+				}
+				crashMsg := r.checkPodCrashLoopInEnv(ctx, app, env.Name, envNs)
+				if crashMsg == "" {
+					return false
+				}
+				es.Phase = mortisev1alpha1.AppPhaseCrashLooping
+				es.Message = crashMsg
+				if crashCountsTowardTopLevel {
+					anyCrash = true
+					if firstCrashMsg == "" {
+						firstCrashMsg = crashMsg
+					}
+				}
+				return true
+			}
 
 			if ready && !newRestart {
 				if restartedAt != "" {
@@ -2991,28 +3011,19 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 					es.Phase = mortisev1alpha1.AppPhaseReady
 				} else {
 					es.Phase = mortisev1alpha1.AppPhaseDeploying
-					if !excludeFromTopLevelReadiness {
+					countsTowardTopLevelReadiness := !excludeFromTopLevelReadiness
+					if applyCrashLoopState() && !crashCountsTowardTopLevel {
+						countsTowardTopLevelReadiness = false
+					}
+					if countsTowardTopLevelReadiness {
 						anyNotReady = true
 					}
 				}
 			} else {
 				es.Phase = mortisev1alpha1.AppPhaseDeploying
-				crashCountsTowardTopLevel := envSelectedForBuildFailureAggregation(env.Name, buildAggregationEnvNames)
 				countsTowardTopLevelReadiness := !excludeFromTopLevelReadiness
-				if !isCron {
-					if crashMsg := r.checkPodCrashLoopInEnv(ctx, app, env.Name, envNs); crashMsg != "" {
-						es.Phase = mortisev1alpha1.AppPhaseCrashLooping
-						es.Message = crashMsg
-						if crashCountsTowardTopLevel {
-							anyCrash = true
-						}
-						if crashCountsTowardTopLevel && firstCrashMsg == "" {
-							firstCrashMsg = crashMsg
-						}
-						if !crashCountsTowardTopLevel {
-							countsTowardTopLevelReadiness = false
-						}
-					}
+				if applyCrashLoopState() && !crashCountsTowardTopLevel {
+					countsTowardTopLevelReadiness = false
 				}
 				if countsTowardTopLevelReadiness {
 					anyNotReady = true
