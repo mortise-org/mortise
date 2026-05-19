@@ -144,6 +144,9 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	// that enumerates them and deletes by label.
 	if !app.DeletionTimestamp.IsZero() {
 		if controllerutil.ContainsFinalizer(&app, appFinalizer) {
+			if err := r.pruneBindingsToDeletedApp(ctx, &app); err != nil {
+				return ctrl.Result{}, fmt.Errorf("prune dangling bindings: %w", err)
+			}
 			if err := r.gcAppAcrossEnvs(ctx, &app); err != nil {
 				return ctrl.Result{}, fmt.Errorf("gc app across envs: %w", err)
 			}
@@ -424,6 +427,80 @@ func (r *AppReconciler) removeAppFinalizerWithRetry(ctx context.Context, key typ
 		controllerutil.RemoveFinalizer(&fresh, appFinalizer)
 		return r.Update(ctx, &fresh)
 	})
+}
+
+func (r *AppReconciler) pruneBindingsToDeletedApp(ctx context.Context, deletedApp *mortisev1alpha1.App) error {
+	if deletedApp == nil || deletedApp.Name == "" || deletedApp.Namespace == "" {
+		return nil
+	}
+
+	var apps mortisev1alpha1.AppList
+	if err := r.List(ctx, &apps, client.InNamespace(deletedApp.Namespace)); err != nil {
+		return err
+	}
+
+	for i := range apps.Items {
+		consumer := &apps.Items[i]
+		if consumer.Name == deletedApp.Name || !consumer.DeletionTimestamp.IsZero() {
+			continue
+		}
+
+		changed := false
+		for envIdx := range consumer.Spec.Environments {
+			env := &consumer.Spec.Environments[envIdx]
+			if len(env.Bindings) == 0 {
+				continue
+			}
+			filtered := env.Bindings[:0]
+			for _, binding := range env.Bindings {
+				if binding.Ref == deletedApp.Name {
+					changed = true
+					continue
+				}
+				filtered = append(filtered, binding)
+			}
+			env.Bindings = filtered
+		}
+		if !changed {
+			continue
+		}
+
+		key := types.NamespacedName{Name: consumer.Name, Namespace: consumer.Namespace}
+		if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			var fresh mortisev1alpha1.App
+			if err := r.Get(ctx, key, &fresh); err != nil {
+				return err
+			}
+			if !fresh.DeletionTimestamp.IsZero() {
+				return nil
+			}
+
+			updated := false
+			for envIdx := range fresh.Spec.Environments {
+				env := &fresh.Spec.Environments[envIdx]
+				if len(env.Bindings) == 0 {
+					continue
+				}
+				filtered := env.Bindings[:0]
+				for _, binding := range env.Bindings {
+					if binding.Ref == deletedApp.Name {
+						updated = true
+						continue
+					}
+					filtered = append(filtered, binding)
+				}
+				env.Bindings = filtered
+			}
+			if !updated {
+				return nil
+			}
+			return r.Update(ctx, &fresh)
+		}); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 // reconcileGitSource handles the build-from-source path for source.type=git apps
@@ -2267,10 +2344,63 @@ func (r *AppReconciler) reconcileEnvSecret(ctx context.Context, app *mortisev1al
 			})
 		}
 	}
+	if len(env.Bindings) > 0 && len(bindingEnvs) == 0 {
+		if deleted, err := r.deleteBindingOnlyEnvSecret(ctx, envNs, app.Name); err != nil {
+			return fmt.Errorf("delete empty binding-only env secret: %w", err)
+		} else if deleted {
+			return nil
+		}
+	}
 	if len(existing) == 0 && len(toMerge) == 0 && len(bindingEnvs) == 0 {
 		return nil
 	}
 	return store.ReplaceSource(ctx, envNs, app.Name, "binding", bindingEnvs, labels)
+}
+
+func (r *AppReconciler) deleteBindingOnlyEnvSecret(ctx context.Context, envNs, appName string) (bool, error) {
+	secretKey := types.NamespacedName{
+		Name:      envstore.AppEnvSecretName(appName),
+		Namespace: envNs,
+	}
+
+	deleted := false
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var secret corev1.Secret
+		if err := r.Client.Get(ctx, secretKey, &secret); err != nil {
+			if errors.IsNotFound(err) {
+				return nil
+			}
+			return err
+		}
+
+		existing := envstore.SecretToEnvs(&secret)
+		if len(existing) == 0 {
+			return nil
+		}
+		for _, env := range existing {
+			if env.Source != "binding" {
+				return nil
+			}
+		}
+
+		uid := secret.UID
+		resourceVersion := secret.ResourceVersion
+		if err := r.Client.Delete(ctx, &secret, client.Preconditions{
+			UID:             &uid,
+			ResourceVersion: &resourceVersion,
+		}); err != nil {
+			if errors.IsNotFound(err) {
+				return nil
+			}
+			return err
+		}
+		deleted = true
+		return nil
+	})
+	if err != nil {
+		return false, err
+	}
+	return deleted, nil
 }
 
 func (r *AppReconciler) readLastSpecEnv(ctx context.Context, ns, appName string) map[string]string {

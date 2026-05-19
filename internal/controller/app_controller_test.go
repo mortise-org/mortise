@@ -7359,10 +7359,7 @@ var _ = Describe("App Controller — git source", func() {
 			})
 			Expect(err).NotTo(HaveOccurred(), "reconcile should succeed after bound app deleted")
 			envData = readAppEnvSecret(ctx, apiName, envNsProduction)
-			Expect(envData).NotTo(HaveKey("STALE_DB_HOST"), "stale binding vars should be cleared")
-			Expect(envData).NotTo(HaveKey("STALE_DB_PORT"), "stale binding vars should be cleared")
-			Expect(envData).NotTo(HaveKey("STALE_DB_USERNAME"), "stale credential vars should be cleared")
-			Expect(envData).NotTo(HaveKey("STALE_DB_PASSWORD"), "stale credential vars should be cleared")
+			Expect(envData).To(BeNil(), "empty app-env Secret should be removed after last binding disappears")
 		})
 
 		It("preserves valid bindings when one of multiple bound apps is deleted", func() {
@@ -7453,6 +7450,77 @@ var _ = Describe("App Controller — git source", func() {
 			Expect(envData).NotTo(HaveKey("SURV_DB_HOST"), "deleted binding vars should be cleared")
 			Expect(envData).NotTo(HaveKey("SURV_DB_PORT"), "deleted binding vars should be cleared")
 			Expect(envData).NotTo(HaveKey("SURV_DB_PASSWORD"), "deleted credential vars should be cleared")
+		})
+
+		It("prunes dangling binding refs from consumers when a bound app is deleted", func() {
+			dbName := "prune-db"
+			cacheName := "prune-cache"
+			apiName := "prune-api"
+
+			dbApp := &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{Name: dbName, Namespace: namespace},
+				Spec: mortisev1alpha1.AppSpec{
+					Source:  mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: "postgres:16"},
+					Network: mortisev1alpha1.NetworkConfig{Public: false},
+					Environments: []mortisev1alpha1.Environment{{
+						Name:     "production",
+						Replicas: ptr.To[int32](1),
+					}},
+				},
+			}
+			cacheApp := &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{Name: cacheName, Namespace: namespace},
+				Spec: mortisev1alpha1.AppSpec{
+					Source:  mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: "redis:7"},
+					Network: mortisev1alpha1.NetworkConfig{Public: false},
+					Environments: []mortisev1alpha1.Environment{{
+						Name:     "production",
+						Replicas: ptr.To[int32](1),
+					}},
+				},
+			}
+			consumer := &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{Name: apiName, Namespace: namespace},
+				Spec: mortisev1alpha1.AppSpec{
+					Source:  mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: testImageNginx},
+					Network: mortisev1alpha1.NetworkConfig{Public: false},
+					Environments: []mortisev1alpha1.Environment{{
+						Name:     "production",
+						Replicas: ptr.To[int32](1),
+						Bindings: []mortisev1alpha1.Binding{
+							{Ref: dbName},
+							{Ref: cacheName},
+						},
+					}},
+				},
+			}
+
+			Expect(k8sClient.Create(ctx, dbApp)).To(Succeed())
+			Expect(k8sClient.Create(ctx, cacheApp)).To(Succeed())
+			Expect(k8sClient.Create(ctx, consumer)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, cacheApp) }()
+			defer func() { _ = k8sClient.Delete(ctx, consumer) }()
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+
+			// Ensure the provider app has its finalizer before deletion.
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: dbName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Delete(ctx, dbApp)).To(Succeed())
+
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: dbName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var fresh mortisev1alpha1.App
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: apiName, Namespace: namespace}, &fresh)).To(Succeed())
+			Expect(fresh.Spec.Environments).To(HaveLen(1))
+			Expect(fresh.Spec.Environments[0].Bindings).To(HaveLen(1))
+			Expect(fresh.Spec.Environments[0].Bindings[0].Ref).To(Equal(cacheName))
 		})
 
 		It("skips binding when bound app is disabled in the target env", func() {
