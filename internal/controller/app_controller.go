@@ -622,33 +622,36 @@ func (r *AppReconciler) reconcileEnvBuild(ctx context.Context, app *mortisev1alp
 	// Short-circuit: skip rebuild if we already built this revision for this env
 	// with the same effective build inputs.
 	es := envStatusFor(app, envName)
-	if currentRunName := currentBuildRunNameForEnv(app, envName); currentRunName != "" {
-		var current mortisev1alpha1.BuildRun
-		if err := r.Get(ctx, types.NamespacedName{Namespace: app.Namespace, Name: currentRunName}, &current); err != nil {
-			if !errors.IsNotFound(err) {
-				return "", false, false, false, err
-			}
-		} else if buildRunMatchesAppSpec(&current, app, envName, desiredRunSpec) {
-			projectAppBuildRunStatus(app, envName, &current)
-			switch current.Status.Phase {
-			case mortisev1alpha1.BuildRunPhaseSucceeded:
-				r.applyEnvBuildSuccess(ctx, app, projectionEnvOrder, envName, revision, current.Status.Image, current.Status.Digest, current.Status.DetectedPort)
-				return current.Status.Image, false, true, false, nil
-			case mortisev1alpha1.BuildRunPhaseFailed:
-				if err := r.setBuildFailureCondition(ctx, app, firstNonEmpty(current.Status.FailureReason, "BuildFailed"), current.Status.FailureMessage); err != nil {
+	if !hasPendingRebuildRequest(app) {
+		currentRunName := currentBuildRunNameForEnv(app, envName)
+		if currentRunName != "" {
+			var current mortisev1alpha1.BuildRun
+			if err := r.Get(ctx, types.NamespacedName{Namespace: app.Namespace, Name: currentRunName}, &current); err != nil {
+				if !errors.IsNotFound(err) {
 					return "", false, false, false, err
 				}
-				return "", false, true, false, nil
-			default:
-				app.Status.Phase = mortisev1alpha1.AppPhaseBuilding
-				meta.SetStatusCondition(&app.Status.Conditions, metav1.Condition{
-					Type:               "BuildStarted",
-					Status:             metav1.ConditionTrue,
-					Reason:             "BuildInProgress",
-					Message:            fmt.Sprintf("building revision %s for %s", revision, envName),
-					LastTransitionTime: metav1.NewTime(r.clock().Now()),
-				})
-				return "", true, true, false, nil
+			} else if buildRunMatchesAppSpec(&current, app, envName, desiredRunSpec) {
+				projectAppBuildRunStatus(app, envName, &current)
+				switch current.Status.Phase {
+				case mortisev1alpha1.BuildRunPhaseSucceeded:
+					r.applyEnvBuildSuccess(ctx, app, projectionEnvOrder, envName, revision, current.Status.Image, current.Status.Digest, current.Status.DetectedPort)
+					return current.Status.Image, false, true, false, nil
+				case mortisev1alpha1.BuildRunPhaseFailed:
+					if err := r.setBuildFailureCondition(ctx, app, firstNonEmpty(current.Status.FailureReason, "BuildFailed"), current.Status.FailureMessage); err != nil {
+						return "", false, false, false, err
+					}
+					return "", false, true, false, nil
+				default:
+					app.Status.Phase = mortisev1alpha1.AppPhaseBuilding
+					meta.SetStatusCondition(&app.Status.Conditions, metav1.Condition{
+						Type:               "BuildStarted",
+						Status:             metav1.ConditionTrue,
+						Reason:             "BuildInProgress",
+						Message:            fmt.Sprintf("building revision %s for %s", revision, envName),
+						LastTransitionTime: metav1.NewTime(r.clock().Now()),
+					})
+					return "", true, true, false, nil
+				}
 			}
 		}
 	}
