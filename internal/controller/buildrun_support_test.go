@@ -77,6 +77,68 @@ func TestEnsureAppBuildRunCreatesAndClearsRebuildMarkers(t *testing.T) {
 	}
 }
 
+func TestEnsureAppBuildRunDoesNotReuseAnotherEnvsCurrentRun(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := mortisev1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add scheme: %v", err)
+	}
+
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "demo",
+			Namespace: "pj-default-project",
+			Annotations: map[string]string{
+				"mortise.dev/git-token-owner": "owner@example.com",
+			},
+		},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{
+				Type:        mortisev1alpha1.SourceTypeGit,
+				Repo:        "https://example.com/repo.git",
+				Branch:      "main",
+				ProviderRef: "github",
+			},
+		},
+		Status: mortisev1alpha1.AppStatus{
+			CurrentBuildRunName: "production-run",
+			Environments: []mortisev1alpha1.EnvironmentStatus{
+				{
+					Name: "production",
+					CurrentBuildRunRef: &mortisev1alpha1.BuildRunReference{
+						Name:  "production-run",
+						Phase: mortisev1alpha1.BuildRunPhaseRunning,
+					},
+				},
+			},
+		},
+	}
+
+	productionRun := &mortisev1alpha1.BuildRun{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "production-run",
+			Namespace: app.Namespace,
+		},
+		Spec: appBuildRunSpec(app, "production", "main", "abc1234567890", "registry/push:prod", "registry/pull:prod"),
+		Status: mortisev1alpha1.BuildRunStatus{
+			Phase: mortisev1alpha1.BuildRunPhaseRunning,
+		},
+	}
+
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(app, productionRun).Build()
+	r := &AppReconciler{Client: c, Scheme: scheme}
+
+	run, err := r.ensureAppBuildRun(context.Background(), app, "staging", "main", "abc1234567890", "registry/push:staging", "registry/pull:staging")
+	if err != nil {
+		t.Fatalf("ensure buildrun: %v", err)
+	}
+	if run.Name == productionRun.Name {
+		t.Fatalf("expected staging buildrun not to reuse production run %q", run.Name)
+	}
+	if run.Spec.Environment != "staging" {
+		t.Fatalf("expected staging buildrun, got %q", run.Spec.Environment)
+	}
+}
+
 func TestParseImageRefSplitsRegistryPathAndTag(t *testing.T) {
 	ref := parseImageRef("registry.example.com/team/app:sha-prod")
 	if ref.Registry != "registry.example.com" {
@@ -235,6 +297,13 @@ func TestEnsureAppBuildRunReusesCurrentManualRunAfterMarkersClear(t *testing.T) 
 		},
 		Status: mortisev1alpha1.AppStatus{
 			CurrentBuildRunName: "manual-run",
+			Environments: []mortisev1alpha1.EnvironmentStatus{{
+				Name: "production",
+				CurrentBuildRunRef: &mortisev1alpha1.BuildRunReference{
+					Name:  "manual-run",
+					Phase: mortisev1alpha1.BuildRunPhaseRunning,
+				},
+			}},
 		},
 		Spec: mortisev1alpha1.AppSpec{
 			Source: mortisev1alpha1.AppSource{
@@ -296,6 +365,13 @@ func TestEnsureAppBuildRunReusesCurrentTerminalRunBeforeStatusProjection(t *test
 		},
 		Status: mortisev1alpha1.AppStatus{
 			CurrentBuildRunName: "manual-run",
+			Environments: []mortisev1alpha1.EnvironmentStatus{{
+				Name: "production",
+				CurrentBuildRunRef: &mortisev1alpha1.BuildRunReference{
+					Name:  "manual-run",
+					Phase: mortisev1alpha1.BuildRunPhaseSucceeded,
+				},
+			}},
 		},
 		Spec: mortisev1alpha1.AppSpec{
 			Source: mortisev1alpha1.AppSource{
@@ -358,6 +434,13 @@ func TestEnsureAppBuildRunDoesNotReuseCurrentRunWhenInputHashChanges(t *testing.
 		},
 		Status: mortisev1alpha1.AppStatus{
 			CurrentBuildRunName: "current-run",
+			Environments: []mortisev1alpha1.EnvironmentStatus{{
+				Name: "production",
+				CurrentBuildRunRef: &mortisev1alpha1.BuildRunReference{
+					Name:  "current-run",
+					Phase: mortisev1alpha1.BuildRunPhaseRunning,
+				},
+			}},
 		},
 		Spec: mortisev1alpha1.AppSpec{
 			Source: mortisev1alpha1.AppSource{
@@ -427,6 +510,10 @@ func TestReconcileEnvBuildProjectsCurrentTerminalRunBeforeRevisionShortCircuit(t
 					Name:           "production",
 					LastBuiltSHA:   "same-sha",
 					LastBuiltImage: "registry.example.com/demo:old",
+					CurrentBuildRunRef: &mortisev1alpha1.BuildRunReference{
+						Name:  "manual-run",
+						Phase: mortisev1alpha1.BuildRunPhaseSucceeded,
+					},
 				},
 			},
 		},
@@ -456,7 +543,7 @@ func TestReconcileEnvBuildProjectsCurrentTerminalRunBeforeRevisionShortCircuit(t
 		RegistryBackend: &fakeRegistryBackend{},
 	}
 
-	image, requeue, statusDirty, _, err := r.reconcileEnvBuild(context.Background(), app, "production", "main", "same-sha")
+	image, requeue, statusDirty, _, err := r.reconcileEnvBuild(context.Background(), app, []string{"production"}, "production", "main", "same-sha")
 	if err != nil {
 		t.Fatalf("reconcileEnvBuild: %v", err)
 	}
@@ -477,6 +564,93 @@ func TestReconcileEnvBuildProjectsCurrentTerminalRunBeforeRevisionShortCircuit(t
 	}
 	if es := envStatusFor(app, "production"); es == nil || es.LastBuiltImage != "registry.example.com/demo:new" {
 		t.Fatalf("expected env status updated from manual run, got %+v", es)
+	}
+}
+
+func TestReconcileEnvBuildSkipsTerminalCurrentRunWhenManualRebuildRequested(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := mortisev1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add scheme: %v", err)
+	}
+
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "demo",
+			Namespace: "pj-default-project",
+			Annotations: map[string]string{
+				"mortise.dev/revision":              "same-sha",
+				rebuildRequestedAtAnnotation:        "req-1",
+				rebuildNoCacheRequestedAtAnnotation: "req-1",
+				"mortise.dev/git-token-owner":       "owner@example.com",
+				"mortise.dev/no-cache-build":        "true",
+			},
+		},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{
+				Type:        mortisev1alpha1.SourceTypeGit,
+				Repo:        "https://example.com/repo.git",
+				Branch:      "main",
+				ProviderRef: "github",
+			},
+		},
+		Status: mortisev1alpha1.AppStatus{
+			CurrentBuildRunName: "manual-run",
+			Environments: []mortisev1alpha1.EnvironmentStatus{{
+				Name:           "production",
+				LastBuiltSHA:   "same-sha",
+				LastBuiltImage: "registry.example.com/demo:old",
+				CurrentBuildRunRef: &mortisev1alpha1.BuildRunReference{
+					Name:  "manual-run",
+					Phase: mortisev1alpha1.BuildRunPhaseSucceeded,
+				},
+				LastSuccessfulBuildRunRef: &mortisev1alpha1.BuildRunReference{
+					Name:  "manual-run",
+					Phase: mortisev1alpha1.BuildRunPhaseSucceeded,
+				},
+			}},
+		},
+	}
+	previousRun := &mortisev1alpha1.BuildRun{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "manual-run",
+			Namespace: app.Namespace,
+		},
+		Spec: appBuildRunSpec(&mortisev1alpha1.App{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:        app.Name,
+				Namespace:   app.Namespace,
+				Annotations: map[string]string{"mortise.dev/revision": "same-sha", "mortise.dev/git-token-owner": "owner@example.com"},
+			},
+			Spec: app.Spec,
+		}, "production", "main", "same-sha", "registry.example.com/mortise/demo:same-sh-production", "registry.example.com/mortise/demo:same-sh-production"),
+		Status: mortisev1alpha1.BuildRunStatus{
+			Phase: mortisev1alpha1.BuildRunPhaseSucceeded,
+			Image: "registry.example.com/demo:old",
+		},
+	}
+
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(app, previousRun).Build()
+	r := &AppReconciler{
+		Client:          c,
+		Scheme:          scheme,
+		RegistryBackend: &fakeRegistryBackend{},
+	}
+
+	image, requeue, statusDirty, _, err := r.reconcileEnvBuild(context.Background(), app, []string{"production"}, "production", "main", "same-sha")
+	if err != nil {
+		t.Fatalf("reconcileEnvBuild: %v", err)
+	}
+	if image != "" {
+		t.Fatalf("expected manual rebuild to create a fresh buildrun, got image %q", image)
+	}
+	if !requeue {
+		t.Fatal("expected manual rebuild to requeue on fresh buildrun")
+	}
+	if !statusDirty {
+		t.Fatal("expected manual rebuild to dirty status")
+	}
+	if app.Status.CurrentBuildRunName == "manual-run" {
+		t.Fatal("expected manual rebuild to replace the previous terminal run")
 	}
 }
 
@@ -502,6 +676,13 @@ func TestReconcileEnvBuildProjectsFailedCurrentRunIntoStatus(t *testing.T) {
 		},
 		Status: mortisev1alpha1.AppStatus{
 			CurrentBuildRunName: "manual-run",
+			Environments: []mortisev1alpha1.EnvironmentStatus{{
+				Name: "pr-6",
+				CurrentBuildRunRef: &mortisev1alpha1.BuildRunReference{
+					Name:  "manual-run",
+					Phase: mortisev1alpha1.BuildRunPhaseFailed,
+				},
+			}},
 		},
 	}
 	run := &mortisev1alpha1.BuildRun{
@@ -524,7 +705,7 @@ func TestReconcileEnvBuildProjectsFailedCurrentRunIntoStatus(t *testing.T) {
 		RegistryBackend: &fakeRegistryBackend{},
 	}
 
-	image, requeue, statusDirty, _, err := r.reconcileEnvBuild(context.Background(), app, "pr-6", "feature/preview-fail", "same-sha")
+	image, requeue, statusDirty, _, err := r.reconcileEnvBuild(context.Background(), app, []string{"pr-6"}, "pr-6", "feature/preview-fail", "same-sha")
 	if err != nil {
 		t.Fatalf("reconcileEnvBuild: %v", err)
 	}
@@ -544,6 +725,82 @@ func TestReconcileEnvBuildProjectsFailedCurrentRunIntoStatus(t *testing.T) {
 	cond := meta.FindStatusCondition(app.Status.Conditions, "BuildSucceeded")
 	if cond == nil || cond.Status != metav1.ConditionFalse {
 		t.Fatalf("expected app build failure condition to be set, got %+v", cond)
+	}
+}
+
+func TestReconcileEnvBuildDoesNotReuseAnotherEnvsCurrentRun(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := mortisev1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add scheme: %v", err)
+	}
+
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "demo",
+			Namespace: "pj-default-project",
+			Annotations: map[string]string{
+				"mortise.dev/revision":        "same-sha",
+				"mortise.dev/git-token-owner": "owner@example.com",
+			},
+		},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{
+				Type:        mortisev1alpha1.SourceTypeGit,
+				Repo:        "https://example.com/repo.git",
+				Branch:      "main",
+				ProviderRef: "github",
+			},
+		},
+		Status: mortisev1alpha1.AppStatus{
+			CurrentBuildRunName: "production-run",
+			Environments: []mortisev1alpha1.EnvironmentStatus{
+				{
+					Name: "production",
+					CurrentBuildRunRef: &mortisev1alpha1.BuildRunReference{
+						Name:  "production-run",
+						Phase: mortisev1alpha1.BuildRunPhaseRunning,
+					},
+				},
+			},
+		},
+	}
+	productionRun := &mortisev1alpha1.BuildRun{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "production-run",
+			Namespace: app.Namespace,
+		},
+		Spec: appBuildRunSpec(app, "production", "main", "same-sha", "registry.example.com/mortise/demo:same-sh-production", "registry.example.com/mortise/demo:same-sh-production"),
+		Status: mortisev1alpha1.BuildRunStatus{
+			Phase: mortisev1alpha1.BuildRunPhaseRunning,
+		},
+	}
+
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(app, productionRun).Build()
+	r := &AppReconciler{
+		Client:          c,
+		Scheme:          scheme,
+		RegistryBackend: &fakeRegistryBackend{},
+	}
+
+	image, requeue, statusDirty, _, err := r.reconcileEnvBuild(context.Background(), app, []string{"production", "staging"}, "staging", "main", "same-sha")
+	if err != nil {
+		t.Fatalf("reconcileEnvBuild: %v", err)
+	}
+	if image != "" {
+		t.Fatalf("expected staging build to stay in flight, got %q", image)
+	}
+	if !requeue {
+		t.Fatal("expected staging buildrun creation to requeue")
+	}
+	if !statusDirty {
+		t.Fatal("expected status dirty after staging buildrun creation")
+	}
+	if app.Status.CurrentBuildRunName == "production-run" {
+		t.Fatal("expected staging buildrun to replace app-level current name during projection")
+	}
+	stagingStatus := envStatusFor(app, "staging")
+	if stagingStatus == nil || stagingStatus.CurrentBuildRunRef == nil || stagingStatus.CurrentBuildRunRef.Name == "production-run" {
+		t.Fatalf("expected staging env to get its own buildrun ref, got %+v", stagingStatus)
 	}
 }
 
@@ -607,7 +864,7 @@ func TestReconcileEnvBuildDoesNotShortCircuitLastBuiltSHAWhenInputHashChanges(t 
 		RegistryBackend: &fakeRegistryBackend{},
 	}
 
-	image, requeue, statusDirty, _, err := r.reconcileEnvBuild(context.Background(), app, "production", "main", "same-sha")
+	image, requeue, statusDirty, _, err := r.reconcileEnvBuild(context.Background(), app, []string{"production"}, "production", "main", "same-sha")
 	if err != nil {
 		t.Fatalf("reconcileEnvBuild: %v", err)
 	}
@@ -665,6 +922,43 @@ func TestProjectAppBuildRunStatusProjectsRefs(t *testing.T) {
 	}
 	if es.LastSuccessfulBuildRunRef == nil || es.LastSuccessfulBuildRunRef.Name != "buildrun-1" {
 		t.Fatalf("expected last successful buildrun ref, got %+v", es.LastSuccessfulBuildRunRef)
+	}
+}
+
+func TestApplyEnvBuildSuccessDoesNotOverwriteProjectedMetadataWithLaterEnv(t *testing.T) {
+	app := &mortisev1alpha1.App{
+		Status: mortisev1alpha1.AppStatus{
+			Environments: []mortisev1alpha1.EnvironmentStatus{
+				{
+					Name:           "production",
+					LastBuiltSHA:   "prod-sha",
+					LastBuiltImage: "registry.example.com/demo:prod",
+				},
+				{
+					Name: "preview",
+				},
+			},
+			LastBuiltSHA:   "prod-sha",
+			LastBuiltImage: "registry.example.com/demo:prod",
+			DetectedPort:   8081,
+		},
+	}
+
+	r := &AppReconciler{}
+	r.applyEnvBuildSuccess(context.Background(), app, []string{"production", "preview"}, "preview", "preview-sha", "registry.example.com/demo:preview", "sha256:preview", 3000)
+
+	if app.Status.LastBuiltSHA != "prod-sha" {
+		t.Fatalf("expected projected SHA to stay on production, got %q", app.Status.LastBuiltSHA)
+	}
+	if app.Status.LastBuiltImage != "registry.example.com/demo:prod" {
+		t.Fatalf("expected projected image to stay on production, got %q", app.Status.LastBuiltImage)
+	}
+	if app.Status.DetectedPort != 8081 {
+		t.Fatalf("expected projected port to stay on production, got %d", app.Status.DetectedPort)
+	}
+	previewStatus := envStatusFor(app, "preview")
+	if previewStatus == nil || previewStatus.LastBuiltImage != "registry.example.com/demo:preview" {
+		t.Fatalf("expected preview env build recorded, got %+v", previewStatus)
 	}
 }
 

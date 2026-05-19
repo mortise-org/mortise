@@ -367,6 +367,104 @@ func TestUpdateStatusRecomputesTopLevelBuildRunNamesFromTerminalEnvRef(t *testin
 	}
 }
 
+func TestUpdateStatusProjectsTopLevelBuildMetadataFromResolvedEnvOrder(t *testing.T) {
+	ctx := context.Background()
+	scheme := newAppStatusTestScheme(t)
+
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "demo",
+			Namespace: "pj-default-project",
+		},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{
+				Type:  mortisev1alpha1.SourceTypeImage,
+				Image: "nginx:1.27",
+			},
+			Environments: []mortisev1alpha1.Environment{{Name: "preview"}, {Name: "production"}},
+		},
+		Status: mortisev1alpha1.AppStatus{
+			LastBuiltSHA:   "poisoned-sha",
+			LastBuiltImage: "registry.example/demo:preview",
+			DetectedPort:   3000,
+			Environments: []mortisev1alpha1.EnvironmentStatus{
+				{
+					Name:           "preview",
+					LastBuiltSHA:   "preview-sha",
+					LastBuiltImage: "registry.example/demo:preview",
+					LastSuccessfulBuildRunRef: &mortisev1alpha1.BuildRunReference{
+						Name:  "preview-run",
+						Phase: mortisev1alpha1.BuildRunPhaseSucceeded,
+					},
+				},
+				{
+					Name:           "production",
+					LastBuiltSHA:   "prod-sha",
+					LastBuiltImage: "registry.example/demo:prod",
+					LastSuccessfulBuildRunRef: &mortisev1alpha1.BuildRunReference{
+						Name:  "prod-run",
+						Phase: mortisev1alpha1.BuildRunPhaseSucceeded,
+					},
+				},
+			},
+		},
+	}
+	productionRun := &mortisev1alpha1.BuildRun{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "prod-run",
+			Namespace: app.Namespace,
+		},
+		Status: mortisev1alpha1.BuildRunStatus{
+			Phase:        mortisev1alpha1.BuildRunPhaseSucceeded,
+			DetectedPort: 8081,
+		},
+	}
+	previewRun := &mortisev1alpha1.BuildRun{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "preview-run",
+			Namespace: app.Namespace,
+		},
+		Status: mortisev1alpha1.BuildRunStatus{
+			Phase:        mortisev1alpha1.BuildRunPhaseSucceeded,
+			DetectedPort: 3000,
+		},
+	}
+	productionDep := newReadyDeploymentForStatusTest(t, app, "production")
+	previewDep := newReadyDeploymentForStatusTest(t, app, "preview")
+
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(app, productionDep, previewDep).
+		WithObjects(app, productionRun, previewRun, productionDep, previewDep).
+		Build()
+	r := &AppReconciler{Client: c, Scheme: scheme}
+	if err := c.Status().Update(ctx, productionDep); err != nil {
+		t.Fatalf("seed production deployment status: %v", err)
+	}
+	if err := c.Status().Update(ctx, previewDep); err != nil {
+		t.Fatalf("seed preview deployment status: %v", err)
+	}
+
+	resolvedEnvs := []mortisev1alpha1.Environment{{Name: "production"}, {Name: "preview"}}
+	if err := r.updateStatus(ctx, app, resolvedEnvs, nil); err != nil {
+		t.Fatalf("update status: %v", err)
+	}
+
+	var fresh mortisev1alpha1.App
+	if err := c.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: app.Namespace}, &fresh); err != nil {
+		t.Fatalf("get app: %v", err)
+	}
+	if fresh.Status.LastBuiltSHA != "prod-sha" {
+		t.Fatalf("expected projected SHA from production, got %q", fresh.Status.LastBuiltSHA)
+	}
+	if fresh.Status.LastBuiltImage != "registry.example/demo:prod" {
+		t.Fatalf("expected projected image from production, got %q", fresh.Status.LastBuiltImage)
+	}
+	if fresh.Status.DetectedPort != 8081 {
+		t.Fatalf("expected projected detected port from production, got %d", fresh.Status.DetectedPort)
+	}
+}
+
 func TestUpdateStatusMarksDegradedWhenLatestBuildFailsButPreviousImageStillServes(t *testing.T) {
 	ctx := context.Background()
 	scheme := runtime.NewScheme()
@@ -1166,7 +1264,7 @@ func TestShouldRefreshFailedAppStatusForRemovedPreviewBuildFailure(t *testing.T)
 	}
 }
 
-func TestShouldRefreshFailedAppStatusSkipsNonPreviewBuildFailure(t *testing.T) {
+func TestShouldRefreshFailedAppStatusForSelectedEnvBuildFailure(t *testing.T) {
 	app := &mortisev1alpha1.App{
 		Status: mortisev1alpha1.AppStatus{
 			Phase: mortisev1alpha1.AppPhaseFailed,
@@ -1197,8 +1295,29 @@ func TestShouldRefreshFailedAppStatusSkipsNonPreviewBuildFailure(t *testing.T) {
 	resolvedEnvs := []mortisev1alpha1.Environment{{Name: "production"}, {Name: "pr-6"}}
 	previewEnvNames := map[string]struct{}{"pr-6": {}}
 
-	if shouldRefreshFailedAppStatus(app, resolvedEnvs, previewEnvNames) {
-		t.Fatal("expected failed app with non-preview build failure to keep failed latch")
+	if !shouldRefreshFailedAppStatus(app, resolvedEnvs, previewEnvNames) {
+		t.Fatal("expected failed app with env-backed build failure to refresh status")
+	}
+}
+
+func TestShouldRefreshFailedAppStatusSkipsAppGlobalBuildFailure(t *testing.T) {
+	app := &mortisev1alpha1.App{
+		Status: mortisev1alpha1.AppStatus{
+			Phase: mortisev1alpha1.AppPhaseFailed,
+			Conditions: []metav1.Condition{{
+				Type:   "BuildSucceeded",
+				Status: metav1.ConditionFalse,
+				Reason: "BuildFailed",
+			}},
+			Environments: []mortisev1alpha1.EnvironmentStatus{
+				{Name: "production"},
+				{Name: "pr-6"},
+			},
+		},
+	}
+
+	if shouldRefreshFailedAppStatus(app, []mortisev1alpha1.Environment{{Name: "production"}, {Name: "pr-6"}}, map[string]struct{}{"pr-6": {}}) {
+		t.Fatal("expected app-global build failure to keep failed latch")
 	}
 }
 

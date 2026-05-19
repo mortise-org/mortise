@@ -219,6 +219,11 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	needsRequeue := false
 	buildStatusDirty := false
 	clearNoCache := false
+	projectionEnvOrder := make([]string, 0, len(resolvedEnvs))
+	for _, env := range resolvedEnvs {
+		projectionEnvOrder = append(projectionEnvOrder, env.Name)
+	}
+
 	for i := range resolvedEnvs {
 		env := &resolvedEnvs[i]
 		envNs, err := appEnvNs(&app, env.Name)
@@ -246,7 +251,7 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		var image string
 		if app.Spec.Source.Type == mortisev1alpha1.SourceTypeGit && r.BuildClient != nil {
 			buildIdentity := resolveEnvBuildIdentity(&app, *env, previewBuildIdentities)
-			envImage, requeue, dirty, shouldClearNoCache, err := r.reconcileEnvBuild(ctx, &app, env.Name, buildIdentity.branch, buildIdentity.revision)
+			envImage, requeue, dirty, shouldClearNoCache, err := r.reconcileEnvBuild(ctx, &app, projectionEnvOrder, env.Name, buildIdentity.branch, buildIdentity.revision)
 			if err != nil {
 				return ctrl.Result{}, fmt.Errorf("reconcile buildrun for env %s: %w", env.Name, err)
 			}
@@ -589,7 +594,7 @@ func resolveEnvBuildIdentity(app *mortisev1alpha1.App, env mortisev1alpha1.Envir
 // the image to use for this env's deployment, or "" if a build is still in
 // flight (caller should skip deployment and requeue). statusDirty is true when
 // applyEnvBuildSuccess mutated app.Status and the caller must flush.
-func (r *AppReconciler) reconcileEnvBuild(ctx context.Context, app *mortisev1alpha1.App, envName, branch, revision string) (image string, requeue bool, statusDirty bool, shouldClearNoCache bool, err error) {
+func (r *AppReconciler) reconcileEnvBuild(ctx context.Context, app *mortisev1alpha1.App, projectionEnvOrder []string, envName, branch, revision string) (image string, requeue bool, statusDirty bool, shouldClearNoCache bool, err error) {
 	log := logf.FromContext(ctx)
 
 	branch = firstNonEmpty(branch, app.Spec.Source.Branch)
@@ -617,33 +622,36 @@ func (r *AppReconciler) reconcileEnvBuild(ctx context.Context, app *mortisev1alp
 	// Short-circuit: skip rebuild if we already built this revision for this env
 	// with the same effective build inputs.
 	es := envStatusFor(app, envName)
-	if app.Status.CurrentBuildRunName != "" {
-		var current mortisev1alpha1.BuildRun
-		if err := r.Get(ctx, types.NamespacedName{Namespace: app.Namespace, Name: app.Status.CurrentBuildRunName}, &current); err != nil {
-			if !errors.IsNotFound(err) {
-				return "", false, false, false, err
-			}
-		} else if buildRunMatchesAppSpec(&current, app, envName, desiredRunSpec) {
-			projectAppBuildRunStatus(app, envName, &current)
-			switch current.Status.Phase {
-			case mortisev1alpha1.BuildRunPhaseSucceeded:
-				r.applyEnvBuildSuccess(ctx, app, envName, revision, current.Status.Image, current.Status.Digest, current.Status.DetectedPort)
-				return current.Status.Image, false, true, false, nil
-			case mortisev1alpha1.BuildRunPhaseFailed:
-				if err := r.setBuildFailureCondition(ctx, app, firstNonEmpty(current.Status.FailureReason, "BuildFailed"), current.Status.FailureMessage); err != nil {
+	if !hasPendingRebuildRequest(app) {
+		currentRunName := currentBuildRunNameForEnv(app, envName)
+		if currentRunName != "" {
+			var current mortisev1alpha1.BuildRun
+			if err := r.Get(ctx, types.NamespacedName{Namespace: app.Namespace, Name: currentRunName}, &current); err != nil {
+				if !errors.IsNotFound(err) {
 					return "", false, false, false, err
 				}
-				return "", false, true, false, nil
-			default:
-				app.Status.Phase = mortisev1alpha1.AppPhaseBuilding
-				meta.SetStatusCondition(&app.Status.Conditions, metav1.Condition{
-					Type:               "BuildStarted",
-					Status:             metav1.ConditionTrue,
-					Reason:             "BuildInProgress",
-					Message:            fmt.Sprintf("building revision %s for %s", revision, envName),
-					LastTransitionTime: metav1.NewTime(r.clock().Now()),
-				})
-				return "", true, true, false, nil
+			} else if buildRunMatchesAppSpec(&current, app, envName, desiredRunSpec) {
+				projectAppBuildRunStatus(app, envName, &current)
+				switch current.Status.Phase {
+				case mortisev1alpha1.BuildRunPhaseSucceeded:
+					r.applyEnvBuildSuccess(ctx, app, projectionEnvOrder, envName, revision, current.Status.Image, current.Status.Digest, current.Status.DetectedPort)
+					return current.Status.Image, false, true, false, nil
+				case mortisev1alpha1.BuildRunPhaseFailed:
+					if err := r.setBuildFailureCondition(ctx, app, firstNonEmpty(current.Status.FailureReason, "BuildFailed"), current.Status.FailureMessage); err != nil {
+						return "", false, false, false, err
+					}
+					return "", false, true, false, nil
+				default:
+					app.Status.Phase = mortisev1alpha1.AppPhaseBuilding
+					meta.SetStatusCondition(&app.Status.Conditions, metav1.Condition{
+						Type:               "BuildStarted",
+						Status:             metav1.ConditionTrue,
+						Reason:             "BuildInProgress",
+						Message:            fmt.Sprintf("building revision %s for %s", revision, envName),
+						LastTransitionTime: metav1.NewTime(r.clock().Now()),
+					})
+					return "", true, true, false, nil
+				}
 			}
 		}
 	}
@@ -667,7 +675,7 @@ func (r *AppReconciler) reconcileEnvBuild(ctx context.Context, app *mortisev1alp
 	projectAppBuildRunStatus(app, envName, run)
 	switch run.Status.Phase {
 	case mortisev1alpha1.BuildRunPhaseSucceeded:
-		r.applyEnvBuildSuccess(ctx, app, envName, revision, run.Status.Image, run.Status.Digest, run.Status.DetectedPort)
+		r.applyEnvBuildSuccess(ctx, app, projectionEnvOrder, envName, revision, run.Status.Image, run.Status.Digest, run.Status.DetectedPort)
 		return run.Status.Image, false, true, false, nil
 	case mortisev1alpha1.BuildRunPhaseFailed:
 		if err := r.setBuildFailureCondition(ctx, app, firstNonEmpty(run.Status.FailureReason, "BuildFailed"), run.Status.FailureMessage); err != nil {
@@ -688,7 +696,7 @@ func (r *AppReconciler) reconcileEnvBuild(ctx context.Context, app *mortisev1alp
 }
 
 // applyEnvBuildSuccess records the successful build for a specific environment.
-func (r *AppReconciler) applyEnvBuildSuccess(_ context.Context, app *mortisev1alpha1.App, envName, revision, image, digest string, detectedPort int32) {
+func (r *AppReconciler) applyEnvBuildSuccess(_ context.Context, app *mortisev1alpha1.App, projectionEnvOrder []string, envName, revision, image, digest string, detectedPort int32) {
 	// Update per-env status.
 	found := false
 	for i := range app.Status.Environments {
@@ -707,10 +715,11 @@ func (r *AppReconciler) applyEnvBuildSuccess(_ context.Context, app *mortisev1al
 		})
 	}
 
-	// Keep app-level fields updated for backward compat.
-	app.Status.LastBuiltSHA = revision
-	app.Status.LastBuiltImage = image
-	app.Status.DetectedPort = detectedPort
+	if projectedEnvName(app.Status.Environments, projectionEnvOrder) == envName {
+		app.Status.LastBuiltSHA = revision
+		app.Status.LastBuiltImage = image
+		app.Status.DetectedPort = detectedPort
+	}
 	app.Status.Phase = mortisev1alpha1.AppPhaseDeploying
 	meta.SetStatusCondition(&app.Status.Conditions, metav1.Condition{
 		Type:               "BuildSucceeded",
@@ -852,6 +861,89 @@ func envStatusFor(app *mortisev1alpha1.App, envName string) *mortisev1alpha1.Env
 	return nil
 }
 
+func projectedEnvName(envStatuses []mortisev1alpha1.EnvironmentStatus, projectionEnvOrder []string) string {
+	if len(envStatuses) == 0 {
+		return ""
+	}
+
+	statusByName := make(map[string]mortisev1alpha1.EnvironmentStatus, len(envStatuses))
+	extras := make([]string, 0, len(envStatuses))
+	for _, es := range envStatuses {
+		statusByName[es.Name] = es
+		extras = append(extras, es.Name)
+	}
+
+	seen := make(map[string]struct{}, len(projectionEnvOrder))
+	orderedNames := make([]string, 0, len(projectionEnvOrder)+len(extras))
+	for _, envName := range projectionEnvOrder {
+		if _, ok := statusByName[envName]; !ok {
+			continue
+		}
+		orderedNames = append(orderedNames, envName)
+		seen[envName] = struct{}{}
+	}
+
+	sort.Strings(extras)
+	for _, envName := range extras {
+		if _, ok := seen[envName]; ok {
+			continue
+		}
+		orderedNames = append(orderedNames, envName)
+	}
+
+	for _, envName := range orderedNames {
+		es := statusByName[envName]
+		if es.LastBuiltImage != "" {
+			return envName
+		}
+	}
+	return ""
+}
+
+func projectedBuildRunName(es mortisev1alpha1.EnvironmentStatus) string {
+	if es.CurrentBuildRunRef != nil && es.CurrentBuildRunRef.Phase == mortisev1alpha1.BuildRunPhaseSucceeded {
+		return es.CurrentBuildRunRef.Name
+	}
+	if es.LastSuccessfulBuildRunRef != nil {
+		return es.LastSuccessfulBuildRunRef.Name
+	}
+	return ""
+}
+
+func (r *AppReconciler) projectAppBuildMetadata(ctx context.Context, app *mortisev1alpha1.App, projectionEnvOrder []string) error {
+	app.Status.LastBuiltSHA = ""
+	app.Status.LastBuiltImage = ""
+	app.Status.DetectedPort = 0
+
+	envName := projectedEnvName(app.Status.Environments, projectionEnvOrder)
+	if envName == "" {
+		return nil
+	}
+
+	es := envStatusFor(app, envName)
+	if es == nil {
+		return nil
+	}
+
+	app.Status.LastBuiltSHA = es.LastBuiltSHA
+	app.Status.LastBuiltImage = es.LastBuiltImage
+
+	runName := projectedBuildRunName(*es)
+	if runName == "" {
+		return nil
+	}
+
+	var run mortisev1alpha1.BuildRun
+	if err := r.Get(ctx, types.NamespacedName{Namespace: app.Namespace, Name: runName}, &run); err != nil {
+		if errors.IsNotFound(err) {
+			return nil
+		}
+		return err
+	}
+	app.Status.DetectedPort = run.Status.DetectedPort
+	return nil
+}
+
 func envSelectedForBuildFailureAggregation(envName string, aggregationEnvNames map[string]struct{}) bool {
 	if len(aggregationEnvNames) == 0 {
 		return false
@@ -900,7 +992,7 @@ func excludedEnvHasTerminalBuildFailure(envStatuses []mortisev1alpha1.Environmen
 	return false
 }
 
-func shouldRefreshFailedAppStatus(app *mortisev1alpha1.App, resolvedEnvs []mortisev1alpha1.Environment, previewEnvNames map[string]struct{}) bool {
+func shouldRefreshFailedAppStatus(app *mortisev1alpha1.App, _ []mortisev1alpha1.Environment, _ map[string]struct{}) bool {
 	if app.Status.Phase != mortisev1alpha1.AppPhaseFailed {
 		return false
 	}
@@ -910,16 +1002,12 @@ func shouldRefreshFailedAppStatus(app *mortisev1alpha1.App, resolvedEnvs []morti
 		return false
 	}
 
-	buildAggregationEnvNames := buildFailureAggregationEnvNames(resolvedEnvs, previewEnvNames)
-	if len(buildAggregationEnvNames) == 0 {
-		return false
+	for _, es := range app.Status.Environments {
+		if es.CurrentBuildRunRef != nil && isTerminalBuildFailurePhase(es.CurrentBuildRunRef.Phase) {
+			return true
+		}
 	}
-
-	if selectedEnvHasTerminalBuildFailure(app.Status.Environments, buildAggregationEnvNames) {
-		return false
-	}
-
-	return excludedEnvHasTerminalBuildFailure(app.Status.Environments, buildAggregationEnvNames)
+	return false
 }
 
 // currentImageForEnv returns the image currently deployed for the given
@@ -2799,6 +2887,7 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 		}
 
 		envStatuses := make([]mortisev1alpha1.EnvironmentStatus, 0, len(resolvedEnvs))
+		projectionEnvOrder := make([]string, 0, len(resolvedEnvs))
 		buildAggregationEnvNames := buildFailureAggregationEnvNames(resolvedEnvs, previewEnvNames)
 
 		isCron := app.Spec.Kind == mortisev1alpha1.AppKindCron
@@ -2808,6 +2897,7 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 		firstCrashMsg := ""
 
 		for _, env := range resolvedEnvs {
+			projectionEnvOrder = append(projectionEnvOrder, env.Name)
 			autoDomain := ""
 			if app.Spec.Network.Public {
 				autoDomain = r.autoDefaultDomain(ctx, app, env.Name)
@@ -2995,6 +3085,9 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 
 		fresh.Status.Phase = phase
 		fresh.Status.Environments = envStatuses
+		if err := r.projectAppBuildMetadata(ctx, &fresh, projectionEnvOrder); err != nil {
+			return err
+		}
 		fresh.Status.CurrentBuildRunName, fresh.Status.LastBuildRunName = aggregateAppBuildRunNames(envStatuses)
 		return r.Status().Update(ctx, &fresh)
 	})
