@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/fake"
@@ -49,7 +51,6 @@ func TestAuthStatusSetupRequired(t *testing.T) {
 	k8sClient := setupEnvtest(t)
 	ctx := context.Background()
 	_ = k8sClient.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "mortise-system"}})
-
 	authProvider := auth.NewNativeAuthProvider(k8sClient)
 	jwtHelper := auth.NewJWTHelper(k8sClient)
 	srv := api.NewServer(k8sClient, fake.NewClientset(), nil, nil, authProvider, jwtHelper, nil, authz.NewNativePolicyEngine(k8sClient))
@@ -106,6 +107,44 @@ func TestSetupCreatesAdmin(t *testing.T) {
 	w = doRequestWithToken(h, http.MethodPost, "/api/auth/setup", body, "")
 	if w.Code != http.StatusConflict {
 		t.Fatalf("expected 409 on second setup, got %d", w.Code)
+	}
+}
+
+func TestSetupRejectsDuplicateUserWithoutLeakingSecretName(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	ctx := context.Background()
+	_ = k8sClient.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "mortise-system"}})
+	_ = k8sClient.Delete(ctx, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "mortise-setup-complete", Namespace: "mortise-system"}})
+
+	authProvider := auth.NewNativeAuthProvider(k8sClient)
+	jwtHelper := auth.NewJWTHelper(k8sClient)
+	if err := authProvider.CreateUser(ctx, "admin@example.com", "initialpass", auth.RoleAdmin); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+
+	srv := api.NewServer(k8sClient, fake.NewClientset(), nil, nil, authProvider, jwtHelper, nil, authz.NewNativePolicyEngine(k8sClient))
+	h := srv.Handler()
+
+	body := map[string]any{"email": "admin@example.com", "password": "initialpass"}
+	w := doRequestWithToken(h, http.MethodPost, "/api/auth/setup", body, "")
+	if w.Code != http.StatusConflict {
+		t.Fatalf("expected 409 on duplicate setup user, got %d: %s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "user-") || strings.Contains(w.Body.String(), "secret") {
+		t.Fatalf("expected sanitized duplicate-user error, got %s", w.Body.String())
+	}
+
+	var resp map[string]string
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp["error"] != "user already exists" {
+		t.Fatalf("expected sanitized duplicate-user error, got %#v", resp)
+	}
+
+	var sentinel corev1.ConfigMap
+	if err := k8sClient.Get(ctx, types.NamespacedName{Name: "mortise-setup-complete", Namespace: "mortise-system"}, &sentinel); !apierrors.IsNotFound(err) {
+		t.Fatalf("expected duplicate setup path to clean up sentinel, got err=%v configmap=%+v", err, sentinel)
 	}
 }
 

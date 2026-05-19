@@ -1140,8 +1140,8 @@ func TestUpdateStatusIgnoresPreviewCrashLoopForTopLevelHealth(t *testing.T) {
 	if err := c.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: app.Namespace}, &fresh); err != nil {
 		t.Fatalf("get app: %v", err)
 	}
-	if fresh.Status.Phase != mortisev1alpha1.AppPhaseDeploying {
-		t.Fatalf("expected preview crash loop to keep top-level phase %q, got %q", mortisev1alpha1.AppPhaseDeploying, fresh.Status.Phase)
+	if fresh.Status.Phase != mortisev1alpha1.AppPhaseReady {
+		t.Fatalf("expected preview crash loop to keep top-level phase %q, got %q", mortisev1alpha1.AppPhaseReady, fresh.Status.Phase)
 	}
 	if cond := meta.FindStatusCondition(fresh.Status.Conditions, "PodHealthy"); cond != nil {
 		t.Fatalf("expected preview crash loop to not poison top-level PodHealthy, got %+v", cond)

@@ -2998,6 +2998,7 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 			} else {
 				es.Phase = mortisev1alpha1.AppPhaseDeploying
 				crashCountsTowardTopLevel := envSelectedForBuildFailureAggregation(env.Name, buildAggregationEnvNames)
+				countsTowardTopLevelReadiness := !excludeFromTopLevelReadiness
 				if !isCron {
 					if crashMsg := r.checkPodCrashLoopInEnv(ctx, app, env.Name, envNs); crashMsg != "" {
 						es.Phase = mortisev1alpha1.AppPhaseCrashLooping
@@ -3008,9 +3009,12 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 						if crashCountsTowardTopLevel && firstCrashMsg == "" {
 							firstCrashMsg = crashMsg
 						}
+						if !crashCountsTowardTopLevel {
+							countsTowardTopLevelReadiness = false
+						}
 					}
 				}
-				if !excludeFromTopLevelReadiness {
+				if countsTowardTopLevelReadiness {
 					anyNotReady = true
 				}
 			}
