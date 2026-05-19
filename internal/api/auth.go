@@ -125,6 +125,10 @@ func (s *Server) Setup(w http.ResponseWriter, r *http.Request) {
 
 	if err := native.CreateUser(r.Context(), req.Email, req.Password, auth.RoleAdmin); err != nil {
 		_ = s.client.Delete(r.Context(), sentinel)
+		if k8serrors.IsAlreadyExists(err) {
+			writeJSON(w, http.StatusConflict, errorResponse{"user already exists"})
+			return
+		}
 		writeJSON(w, http.StatusInternalServerError, errorResponse{err.Error()})
 		return
 	}

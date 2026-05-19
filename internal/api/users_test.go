@@ -2,7 +2,9 @@ package api_test
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 
 	"k8s.io/client-go/kubernetes/fake"
@@ -82,5 +84,30 @@ func TestDeleteUserAllowsDeletingAdminWhenAnotherAdminExists(t *testing.T) {
 	w := doRequestWithToken(h, http.MethodDelete, "/api/admin/users/admin1@example.com", nil, token)
 	if w.Code != http.StatusNoContent {
 		t.Fatalf("expected 204, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestCreateUserRejectsDuplicateWithoutLeakingSecretName(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+
+	w := doRequest(h, http.MethodPost, "/api/admin/users", map[string]any{
+		"email":    "test@example.com",
+		"password": "anotherpass1",
+		"role":     "admin",
+	})
+	if w.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d: %s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "user-") || strings.Contains(w.Body.String(), "secret") {
+		t.Fatalf("expected sanitized duplicate-user error, got %s", w.Body.String())
+	}
+	var resp map[string]string
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp["error"] != "user already exists" {
+		t.Fatalf("expected sanitized duplicate-user error, got %#v", resp)
 	}
 }

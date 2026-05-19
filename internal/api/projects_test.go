@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 
@@ -41,6 +42,11 @@ func TestCreateProjectAsAdmin(t *testing.T) {
 	var project mortisev1alpha1.Project
 	if err := k8sClient.Get(context.Background(), types.NamespacedName{Name: "my-saas"}, &project); err != nil {
 		t.Fatalf("project CRD not found after create: %v", err)
+	}
+
+	var activityCM corev1.ConfigMap
+	if err := k8sClient.Get(context.Background(), types.NamespacedName{Namespace: "pj-my-saas", Name: "activity-my-saas"}, &activityCM); !errors.IsNotFound(err) {
+		t.Fatalf("expected API create to leave project activity ConfigMap to the controller, got err=%v configmap=%+v", err, activityCM)
 	}
 }
 

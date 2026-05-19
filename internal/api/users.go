@@ -7,6 +7,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 
 	"github.com/mortise-org/mortise/internal/auth"
@@ -117,6 +118,10 @@ func (s *Server) CreateUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := native.CreateUser(r.Context(), req.Email, req.Password, auth.Role(req.Role)); err != nil {
+		if apierrors.IsAlreadyExists(err) {
+			writeJSON(w, http.StatusConflict, errorResponse{"user already exists"})
+			return
+		}
 		writeJSON(w, http.StatusInternalServerError, errorResponse{err.Error()})
 		return
 	}
