@@ -2117,7 +2117,7 @@ func (r *AppReconciler) reconcileEnvSecret(ctx context.Context, app *mortisev1al
 		specEnvKeys[ev.Name] = struct{}{}
 	}
 	for _, existingEnv := range existing {
-		if existingEnv.Source != "user" {
+		if existingEnv.Source != "" && existingEnv.Source != "user" {
 			continue
 		}
 		if _, stillInSpec := specEnvKeys[existingEnv.Name]; stillInSpec {

@@ -6820,6 +6820,9 @@ var _ = Describe("App Controller — git source", func() {
 		})
 
 		It("treats removing an environment from spec as non-destructive for existing workloads", func() {
+			withStagingEnv(ctx)
+			defer withoutStagingEnv(ctx)
+
 			appName := "env-removal-contract-guard"
 			app := &mortisev1alpha1.App{
 				ObjectMeta: metav1.ObjectMeta{Name: appName, Namespace: namespace},
@@ -6852,62 +6855,16 @@ var _ = Describe("App Controller — git source", func() {
 				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
 			})
 			Expect(err).NotTo(HaveOccurred())
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
 
 			stagingNs := "pj-default-project-staging"
-			err = k8sClient.Create(ctx, &corev1.Namespace{
-				ObjectMeta: metav1.ObjectMeta{Name: stagingNs},
-			})
-			Expect(err == nil || kerrors.IsAlreadyExists(err)).To(BeTrue())
-			stagingLabels := appLabels(app, "staging")
-			stagingDeployment := &appsv1.Deployment{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      deploymentName(appName),
-					Namespace: stagingNs,
-					Labels:    stagingLabels,
-				},
-				Spec: appsv1.DeploymentSpec{
-					Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": appName}},
-					Template: corev1.PodTemplateSpec{
-						ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": appName}},
-						Spec: corev1.PodSpec{
-							Containers: []corev1.Container{{Name: "app", Image: testImageNginx}},
-						},
-					},
-				},
-			}
-			stagingService := &corev1.Service{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      serviceName(appName),
-					Namespace: stagingNs,
-					Labels:    stagingLabels,
-				},
-				Spec: corev1.ServiceSpec{
-					Selector: map[string]string{"app": appName},
-					Ports:    []corev1.ServicePort{{Port: 80}},
-				},
-			}
-			stagingIngress := &networkingv1.Ingress{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      ingressName(appName),
-					Namespace: stagingNs,
-					Labels:    stagingLabels,
-				},
-				Spec: networkingv1.IngressSpec{
-					Rules: []networkingv1.IngressRule{{Host: "staging-guard.example.com"}},
-				},
-			}
-			stagingSecret := &corev1.Secret{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      envstore.AppEnvSecretName(appName),
-					Namespace: stagingNs,
-					Labels:    stagingLabels,
-				},
-				Data: map[string][]byte{"STAGING_ONLY": []byte("1")},
-			}
-			Expect(k8sClient.Create(ctx, stagingDeployment)).To(Succeed())
-			Expect(k8sClient.Create(ctx, stagingService)).To(Succeed())
-			Expect(k8sClient.Create(ctx, stagingIngress)).To(Succeed())
-			Expect(k8sClient.Create(ctx, stagingSecret)).To(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: deploymentName(appName), Namespace: stagingNs}, &appsv1.Deployment{})).To(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: serviceName(appName), Namespace: stagingNs}, &corev1.Service{})).To(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: ingressName(appName), Namespace: stagingNs}, &networkingv1.Ingress{})).To(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: envstore.AppEnvSecretName(appName), Namespace: stagingNs}, &corev1.Secret{})).To(Succeed())
 
 			var fetchedApp mortisev1alpha1.App
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: appName, Namespace: namespace}, &fetchedApp)).To(Succeed())
