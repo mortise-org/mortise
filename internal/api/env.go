@@ -130,6 +130,17 @@ func (s *Server) PutEnv(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
+	existingSource := make(map[string]string, len(existing))
+	for _, e := range existing {
+		existingSource[e.Name] = e.Source
+	}
+	for _, v := range vars {
+		if src, ok := existingSource[v.Name]; ok && src != "" && src != "user" {
+			writeJSON(w, http.StatusConflict, errorResponse{fmt.Sprintf(
+				"cannot overwrite %q: managed by %s (only user-set vars can be modified)", v.Name, src)})
+			return
+		}
+	}
 
 	// Start with non-user vars from the existing Secret.
 	var merged []envstore.Env

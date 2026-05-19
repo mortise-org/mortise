@@ -444,8 +444,7 @@ func (s *Server) DeleteProjectEnvironment(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	project.Spec.Environments = append(project.Spec.Environments[:idx], project.Spec.Environments[idx+1:]...)
-	if err := s.client.Update(r.Context(), project); err != nil {
+	if err := s.deleteProjectEnvironmentSpec(r.Context(), project.Name, envName); err != nil {
 		if apierrors.IsForbidden(err) {
 			writeJSON(w, http.StatusConflict, errorResponse{err.Error()})
 			return
@@ -530,15 +529,11 @@ func (s *Server) CloneProjectEnvironment(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
-	project.Spec.Environments = append(project.Spec.Environments, mortisev1alpha1.ProjectEnvironment{
-		Name:         req.Name,
-		DisplayOrder: req.DisplayOrder,
-	})
 	if err := s.ensureProjectEnvNamespace(r.Context(), project, req.Name, false); err != nil {
 		writeError(w, r, err)
 		return
 	}
-	if err := s.client.Update(r.Context(), project); err != nil {
+	if err := s.cloneProjectEnvironmentSpec(r.Context(), project.Name, req); err != nil {
 		_ = s.deleteProjectEnvNamespace(r.Context(), project, req.Name)
 		writeError(w, r, err)
 		return
@@ -565,6 +560,40 @@ func (s *Server) CloneProjectEnvironment(w http.ResponseWriter, r *http.Request)
 		Name:         req.Name,
 		DisplayOrder: req.DisplayOrder,
 		Health:       EnvHealthUnknown,
+	})
+}
+
+func (s *Server) deleteProjectEnvironmentSpec(ctx context.Context, projectName, envName string) error {
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var current mortisev1alpha1.Project
+		if err := s.client.Get(ctx, types.NamespacedName{Name: projectName}, &current); err != nil {
+			return err
+		}
+		idx := indexOfEnv(&current, envName)
+		if idx < 0 {
+			return apierrors.NewNotFound(schema.GroupResource{Group: mortisev1alpha1.GroupVersion.Group, Resource: "projects"}, projectName)
+		}
+		current.Spec.Environments = append(current.Spec.Environments[:idx], current.Spec.Environments[idx+1:]...)
+		return s.client.Update(ctx, &current)
+	})
+}
+
+func (s *Server) cloneProjectEnvironmentSpec(ctx context.Context, projectName string, req cloneProjectEnvRequest) error {
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var current mortisev1alpha1.Project
+		if err := s.client.Get(ctx, types.NamespacedName{Name: projectName}, &current); err != nil {
+			return err
+		}
+		for _, existing := range current.Spec.Environments {
+			if existing.Name == req.Name {
+				return apierrors.NewAlreadyExists(schema.GroupResource{Group: mortisev1alpha1.GroupVersion.Group, Resource: "projectenvironments"}, req.Name)
+			}
+		}
+		current.Spec.Environments = append(current.Spec.Environments, mortisev1alpha1.ProjectEnvironment{
+			Name:         req.Name,
+			DisplayOrder: req.DisplayOrder,
+		})
+		return s.client.Update(ctx, &current)
 	})
 }
 

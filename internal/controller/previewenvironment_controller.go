@@ -50,6 +50,16 @@ const previewFinalizer = "mortise.dev/preview-finalizer"
 // no matching open PR (e.g. because the forge API hasn't propagated yet)
 // would race against the creator.
 const convergenceGracePeriod = 15 * time.Minute
+const previewNamespaceReadyRequeue = 2 * time.Second
+
+type previewNamespaceNotReadyError struct {
+	project string
+	env     string
+}
+
+func (e *previewNamespaceNotReadyError) Error() string {
+	return fmt.Sprintf("preview namespace %q for project %q not ready", constants.EnvNamespace(e.project, e.env), e.project)
+}
 
 // PreviewEnvironmentReconciler coordinates preview environments as a thin layer:
 // it adds/removes a ProjectEnvironment entry on the parent Project and clones
@@ -126,7 +136,6 @@ func (r *PreviewEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.R
 	if err := r.ensureProjectEnv(ctx, projectName, envName); err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensure project env: %w", err)
 	}
-
 	controlNs := constants.ControlNamespace(projectName)
 
 	var apps mortisev1alpha1.AppList
@@ -144,11 +153,19 @@ func (r *PreviewEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.R
 
 	// Copy shared-env and per-app env Secrets from source env namespace to preview namespace.
 	if err := r.copySharedEnvSecret(ctx, projectName, sourceEnv, envName); err != nil {
+		if _, ok := err.(*previewNamespaceNotReadyError); ok {
+			log.Info("preview namespace not ready yet, waiting for project controller", "project", projectName, "env", envName)
+			return ctrl.Result{RequeueAfter: previewNamespaceReadyRequeue}, nil
+		}
 		log.Error(err, "copy shared-env secret")
 		return ctrl.Result{}, err
 	}
 	for i := range apps.Items {
 		if err := r.copyAppEnvSecret(ctx, projectName, sourceEnv, envName, apps.Items[i].Name); err != nil {
+			if _, ok := err.(*previewNamespaceNotReadyError); ok {
+				log.Info("preview namespace not ready yet, waiting for project controller", "project", projectName, "env", envName)
+				return ctrl.Result{RequeueAfter: previewNamespaceReadyRequeue}, nil
+			}
 			log.Error(err, "copy app env secret", "app", apps.Items[i].Name)
 			return ctrl.Result{}, err
 		}
@@ -334,6 +351,9 @@ func (r *PreviewEnvironmentReconciler) copySharedEnvSecret(ctx context.Context, 
 	if err != nil {
 		return err
 	}
+	if err := r.ensurePreviewNamespaceReady(ctx, targetNs, projectName, envName); err != nil {
+		return err
+	}
 
 	var existing corev1.Secret
 	err = r.Get(ctx, types.NamespacedName{Namespace: targetNs, Name: envstore.SharedEnvName}, &existing)
@@ -379,6 +399,9 @@ func (r *PreviewEnvironmentReconciler) copyAppEnvSecret(ctx context.Context, pro
 	if err != nil {
 		return err
 	}
+	if err := r.ensurePreviewNamespaceReady(ctx, targetNs, projectName, envName); err != nil {
+		return err
+	}
 
 	var existing corev1.Secret
 	err = r.Get(ctx, types.NamespacedName{Namespace: targetNs, Name: secretName}, &existing)
@@ -415,6 +438,17 @@ func (r *PreviewEnvironmentReconciler) copyAppEnvSecret(ctx context.Context, pro
 		Data: source.Data,
 	}
 	if err := r.Create(ctx, copied); err != nil && !errors.IsAlreadyExists(err) {
+		return err
+	}
+	return nil
+}
+
+func (r *PreviewEnvironmentReconciler) ensurePreviewNamespaceReady(ctx context.Context, targetNs, projectName, envName string) error {
+	var ns corev1.Namespace
+	if err := r.Get(ctx, types.NamespacedName{Name: targetNs}, &ns); err != nil {
+		if errors.IsNotFound(err) {
+			return &previewNamespaceNotReadyError{project: projectName, env: envName}
+		}
 		return err
 	}
 	return nil
@@ -734,6 +768,7 @@ func (r *PreviewEnvironmentReconciler) ConvergeProjectPreviews(ctx context.Conte
 
 	// Delete PE CRs for PRs that are no longer open. Skip recently-created
 	// PEs to avoid racing with webhooks or in-flight reconciles.
+	var deleteErr error
 	for peName, pe := range existingByPR {
 		if openPEs[peName] {
 			continue
@@ -750,12 +785,16 @@ func (r *PreviewEnvironmentReconciler) ConvergeProjectPreviews(ctx context.Conte
 			if errors.IsNotFound(err) {
 				continue
 			}
-			return fmt.Errorf("delete stale PE %q: %w", peName, err)
+			log.Error(err, "convergence: failed to delete stale PE, skipping", "project", project.Name, "pe", peName)
+			if deleteErr == nil {
+				deleteErr = fmt.Errorf("delete stale PE %q: %w", peName, err)
+			}
+			continue
 		}
 		log.Info("convergence: deleted PE for closed PR", "project", project.Name, "pe", peName)
 	}
 
-	return nil
+	return deleteErr
 }
 
 func (r *PreviewEnvironmentReconciler) protectRepoPreviewEnvironments(protectedPEs map[string]bool, existingByPR map[string]*mortisev1alpha1.PreviewEnvironment, repo string, multiRepo bool) {

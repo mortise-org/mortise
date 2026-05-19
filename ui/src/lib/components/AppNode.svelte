@@ -59,17 +59,18 @@
 	// Build timer - synced to the BuildStarted condition timestamp from k8s.
 	let buildElapsed = $state('');
 	let timerHandle: ReturnType<typeof setInterval> | null = null;
+	let activeBuildStart = $state<number | null>(null);
 
 	function buildStartTime(): number | null {
 		const cond = app.status?.conditions?.find(c => c.type === 'BuildStarted' && c.status === 'True');
 		if (!cond?.lastTransitionTime) return null;
-		return new Date(cond.lastTransitionTime).getTime();
+		const start = new Date(cond.lastTransitionTime).getTime();
+		return Number.isNaN(start) ? null : start;
 	}
 
-	function startBuildTimer() {
-		const start = buildStartTime() ?? Date.now();
+	function startBuildTimer(start: number) {
 		const tick = () => {
-			const s = Math.floor((Date.now() - start) / 1000);
+			const s = Math.max(0, Math.floor((Date.now() - start) / 1000));
 			const m = Math.floor(s / 60);
 			buildElapsed = m > 0 ? `${m}m ${s % 60}s` : `${s}s`;
 		};
@@ -78,12 +79,18 @@
 	}
 
 	$effect(() => {
-		if (phase === 'Building' && !timerHandle) {
-			startBuildTimer();
-		} else if (phase !== 'Building' && timerHandle) {
-			clearInterval(timerHandle);
-			timerHandle = null;
-			buildElapsed = '';
+		const start = phase === 'Building' ? (buildStartTime() ?? Date.now()) : null;
+		if (start !== activeBuildStart) {
+			if (timerHandle) {
+				clearInterval(timerHandle);
+				timerHandle = null;
+			}
+			activeBuildStart = start;
+			if (start !== null) {
+				startBuildTimer(start);
+			} else {
+				buildElapsed = '';
+			}
 		}
 	});
 

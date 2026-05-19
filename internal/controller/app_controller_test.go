@@ -716,6 +716,73 @@ func TestUpdateStatusClearsDegradedAfterSuccessfulRecovery(t *testing.T) {
 	}
 }
 
+func TestApplyEnvBuildSuccessClearsBuildStartedCondition(t *testing.T) {
+	r := &AppReconciler{Clock: clocktesting.NewFakeClock(time.Unix(1_700_000_000, 0))}
+	app := &mortisev1alpha1.App{
+		Status: mortisev1alpha1.AppStatus{
+			Conditions: []metav1.Condition{
+				{
+					Type:               "BuildStarted",
+					Status:             metav1.ConditionTrue,
+					Reason:             "BuildInProgress",
+					Message:            "building revision oldsha for production",
+					LastTransitionTime: metav1.NewTime(time.Unix(1_600_000_000, 0)),
+				},
+			},
+		},
+	}
+
+	r.applyEnvBuildSuccess(context.Background(), app, []string{"production"}, "production", "newsha", "registry.example/demo:new", "sha256:new", 8080)
+
+	if cond := meta.FindStatusCondition(app.Status.Conditions, "BuildStarted"); cond != nil {
+		t.Fatalf("expected BuildStarted to be cleared after build success, got %+v", cond)
+	}
+	if cond := meta.FindStatusCondition(app.Status.Conditions, "BuildSucceeded"); cond == nil || cond.Status != metav1.ConditionTrue {
+		t.Fatalf("expected BuildSucceeded=True after build success, got %+v", cond)
+	}
+}
+
+func TestSetBuildFailureConditionClearsBuildStartedCondition(t *testing.T) {
+	ctx := context.Background()
+	scheme := newAppStatusTestScheme(t)
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "demo", Namespace: "pj-default-project"},
+		Status: mortisev1alpha1.AppStatus{
+			Conditions: []metav1.Condition{
+				{
+					Type:               "BuildStarted",
+					Status:             metav1.ConditionTrue,
+					Reason:             "BuildInProgress",
+					Message:            "building revision oldsha for production",
+					LastTransitionTime: metav1.NewTime(time.Unix(1_600_000_000, 0)),
+				},
+			},
+		},
+	}
+
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(app).
+		WithObjects(app).
+		Build()
+	r := &AppReconciler{Client: c, Scheme: scheme, Clock: clocktesting.NewFakeClock(time.Unix(1_700_000_000, 0))}
+
+	if err := r.setBuildFailureCondition(ctx, app, "BuildFailed", "docker build failed"); err != nil {
+		t.Fatalf("setBuildFailureCondition: %v", err)
+	}
+
+	var fresh mortisev1alpha1.App
+	if err := c.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: app.Namespace}, &fresh); err != nil {
+		t.Fatalf("get app: %v", err)
+	}
+	if cond := meta.FindStatusCondition(fresh.Status.Conditions, "BuildStarted"); cond != nil {
+		t.Fatalf("expected BuildStarted to be cleared after build failure, got %+v", cond)
+	}
+	if cond := meta.FindStatusCondition(fresh.Status.Conditions, "BuildSucceeded"); cond == nil || cond.Status != metav1.ConditionFalse {
+		t.Fatalf("expected BuildSucceeded=False after build failure, got %+v", cond)
+	}
+}
+
 func TestUpdateStatusMasksPreviewOnlyBuildFailureWhilePreviewStillServes(t *testing.T) {
 	ctx := context.Background()
 	scheme := newAppStatusTestScheme(t)

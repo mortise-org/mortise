@@ -45,6 +45,19 @@ import (
 	"github.com/mortise-org/mortise/internal/git"
 )
 
+type deleteErrorClient struct {
+	client.Client
+	target types.NamespacedName
+	err    error
+}
+
+func (c *deleteErrorClient) Delete(ctx context.Context, obj client.Object, opts ...client.DeleteOption) error {
+	if obj.GetNamespace() == c.target.Namespace && obj.GetName() == c.target.Name {
+		return c.err
+	}
+	return c.Client.Delete(ctx, obj, opts...)
+}
+
 // helper: create a test Project and its control namespace (`pj-{name}`). The
 // PreviewEnvironment CRD lives in the control namespace; preview workloads
 // reconcile into `pj-{name}-pr-{num}` which the controller creates on demand.
@@ -392,11 +405,16 @@ func TestPreviewEnvironmentReconcileHydratesEmptyPreviewAppSecret(t *testing.T) 
 			Namespace: constants.EnvNamespace(project.Name, "pr-7"),
 		},
 	}
+	previewNamespace := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: constants.EnvNamespace(project.Name, "pr-7"),
+		},
+	}
 
 	c := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithStatusSubresource(pe).
-		WithObjects(project, pe, app, sourceSecret, previewSecret).
+		WithObjects(project, pe, app, sourceSecret, previewSecret, previewNamespace).
 		Build()
 	r := &PreviewEnvironmentReconciler{
 		Client: c,
@@ -770,6 +788,70 @@ var _ = Describe("PreviewEnvironment Controller", func() {
 			var updated mortisev1alpha1.PreviewEnvironment
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: pe.Name, Namespace: ns}, &updated)).To(Succeed())
 			Expect(updated.Status.Phase).To(Equal(mortisev1alpha1.PreviewPhaseReady))
+		})
+
+		It("should requeue until the preview namespace is ready", func() {
+			ctx := context.Background()
+			project, ns := createPreviewTestProject(ctx, true)
+			project.Spec.Environments = []mortisev1alpha1.ProjectEnvironment{{Name: "staging"}}
+			project.Status.EnvNamespaces = map[string]string{
+				"staging": constants.EnvNamespace(project.Name, "staging"),
+			}
+			Expect(k8sClient.Update(ctx, project)).To(Succeed())
+			Expect(k8sClient.Status().Update(ctx, project)).To(Succeed())
+
+			createPreviewApp(ctx, "wait-app", ns, &mortisev1alpha1.Environment{Name: "staging"})
+
+			sourceEnvNs := constants.EnvNamespace(project.Name, "staging")
+			Expect(k8sClient.Create(ctx, &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{Name: sourceEnvNs},
+			})).To(Succeed())
+
+			sharedSecret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      envstore.SharedEnvName,
+					Namespace: sourceEnvNs,
+				},
+				Data: map[string][]byte{
+					"FEATURE_FLAG": []byte("true"),
+				},
+			}
+			Expect(k8sClient.Create(ctx, sharedSecret)).To(Succeed())
+
+			pe := createPreviewEnv(ctx, "wait-app-preview-pr-22", ns, project.Name, 22, "sha22", "feat")
+
+			reconciler := newPEReconciler()
+			result, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: pe.Name, Namespace: ns},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(previewNamespaceReadyRequeue))
+
+			previewNs := constants.EnvNamespace(project.Name, "pr-22")
+			Expect(k8sClient.Create(ctx, &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{Name: previewNs},
+			})).To(Succeed())
+
+			var refreshed mortisev1alpha1.Project
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: project.Name}, &refreshed)).To(Succeed())
+			if refreshed.Status.EnvNamespaces == nil {
+				refreshed.Status.EnvNamespaces = map[string]string{}
+			}
+			refreshed.Status.EnvNamespaces["pr-22"] = previewNs
+			Expect(k8sClient.Status().Update(ctx, &refreshed)).To(Succeed())
+
+			result, err = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: pe.Name, Namespace: ns},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(BeZero())
+
+			var copied corev1.Secret
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      envstore.SharedEnvName,
+				Namespace: previewNs,
+			}, &copied)).To(Succeed())
+			Expect(copied.Data).To(HaveKeyWithValue("FEATURE_FLAG", []byte("true")))
 		})
 
 		It("should succeed even when no apps exist in the project", func() {
@@ -1614,6 +1696,118 @@ func TestConvergeProjectPreviews_DeletesStale(t *testing.T) {
 	}
 	if !prNums[7] {
 		t.Errorf("PE for PR #7 should be created")
+	}
+}
+
+func TestConvergeProjectPreviews_ContinuesAfterStaleDeleteError(t *testing.T) {
+	ctx := context.Background()
+	s := newTestScheme(t)
+	projectName := "converge-delete-continue"
+	nsName := constants.ControlNamespace(projectName)
+
+	project := &mortisev1alpha1.Project{
+		ObjectMeta: metav1.ObjectMeta{Name: projectName},
+		Spec: mortisev1alpha1.ProjectSpec{
+			Preview:      &mortisev1alpha1.PreviewConfig{Enabled: true},
+			Environments: []mortisev1alpha1.ProjectEnvironment{{Name: "staging"}},
+		},
+	}
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: nsName},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{
+				Type:        mortisev1alpha1.SourceTypeGit,
+				Repo:        "https://github.com/org/repo",
+				Branch:      "main",
+				ProviderRef: "github-converge-delete",
+			},
+		},
+	}
+	gp := &mortisev1alpha1.GitProvider{
+		ObjectMeta: metav1.ObjectMeta{Name: "github-converge-delete"},
+		Spec: mortisev1alpha1.GitProviderSpec{
+			Type: mortisev1alpha1.GitProviderTypeGitHub,
+			Host: "https://github.com",
+		},
+	}
+	pm := &mortisev1alpha1.ProjectMember{
+		ObjectMeta: metav1.ObjectMeta{Name: "member", Namespace: nsName},
+		Spec: mortisev1alpha1.ProjectMemberSpec{
+			Email: "dev@example.com",
+			Role:  "owner",
+		},
+	}
+	tokenSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      git.UserTokenSecretName("github-converge-delete", "dev@example.com"),
+			Namespace: git.TokenSecretNamespace,
+		},
+		Data: map[string][]byte{"token": []byte("fake-token")},
+	}
+
+	oldEnough := metav1.NewTime(time.Now().Add(-convergenceGracePeriod - time.Minute))
+	stuckPE := &mortisev1alpha1.PreviewEnvironment{
+		ObjectMeta: metav1.ObjectMeta{Name: "preview-pr-5", Namespace: nsName, CreationTimestamp: oldEnough},
+		Spec: mortisev1alpha1.PreviewEnvironmentSpec{
+			ProjectRef:  projectName,
+			SourceEnv:   "staging",
+			PullRequest: mortisev1alpha1.PullRequestRef{Number: 5, Branch: "old", SHA: "old"},
+		},
+	}
+	otherStale := &mortisev1alpha1.PreviewEnvironment{
+		ObjectMeta: metav1.ObjectMeta{Name: "preview-pr-6", Namespace: nsName, CreationTimestamp: oldEnough},
+		Spec: mortisev1alpha1.PreviewEnvironmentSpec{
+			ProjectRef:  projectName,
+			SourceEnv:   "staging",
+			PullRequest: mortisev1alpha1.PullRequestRef{Number: 6, Branch: "old2", SHA: "old2"},
+		},
+	}
+
+	base := fake.NewClientBuilder().WithScheme(s).WithObjects(project, app, gp, pm, tokenSecret, stuckPE, otherStale).Build()
+	c := &deleteErrorClient{
+		Client: base,
+		target: types.NamespacedName{Name: stuckPE.Name, Namespace: stuckPE.Namespace},
+		err:    fmt.Errorf("forced delete failure"),
+	}
+
+	mock := &mockGitAPI{
+		openPRs: []git.PullRequestSnapshot{
+			{Number: 7, Branch: "new-feat", SHA: "ccc"},
+		},
+	}
+	reconciler := &PreviewEnvironmentReconciler{
+		Client: c,
+		Scheme: s,
+		Clock:  clocktesting.NewFakeClock(time.Now()),
+		GitAPIFactory: func(gp *mortisev1alpha1.GitProvider, token, secret string) (git.GitAPI, error) {
+			return mock, nil
+		},
+	}
+
+	err := reconciler.ConvergeProjectPreviews(ctx, project)
+	if err == nil || !strings.Contains(err.Error(), stuckPE.Name) {
+		t.Fatalf("expected returned delete error for stuck PE, got %v", err)
+	}
+
+	var peList mortisev1alpha1.PreviewEnvironmentList
+	if err := base.List(ctx, &peList, client.InNamespace(nsName)); err != nil {
+		t.Fatalf("list PEs: %v", err)
+	}
+
+	gotNames := map[string]bool{}
+	for _, pe := range peList.Items {
+		if pe.DeletionTimestamp.IsZero() {
+			gotNames[pe.Name] = true
+		}
+	}
+	if !gotNames[stuckPE.Name] {
+		t.Fatalf("expected stuck PE to remain present")
+	}
+	if gotNames[otherStale.Name] {
+		t.Fatalf("expected second stale PE to be deleted despite first delete failure")
+	}
+	if !gotNames["preview-pr-7"] {
+		t.Fatalf("expected new PE for PR #7 to be created despite stale delete failure")
 	}
 }
 
