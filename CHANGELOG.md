@@ -5,7 +5,7 @@ All notable changes to Mortise are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.0.2] - 2026-05-15
+## [1.0.2] - 2026-05-19
 
 ### Added
 
@@ -60,6 +60,18 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **DEV_CLUSTER targeting in local workflows**: `make dev-up`, `make dev-reload`,
   and dev E2E port-forwarding now target the cluster named by `DEV_CLUSTER`
   instead of whichever kube context happens to be active.
+- **Preview namespace teardown**: deleting a `PreviewEnvironment` now explicitly
+  deletes the preview namespace instead of leaving closed-PR workloads running.
+- **BuildRun retention and log GC**: terminal `BuildRun` objects now retain the
+  newest history per app/environment and delete their durable build-log
+  ConfigMaps when old runs are retired.
+- **App-spec env var pruning**: environment variables removed from
+  `spec.environments[].env` are now pruned from the backing env Secret only
+  when Mortise still owns the prior spec-applied value, preserving user
+  overrides and non-user sources.
+- **CrashLoop false positives during startup**: apps no longer flip to
+  `CrashLooping` during normal `ContainerCreating`, `PodInitializing`, or image
+  pull waits; `CrashLooping` now reflects real `CrashLoopBackOff` states only.
 
 ### Changed
 
