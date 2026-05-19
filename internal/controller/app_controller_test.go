@@ -1225,6 +1225,90 @@ func TestUpdateStatusPreviewOnlyCrashLoopStillSetsTopLevelHealth(t *testing.T) {
 	}
 }
 
+func TestUpdateStatusDetectsCrashLoopWhileRedeployLatchIsActive(t *testing.T) {
+	ctx := context.Background()
+	scheme := newAppStatusTestScheme(t)
+
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "demo",
+			Namespace: "pj-default-project",
+		},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage},
+			Environments: []mortisev1alpha1.Environment{
+				{Name: "production"},
+			},
+		},
+		Status: mortisev1alpha1.AppStatus{
+			Conditions: []metav1.Condition{{
+				Type:    "BuildSucceeded",
+				Status:  metav1.ConditionTrue,
+				Reason:  "BuildComplete",
+				Message: "built registry.example/demo:prod digest=sha256:prod for production",
+			}},
+			Environments: []mortisev1alpha1.EnvironmentStatus{{
+				Name:                     "production",
+				LastBuiltImage:           "registry.example/demo:prod",
+				LastProcessedRestartedAt: "",
+			}},
+		},
+	}
+	dep := newReadyDeploymentForStatusTest(t, app, "production")
+	if dep.Spec.Template.Annotations == nil {
+		dep.Spec.Template.Annotations = map[string]string{}
+	}
+	dep.Spec.Template.Annotations["mortise.dev/restartedAt"] = "1700000000000"
+	dep.Status.ReadyReplicas = 0
+	dep.Status.AvailableReplicas = 0
+	dep.Status.UpdatedReplicas = 1
+	prodPod := newStatusTestPod(app, "production", "prod-pod", []corev1.ContainerStatus{{
+		Name:         "app",
+		RestartCount: 200,
+		State: corev1.ContainerState{
+			Waiting: &corev1.ContainerStateWaiting{Reason: "CrashLoopBackOff"},
+		},
+		LastTerminationState: corev1.ContainerState{
+			Terminated: &corev1.ContainerStateTerminated{
+				ExitCode: 1,
+				Reason:   "Error",
+			},
+		},
+	}}, nil)
+
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(app, dep).
+		WithObjects(app, dep, prodPod).
+		Build()
+	r := &AppReconciler{Client: c, Scheme: scheme}
+	if err := c.Status().Update(ctx, dep); err != nil {
+		t.Fatalf("seed deployment status: %v", err)
+	}
+
+	if err := r.updateStatus(ctx, app, []mortisev1alpha1.Environment{{Name: "production"}}, nil); err != nil {
+		t.Fatalf("update status: %v", err)
+	}
+
+	var fresh mortisev1alpha1.App
+	if err := c.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: app.Namespace}, &fresh); err != nil {
+		t.Fatalf("get app: %v", err)
+	}
+	if fresh.Status.Phase != mortisev1alpha1.AppPhaseCrashLooping {
+		t.Fatalf("expected redeploy crash loop to set top-level phase %q, got %q", mortisev1alpha1.AppPhaseCrashLooping, fresh.Status.Phase)
+	}
+	envStatus := envStatusFor(&fresh, "production")
+	if envStatus == nil || envStatus.Phase != mortisev1alpha1.AppPhaseCrashLooping {
+		t.Fatalf("expected production env to be crash looping, got %+v", envStatus)
+	}
+	if cond := meta.FindStatusCondition(fresh.Status.Conditions, "PodHealthy"); cond == nil || cond.Status != metav1.ConditionFalse {
+		t.Fatalf("expected redeploy crash loop to set PodHealthy false, got %+v", cond)
+	}
+	if envStatus != nil && envStatus.LastProcessedRestartedAt != "" {
+		t.Fatalf("expected crash detection to preserve restart latch until rollout succeeds, got %q", envStatus.LastProcessedRestartedAt)
+	}
+}
+
 func TestUpdateStatusRecoversAfterPreviewRemoval(t *testing.T) {
 	ctx := context.Background()
 	scheme := newAppStatusTestScheme(t)
