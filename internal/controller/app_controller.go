@@ -891,6 +891,7 @@ func (r *AppReconciler) applyEnvBuildSuccess(_ context.Context, app *mortisev1al
 		app.Status.DetectedPort = detectedPort
 	}
 	app.Status.Phase = mortisev1alpha1.AppPhaseDeploying
+	meta.RemoveStatusCondition(&app.Status.Conditions, "BuildStarted")
 	meta.SetStatusCondition(&app.Status.Conditions, metav1.Condition{
 		Type:               "BuildSucceeded",
 		Status:             metav1.ConditionTrue,
@@ -1276,6 +1277,7 @@ func (r *AppReconciler) setFailedCondition(ctx context.Context, app *mortisev1al
 	transitionTime := metav1.NewTime(r.clock().Now())
 	if err := r.updateAppStatus(ctx, app, func(status *mortisev1alpha1.AppStatus) {
 		status.Phase = mortisev1alpha1.AppPhaseFailed
+		meta.RemoveStatusCondition(&status.Conditions, "BuildStarted")
 		meta.SetStatusCondition(&status.Conditions, metav1.Condition{
 			Type:               "BuildSucceeded",
 			Status:             metav1.ConditionFalse,
@@ -1287,6 +1289,7 @@ func (r *AppReconciler) setFailedCondition(ctx context.Context, app *mortisev1al
 		log.Error(err, "update failed status")
 	}
 	app.Status.Phase = mortisev1alpha1.AppPhaseFailed
+	meta.RemoveStatusCondition(&app.Status.Conditions, "BuildStarted")
 	meta.SetStatusCondition(&app.Status.Conditions, metav1.Condition{
 		Type:               "BuildSucceeded",
 		Status:             metav1.ConditionFalse,
@@ -1300,6 +1303,7 @@ func (r *AppReconciler) setFailedCondition(ctx context.Context, app *mortisev1al
 func (r *AppReconciler) setBuildFailureCondition(ctx context.Context, app *mortisev1alpha1.App, reason, msg string) error {
 	transitionTime := metav1.NewTime(r.clock().Now())
 	if err := r.updateAppStatus(ctx, app, func(status *mortisev1alpha1.AppStatus) {
+		meta.RemoveStatusCondition(&status.Conditions, "BuildStarted")
 		meta.SetStatusCondition(&status.Conditions, metav1.Condition{
 			Type:               "BuildSucceeded",
 			Status:             metav1.ConditionFalse,
@@ -1310,6 +1314,7 @@ func (r *AppReconciler) setBuildFailureCondition(ctx context.Context, app *morti
 	}); err != nil {
 		return err
 	}
+	meta.RemoveStatusCondition(&app.Status.Conditions, "BuildStarted")
 	meta.SetStatusCondition(&app.Status.Conditions, metav1.Condition{
 		Type:               "BuildSucceeded",
 		Status:             metav1.ConditionFalse,

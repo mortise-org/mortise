@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/retry"
 
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
 	"github.com/mortise-org/mortise/internal/authz"
@@ -63,8 +65,6 @@ func (s *Server) Rollback(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
-	envNs := constants.EnvNamespace(projectName, req.Environment)
-
 	// Find the environment status.
 	var envStatus *mortisev1alpha1.EnvironmentStatus
 	for i := range app.Status.Environments {
@@ -88,19 +88,7 @@ func (s *Server) Rollback(w http.ResponseWriter, r *http.Request) {
 		rollbackImage = target.Digest
 	}
 
-	depName := constants.DeploymentName(appName)
-	var dep appsv1.Deployment
-	if err := s.client.Get(r.Context(), types.NamespacedName{Name: depName, Namespace: envNs}, &dep); err != nil {
-		writeError(w, r, err)
-		return
-	}
-	if len(dep.Spec.Template.Spec.Containers) == 0 {
-		writeJSON(w, http.StatusInternalServerError, errorResponse{fmt.Sprintf("deployment %s has no containers", depName)})
-		return
-	}
-
-	dep.Spec.Template.Spec.Containers[0].Image = rollbackImage
-	if err := s.client.Update(r.Context(), &dep); err != nil {
+	if err := s.rollbackDeployment(r.Context(), projectName, appName, req.Environment, rollbackImage); err != nil {
 		writeError(w, r, err)
 		return
 	}
@@ -205,20 +193,7 @@ func (s *Server) Promote(w http.ResponseWriter, r *http.Request) {
 		promoteImage = fromStatus.CurrentDigest
 	}
 
-	depName := constants.DeploymentName(appName)
-	toEnvNs := constants.EnvNamespace(projectName, req.To)
-	var dep appsv1.Deployment
-	if err := s.client.Get(r.Context(), types.NamespacedName{Name: depName, Namespace: toEnvNs}, &dep); err != nil {
-		writeError(w, r, err)
-		return
-	}
-	if len(dep.Spec.Template.Spec.Containers) == 0 {
-		writeJSON(w, http.StatusInternalServerError, errorResponse{fmt.Sprintf("deployment %s has no containers", depName)})
-		return
-	}
-
-	dep.Spec.Template.Spec.Containers[0].Image = promoteImage
-	if err := s.client.Update(r.Context(), &dep); err != nil {
+	if err := s.promoteDeployment(r.Context(), projectName, appName, req.To, promoteImage); err != nil {
 		writeError(w, r, err)
 		return
 	}
@@ -248,7 +223,7 @@ func (s *Server) Promote(w http.ResponseWriter, r *http.Request) {
 	toStatus.CurrentDigest = fromStatus.CurrentDigest
 	toStatus.DeployHistory = append(toStatus.DeployHistory, record)
 
-	if err := s.client.Status().Update(r.Context(), &app); err != nil {
+	if err := s.recordPromotedDeploy(r.Context(), ns, appName, req.From, req.To); err != nil {
 		writeError(w, r, err)
 		return
 	}
@@ -260,5 +235,82 @@ func (s *Server) Promote(w http.ResponseWriter, r *http.Request) {
 		"from":   req.From,
 		"to":     req.To,
 		"image":  promoteImage,
+	})
+}
+
+func (s *Server) rollbackDeployment(ctx context.Context, projectName, appName, envName, image string) error {
+	depName := constants.DeploymentName(appName)
+	envNs := constants.EnvNamespace(projectName, envName)
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var dep appsv1.Deployment
+		if err := s.client.Get(ctx, types.NamespacedName{Name: depName, Namespace: envNs}, &dep); err != nil {
+			return err
+		}
+		if len(dep.Spec.Template.Spec.Containers) == 0 {
+			return fmt.Errorf("deployment %s has no containers", depName)
+		}
+		dep.Spec.Template.Spec.Containers[0].Image = image
+		return s.client.Update(ctx, &dep)
+	})
+}
+
+func (s *Server) promoteDeployment(ctx context.Context, projectName, appName, envName, image string) error {
+	depName := constants.DeploymentName(appName)
+	envNs := constants.EnvNamespace(projectName, envName)
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var dep appsv1.Deployment
+		if err := s.client.Get(ctx, types.NamespacedName{Name: depName, Namespace: envNs}, &dep); err != nil {
+			return err
+		}
+		if len(dep.Spec.Template.Spec.Containers) == 0 {
+			return fmt.Errorf("deployment %s has no containers", depName)
+		}
+		dep.Spec.Template.Spec.Containers[0].Image = image
+		return s.client.Update(ctx, &dep)
+	})
+}
+
+func (s *Server) recordPromotedDeploy(ctx context.Context, ns, appName, fromEnv, toEnv string) error {
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var app mortisev1alpha1.App
+		if err := s.client.Get(ctx, types.NamespacedName{Name: appName, Namespace: ns}, &app); err != nil {
+			return err
+		}
+
+		var fromStatus *mortisev1alpha1.EnvironmentStatus
+		for i := range app.Status.Environments {
+			if app.Status.Environments[i].Name == fromEnv {
+				fromStatus = &app.Status.Environments[i]
+				break
+			}
+		}
+		if fromStatus == nil {
+			return fmt.Errorf("source environment %q not found in app status", fromEnv)
+		}
+
+		record := mortisev1alpha1.DeployRecord{
+			Image:     fromStatus.CurrentImage,
+			Digest:    fromStatus.CurrentDigest,
+			Timestamp: metav1.Now(),
+		}
+
+		var toStatus *mortisev1alpha1.EnvironmentStatus
+		for i := range app.Status.Environments {
+			if app.Status.Environments[i].Name == toEnv {
+				toStatus = &app.Status.Environments[i]
+				break
+			}
+		}
+		if toStatus == nil {
+			app.Status.Environments = append(app.Status.Environments, mortisev1alpha1.EnvironmentStatus{
+				Name: toEnv,
+			})
+			toStatus = &app.Status.Environments[len(app.Status.Environments)-1]
+		}
+		toStatus.CurrentImage = fromStatus.CurrentImage
+		toStatus.CurrentDigest = fromStatus.CurrentDigest
+		toStatus.DeployHistory = append(toStatus.DeployHistory, record)
+
+		return s.client.Status().Update(ctx, &app)
 	})
 }

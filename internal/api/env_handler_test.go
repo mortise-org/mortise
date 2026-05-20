@@ -327,6 +327,52 @@ func TestPatchEnvRejectsManagedVarOverwrite(t *testing.T) {
 	}
 }
 
+func TestPutEnvRejectsManagedVarOverwrite(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+	ns := seedProject(t, k8sClient, "default")
+
+	ctx := context.Background()
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "put-bound-app", Namespace: ns},
+		Spec: mortisev1alpha1.AppSpec{
+			Source:       mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: "nginx:1.25.0"},
+			Environments: []mortisev1alpha1.Environment{{Name: "production"}},
+		},
+	}
+	if err := k8sClient.Create(ctx, app); err != nil {
+		t.Fatalf("create app: %v", err)
+	}
+
+	envNs := constants.EnvNamespace("default", "production")
+	_ = k8sClient.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: envNs}})
+
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      envstore.AppEnvSecretName("put-bound-app"),
+			Namespace: envNs,
+			Annotations: map[string]string{
+				"mortise.dev/binding-keys": "DB_URL",
+			},
+		},
+		Data: map[string][]byte{
+			"DB_URL":   []byte("postgres://localhost/db"),
+			"APP_PORT": []byte("3000"),
+		},
+	}
+	if err := k8sClient.Create(ctx, secret); err != nil {
+		t.Fatalf("seed env secret: %v", err)
+	}
+
+	w := doRequest(h, http.MethodPut, "/api/projects/default/apps/put-bound-app/env?environment=production", []map[string]string{
+		{"name": "DB_URL", "value": "postgres://evil/db"},
+	})
+	if w.Code != http.StatusConflict {
+		t.Fatalf("expected 409 when overwriting binding var via PUT, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
 func TestPatchEnvRejectsManagedVarUnset(t *testing.T) {
 	k8sClient := setupEnvtest(t)
 	srv := newAdminServer(t, k8sClient)

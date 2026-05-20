@@ -132,22 +132,34 @@
 	// Build timer — synced to BuildStarted condition timestamp from k8s.
 	let buildElapsed = $state('');
 	let buildTimerHandle: ReturnType<typeof setInterval> | null = null;
+	let activeBuildStart = $state<number | null>(null);
+
+	function buildStartTime(): number | null {
+		const cond = liveApp?.status?.conditions?.find(c => c.type === 'BuildStarted' && c.status === 'True');
+		if (!cond?.lastTransitionTime) return null;
+		const start = new Date(cond.lastTransitionTime).getTime();
+		return Number.isNaN(start) ? null : start;
+	}
 
 	$effect(() => {
-		if (isBuilding && !buildTimerHandle) {
-			const cond = liveApp?.status?.conditions?.find(c => c.type === 'BuildStarted' && c.status === 'True');
-			const start = cond?.lastTransitionTime ? new Date(cond.lastTransitionTime).getTime() : Date.now();
+		const start = isBuilding ? (buildStartTime() ?? Date.now()) : null;
+		if (start !== activeBuildStart) {
+			if (buildTimerHandle) {
+				clearInterval(buildTimerHandle);
+				buildTimerHandle = null;
+			}
+			activeBuildStart = start;
+			if (start === null) {
+				buildElapsed = '';
+				return;
+			}
 			const tick = () => {
-				const s = Math.floor((Date.now() - start) / 1000);
+				const s = Math.max(0, Math.floor((Date.now() - start) / 1000));
 				const m = Math.floor(s / 60);
 				buildElapsed = m > 0 ? `${m}m ${s % 60}s` : `${s}s`;
 			};
 			tick();
 			buildTimerHandle = setInterval(tick, 1000);
-		} else if (!isBuilding && buildTimerHandle) {
-			clearInterval(buildTimerHandle);
-			buildTimerHandle = null;
-			buildElapsed = '';
 		}
 	});
 
