@@ -67,7 +67,13 @@
 	const currentEnv = $derived.by<string>(() => {
 		if (!activeProject) return '';
 		const stored = store.currentEnv(activeProject);
-		if (stored && projectEnvs.some((e) => e.name === stored)) return stored;
+		if (stored) {
+			const isProjectEnv = projectEnvs.some((e) => e.name === stored);
+			const isPreviewEnv = (store.previewEnvs[activeProject] ?? []).some(
+				(p) => (p.environmentName || p.name) === stored
+			);
+			if (isProjectEnv || isPreviewEnv) return stored;
+		}
 		return projectEnvs[0]?.name ?? stored ?? '';
 	});
 
