@@ -4284,6 +4284,15 @@ var _ = Describe("App Controller", func() {
 	})
 })
 
+func envStatusByName(statuses []mortisev1alpha1.EnvironmentStatus, name string) *mortisev1alpha1.EnvironmentStatus {
+	for i := range statuses {
+		if statuses[i].Name == name {
+			return &statuses[i]
+		}
+	}
+	return nil
+}
+
 var _ = Describe("renderDomainTemplate", func() {
 	It("uses default template with project scoping", func() {
 		result := renderDomainTemplate("", "api", "team-a", "production", "example.com")
@@ -5097,6 +5106,10 @@ var _ = Describe("App Controller — git source", func() {
 
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: namespace}, app)).To(Succeed())
 			Expect(app.Status.Phase).To(Equal(mortisev1alpha1.AppPhaseBuilding))
+			prodStatus := envStatusByName(app.Status.Environments, "production")
+			Expect(prodStatus).NotTo(BeNil())
+			Expect(prodStatus.Phase).To(Equal(mortisev1alpha1.AppPhaseBuilding))
+			Expect(prodStatus.Message).To(ContainSubstring("building revision revasync"))
 
 			// A second reconcile while the build is still in flight should also
 			// return quickly and the phase should still be Building (no

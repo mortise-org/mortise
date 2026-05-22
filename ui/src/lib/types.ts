@@ -117,6 +117,13 @@ export interface DeployRecord {
 	timestamp: string;
 }
 
+export type BuildRunPhase = 'Pending' | 'Running' | 'Succeeded' | 'Failed';
+
+export interface BuildRunReference {
+	name: string;
+	phase?: BuildRunPhase;
+}
+
 export interface EnvironmentStatus {
 	name: string;
 	phase?: AppPhase;
@@ -127,6 +134,8 @@ export interface EnvironmentStatus {
 	domain?: string;
 	autoDomain?: string;
 	deployHistory?: DeployRecord[];
+	currentBuildRunRef?: BuildRunReference;
+	lastSuccessfulBuildRunRef?: BuildRunReference;
 	pendingEnvHash?: string;
 	deployedEnvHash?: string;
 	certificateStatus?: string;
@@ -180,6 +189,29 @@ export function resolveAppEnvironment(app: App, requestedEnv: string | null | un
 	const uniqueEnvs = [...new Set(knownEnvs.filter(Boolean))];
 	if (requestedEnv && uniqueEnvs.includes(requestedEnv)) return requestedEnv;
 	return uniqueEnvs[0] ?? requestedEnv ?? 'production';
+}
+
+function isBuildingRunPhase(phase: BuildRunPhase | undefined): boolean {
+	return phase === 'Pending' || phase === 'Running';
+}
+
+export function appPhaseForEnvironment(app: App, envName: string | null | undefined): AppPhase | null {
+	if (!envName) return app.status?.phase ?? null;
+
+	const envStatus = app.status?.environments?.find((env) => env.name === envName) ?? null;
+	if (!envStatus) {
+		// Only fall back to top-level phase when no per-environment status exists at all.
+		return (app.status?.environments?.length ?? 0) === 0 ? (app.status?.phase ?? null) : null;
+	}
+
+	if (isBuildingRunPhase(envStatus.currentBuildRunRef?.phase)) {
+		return 'Building';
+	}
+	if (envStatus.phase) {
+		return envStatus.phase;
+	}
+
+	return (app.status?.environments?.length ?? 0) === 0 ? (app.status?.phase ?? null) : null;
 }
 
 export interface SecretResponse {

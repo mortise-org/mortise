@@ -812,14 +812,7 @@ func (r *AppReconciler) reconcileEnvBuild(ctx context.Context, app *mortisev1alp
 					}
 					return "", false, true, false, nil
 				default:
-					app.Status.Phase = mortisev1alpha1.AppPhaseBuilding
-					meta.SetStatusCondition(&app.Status.Conditions, metav1.Condition{
-						Type:               "BuildStarted",
-						Status:             metav1.ConditionTrue,
-						Reason:             "BuildInProgress",
-						Message:            fmt.Sprintf("building revision %s for %s", revision, envName),
-						LastTransitionTime: metav1.NewTime(r.clock().Now()),
-					})
+					r.markEnvBuildInProgress(app, envName, revision)
 					return "", true, true, false, nil
 				}
 			}
@@ -853,16 +846,29 @@ func (r *AppReconciler) reconcileEnvBuild(ctx context.Context, app *mortisev1alp
 		}
 		return "", false, true, false, nil
 	default:
-		app.Status.Phase = mortisev1alpha1.AppPhaseBuilding
-		meta.SetStatusCondition(&app.Status.Conditions, metav1.Condition{
-			Type:               "BuildStarted",
-			Status:             metav1.ConditionTrue,
-			Reason:             "BuildInProgress",
-			Message:            fmt.Sprintf("building revision %s for %s", revision, envName),
-			LastTransitionTime: metav1.NewTime(r.clock().Now()),
-		})
+		r.markEnvBuildInProgress(app, envName, revision)
 		return "", true, true, false, nil
 	}
+}
+
+func (r *AppReconciler) markEnvBuildInProgress(app *mortisev1alpha1.App, envName, revision string) {
+	if app == nil {
+		return
+	}
+
+	app.Status.Phase = mortisev1alpha1.AppPhaseBuilding
+	if es := ensureEnvStatus(app, envName); es != nil {
+		es.Phase = mortisev1alpha1.AppPhaseBuilding
+		es.Message = fmt.Sprintf("building revision %s", revision)
+	}
+
+	meta.SetStatusCondition(&app.Status.Conditions, metav1.Condition{
+		Type:               "BuildStarted",
+		Status:             metav1.ConditionTrue,
+		Reason:             "BuildInProgress",
+		Message:            fmt.Sprintf("building revision %s for %s", revision, envName),
+		LastTransitionTime: metav1.NewTime(r.clock().Now()),
+	})
 }
 
 // applyEnvBuildSuccess records the successful build for a specific environment.

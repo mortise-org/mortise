@@ -1,8 +1,8 @@
 <script lang="ts">
 	import { api } from '$lib/api';
 	import { store } from '$lib/store.svelte';
-	import { resolveAppEnvironment } from '$lib/types';
-	import type { App, BuildLogsResponse, Pod } from '$lib/types';
+	import { appPhaseForEnvironment, resolveAppEnvironment } from '$lib/types';
+	import type { App, AppPhase, BuildLogsResponse, Pod } from '$lib/types';
 	import { X, GitBranch, Container, Cloud, ExternalLink, Rocket } from 'lucide-svelte';
 	import DeploymentsTab from './drawer/DeploymentsTab.svelte';
 	import VariablesTab from './drawer/VariablesTab.svelte';
@@ -16,16 +16,20 @@
 		appName,
 		autoRedeploy = false,
 		liveApp = null,
+		phaseOverride = null,
 		liveBuildLogs = null,
 		livePods = null,
+		onPhaseOverride = () => {},
 		onClose
 	}: {
 		project: string;
 		appName: string;
 		autoRedeploy?: boolean;
 		liveApp?: App | null;
+		phaseOverride?: AppPhase | null;
 		liveBuildLogs?: BuildLogsResponse | null;
 		livePods?: Pod[] | null;
+		onPhaseOverride?: (envName: string, phase: AppPhase | null) => void;
 		onClose: () => void;
 	} = $props();
 
@@ -37,9 +41,9 @@
 	const envStatusEntry = $derived(liveApp?.status?.environments?.find((e) => e.name === selectedEnv));
 	const envSpecEntry = $derived(liveApp?.spec.environments?.find((e) => e.name === selectedEnv));
 	const envEnabled = $derived(envSpecEntry?.enabled !== false);
-	const envPhase = $derived.by<string | null>(() => {
-		return envStatusEntry?.phase ?? liveApp?.status?.phase ?? null;
-	});
+	const envPhase = $derived.by<AppPhase | null>(() => (
+		liveApp ? appPhaseForEnvironment(liveApp, selectedEnv) : null
+	));
 
 	let reloading = $state(false);
 	let errorMsg = $state('');
@@ -69,9 +73,9 @@
 	// Status display derives from liveApp (polled) with an optimistic override layer.
 	// $derived memoises by value: "Building"==="Building" → zero downstream updates
 	// when the phase hasn't actually changed, even though liveApp is a new object each poll.
-	let optimisticPhase = $state<string | null>(null);
+	let optimisticPhase = $state<AppPhase | null>(null);
 	const effectivePhase = $derived(
-		optimisticPhase ?? envPhase
+		phaseOverride ?? optimisticPhase ?? envPhase
 	);
 	const phaseMessage = $derived(
 		effectivePhase === 'Degraded'
@@ -86,8 +90,18 @@
 		}
 	});
 
+	$effect(() => {
+		if (!phaseOverride) return;
+		if (!envPhase) return;
+		if (envPhase === phaseOverride || envPhase !== 'Ready') {
+			onPhaseOverride(selectedEnv, null);
+		}
+	});
+
 	function applyOptimisticPhase(phase: string) {
-		optimisticPhase = phase;
+		const next = phase as AppPhase;
+		optimisticPhase = next;
+		if (selectedEnv) onPhaseOverride(selectedEnv, next);
 	}
 
 	async function doRebuild() {

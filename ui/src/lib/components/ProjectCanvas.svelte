@@ -13,12 +13,14 @@
 		app: App;
 		projectName: string;
 		env: string;
+		phaseOverride?: import('$lib/types').AppPhase | null;
 		onOpen: (appName: string) => void;
 	}
 
 	interface Props {
 		projectName: string;
 		apps: App[];
+		phaseOverrides?: Record<string, import('$lib/types').AppPhase | null>;
 		selectedApp?: string | null;
 		onAppOpen: (appName: string) => void;
 		onAddApp?: () => void;
@@ -26,7 +28,7 @@
 		onPaneClick?: () => void;
 	}
 
-	let { projectName, apps, selectedApp = null, onAppOpen, onAddApp, onDeleteApp, onPaneClick }: Props = $props();
+	let { projectName, apps, phaseOverrides = {}, selectedApp = null, onAppOpen, onAddApp, onDeleteApp, onPaneClick }: Props = $props();
 
 	const currentEnv = $derived(
 		store.currentEnv(projectName) || apps[0]?.spec.environments?.[0]?.name || 'production'
@@ -77,6 +79,7 @@
 					app,
 					projectName,
 					env,
+					phaseOverride: phaseOverrides[`${app.metadata.name}:${env}`] ?? null,
 					onOpen: onAppOpen
 				} satisfies AppNodeData
 			};
