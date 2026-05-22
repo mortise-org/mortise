@@ -20,13 +20,9 @@
 	const envEntry = $derived(app.spec.environments?.find((e) => e.name === envName));
 	const envStatusEntry = $derived(app.status?.environments?.find((e) => e.name === envName));
 	const enabled = $derived(envEntry?.enabled !== false);
-	// Building is app-aggregate (one build serves all envs); everything else is
-	// per-env from EnvironmentStatus.phase.
 	const phase = $derived.by<AppPhase | undefined>(() => {
-		if (app.status?.phase === 'Building') return 'Building';
-		if (app.status?.phase === 'Failed') return 'Failed';
-		if (app.status?.phase === 'Degraded' && envStatusEntry?.phase === 'Ready') return 'Degraded';
-		return envStatusEntry?.phase ?? app.status?.phase;
+		if (envStatusEntry?.phase) return envStatusEntry.phase;
+		return app.status?.phase;
 	});
 	const isExternal = $derived(app.spec.source.type === 'external' as string);
 	const isPrivate = $derived(app.spec.network?.public === false);

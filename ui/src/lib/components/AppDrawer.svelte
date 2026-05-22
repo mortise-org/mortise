@@ -34,14 +34,8 @@
 	const envStatusEntry = $derived(liveApp?.status?.environments?.find((e) => e.name === selectedEnv));
 	const envSpecEntry = $derived(liveApp?.spec.environments?.find((e) => e.name === selectedEnv));
 	const envEnabled = $derived(envSpecEntry?.enabled !== false);
-	// Building is app-aggregate (one build serves all envs); everything else
-	// derives from per-env EnvironmentStatus.phase.
 	const envPhase = $derived.by<string | null>(() => {
-		const agg = liveApp?.status?.phase ?? null;
-		if (agg === 'Building') return 'Building';
-		if (agg === 'Failed') return 'Failed';
-		if (agg === 'Degraded' && envStatusEntry?.phase === 'Ready') return 'Degraded';
-		return envStatusEntry?.phase ?? agg;
+		return envStatusEntry?.phase ?? liveApp?.status?.phase ?? null;
 	});
 
 	let reloading = $state(false);
@@ -49,7 +43,7 @@
 
 	let lastAutoSwitchPhase = $state<string | null>(null);
 	$effect(() => {
-		const phase = liveApp?.status?.phase ?? null;
+		const phase = envPhase;
 		if ((phase === 'Building' || phase === 'Degraded' || phase === 'Failed') && phase !== lastAutoSwitchPhase) {
 			if (liveApp!.spec.source.type !== 'image') {
 				lastAutoSwitchPhase = phase;
@@ -84,7 +78,7 @@
 
 	// Clear optimistic override once the real polled phase catches up.
 	$effect(() => {
-		if (optimisticPhase && liveApp?.status?.phase === optimisticPhase) {
+		if (optimisticPhase && envPhase === optimisticPhase) {
 			optimisticPhase = null;
 		}
 	});
@@ -96,7 +90,7 @@
 	async function doRebuild() {
 		if (!liveApp) return;
 		errorMsg = '';
-		const prevPhase = liveApp.status?.phase;
+		const prevPhase = envPhase;
 		applyOptimisticPhase('Building');
 		reloading = true;
 		try {
@@ -114,7 +108,7 @@
 		const envName = selectedEnv || liveApp.spec.environments?.[0]?.name;
 		if (!envName) return;
 		errorMsg = '';
-		const prevPhase = liveApp.status?.phase;
+		const prevPhase = envPhase;
 		applyOptimisticPhase('Deploying');
 		reloading = true;
 		try {
