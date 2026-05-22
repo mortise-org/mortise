@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { api } from '$lib/api';
 	import { store } from '$lib/store.svelte';
-	import { appNeedsRedeploy } from '$lib/types';
+	import { appNeedsRedeploy, resolveAppEnvironment } from '$lib/types';
 	import type { App, EnvVar } from '$lib/types';
 	import { Loader2, X } from 'lucide-svelte';
 
@@ -64,7 +64,7 @@
 	}
 
 	const activeEnv = $derived(
-		store.currentEnv(project) || app.spec.environments?.[0]?.name || 'production'
+		resolveAppEnvironment(app, store.currentEnv(project))
 	);
 	const isGitSource = $derived(app.spec.source.type === 'git');
 

@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { api } from '$lib/api';
 	import { store } from '$lib/store.svelte';
+	import { resolveAppEnvironment } from '$lib/types';
 	import type { App, BuildLogsResponse, Pod } from '$lib/types';
 	import { X, GitBranch, Container, Cloud, ExternalLink, Rocket } from 'lucide-svelte';
 	import DeploymentsTab from './drawer/DeploymentsTab.svelte';
@@ -30,7 +31,9 @@
 
 	// Navbar is the single source of truth for env selection. Tabs read the
 	// current env from the store; the drawer does not own env state.
-	const selectedEnv = $derived(store.currentEnv(project) ?? '');
+	const selectedEnv = $derived(
+		liveApp ? resolveAppEnvironment(liveApp, store.currentEnv(project)) : (store.currentEnv(project) ?? '')
+	);
 	const envStatusEntry = $derived(liveApp?.status?.environments?.find((e) => e.name === selectedEnv));
 	const envSpecEntry = $derived(liveApp?.spec.environments?.find((e) => e.name === selectedEnv));
 	const envEnabled = $derived(envSpecEntry?.enabled !== false);
