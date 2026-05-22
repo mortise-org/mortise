@@ -3,13 +3,14 @@
 	import type { NodeProps } from '@xyflow/svelte';
 	import { Handle, Position } from '@xyflow/svelte';
 	import { GitBranch, Container, Cloud, Clock, HardDrive, RotateCw } from 'lucide-svelte';
-	import { appNeedsRedeploy } from '$lib/types';
+	import { appNeedsRedeploy, appPhaseForEnvironment } from '$lib/types';
 	import type { App, AppPhase } from '$lib/types';
 
 	interface AppNodeData {
 		app: App;
 		projectName: string;
 		env: string;
+		phaseOverride?: AppPhase | null;
 		onOpen: (appName: string) => void;
 	}
 
@@ -21,8 +22,7 @@
 	const envStatusEntry = $derived(app.status?.environments?.find((e) => e.name === envName));
 	const enabled = $derived(envEntry?.enabled !== false);
 	const phase = $derived.by<AppPhase | undefined>(() => {
-		if (envStatusEntry?.phase) return envStatusEntry.phase;
-		return app.status?.phase;
+		return nodeData.phaseOverride ?? appPhaseForEnvironment(app, envName) ?? undefined;
 	});
 	const isExternal = $derived(app.spec.source.type === 'external' as string);
 	const isPrivate = $derived(app.spec.network?.public === false);

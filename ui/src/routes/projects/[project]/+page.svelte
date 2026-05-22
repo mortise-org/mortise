@@ -4,7 +4,7 @@
 	import { goto } from '$app/navigation';
 	import { api } from '$lib/api';
 	import { store } from '$lib/store.svelte';
-	import { appNeedsRedeploy, staleEnvironments } from '$lib/types';
+	import { appNeedsRedeploy, appPhaseForEnvironment, resolveAppEnvironment, staleEnvironments } from '$lib/types';
 	import type { App, AppPhase, Project, BuildLogsResponse, Pod } from '$lib/types';
 	import { connectProjectEvents } from '$lib/projectEvents';
 	import ProjectCanvas from '$lib/components/ProjectCanvas.svelte';
@@ -26,6 +26,7 @@
 	let deploying = $state(false);
 	let deployError = $state('');
 	let showDetailsModal = $state(false);
+	let phaseOverrides = $state<Record<string, AppPhase | null>>({});
 
 	// SSE-fed state for build logs
 	let buildLogs = $state<Map<string, BuildLogsResponse>>(new Map());
@@ -36,6 +37,37 @@
 	);
 
 	let eventStream: Awaited<ReturnType<typeof connectProjectEvents>> | null = null;
+
+	function phaseOverrideKey(appName: string, envName: string): string {
+		return `${appName}:${envName}`;
+	}
+
+	function applyPhaseOverride(appName: string, envName: string, phase: AppPhase | null) {
+		const key = phaseOverrideKey(appName, envName);
+		if (phase) {
+			phaseOverrides = { ...phaseOverrides, [key]: phase };
+			return;
+		}
+		if (!(key in phaseOverrides)) return;
+		const next = { ...phaseOverrides };
+		delete next[key];
+		phaseOverrides = next;
+	}
+
+	function reconcilePhaseOverrides(app: App) {
+		const next = { ...phaseOverrides };
+		let changed = false;
+		for (const [key, phase] of Object.entries(phaseOverrides)) {
+			if (!key.startsWith(`${app.metadata.name}:`) || !phase) continue;
+			const envName = key.slice(app.metadata.name.length + 1);
+			const realPhase = appPhaseForEnvironment(app, envName);
+			if (realPhase && (realPhase === phase || realPhase !== 'Ready')) {
+				delete next[key];
+				changed = true;
+			}
+		}
+		if (changed) phaseOverrides = next;
+	}
 
 	onMount(async () => {
 		if (!localStorage.getItem('mortise_token')) {
@@ -85,6 +117,7 @@
 		eventStream?.close();
 		eventStream = connectProjectEvents(projectName, {
 			onAppUpdated: (app) => {
+				reconcilePhaseOverrides(app);
 				const idx = apps.findIndex(a => a.metadata.name === app.metadata.name);
 				if (idx >= 0) {
 					apps[idx] = app;
@@ -320,6 +353,7 @@
 				<ProjectCanvas
 					{projectName}
 					{apps}
+					{phaseOverrides}
 					selectedApp={urlApp}
 					onAppOpen={(name) => selectedApp = name}
 					onPaneClick={() => selectedApp = null}
@@ -449,7 +483,8 @@
 						</thead>
 						<tbody>
 							{#each apps as app}
-								{@const phase = app.status?.phase}
+								{@const appEnv = resolveAppEnvironment(app, selectedEnv)}
+								{@const phase = phaseOverrides[phaseOverrideKey(app.metadata.name, appEnv)] ?? appPhaseForEnvironment(app, appEnv)}
 								{@const style = phase ? phaseStyles[phase] : undefined}
 								{@const Icon = sourceIcon(app)}
 								{@const domain = app.spec.environments?.[0]?.domain}
@@ -525,8 +560,13 @@
 			appName={selectedApp}
 			autoRedeploy={project?.autoRedeploy ?? false}
 			liveApp={drawerApp}
+			phaseOverride={drawerApp ? (phaseOverrides[phaseOverrideKey(drawerApp.metadata.name, resolveAppEnvironment(drawerApp, selectedEnv))] ?? null) : null}
 			liveBuildLogs={buildLogs.get(selectedApp ?? '') ?? null}
 			livePods={podUpdates.get((selectedApp ?? '') + ':' + (store.currentEnv(projectName) ?? '')) ?? null}
+			onPhaseOverride={(envName, phase) => {
+				if (!selectedApp) return;
+				applyPhaseOverride(selectedApp, envName, phase);
+			}}
 			onClose={() => selectedApp = null}
 		/>
 	{/key}

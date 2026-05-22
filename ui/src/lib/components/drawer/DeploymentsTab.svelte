@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { api } from '$lib/api';
 	import { store } from '$lib/store.svelte';
-	import { appNeedsRedeploy, resolveAppEnvironment } from '$lib/types';
+	import { appNeedsRedeploy, appPhaseForEnvironment, resolveAppEnvironment } from '$lib/types';
 	import type { App } from '$lib/types';
 	import { RotateCw } from 'lucide-svelte';
 
@@ -29,14 +29,14 @@
 		app.status?.environments?.find((e) => e.name === selectedEnv) ?? null
 	);
 
-	const phase = $derived(phaseProp ?? app.status?.phase ?? 'Pending');
+	const phase = $derived(phaseProp ?? appPhaseForEnvironment(app, selectedEnv) ?? 'Pending');
 
 	const needsRedeploy = $derived(!autoRedeploy && appNeedsRedeploy(app));
 
 	async function doRedeploy() {
 		errorMsg = '';
 		reloading = true;
-		const prevPhase = app.status?.phase;
+		const prevPhase = phase;
 		onOptimisticPhase?.('Deploying');
 		try {
 			await api.redeploy(project, app.metadata.name, selectedEnv);
@@ -83,7 +83,7 @@
 	async function doRollback(envName: string, index: number) {
 		errorMsg = '';
 		reloading = true;
-		const prevPhase = app.status?.phase;
+		const prevPhase = phase;
 		onOptimisticPhase?.('Deploying');
 		try {
 			await api.rollback(project, app.metadata.name, envName, index);

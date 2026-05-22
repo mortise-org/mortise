@@ -2,7 +2,7 @@
 	import { onDestroy, untrack } from 'svelte';
 	import { AuthRequiredError, api } from '$lib/api';
 	import { store } from '$lib/store.svelte';
-	import { resolveAppEnvironment } from '$lib/types';
+	import { appPhaseForEnvironment, resolveAppEnvironment } from '$lib/types';
 	import { Loader2, Search } from 'lucide-svelte';
 	import type { App, LogLineEvent, Pod } from '$lib/types';
 	import LogLine from '$lib/components/LogLine.svelte';
@@ -22,7 +22,7 @@
 		resolveAppEnvironment(app, store.currentEnv(project))
 	);
 	const envStatusEntry = $derived(app.status?.environments?.find((e) => e.name === selectedEnv));
-	const envPhase = $derived(envStatusEntry?.phase ?? app.status?.phase);
+	const envPhase = $derived(appPhaseForEnvironment(app, selectedEnv));
 	const isBuilding = $derived(envPhase === 'Building');
 	const isFailed = $derived(envPhase === 'Failed');
 	const failedMessage = $derived(
