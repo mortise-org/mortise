@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { store } from '$lib/store.svelte';
+	import { resolveAppEnvironment } from '$lib/types';
 	import type { App, AppSpec } from '$lib/types';
 
 	import SourceSection from './settings/SourceSection.svelte';
@@ -39,7 +40,7 @@
 	}
 
 	const selectedEnv = $derived(
-		store.currentEnv(project) || effectiveSpec.environments?.[0]?.name || 'production'
+		resolveAppEnvironment(app, store.currentEnv(project))
 	);
 	const envEntry = $derived(effectiveSpec.environments?.find(e => e.name === selectedEnv));
 	const envEnabled = $derived(envEntry?.enabled !== false);

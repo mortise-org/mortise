@@ -2,6 +2,7 @@
 	import { onDestroy, untrack } from 'svelte';
 	import { AuthRequiredError, api } from '$lib/api';
 	import { store } from '$lib/store.svelte';
+	import { resolveAppEnvironment } from '$lib/types';
 	import { Loader2, Search } from 'lucide-svelte';
 	import type { App, LogLineEvent, Pod } from '$lib/types';
 	import LogLine from '$lib/components/LogLine.svelte';
@@ -17,14 +18,15 @@
 		livePods?: Pod[] | null;
 	} = $props();
 
-	const isBuilding = $derived(app.status?.phase === 'Building');
-	const isFailed = $derived(app.status?.phase === 'Failed');
-	const failedMessage = $derived(
-		app.status?.conditions?.find((c) => c.status === 'False')?.message ?? null
-	);
-
 	const selectedEnv = $derived(
-		store.currentEnv(project) || app.spec.environments?.[0]?.name || 'production'
+		resolveAppEnvironment(app, store.currentEnv(project))
+	);
+	const envStatusEntry = $derived(app.status?.environments?.find((e) => e.name === selectedEnv));
+	const envPhase = $derived(envStatusEntry?.phase ?? app.status?.phase);
+	const isBuilding = $derived(envPhase === 'Building');
+	const isFailed = $derived(envPhase === 'Failed');
+	const failedMessage = $derived(
+		envStatusEntry?.message ?? app.status?.conditions?.find((c) => c.status === 'False')?.message ?? null
 	);
 
 	let pods = $state<Pod[]>([]);

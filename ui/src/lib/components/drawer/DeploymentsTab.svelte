@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { api } from '$lib/api';
 	import { store } from '$lib/store.svelte';
-	import { appNeedsRedeploy } from '$lib/types';
+	import { appNeedsRedeploy, resolveAppEnvironment } from '$lib/types';
 	import type { App } from '$lib/types';
 	import { RotateCw } from 'lucide-svelte';
 
@@ -20,7 +20,7 @@
 	} = $props();
 
 	const selectedEnv = $derived(
-		store.currentEnv(project) || app.spec.environments?.[0]?.name || 'production'
+		resolveAppEnvironment(app, store.currentEnv(project))
 	);
 	let reloading = $state(false);
 	let errorMsg = $state('');

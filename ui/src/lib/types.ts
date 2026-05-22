@@ -172,6 +172,16 @@ export function staleEnvironments(app: App): string[] {
 		.map(env => env.name);
 }
 
+export function resolveAppEnvironment(app: App, requestedEnv: string | null | undefined): string {
+	const knownEnvs = [
+		...(app.spec.environments ?? []).map((env) => env.name),
+		...(app.status?.environments ?? []).map((env) => env.name)
+	];
+	const uniqueEnvs = [...new Set(knownEnvs.filter(Boolean))];
+	if (requestedEnv && uniqueEnvs.includes(requestedEnv)) return requestedEnv;
+	return uniqueEnvs[0] ?? requestedEnv ?? 'production';
+}
+
 export interface SecretResponse {
 	name: string;
 	keys: string[];
