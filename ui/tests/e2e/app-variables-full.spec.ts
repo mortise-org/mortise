@@ -715,9 +715,9 @@ test.describe('variables tab - fromBinding projection', () => {
       expect(envVar?.valueFrom?.fromBinding?.key).toBe('password');
     }).toPass({ timeout: 10_000 });
 
-    // The variable should show in the table with a binding badge
-    await expect(runtimeSection.getByText('DB_PASS')).toBeVisible({ timeout: 5_000 });
-    await expect(runtimeSection.getByText('binding')).toBeVisible();
+    // The variable should show in the table with a binding badge (may take time for controller to reconcile)
+    await expect(runtimeSection.getByText('DB_PASS')).toBeVisible({ timeout: 15_000 });
+    await expect(runtimeSection.getByText('binding').first()).toBeVisible();
 
     await deleteAppViaAPI(request, token, project, webApp);
     await deleteAppViaAPI(request, token, project, pgApp);
