@@ -441,7 +441,7 @@ test.describe('variables tab - staging env via switcher', () => {
     await envSwitcher.click();
 
     // Click the "staging" option in the dropdown.
-    await page.getByRole('button', { name: 'staging' }).click();
+    await page.getByRole('button', { name: 'staging', exact: true }).click();
 
     // Now the Runtime section should show "Runtime - staging" and the var.
     await expect(page.getByText('Runtime - staging')).toBeVisible({ timeout: 8_000 });

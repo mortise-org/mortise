@@ -2452,7 +2452,6 @@ func (r *AppReconciler) reconcileEnvSecret(ctx context.Context, app *mortisev1al
 	}
 
 	var bindingEnvs []envstore.Env
-	bindingEnvs = append(bindingEnvs, fromBindingEnvs...)
 	if len(env.Bindings) > 0 {
 		resolver := &bindings.Resolver{Client: r.Client}
 		boundVars, err := resolver.Resolve(ctx, projectName, env.Name, env.Bindings)
@@ -2467,6 +2466,9 @@ func (r *AppReconciler) reconcileEnvSecret(ctx context.Context, app *mortisev1al
 			})
 		}
 	}
+	// Append fromBinding vars last so explicit user projections win over
+	// auto-generated binding vars when names collide.
+	bindingEnvs = append(bindingEnvs, fromBindingEnvs...)
 	if len(bindingEnvs) == 0 {
 		if deleted, err := r.deleteBindingOnlyEnvSecret(ctx, envNs, app.Name); err != nil {
 			return fmt.Errorf("delete empty binding-only env secret: %w", err)

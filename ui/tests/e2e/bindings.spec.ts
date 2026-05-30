@@ -138,7 +138,7 @@ test.describe('bindings', () => {
 
 		await injectToken(page, adminToken);
 		await page.goto(`/projects/${projectName}/apps/${webApp}`);
-		await expect(page.getByRole('heading', { name: webApp })).toBeVisible({ timeout: 10_000 });
+		await expect(page.getByRole('heading', { name: webApp, exact: true })).toBeVisible({ timeout: 10_000 });
 
 		await page.getByRole('button', { name: 'Variables', exact: true }).click();
 
