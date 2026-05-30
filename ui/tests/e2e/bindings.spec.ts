@@ -142,18 +142,22 @@ test.describe('bindings', () => {
 
 		await page.getByRole('button', { name: 'Variables', exact: true }).click();
 
-		// Click + in the Runtime section
-		const runtimeSection = page.locator('.rounded-lg.border').filter({ hasText: /^Runtime/ });
-		await runtimeSection.locator('button').filter({ has: page.locator('svg') }).last().click();
+		// Click + in the Runtime section header
+		const runtimeSection = page.locator('.rounded-lg.border').filter({ hasText: /^Runtime/ }).first();
+		const header = runtimeSection.locator('.flex.items-center.justify-between').first();
+		await header.locator('button:has(svg)').last().click();
 
-		await page.getByPlaceholder('VARIABLE_NAME').fill('MY_DB_URL');
+		const varNameInput = runtimeSection.getByPlaceholder('VARIABLE_NAME');
+		await expect(varNameInput).toBeVisible({ timeout: 10_000 });
+		await varNameInput.fill('MY_DB_URL');
 
 		// Click the link icon to open the bindings picker
 		await runtimeSection.locator('button[title="Insert from binding or secret"]').click();
 
 		// Click the DATABASE_URL row from the picker
-		await expect(page.getByText('DATABASE_URL')).toBeVisible({ timeout: 5_000 });
-		await page.locator('button').filter({ hasText: 'DATABASE_URL' }).filter({ hasText: pgApp }).click();
+		const picker = page.locator('.absolute.left-0.top-full');
+		await expect(picker.getByText('DATABASE_URL')).toBeVisible({ timeout: 5_000 });
+		await picker.locator('button').filter({ hasText: 'DATABASE_URL' }).click();
 
 		// Verify via API
 		await expect(async () => {

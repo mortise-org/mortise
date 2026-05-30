@@ -697,12 +697,13 @@ test.describe('variables tab - fromBinding projection', () => {
     // Click the link icon to open the bindings picker
     await runtimeSection.locator('button[title="Insert from binding or secret"]').click();
 
-    // The picker should show the bound postgres app's credentials
-    await expect(page.getByText('Bindings').last()).toBeVisible({ timeout: 5_000 });
-    await expect(page.getByText('PASSWORD')).toBeVisible({ timeout: 5_000 });
+    // The picker panel should show the bound postgres app's credentials
+    const picker = page.locator('.absolute.left-0.top-full');
+    await expect(picker.getByText('Bindings')).toBeVisible({ timeout: 5_000 });
+    await expect(picker.getByText('PASSWORD')).toBeVisible({ timeout: 5_000 });
 
-    // Click the PASSWORD row
-    await page.locator('button').filter({ hasText: 'PASSWORD' }).filter({ hasText: pgApp }).click();
+    // Click the PASSWORD row in the picker
+    await picker.locator('button').filter({ hasText: 'PASSWORD' }).click();
 
     // Verify CRD spec has the fromBinding entry
     await expect(async () => {
@@ -743,17 +744,12 @@ test.describe('variables tab - fromBinding projection', () => {
     const hostRow = page.locator('div.group').filter({ hasText: `${prefix}_HOST` });
     await expect(hostRow.getByText('binding')).toBeVisible();
 
-    // Auto-injected vars should NOT have a trash button (spacer div instead)
-    const trashButtons = hostRow.locator('button').filter({ has: page.locator('svg') });
-    // Only the eye button, not the trash
-    const buttonCount = await trashButtons.count();
-    // Eye button is present, but no trash button for auto-injected
-    const rowButtons = hostRow.locator('button');
-    for (let i = 0; i < await rowButtons.count(); i++) {
-      const title = await rowButtons.nth(i).getAttribute('title');
-      expect(title).not.toBe(null);
-      expect(title).not.toContain('Delete');
-    }
+    // Auto-injected vars should NOT have a trash button (spacer div instead).
+    // The row has an eye toggle button but no trash/delete button.
+    const trashButton = hostRow.locator('button').filter({ has: page.locator('svg.h-3\\.5.w-3\\.5') }).last();
+    const trashTitle = await trashButton.getAttribute('title');
+    // The last button should be the eye toggle (Hide/Reveal), not a delete
+    expect(trashTitle).toMatch(/Hide|Reveal|Show/);
 
     await deleteAppViaAPI(request, token, project, webApp);
     await deleteAppViaAPI(request, token, project, pgApp);

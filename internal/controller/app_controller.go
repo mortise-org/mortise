@@ -2409,10 +2409,18 @@ func (r *AppReconciler) reconcileEnvSecret(ctx context.Context, app *mortisev1al
 	}
 
 	var toMerge []envstore.Env
+	var fromBindingEnvs []envstore.Env
 	for _, ev := range env.Env {
 		resolved, source, err := r.resolveEnvVarValue(ctx, ev, envNs, projectName, env.Name, bindingRefs)
 		if err != nil {
 			log.Error(err, "skipping env var with invalid valueFrom", "var", ev.Name)
+			continue
+		}
+
+		// fromBinding vars go into the binding-source list so they survive
+		// ReplaceSource("binding", ...) below.
+		if source == "binding" {
+			fromBindingEnvs = append(fromBindingEnvs, envstore.Env{Name: ev.Name, Value: resolved, Source: source})
 			continue
 		}
 
@@ -2444,6 +2452,7 @@ func (r *AppReconciler) reconcileEnvSecret(ctx context.Context, app *mortisev1al
 	}
 
 	var bindingEnvs []envstore.Env
+	bindingEnvs = append(bindingEnvs, fromBindingEnvs...)
 	if len(env.Bindings) > 0 {
 		resolver := &bindings.Resolver{Client: r.Client}
 		boundVars, err := resolver.Resolve(ctx, projectName, env.Name, env.Bindings)
