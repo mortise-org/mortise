@@ -24,6 +24,8 @@
 		value: string;
 		source?: string;
 		revealed?: boolean;
+		bindingRef?: string;
+		bindingKey?: string;
 	};
 
 	type SectionState = {
@@ -115,7 +117,8 @@
 		try {
 			const rows = await api.getEnv(project, app.metadata.name, envName);
 			const entries: EnvEntry[] = (rows ?? []).map(r => ({
-				name: r.name, value: r.value, source: r.source ?? 'user', revealed: false
+				name: r.name, value: r.value, source: r.source ?? 'user', revealed: false,
+				bindingRef: r.bindingRef, bindingKey: r.bindingKey
 			}));
 			envSection.entries = entries;
 			envSection.originalEntries = entries.map(e => ({ ...e }));
@@ -209,9 +212,58 @@
 		section.entries[idx] = { ...section.entries[idx], revealed: !section.entries[idx].revealed };
 	}
 
-	function insertRef(ref: string) {
-		envSection.newValue = envSection.newValue + ref;
+	async function handleBindingSelect(ref: string, key: string) {
+		const varName = envSection.newKey.trim();
+		if (!varName) return;
 		envSection.showPicker = false;
+		envSection.saving = true;
+		envSection.error = '';
+		try {
+			const spec = JSON.parse(JSON.stringify(app.spec));
+			const envObj = spec.environments?.find((e: { name: string }) => e.name === activeEnv);
+			if (!envObj) throw new Error(`Environment ${activeEnv} not found`);
+			envObj.env = [
+				...(envObj.env ?? []),
+				{ name: varName, valueFrom: { fromBinding: { ref, key } } }
+			];
+			await api.updateApp(project, app.metadata.name, spec);
+			envSection.showNewRow = false;
+			envSection.newKey = '';
+			envSection.newValue = '';
+			markStale();
+			await loadEnv(activeEnv);
+		} catch (e) {
+			envSection.error = e instanceof Error ? e.message : 'Failed to add binding var';
+		} finally {
+			envSection.saving = false;
+		}
+	}
+
+	async function handleSecretSelect(secretName: string) {
+		const varName = envSection.newKey.trim();
+		if (!varName) return;
+		envSection.showPicker = false;
+		envSection.saving = true;
+		envSection.error = '';
+		try {
+			const spec = JSON.parse(JSON.stringify(app.spec));
+			const envObj = spec.environments?.find((e: { name: string }) => e.name === activeEnv);
+			if (!envObj) throw new Error(`Environment ${activeEnv} not found`);
+			envObj.env = [
+				...(envObj.env ?? []),
+				{ name: varName, valueFrom: { secretRef: secretName } }
+			];
+			await api.updateApp(project, app.metadata.name, spec);
+			envSection.showNewRow = false;
+			envSection.newKey = '';
+			envSection.newValue = '';
+			markStale();
+			await loadEnv(activeEnv);
+		} catch (e) {
+			envSection.error = e instanceof Error ? e.message : 'Failed to add secret ref var';
+		} finally {
+			envSection.saving = false;
+		}
 	}
 
 	function parseRaw(text: string): Record<string, string> {
@@ -281,7 +333,27 @@
 	}
 
 	async function deleteEnvVar(idx: number) {
-		const key = envSection.entries[idx].name;
+		const entry = envSection.entries[idx];
+		if (entry.bindingRef || entry.source === 'binding') {
+			envSection.saving = true;
+			envSection.error = '';
+			try {
+				const spec = JSON.parse(JSON.stringify(app.spec));
+				const envObj = spec.environments?.find((e: { name: string }) => e.name === activeEnv);
+				if (envObj) {
+					envObj.env = (envObj.env ?? []).filter((ev: { name: string }) => ev.name !== entry.name);
+					await api.updateApp(project, app.metadata.name, spec);
+				}
+				markStale();
+				await loadEnv(activeEnv);
+			} catch (e) {
+				envSection.error = e instanceof Error ? e.message : 'Failed to delete';
+			} finally {
+				envSection.saving = false;
+			}
+			return;
+		}
+		const key = entry.name;
 		envSection.entries = envSection.entries.filter((_, i) => i !== idx);
 		const next = new Set(envSection.editedKeys);
 		next.delete(key);
@@ -453,6 +525,7 @@
 			title="Runtime - {activeEnv}"
 			{project}
 			{app}
+			{activeEnv}
 			showBindingPicker={true}
 			onSave={saveEnvSection}
 			onAdd={addEnvVar}
@@ -461,7 +534,8 @@
 			onValueEdit={(idx, val) => handleValueEdit(envSection, idx, val)}
 			onKeyPaste={(e) => handleKeyPaste(envSection, e)}
 			onToggleReveal={(idx) => toggleReveal(envSection, idx)}
-			onInsertRef={insertRef}
+			onBindingSelect={handleBindingSelect}
+			onSecretSelect={handleSecretSelect}
 			onSetRawMode={(v) => { envSection.rawMode = v; }}
 			onSetRawText={(v) => { envSection.rawText = v; }}
 			onSetShowNewRow={(v) => { envSection.showNewRow = v; }}

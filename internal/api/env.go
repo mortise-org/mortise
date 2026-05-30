@@ -27,6 +27,11 @@ type envVarResponse struct {
 	Value    string `json:"value"`
 	Source   string `json:"source,omitempty"`
 	Redacted bool   `json:"redacted,omitempty"`
+	// BindingRef and BindingKey are set for env vars with valueFrom.fromBinding
+	// on the CRD spec, so the UI can display "app → key" instead of the
+	// resolved value.
+	BindingRef string `json:"bindingRef,omitempty"`
+	BindingKey string `json:"bindingKey,omitempty"`
 }
 
 // patchEnvRequest is the JSON body for PATCH .../env.
@@ -77,9 +82,27 @@ func (s *Server) GetEnv(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Build a map of fromBinding specs so we can enrich the response.
+	fromBindingSpecs := make(map[string]*mortisev1alpha1.BindingVarSource)
+	for _, envSpec := range app.Spec.Environments {
+		if envSpec.Name == envName {
+			for _, ev := range envSpec.Env {
+				if ev.ValueFrom != nil && ev.ValueFrom.FromBinding != nil {
+					fromBindingSpecs[ev.Name] = ev.ValueFrom.FromBinding
+				}
+			}
+			break
+		}
+	}
+
 	resp := make([]envVarResponse, 0, len(envs))
 	for _, e := range envs {
-		resp = append(resp, envResponseVar(e, plaintext))
+		ev := envResponseVar(e, plaintext)
+		if fb, ok := fromBindingSpecs[e.Name]; ok {
+			ev.BindingRef = fb.Ref
+			ev.BindingKey = fb.Key
+		}
+		resp = append(resp, ev)
 	}
 	writeJSON(w, http.StatusOK, resp)
 }

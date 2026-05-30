@@ -199,6 +199,25 @@ spec:
                             type: string
                           valueFrom:
                             properties:
+                              fromBinding:
+                                description: |-
+                                  BindingVarSource references a single key from a bound App's credentials.
+                                  The Ref must match a binding declared in the same environment's bindings[]
+                                  list. The Key must be a valid credential name exposed by the bound App
+                                  (e.g. "host", "port", "url", "password").
+                                properties:
+                                  key:
+                                    description: Key is the credential key to project
+                                      from the bound App.
+                                    type: string
+                                  ref:
+                                    description: Ref is the name of the bound App
+                                      within the same project.
+                                    type: string
+                                required:
+                                - key
+                                - ref
+                                type: object
                               secretRef:
                                 type: string
                             type: object
@@ -423,6 +442,25 @@ spec:
                       type: string
                     valueFrom:
                       properties:
+                        fromBinding:
+                          description: |-
+                            BindingVarSource references a single key from a bound App's credentials.
+                            The Ref must match a binding declared in the same environment's bindings[]
+                            list. The Key must be a valid credential name exposed by the bound App
+                            (e.g. "host", "port", "url", "password").
+                          properties:
+                            key:
+                              description: Key is the credential key to project from
+                                the bound App.
+                              type: string
+                            ref:
+                              description: Ref is the name of the bound App within
+                                the same project.
+                              type: string
+                          required:
+                          - key
+                          - ref
+                          type: object
                         secretRef:
                           type: string
                       type: object

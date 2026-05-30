@@ -2,13 +2,14 @@
 	import type { App } from '$lib/types';
 	import BindingsPicker from '$lib/components/BindingsPicker.svelte';
 	import { Plus, Trash2, Link, Upload, FileText, X, Eye, EyeOff } from 'lucide-svelte';
-	import type { Snippet } from 'svelte';
 
 	type EnvEntry = {
 		name: string;
 		value: string;
 		source?: string;
 		revealed?: boolean;
+		bindingRef?: string;
+		bindingKey?: string;
 	};
 
 	type SectionState = {
@@ -32,6 +33,7 @@
 		subtitle = '',
 		project = '',
 		app = undefined,
+		activeEnv = '',
 		showBindingPicker = false,
 		showSourceBadge = true,
 		onSave,
@@ -41,7 +43,8 @@
 		onValueEdit,
 		onKeyPaste,
 		onToggleReveal,
-		onInsertRef,
+		onBindingSelect,
+		onSecretSelect,
 		onSetRawMode,
 		onSetRawText,
 		onSetShowNewRow,
@@ -54,6 +57,7 @@
 		subtitle?: string;
 		project?: string;
 		app?: App;
+		activeEnv?: string;
 		showBindingPicker?: boolean;
 		showSourceBadge?: boolean;
 		onSave: () => void;
@@ -63,7 +67,8 @@
 		onValueEdit: (idx: number, value: string) => void;
 		onKeyPaste: (e: ClipboardEvent) => void;
 		onToggleReveal: (idx: number) => void;
-		onInsertRef?: (ref: string) => void;
+		onBindingSelect?: (ref: string, key: string) => void;
+		onSecretSelect?: (secretName: string) => void;
 		onSetRawMode: (v: boolean) => void;
 		onSetRawText: (v: string) => void;
 		onSetShowNewRow: (v: boolean) => void;
@@ -79,6 +84,14 @@
 			case 'shared': return { label: 'project', classes: 'bg-accent/10 text-accent' };
 			default: return null;
 		}
+	}
+
+	function isFromBinding(entry: EnvEntry): boolean {
+		return !!entry.bindingRef && !!entry.bindingKey;
+	}
+
+	function isAutoInjectedBinding(entry: EnvEntry): boolean {
+		return entry.source === 'binding' && !entry.bindingRef;
 	}
 </script>
 
@@ -155,14 +168,15 @@
 							placeholder="value or binding ref"
 							onkeydown={(e) => { if (e.key === 'Enter' && section.newKey.trim()) onAdd(); }}
 							class="w-full rounded-md border border-surface-600 bg-surface-800 px-2.5 py-1.5 text-sm text-white placeholder-gray-500 outline-none focus:border-accent {showBindingPicker ? 'pr-8' : ''}" />
-						{#if showBindingPicker && onInsertRef && onSetShowPicker}
+						{#if showBindingPicker && onBindingSelect && onSetShowPicker}
 							<button type="button" onclick={() => onSetShowPicker?.(!section.showPicker)}
-								class="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500 hover:text-accent" title="Insert reference">
+								class="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500 hover:text-accent" title="Insert from binding or secret">
 								<Link class="h-3.5 w-3.5" />
 							</button>
 							{#if section.showPicker && project && app}
-								<BindingsPicker {project} {app}
-									onInsert={(ref) => onInsertRef?.(ref)}
+								<BindingsPicker {project} {app} {activeEnv}
+									onBindingSelect={(ref, key) => onBindingSelect?.(ref, key)}
+									onSecretSelect={(name) => onSecretSelect?.(name)}
 									onClose={() => onSetShowPicker?.(false)} />
 							{/if}
 						{/if}
@@ -191,29 +205,51 @@
 							{/if}
 						</div>
 						<div class="flex-1 flex items-center gap-1 min-w-0">
-							{#if entry.revealed}
+							{#if isFromBinding(entry)}
+								<!-- fromBinding: show ref → key as display, reveal shows resolved value -->
+								{#if entry.revealed}
+									<span class="w-full px-1 py-0.5 font-mono text-xs text-gray-400 truncate">{entry.value}</span>
+								{:else}
+									<span class="w-full px-1 py-0.5 font-mono text-xs text-info/70 truncate">{entry.bindingRef} → {entry.bindingKey}</span>
+								{/if}
+								<button type="button" onclick={() => onToggleReveal(idx)}
+									class="shrink-0 p-1 text-gray-600 hover:text-gray-400" title={entry.revealed ? 'Show reference' : 'Show resolved value'}>
+									{#if entry.revealed}
+										<EyeOff class="h-3.5 w-3.5" />
+									{:else}
+										<Eye class="h-3.5 w-3.5" />
+									{/if}
+								</button>
+							{:else if entry.revealed}
 								<input type="text" value={entry.value}
 									oninput={(e) => onValueEdit(idx, (e.target as HTMLInputElement).value)}
-									class="w-full rounded border border-transparent bg-transparent px-1 py-0.5 font-mono text-xs text-gray-400 outline-none focus:border-surface-500 focus:bg-surface-700 hover:border-surface-600" />
+									readonly={isAutoInjectedBinding(entry)}
+									class="w-full rounded border border-transparent bg-transparent px-1 py-0.5 font-mono text-xs text-gray-400 outline-none focus:border-surface-500 focus:bg-surface-700 hover:border-surface-600 {isAutoInjectedBinding(entry) ? 'cursor-default' : ''}" />
 							{:else}
 								<button type="button" onclick={() => onToggleReveal(idx)}
 									class="w-full text-left px-1 py-0.5 font-mono text-xs text-gray-500 hover:text-gray-400 truncate">
 									{'*'.repeat(Math.min(entry.value.length || 7, 20))}
 								</button>
 							{/if}
-							<button type="button" onclick={() => onToggleReveal(idx)}
-								class="shrink-0 p-1 text-gray-600 hover:text-gray-400" title={entry.revealed ? 'Hide' : 'Reveal'}>
-								{#if entry.revealed}
-									<EyeOff class="h-3.5 w-3.5" />
-								{:else}
-									<Eye class="h-3.5 w-3.5" />
-								{/if}
-							</button>
+							{#if !isFromBinding(entry)}
+								<button type="button" onclick={() => onToggleReveal(idx)}
+									class="shrink-0 p-1 text-gray-600 hover:text-gray-400" title={entry.revealed ? 'Hide' : 'Reveal'}>
+									{#if entry.revealed}
+										<EyeOff class="h-3.5 w-3.5" />
+									{:else}
+										<Eye class="h-3.5 w-3.5" />
+									{/if}
+								</button>
+							{/if}
 						</div>
-						<button type="button" onclick={() => onDelete(idx)}
-							class="shrink-0 rounded p-1 text-gray-500 hover:text-danger transition-colors">
-							<Trash2 class="h-3.5 w-3.5" />
-						</button>
+						{#if !isAutoInjectedBinding(entry)}
+							<button type="button" onclick={() => onDelete(idx)}
+								class="shrink-0 rounded p-1 text-gray-500 hover:text-danger transition-colors">
+								<Trash2 class="h-3.5 w-3.5" />
+							</button>
+						{:else}
+							<div class="w-[26px]"></div>
+						{/if}
 					</div>
 				{/each}
 			{/if}

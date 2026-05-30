@@ -105,35 +105,96 @@ test.describe('bindings', () => {
 		await deleteAppViaAPI(request, adminToken, projectName, pgAppName);
 	});
 
-	test('developer uses binding reference variable syntax in Variables tab', async ({
+	test('developer adds a fromBinding var via the bindings picker', async ({
 		page,
 		request
 	}) => {
-		const appName = `e2e-bindvar-${randomSuffix()}`;
+		const webApp = `e2e-bindvar-${randomSuffix()}`;
+		const pgApp = `pg-bindvar-${randomSuffix()}`;
+
+		await createAppViaAPI(request, adminToken, projectName, webApp);
+		const pgRes = await request.post(`/api/projects/${projectName}/apps`, {
+			headers: { Authorization: `Bearer ${adminToken}` },
+			data: {
+				name: pgApp,
+				spec: {
+					source: { type: 'image', image: 'postgres:16' },
+					network: { public: false, port: 5432 },
+					environments: [{ name: 'production', replicas: 1 }],
+					credentials: [{ name: 'DATABASE_URL' }]
+				}
+			}
+		});
+		if (!pgRes.ok()) throw new Error(`create pg app: ${pgRes.status()}`);
+
+		// Add binding via API
+		const app = await getAppViaAPI(request, adminToken, projectName, webApp);
+		const spec = JSON.parse(JSON.stringify(app.spec));
+		spec.environments = [{ name: 'production', replicas: 1, bindings: [{ ref: pgApp }] }];
+		await request.put(`/api/projects/${projectName}/apps/${webApp}`, {
+			headers: { Authorization: `Bearer ${adminToken}` },
+			data: spec
+		});
+
+		await injectToken(page, adminToken);
+		await page.goto(`/projects/${projectName}/apps/${webApp}`);
+		await expect(page.getByRole('heading', { name: webApp })).toBeVisible({ timeout: 10_000 });
+
+		await page.getByRole('button', { name: 'Variables', exact: true }).click();
+
+		// Click + in the Runtime section
+		const runtimeSection = page.locator('.rounded-lg.border').filter({ hasText: /^Runtime/ });
+		await runtimeSection.locator('button').filter({ has: page.locator('svg') }).last().click();
+
+		await page.getByPlaceholder('VARIABLE_NAME').fill('MY_DB_URL');
+
+		// Click the link icon to open the bindings picker
+		await runtimeSection.locator('button[title="Insert from binding or secret"]').click();
+
+		// Click the DATABASE_URL row from the picker
+		await expect(page.getByText('DATABASE_URL')).toBeVisible({ timeout: 5_000 });
+		await page.locator('button').filter({ hasText: 'DATABASE_URL' }).filter({ hasText: pgApp }).click();
+
+		// Verify via API
+		await expect(async () => {
+			const updatedApp = await getAppViaAPI(request, adminToken, projectName, webApp);
+			const envSpec = updatedApp.spec.environments?.find((e: { name: string }) => e.name === 'production');
+			const envVar = envSpec?.env?.find((e: { name: string }) => e.name === 'MY_DB_URL');
+			expect(envVar?.valueFrom?.fromBinding?.ref).toBe(pgApp);
+			expect(envVar?.valueFrom?.fromBinding?.key).toBe('DATABASE_URL');
+		}).toPass({ timeout: 10_000 });
+
+		await deleteAppViaAPI(request, adminToken, projectName, webApp);
+		await deleteAppViaAPI(request, adminToken, projectName, pgApp);
+	});
+
+	test('bindings + button does not flash/disappear on click', async ({ page, request }) => {
+		const appName = `web-flash-${randomSuffix()}`;
 		await createAppViaAPI(request, adminToken, projectName, appName);
 
 		await injectToken(page, adminToken);
 		await page.goto(`/projects/${projectName}/apps/${appName}`);
 		await expect(page.getByRole('heading', { name: appName })).toBeVisible({ timeout: 10_000 });
 
-		// Open Variables tab.
 		await page.getByRole('button', { name: 'Variables', exact: true }).click();
 
-		// Click the + button in the Runtime env section to add a new variable.
-		const runtimeSection = page.locator('.rounded-lg.border').filter({ hasText: /^Runtime/ });
-		await runtimeSection.locator('button').filter({ has: page.locator('svg') }).last().click();
+		const bindingsSection = page
+			.locator('.rounded-lg.border')
+			.filter({ has: page.getByRole('button', { name: 'Bindings', exact: true }) })
+			.first();
+		const bindingsHeader = bindingsSection.locator('div[role="button"]').first();
+		await expect(bindingsHeader).toBeVisible({ timeout: 5_000 });
 
-		// Fill the key and the reference value.
-		await page.getByPlaceholder('VARIABLE_NAME').fill('DATABASE_URL');
-		await page.getByPlaceholder('value').first().fill('${{bindings.postgres.DATABASE_URL}}');
+		// Click + to show the add binding form
+		await bindingsHeader.locator('button').click();
 
-		// The Add button should be visible.
-		const addBtn = page.getByRole('button', { name: 'Add' }).first();
-		await expect(addBtn).toBeVisible();
-		await addBtn.click();
+		// The select dropdown should appear AND stay visible (not flash away)
+		const bindingSelect = bindingsSection.locator('#binding-ref');
+		await expect(bindingSelect).toBeVisible({ timeout: 5_000 });
 
-		// The variable with reference syntax should appear.
-		await expect(page.getByText('DATABASE_URL')).toBeVisible({ timeout: 5_000 });
+		// Wait 2 seconds to ensure SSE events don't reset the form
+		await page.waitForTimeout(2000);
+		await expect(bindingSelect).toBeVisible();
 
 		await deleteAppViaAPI(request, adminToken, projectName, appName);
 	});

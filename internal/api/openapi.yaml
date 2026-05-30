@@ -94,6 +94,13 @@ definitions:
       to:
         type: string
     type: object
+  api.bindingKeysResponse:
+    properties:
+      keys:
+        items:
+          type: string
+        type: array
+    type: object
   api.buildArgResponse:
     properties:
       name:
@@ -295,6 +302,14 @@ definitions:
     type: object
   api.envVarResponse:
     properties:
+      bindingKey:
+        type: string
+      bindingRef:
+        description: |-
+          BindingRef and BindingKey are set for env vars with valueFrom.fromBinding
+          on the CRD spec, so the UI can display "app → key" instead of the
+          resolved value.
+        type: string
       name:
         type: string
       redacted:
@@ -1383,6 +1398,19 @@ definitions:
         description: Ref is the name of the bound App within the same project.
         type: string
     type: object
+  v1alpha1.BindingVarSource:
+    properties:
+      key:
+        description: |-
+          Key is the credential key to project from the bound App.
+          +kubebuilder:validation:Required
+        type: string
+      ref:
+        description: |-
+          Ref is the name of the bound App within the same project.
+          +kubebuilder:validation:Required
+        type: string
+    type: object
   v1alpha1.Build:
     properties:
       args:
@@ -1681,6 +1709,8 @@ definitions:
     type: object
   v1alpha1.EnvVarSource:
     properties:
+      fromBinding:
+        $ref: '#/definitions/v1alpha1.BindingVarSource'
       secretRef:
         type: string
     type: object
@@ -3340,6 +3370,50 @@ paths:
       summary: Update an app
       tags:
       - apps
+  /projects/{project}/apps/{app}/binding-keys:
+    get:
+      description: Returns the keys available for projection from a bound app (host,
+        port, url, credentials)
+      parameters:
+      - description: Project name
+        in: path
+        name: project
+        required: true
+        type: string
+      - description: App name
+        in: path
+        name: app
+        required: true
+        type: string
+      - description: Bound app name
+        in: query
+        name: ref
+        required: true
+        type: string
+      - description: Environment name
+        in: query
+        name: environment
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.bindingKeysResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.errorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.errorResponse'
+      security:
+      - BearerAuth: []
+      summary: Get available binding keys for a bound app
+      tags:
+      - bindings
   /projects/{project}/apps/{app}/build-args:
     get:
       description: Returns all build arguments for a specific environment on an app
