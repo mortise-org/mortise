@@ -231,6 +231,23 @@ func writeBuildKitTLS(buildCfg *build.Config, src platformconfig.BuildConfig) er
 	return nil
 }
 
+func operatorNamespace() string {
+	if ns := os.Getenv("POD_NAMESPACE"); ns != "" {
+		return ns
+	}
+	if data, err := os.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/namespace"); err == nil {
+		return strings.TrimSpace(string(data))
+	}
+	return "mortise-system"
+}
+
+func operatorServiceAccount() string {
+	if sa := os.Getenv("SERVICE_ACCOUNT_NAME"); sa != "" {
+		return sa
+	}
+	return "mortise-controller"
+}
+
 func isCRDDiscoveryNotReady(err error) bool {
 	if err == nil {
 		return false
@@ -375,9 +392,11 @@ func main() {
 	}
 
 	if err := (&controller.ProjectReconciler{
-		Client:    mgr.GetClient(),
-		Scheme:    mgr.GetScheme(),
-		APIReader: mgr.GetAPIReader(),
+		Client:             mgr.GetClient(),
+		Scheme:             mgr.GetScheme(),
+		APIReader:          mgr.GetAPIReader(),
+		OperatorNamespace:  operatorNamespace(),
+		ServiceAccountName: operatorServiceAccount(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "Project")
 		os.Exit(1)

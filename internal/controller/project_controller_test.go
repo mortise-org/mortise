@@ -59,7 +59,7 @@ var _ = Describe("Project Controller", func() {
 			}
 			Expect(k8sClient.Create(ctx, project)).To(Succeed())
 
-			r := &ProjectReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			r := &ProjectReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), OperatorNamespace: "mortise-system", ServiceAccountName: "mortise-controller"}
 			// First reconcile: adds finalizer.
 			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: projectName}})
 			Expect(err).NotTo(HaveOccurred())
@@ -119,7 +119,7 @@ var _ = Describe("Project Controller", func() {
 				Message:      "Created project " + projectName,
 			})).To(Succeed())
 
-			r := &ProjectReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			r := &ProjectReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), OperatorNamespace: "mortise-system", ServiceAccountName: "mortise-controller"}
 			Expect(r.ensureProjectCreateActivity(ctx, project)).To(Succeed())
 			var stale mortisev1alpha1.Project
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: projectName}, &stale)).To(Succeed())
@@ -167,7 +167,7 @@ var _ = Describe("Project Controller", func() {
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: concurrentProjectName}, &staleA)).To(Succeed())
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: concurrentProjectName}, &staleB)).To(Succeed())
 
-			r := &ProjectReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			r := &ProjectReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), OperatorNamespace: "mortise-system", ServiceAccountName: "mortise-controller"}
 			start := make(chan struct{})
 			errCh := make(chan error, 2)
 
@@ -239,7 +239,7 @@ var _ = Describe("Project Controller", func() {
 			}
 			Expect(k8sClient.Create(ctx, project)).To(Succeed())
 
-			r := &ProjectReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			r := &ProjectReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), OperatorNamespace: "mortise-system", ServiceAccountName: "mortise-controller"}
 			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: projectName}})
 			Expect(err).NotTo(HaveOccurred())
 			_, err = r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: projectName}})
@@ -285,7 +285,7 @@ var _ = Describe("Project Controller", func() {
 			}
 			Expect(k8sClient.Create(ctx, project)).To(Succeed())
 
-			r := &ProjectReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			r := &ProjectReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), OperatorNamespace: "mortise-system", ServiceAccountName: "mortise-controller"}
 			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: projectName}})
 			Expect(err).NotTo(HaveOccurred())
 			_, err = r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: projectName}})
@@ -303,7 +303,7 @@ var _ = Describe("Project Controller", func() {
 
 	Context("when the Project is missing", func() {
 		It("returns nil without error", func() {
-			r := &ProjectReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			r := &ProjectReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), OperatorNamespace: "mortise-system", ServiceAccountName: "mortise-controller"}
 			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: "does-not-exist"}})
 			Expect(err).NotTo(HaveOccurred())
 		})
@@ -338,7 +338,7 @@ var _ = Describe("Project Controller", func() {
 			}
 			Expect(k8sClient.Create(ctx, project)).To(Succeed())
 
-			r := &ProjectReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			r := &ProjectReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), OperatorNamespace: "mortise-system", ServiceAccountName: "mortise-controller"}
 			// Add finalizer pass.
 			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: projectName}})
 			Expect(err).NotTo(HaveOccurred())
@@ -375,7 +375,7 @@ var _ = Describe("Project Controller", func() {
 			}
 			Expect(k8sClient.Create(ctx, project)).To(Succeed())
 
-			r := &ProjectReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			r := &ProjectReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), OperatorNamespace: "mortise-system", ServiceAccountName: "mortise-controller"}
 			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: projectName}})
 			Expect(err).NotTo(HaveOccurred())
 			_, err = r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: projectName}})
@@ -442,7 +442,7 @@ var _ = Describe("Project Controller", func() {
 			}
 			Expect(k8sClient.Create(ctx, project)).To(Succeed())
 
-			r := &ProjectReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			r := &ProjectReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), OperatorNamespace: "mortise-system", ServiceAccountName: "mortise-controller"}
 			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: projectName}})
 			Expect(err).NotTo(HaveOccurred())
 			_, err = r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: projectName}})
@@ -473,7 +473,7 @@ var _ = Describe("Project Controller", func() {
 			}
 			Expect(k8sClient.Create(ctx, project)).To(Succeed())
 
-			r := &ProjectReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			r := &ProjectReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), OperatorNamespace: "mortise-system", ServiceAccountName: "mortise-controller"}
 			for i := 0; i < 3; i++ {
 				_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: projectName}})
 				Expect(err).NotTo(HaveOccurred())
@@ -500,7 +500,7 @@ var _ = Describe("Project Controller", func() {
 			}
 			Expect(k8sClient.Create(ctx, project)).To(Succeed())
 
-			r := &ProjectReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			r := &ProjectReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), OperatorNamespace: "mortise-system", ServiceAccountName: "mortise-controller"}
 			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: projectName}})
 			Expect(err).NotTo(HaveOccurred())
 			_, err = r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: projectName}})

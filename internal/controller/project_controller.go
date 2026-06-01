@@ -25,6 +25,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -113,8 +114,10 @@ func asNamespaceResolveError(err error) (*namespaceResolveError, bool) {
 // delete, and propagates env-set changes to owned Apps.
 type ProjectReconciler struct {
 	client.Client
-	Scheme    *runtime.Scheme
-	APIReader client.Reader
+	Scheme             *runtime.Scheme
+	APIReader          client.Reader
+	OperatorNamespace  string
+	ServiceAccountName string
 }
 
 // +kubebuilder:rbac:groups=mortise.mortise.dev,resources=projects,verbs=get;list;watch;create;update;patch;delete
@@ -123,6 +126,7 @@ type ProjectReconciler struct {
 // +kubebuilder:rbac:groups=mortise.mortise.dev,resources=apps,verbs=get;list;watch;patch;update
 // +kubebuilder:rbac:groups=mortise.mortise.dev,resources=projectmembers,verbs=get;list;watch;create
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=rolebindings,verbs=get;list;watch;create;update;patch;delete
 
 func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
@@ -194,6 +198,9 @@ func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		log.Error(err, "ensure control namespace failed")
 		return ctrl.Result{}, err
 	}
+	if err := r.ensureRoleBinding(ctx, controlNs); err != nil {
+		return ctrl.Result{}, fmt.Errorf("ensure role binding in %q: %w", controlNs, err)
+	}
 
 	// Auto-create an owner ProjectMember for the project creator.
 	if err := r.ensureOwnerMember(ctx, &project, controlNs); err != nil {
@@ -215,6 +222,9 @@ func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 				return ctrl.Result{}, r.markFailed(ctx, &project, controlNs, nsErr.Reason, nsErr.Message)
 			}
 			return ctrl.Result{}, fmt.Errorf("ensure env namespace %q: %w", ns, err)
+		}
+		if err := r.ensureRoleBinding(ctx, ns); err != nil {
+			return ctrl.Result{}, fmt.Errorf("ensure role binding in %q: %w", ns, err)
 		}
 		envNsMap[env.Name] = ns
 	}
@@ -388,6 +398,61 @@ func (r *ProjectReconciler) ensureNamespace(ctx context.Context, project *mortis
 		Reason:  ReasonNamespaceAlreadyExists,
 		Message: fmt.Sprintf("namespace %q already exists and is not managed by mortise; delete it or pick a different project/env name", nsName),
 	}
+}
+
+// ensureRoleBinding creates or updates the RoleBinding in the given namespace
+// that grants the operator SA namespace-scoped write permissions.
+func (r *ProjectReconciler) ensureRoleBinding(ctx context.Context, ns string) error {
+	desired := &rbacv1.RoleBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      constants.NsRoleBindingName,
+			Namespace: ns,
+			Labels: map[string]string{
+				"app.kubernetes.io/managed-by": "mortise",
+			},
+		},
+		RoleRef: rbacv1.RoleRef{
+			APIGroup: rbacv1.GroupName,
+			Kind:     "ClusterRole",
+			Name:     constants.NsClusterRoleName,
+		},
+		Subjects: []rbacv1.Subject{
+			{
+				Kind:      rbacv1.ServiceAccountKind,
+				Name:      r.ServiceAccountName,
+				Namespace: r.OperatorNamespace,
+			},
+		},
+	}
+
+	var existing rbacv1.RoleBinding
+	err := r.Get(ctx, types.NamespacedName{Name: desired.Name, Namespace: ns}, &existing)
+	if errors.IsNotFound(err) {
+		return r.Create(ctx, desired)
+	}
+	if err != nil {
+		return err
+	}
+
+	// Converge RoleRef and Subjects if they drifted.
+	if existing.RoleRef != desired.RoleRef || !rbacSubjectsEqual(existing.Subjects, desired.Subjects) {
+		existing.RoleRef = desired.RoleRef
+		existing.Subjects = desired.Subjects
+		return r.Update(ctx, &existing)
+	}
+	return nil
+}
+
+func rbacSubjectsEqual(a, b []rbacv1.Subject) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // namespaceLabels returns the management labels stamped on a project-owned ns.

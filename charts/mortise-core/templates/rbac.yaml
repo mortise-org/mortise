@@ -1,28 +1,20 @@
 # -----------------------------------------------------------------------------
 # ClusterRole: mortise-controller
 #
-# This role grants the minimum permissions the Mortise operator needs.
-# Where possible, permissions are scoped by apiGroup, resource, and verb.
+# Cluster-scoped permissions: Mortise CRDs, namespace lifecycle, and read-only
+# access to workload resources (needed by the controller-runtime cache).
+# Write access to namespace-scoped resources is granted per-namespace via
+# mortise-controller-ns RoleBindings — see below.
 #
 # RBAC SCOPING NOTES (see #226):
 #
-#   Secrets  — The operator creates per-App Secrets (image pull, env) in
-#              dynamically-created pj-* namespaces AND reads its own GitHub
-#              OAuth secret in mortise-system.  K8s RBAC cannot filter by
-#              namespace name pattern, so cluster-wide access is still
-#              required.  RISK: a bug in the operator could read/write
-#              Secrets in any namespace.  Mitigate with OPA/Kyverno
-#              policies that restrict Secret access to pj-* + mortise-system.
+#   The previous single ClusterRole granted full CRUD on Secrets, Pods/exec,
+#   and workload resources cluster-wide. This split limits write access to
+#   namespaces the operator manages (pj-* and the operator namespace), while
+#   keeping cluster-wide read access required by controller-runtime's cache.
 #
-#   Namespaces — The Project controller creates/deletes one namespace per
-#              Project CRD.  Namespace names are dynamic (pj-{project}), so
-#              resourceNames cannot be used.  Cluster-wide is required.
-#
-#   Pods/exec — Used by the /api/projects/{project}/apps/{app}/exec
-#              endpoint to exec into user pods.  These pods only exist in
-#              pj-* namespaces.  Cluster-wide is granted because K8s RBAC
-#              cannot scope to a namespace name pattern.  Mitigate with
-#              OPA/Kyverno policies restricting exec to pj-* namespaces.
+#   Remaining cluster-wide reads: controller-runtime watches resource types
+#   globally (Secrets, Pods, etc.). Restrict with OPA/Kyverno if needed.
 # -----------------------------------------------------------------------------
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
@@ -31,20 +23,16 @@ metadata:
 rules:
   # ---------------------------------------------------------------------------
   # Mortise CRDs — full lifecycle management
-  # The operator is the sole controller for all Mortise custom resources.
   # ---------------------------------------------------------------------------
 
-  # Project CRD: cluster-scoped; operator creates/deletes the backing namespace.
   - apiGroups: ["mortise.mortise.dev"]
     resources: ["projects", "projects/status", "projects/finalizers"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 
-  # App and BuildRun CRDs: namespaced inside pj-* namespaces.
   - apiGroups: ["mortise.mortise.dev"]
     resources: ["apps", "buildruns"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 
-  # Supporting CRDs: PlatformConfig, GitProvider, PreviewEnvironment, ProjectMember.
   - apiGroups: ["mortise.mortise.dev"]
     resources: ["platformconfigs", "gitproviders", "previewenvironments", "projectmembers"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
@@ -56,92 +44,119 @@ rules:
     verbs: ["get", "update", "patch"]
 
   # ---------------------------------------------------------------------------
-  # Namespaces (cluster-wide — see scoping note above)
-  # Project controller creates one namespace per Project CRD (pj-{name}).
-  # Cannot use resourceNames because namespace names are dynamic.
+  # Namespaces (cluster-wide — names are dynamic: pj-{project}[-{env}])
   # ---------------------------------------------------------------------------
   - apiGroups: [""]
     resources: ["namespaces"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 
   # ---------------------------------------------------------------------------
-  # Core workload resources — created by App controller in pj-* namespaces
+  # RoleBindings — the Project controller creates one per pj-* namespace to
+  # bind the SA to the namespace-scoped ClusterRole.
+  # ---------------------------------------------------------------------------
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["rolebindings"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # ---------------------------------------------------------------------------
+  # Read-only access to workload resources (controller-runtime cache)
+  #
+  # The cache requires cluster-wide list/watch. Write access is granted
+  # per-namespace via the mortise-controller-ns ClusterRole + RoleBindings.
   # ---------------------------------------------------------------------------
 
-  # Deployments: one per App for long-running services.
   - apiGroups: ["apps"]
     resources: ["deployments"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+    verbs: ["get", "list", "watch"]
 
-  # Services: one per App for internal routing.
   - apiGroups: [""]
     resources: ["services"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+    verbs: ["get", "list", "watch"]
 
-  # PVCs: one per App with persistent storage configured.
   - apiGroups: [""]
     resources: ["persistentvolumeclaims"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+    verbs: ["get", "list", "watch"]
 
-  # ServiceAccounts: one per App if the App needs its own identity.
   - apiGroups: [""]
     resources: ["serviceaccounts"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+    verbs: ["get", "list", "watch"]
 
-  # ---------------------------------------------------------------------------
-  # Secrets (cluster-wide — see scoping note above)
-  # Used for: per-App image pull secrets, per-App env secrets, and the
-  # operator's own GitHub OAuth client secret in mortise-system.
-  # Cannot scope to pj-* + mortise-system because K8s RBAC lacks namespace
-  # name pattern matching.  Mitigate with admission policies.
-  # ---------------------------------------------------------------------------
   - apiGroups: [""]
     resources: ["secrets"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+    verbs: ["get", "list", "watch"]
 
-  # ---------------------------------------------------------------------------
-  # ConfigMaps: per-project Activity event store (section 5.11) and App
-  # configFiles (one CM per configFiles entry, named {app}-config-{i}).
-  # Delete is required so reconcileConfigMaps can prune orphans.
-  # ---------------------------------------------------------------------------
   - apiGroups: [""]
     resources: ["configmaps"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+    verbs: ["get", "list", "watch"]
 
-  # Ingresses: one per App with an external route configured.
   - apiGroups: ["networking.k8s.io"]
     resources: ["ingresses"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+    verbs: ["get", "list", "watch"]
 
-  # CronJobs: one per cron-type App.
   - apiGroups: ["batch"]
     resources: ["cronjobs"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+    verbs: ["get", "list", "watch"]
 
-  # Jobs: watched by the build flow for durable execution state.
   - apiGroups: ["batch"]
     resources: ["jobs"]
     verbs: ["get", "list", "watch"]
 
-  # cert-manager Certificates: read-only for TLS status surfacing.
   - apiGroups: ["cert-manager.io"]
     resources: ["certificates"]
     verbs: ["get", "list", "watch"]
 
   # ---------------------------------------------------------------------------
-  # Pod observability — read-only
-  # Used for SSE streaming of pod logs to the Mortise UI.
+  # Pod observability — read-only (no write needed at any scope)
   # ---------------------------------------------------------------------------
   - apiGroups: [""]
     resources: ["pods", "pods/log"]
     verbs: ["get", "list", "watch"]
+---
+# -----------------------------------------------------------------------------
+# ClusterRole: mortise-controller-ns
+#
+# Namespace-scoped write permissions, bound per-namespace via RoleBindings.
+# The Project controller creates a RoleBinding in every pj-* namespace; the
+# Helm chart creates one in the operator namespace for OAuth/config secrets.
+# -----------------------------------------------------------------------------
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: mortise-controller-ns
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["create", "update", "patch", "delete"]
 
-  # ---------------------------------------------------------------------------
-  # Pod exec (cluster-wide — see scoping note above)
-  # Used by /api/projects/{project}/apps/{app}/exec to exec into user pods.
-  # Pods only exist in pj-* namespaces, but RBAC cannot scope by namespace
-  # name pattern.  Mitigate with admission policies restricting exec to pj-*.
-  # ---------------------------------------------------------------------------
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["create", "update", "patch", "delete"]
+
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["create", "update", "patch", "delete"]
+
+  - apiGroups: [""]
+    resources: ["serviceaccounts"]
+    verbs: ["create", "update", "patch", "delete"]
+
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create", "update", "patch", "delete"]
+
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["create", "update", "patch", "delete"]
+
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses"]
+    verbs: ["create", "update", "patch", "delete"]
+
+  - apiGroups: ["batch"]
+    resources: ["cronjobs"]
+    verbs: ["create", "update", "patch", "delete"]
+
+  # pods/exec — used by the /api/.../exec endpoint for user pods
   - apiGroups: [""]
     resources: ["pods/exec"]
     verbs: ["create"]
@@ -154,6 +169,22 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
   name: mortise-controller
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.serviceAccount.name }}
+    namespace: {{ .Release.Namespace }}
+---
+# Static RoleBinding in the operator namespace so it can manage its own
+# secrets (GitHub OAuth client secret, etc.).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: mortise-controller-ns
+  namespace: {{ .Release.Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: mortise-controller-ns
 subjects:
   - kind: ServiceAccount
     name: {{ .Values.serviceAccount.name }}
