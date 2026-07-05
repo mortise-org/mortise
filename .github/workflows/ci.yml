@@ -82,6 +82,10 @@ jobs:
           kubectl -n mortise-system logs -l app.kubernetes.io/name=mortise --tail=300 --all-containers --prefix || true
           kubectl get events -A --sort-by=.lastTimestamp | tail -80 || true
 
+      - name: Tear down integration cluster
+        if: always()
+        run: k3d cluster delete mortise-int || true
+
   lint:
     name: Go vet + staticcheck
     runs-on: ubuntu-latest

@@ -287,9 +287,8 @@ test-integration: ## Create k3d cluster, install chart + test deps, run integrat
 		--set metrics-server.args='{--kubelet-insecure-tls}' \
 		--wait --timeout 180s
 	@echo "==> Running integration tests..."
-	go test -v -parallel 25 -tags integration -count=1 -timeout 45m ./test/integration/... || { \
-		k3d cluster delete $(INT_CLUSTER); exit 1; \
-	}
+	go test -v -parallel 25 -tags integration -count=1 -timeout 45m ./test/integration/... || \
+		{ echo "==> Tests failed; leaving cluster for diagnostics (run: k3d cluster delete $(INT_CLUSTER))"; exit 1; }
 	@echo "==> Tearing down cluster..."
 	k3d cluster delete $(INT_CLUSTER)
 
