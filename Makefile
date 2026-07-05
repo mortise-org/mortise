@@ -183,7 +183,7 @@ dev-up: build-ui ## Create k3d dev cluster with build infra, install Mortise, po
 		--set buildkit.enabled=false \
 		--set platformConfig.enabled=false \
 		--set cert-manager.enabled=false \
-		--set metricsServer.args='{--kubelet-insecure-tls}' \
+		--set metrics-server.args='{--kubelet-insecure-tls}' \
 		--set mortise-core.github.clientID=$(GITHUB_CLIENT_ID) \
 		--wait --timeout $(DEV_HELM_TIMEOUT)
 	@echo "==> Applying dev PlatformConfig..."
@@ -284,7 +284,7 @@ test-integration: ## Create k3d cluster, install chart + test deps, run integrat
 		--set buildkit.enabled=false \
 		--set platformConfig.enabled=false \
 		--set cert-manager.enabled=false \
-		--set metricsServer.args='{--kubelet-insecure-tls}' \
+		--set metrics-server.args='{--kubelet-insecure-tls}' \
 		--wait --timeout 180s
 	@echo "==> Running integration tests..."
 	go test -v -parallel 25 -tags integration -count=1 -timeout 45m ./test/integration/... || { \
@@ -412,7 +412,7 @@ dev-reload: build-ui ## Rebuild image, re-apply CRDs + chart, restart Mortise in
 		--set buildkit.enabled=false \
 		--set platformConfig.enabled=false \
 		--set cert-manager.enabled=false \
-		--set metricsServer.args='{--kubelet-insecure-tls}'
+		--set metrics-server.args='{--kubelet-insecure-tls}'
 	kubectl --context $(DEV_KUBE_CONTEXT) rollout restart deployment/mortise -n mortise-system
 	kubectl --context $(DEV_KUBE_CONTEXT) rollout status deployment/mortise -n mortise-system --timeout 60s
 	@-pkill -f "[k]ubectl port-forward.*8090" >/dev/null 2>&1

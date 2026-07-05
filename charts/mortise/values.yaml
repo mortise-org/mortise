@@ -126,7 +126,7 @@ buildkit:
 # metrics-server — provides the PodMetrics API for real-time CPU/memory
 # ---------------------------------------------------------------------------
 # Disable if metrics-server is already installed in your cluster.
-metricsServer:
+metrics-server:
   enabled: true
   args:
     - --kubelet-insecure-tls
