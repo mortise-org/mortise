@@ -74,6 +74,14 @@ jobs:
       - name: Run integration tests
         run: make test-integration
 
+      - name: Dump cluster diagnostics on failure
+        if: failure()
+        run: |
+          kubectl get pods -A -o wide || true
+          kubectl -n mortise-system describe pods || true
+          kubectl -n mortise-system logs -l app.kubernetes.io/name=mortise --tail=300 --all-containers --prefix || true
+          kubectl get events -A --sort-by=.lastTimestamp | tail -80 || true
+
   lint:
     name: Go vet + staticcheck
     runs-on: ubuntu-latest
@@ -147,6 +155,25 @@ jobs:
 
       - name: Run UI E2E tests
         run: make test-e2e
+
+      - name: Dump cluster diagnostics on failure
+        if: failure()
+        run: |
+          kubectl --context k3d-mortise-dev get pods -A -o wide || true
+          kubectl --context k3d-mortise-dev -n mortise-system describe pods || true
+          kubectl --context k3d-mortise-dev -n mortise-system logs -l app.kubernetes.io/name=mortise --tail=300 --all-containers --prefix || true
+          kubectl --context k3d-mortise-dev get events -A --sort-by=.lastTimestamp | tail -80 || true
+
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            ui/test-results/
+            ui/playwright-report/
+          retention-days: 7
+          if-no-files-found: ignore
 
       - name: Tear down dev cluster
         if: always()

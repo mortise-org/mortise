@@ -38,6 +38,11 @@ resources:
 # Override per-environment in your values override file.
 podSecurityContext:
   runAsNonRoot: true
+  # runAsUser/runAsGroup must be numeric: the image USER is created as UID
+  # 65532 but declared by name, and kubelet cannot verify a non-numeric image
+  # user against runAsNonRoot (fails with CreateContainerConfigError).
+  runAsUser: 65532
+  runAsGroup: 65532
   seccompProfile:
     type: RuntimeDefault
 

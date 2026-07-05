@@ -11,11 +11,9 @@
 # Operator (mortise-core subchart)
 # ---------------------------------------------------------------------------
 mortise-core:
-  image:
-    repository: ghcr.io/mortise-org/mortise
-    tag: 0.1.0
-    pullPolicy: IfNotPresent
-
+  # image is intentionally omitted so the mortise-core subchart default (and
+  # the tag CI stamps at release) flows through. An override here was pinning a
+  # stale operator version that release.yml never restamped.
   replicaCount: 1
 
   api:

@@ -33,7 +33,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     mkdir -p /tmp/railpack && chown mortise:mortise /tmp/railpack
 WORKDIR /
 COPY --from=builder /workspace/manager .
-USER mortise
+# Numeric USER so kubelet can verify runAsNonRoot without resolving names.
+USER 65532:65532
 
 ENTRYPOINT ["/manager"]
 
