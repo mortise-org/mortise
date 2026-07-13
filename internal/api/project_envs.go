@@ -8,13 +8,16 @@ import (
 	"net/http"
 	"regexp"
 	"sort"
+	"time"
 
 	"github.com/go-chi/chi/v5"
+	authorizationv1 "k8s.io/api/authorization/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -22,6 +25,7 @@ import (
 	"github.com/mortise-org/mortise/internal/authz"
 	"github.com/mortise-org/mortise/internal/constants"
 	"github.com/mortise-org/mortise/internal/envstore"
+	"github.com/mortise-org/mortise/internal/nsrbac"
 )
 
 // maxProjectEnvNameLen caps project env names. Environment names are used as
@@ -920,6 +924,45 @@ func (s *Server) ensureProjectEnvNamespace(ctx context.Context, project *mortise
 		labels[constants.EnvironmentLabel] = envName
 	}
 
+	if err := s.ensureEnvNamespaceObject(ctx, project, nsName, labels); err != nil {
+		return err
+	}
+	// Stamp the write RoleBinding in the same request. The Project reconciler
+	// stamps it too, but asynchronously: handlers that write into the fresh
+	// namespace (clone/rename secret copies, immediate secret POSTs) would
+	// race it and get forbidden.
+	if s.serviceAccountName == "" {
+		return nil
+	}
+	if err := nsrbac.EnsureWriteBinding(ctx, s.client, nsName, s.serviceAccountName, s.operatorNamespace); err != nil {
+		return err
+	}
+	return s.waitForNamespaceWriteAccess(ctx, nsName)
+}
+
+// waitForNamespaceWriteAccess blocks until the apiserver's RBAC cache reflects
+// the just-stamped RoleBinding. The authorizer serves from an informer, so a
+// write issued immediately after the binding lands can still be rejected.
+func (s *Server) waitForNamespaceWriteAccess(ctx context.Context, ns string) error {
+	return wait.PollUntilContextTimeout(ctx, 50*time.Millisecond, 5*time.Second, true, func(ctx context.Context) (bool, error) {
+		ssar := &authorizationv1.SelfSubjectAccessReview{
+			Spec: authorizationv1.SelfSubjectAccessReviewSpec{
+				ResourceAttributes: &authorizationv1.ResourceAttributes{
+					Namespace: ns,
+					Verb:      "create",
+					Resource:  "secrets",
+				},
+			},
+		}
+		resp, err := s.clientset.AuthorizationV1().SelfSubjectAccessReviews().Create(ctx, ssar, metav1.CreateOptions{})
+		if err != nil {
+			return false, nil
+		}
+		return resp.Status.Allowed, nil
+	})
+}
+
+func (s *Server) ensureEnvNamespaceObject(ctx context.Context, project *mortisev1alpha1.Project, nsName string, labels map[string]string) error {
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		var existing corev1.Namespace
 		err := s.client.Get(ctx, types.NamespacedName{Name: nsName}, &existing)

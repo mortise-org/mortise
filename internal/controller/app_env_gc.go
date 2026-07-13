@@ -145,11 +145,39 @@ func (r *AppReconciler) deleteMatching(ctx context.Context, list client.ObjectLi
 		return err
 	}
 	for _, obj := range items {
-		if err := r.Delete(ctx, obj); err != nil && !errors.IsNotFound(err) {
-			return err
+		err := r.Delete(ctx, obj)
+		if err == nil || errors.IsNotFound(err) {
+			continue
 		}
+		// The operator's write access is a per-namespace RoleBinding. A
+		// Terminating namespace GCs that binding before its contents, so
+		// deletes there come back forbidden (authz runs before the 404
+		// would). Namespace GC owns the cleanup; skip instead of wedging
+		// the finalizer.
+		if errors.IsForbidden(err) {
+			gone, nsErr := r.namespaceGoneOrTerminating(ctx, obj.GetNamespace())
+			if nsErr != nil {
+				return nsErr
+			}
+			if gone {
+				continue
+			}
+		}
+		return err
 	}
 	return nil
+}
+
+func (r *AppReconciler) namespaceGoneOrTerminating(ctx context.Context, name string) (bool, error) {
+	var ns corev1.Namespace
+	err := r.Get(ctx, client.ObjectKey{Name: name}, &ns)
+	if errors.IsNotFound(err) {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return !ns.DeletionTimestamp.IsZero(), nil
 }
 
 // extractItems is a tiny type-switch that pulls concrete objects out of a
