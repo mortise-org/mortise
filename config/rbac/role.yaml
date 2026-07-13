@@ -112,6 +112,7 @@ rules:
   - gitproviders/status
   - platformconfigs/status
   - previewenvironments/status
+  - projectmembers/status
   - projects/status
   verbs:
   - get
@@ -138,6 +139,14 @@ rules:
   - patch
   - update
   - watch
+- apiGroups:
+  - rbac.authorization.k8s.io
+  resourceNames:
+  - mortise-controller-ns
+  resources:
+  - clusterroles
+  verbs:
+  - bind
 - apiGroups:
   - rbac.authorization.k8s.io
   resources:

@@ -40,7 +40,7 @@ rules:
     resources: ["apps/finalizers", "buildruns/finalizers"]
     verbs: ["update"]
   - apiGroups: ["mortise.mortise.dev"]
-    resources: ["apps/status", "buildruns/status", "gitproviders/status", "platformconfigs/status", "previewenvironments/status"]
+    resources: ["apps/status", "buildruns/status", "gitproviders/status", "platformconfigs/status", "previewenvironments/status", "projectmembers/status"]
     verbs: ["get", "update", "patch"]
 
   # ---------------------------------------------------------------------------
@@ -57,6 +57,14 @@ rules:
   - apiGroups: ["rbac.authorization.k8s.io"]
     resources: ["rolebindings"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # Kubernetes escalation prevention requires the SA to hold `bind` on the
+  # ClusterRole it references in those RoleBindings. Pinned by resourceNames
+  # so the operator can only bind the one role it already effectively owns.
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["clusterroles"]
+    verbs: ["bind"]
+    resourceNames: ["mortise-controller-ns"]
 
   # ---------------------------------------------------------------------------
   # Read-only access to workload resources (controller-runtime cache)

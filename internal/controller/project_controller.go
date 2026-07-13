@@ -25,7 +25,6 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
-	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -41,6 +40,7 @@ import (
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
 	"github.com/mortise-org/mortise/internal/activity"
 	"github.com/mortise-org/mortise/internal/constants"
+	"github.com/mortise-org/mortise/internal/nsrbac"
 )
 
 const (
@@ -125,8 +125,10 @@ type ProjectReconciler struct {
 // +kubebuilder:rbac:groups=mortise.mortise.dev,resources=projects/finalizers,verbs=update
 // +kubebuilder:rbac:groups=mortise.mortise.dev,resources=apps,verbs=get;list;watch;patch;update
 // +kubebuilder:rbac:groups=mortise.mortise.dev,resources=projectmembers,verbs=get;list;watch;create
+// +kubebuilder:rbac:groups=mortise.mortise.dev,resources=projectmembers/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=rolebindings,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles,verbs=bind,resourceNames=mortise-controller-ns
 
 func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
@@ -403,56 +405,7 @@ func (r *ProjectReconciler) ensureNamespace(ctx context.Context, project *mortis
 // ensureRoleBinding creates or updates the RoleBinding in the given namespace
 // that grants the operator SA namespace-scoped write permissions.
 func (r *ProjectReconciler) ensureRoleBinding(ctx context.Context, ns string) error {
-	desired := &rbacv1.RoleBinding{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      constants.NsRoleBindingName,
-			Namespace: ns,
-			Labels: map[string]string{
-				"app.kubernetes.io/managed-by": "mortise",
-			},
-		},
-		RoleRef: rbacv1.RoleRef{
-			APIGroup: rbacv1.GroupName,
-			Kind:     "ClusterRole",
-			Name:     constants.NsClusterRoleName,
-		},
-		Subjects: []rbacv1.Subject{
-			{
-				Kind:      rbacv1.ServiceAccountKind,
-				Name:      r.ServiceAccountName,
-				Namespace: r.OperatorNamespace,
-			},
-		},
-	}
-
-	var existing rbacv1.RoleBinding
-	err := r.Get(ctx, types.NamespacedName{Name: desired.Name, Namespace: ns}, &existing)
-	if errors.IsNotFound(err) {
-		return r.Create(ctx, desired)
-	}
-	if err != nil {
-		return err
-	}
-
-	// Converge RoleRef and Subjects if they drifted.
-	if existing.RoleRef != desired.RoleRef || !rbacSubjectsEqual(existing.Subjects, desired.Subjects) {
-		existing.RoleRef = desired.RoleRef
-		existing.Subjects = desired.Subjects
-		return r.Update(ctx, &existing)
-	}
-	return nil
-}
-
-func rbacSubjectsEqual(a, b []rbacv1.Subject) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
+	return nsrbac.EnsureWriteBinding(ctx, r.Client, ns, r.ServiceAccountName, r.OperatorNamespace)
 }
 
 // namespaceLabels returns the management labels stamped on a project-owned ns.
