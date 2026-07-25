@@ -779,10 +779,15 @@ subdomain automatically, rooted at the platform domain configured at install.
 **Two domain concepts.** `PlatformConfig.spec.domain` is used exclusively for
 generating app subdomains. `PlatformConfig.spec.externalDomain` is where Mortise
 itself is publicly reachable — git webhook callbacks, deploy token API calls, and
-the UI all use this address. If `externalDomain` is empty, `domain` is used as
-fallback. This separation matters when app traffic routes through a wildcard DNS
-record (e.g. `*.apps.example.com`) while the Mortise API lives at a separate
-address (e.g. `mortise.example.com`, a Cloudflare Tunnel, or an IP).
+the UI all use this address. Webhook registration requires `externalDomain`;
+when it is empty the App controller skips registration and records a
+`WebhookConfigured=False` condition instead of guessing (the apex of the app
+domain generally does not route to the Mortise API, and registering there
+produces hooks that can never deliver). Installs that do serve Mortise at the
+apex set `externalDomain` to the same value as `domain`. This separation
+matters when app traffic routes through a wildcard DNS record (e.g.
+`*.apps.example.com`) while the Mortise API lives at a separate address
+(e.g. `mortise.example.com`, a Cloudflare Tunnel, or an IP).
 The default pattern includes the project name to prevent hostname collisions
 when two projects have apps with the same name:
 
@@ -1332,9 +1337,12 @@ users don't need to configure one manually.
 
 After credentials are configured, the per-repo webhook is registered
 automatically by the App controller when it reconciles a git-source app.
-The callback URL is `https://{externalDomain}/api/webhooks/{provider}`
-(falls back to `domain` if `externalDomain` is not set). The git host
-must be able to reach this address for push-to-deploy to work.
+The callback URL is `https://{externalDomain}/api/webhooks/{provider}`.
+Registration requires `externalDomain` and a usable provider
+`webhookSecretRef`; when either is missing the controller skips
+registration and records the reason on the App's `WebhookConfigured`
+condition. The git host must be able to reach this address for
+push-to-deploy to work.
 
 **Device flow API routes:**
 - `POST /api/auth/git/{provider}/device`: initiates device flow, returns user code + verification URI.

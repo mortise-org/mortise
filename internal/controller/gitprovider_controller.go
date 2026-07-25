@@ -22,15 +22,18 @@ import (
 	"net/url"
 	"os"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
+	"github.com/mortise-org/mortise/internal/git"
 )
 
 // providerClientIDEnvVars maps each GitProvider type to the environment
@@ -113,7 +116,67 @@ func (r *GitProviderReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		}
 	}
 
+	// Re-attach the managed webhook Secret when the ref was lost (e.g. the CR
+	// was recreated from a manifest that omitted it). Without the ref every
+	// delivery is rejected 403 and builds silently stop triggering.
+	if gp.Spec.WebhookSecretRef == nil {
+		if requeue, err := r.reattachWebhookSecret(ctx, &gp); err != nil {
+			return ctrl.Result{}, err
+		} else if requeue {
+			return ctrl.Result{Requeue: true}, nil
+		}
+	}
+	setWebhookSecretCondition(&gp)
+
 	return ctrl.Result{}, r.markReady(ctx, &gp)
+}
+
+// reattachWebhookSecret re-links spec.webhookSecretRef to the conventionally
+// named managed Secret if it still exists. Returns true when the spec was
+// patched (caller requeues to observe the update).
+func (r *GitProviderReconciler) reattachWebhookSecret(ctx context.Context, gp *mortisev1alpha1.GitProvider) (bool, error) {
+	log := logf.FromContext(ctx)
+	secretName := git.WebhookSecretName(gp.Name)
+	var s corev1.Secret
+	if err := r.Get(ctx, types.NamespacedName{Namespace: git.TokenSecretNamespace, Name: secretName}, &s); err != nil {
+		if errors.IsNotFound(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	if s.Labels["app.kubernetes.io/managed-by"] != "mortise" || len(s.Data[git.WebhookSecretKey]) == 0 {
+		return false, nil
+	}
+	log.Info("re-attaching lost webhookSecretRef", "secret", secretName)
+	patch := client.MergeFrom(gp.DeepCopy())
+	gp.Spec.WebhookSecretRef = &mortisev1alpha1.SecretRef{
+		Namespace: git.TokenSecretNamespace,
+		Name:      secretName,
+		Key:       git.WebhookSecretKey,
+	}
+	if err := r.Patch(ctx, gp, patch); err != nil {
+		return false, fmt.Errorf("re-attach webhookSecretRef: %w", err)
+	}
+	return true, nil
+}
+
+// setWebhookSecretCondition records whether webhook deliveries can be
+// verified, so a missing secret is visible on the CR instead of only as 403s
+// in the webhook handler. Flushed by the markReady status update.
+func setWebhookSecretCondition(gp *mortisev1alpha1.GitProvider) {
+	cond := metav1.Condition{
+		Type:               "WebhookSecretConfigured",
+		Status:             metav1.ConditionTrue,
+		Reason:             "SecretConfigured",
+		Message:            "webhook deliveries can be verified",
+		ObservedGeneration: gp.Generation,
+	}
+	if gp.Spec.WebhookSecretRef == nil {
+		cond.Status = metav1.ConditionFalse
+		cond.Reason = "WebhookSecretMissing"
+		cond.Message = "spec.webhookSecretRef is not set; all webhook deliveries will be rejected"
+	}
+	meta.SetStatusCondition(&gp.Status.Conditions, cond)
 }
 
 func (r *GitProviderReconciler) markReady(ctx context.Context, gp *mortisev1alpha1.GitProvider) error {
