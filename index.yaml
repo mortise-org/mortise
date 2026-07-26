@@ -2,8 +2,35 @@ apiVersion: v1
 entries:
   mortise:
   - apiVersion: v2
+    appVersion: 1.0.4
+    created: "2026-07-26T17:14:25.810116848Z"
+    dependencies:
+    - name: mortise-core
+      repository: file://../mortise-core
+      version: 1.0.4
+    - condition: traefik.enabled
+      name: traefik
+      repository: https://traefik.github.io/charts
+      version: 34.3.0
+    - condition: cert-manager.enabled
+      name: cert-manager
+      repository: https://charts.jetstack.io
+      version: v1.17.1
+    - condition: metrics-server.enabled
+      name: metrics-server
+      repository: https://kubernetes-sigs.github.io/metrics-server/
+      version: 3.12.2
+    description: Self-hosted Railway-style deploy platform for Kubernetes (batteries
+      included)
+    digest: cf1a6b1e861400e03c56c6bfbda15a5b7dd99c9109c34caf79de1fb63b1785de
+    name: mortise
+    type: application
+    urls:
+    - https://mortise-org.github.io/mortise/mortise-1.0.4.tgz
+    version: 1.0.4
+  - apiVersion: v2
     appVersion: 1.0.3
-    created: "2026-05-20T17:56:56.891691313Z"
+    created: "2026-07-26T17:14:25.794794598Z"
     dependencies:
     - name: mortise-core
       repository: file://../mortise-core
@@ -30,7 +57,7 @@ entries:
     version: 1.0.3
   - apiVersion: v2
     appVersion: 1.0.2
-    created: "2026-05-20T17:56:56.876074812Z"
+    created: "2026-07-26T17:14:25.780027957Z"
     dependencies:
     - name: mortise-core
       repository: file://../mortise-core
@@ -57,7 +84,7 @@ entries:
     version: 1.0.2
   - apiVersion: v2
     appVersion: 1.0.1
-    created: "2026-05-20T17:56:56.861662697Z"
+    created: "2026-07-26T17:14:25.763599655Z"
     dependencies:
     - name: mortise-core
       repository: file://../mortise-core
@@ -84,7 +111,7 @@ entries:
     version: 1.0.1
   - apiVersion: v2
     appVersion: 1.0.0
-    created: "2026-05-20T17:56:56.847419342Z"
+    created: "2026-07-26T17:14:25.748781301Z"
     dependencies:
     - name: mortise-core
       repository: file://../mortise-core
@@ -111,7 +138,7 @@ entries:
     version: 1.0.0
   - apiVersion: v2
     appVersion: 0.1.4
-    created: "2026-05-20T17:56:56.832875699Z"
+    created: "2026-07-26T17:14:25.733464803Z"
     dependencies:
     - name: mortise-core
       repository: file://../mortise-core
@@ -138,7 +165,7 @@ entries:
     version: 0.1.4
   - apiVersion: v2
     appVersion: 0.1.3
-    created: "2026-05-20T17:56:56.818378068Z"
+    created: "2026-07-26T17:14:25.717936376Z"
     dependencies:
     - name: mortise-core
       repository: file://../mortise-core
@@ -165,7 +192,7 @@ entries:
     version: 0.1.3
   - apiVersion: v2
     appVersion: 0.1.2
-    created: "2026-05-20T17:56:56.80373145Z"
+    created: "2026-07-26T17:14:25.703570215Z"
     dependencies:
     - name: mortise-core
       repository: file://../mortise-core
@@ -192,7 +219,7 @@ entries:
     version: 0.1.2
   - apiVersion: v2
     appVersion: 0.1.1
-    created: "2026-05-20T17:56:56.789740752Z"
+    created: "2026-07-26T17:14:25.687269888Z"
     dependencies:
     - name: mortise-core
       repository: file://../mortise-core
@@ -219,7 +246,7 @@ entries:
     version: 0.1.1
   - apiVersion: v2
     appVersion: 0.1.0
-    created: "2026-05-20T17:56:56.773764395Z"
+    created: "2026-07-26T17:14:25.671544614Z"
     dependencies:
     - name: mortise-core
       repository: file://../mortise-core
@@ -242,8 +269,18 @@ entries:
     version: 0.1.0
   mortise-core:
   - apiVersion: v2
+    appVersion: 1.0.4
+    created: "2026-07-26T17:14:25.816045327Z"
+    description: Mortise operator — the controller, API, CRDs, and RBAC
+    digest: fa11223099a9efa1c6b9d1fc59cb1f8efdff3d3a80760b371a666ea5a077f83d
+    name: mortise-core
+    type: application
+    urls:
+    - https://mortise-org.github.io/mortise/mortise-core-1.0.4.tgz
+    version: 1.0.4
+  - apiVersion: v2
     appVersion: 1.0.3
-    created: "2026-05-20T17:56:56.898143695Z"
+    created: "2026-07-26T17:14:25.815397193Z"
     description: Mortise operator — the controller, API, CRDs, and RBAC
     digest: 151af97fc0515d24a90deeeb2ff451ece703f3e7c797fee4012c1fc4dc640e4d
     name: mortise-core
@@ -253,7 +290,7 @@ entries:
     version: 1.0.3
   - apiVersion: v2
     appVersion: 1.0.2
-    created: "2026-05-20T17:56:56.897523761Z"
+    created: "2026-07-26T17:14:25.814778412Z"
     description: Mortise operator — the controller, API, CRDs, and RBAC
     digest: d49a57aedb53c5e06874c2d2b3633c4910f0d3bdb53b74676f3c057d8c28725e
     name: mortise-core
@@ -263,7 +300,7 @@ entries:
     version: 1.0.2
   - apiVersion: v2
     appVersion: 1.0.1
-    created: "2026-05-20T17:56:56.896739491Z"
+    created: "2026-07-26T17:14:25.814177071Z"
     description: Mortise operator — the controller, API, CRDs, and RBAC
     digest: 9aeceebc8a40b9755c00a34640ebd8b012b874269867614f72f409174bb6bf62
     name: mortise-core
@@ -273,7 +310,7 @@ entries:
     version: 1.0.1
   - apiVersion: v2
     appVersion: 1.0.0
-    created: "2026-05-20T17:56:56.895120667Z"
+    created: "2026-07-26T17:14:25.813510305Z"
     description: Mortise operator — the controller, API, CRDs, and RBAC
     digest: 6e35ede387f27522ada752242a795a0dd9ce430179512ffa20733200aa161da3
     name: mortise-core
@@ -283,7 +320,7 @@ entries:
     version: 1.0.0
   - apiVersion: v2
     appVersion: 0.1.4
-    created: "2026-05-20T17:56:56.894462262Z"
+    created: "2026-07-26T17:14:25.812938616Z"
     description: Mortise operator — the controller, API, CRDs, and RBAC
     digest: 282c8ba04de2a5f401b37d7271653133387e7d967288e2fee305a050273d471f
     name: mortise-core
@@ -293,7 +330,7 @@ entries:
     version: 0.1.4
   - apiVersion: v2
     appVersion: 0.1.3
-    created: "2026-05-20T17:56:56.893951501Z"
+    created: "2026-07-26T17:14:25.81241961Z"
     description: Mortise operator — the controller, API, CRDs, and RBAC
     digest: 0f97e7bc501022d0e3324e12a772ecbc945d95a7a05f08d0e1f92175ad98bf42
     name: mortise-core
@@ -303,7 +340,7 @@ entries:
     version: 0.1.3
   - apiVersion: v2
     appVersion: 0.1.2
-    created: "2026-05-20T17:56:56.893396448Z"
+    created: "2026-07-26T17:14:25.811926871Z"
     description: Mortise operator — the controller, API, CRDs, and RBAC
     digest: 6860bf1f800c2c95785de5455d74704ab797ed6215ce14fe7004795cd7915885
     name: mortise-core
@@ -313,7 +350,7 @@ entries:
     version: 0.1.2
   - apiVersion: v2
     appVersion: 0.1.1
-    created: "2026-05-20T17:56:56.892817349Z"
+    created: "2026-07-26T17:14:25.811389002Z"
     description: Mortise operator — the controller, API, CRDs, and RBAC
     digest: 59fdd9089087bf63f16b38d82ec7536609416f6d217d15ff189bcc2526e1d908
     name: mortise-core
@@ -323,7 +360,7 @@ entries:
     version: 0.1.1
   - apiVersion: v2
     appVersion: 0.1.0
-    created: "2026-05-20T17:56:56.892174513Z"
+    created: "2026-07-26T17:14:25.810875526Z"
     description: Mortise operator — the controller, API, CRDs, and RBAC
     digest: 120084d62c4c1d380f87fc6cd20035ac08c59d0238b21c1c44859475c30cb29a
     name: mortise-core
@@ -331,4 +368,4 @@ entries:
     urls:
     - https://mortise-org.github.io/mortise/mortise-core-0.1.0.tgz
     version: 0.1.0
-generated: "2026-05-20T17:56:56.760397233Z"
+generated: "2026-07-26T17:14:25.657522768Z"
