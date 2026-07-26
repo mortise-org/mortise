@@ -109,6 +109,7 @@ const (
 	webhookConditionType       = "WebhookConfigured"
 	webhookRegisteredReason    = "Registered"
 	webhookMissingURLReason    = "WebhookURLUnavailable"
+	webhookMissingSecretReason = "WebhookSecretUnavailable"
 	webhookInputHashMessageKey = "inputHash="
 )
 
@@ -2787,17 +2788,18 @@ func isMortiseManaged(obj client.Object) bool {
 func (r *AppReconciler) ensureWebhook(ctx context.Context, app *mortisev1alpha1.App, gp *mortisev1alpha1.GitProvider, token string) error {
 	log := logf.FromContext(ctx)
 
-	// Resolve the webhook URL from PlatformConfig domain.
+	// Resolve the webhook URL from PlatformConfig. Only externalDomain serves
+	// the Mortise API; spec.domain is the wildcard base for user apps, so
+	// falling back to it would register (and, via stale-hook cleanup, replace
+	// working hooks with) URLs that route nowhere.
 	var pc mortisev1alpha1.PlatformConfig
 	if err := r.Get(ctx, types.NamespacedName{Name: "platform"}, &pc); err != nil {
 		return fmt.Errorf("get PlatformConfig: %w", err)
 	}
 	host := pc.Spec.ExternalDomain
 	if host == "" {
-		host = pc.Spec.Domain
-	}
-	if host == "" {
-		r.setWebhookCondition(ctx, app, metav1.ConditionFalse, webhookMissingURLReason, "platform domain is not configured")
+		r.setWebhookCondition(ctx, app, metav1.ConditionFalse, webhookMissingURLReason,
+			"platformConfig.spec.externalDomain is not configured; webhook registration skipped")
 		return nil
 	}
 
@@ -2807,7 +2809,9 @@ func (r *AppReconciler) ensureWebhook(ctx context.Context, app *mortisev1alpha1.
 	}
 	webhookURL := fmt.Sprintf("%s://%s/api/webhooks/%s", scheme, host, gp.Name)
 
-	// Resolve webhook secret.
+	// Resolve webhook secret. The webhook handler rejects every delivery for
+	// a provider without a usable secret, so registering a secretless hook
+	// only produces 403s — skip and say why instead.
 	var webhookSecret string
 	if gp.Spec.WebhookSecretRef != nil {
 		var s corev1.Secret
@@ -2817,6 +2821,11 @@ func (r *AppReconciler) ensureWebhook(ctx context.Context, app *mortisev1alpha1.
 		}, &s); err == nil {
 			webhookSecret = string(s.Data[gp.Spec.WebhookSecretRef.Key])
 		}
+	}
+	if webhookSecret == "" {
+		r.setWebhookCondition(ctx, app, metav1.ConditionFalse, webhookMissingSecretReason,
+			fmt.Sprintf("GitProvider %q has no usable webhookSecretRef; webhook registration skipped", gp.Name))
+		return nil
 	}
 	inputHash := webhookRegistrationInputHash(app, gp, webhookURL, webhookSecret)
 	if webhookConditionInputHash(app) == inputHash {

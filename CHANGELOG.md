@@ -5,6 +5,36 @@ All notable changes to Mortise are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **Webhook registration requires `externalDomain`** (#450): the App
+  controller no longer falls back to `spec.domain` when
+  `spec.externalDomain` is unset. The app wildcard domain does not route
+  to the Mortise API, so the fallback registered (and, via stale-hook
+  cleanup, replaced working hooks with) callbacks that could never
+  deliver. When `externalDomain` is empty, registration is skipped and
+  the App records a `WebhookConfigured=False` condition. Installs that
+  serve Mortise on the platform domain must set `externalDomain` to the
+  same value.
+
+### Fixed
+
+- **Secretless webhook registration** (#451): the App controller no
+  longer registers webhooks for a GitProvider without a usable
+  `webhookSecretRef`. The webhook handler rejects unsigned deliveries,
+  so such hooks could never deliver; registration is now skipped with a
+  `WebhookConfigured=False` condition until the secret is configured.
+- **GitProvider self-heal** (#451): the GitProvider reconciler
+  re-attaches a lost `spec.webhookSecretRef` when the managed
+  `gitprovider-webhook-{name}` Secret still exists, and reports a
+  `WebhookSecretConfigured` status condition either way.
+- **Registry pull URL warning** (#449): the operator logs a startup
+  warning when `spec.registry.url` is cluster-internal and
+  `spec.registry.pullURL` is empty, instead of silently templating
+  image refs kubelets cannot pull.
+
 ## [1.0.2] - 2026-05-19
 
 ### Added

@@ -278,7 +278,7 @@ func (s *Server) GetWebhookSecret(w http.ResponseWriter, r *http.Request) {
 
 // webhookSecretName returns the Secret name for a GitProvider's webhook HMAC key.
 func webhookSecretName(providerName string) string {
-	return "gitprovider-webhook-" + providerName
+	return git.WebhookSecretName(providerName)
 }
 
 // validateGitProviderRequest returns an error message describing why the

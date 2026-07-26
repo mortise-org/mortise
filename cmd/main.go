@@ -156,6 +156,16 @@ func stacksFromPlatformConfig(cfg *platformconfig.Config, log logr.Logger) stack
 		bc = bk
 	}
 
+	// Kubelet resolves image refs via host DNS, so cluster-internal .svc
+	// registry URLs are unpullable from nodes. Without pullURL the pull ref
+	// falls back to the push URL and every fresh deploy ImagePullBackOffs.
+	if cfg.Registry.URL != "" && cfg.Registry.PullURL == "" && strings.Contains(cfg.Registry.URL, ".svc") {
+		log.Info("WARNING: spec.registry.pullURL is empty and spec.registry.url is cluster-internal; "+
+			"kubelet-facing image refs will use the push URL, which nodes typically cannot resolve. "+
+			"Set spec.registry.pullURL (and restart the operator) if pods fail to pull built images.",
+			"url", cfg.Registry.URL)
+	}
+
 	return stacks{
 		build: bc,
 		registry: registry.NewOCIBackend(registry.Config{
