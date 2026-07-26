@@ -5,10 +5,14 @@ All notable changes to Mortise are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.0.4] - 2026-07-26
 
 ### Changed
 
+- **Umbrella chart values key rename**: the metrics-server subchart is now
+  configured under `metrics-server` (kebab-case) instead of `metricsServer`.
+  Values under the old key are silently ignored — upgraders who disabled or
+  configured metrics-server must move those values to the new key (#433).
 - **Webhook registration requires `externalDomain`** (#450): the App
   controller no longer falls back to `spec.domain` when
   `spec.externalDomain` is unset. The app wildcard domain does not route
@@ -34,6 +38,18 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   warning when `spec.registry.url` is cluster-internal and
   `spec.registry.pullURL` is empty, instead of silently templating
   image refs kubelets cannot pull.
+- **Operator pod fails to start under `runAsNonRoot`** (#433): the chart
+  now sets numeric `runAsUser`/`runAsGroup` (65532) and the Dockerfile
+  uses a numeric `USER`, so kubelet can verify `runAsNonRoot` instead of
+  failing with `CreateContainerConfigError`.
+- **RBAC escalation-prevention deadlock** (#433): the operator ClusterRole
+  gains the `bind` verb (pinned to `mortise-controller-ns`) so the Project
+  controller can create per-namespace RoleBindings on RBAC-enforcing
+  clusters, plus `projectmembers/status` for member management.
+- **Builds under `readOnlyRootFilesystem`** (#433): `DOCKER_CONFIG` points
+  at the writable emptyDir so BuildKit's auth provider can create its
+  config dir; RBAC-propagation races between namespace creation and
+  RoleBinding stamping no longer surface as 500s or wedge App deletion.
 
 ## [1.0.2] - 2026-05-19
 
