@@ -813,9 +813,9 @@ test.describe('variables tab - fromBinding projection', () => {
       await expect(async () => {
         const updatedApp = await getAppViaAPI(request, token, project, webApp);
         const env = updatedApp.spec.environments?.find((candidate: { name: string }) => candidate.name === 'production');
-        expect(env?.env?.some((entry: { name: string }) => entry.name === name)).toBe(false);
-		const rows = await getEnvViaAPI(request, token, project, webApp);
-		expect(rows.some(row => row.name === name)).toBe(false);
+        expect(env?.env?.some((entry: { name: string }) => entry.name === name) ?? false).toBe(false);
+        const rows = await getEnvViaAPI(request, token, project, webApp);
+        expect(rows.some(row => row.name === name)).toBe(false);
       }).toPass({ timeout: 10_000 });
     }
 
