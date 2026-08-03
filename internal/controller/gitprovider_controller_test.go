@@ -23,11 +23,13 @@ import (
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
+	"github.com/mortise-org/mortise/internal/git"
 )
 
 var _ = Describe("GitProvider Controller", func() {
@@ -176,6 +178,87 @@ var _ = Describe("GitProvider Controller", func() {
 	Context("when the resource does not exist", func() {
 		It("returns nil without error", func() {
 			Expect(reconcile("does-not-exist")).To(Succeed())
+		})
+	})
+
+	Context("when webhookSecretRef was lost but the managed secret survives", func() {
+		const gpName = "gp-reattach"
+
+		BeforeEach(func() {
+			_ = k8sClient.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: git.TokenSecretNamespace}})
+			s := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      git.WebhookSecretName(gpName),
+					Namespace: git.TokenSecretNamespace,
+					Labels:    map[string]string{"app.kubernetes.io/managed-by": "mortise"},
+				},
+				Data: map[string][]byte{git.WebhookSecretKey: []byte("hmac")},
+			}
+			Expect(k8sClient.Create(ctx, s)).To(Succeed())
+
+			gp := makeProvider(gpName, mortisev1alpha1.GitProviderTypeGitHub, "unused")
+			gp.Spec.WebhookSecretRef = nil
+			Expect(k8sClient.Create(ctx, gp)).To(Succeed())
+		})
+
+		AfterEach(func() {
+			gp := &mortisev1alpha1.GitProvider{}
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: gpName}, gp); err == nil {
+				Expect(k8sClient.Delete(ctx, gp)).To(Succeed())
+			}
+			s := &corev1.Secret{}
+			if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: git.TokenSecretNamespace, Name: git.WebhookSecretName(gpName)}, s); err == nil {
+				Expect(k8sClient.Delete(ctx, s)).To(Succeed())
+			}
+		})
+
+		It("re-attaches the ref and reaches Ready with WebhookSecretConfigured=True", func() {
+			Expect(reconcile(gpName)).To(Succeed())
+
+			var updated mortisev1alpha1.GitProvider
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: gpName}, &updated)).To(Succeed())
+			Expect(updated.Spec.WebhookSecretRef).NotTo(BeNil())
+			Expect(updated.Spec.WebhookSecretRef.Name).To(Equal(git.WebhookSecretName(gpName)))
+			Expect(updated.Spec.WebhookSecretRef.Namespace).To(Equal(git.TokenSecretNamespace))
+			Expect(updated.Spec.WebhookSecretRef.Key).To(Equal(git.WebhookSecretKey))
+
+			// Second pass (the requeue) completes the status projection.
+			Expect(reconcile(gpName)).To(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: gpName}, &updated)).To(Succeed())
+			Expect(updated.Status.Phase).To(Equal(mortisev1alpha1.GitProviderPhaseReady))
+			cond := meta.FindStatusCondition(updated.Status.Conditions, "WebhookSecretConfigured")
+			Expect(cond).NotTo(BeNil())
+			Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+		})
+	})
+
+	Context("when webhookSecretRef is nil and no managed secret exists", func() {
+		const gpName = "gp-no-webhook-secret"
+
+		BeforeEach(func() {
+			gp := makeProvider(gpName, mortisev1alpha1.GitProviderTypeGitHub, "unused")
+			gp.Spec.WebhookSecretRef = nil
+			Expect(k8sClient.Create(ctx, gp)).To(Succeed())
+		})
+
+		AfterEach(func() {
+			gp := &mortisev1alpha1.GitProvider{}
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: gpName}, gp); err == nil {
+				Expect(k8sClient.Delete(ctx, gp)).To(Succeed())
+			}
+		})
+
+		It("stays Ready but reports WebhookSecretConfigured=False", func() {
+			Expect(reconcile(gpName)).To(Succeed())
+
+			var updated mortisev1alpha1.GitProvider
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: gpName}, &updated)).To(Succeed())
+			Expect(updated.Spec.WebhookSecretRef).To(BeNil())
+			Expect(updated.Status.Phase).To(Equal(mortisev1alpha1.GitProviderPhaseReady))
+			cond := meta.FindStatusCondition(updated.Status.Conditions, "WebhookSecretConfigured")
+			Expect(cond).NotTo(BeNil())
+			Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(cond.Reason).To(Equal("WebhookSecretMissing"))
 		})
 	})
 

@@ -40,6 +40,7 @@ import (
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
 	"github.com/mortise-org/mortise/internal/activity"
 	"github.com/mortise-org/mortise/internal/constants"
+	"github.com/mortise-org/mortise/internal/nsrbac"
 )
 
 const (
@@ -113,8 +114,10 @@ func asNamespaceResolveError(err error) (*namespaceResolveError, bool) {
 // delete, and propagates env-set changes to owned Apps.
 type ProjectReconciler struct {
 	client.Client
-	Scheme    *runtime.Scheme
-	APIReader client.Reader
+	Scheme             *runtime.Scheme
+	APIReader          client.Reader
+	OperatorNamespace  string
+	ServiceAccountName string
 }
 
 // +kubebuilder:rbac:groups=mortise.mortise.dev,resources=projects,verbs=get;list;watch;create;update;patch;delete
@@ -122,7 +125,10 @@ type ProjectReconciler struct {
 // +kubebuilder:rbac:groups=mortise.mortise.dev,resources=projects/finalizers,verbs=update
 // +kubebuilder:rbac:groups=mortise.mortise.dev,resources=apps,verbs=get;list;watch;patch;update
 // +kubebuilder:rbac:groups=mortise.mortise.dev,resources=projectmembers,verbs=get;list;watch;create
+// +kubebuilder:rbac:groups=mortise.mortise.dev,resources=projectmembers/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=rolebindings,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles,verbs=bind,resourceNames=mortise-controller-ns
 
 func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
@@ -194,6 +200,9 @@ func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		log.Error(err, "ensure control namespace failed")
 		return ctrl.Result{}, err
 	}
+	if err := r.ensureRoleBinding(ctx, controlNs); err != nil {
+		return ctrl.Result{}, fmt.Errorf("ensure role binding in %q: %w", controlNs, err)
+	}
 
 	// Auto-create an owner ProjectMember for the project creator.
 	if err := r.ensureOwnerMember(ctx, &project, controlNs); err != nil {
@@ -215,6 +224,9 @@ func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 				return ctrl.Result{}, r.markFailed(ctx, &project, controlNs, nsErr.Reason, nsErr.Message)
 			}
 			return ctrl.Result{}, fmt.Errorf("ensure env namespace %q: %w", ns, err)
+		}
+		if err := r.ensureRoleBinding(ctx, ns); err != nil {
+			return ctrl.Result{}, fmt.Errorf("ensure role binding in %q: %w", ns, err)
 		}
 		envNsMap[env.Name] = ns
 	}
@@ -388,6 +400,12 @@ func (r *ProjectReconciler) ensureNamespace(ctx context.Context, project *mortis
 		Reason:  ReasonNamespaceAlreadyExists,
 		Message: fmt.Sprintf("namespace %q already exists and is not managed by mortise; delete it or pick a different project/env name", nsName),
 	}
+}
+
+// ensureRoleBinding creates or updates the RoleBinding in the given namespace
+// that grants the operator SA namespace-scoped write permissions.
+func (r *ProjectReconciler) ensureRoleBinding(ctx context.Context, ns string) error {
+	return nsrbac.EnsureWriteBinding(ctx, r.Client, ns, r.ServiceAccountName, r.OperatorNamespace)
 }
 
 // namespaceLabels returns the management labels stamped on a project-owned ns.

@@ -4800,21 +4800,42 @@ var _ = Describe("App Controller — git source", func() {
 	})
 
 	Context("webhook registration", func() {
+		// makeWebhookSecret creates the HMAC Secret a GitProvider's
+		// webhookSecretRef points at; ensureWebhook skips registration when a
+		// provider has no usable secret.
+		makeWebhookSecret := func(ctx context.Context, providerName string) (*corev1.Secret, *mortisev1alpha1.SecretRef) {
+			_ = k8sClient.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "mortise-system"}})
+			s := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      git.WebhookSecretName(providerName),
+					Namespace: "mortise-system",
+					Labels:    map[string]string{"app.kubernetes.io/managed-by": "mortise"},
+				},
+				Data: map[string][]byte{git.WebhookSecretKey: []byte("hmac-secret")},
+			}
+			Expect(k8sClient.Create(ctx, s)).To(Succeed())
+			return s, &mortisev1alpha1.SecretRef{Namespace: "mortise-system", Name: s.Name, Key: git.WebhookSecretKey}
+		}
+
 		It("latches registration on a status condition input hash", func() {
 			ctx := context.Background()
 
 			pc := &mortisev1alpha1.PlatformConfig{
 				ObjectMeta: metav1.ObjectMeta{Name: "platform"},
-				Spec:       mortisev1alpha1.PlatformConfigSpec{Domain: "example.com"},
+				Spec:       mortisev1alpha1.PlatformConfigSpec{Domain: "example.com", ExternalDomain: "mortise.example.com"},
 			}
 			Expect(k8sClient.Create(ctx, pc)).To(Succeed())
 			defer func() { Expect(k8sClient.Delete(ctx, pc)).To(Succeed()) }()
 
+			whSecret, whRef := makeWebhookSecret(ctx, "gh-webhook-latch")
+			defer func() { Expect(k8sClient.Delete(ctx, whSecret)).To(Succeed()) }()
+
 			gp := &mortisev1alpha1.GitProvider{
 				ObjectMeta: metav1.ObjectMeta{Name: "gh-webhook-latch"},
 				Spec: mortisev1alpha1.GitProviderSpec{
-					Type: mortisev1alpha1.GitProviderTypeGitHub,
-					Host: "https://github.com",
+					Type:             mortisev1alpha1.GitProviderTypeGitHub,
+					Host:             "https://github.com",
+					WebhookSecretRef: whRef,
 				},
 			}
 			Expect(k8sClient.Create(ctx, gp)).To(Succeed())
@@ -4852,17 +4873,21 @@ var _ = Describe("App Controller — git source", func() {
 
 			pc := &mortisev1alpha1.PlatformConfig{
 				ObjectMeta: metav1.ObjectMeta{Name: "platform"},
-				Spec:       mortisev1alpha1.PlatformConfigSpec{Domain: "example.com"},
+				Spec:       mortisev1alpha1.PlatformConfigSpec{Domain: "example.com", ExternalDomain: "mortise.example.com"},
 			}
 			Expect(k8sClient.Create(ctx, pc)).To(Succeed())
 			defer func() { Expect(k8sClient.Delete(ctx, pc)).To(Succeed()) }()
 
+			whSecret, whRef := makeWebhookSecret(ctx, "gh-webhook-failure")
+			defer func() { Expect(k8sClient.Delete(ctx, whSecret)).To(Succeed()) }()
+
 			gp := &mortisev1alpha1.GitProvider{
 				ObjectMeta: metav1.ObjectMeta{Name: "gh-webhook-failure"},
 				Spec: mortisev1alpha1.GitProviderSpec{
-					Type:     mortisev1alpha1.GitProviderTypeGitHub,
-					Host:     "https://github.com",
-					ClientID: "test-client-id",
+					Type:             mortisev1alpha1.GitProviderTypeGitHub,
+					Host:             "https://github.com",
+					ClientID:         "test-client-id",
+					WebhookSecretRef: whRef,
 				},
 			}
 			Expect(k8sClient.Create(ctx, gp)).To(Succeed())
@@ -4913,16 +4938,20 @@ var _ = Describe("App Controller — git source", func() {
 
 			pc := &mortisev1alpha1.PlatformConfig{
 				ObjectMeta: metav1.ObjectMeta{Name: "platform"},
-				Spec:       mortisev1alpha1.PlatformConfigSpec{Domain: "example.com"},
+				Spec:       mortisev1alpha1.PlatformConfigSpec{Domain: "example.com", ExternalDomain: "mortise.example.com"},
 			}
 			Expect(k8sClient.Create(ctx, pc)).To(Succeed())
 			defer func() { Expect(k8sClient.Delete(ctx, pc)).To(Succeed()) }()
 
+			whSecret, whRef := makeWebhookSecret(ctx, "gh-webhook-permanent")
+			defer func() { Expect(k8sClient.Delete(ctx, whSecret)).To(Succeed()) }()
+
 			gp := &mortisev1alpha1.GitProvider{
 				ObjectMeta: metav1.ObjectMeta{Name: "gh-webhook-permanent"},
 				Spec: mortisev1alpha1.GitProviderSpec{
-					Type: mortisev1alpha1.GitProviderTypeGitHub,
-					Host: "https://github.com",
+					Type:             mortisev1alpha1.GitProviderTypeGitHub,
+					Host:             "https://github.com",
+					WebhookSecretRef: whRef,
 				},
 			}
 			Expect(k8sClient.Create(ctx, gp)).To(Succeed())
@@ -4966,16 +4995,20 @@ var _ = Describe("App Controller — git source", func() {
 
 			pc := &mortisev1alpha1.PlatformConfig{
 				ObjectMeta: metav1.ObjectMeta{Name: "platform"},
-				Spec:       mortisev1alpha1.PlatformConfigSpec{Domain: "example.com"},
+				Spec:       mortisev1alpha1.PlatformConfigSpec{Domain: "example.com", ExternalDomain: "mortise.example.com"},
 			}
 			Expect(k8sClient.Create(ctx, pc)).To(Succeed())
 			defer func() { Expect(k8sClient.Delete(ctx, pc)).To(Succeed()) }()
 
+			whSecret, whRef := makeWebhookSecret(ctx, "gh-webhook-transient")
+			defer func() { Expect(k8sClient.Delete(ctx, whSecret)).To(Succeed()) }()
+
 			gp := &mortisev1alpha1.GitProvider{
 				ObjectMeta: metav1.ObjectMeta{Name: "gh-webhook-transient"},
 				Spec: mortisev1alpha1.GitProviderSpec{
-					Type: mortisev1alpha1.GitProviderTypeGitHub,
-					Host: "https://github.com",
+					Type:             mortisev1alpha1.GitProviderTypeGitHub,
+					Host:             "https://github.com",
+					WebhookSecretRef: whRef,
 				},
 			}
 			Expect(k8sClient.Create(ctx, gp)).To(Succeed())
@@ -5003,6 +5036,95 @@ var _ = Describe("App Controller — git source", func() {
 			Expect(r.ensureWebhook(ctx, app, gp, "tok")).To(HaveOccurred())
 			Expect(api.listCount).To(Equal(2))
 			Expect(api.registerCount).To(Equal(2))
+		})
+
+		It("skips registration when externalDomain is not configured", func() {
+			ctx := context.Background()
+
+			// Only spec.domain set: the app wildcard domain does not serve the
+			// Mortise API, so no webhook may be registered against it.
+			pc := &mortisev1alpha1.PlatformConfig{
+				ObjectMeta: metav1.ObjectMeta{Name: "platform"},
+				Spec:       mortisev1alpha1.PlatformConfigSpec{Domain: "example.com"},
+			}
+			Expect(k8sClient.Create(ctx, pc)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, pc)).To(Succeed()) }()
+
+			whSecret, whRef := makeWebhookSecret(ctx, "gh-webhook-nodomain")
+			defer func() { Expect(k8sClient.Delete(ctx, whSecret)).To(Succeed()) }()
+
+			gp := &mortisev1alpha1.GitProvider{
+				ObjectMeta: metav1.ObjectMeta{Name: "gh-webhook-nodomain"},
+				Spec: mortisev1alpha1.GitProviderSpec{
+					Type:             mortisev1alpha1.GitProviderTypeGitHub,
+					Host:             "https://github.com",
+					WebhookSecretRef: whRef,
+				},
+			}
+			Expect(k8sClient.Create(ctx, gp)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, gp)).To(Succeed()) }()
+
+			app := makeGitSourceApp("git-webhook-nodomain", namespace, gp.Name)
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: namespace}, app)).To(Succeed())
+
+			api := &fakeWebhookAPI{}
+			r := gitSourceReconciler(&fakeBuildClient{digest: "sha256:nodomain"}, &fakeGitClient{}, &fakeRegistryBackend{})
+			r.GitAPIFactory = func(_ *mortisev1alpha1.GitProvider, _, _ string) (git.GitAPI, error) {
+				return api, nil
+			}
+
+			Expect(r.ensureWebhook(ctx, app, gp, "tok")).To(Succeed())
+			Expect(api.listCount).To(Equal(0))
+			Expect(api.registerCount).To(Equal(0))
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: namespace}, app)).To(Succeed())
+			cond := meta.FindStatusCondition(app.Status.Conditions, webhookConditionType)
+			Expect(cond).NotTo(BeNil())
+			Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(cond.Reason).To(Equal(webhookMissingURLReason))
+		})
+
+		It("skips registration when the provider has no usable webhook secret", func() {
+			ctx := context.Background()
+
+			pc := &mortisev1alpha1.PlatformConfig{
+				ObjectMeta: metav1.ObjectMeta{Name: "platform"},
+				Spec:       mortisev1alpha1.PlatformConfigSpec{Domain: "example.com", ExternalDomain: "mortise.example.com"},
+			}
+			Expect(k8sClient.Create(ctx, pc)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, pc)).To(Succeed()) }()
+
+			gp := &mortisev1alpha1.GitProvider{
+				ObjectMeta: metav1.ObjectMeta{Name: "gh-webhook-nosecret"},
+				Spec: mortisev1alpha1.GitProviderSpec{
+					Type: mortisev1alpha1.GitProviderTypeGitHub,
+					Host: "https://github.com",
+				},
+			}
+			Expect(k8sClient.Create(ctx, gp)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, gp)).To(Succeed()) }()
+
+			app := makeGitSourceApp("git-webhook-nosecret", namespace, gp.Name)
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: namespace}, app)).To(Succeed())
+
+			api := &fakeWebhookAPI{}
+			r := gitSourceReconciler(&fakeBuildClient{digest: "sha256:nosecret"}, &fakeGitClient{}, &fakeRegistryBackend{})
+			r.GitAPIFactory = func(_ *mortisev1alpha1.GitProvider, _, _ string) (git.GitAPI, error) {
+				return api, nil
+			}
+
+			Expect(r.ensureWebhook(ctx, app, gp, "tok")).To(Succeed())
+			Expect(api.registerCount).To(Equal(0))
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: namespace}, app)).To(Succeed())
+			cond := meta.FindStatusCondition(app.Status.Conditions, webhookConditionType)
+			Expect(cond).NotTo(BeNil())
+			Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(cond.Reason).To(Equal(webhookMissingSecretReason))
 		})
 	})
 

@@ -183,7 +183,7 @@ dev-up: build-ui ## Create k3d dev cluster with build infra, install Mortise, po
 		--set buildkit.enabled=false \
 		--set platformConfig.enabled=false \
 		--set cert-manager.enabled=false \
-		--set metricsServer.args='{--kubelet-insecure-tls}' \
+		--set metrics-server.args='{--kubelet-insecure-tls}' \
 		--set mortise-core.github.clientID=$(GITHUB_CLIENT_ID) \
 		--wait --timeout $(DEV_HELM_TIMEOUT)
 	@echo "==> Applying dev PlatformConfig..."
@@ -284,12 +284,11 @@ test-integration: ## Create k3d cluster, install chart + test deps, run integrat
 		--set buildkit.enabled=false \
 		--set platformConfig.enabled=false \
 		--set cert-manager.enabled=false \
-		--set metricsServer.args='{--kubelet-insecure-tls}' \
+		--set metrics-server.args='{--kubelet-insecure-tls}' \
 		--wait --timeout 180s
 	@echo "==> Running integration tests..."
-	go test -v -parallel 25 -tags integration -count=1 -timeout 45m ./test/integration/... || { \
-		k3d cluster delete $(INT_CLUSTER); exit 1; \
-	}
+	go test -v -parallel 25 -tags integration -count=1 -timeout 45m ./test/integration/... || \
+		{ echo "==> Tests failed; leaving cluster for diagnostics (run: k3d cluster delete $(INT_CLUSTER))"; exit 1; }
 	@echo "==> Tearing down cluster..."
 	k3d cluster delete $(INT_CLUSTER)
 
@@ -314,7 +313,13 @@ verify-chart-dependency-drift: ## Verify the vendored mortise-core package match
 	diff -qr charts/mortise-core/crds "$$tmpdir/mortise-core/crds"; \
 	diff -q charts/mortise-core/values.yaml "$$tmpdir/mortise-core/values.yaml"; \
 	helm template packaged-core "$$tgz" --show-only templates/rbac.yaml --namespace mortise-system > "$$rbac_manifest"; \
-	python3 -c 'import sys,yaml; docs=[doc for doc in yaml.safe_load_all(open(sys.argv[1], encoding="utf-8")) if doc]; resources={res for doc in docs if doc.get("kind") == "ClusterRole" for rule in doc.get("rules", []) for res in rule.get("resources", [])}; required={"buildruns", "buildruns/finalizers", "buildruns/status"}; missing=sorted(required - resources); assert not missing, f"missing RBAC resources in packaged subchart: {'"'"', '"'"'.join(missing)}"' "$$rbac_manifest"
+	awk '/^kind:/ {kind=$$2} kind=="ClusterRole" && /^[[:space:]]*resources:/ {sub(/.*resources:/, ""); gsub(/[][",]/, " "); print}' "$$rbac_manifest" \
+		| tr -s ' ' '\n' | sed '/^$$/d' | sort -u > "$$tmpdir/clusterrole-resources.txt"; \
+	missing=""; \
+	for res in buildruns buildruns/finalizers buildruns/status; do \
+		grep -Fxq "$$res" "$$tmpdir/clusterrole-resources.txt" || missing="$$missing $$res"; \
+	done; \
+	if [ -n "$$missing" ]; then echo "missing RBAC resources in packaged subchart:$$missing" >&2; exit 1; fi
 
 .PHONY: test-charts
 test-charts: ## Lint and template-test both Helm charts (no cluster required)
@@ -327,10 +332,13 @@ test-charts: ## Lint and template-test both Helm charts (no cluster required)
 	@echo "==> Template: umbrella defaults (all enabled, PVC storage)..."
 	helm template test charts/mortise --namespace mortise-system >/dev/null
 	@echo "==> Verifying PVCs render by default..."
+# grep -q exits on the first match while helm is still writing; under
+# `pipefail` that surfaces as SIGPIPE (exit 141), and for the negated
+# assertions below `!` would flip that failure into a false pass.
 	helm template test charts/mortise --namespace mortise-system \
-		--show-only templates/registry.yaml | grep -q "PersistentVolumeClaim"
+		--show-only templates/registry.yaml | grep "PersistentVolumeClaim" >/dev/null
 	helm template test charts/mortise --namespace mortise-system \
-		--show-only templates/buildkit.yaml | grep -q "PersistentVolumeClaim"
+		--show-only templates/buildkit.yaml | grep "PersistentVolumeClaim" >/dev/null
 	@echo "==> Template: all infra disabled (operator only)..."
 	helm template test charts/mortise --namespace mortise-system \
 		--set traefik.enabled=false \
@@ -338,7 +346,7 @@ test-charts: ## Lint and template-test both Helm charts (no cluster required)
 		--set buildkit.enabled=false \
 		--set registry.enabled=false \
 		--set platformConfig.enabled=false \
-		| grep -q "kind: Deployment"
+		| grep "kind: Deployment" >/dev/null
 	@echo "==> Verify disabled components don't render..."
 	! helm template test charts/mortise --namespace mortise-system \
 		--set traefik.enabled=false \
@@ -346,12 +354,12 @@ test-charts: ## Lint and template-test both Helm charts (no cluster required)
 		--set buildkit.enabled=false \
 		--set registry.enabled=false \
 		--set platformConfig.enabled=false \
-		| grep -q "buildkitd"
+		| grep "buildkitd" >/dev/null
 	@echo "==> Template: emptyDir fallback..."
 	! helm template test charts/mortise --namespace mortise-system \
 		--set registry.storage=emptyDir \
 		--set buildkit.storage=emptyDir \
-		--show-only templates/registry.yaml | grep -q "PersistentVolumeClaim"
+		--show-only templates/registry.yaml | grep "PersistentVolumeClaim" >/dev/null
 	@echo "==> Template: mortise-core standalone..."
 	helm template test charts/mortise-core --namespace mortise-system >/dev/null
 	@echo ""
@@ -412,7 +420,7 @@ dev-reload: build-ui ## Rebuild image, re-apply CRDs + chart, restart Mortise in
 		--set buildkit.enabled=false \
 		--set platformConfig.enabled=false \
 		--set cert-manager.enabled=false \
-		--set metricsServer.args='{--kubelet-insecure-tls}'
+		--set metrics-server.args='{--kubelet-insecure-tls}'
 	kubectl --context $(DEV_KUBE_CONTEXT) rollout restart deployment/mortise -n mortise-system
 	kubectl --context $(DEV_KUBE_CONTEXT) rollout status deployment/mortise -n mortise-system --timeout 60s
 	@-pkill -f "[k]ubectl port-forward.*8090" >/dev/null 2>&1

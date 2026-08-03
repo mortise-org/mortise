@@ -15,6 +15,18 @@ import (
 // TokenSecretNamespace is where user git tokens and provider secrets are stored.
 const TokenSecretNamespace = "mortise-system"
 
+// WebhookSecretKey is the key inside a provider webhook Secret that holds the
+// shared HMAC secret.
+const WebhookSecretKey = "webhookSecret"
+
+// WebhookSecretName returns the k8s Secret name holding the webhook HMAC
+// secret for a provider. Pattern: gitprovider-webhook-{providerName}. Every
+// GitProvider creation path mints this Secret; the GitProvider reconciler
+// uses the same convention to re-attach a lost webhookSecretRef.
+func WebhookSecretName(providerName string) string {
+	return "gitprovider-webhook-" + providerName
+}
+
 // UserTokenSecretName returns the k8s Secret name for a user's token for a
 // specific provider. Pattern: user-{providerName}-token-{hex(email)}.
 func UserTokenSecretName(providerName, email string) string {

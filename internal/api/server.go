@@ -50,6 +50,20 @@ type Server struct {
 	Clock         kclock.Clock
 	sseTokens     *sseTokenStore
 	GitAPIFactory func(*mortisev1alpha1.GitProvider, string, string) (git.GitAPI, error)
+
+	// operatorNamespace/serviceAccountName identify the operator's own SA so
+	// handlers that create env namespaces can stamp the write RoleBinding in
+	// the same request (see internal/nsrbac). Empty in unit tests, where
+	// envtest doesn't enforce RBAC and the stamp is unnecessary.
+	operatorNamespace  string
+	serviceAccountName string
+}
+
+// SetOperatorIdentity records the operator's namespace and ServiceAccount so
+// env-namespace-creating handlers can stamp the write RoleBinding.
+func (s *Server) SetOperatorIdentity(namespace, serviceAccount string) {
+	s.operatorNamespace = namespace
+	s.serviceAccountName = serviceAccount
 }
 
 // RESTConfig returns the rest.Config the server was built with. Exposed for

@@ -145,9 +145,12 @@ Mortise API. Webhook callbacks are sent to
   where the Mortise API is on a different hostname or port than the
   wildcard used for app routing
 
-**When you don't:**
-- The platform domain also serves as the Mortise API address — the
-  default behavior when external domain is empty
+**It is required for automatic webhook registration.** When it is
+empty, the App controller skips webhook registration and records a
+`WebhookConfigured=False` condition; pushes then need a manual redeploy.
+The app wildcard domain is not assumed to route to the Mortise API, so
+Mortise never registers callbacks against it. If your platform domain
+does also serve the Mortise API, set `externalDomain` to the same value.
 
 Set it in **Settings > External Domain** in the UI, or via the
 PlatformConfig CRD:
@@ -157,8 +160,6 @@ spec:
   domain: apps.example.com          # used for app subdomains
   externalDomain: mortise.example.com  # where Mortise API is reachable
 ```
-
-If left empty, the platform domain is used for webhook callbacks.
 
 ### Webhook reachability
 

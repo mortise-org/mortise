@@ -23,6 +23,52 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   re-runs reset UI state, causing the add-row form to appear then immediately
   disappear. Fixed with state guards.
 
+## [1.0.4] - 2026-07-26
+
+### Changed
+
+- **Umbrella chart values key rename**: the metrics-server subchart is now
+  configured under `metrics-server` (kebab-case) instead of `metricsServer`.
+  Values under the old key are silently ignored — upgraders who disabled or
+  configured metrics-server must move those values to the new key (#433).
+- **Webhook registration requires `externalDomain`** (#450): the App
+  controller no longer falls back to `spec.domain` when
+  `spec.externalDomain` is unset. The app wildcard domain does not route
+  to the Mortise API, so the fallback registered (and, via stale-hook
+  cleanup, replaced working hooks with) callbacks that could never
+  deliver. When `externalDomain` is empty, registration is skipped and
+  the App records a `WebhookConfigured=False` condition. Installs that
+  serve Mortise on the platform domain must set `externalDomain` to the
+  same value.
+
+### Fixed
+
+- **Secretless webhook registration** (#451): the App controller no
+  longer registers webhooks for a GitProvider without a usable
+  `webhookSecretRef`. The webhook handler rejects unsigned deliveries,
+  so such hooks could never deliver; registration is now skipped with a
+  `WebhookConfigured=False` condition until the secret is configured.
+- **GitProvider self-heal** (#451): the GitProvider reconciler
+  re-attaches a lost `spec.webhookSecretRef` when the managed
+  `gitprovider-webhook-{name}` Secret still exists, and reports a
+  `WebhookSecretConfigured` status condition either way.
+- **Registry pull URL warning** (#449): the operator logs a startup
+  warning when `spec.registry.url` is cluster-internal and
+  `spec.registry.pullURL` is empty, instead of silently templating
+  image refs kubelets cannot pull.
+- **Operator pod fails to start under `runAsNonRoot`** (#433): the chart
+  now sets numeric `runAsUser`/`runAsGroup` (65532) and the Dockerfile
+  uses a numeric `USER`, so kubelet can verify `runAsNonRoot` instead of
+  failing with `CreateContainerConfigError`.
+- **RBAC escalation-prevention deadlock** (#433): the operator ClusterRole
+  gains the `bind` verb (pinned to `mortise-controller-ns`) so the Project
+  controller can create per-namespace RoleBindings on RBAC-enforcing
+  clusters, plus `projectmembers/status` for member management.
+- **Builds under `readOnlyRootFilesystem`** (#433): `DOCKER_CONFIG` points
+  at the writable emptyDir so BuildKit's auth provider can create its
+  config dir; RBAC-propagation races between namespace creation and
+  RoleBinding stamping no longer surface as 500s or wedge App deletion.
+
 ## [1.0.2] - 2026-05-19
 
 ### Added

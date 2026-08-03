@@ -112,6 +112,7 @@ rules:
   - gitproviders/status
   - platformconfigs/status
   - previewenvironments/status
+  - projectmembers/status
   - projects/status
   verbs:
   - get
@@ -130,6 +131,26 @@ rules:
   - networking.k8s.io
   resources:
   - ingresses
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - rbac.authorization.k8s.io
+  resourceNames:
+  - mortise-controller-ns
+  resources:
+  - clusterroles
+  verbs:
+  - bind
+- apiGroups:
+  - rbac.authorization.k8s.io
+  resources:
+  - rolebindings
   verbs:
   - create
   - delete

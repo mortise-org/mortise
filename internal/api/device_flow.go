@@ -443,7 +443,7 @@ func (d *DeviceFlowHandler) getOrCreateGitProvider(ctx context.Context, name str
 	if _, err := cryptorand.Read(webhookSecretBytes); err != nil {
 		return nil, fmt.Errorf("generate webhook secret: %w", err)
 	}
-	secretName := "gitprovider-webhook-" + name
+	secretName := git.WebhookSecretName(name)
 	whSecret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      secretName,

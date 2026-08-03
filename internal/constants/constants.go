@@ -26,6 +26,14 @@ const (
 	// AppFinalizer gates App deletion until cross-namespace cleanup completes.
 	AppFinalizer = "mortise.dev/app-finalizer"
 
+	// NsClusterRoleName is the ClusterRole that carries namespace-scoped write
+	// permissions. Bound per-namespace via RoleBindings created by the Project
+	// controller.
+	NsClusterRoleName = "mortise-controller-ns"
+
+	// NsRoleBindingName is the RoleBinding name stamped in every pj-* namespace.
+	NsRoleBindingName = "mortise-controller-ns"
+
 	maxPreviewPRNumberDigits = 19
 	previewRepoHashLen       = 8
 )
