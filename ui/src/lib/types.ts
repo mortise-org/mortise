@@ -163,6 +163,8 @@ export interface App {
 		name: string;
 		namespace?: string;
 		creationTimestamp?: string;
+		generation?: number;
+		resourceVersion?: string;
 	};
 	spec: AppSpec;
 	status?: AppStatus;

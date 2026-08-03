@@ -723,6 +723,109 @@ test.describe('variables tab - fromBinding projection', () => {
     await deleteAppViaAPI(request, token, project, pgApp);
   });
 
+  test('manual saves preserve automatic bindings, fromBinding, and secretRef projections', async ({ page, request }) => {
+    const webApp = `web-owned-${randomSuffix()}`;
+    const pgApp = `pg-owned-${randomSuffix()}`;
+    await createBoundApps(request, webApp, pgApp);
+
+    const secretRes = await request.post(
+      `/api/projects/${project}/apps/${webApp}/secrets?environment=production`,
+      {
+        headers: { Authorization: `Bearer ${token}` },
+        data: { name: 'runtime-secret', data: { SECRET_TOKEN: 'resolved-secret' } }
+      }
+    );
+    expect(secretRes.ok()).toBe(true);
+
+    const app = await getAppViaAPI(request, token, project, webApp);
+    const spec = JSON.parse(JSON.stringify(app.spec));
+    const envObj = spec.environments.find((env: { name: string }) => env.name === 'production');
+    envObj.env = [
+      { name: 'BOUND_PASSWORD', valueFrom: { fromBinding: { ref: pgApp, key: 'password' } } },
+      { name: 'SECRET_TOKEN', valueFrom: { secretRef: 'runtime-secret' } }
+    ];
+    const update = await request.put(`/api/projects/${project}/apps/${webApp}`, {
+      headers: { Authorization: `Bearer ${token}` },
+      data: spec
+    });
+    expect(update.ok()).toBe(true);
+
+    const prefix = pgApp.toUpperCase().replace(/[^A-Z0-9_]/g, '_');
+    await expect(async () => {
+      const rows = await getEnvViaAPI(request, token, project, webApp);
+      expect(rows).toEqual(expect.arrayContaining([
+        expect.objectContaining({ name: `${prefix}_HOST`, source: 'binding' }),
+        expect.objectContaining({ name: 'BOUND_PASSWORD', bindingRef: pgApp, bindingKey: 'password' }),
+        expect.objectContaining({ name: 'SECRET_TOKEN', secretRef: 'runtime-secret' })
+      ]));
+    }).toPass({ timeout: 20_000, intervals: [500, 1_000, 2_000] });
+
+    await injectToken(page, token);
+    await goToVariablesTab(page, project, webApp);
+    const runtimeSection = variableSection(page, 'Runtime - production');
+    await expect(runtimeSection.getByText(`${prefix}_HOST`)).toBeVisible({ timeout: 15_000 });
+    await expect(runtimeSection.getByText('BOUND_PASSWORD')).toBeVisible();
+    await expect(runtimeSection.getByText('SECRET_TOKEN')).toBeVisible();
+
+    await clickPlusButton(page, 'Runtime - production');
+    await runtimeSection.getByPlaceholder('VARIABLE_NAME').fill('MANUAL_VALUE');
+    await runtimeSection.getByPlaceholder('value or binding ref').fill('one');
+    await runtimeSection.getByRole('button', { name: 'Add', exact: true }).click();
+    await expect(runtimeSection.getByText(/managed by binding/)).toHaveCount(0);
+
+    await expect(async () => {
+      const rows = await getEnvViaAPI(request, token, project, webApp);
+      expect(rows).toEqual(expect.arrayContaining([
+        expect.objectContaining({ name: 'MANUAL_VALUE', value: 'one' }),
+        expect.objectContaining({ name: `${prefix}_HOST`, source: 'binding' }),
+        expect.objectContaining({ name: 'BOUND_PASSWORD', bindingRef: pgApp }),
+        expect.objectContaining({ name: 'SECRET_TOKEN', secretRef: 'runtime-secret' })
+      ]));
+    }).toPass({ timeout: 15_000, intervals: [500, 1_000] });
+
+    const manualRow = runtimeSection.locator('div.group').filter({ hasText: 'MANUAL_VALUE' });
+    await manualRow.locator('button[title="Reveal"]').click();
+    await manualRow.locator('input').fill('two');
+    await runtimeSection.getByRole('button', { name: 'Save 1 change', exact: true }).click();
+    await expect(async () => {
+      const rows = await getEnvViaAPI(request, token, project, webApp);
+      expect(rows.find(row => row.name === 'MANUAL_VALUE')?.value).toBe('two');
+      expect(rows.find(row => row.name === `${prefix}_HOST`)).toBeDefined();
+    }).toPass({ timeout: 10_000 });
+
+    await runtimeSection.getByRole('button', { name: 'Raw', exact: true }).click();
+    await runtimeSection.locator('textarea').fill('RAW_LITERAL=raw');
+    await runtimeSection.getByRole('button', { name: 'Save', exact: true }).click();
+    await expect(async () => {
+      const rows = await getEnvViaAPI(request, token, project, webApp);
+      expect(rows).toEqual(expect.arrayContaining([
+        expect.objectContaining({ name: 'RAW_LITERAL', value: 'raw' }),
+        expect.objectContaining({ name: `${prefix}_HOST`, source: 'binding' }),
+        expect.objectContaining({ name: 'BOUND_PASSWORD', bindingRef: pgApp }),
+        expect.objectContaining({ name: 'SECRET_TOKEN', secretRef: 'runtime-secret' })
+      ]));
+      expect(rows.find(row => row.name === 'MANUAL_VALUE')).toBeUndefined();
+    }).toPass({ timeout: 15_000, intervals: [500, 1_000] });
+
+    for (const name of ['BOUND_PASSWORD', 'SECRET_TOKEN']) {
+      const row = runtimeSection.locator('div.group').filter({ hasText: name });
+      await row.locator('button').last().click();
+      await expect(async () => {
+        const updatedApp = await getAppViaAPI(request, token, project, webApp);
+        const env = updatedApp.spec.environments?.find((candidate: { name: string }) => candidate.name === 'production');
+        expect(env?.env?.some((entry: { name: string }) => entry.name === name)).toBe(false);
+		const rows = await getEnvViaAPI(request, token, project, webApp);
+		expect(rows.some(row => row.name === name)).toBe(false);
+      }).toPass({ timeout: 10_000 });
+    }
+
+    const remaining = await getEnvViaAPI(request, token, project, webApp);
+    expect(remaining.find(row => row.name === `${prefix}_HOST`)).toBeDefined();
+
+    await deleteAppViaAPI(request, token, project, webApp);
+    await deleteAppViaAPI(request, token, project, pgApp);
+  });
+
   // -------------------------------------------------------------------------
   // Test: auto-injected binding vars show as read-only without delete button
   // -------------------------------------------------------------------------

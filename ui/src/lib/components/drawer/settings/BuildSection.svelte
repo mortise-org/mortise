@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { untrack } from 'svelte';
 	import { api } from '$lib/api';
 	import type { App, AppSpec } from '$lib/types';
 	import { inputCls, labelCls, sectionCls, headingCls, btnPrimary } from './styles';
@@ -6,14 +7,20 @@
 	let {
 		project,
 		app,
+		appIdentity,
+		resetEpoch,
 		cloneSpec,
+		onDirty,
 		onSpecUpdate,
 		onError
 	}: {
 		project: string;
 		app: App;
+		appIdentity: string;
+		resetEpoch: number;
 		cloneSpec: () => AppSpec;
-		onSpecUpdate: (spec: AppSpec) => void;
+		onDirty: () => void;
+		onSpecUpdate: (app: App) => void;
 		onError: (msg: string) => void;
 	} = $props();
 
@@ -23,9 +30,14 @@
 	let savingBuild = $state(false);
 
 	$effect(() => {
-		buildMode = app.spec.source.build?.mode ?? 'auto';
-		dockerfilePath = app.spec.source.build?.dockerfilePath ?? '';
-		buildContext = app.spec.source.build?.context ?? '';
+		appIdentity;
+		resetEpoch;
+		untrack(() => {
+			const spec = cloneSpec();
+			buildMode = spec.source.build?.mode ?? 'auto';
+			dockerfilePath = spec.source.build?.dockerfilePath ?? '';
+			buildContext = spec.source.build?.context ?? '';
+		});
 	});
 
 	const srcPath = $derived(app.spec.source.path ?? '');
@@ -44,7 +56,7 @@
 		};
 		try {
 			const result = await api.updateApp(project, app.metadata.name, spec);
-			onSpecUpdate(result.spec);
+			onSpecUpdate(result);
 		} catch (e) {
 			onError(e instanceof Error ? e.message : 'Failed to save build config');
 		} finally {
@@ -58,7 +70,7 @@
 	<div class="space-y-3">
 		<div>
 			<label class={labelCls} for="build-mode">Build mode</label>
-			<select id="build-mode" bind:value={buildMode}
+			<select id="build-mode" bind:value={buildMode} onchange={onDirty}
 				class="mt-1 w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-white outline-none focus:border-accent">
 				<option value="auto">Auto-detect</option>
 				<option value="dockerfile">Dockerfile</option>
@@ -68,14 +80,14 @@
 		{#if buildMode === 'dockerfile'}
 			<div>
 				<label class={labelCls} for="dockerfile-path">Dockerfile path</label>
-				<input id="dockerfile-path" type="text" bind:value={dockerfilePath} placeholder="Dockerfile"
+				<input id="dockerfile-path" type="text" bind:value={dockerfilePath} oninput={onDirty} placeholder="Dockerfile"
 					class="mt-1 w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 font-mono text-sm text-white placeholder-gray-500 outline-none focus:border-accent" />
 			</div>
 		{/if}
 		{#if buildMode !== 'railpack' && srcPath}
 			<div>
 				<label class={labelCls} for="build-context">Build context</label>
-				<select id="build-context" bind:value={buildContext}
+				<select id="build-context" bind:value={buildContext} onchange={onDirty}
 					class="mt-1 w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-white outline-none focus:border-accent">
 					<option value="">Auto-detect</option>
 					<option value="subdir">Subdirectory (self-contained)</option>

@@ -542,7 +542,7 @@ export const api = {
 
 	// --- env management ---
 	getEnv: (project: string, app: string, env: string) =>
-		request<Array<{ name: string; value: string; source?: string; bindingRef?: string; bindingKey?: string }>>(
+		request<Array<{ name: string; value: string; source?: string; bindingRef?: string; bindingKey?: string; secretRef?: string }>>(
 			`/projects/${enc(project)}/apps/${enc(app)}/env?environment=${enc(env)}`
 		),
 	setEnv: (project: string, app: string, env: string, vars: Record<string, string>) =>

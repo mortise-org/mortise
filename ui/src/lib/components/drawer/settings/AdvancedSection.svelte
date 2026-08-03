@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { untrack } from 'svelte';
 	import { api } from '$lib/api';
 	import type { App, AppSpec, SecretMount } from '$lib/types';
 	import { Plus, Trash2, ChevronDown } from 'lucide-svelte';
@@ -7,16 +8,24 @@
 	let {
 		project,
 		app,
+		appIdentity,
 		selectedEnv,
+		resetEpoch,
 		cloneSpec,
+		onDirty,
 		onSpecUpdate,
+		onDraftCleared,
 		onError
 	}: {
 		project: string;
 		app: App;
+		appIdentity: string;
 		selectedEnv: string;
+		resetEpoch: number;
 		cloneSpec: () => AppSpec;
-		onSpecUpdate: (spec: AppSpec) => void;
+		onDirty: (scope: 'annotations' | 'mounts' | 'mount-form') => void;
+		onSpecUpdate: (app: App, scope: 'annotations' | 'mounts') => void;
+		onDraftCleared: (scope: 'mount-form' | 'mounts') => void;
 		onError: (msg: string) => void;
 	} = $props();
 
@@ -29,27 +38,38 @@
 	let savingMounts = $state(false);
 
 	$effect(() => {
-		// eslint-disable-next-line @typescript-eslint/no-explicit-any
-		const env = (app.spec.environments?.find(e => e.name === selectedEnv) as any) ?? {};
-		annotations = Object.fromEntries(Object.entries((env.annotations ?? {}) as Record<string, string>));
-		secretMounts = (env.secretMounts ?? []) as SecretMount[];
+		appIdentity;
+		selectedEnv;
+		resetEpoch;
+		untrack(() => {
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
+			const env = (cloneSpec().environments?.find(e => e.name === selectedEnv) as any) ?? {};
+			annotations = Object.fromEntries(Object.entries((env.annotations ?? {}) as Record<string, string>));
+			secretMounts = (env.secretMounts ?? []).map((mount: SecretMount) => ({ ...mount }));
+			showAddMount = false;
+			newMount = { secretName: '', mountPath: '' };
+		});
 	});
 
 	function addAnnotation() {
+		onDirty('annotations');
 		annotations = { ...annotations, '': '' };
 	}
 
 	function updateAnnotationKey(i: number, _oldKey: string, newKey: string) {
+		onDirty('annotations');
 		const entries = Object.entries(annotations);
 		entries[i] = [newKey, entries[i][1]];
 		annotations = Object.fromEntries(entries);
 	}
 
 	function updateAnnotationValue(key: string, val: string) {
+		onDirty('annotations');
 		annotations = { ...annotations, [key]: val };
 	}
 
 	function removeAnnotation(key: string) {
+		onDirty('annotations');
 		const { [key]: _, ...rest } = annotations;
 		annotations = rest;
 	}
@@ -67,7 +87,7 @@
 			}
 			spec.environments[envIdx] = { ...spec.environments[envIdx], annotations };
 			const result = await api.updateApp(project, app.metadata.name, spec);
-			onSpecUpdate(result.spec);
+			onSpecUpdate(result, 'annotations');
 		} catch (e) {
 			onError(e instanceof Error ? e.message : 'Failed to save annotations');
 		} finally {
@@ -75,21 +95,35 @@
 		}
 	}
 
-	function addSecretMount() {
+	async function addSecretMount() {
 		if (!newMount.secretName || !newMount.mountPath) return;
+		const previousMounts = secretMounts;
+		onDirty('mounts');
 		secretMounts = [...secretMounts, { name: newMount.secretName, secret: newMount.secretName, path: newMount.mountPath }];
+		if (await saveSecretMounts()) {
+			newMount = { secretName: '', mountPath: '' };
+			showAddMount = false;
+			onDraftCleared('mount-form');
+		} else {
+			secretMounts = previousMounts;
+			onDraftCleared('mounts');
+		}
+	}
+
+	function cancelSecretMount() {
 		newMount = { secretName: '', mountPath: '' };
 		showAddMount = false;
-		void saveSecretMounts();
+		onDraftCleared('mount-form');
 	}
 
 	function removeSecretMount(i: number) {
+		onDirty('mounts');
 		secretMounts = secretMounts.filter((_, idx) => idx !== i);
 		void saveSecretMounts();
 	}
 
-	async function saveSecretMounts() {
-		if (!selectedEnv) return;
+	async function saveSecretMounts(): Promise<boolean> {
+		if (!selectedEnv) return false;
 		savingMounts = true;
 		try {
 			const spec = cloneSpec();
@@ -101,9 +135,11 @@
 			}
 			spec.environments[envIdx] = { ...spec.environments[envIdx], secretMounts };
 			const result = await api.updateApp(project, app.metadata.name, spec);
-			onSpecUpdate(result.spec);
+			onSpecUpdate(result, 'mounts');
+			return true;
 		} catch (e) {
 			onError(e instanceof Error ? e.message : 'Failed to save mounts');
+			return false;
 		} finally {
 			savingMounts = false;
 		}
@@ -167,14 +203,14 @@
 			{/each}
 			{#if showAddMount}
 				<div class="rounded-md border border-surface-600 p-2 space-y-2 bg-surface-700">
-					<input type="text" bind:value={newMount.secretName} placeholder="k8s-secret-name"
+					<input type="text" bind:value={newMount.secretName} oninput={() => onDirty('mount-form')} placeholder="k8s-secret-name"
 						class="w-full rounded-md border border-surface-600 bg-surface-800 px-2 py-1.5 text-xs text-white placeholder-gray-500 outline-none focus:border-accent" />
-					<input type="text" bind:value={newMount.mountPath} placeholder="/etc/certs"
+					<input type="text" bind:value={newMount.mountPath} oninput={() => onDirty('mount-form')} placeholder="/etc/certs"
 						class="w-full rounded-md border border-surface-600 bg-surface-800 px-2 py-1.5 text-xs text-white placeholder-gray-500 outline-none focus:border-accent" />
 					<div class="flex gap-2">
 						<button type="button" onclick={addSecretMount} disabled={!newMount.secretName || !newMount.mountPath}
 							class="rounded-md bg-accent px-2 py-1 text-xs text-white hover:bg-accent-hover disabled:opacity-50">Add</button>
-						<button type="button" onclick={() => showAddMount = false}
+						<button type="button" onclick={cancelSecretMount}
 							class="rounded-md border border-surface-600 px-2 py-1 text-xs text-gray-400 hover:bg-surface-600">Cancel</button>
 					</div>
 				</div>

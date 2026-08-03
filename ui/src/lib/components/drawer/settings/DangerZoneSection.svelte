@@ -7,12 +7,20 @@
 	let {
 		project,
 		app,
+		appIdentity,
+		resetEpoch,
 		onAppDeleted,
+		onDirty,
+		onDraftCleared,
 		onError
 	}: {
 		project: string;
 		app: App;
+		appIdentity: string;
+		resetEpoch: number;
 		onAppDeleted: () => void;
+		onDirty: () => void;
+		onDraftCleared: () => void;
 		onError: (msg: string) => void;
 	} = $props();
 
@@ -21,6 +29,14 @@
 	let deleting = $state(false);
 	let bindingConsumers = $state<string[]>([]);
 	let loadingConsumers = $state(false);
+
+	$effect(() => {
+		appIdentity;
+		resetEpoch;
+		confirmDelete = false;
+		deleteConfirmText = '';
+		bindingConsumers = [];
+	});
 
 	async function loadBindingConsumers() {
 		loadingConsumers = true;
@@ -84,6 +100,7 @@
 			<input
 				type="text"
 				bind:value={deleteConfirmText}
+				oninput={onDirty}
 				placeholder={app.metadata.name}
 				class="{inputCls} border-danger/50 focus:border-danger"
 			/>
@@ -98,7 +115,7 @@
 				</button>
 				<button
 					type="button"
-					onclick={() => { confirmDelete = false; deleteConfirmText = ''; bindingConsumers = []; }}
+					onclick={() => { confirmDelete = false; deleteConfirmText = ''; bindingConsumers = []; onDraftCleared(); }}
 					class={btnSecondary}
 				>
 					Cancel

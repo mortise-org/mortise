@@ -7034,6 +7034,52 @@ var _ = Describe("App Controller — git source", func() {
 			Expect(envData).NotTo(HaveKey("DROP_ME"), "removed CRD key should be pruned when still controller-owned")
 		})
 
+		It("removes a deleted secretRef projection when its resolved value is unchanged", func() {
+			appName := "secretref-removal-test"
+			sourceSecret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{Name: "secretref-removal-source", Namespace: envNsProduction},
+				Data:       map[string][]byte{"API_TOKEN": []byte("resolved-token")},
+			}
+			Expect(k8sClient.Create(ctx, sourceSecret)).To(Succeed())
+			defer func() { Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, sourceSecret))).To(Succeed()) }()
+
+			app := &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{Name: appName, Namespace: namespace},
+				Spec: mortisev1alpha1.AppSpec{
+					Source:  mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: testImageNginx},
+					Network: mortisev1alpha1.NetworkConfig{Public: true},
+					Environments: []mortisev1alpha1.Environment{{
+						Name:   "production",
+						Domain: "secretref-removal.example.com",
+						Env: []mortisev1alpha1.EnvVar{{
+							Name:      "API_TOKEN",
+							ValueFrom: &mortisev1alpha1.EnvVarSource{SecretRef: sourceSecret.Name},
+						}},
+					}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, app))).To(Succeed()) }()
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(readAppEnvSecret(ctx, appName, envNsProduction)).To(HaveKeyWithValue("API_TOKEN", "resolved-token"))
+
+			var fetchedApp mortisev1alpha1.App
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: appName, Namespace: namespace}, &fetchedApp)).To(Succeed())
+			fetchedApp.Spec.Environments[0].Env = nil
+			Expect(k8sClient.Update(ctx, &fetchedApp)).To(Succeed())
+
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(readAppEnvSecret(ctx, appName, envNsProduction)).NotTo(HaveKey("API_TOKEN"))
+		})
+
 		It("preserves removed CRD spec env var keys when the user has overridden them", func() {
 			appName := "key-removal-override-test"
 			app := &mortisev1alpha1.App{

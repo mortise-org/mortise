@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { untrack } from 'svelte';
 	import { api } from '$lib/api';
 	import type { App, AppSpec } from '$lib/types';
 	import { ChevronDown } from 'lucide-svelte';
@@ -7,14 +8,22 @@
 	let {
 		project,
 		app,
+		appIdentity,
+		resetEpoch,
 		cloneSpec,
+		onDirty,
+		onDraftCleared,
 		onSpecUpdate,
 		onError
 	}: {
 		project: string;
 		app: App;
+		appIdentity: string;
+		resetEpoch: number;
 		cloneSpec: () => AppSpec;
-		onSpecUpdate: (spec: AppSpec) => void;
+		onDirty: (scope: 'spec' | 'registry') => void;
+		onDraftCleared: (scope: 'spec' | 'registry') => void;
+		onSpecUpdate: (app: App) => void;
 		onError: (msg: string) => void;
 	} = $props();
 
@@ -35,11 +44,18 @@
 	let showAdvancedPull = $state(false);
 
 	$effect(() => {
-		srcRepo = app.spec.source.repo ?? '';
-		srcBranch = app.spec.source.branch ?? '';
-		srcPath = app.spec.source.path ?? '';
-		srcImage = app.spec.source.image ?? '';
-		srcPullSecretRef = app.spec.source.pullSecretRef ?? '';
+		appIdentity;
+		resetEpoch;
+		untrack(() => {
+			const spec = cloneSpec();
+			srcRepo = spec.source.repo ?? '';
+			srcBranch = spec.source.branch ?? '';
+			srcPath = spec.source.path ?? '';
+			srcImage = spec.source.image ?? '';
+			srcPullSecretRef = spec.source.pullSecretRef ?? '';
+			pullPassword = '';
+			if (spec.source.type === 'image') void loadPullCredentials();
+		});
 	});
 
 	import { onMount } from 'svelte';
@@ -73,6 +89,7 @@
 			pullHasPassword = creds.hasPassword;
 			pullConnected = true;
 			pullPassword = '';
+			onDraftCleared('registry');
 		} catch (e) {
 			onError(e instanceof Error ? e.message : 'Failed to save pull credentials');
 		} finally {
@@ -89,6 +106,7 @@
 			pullPassword = '';
 			pullHasPassword = false;
 			pullConnected = false;
+			onDraftCleared('registry');
 		} catch (e) {
 			onError(e instanceof Error ? e.message : 'Failed to remove pull credentials');
 		} finally {
@@ -113,7 +131,7 @@
 		saving = true;
 		try {
 			const result = await api.updateApp(project, app.metadata.name, buildUpdatedSpec());
-			onSpecUpdate(result.spec);
+			onSpecUpdate(result);
 		} catch (e) {
 			onError(e instanceof Error ? e.message : 'Failed to save');
 		} finally {
@@ -129,22 +147,22 @@
 		{#if app.spec.source.type === 'git'}
 			<div>
 				<label class={labelCls} for="src-repo">Repository</label>
-				<input id="src-repo" type="text" bind:value={srcRepo} placeholder="https://github.com/org/repo" class={inputCls} />
+			<input id="src-repo" type="text" bind:value={srcRepo} oninput={() => onDirty('spec')} placeholder="https://github.com/org/repo" class={inputCls} />
 			</div>
 			<div class="grid grid-cols-2 gap-2">
 				<div>
 					<label class={labelCls} for="src-branch">Branch</label>
-					<input id="src-branch" type="text" bind:value={srcBranch} placeholder="main" class={inputCls} />
+					<input id="src-branch" type="text" bind:value={srcBranch} oninput={() => onDirty('spec')} placeholder="main" class={inputCls} />
 				</div>
 				<div>
 					<label class={labelCls} for="src-path">Path</label>
-					<input id="src-path" type="text" bind:value={srcPath} placeholder="/" class={inputCls} />
+					<input id="src-path" type="text" bind:value={srcPath} oninput={() => onDirty('spec')} placeholder="/" class={inputCls} />
 				</div>
 			</div>
 		{:else if app.spec.source.type === 'image'}
 			<div>
 				<label class={labelCls} for="src-image">Image</label>
-				<input id="src-image" type="text" bind:value={srcImage} placeholder="registry.example.com/app:latest" class={inputCls} />
+				<input id="src-image" type="text" bind:value={srcImage} oninput={() => onDirty('spec')} placeholder="registry.example.com/app:latest" class={inputCls} />
 			</div>
 
 			<!-- Pull credentials -->
@@ -162,15 +180,15 @@
 				{:else}
 					<div>
 						<label class={labelCls} for="pull-registry">Registry URL</label>
-						<input id="pull-registry" type="text" bind:value={pullRegistry} placeholder="ghcr.io" class={inputCls} />
+						<input id="pull-registry" type="text" bind:value={pullRegistry} oninput={() => onDirty('registry')} placeholder="ghcr.io" class={inputCls} />
 					</div>
 					<div>
 						<label class={labelCls} for="pull-username">Username</label>
-						<input id="pull-username" type="text" bind:value={pullUsername} placeholder="username" class={inputCls} />
+						<input id="pull-username" type="text" bind:value={pullUsername} oninput={() => onDirty('registry')} placeholder="username" class={inputCls} />
 					</div>
 					<div>
 						<label class={labelCls} for="pull-password">Password / token</label>
-						<input id="pull-password" type="password" bind:value={pullPassword} placeholder="••••••••" class={inputCls} />
+						<input id="pull-password" type="password" bind:value={pullPassword} oninput={() => onDirty('registry')} placeholder="••••••••" class={inputCls} />
 					</div>
 					<div class="flex justify-end">
 						<button type="button" onclick={savePullCredentials} disabled={savingPull} class={btnPrimary}>
@@ -190,7 +208,7 @@
 				{#if showAdvancedPull}
 					<div class="mt-2">
 						<label class={labelCls} for="src-pull-secret">Manual pull secret <span class="text-gray-600">(k8s Secret name)</span></label>
-						<input id="src-pull-secret" type="text" bind:value={srcPullSecretRef} placeholder="my-registry-secret" class={inputCls} />
+						<input id="src-pull-secret" type="text" bind:value={srcPullSecretRef} oninput={() => onDirty('spec')} placeholder="my-registry-secret" class={inputCls} />
 						<p class="mt-0.5 text-xs text-gray-500">Name of an existing k8s Secret you manage yourself. Overrides credentials above.</p>
 					</div>
 				{/if}

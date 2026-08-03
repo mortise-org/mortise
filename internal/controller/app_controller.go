@@ -2410,12 +2410,14 @@ func (r *AppReconciler) reconcileEnvSecret(ctx context.Context, app *mortisev1al
 
 	var toMerge []envstore.Env
 	var fromBindingEnvs []envstore.Env
+	resolvedSpecEnv := make(map[string]string, len(env.Env))
 	for _, ev := range env.Env {
 		resolved, source, err := r.resolveEnvVarValue(ctx, ev, envNs, projectName, env.Name, bindingRefs)
 		if err != nil {
 			log.Error(err, "skipping env var with invalid valueFrom", "var", ev.Name)
 			continue
 		}
+		resolvedSpecEnv[ev.Name] = resolved
 
 		// fromBinding vars go into the binding-source list so they survive
 		// ReplaceSource("binding", ...) below.
@@ -2447,7 +2449,7 @@ func (r *AppReconciler) reconcileEnvSecret(ctx context.Context, app *mortisev1al
 		}
 	}
 
-	if err := r.writeLastSpecEnv(ctx, envNs, app.Name, env.Env); err != nil {
+	if err := r.writeLastSpecEnv(ctx, envNs, app.Name, resolvedSpecEnv); err != nil {
 		return fmt.Errorf("write last-spec-env: %w", err)
 	}
 
@@ -2601,7 +2603,7 @@ func (r *AppReconciler) readLastSpecEnv(ctx context.Context, ns, appName string)
 	return m
 }
 
-func (r *AppReconciler) writeLastSpecEnv(ctx context.Context, ns, appName string, envVars []mortisev1alpha1.EnvVar) error {
+func (r *AppReconciler) writeLastSpecEnv(ctx context.Context, ns, appName string, envVars map[string]string) error {
 	var sec corev1.Secret
 	if err := r.Client.Get(ctx, types.NamespacedName{
 		Name:      envstore.AppEnvSecretName(appName),
@@ -2612,11 +2614,7 @@ func (r *AppReconciler) writeLastSpecEnv(ctx context.Context, ns, appName string
 		}
 		return fmt.Errorf("get env secret for last-spec annotation: %w", err)
 	}
-	m := make(map[string]string, len(envVars))
-	for _, ev := range envVars {
-		m[ev.Name] = ev.Value
-	}
-	data, err := json.Marshal(m)
+	data, err := json.Marshal(envVars)
 	if err != nil {
 		return fmt.Errorf("marshal last-spec env: %w", err)
 	}

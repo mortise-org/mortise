@@ -66,6 +66,29 @@ test.describe('app drawer settings tab sections', () => {
 		await expect(page.getByRole('heading', { name: 'Networking' })).toBeVisible({ timeout: 3_000 });
 	});
 
+	test('live status changes and filtering preserve the active Settings draft', async ({ page }) => {
+		await navigateToSettingsTab(page);
+
+		const sourceInput = page.locator('#src-image');
+		await sourceInput.fill('nginx:unsaved-draft');
+		const portInput = page.locator('#net-port');
+		await portInput.fill('9191');
+
+		const filter = page.getByPlaceholder('Filter settings…');
+		await filter.fill('domains');
+		await expect(sourceInput).toBeHidden();
+		await filter.fill('');
+		await expect(sourceInput).toHaveValue('nginx:unsaved-draft');
+		await expect(portInput).toHaveValue('9191');
+
+		const redeploy = page.getByRole('button', { name: 'Redeploy', exact: true });
+		if (await redeploy.isEnabled()) await redeploy.click();
+		await page.waitForTimeout(2_000);
+		await expect(page.getByRole('button', { name: 'Settings', exact: true })).toHaveClass(/border-accent/);
+		await expect(sourceInput).toHaveValue('nginx:unsaved-draft');
+		await expect(portInput).toHaveValue('9191');
+	});
+
 	test('Test 2: Update image reference, verify via API', async ({ page, request }) => {
 		await navigateToSettingsTab(page);
 

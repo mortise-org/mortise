@@ -373,6 +373,151 @@ func TestPutEnvRejectsManagedVarOverwrite(t *testing.T) {
 	}
 }
 
+func TestGetEnvIncludesDeclarativeSourceMetadata(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+	ns := seedProject(t, k8sClient, "default")
+
+	ctx := context.Background()
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "declarative-app", Namespace: ns},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: "nginx:1.25.0"},
+			Environments: []mortisev1alpha1.Environment{{
+				Name: "production",
+				Env: []mortisev1alpha1.EnvVar{
+					{Name: "DATABASE_URL", ValueFrom: &mortisev1alpha1.EnvVarSource{FromBinding: &mortisev1alpha1.BindingVarSource{Ref: "database", Key: "url"}}},
+					{Name: "API_TOKEN", ValueFrom: &mortisev1alpha1.EnvVarSource{SecretRef: "api-secrets"}},
+					{Name: "LITERAL", Value: "plain"},
+				},
+			}},
+		},
+	}
+	if err := k8sClient.Create(ctx, app); err != nil {
+		t.Fatalf("create app: %v", err)
+	}
+
+	envNs := constants.EnvNamespace("default", "production")
+	_ = k8sClient.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: envNs}})
+	if err := k8sClient.Create(ctx, &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: envstore.AppEnvSecretName(app.Name), Namespace: envNs,
+			Annotations: map[string]string{envstore.AnnotationBindingKeys: "DATABASE_URL"},
+		},
+		Data: map[string][]byte{
+			"DATABASE_URL": []byte("postgres://database"),
+			"API_TOKEN":    []byte("resolved-secret"),
+			"LITERAL":      []byte("plain"),
+		},
+	}); err != nil {
+		t.Fatalf("seed env secret: %v", err)
+	}
+
+	w := doRequest(h, http.MethodGet, "/api/projects/default/apps/declarative-app/env?environment=production", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("get: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var rows []envRow
+	if err := json.NewDecoder(w.Body).Decode(&rows); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	byName := make(map[string]envRow, len(rows))
+	for _, row := range rows {
+		byName[row.Name] = row
+	}
+	if got := byName["DATABASE_URL"]; got.BindingRef != "database" || got.BindingKey != "url" || got.SecretRef != "" {
+		t.Errorf("fromBinding metadata = %+v", got)
+	}
+	if got := byName["API_TOKEN"]; got.SecretRef != "api-secrets" || got.BindingRef != "" || got.BindingKey != "" {
+		t.Errorf("secretRef metadata = %+v", got)
+	}
+	if got := byName["LITERAL"]; got.SecretRef != "" || got.BindingRef != "" || got.BindingKey != "" {
+		t.Errorf("literal unexpectedly has declarative metadata: %+v", got)
+	}
+}
+
+type envRow struct {
+	Name       string `json:"name"`
+	Value      string `json:"value"`
+	Source     string `json:"source"`
+	BindingRef string `json:"bindingRef"`
+	BindingKey string `json:"bindingKey"`
+	SecretRef  string `json:"secretRef"`
+}
+
+func TestPutEnvUserLiteralsPreserveManagedRows(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+	ns := seedProject(t, k8sClient, "default")
+
+	ctx := context.Background()
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "preserve-bound-app", Namespace: ns},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: "nginx:1.25.0"},
+			Environments: []mortisev1alpha1.Environment{{
+				Name: "production",
+				Env:  []mortisev1alpha1.EnvVar{{Name: "SECRET_TOKEN", ValueFrom: &mortisev1alpha1.EnvVarSource{SecretRef: "app-secrets"}}},
+			}},
+		},
+	}
+	if err := k8sClient.Create(ctx, app); err != nil {
+		t.Fatalf("create app: %v", err)
+	}
+	envNs := constants.EnvNamespace("default", "production")
+	_ = k8sClient.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: envNs}})
+	if err := k8sClient.Create(ctx, &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: envstore.AppEnvSecretName(app.Name), Namespace: envNs,
+			Annotations: map[string]string{envstore.AnnotationBindingKeys: "DB_URL"},
+		},
+		Data: map[string][]byte{
+			"DB_URL":       []byte("postgres://database"),
+			"SECRET_TOKEN": []byte("resolved-secret"),
+			"OLD_USER":     []byte("old"),
+		},
+	}); err != nil {
+		t.Fatalf("seed env secret: %v", err)
+	}
+
+	w := doRequest(h, http.MethodPut, "/api/projects/default/apps/preserve-bound-app/env?environment=production", []map[string]string{
+		{"name": "NEW_USER", "value": "new"},
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("put: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	w = doRequest(h, http.MethodGet, "/api/projects/default/apps/preserve-bound-app/env?environment=production", nil)
+	var rows []envRow
+	if err := json.NewDecoder(w.Body).Decode(&rows); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	byName := make(map[string]envRow, len(rows))
+	for _, row := range rows {
+		byName[row.Name] = row
+	}
+	if got := byName["DB_URL"]; got.Value != "postgres://database" || got.Source != "binding" {
+		t.Errorf("managed binding row was not preserved: %+v", got)
+	}
+	if got := byName["NEW_USER"]; got.Value != "new" || got.Source != "user" {
+		t.Errorf("user row was not replaced: %+v", got)
+	}
+	if got := byName["SECRET_TOKEN"]; got.Value != "resolved-secret" || got.SecretRef != "app-secrets" {
+		t.Errorf("secretRef row was not preserved: %+v", got)
+	}
+	if _, ok := byName["OLD_USER"]; ok {
+		t.Error("old user row should have been replaced")
+	}
+
+	w = doRequest(h, http.MethodPut, "/api/projects/default/apps/preserve-bound-app/env?environment=production", []map[string]string{
+		{"name": "SECRET_TOKEN", "value": "literal"},
+	})
+	if w.Code != http.StatusConflict {
+		t.Fatalf("expected 409 when overwriting secretRef projection, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
 func TestPatchEnvRejectsManagedVarUnset(t *testing.T) {
 	k8sClient := setupEnvtest(t)
 	srv := newAdminServer(t, k8sClient)

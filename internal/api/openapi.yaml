@@ -314,6 +314,10 @@ definitions:
         type: string
       redacted:
         type: boolean
+      secretRef:
+        description: SecretRef is set for env vars with valueFrom.secretRef on the
+          CRD spec.
+        type: string
       source:
         type: string
       value:
