@@ -303,6 +303,7 @@ func (s *Server) Handler() http.Handler {
 			r.Get("/projects/{project}/apps/{app}/tokens", s.ListTokens)
 			r.Delete("/projects/{project}/apps/{app}/tokens/{tokenName}", s.DeleteToken)
 
+			r.Get("/projects/{project}/apps/{app}/binding-keys", s.GetBindingKeys)
 			r.Get("/projects/{project}/apps/{app}/env", s.GetEnv)
 			r.Put("/projects/{project}/apps/{app}/env", s.PutEnv)
 			r.Patch("/projects/{project}/apps/{app}/env", s.PatchEnv)

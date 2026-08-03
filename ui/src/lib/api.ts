@@ -295,6 +295,10 @@ export const api = {
 		request<BindingEdge[]>(
 			`/projects/${enc(project)}/bindings?environment=${enc(environment)}`
 		),
+	getBindingKeys: (project: string, app: string, ref: string, environment?: string) =>
+		request<{ keys: string[] }>(
+			`/projects/${enc(project)}/apps/${enc(app)}/binding-keys?ref=${enc(ref)}${environment ? `&environment=${enc(environment)}` : ''}`
+		),
 
 	// --- apps (project-scoped) ---
 	listApps: (project: string) => request<App[]>(`/projects/${enc(project)}/apps`),
@@ -538,7 +542,7 @@ export const api = {
 
 	// --- env management ---
 	getEnv: (project: string, app: string, env: string) =>
-		request<Array<{ name: string; value: string; source?: string }>>(
+		request<Array<{ name: string; value: string; source?: string; bindingRef?: string; bindingKey?: string; secretRef?: string }>>(
 			`/projects/${enc(project)}/apps/${enc(app)}/env?environment=${enc(env)}`
 		),
 	setEnv: (project: string, app: string, env: string, vars: Record<string, string>) =>

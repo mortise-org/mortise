@@ -766,3 +766,201 @@ func TestAutoURLForMongoImage(t *testing.T) {
 		t.Errorf("expected mongodb:// URL, got %q", urlVar.Value)
 	}
 }
+
+// --- ResolveSingle tests ---
+
+func TestResolveSingleHost(t *testing.T) {
+	db := newDB("db", "pj-web")
+	creds := credentialsSecret("db", "pj-web-production", map[string]string{
+		"username": "postgres", "password": "hunter2",
+	})
+	c := newFakeClient(t, db, creds)
+	r := &bindings.Resolver{Client: c}
+
+	val, err := r.ResolveSingle(context.Background(), "web", "production", "db", "host")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if val != "db.pj-web-production.svc.cluster.local" {
+		t.Errorf("got %q, want DNS host", val)
+	}
+}
+
+func TestResolveSinglePort(t *testing.T) {
+	db := newDB("db", "pj-web")
+	creds := credentialsSecret("db", "pj-web-production", map[string]string{
+		"username": "postgres", "password": "hunter2",
+	})
+	c := newFakeClient(t, db, creds)
+	r := &bindings.Resolver{Client: c}
+
+	val, err := r.ResolveSingle(context.Background(), "web", "production", "db", "port")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if val != "8080" {
+		t.Errorf("got %q, want 8080", val)
+	}
+}
+
+func TestResolveSingleURL(t *testing.T) {
+	db := newDB("db", "pj-web")
+	creds := credentialsSecret("db", "pj-web-production", map[string]string{
+		"username": "postgres", "password": "hunter2",
+	})
+	c := newFakeClient(t, db, creds)
+	r := &bindings.Resolver{Client: c}
+
+	val, err := r.ResolveSingle(context.Background(), "web", "production", "db", "url")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.HasPrefix(val, "postgres://") {
+		t.Errorf("got %q, want postgres:// URL", val)
+	}
+}
+
+func TestResolveSingleCredential(t *testing.T) {
+	db := newDB("db", "pj-web")
+	creds := credentialsSecret("db", "pj-web-production", map[string]string{
+		"username": "postgres", "password": "hunter2",
+	})
+	c := newFakeClient(t, db, creds)
+	r := &bindings.Resolver{Client: c}
+
+	val, err := r.ResolveSingle(context.Background(), "web", "production", "db", "password")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if val != "hunter2" {
+		t.Errorf("got %q, want hunter2", val)
+	}
+}
+
+func TestResolveSingleInvalidKey(t *testing.T) {
+	db := newDB("db", "pj-web")
+	creds := credentialsSecret("db", "pj-web-production", map[string]string{
+		"username": "postgres", "password": "hunter2",
+	})
+	c := newFakeClient(t, db, creds)
+	r := &bindings.Resolver{Client: c}
+
+	_, err := r.ResolveSingle(context.Background(), "web", "production", "db", "nonexistent")
+	if err == nil {
+		t.Fatal("expected error for invalid key")
+	}
+	if !strings.Contains(err.Error(), "does not expose key") {
+		t.Errorf("error should mention invalid key, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "available keys") {
+		t.Errorf("error should list available keys, got: %v", err)
+	}
+}
+
+func TestResolveSingleURLNotAvailableForUnknownImage(t *testing.T) {
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "svc", Namespace: "pj-web"},
+		Spec: mortisev1alpha1.AppSpec{
+			Source:  mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: "nginx:1.25"},
+			Network: mortisev1alpha1.NetworkConfig{Port: 80},
+			Environments: []mortisev1alpha1.Environment{
+				{Name: "production"},
+			},
+		},
+	}
+	c := newFakeClient(t, app)
+	r := &bindings.Resolver{Client: c}
+
+	_, err := r.ResolveSingle(context.Background(), "web", "production", "svc", "url")
+	if err == nil {
+		t.Fatal("expected error for url on non-db image")
+	}
+	if !strings.Contains(err.Error(), "auto-URL not available") {
+		t.Errorf("error should mention auto-URL, got: %v", err)
+	}
+}
+
+func TestResolveSingleMissingApp(t *testing.T) {
+	c := newFakeClient(t)
+	r := &bindings.Resolver{Client: c}
+
+	_, err := r.ResolveSingle(context.Background(), "web", "production", "ghost", "host")
+	if err == nil {
+		t.Fatal("expected error for missing app")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("error should mention not found, got: %v", err)
+	}
+}
+
+func TestResolveSingleDisabledApp(t *testing.T) {
+	disabled := false
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "db", Namespace: "pj-web"},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: "postgres:16"},
+			Environments: []mortisev1alpha1.Environment{
+				{Name: "production", Enabled: &disabled},
+			},
+		},
+	}
+	c := newFakeClient(t, app)
+	r := &bindings.Resolver{Client: c}
+
+	_, err := r.ResolveSingle(context.Background(), "web", "production", "db", "host")
+	if err == nil {
+		t.Fatal("expected error for disabled app")
+	}
+	if !strings.Contains(err.Error(), "disabled") {
+		t.Errorf("error should mention disabled, got: %v", err)
+	}
+}
+
+func TestAvailableKeysPostgres(t *testing.T) {
+	db := newDB("db", "pj-web")
+	creds := credentialsSecret("db", "pj-web-production", map[string]string{
+		"username": "postgres", "password": "hunter2",
+	})
+	c := newFakeClient(t, db, creds)
+	r := &bindings.Resolver{Client: c}
+
+	keys, err := r.AvailableKeys(context.Background(), "web", "production", "db")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := map[string]bool{"host": true, "port": true, "url": true, "username": true, "password": true}
+	got := make(map[string]bool, len(keys))
+	for _, k := range keys {
+		got[k] = true
+	}
+	for k := range want {
+		if !got[k] {
+			t.Errorf("missing key %q in available keys %v", k, keys)
+		}
+	}
+}
+
+func TestAvailableKeysNoURL(t *testing.T) {
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "svc", Namespace: "pj-web"},
+		Spec: mortisev1alpha1.AppSpec{
+			Source:  mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: "nginx:1.25"},
+			Network: mortisev1alpha1.NetworkConfig{Port: 80},
+			Environments: []mortisev1alpha1.Environment{
+				{Name: "production"},
+			},
+		},
+	}
+	c := newFakeClient(t, app)
+	r := &bindings.Resolver{Client: c}
+
+	keys, err := r.AvailableKeys(context.Background(), "web", "production", "svc")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, k := range keys {
+		if k == "url" {
+			t.Error("nginx should not have url in available keys")
+		}
+	}
+}

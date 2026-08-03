@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { untrack } from 'svelte';
 	import { api } from '$lib/api';
 	import type { App, AppSpec } from '$lib/types';
 	import { inputCls, labelCls, sectionCls, headingCls, btnPrimary } from './styles';
@@ -6,16 +7,22 @@
 	let {
 		project,
 		app,
+		appIdentity,
 		selectedEnv,
+		resetEpoch,
 		cloneSpec,
+		onDirty,
 		onSpecUpdate,
 		onError
 	}: {
 		project: string;
 		app: App;
+		appIdentity: string;
 		selectedEnv: string;
+		resetEpoch: number;
 		cloneSpec: () => AppSpec;
-		onSpecUpdate: (spec: AppSpec) => void;
+		onDirty: () => void;
+		onSpecUpdate: (app: App) => void;
 		onError: (msg: string) => void;
 	} = $props();
 
@@ -25,10 +32,15 @@
 	let saving = $state(false);
 
 	$effect(() => {
-		const env = app.spec.environments?.find(e => e.name === selectedEnv);
-		scaleReplicas = String(env?.replicas ?? 1);
-		scaleCpu = env?.resources?.cpu ?? '';
-		scaleMemory = env?.resources?.memory ?? '';
+		appIdentity;
+		selectedEnv;
+		resetEpoch;
+		untrack(() => {
+			const env = cloneSpec().environments?.find(e => e.name === selectedEnv);
+			scaleReplicas = String(env?.replicas ?? 1);
+			scaleCpu = env?.resources?.cpu ?? '';
+			scaleMemory = env?.resources?.memory ?? '';
+		});
 	});
 
 	async function saveScale() {
@@ -48,7 +60,7 @@
 		if (scaleMemory) envSpec.resources.memory = scaleMemory;
 		try {
 			const result = await api.updateApp(project, app.metadata.name, spec);
-			onSpecUpdate(result.spec);
+			onSpecUpdate(result);
 		} catch (e) {
 			onError(e instanceof Error ? e.message : 'Failed to save');
 		} finally {
@@ -62,16 +74,16 @@
 	<div class="space-y-2">
 		<div>
 			<label class={labelCls} for="scale-replicas">Replicas</label>
-			<input id="scale-replicas" type="number" min="0" bind:value={scaleReplicas} class={inputCls} />
+			<input id="scale-replicas" type="number" min="0" bind:value={scaleReplicas} oninput={onDirty} class={inputCls} />
 		</div>
 		<div class="grid grid-cols-2 gap-2">
 			<div>
 				<label class={labelCls} for="scale-cpu">CPU</label>
-				<input id="scale-cpu" type="text" bind:value={scaleCpu} placeholder="500m" class={inputCls} />
+				<input id="scale-cpu" type="text" bind:value={scaleCpu} oninput={onDirty} placeholder="500m" class={inputCls} />
 			</div>
 			<div>
 				<label class={labelCls} for="scale-mem">Memory</label>
-				<input id="scale-mem" type="text" bind:value={scaleMemory} placeholder="256Mi" class={inputCls} />
+				<input id="scale-mem" type="text" bind:value={scaleMemory} oninput={onDirty} placeholder="256Mi" class={inputCls} />
 			</div>
 		</div>
 	</div>

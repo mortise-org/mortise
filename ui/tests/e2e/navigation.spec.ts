@@ -86,7 +86,7 @@ test.describe('left rail navigation', () => {
 		await page.getByTitle('Projects').click();
 
 		await expect(page).toHaveURL('/');
-		await expect(page.getByRole('heading', { name: 'Projects' })).toBeVisible();
+		await expect(page.getByRole('heading', { name: 'Projects', exact: true })).toBeVisible();
 	});
 
 	test('sign out clears mortise_token and redirects to login', async ({ page }) => {

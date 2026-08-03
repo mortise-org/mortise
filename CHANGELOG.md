@@ -5,6 +5,24 @@ All notable changes to Mortise are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`valueFrom.fromBinding` env var projection** (SPEC §5.8b): New CRD field
+  lets users project specific keys from bound app credentials into custom-named
+  env vars (e.g. `DB_PASS` from `pg.password`). Includes new
+  `GET /binding-keys` API endpoint and BindingsPicker UI rewrite.
+
+### Fixed
+
+- **`valueFrom.secretRef` resolution**: Field existed on the CRD but the
+  controller never resolved it. Now reads the referenced Secret from the env
+  namespace.
+- **Bindings/Credentials `+` button flash bug**: SSE-triggered `$effect`
+  re-runs reset UI state, causing the add-row form to appear then immediately
+  disappear. Fixed with state guards.
+
 ## [1.0.4] - 2026-07-26
 
 ### Changed

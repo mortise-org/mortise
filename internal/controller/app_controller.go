@@ -2339,6 +2339,7 @@ func pvcName(app, volume string) string {
 // The Deployment mounts this Secret via envFrom instead of carrying literal env
 // vars on its container spec. Also ensures the shared-env Secret exists.
 func (r *AppReconciler) reconcileEnvSecret(ctx context.Context, app *mortisev1alpha1.App, env *mortisev1alpha1.Environment, envNs string) error {
+	log := logf.FromContext(ctx)
 	store := &envstore.Store{Client: r.Client}
 	projectName, _ := appProjectName(app)
 
@@ -2403,20 +2404,39 @@ func (r *AppReconciler) reconcileEnvSecret(ctx context.Context, app *mortisev1al
 		delete(existingByName, existingEnv.Name)
 	}
 
+	bindingRefs := make(map[string]bool, len(env.Bindings))
+	for _, b := range env.Bindings {
+		bindingRefs[b.Ref] = true
+	}
+
 	var toMerge []envstore.Env
+	var fromBindingEnvs []envstore.Env
+	resolvedSpecEnv := make(map[string]string, len(env.Env))
 	for _, ev := range env.Env {
+		resolved, source, err := r.resolveEnvVarValue(ctx, ev, envNs, projectName, env.Name, bindingRefs)
+		if err != nil {
+			log.Error(err, "skipping env var with invalid valueFrom", "var", ev.Name)
+			continue
+		}
+		resolvedSpecEnv[ev.Name] = resolved
+
+		// fromBinding vars go into the binding-source list so they survive
+		// ReplaceSource("binding", ...) below.
+		if source == "binding" {
+			fromBindingEnvs = append(fromBindingEnvs, envstore.Env{Name: ev.Name, Value: resolved, Source: source})
+			continue
+		}
+
 		existingVal, exists := existingByName[ev.Name]
 		if !exists {
-			toMerge = append(toMerge, envstore.Env{Name: ev.Name, Value: ev.Value, Source: "user"})
+			toMerge = append(toMerge, envstore.Env{Name: ev.Name, Value: resolved, Source: source})
 			continue
 		}
-		if ev.Value == existingVal {
+		if resolved == existingVal {
 			continue
 		}
-		// Key exists with a different value. Update only if the user hasn't
-		// overridden it (Secret value still matches what the spec last set).
 		if lastVal, tracked := lastSpec[ev.Name]; tracked && existingVal == lastVal {
-			toMerge = append(toMerge, envstore.Env{Name: ev.Name, Value: ev.Value, Source: "user"})
+			toMerge = append(toMerge, envstore.Env{Name: ev.Name, Value: resolved, Source: source})
 		}
 	}
 	for _, sv := range app.Spec.SharedVars {
@@ -2430,7 +2450,7 @@ func (r *AppReconciler) reconcileEnvSecret(ctx context.Context, app *mortisev1al
 		}
 	}
 
-	if err := r.writeLastSpecEnv(ctx, envNs, app.Name, env.Env); err != nil {
+	if err := r.writeLastSpecEnv(ctx, envNs, app.Name, resolvedSpecEnv); err != nil {
 		return fmt.Errorf("write last-spec-env: %w", err)
 	}
 
@@ -2449,6 +2469,9 @@ func (r *AppReconciler) reconcileEnvSecret(ctx context.Context, app *mortisev1al
 			})
 		}
 	}
+	// Append fromBinding vars last so explicit user projections win over
+	// auto-generated binding vars when names collide.
+	bindingEnvs = append(bindingEnvs, fromBindingEnvs...)
 	if len(bindingEnvs) == 0 {
 		if deleted, err := r.deleteBindingOnlyEnvSecret(ctx, envNs, app.Name); err != nil {
 			return fmt.Errorf("delete empty binding-only env secret: %w", err)
@@ -2460,6 +2483,60 @@ func (r *AppReconciler) reconcileEnvSecret(ctx context.Context, app *mortisev1al
 		return nil
 	}
 	return store.ReplaceSource(ctx, envNs, app.Name, "binding", bindingEnvs, labels)
+}
+
+// resolveEnvVarValue resolves the effective value and source for a spec env var.
+// Handles literal values, valueFrom.secretRef, and valueFrom.fromBinding.
+func (r *AppReconciler) resolveEnvVarValue(
+	ctx context.Context,
+	ev mortisev1alpha1.EnvVar,
+	envNs, projectName, envName string,
+	bindingRefs map[string]bool,
+) (string, string, error) {
+	hasValue := ev.Value != ""
+	hasSecretRef := ev.ValueFrom != nil && ev.ValueFrom.SecretRef != ""
+	hasFromBinding := ev.ValueFrom != nil && ev.ValueFrom.FromBinding != nil
+
+	sources := 0
+	if hasValue {
+		sources++
+	}
+	if hasSecretRef {
+		sources++
+	}
+	if hasFromBinding {
+		sources++
+	}
+	if sources > 1 {
+		return "", "", fmt.Errorf("env var %q: only one of value, valueFrom.secretRef, valueFrom.fromBinding may be set", ev.Name)
+	}
+
+	if hasSecretRef {
+		var secret corev1.Secret
+		if err := r.Client.Get(ctx, types.NamespacedName{
+			Name:      ev.ValueFrom.SecretRef,
+			Namespace: envNs,
+		}, &secret); err != nil {
+			return "", "", fmt.Errorf("env var %q: read secretRef %q in %s: %w", ev.Name, ev.ValueFrom.SecretRef, envNs, err)
+		}
+		val := string(secret.Data[ev.Name])
+		return val, "user", nil
+	}
+
+	if hasFromBinding {
+		fb := ev.ValueFrom.FromBinding
+		if !bindingRefs[fb.Ref] {
+			return "", "", fmt.Errorf("env var %q: fromBinding.ref %q is not in this environment's bindings list", ev.Name, fb.Ref)
+		}
+		resolver := &bindings.Resolver{Client: r.Client}
+		val, err := resolver.ResolveSingle(ctx, projectName, envName, fb.Ref, fb.Key)
+		if err != nil {
+			return "", "", fmt.Errorf("env var %q: resolve fromBinding: %w", ev.Name, err)
+		}
+		return val, "binding", nil
+	}
+
+	return ev.Value, "user", nil
 }
 
 func (r *AppReconciler) deleteBindingOnlyEnvSecret(ctx context.Context, envNs, appName string) (bool, error) {
@@ -2527,7 +2604,7 @@ func (r *AppReconciler) readLastSpecEnv(ctx context.Context, ns, appName string)
 	return m
 }
 
-func (r *AppReconciler) writeLastSpecEnv(ctx context.Context, ns, appName string, envVars []mortisev1alpha1.EnvVar) error {
+func (r *AppReconciler) writeLastSpecEnv(ctx context.Context, ns, appName string, envVars map[string]string) error {
 	var sec corev1.Secret
 	if err := r.Client.Get(ctx, types.NamespacedName{
 		Name:      envstore.AppEnvSecretName(appName),
@@ -2538,11 +2615,7 @@ func (r *AppReconciler) writeLastSpecEnv(ctx context.Context, ns, appName string
 		}
 		return fmt.Errorf("get env secret for last-spec annotation: %w", err)
 	}
-	m := make(map[string]string, len(envVars))
-	for _, ev := range envVars {
-		m[ev.Name] = ev.Value
-	}
-	data, err := json.Marshal(m)
+	data, err := json.Marshal(envVars)
 	if err != nil {
 		return fmt.Errorf("marshal last-spec env: %w", err)
 	}

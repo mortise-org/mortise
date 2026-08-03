@@ -174,7 +174,22 @@ type EnvVar struct {
 }
 
 type EnvVarSource struct {
-	SecretRef string `json:"secretRef,omitempty"`
+	SecretRef   string            `json:"secretRef,omitempty"`
+	FromBinding *BindingVarSource `json:"fromBinding,omitempty"`
+}
+
+// BindingVarSource references a single key from a bound App's credentials.
+// The Ref must match a binding declared in the same environment's bindings[]
+// list. The Key must be a valid credential name exposed by the bound App
+// (e.g. "host", "port", "url", "password").
+type BindingVarSource struct {
+	// Ref is the name of the bound App within the same project.
+	// +kubebuilder:validation:Required
+	Ref string `json:"ref"`
+
+	// Key is the credential key to project from the bound App.
+	// +kubebuilder:validation:Required
+	Key string `json:"key"`
 }
 
 // Credential declares a single named credential exposed by this App to any

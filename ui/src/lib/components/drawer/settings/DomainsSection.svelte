@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { untrack } from 'svelte';
 	import { api } from '$lib/api';
 	import type { App, AppSpec, DomainsResponse } from '$lib/types';
 	import { inputCls, labelCls, sectionCls, headingCls, btnPrimary } from './styles';
@@ -6,14 +7,24 @@
 	let {
 		project,
 		app,
+		appIdentity,
 		selectedEnv,
+		resetEpoch,
+		cloneSpec,
+		onDirty,
+		onDraftCleared,
 		onSpecUpdate,
 		onError
 	}: {
 		project: string;
 		app: App;
+		appIdentity: string;
 		selectedEnv: string;
-		onSpecUpdate: (spec: AppSpec) => void;
+		resetEpoch: number;
+		cloneSpec: () => AppSpec;
+		onDirty: (scope: 'primary' | 'custom' | 'tls') => void;
+		onDraftCleared: (scope: 'primary' | 'custom' | 'tls') => void;
+		onSpecUpdate: (app: App, scope: 'primary' | 'tls') => void;
 		onError: (msg: string) => void;
 	} = $props();
 
@@ -30,15 +41,28 @@
 	let savingTls = $state(false);
 
 	$effect(() => {
-		if (selectedEnv) void loadDomains();
+		appIdentity;
+		selectedEnv;
+		untrack(() => {
+			if (selectedEnv) void loadDomains();
+		});
 	});
 
 	$effect(() => {
-		const env = app.spec.environments?.find(e => e.name === selectedEnv) as
-			| { tls?: { clusterIssuer?: string; secretName?: string } }
-			| undefined;
-		tlsClusterIssuer = env?.tls?.clusterIssuer ?? '';
-		tlsSecretName = env?.tls?.secretName ?? '';
+		appIdentity;
+		selectedEnv;
+		resetEpoch;
+		untrack(() => {
+			const env = cloneSpec().environments?.find(e => e.name === selectedEnv) as
+				| { tls?: { clusterIssuer?: string; secretName?: string } }
+				| undefined;
+			tlsClusterIssuer = env?.tls?.clusterIssuer ?? '';
+			tlsSecretName = env?.tls?.secretName ?? '';
+			newDomain = '';
+			editingPrimary = false;
+			primaryDomainInput = '';
+			primaryDomainError = '';
+		});
 	});
 
 	async function loadDomains() {
@@ -73,6 +97,7 @@
 		newDomain = '';
 		try {
 			domains = await api.addDomain(project, app.metadata.name, selectedEnv, domainToAdd);
+			onDraftCleared('custom');
 		} catch (e) {
 			onError(e instanceof Error ? e.message : 'Failed to add domain');
 			domains = prevDomains;
@@ -120,15 +145,16 @@
 
 		savingPrimary = true;
 		try {
-			const envs = [...(app.spec.environments ?? [])];
-			const idx = envs.findIndex(e => e.name === selectedEnv);
+			const spec = cloneSpec();
+			spec.environments = spec.environments ?? [];
+			const idx = spec.environments.findIndex(e => e.name === selectedEnv);
 			if (idx >= 0) {
-				envs[idx] = { ...envs[idx], domain };
+				spec.environments[idx] = { ...spec.environments[idx], domain };
 			} else {
-				envs.push({ name: selectedEnv, domain });
+				spec.environments.push({ name: selectedEnv, domain });
 			}
-			const result = await api.updateApp(project, app.metadata.name, { ...app.spec, environments: envs });
-			onSpecUpdate(result.spec);
+			const result = await api.updateApp(project, app.metadata.name, spec);
+			onSpecUpdate(result, 'primary');
 			domains = domains ? { ...domains, primary: domain } : { primary: domain, custom: [] };
 			editingPrimary = false;
 		} catch (e) {
@@ -142,13 +168,14 @@
 		if (!selectedEnv) return;
 		savingPrimary = true;
 		try {
-			const envs = [...(app.spec.environments ?? [])];
-			const idx = envs.findIndex(e => e.name === selectedEnv);
+			const spec = cloneSpec();
+			spec.environments = spec.environments ?? [];
+			const idx = spec.environments.findIndex(e => e.name === selectedEnv);
 			if (idx >= 0) {
-				envs[idx] = { ...envs[idx], domain: '' };
+				spec.environments[idx] = { ...spec.environments[idx], domain: '' };
 			}
-			const result = await api.updateApp(project, app.metadata.name, { ...app.spec, environments: envs });
-			onSpecUpdate(result.spec);
+			const result = await api.updateApp(project, app.metadata.name, spec);
+			onSpecUpdate(result, 'primary');
 			domains = domains ? { ...domains, primary: '' } : { primary: '', custom: [] };
 		} catch (e) {
 			onError(e instanceof Error ? e.message : 'Failed to remove primary domain');
@@ -161,7 +188,7 @@
 		if (!selectedEnv) return;
 		savingTls = true;
 		try {
-			const spec = JSON.parse(JSON.stringify(app.spec)) as AppSpec;
+			const spec = cloneSpec();
 			spec.environments = spec.environments ?? [];
 			let envIdx = spec.environments.findIndex((e: { name: string }) => e.name === selectedEnv);
 			if (envIdx < 0) {
@@ -173,7 +200,7 @@
 				secretName: tlsSecretName || undefined
 			};
 			const result = await api.updateApp(project, app.metadata.name, spec);
-			onSpecUpdate(result.spec);
+			onSpecUpdate(result, 'tls');
 		} catch (e) {
 			onError(e instanceof Error ? e.message : 'Failed to save TLS config');
 		} finally {
@@ -215,11 +242,11 @@
 	{:else if editingPrimary}
 		<div class="space-y-2">
 			<div class="flex gap-2">
-				<input type="text" bind:value={primaryDomainInput} placeholder="app.example.com" class="{inputCls} flex-1" />
+				<input type="text" bind:value={primaryDomainInput} oninput={() => onDirty('primary')} placeholder="app.example.com" class="{inputCls} flex-1" />
 				<button type="button" onclick={savePrimaryDomain} disabled={savingPrimary} class={btnPrimary}>
 					{savingPrimary ? 'Saving…' : 'Save'}
 				</button>
-				<button type="button" onclick={() => { editingPrimary = false; primaryDomainError = ''; }}
+				<button type="button" onclick={() => { editingPrimary = false; primaryDomainError = ''; onDraftCleared('primary'); }}
 					class="rounded-md px-2 py-1 text-xs text-gray-400 hover:bg-surface-700 hover:text-white">Cancel</button>
 			</div>
 			{#if primaryDomainError}
@@ -229,7 +256,7 @@
 	{:else if !domains?.primary}
 		<div class="space-y-2">
 			<div class="flex gap-2">
-				<input type="text" bind:value={primaryDomainInput} placeholder="app.example.com" class="{inputCls} flex-1" />
+				<input type="text" bind:value={primaryDomainInput} oninput={() => onDirty('primary')} placeholder="app.example.com" class="{inputCls} flex-1" />
 				<button type="button" onclick={savePrimaryDomain} disabled={savingPrimary || !primaryDomainInput.trim()} class={btnPrimary}>
 					{savingPrimary ? 'Saving…' : 'Set primary'}
 				</button>
@@ -252,7 +279,7 @@
 	{/if}
 
 	<div class="flex gap-2">
-		<input type="text" bind:value={newDomain} placeholder="custom.example.com" class="{inputCls} flex-1" />
+		<input type="text" bind:value={newDomain} oninput={() => onDirty('custom')} placeholder="custom.example.com" class="{inputCls} flex-1" />
 		<button type="button" onclick={handleAddDomain} disabled={savingDomain || !newDomain.trim()} class={btnPrimary}>
 			{savingDomain ? 'Adding…' : 'Add'}
 		</button>
@@ -267,11 +294,11 @@
 			</div>
 			<div>
 				<label class={labelCls} for="tls-issuer-ovr">Cluster issuer override</label>
-				<input id="tls-issuer-ovr" type="text" bind:value={tlsClusterIssuer} placeholder="letsencrypt-staging" class={inputCls} />
+				<input id="tls-issuer-ovr" type="text" bind:value={tlsClusterIssuer} oninput={() => onDirty('tls')} placeholder="letsencrypt-staging" class={inputCls} />
 			</div>
 			<div>
 				<label class={labelCls} for="tls-secret-ovr">TLS secret name override</label>
-				<input id="tls-secret-ovr" type="text" bind:value={tlsSecretName} placeholder="my-tls-secret" class={inputCls} />
+				<input id="tls-secret-ovr" type="text" bind:value={tlsSecretName} oninput={() => onDirty('tls')} placeholder="my-tls-secret" class={inputCls} />
 				<p class="text-xs text-gray-500 mt-0.5">Mutually exclusive with cluster issuer</p>
 			</div>
 			<button type="button" onclick={saveTlsOverride} disabled={savingTls} class={btnPrimary}>

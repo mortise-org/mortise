@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { untrack } from 'svelte';
 	import { store } from '$lib/store.svelte';
 	import { resolveAppEnvironment } from '$lib/types';
 	import type { App, AppSpec } from '$lib/types';
@@ -24,25 +25,95 @@
 		onAppDeleted: () => void;
 	} = $props();
 
-	let specOverride = $state<AppSpec | null>(null);
-	let lastSeenSpec = $state<AppSpec | null>(null);
-	$effect(() => {
-		if (lastSeenSpec !== null && app.spec !== lastSeenSpec) {
-			specOverride = null;
-		}
-		lastSeenSpec = app.spec;
-	});
-	const effectiveSpec = $derived(specOverride ?? app.spec);
-	function cloneSpec(): AppSpec { return JSON.parse(JSON.stringify(effectiveSpec)); }
-
-	function handleSpecUpdate(spec: AppSpec) {
-		specOverride = spec;
-	}
-
 	const selectedEnv = $derived(
 		resolveAppEnvironment(app, store.currentEnv(project))
 	);
-	const envEntry = $derived(effectiveSpec.environments?.find(e => e.name === selectedEnv));
+	const appIdentity = $derived(`${project}/${app.metadata.name}`);
+
+	type SettingsSectionId =
+		| 'source' | 'registry' | 'build' | 'networking' | 'scale' | 'storage'
+		| 'domains-primary' | 'domains-custom' | 'domains-tls' | 'deploy-tokens'
+		| 'annotations' | 'mounts' | 'mount-form' | 'delete';
+	const copySpec = (spec: AppSpec): AppSpec => JSON.parse(JSON.stringify(spec));
+	let acceptedSpec = $state<AppSpec | null>(null);
+	let acceptedGeneration = $state<number | undefined>();
+	let dirtySections = $state<Set<SettingsSectionId>>(new Set());
+	let newerSpecWhileDirty = $state(false);
+	let showExternalChangeWarning = $state(false);
+	let resetEpoch = $state(0);
+	let lastIdentity = $state('');
+	let lastEnvironment = $state('');
+
+	$effect(() => {
+		const identity = `${project}/${app.metadata.name}`;
+		const environment = selectedEnv;
+		const generation = app.metadata.generation;
+
+		if (identity !== lastIdentity || environment !== lastEnvironment) {
+			acceptedSpec = untrack(() => copySpec(app.spec));
+			acceptedGeneration = generation;
+			dirtySections = new Set();
+			newerSpecWhileDirty = false;
+			showExternalChangeWarning = false;
+			lastIdentity = identity;
+			lastEnvironment = environment;
+			resetEpoch += 1;
+			return;
+		}
+
+		if (generation === undefined || generation === acceptedGeneration) return;
+		if (acceptedGeneration !== undefined && generation < acceptedGeneration) return;
+
+		acceptedSpec = untrack(() => copySpec(app.spec));
+		acceptedGeneration = generation;
+		if (dirtySections.size === 0) {
+			resetEpoch += 1;
+			newerSpecWhileDirty = false;
+			showExternalChangeWarning = false;
+		} else {
+			newerSpecWhileDirty = true;
+			showExternalChangeWarning = true;
+		}
+	});
+
+	function cloneSpec(): AppSpec {
+		return copySpec(acceptedSpec ?? app.spec);
+	}
+
+	function markSectionDirty(section: SettingsSectionId) {
+		if (dirtySections.has(section)) return;
+		dirtySections = new Set([...dirtySections, section]);
+	}
+
+	function clearSectionDirty(section: SettingsSectionId) {
+		if (!dirtySections.has(section)) return;
+		const next = new Set(dirtySections);
+		next.delete(section);
+		dirtySections = next;
+		if (dirtySections.size === 0) {
+			newerSpecWhileDirty = false;
+			showExternalChangeWarning = false;
+		}
+	}
+
+	function handleSpecUpdate(updatedApp: App, section?: SettingsSectionId) {
+		acceptedSpec = copySpec(updatedApp.spec);
+		acceptedGeneration = updatedApp.metadata.generation ?? acceptedGeneration;
+		if (section) clearSectionDirty(section);
+	}
+
+	function keepEditing() {
+		showExternalChangeWarning = false;
+	}
+
+	function reloadLatest() {
+		dirtySections = new Set();
+		newerSpecWhileDirty = false;
+		showExternalChangeWarning = false;
+		resetEpoch += 1;
+	}
+
+	const envEntry = $derived((acceptedSpec ?? app.spec).environments?.find(e => e.name === selectedEnv));
 	const envEnabled = $derived(envEntry?.enabled !== false);
 	let togglingEnabled = $state(false);
 
@@ -61,7 +132,7 @@
 		try {
 			const { api } = await import('$lib/api');
 			const result = await api.updateApp(project, app.metadata.name, spec);
-			specOverride = result.spec;
+			handleSpecUpdate(result);
 		} catch (e) {
 			errorMsg = e instanceof Error ? e.message : 'Failed to toggle environment';
 		} finally {
@@ -86,6 +157,15 @@
 	{#if errorMsg}
 		<div class="rounded-md bg-danger/10 px-3 py-2 text-xs text-danger">{errorMsg}</div>
 	{/if}
+	{#if newerSpecWhileDirty && showExternalChangeWarning}
+		<div class="rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning" role="alert">
+			<p>This app changed elsewhere. Your unsaved edits are preserved.</p>
+			<div class="mt-2 flex gap-2">
+				<button type="button" onclick={keepEditing} class="rounded-md border border-warning/40 px-2 py-1 hover:bg-warning/10">Keep editing</button>
+				<button type="button" onclick={reloadLatest} class="rounded-md bg-warning px-2 py-1 font-medium text-surface-900 hover:opacity-90">Reload latest</button>
+			</div>
+		</div>
+	{/if}
 
 	<!-- Filter -->
 	<input
@@ -95,20 +175,24 @@
 		class="w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-white placeholder-gray-500 outline-none focus:border-accent"
 	/>
 
-	{#if sectionVisible('source')}
-		<SourceSection {project} {app} {cloneSpec} onSpecUpdate={handleSpecUpdate} onError={handleError} />
-	{/if}
+	<div class:hidden={!sectionVisible('source')}>
+		<SourceSection {project} {app} {appIdentity} {resetEpoch} {cloneSpec}
+			onDirty={(scope) => markSectionDirty(scope === 'spec' ? 'source' : 'registry')}
+			onDraftCleared={(scope) => clearSectionDirty(scope === 'spec' ? 'source' : 'registry')}
+			onSpecUpdate={(result) => handleSpecUpdate(result, 'source')} onError={handleError} />
+	</div>
 
-	{#if sectionVisible('build')}
-		<BuildSection {project} {app} {cloneSpec} onSpecUpdate={handleSpecUpdate} onError={handleError} />
-	{/if}
+	<div class:hidden={!sectionVisible('build')}>
+		<BuildSection {project} {app} {appIdentity} {resetEpoch} {cloneSpec} onDirty={() => markSectionDirty('build')} onSpecUpdate={(result) => handleSpecUpdate(result, 'build')} onError={handleError} />
+	</div>
 
-	{#if sectionVisible('networking')}
-		<NetworkingSection {project} {app} {cloneSpec} onSpecUpdate={handleSpecUpdate} onError={handleError} />
-	{/if}
+	<div class:hidden={!sectionVisible('networking')}>
+		<NetworkingSection {project} {app} {appIdentity} {resetEpoch} {cloneSpec} onDirty={() => markSectionDirty('networking')} onSpecUpdate={(result) => handleSpecUpdate(result, 'networking')} onError={handleError} />
+	</div>
 
 	<!-- Environment enabled toggle (inline — too small to extract) -->
-	{#if selectedEnv && sectionVisible('environment enabled')}
+	{#if selectedEnv}
+		<div class:hidden={!sectionVisible('environment enabled')}>
 		<div class={sectionCls}>
 			<h3 class={headingCls}>Environment</h3>
 			<div class="flex items-center justify-between">
@@ -131,26 +215,34 @@
 				</button>
 			</div>
 		</div>
+		</div>
 	{/if}
 
-	{#if sectionVisible('scale')}
-		<ScaleSection {project} {app} {selectedEnv} {cloneSpec} onSpecUpdate={handleSpecUpdate} onError={handleError} />
-	{/if}
+	<div class:hidden={!sectionVisible('scale')}>
+		<ScaleSection {project} {app} {appIdentity} {selectedEnv} {resetEpoch} {cloneSpec} onDirty={() => markSectionDirty('scale')} onSpecUpdate={(result) => handleSpecUpdate(result, 'scale')} onError={handleError} />
+	</div>
 
-	{#if sectionVisible('storage volumes')}
-		<StorageSection {project} {app} {cloneSpec} onSpecUpdate={handleSpecUpdate} onError={handleError} />
-	{/if}
+	<div class:hidden={!sectionVisible('storage volumes')}>
+		<StorageSection {project} {app} {appIdentity} {resetEpoch} {cloneSpec}
+			onDirty={() => markSectionDirty('storage')} onDraftCleared={() => clearSectionDirty('storage')}
+			onSpecUpdate={handleSpecUpdate} onError={handleError} />
+	</div>
 
-	{#if sectionVisible('domains')}
-		<DomainsSection {project} {app} {selectedEnv} onSpecUpdate={handleSpecUpdate} onError={handleError} />
-	{/if}
+	<div class:hidden={!sectionVisible('domains')}>
+		<DomainsSection {project} {app} {appIdentity} {selectedEnv} {resetEpoch} {cloneSpec}
+			onDirty={(scope) => markSectionDirty(`domains-${scope}` as SettingsSectionId)}
+			onDraftCleared={(scope) => clearSectionDirty(`domains-${scope}` as SettingsSectionId)}
+			onSpecUpdate={(result, scope) => handleSpecUpdate(result, `domains-${scope}` as SettingsSectionId)} onError={handleError} />
+	</div>
 
-	{#if sectionVisible('deploy tokens')}
-		<DeployTokensSection {project} {app} {selectedEnv} onError={handleError} />
-	{/if}
+	<div class:hidden={!sectionVisible('deploy tokens')}>
+		<DeployTokensSection {project} {app} {appIdentity} {resetEpoch} {selectedEnv}
+			onDirty={() => markSectionDirty('deploy-tokens')} onDraftCleared={() => clearSectionDirty('deploy-tokens')}
+			onError={handleError} />
+	</div>
 
 	<!-- Config-as-code (inline — informational only) -->
-	{#if sectionVisible('gitops config')}
+	<div class:hidden={!sectionVisible('gitops config')}>
 		<div class={sectionCls}>
 			<h3 class={headingCls}>Config-as-code (GitOps)</h3>
 			<div class="rounded-md border border-surface-600 bg-surface-700/50 p-3 text-xs text-gray-400">
@@ -158,13 +250,18 @@
 				<a href="https://docs.mortise.dev/gitops" target="_blank" rel="noopener noreferrer" class="mt-2 inline-block text-accent hover:underline">View GitOps guide →</a>
 			</div>
 		</div>
-	{/if}
+	</div>
 
-	{#if sectionVisible('advanced annotations mounts')}
-		<AdvancedSection {project} {app} {selectedEnv} {cloneSpec} onSpecUpdate={handleSpecUpdate} onError={handleError} />
-	{/if}
+	<div class:hidden={!sectionVisible('advanced annotations mounts')}>
+		<AdvancedSection {project} {app} {appIdentity} {selectedEnv} {resetEpoch} {cloneSpec}
+			onDirty={(scope) => markSectionDirty(scope)}
+			onDraftCleared={(scope) => clearSectionDirty(scope)}
+			onSpecUpdate={(result, scope) => handleSpecUpdate(result, scope)} onError={handleError} />
+	</div>
 
-	{#if sectionVisible('danger delete')}
-		<DangerZoneSection {project} {app} {onAppDeleted} onError={handleError} />
-	{/if}
+	<div class:hidden={!sectionVisible('danger delete')}>
+		<DangerZoneSection {project} {app} {appIdentity} {resetEpoch} {onAppDeleted}
+			onDirty={() => markSectionDirty('delete')} onDraftCleared={() => clearSectionDirty('delete')}
+			onError={handleError} />
+	</div>
 </div>

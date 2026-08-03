@@ -4,25 +4,31 @@
 	import { Search } from 'lucide-svelte';
 	import { onMount } from 'svelte';
 
-	let { project, app, onInsert, onClose }: {
+	let { project, app, activeEnv, onBindingSelect, onSecretSelect, onClose }: {
 		project: string;
 		app: App;
-		onInsert: (ref: string) => void;
+		activeEnv: string;
+		onBindingSelect: (ref: string, key: string) => void;
+		onSecretSelect: (secretName: string) => void;
 		onClose: () => void;
 	} = $props();
 
 	let filterText = $state('');
 	let allApps = $state<App[]>([]);
 	let secrets = $state<SecretResponse[]>([]);
-	let sharedVars = $state<Array<{ name: string; value: string; source?: string }>>([]);
 	let loading = $state(true);
+
+	// Which bindings are declared on this app's current environment
+	const currentBindings = $derived(
+		app.spec.environments?.find(e => e.name === activeEnv)?.bindings ?? []
+	);
+	const boundAppNames = $derived(new Set(currentBindings.map(b => b.ref)));
 
 	onMount(async () => {
 		try {
-			[allApps, secrets, sharedVars] = await Promise.all([
+			[allApps, secrets] = await Promise.all([
 				api.listApps(project),
-				api.listSecrets(project, app.metadata.name),
-				api.getSharedVars(project).catch(() => [])
+				api.listSecrets(project, app.metadata.name)
 			]);
 		} finally {
 			loading = false;
@@ -42,44 +48,35 @@
 		return ['postgres', 'redis', 'mysql', 'mariadb', 'mongo'].includes(imageBaseName(image));
 	}
 
-	// All other apps in the project are bindable
+	// Only show apps that are in the current env's bindings list
 	const bindingApps = $derived(
-		allApps.filter(a => a.metadata.name !== app.metadata.name)
+		allApps.filter(a => boundAppNames.has(a.metadata.name))
 	);
 
-	// Build binding rows: auto-generated HOST/PORT/URL + declared credentials
+	// Build binding rows from bound apps' credentials + auto-keys
 	const bindingRows = $derived(
 		bindingApps.flatMap(a => {
-			const prefix = a.metadata.name.toUpperCase().replace(/[^A-Z0-9_]/g, '_');
-			const rows = [
-				{ appName: a.metadata.name, key: 'HOST', ref: `\${{bindings.${a.metadata.name}.host}}` },
-				{ appName: a.metadata.name, key: 'PORT', ref: `\${{bindings.${a.metadata.name}.port}}` }
+			const rows: Array<{appName: string; key: string; display: string}> = [
+				{ appName: a.metadata.name, key: 'host', display: 'HOST' },
+				{ appName: a.metadata.name, key: 'port', display: 'PORT' }
 			];
 			if (hasAutoUrl(a.spec.source.image ?? '')) {
-				rows.push({ appName: a.metadata.name, key: 'URL', ref: `\${{bindings.${a.metadata.name}.url}}` });
+				rows.push({ appName: a.metadata.name, key: 'url', display: 'URL' });
 			}
 			for (const c of a.spec.credentials ?? []) {
 				if (c.name !== 'host' && c.name !== 'port') {
-					rows.push({ appName: a.metadata.name, key: c.name.toUpperCase(), ref: `\${{bindings.${a.metadata.name}.${c.name}}}` });
+					rows.push({ appName: a.metadata.name, key: c.name, display: c.name.toUpperCase() });
 				}
 			}
 			return rows;
-		}).filter(r => !filterText || `${r.appName} ${r.key}`.toLowerCase().includes(filterText.toLowerCase()))
+		}).filter(r => !filterText || `${r.appName} ${r.display}`.toLowerCase().includes(filterText.toLowerCase()))
 	);
 
 	const secretRows = $derived(
 		secrets.flatMap(s => s.keys.map(k => ({
 			name: s.name,
-			key: k,
-			ref: `\${{secrets.${s.name}}}`
+			key: k
 		}))).filter(r => !filterText || r.key.toLowerCase().includes(filterText.toLowerCase()))
-	);
-
-	const sharedRows = $derived(
-		sharedVars.map(v => ({
-			key: v.name,
-			ref: `\${{shared.${v.name}}}`
-		})).filter(r => !filterText || r.key.toLowerCase().includes(filterText.toLowerCase()))
 	);
 </script>
 
@@ -92,7 +89,7 @@
 	<div class="border-b border-surface-600 p-2">
 		<div class="flex items-center gap-2 rounded-md border border-surface-600 bg-surface-700 px-2 py-1.5">
 			<Search class="h-3.5 w-3.5 text-gray-500 shrink-0" />
-			<input type="text" bind:value={filterText} placeholder="Search bindings, secrets, shared..."
+			<input type="text" bind:value={filterText} placeholder="Search bindings, secrets..."
 				class="flex-1 bg-transparent text-sm text-white placeholder-gray-500 outline-none" />
 		</div>
 	</div>
@@ -106,9 +103,9 @@
 				<div>
 					<div class="px-3 py-1.5 text-xs font-medium text-gray-500 uppercase tracking-wide bg-surface-700/50">Bindings</div>
 					{#each bindingRows.slice(0, 8) as row}
-						<button type="button" onclick={() => onInsert(row.ref)}
+						<button type="button" onclick={() => { onBindingSelect(row.appName, row.key); onClose(); }}
 							class="flex w-full items-center justify-between px-3 py-2 text-sm hover:bg-surface-700 transition-colors">
-							<span class="font-mono text-gray-200">{row.key}</span>
+							<span class="font-mono text-gray-200">{row.display}</span>
 							<span class="text-xs text-gray-500">{row.appName}</span>
 						</button>
 					{/each}
@@ -125,7 +122,7 @@
 				<div class="border-t border-surface-600">
 					<div class="px-3 py-1.5 text-xs font-medium text-gray-500 uppercase tracking-wide bg-surface-700/50">Secrets</div>
 					{#each secretRows.slice(0, 8) as row}
-						<button type="button" onclick={() => onInsert(row.ref)}
+						<button type="button" onclick={() => { onSecretSelect(row.name); onClose(); }}
 							class="flex w-full items-center justify-between px-3 py-2 text-sm hover:bg-surface-700 transition-colors">
 							<span class="font-mono text-gray-200">{row.key}</span>
 							<span class="text-xs text-gray-500">{row.name}</span>
@@ -134,23 +131,9 @@
 				</div>
 			{/if}
 
-			<!-- Shared vars section -->
-			{#if sharedRows.length > 0}
-				<div class="border-t border-surface-600">
-					<div class="px-3 py-1.5 text-xs font-medium text-gray-500 uppercase tracking-wide bg-surface-700/50">Shared Variables</div>
-					{#each sharedRows.slice(0, 8) as row}
-						<button type="button" onclick={() => onInsert(row.ref)}
-							class="flex w-full items-center justify-between px-3 py-2 text-sm hover:bg-surface-700 transition-colors">
-							<span class="font-mono text-gray-200">{row.key}</span>
-							<span class="text-xs text-gray-400">shared</span>
-						</button>
-					{/each}
-				</div>
-			{/if}
-
-			{#if bindingRows.length === 0 && secretRows.length === 0 && sharedRows.length === 0}
+			{#if bindingRows.length === 0 && secretRows.length === 0}
 				<div class="px-3 py-6 text-center text-xs text-gray-500">
-					{filterText ? 'No matches' : 'No bindings, secrets, or shared variables defined'}
+					{filterText ? 'No matches' : 'No bindings or secrets available. Add a binding first.'}
 				</div>
 			{/if}
 		{/if}

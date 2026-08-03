@@ -15,6 +15,7 @@ import {
   injectToken,
   createProjectViaAPI,
   deleteProjectViaAPI,
+  deleteAppViaAPI,
   getEnvViaAPI,
   getAppViaAPI
 } from './helpers';
@@ -440,7 +441,7 @@ test.describe('variables tab - staging env via switcher', () => {
     await envSwitcher.click();
 
     // Click the "staging" option in the dropdown.
-    await page.getByRole('button', { name: 'staging' }).click();
+    await page.getByRole('button', { name: 'staging', exact: true }).click();
 
     // Now the Runtime section should show "Runtime - staging" and the var.
     await expect(page.getByText('Runtime - staging')).toBeVisible({ timeout: 8_000 });
@@ -618,5 +619,283 @@ test.describe('variables tab - project variables', () => {
     }).toPass({ timeout: 10_000 });
 
     await setSharedVarsViaAPI(request, token, project, []);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// fromBinding projection tests
+// ---------------------------------------------------------------------------
+test.describe('variables tab - fromBinding projection', () => {
+  let token: string;
+  let project: string;
+
+  test.beforeAll(async ({ request }) => {
+    await ensureAdmin(request);
+    token = await loginViaAPI(request);
+    project = `e2e-frombind-${randomSuffix()}`;
+    await createProjectViaAPI(request, token, project);
+  });
+
+  test.afterAll(async ({ request }) => {
+    await deleteProjectViaAPI(request, token, project);
+  });
+
+  async function createBoundApps(
+    request: import('@playwright/test').APIRequestContext,
+    webName: string,
+    pgName: string
+  ): Promise<void> {
+    // Create postgres app with credentials
+    await request.post(`/api/projects/${project}/apps`, {
+      headers: { Authorization: `Bearer ${token}` },
+      data: {
+        name: pgName,
+        spec: {
+          source: { type: 'image', image: 'postgres:16' },
+          network: { public: false, port: 5432 },
+          environments: [{ name: 'production', replicas: 1 }],
+          credentials: [{ name: 'username' }, { name: 'password' }]
+        }
+      }
+    });
+    // Create web app bound to postgres
+    await request.post(`/api/projects/${project}/apps`, {
+      headers: { Authorization: `Bearer ${token}` },
+      data: {
+        name: webName,
+        spec: {
+          source: { type: 'image', image: 'nginx:1.27' },
+          network: { public: true },
+          environments: [
+            { name: 'production', replicas: 1, bindings: [{ ref: pgName }] }
+          ]
+        }
+      }
+    });
+  }
+
+  // -------------------------------------------------------------------------
+  // Test: fromBinding var added via BindingsPicker appears with binding badge
+  // -------------------------------------------------------------------------
+  test('adding a fromBinding var via picker writes CRD and shows binding badge', async ({ page, request }) => {
+    const webApp = `web-fb-${randomSuffix()}`;
+    const pgApp = `pg-fb-${randomSuffix()}`;
+    await createBoundApps(request, webApp, pgApp);
+
+    await injectToken(page, token);
+    await goToVariablesTab(page, project, webApp);
+    await expect(page.getByText('Runtime - production')).toBeVisible({ timeout: 8_000 });
+
+    // Click + to open new row
+    await clickPlusButton(page, 'Runtime - production');
+    const runtimeSection = variableSection(page, 'Runtime - production');
+    await expect(runtimeSection.getByPlaceholder('VARIABLE_NAME')).toBeVisible({ timeout: 10_000 });
+
+    // Type the variable name
+    await runtimeSection.getByPlaceholder('VARIABLE_NAME').fill('DB_PASS');
+
+    // Click the link icon to open the bindings picker
+    await runtimeSection.locator('button[title="Insert from binding or secret"]').click();
+
+    // The picker panel should show the bound postgres app's credentials
+    const picker = page.locator('.absolute.left-0.top-full');
+    await expect(picker.getByText('Bindings')).toBeVisible({ timeout: 5_000 });
+    await expect(picker.getByText('PASSWORD')).toBeVisible({ timeout: 5_000 });
+
+    // Click the PASSWORD row in the picker
+    await picker.locator('button').filter({ hasText: 'PASSWORD' }).click();
+
+    // Verify CRD spec has the fromBinding entry
+    await expect(async () => {
+      const app = await getAppViaAPI(request, token, project, webApp);
+      const envSpec = app.spec.environments?.find((e: { name: string }) => e.name === 'production');
+      const envVar = envSpec?.env?.find((e: { name: string }) => e.name === 'DB_PASS');
+      expect(envVar).toBeDefined();
+      expect(envVar?.valueFrom?.fromBinding?.ref).toBe(pgApp);
+      expect(envVar?.valueFrom?.fromBinding?.key).toBe('password');
+    }).toPass({ timeout: 10_000 });
+
+    // The variable should show in the table with a binding badge (may take time for controller to reconcile)
+    await expect(runtimeSection.getByText('DB_PASS')).toBeVisible({ timeout: 15_000 });
+    await expect(runtimeSection.getByText('binding').first()).toBeVisible();
+
+    await deleteAppViaAPI(request, token, project, webApp);
+    await deleteAppViaAPI(request, token, project, pgApp);
+  });
+
+  test('manual saves preserve automatic bindings, fromBinding, and secretRef projections', async ({ page, request }) => {
+    const webApp = `web-owned-${randomSuffix()}`;
+    const pgApp = `pg-owned-${randomSuffix()}`;
+    await createBoundApps(request, webApp, pgApp);
+
+    const secretRes = await request.post(
+      `/api/projects/${project}/apps/${webApp}/secrets?environment=production`,
+      {
+        headers: { Authorization: `Bearer ${token}` },
+        data: { name: 'runtime-secret', data: { SECRET_TOKEN: 'resolved-secret' } }
+      }
+    );
+    expect(secretRes.ok()).toBe(true);
+
+    const app = await getAppViaAPI(request, token, project, webApp);
+    const spec = JSON.parse(JSON.stringify(app.spec));
+    const envObj = spec.environments.find((env: { name: string }) => env.name === 'production');
+    envObj.env = [
+      { name: 'BOUND_PASSWORD', valueFrom: { fromBinding: { ref: pgApp, key: 'password' } } },
+      { name: 'SECRET_TOKEN', valueFrom: { secretRef: 'runtime-secret' } }
+    ];
+    const update = await request.put(`/api/projects/${project}/apps/${webApp}`, {
+      headers: { Authorization: `Bearer ${token}` },
+      data: spec
+    });
+    expect(update.ok()).toBe(true);
+
+    const prefix = pgApp.toUpperCase().replace(/[^A-Z0-9_]/g, '_');
+    await expect(async () => {
+      const rows = await getEnvViaAPI(request, token, project, webApp);
+      expect(rows).toEqual(expect.arrayContaining([
+        expect.objectContaining({ name: `${prefix}_HOST`, source: 'binding' }),
+        expect.objectContaining({ name: 'BOUND_PASSWORD', bindingRef: pgApp, bindingKey: 'password' }),
+        expect.objectContaining({ name: 'SECRET_TOKEN', secretRef: 'runtime-secret' })
+      ]));
+    }).toPass({ timeout: 20_000, intervals: [500, 1_000, 2_000] });
+
+    await injectToken(page, token);
+    await goToVariablesTab(page, project, webApp);
+    const runtimeSection = variableSection(page, 'Runtime - production');
+    await expect(runtimeSection.getByText(`${prefix}_HOST`)).toBeVisible({ timeout: 15_000 });
+    await expect(runtimeSection.getByText('BOUND_PASSWORD')).toBeVisible();
+    await expect(runtimeSection.getByText('SECRET_TOKEN')).toBeVisible();
+
+    await clickPlusButton(page, 'Runtime - production');
+    await runtimeSection.getByPlaceholder('VARIABLE_NAME').fill('MANUAL_VALUE');
+    await runtimeSection.getByPlaceholder('value or binding ref').fill('one');
+    await runtimeSection.getByRole('button', { name: 'Add', exact: true }).click();
+    await expect(runtimeSection.getByText(/managed by binding/)).toHaveCount(0);
+
+    await expect(async () => {
+      const rows = await getEnvViaAPI(request, token, project, webApp);
+      expect(rows).toEqual(expect.arrayContaining([
+        expect.objectContaining({ name: 'MANUAL_VALUE', value: 'one' }),
+        expect.objectContaining({ name: `${prefix}_HOST`, source: 'binding' }),
+        expect.objectContaining({ name: 'BOUND_PASSWORD', bindingRef: pgApp }),
+        expect.objectContaining({ name: 'SECRET_TOKEN', secretRef: 'runtime-secret' })
+      ]));
+    }).toPass({ timeout: 15_000, intervals: [500, 1_000] });
+
+    const manualRow = runtimeSection.locator('div.group').filter({ hasText: 'MANUAL_VALUE' });
+    await manualRow.locator('button[title="Reveal"]').click();
+    await manualRow.locator('input').fill('two');
+    await runtimeSection.getByRole('button', { name: 'Save 1 change', exact: true }).click();
+    await expect(async () => {
+      const rows = await getEnvViaAPI(request, token, project, webApp);
+      expect(rows.find(row => row.name === 'MANUAL_VALUE')?.value).toBe('two');
+      expect(rows.find(row => row.name === `${prefix}_HOST`)).toBeDefined();
+    }).toPass({ timeout: 10_000 });
+
+    await runtimeSection.getByRole('button', { name: 'Raw', exact: true }).click();
+    await runtimeSection.locator('textarea').fill('RAW_LITERAL=raw');
+    await runtimeSection.getByRole('button', { name: 'Save', exact: true }).click();
+    await expect(async () => {
+      const rows = await getEnvViaAPI(request, token, project, webApp);
+      expect(rows).toEqual(expect.arrayContaining([
+        expect.objectContaining({ name: 'RAW_LITERAL', value: 'raw' }),
+        expect.objectContaining({ name: `${prefix}_HOST`, source: 'binding' }),
+        expect.objectContaining({ name: 'BOUND_PASSWORD', bindingRef: pgApp }),
+        expect.objectContaining({ name: 'SECRET_TOKEN', secretRef: 'runtime-secret' })
+      ]));
+      expect(rows.find(row => row.name === 'MANUAL_VALUE')).toBeUndefined();
+    }).toPass({ timeout: 15_000, intervals: [500, 1_000] });
+
+    for (const name of ['BOUND_PASSWORD', 'SECRET_TOKEN']) {
+      const row = runtimeSection.locator('div.group').filter({ hasText: name });
+      await row.locator('button').last().click();
+      await expect(async () => {
+        const updatedApp = await getAppViaAPI(request, token, project, webApp);
+        const env = updatedApp.spec.environments?.find((candidate: { name: string }) => candidate.name === 'production');
+        expect(env?.env?.some((entry: { name: string }) => entry.name === name) ?? false).toBe(false);
+        const rows = await getEnvViaAPI(request, token, project, webApp);
+        expect(rows.some(row => row.name === name)).toBe(false);
+      }).toPass({ timeout: 10_000 });
+    }
+
+    const remaining = await getEnvViaAPI(request, token, project, webApp);
+    expect(remaining.find(row => row.name === `${prefix}_HOST`)).toBeDefined();
+
+    await deleteAppViaAPI(request, token, project, webApp);
+    await deleteAppViaAPI(request, token, project, pgApp);
+  });
+
+  // -------------------------------------------------------------------------
+  // Test: auto-injected binding vars show as read-only without delete button
+  // -------------------------------------------------------------------------
+  test('auto-injected binding vars are read-only and cannot be deleted', async ({ page, request }) => {
+    const webApp = `web-auto-${randomSuffix()}`;
+    const pgApp = `pg-auto-${randomSuffix()}`;
+    await createBoundApps(request, webApp, pgApp);
+
+    await injectToken(page, token);
+    await goToVariablesTab(page, project, webApp);
+    await expect(page.getByText('Runtime - production')).toBeVisible({ timeout: 8_000 });
+
+    // Auto-injected binding vars should show up (e.g. PGAPP_HOST, PGAPP_PORT)
+    const prefix = pgApp.toUpperCase().replace(/[^A-Z0-9_]/g, '_');
+    await expect(page.getByText(`${prefix}_HOST`)).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByText(`${prefix}_PORT`)).toBeVisible();
+
+    // Auto-injected vars should have a "binding" source badge
+    const hostRow = page.locator('div.group').filter({ hasText: `${prefix}_HOST` });
+    await expect(hostRow.getByText('binding')).toBeVisible();
+
+    // Auto-injected vars should NOT have a trash button (spacer div instead).
+    // The row has an eye toggle button but no trash/delete button.
+    const trashButton = hostRow.locator('button').filter({ has: page.locator('svg.h-3\\.5.w-3\\.5') }).last();
+    const trashTitle = await trashButton.getAttribute('title');
+    // The last button should be the eye toggle (Hide/Reveal), not a delete
+    expect(trashTitle).toMatch(/Hide|Reveal|Show/);
+
+    await deleteAppViaAPI(request, token, project, webApp);
+    await deleteAppViaAPI(request, token, project, pgApp);
+  });
+
+  // -------------------------------------------------------------------------
+  // Test: deleting a fromBinding var removes it from CRD spec
+  // -------------------------------------------------------------------------
+  test('deleting a fromBinding var removes it from CRD spec', async ({ page, request }) => {
+    const webApp = `web-delfb-${randomSuffix()}`;
+    const pgApp = `pg-delfb-${randomSuffix()}`;
+    await createBoundApps(request, webApp, pgApp);
+
+    // Add a fromBinding var via API
+    const app = await getAppViaAPI(request, token, project, webApp);
+    const spec = JSON.parse(JSON.stringify(app.spec));
+    const envObj = spec.environments.find((e: { name: string }) => e.name === 'production');
+    envObj.env = [{ name: 'MY_DB_HOST', valueFrom: { fromBinding: { ref: pgApp, key: 'host' } } }];
+    await request.put(`/api/projects/${project}/apps/${webApp}`, {
+      headers: { Authorization: `Bearer ${token}` },
+      data: spec
+    });
+
+    await injectToken(page, token);
+    await goToVariablesTab(page, project, webApp);
+
+    // The fromBinding var should show
+    await expect(page.getByText('MY_DB_HOST')).toBeVisible({ timeout: 10_000 });
+
+    // Click the trash button on the fromBinding row
+    const row = page.locator('div.group').filter({ hasText: 'MY_DB_HOST' });
+    await row.hover();
+    await row.locator('button').last().click();
+
+    // Verify via API that the env var was removed from CRD spec
+    await expect(async () => {
+      const updatedApp = await getAppViaAPI(request, token, project, webApp);
+      const envSpec = updatedApp.spec.environments?.find((e: { name: string }) => e.name === 'production');
+      const envVar = envSpec?.env?.find((e: { name: string }) => e.name === 'MY_DB_HOST');
+      expect(envVar).toBeUndefined();
+    }).toPass({ timeout: 10_000 });
+
+    await deleteAppViaAPI(request, token, project, webApp);
+    await deleteAppViaAPI(request, token, project, pgApp);
   });
 });

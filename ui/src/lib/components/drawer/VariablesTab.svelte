@@ -2,7 +2,7 @@
 	import { api } from '$lib/api';
 	import { store } from '$lib/store.svelte';
 	import { appNeedsRedeploy, resolveAppEnvironment } from '$lib/types';
-	import type { App, EnvVar } from '$lib/types';
+	import type { App, AppSpec, EnvVar } from '$lib/types';
 	import { Loader2, X } from 'lucide-svelte';
 
 	import VarTable from './variables/VarTable.svelte';
@@ -19,11 +19,37 @@
 		autoRedeploy?: boolean;
 	} = $props();
 
+	const copySpec = (spec: AppSpec): AppSpec => JSON.parse(JSON.stringify(spec));
+	let latestAppSpec = $state<AppSpec | null>(null);
+	let latestGeneration = $state<number | undefined>();
+	let latestAppName = $state('');
+	$effect(() => {
+		const appName = app.metadata.name;
+		const generation = app.metadata.generation;
+		if (appName !== latestAppName || generation === undefined || latestGeneration === undefined || generation >= latestGeneration) {
+			latestAppName = appName;
+			latestGeneration = generation;
+			latestAppSpec = copySpec(app.spec);
+		}
+	});
+
+	function cloneLatestAppSpec(): AppSpec {
+		return copySpec(latestAppSpec ?? app.spec);
+	}
+
+	function acceptUpdatedApp(updatedApp: App) {
+		latestAppSpec = copySpec(updatedApp.spec);
+		latestGeneration = updatedApp.metadata.generation ?? latestGeneration;
+	}
+
 	type EnvEntry = {
 		name: string;
 		value: string;
 		source?: string;
 		revealed?: boolean;
+		bindingRef?: string;
+		bindingKey?: string;
+		secretRef?: string;
 	};
 
 	type SectionState = {
@@ -109,20 +135,27 @@
 
 	// --- Load functions ---
 
-	async function loadEnv(envName: string) {
+	function isUserLiteral(entry: EnvEntry): boolean {
+		return (!entry.source || entry.source === 'user') && !entry.bindingRef && !entry.secretRef;
+	}
+
+	async function loadEnv(envName: string, preserveDraftOnError = false): Promise<boolean> {
 		envSection.loading = true;
 		envSection.error = '';
 		try {
 			const rows = await api.getEnv(project, app.metadata.name, envName);
 			const entries: EnvEntry[] = (rows ?? []).map(r => ({
-				name: r.name, value: r.value, source: r.source ?? 'user', revealed: false
+				name: r.name, value: r.value, source: r.source ?? 'user', revealed: false,
+				bindingRef: r.bindingRef, bindingKey: r.bindingKey, secretRef: r.secretRef
 			}));
 			envSection.entries = entries;
 			envSection.originalEntries = entries.map(e => ({ ...e }));
 			envSection.editedKeys = new Set();
+			return true;
 		} catch (e) {
 			envSection.error = e instanceof Error ? e.message : 'Failed to load';
-			envSection.entries = [];
+			if (!preserveDraftOnError) envSection.entries = [];
+			return false;
 		} finally {
 			envSection.loading = false;
 		}
@@ -209,9 +242,60 @@
 		section.entries[idx] = { ...section.entries[idx], revealed: !section.entries[idx].revealed };
 	}
 
-	function insertRef(ref: string) {
-		envSection.newValue = envSection.newValue + ref;
+	async function handleBindingSelect(ref: string, key: string) {
+		const varName = envSection.newKey.trim();
+		if (!varName) return;
 		envSection.showPicker = false;
+		envSection.saving = true;
+		envSection.error = '';
+		try {
+			const spec = cloneLatestAppSpec();
+			const envObj = spec.environments?.find((e: { name: string }) => e.name === activeEnv);
+			if (!envObj) throw new Error(`Environment ${activeEnv} not found`);
+			envObj.env = [
+				...(envObj.env ?? []),
+				{ name: varName, valueFrom: { fromBinding: { ref, key } } }
+			];
+			const updatedApp = await api.updateApp(project, app.metadata.name, spec);
+			acceptUpdatedApp(updatedApp);
+			envSection.showNewRow = false;
+			envSection.newKey = '';
+			envSection.newValue = '';
+			markStale();
+			await loadEnv(activeEnv);
+		} catch (e) {
+			envSection.error = e instanceof Error ? e.message : 'Failed to add binding var';
+		} finally {
+			envSection.saving = false;
+		}
+	}
+
+	async function handleSecretSelect(secretName: string) {
+		const varName = envSection.newKey.trim();
+		if (!varName) return;
+		envSection.showPicker = false;
+		envSection.saving = true;
+		envSection.error = '';
+		try {
+			const spec = cloneLatestAppSpec();
+			const envObj = spec.environments?.find((e: { name: string }) => e.name === activeEnv);
+			if (!envObj) throw new Error(`Environment ${activeEnv} not found`);
+			envObj.env = [
+				...(envObj.env ?? []),
+				{ name: varName, valueFrom: { secretRef: secretName } }
+			];
+			const updatedApp = await api.updateApp(project, app.metadata.name, spec);
+			acceptUpdatedApp(updatedApp);
+			envSection.showNewRow = false;
+			envSection.newKey = '';
+			envSection.newValue = '';
+			markStale();
+			await loadEnv(activeEnv);
+		} catch (e) {
+			envSection.error = e instanceof Error ? e.message : 'Failed to add secret ref var';
+		} finally {
+			envSection.saving = false;
+		}
 	}
 
 	function parseRaw(text: string): Record<string, string> {
@@ -241,7 +325,7 @@
 
 	// --- Env section actions ---
 
-	async function saveEnvSection() {
+	async function saveEnvSection(): Promise<boolean> {
 		envSection.saving = true;
 		envSection.error = '';
 		try {
@@ -253,17 +337,19 @@
 			}
 			if (dupes.length > 0) {
 				envSection.error = `Duplicate keys: ${[...new Set(dupes)].join(', ')}. Rename or remove duplicates before saving.`;
-				envSection.saving = false;
-				return;
+				return false;
 			}
 			const vars: Record<string, string> = {};
-			for (const e of envSection.entries) vars[e.name] = e.value;
+			for (const e of envSection.entries) {
+				if (isUserLiteral(e)) vars[e.name] = e.value;
+			}
 			await api.setEnv(project, app.metadata.name, activeEnv, vars);
-			envSection.originalEntries = envSection.entries.map(e => ({ ...e }));
-			envSection.editedKeys = new Set();
+			if (!await loadEnv(activeEnv, true)) return false;
 			markStale();
+			return true;
 		} catch (e) {
 			envSection.error = e instanceof Error ? e.message : 'Failed to save';
+			return false;
 		} finally {
 			envSection.saving = false;
 		}
@@ -281,7 +367,29 @@
 	}
 
 	async function deleteEnvVar(idx: number) {
-		const key = envSection.entries[idx].name;
+		const entry = envSection.entries[idx];
+		if (entry.bindingRef || entry.secretRef) {
+			envSection.saving = true;
+			envSection.error = '';
+			try {
+				const spec = cloneLatestAppSpec();
+				const envObj = spec.environments?.find((e: { name: string }) => e.name === activeEnv);
+				if (envObj) {
+					envObj.env = (envObj.env ?? []).filter((ev: { name: string }) => ev.name !== entry.name);
+					const updatedApp = await api.updateApp(project, app.metadata.name, spec);
+					acceptUpdatedApp(updatedApp);
+				}
+				markStale();
+				await loadEnv(activeEnv);
+			} catch (e) {
+				envSection.error = e instanceof Error ? e.message : 'Failed to delete';
+			} finally {
+				envSection.saving = false;
+			}
+			return;
+		}
+		if (!isUserLiteral(entry)) return;
+		const key = entry.name;
 		envSection.entries = envSection.entries.filter((_, i) => i !== idx);
 		const next = new Set(envSection.editedKeys);
 		next.delete(key);
@@ -291,13 +399,15 @@
 
 	async function importRawEnv() {
 		const parsed = parseRaw(envSection.rawText);
-		envSection.entries = Object.entries(parsed).map(([key, val]) => ({
+		const managedEntries = envSection.entries.filter(e => !isUserLiteral(e));
+		envSection.entries = [...managedEntries, ...Object.entries(parsed).map(([key, val]) => ({
 			name: key, value: val, source: 'user', revealed: false
-		}));
-		envSection.rawMode = false;
-		envSection.rawText = '';
+		}))];
 		envSection.editedKeys = new Set(Object.keys(parsed));
-		await saveEnvSection();
+		if (await saveEnvSection()) {
+			envSection.rawMode = false;
+			envSection.rawText = '';
+		}
 	}
 
 	// --- Build section actions ---
@@ -453,7 +563,9 @@
 			title="Runtime - {activeEnv}"
 			{project}
 			{app}
+			{activeEnv}
 			showBindingPicker={true}
+			runtimeOwnership={true}
 			onSave={saveEnvSection}
 			onAdd={addEnvVar}
 			onDelete={deleteEnvVar}
@@ -461,7 +573,8 @@
 			onValueEdit={(idx, val) => handleValueEdit(envSection, idx, val)}
 			onKeyPaste={(e) => handleKeyPaste(envSection, e)}
 			onToggleReveal={(idx) => toggleReveal(envSection, idx)}
-			onInsertRef={insertRef}
+			onBindingSelect={handleBindingSelect}
+			onSecretSelect={handleSecretSelect}
 			onSetRawMode={(v) => { envSection.rawMode = v; }}
 			onSetRawText={(v) => { envSection.rawText = v; }}
 			onSetShowNewRow={(v) => { envSection.showNewRow = v; }}
