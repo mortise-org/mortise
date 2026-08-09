@@ -67,6 +67,12 @@ func (r *BuildRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	var br mortisev1alpha1.BuildRun
 	if err := r.Get(ctx, req.NamespacedName, &br); err != nil {
 		if errors.IsNotFound(err) {
+			// The BuildRun is gone (e.g. App deletion cascaded mid-build).
+			// Cancel any in-flight build goroutine so it doesn't run to the
+			// 30min build timeout holding its log ring.
+			if r.Builds != nil {
+				r.Builds.cancelAndDelete(req.NamespacedName)
+			}
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, err
@@ -101,36 +107,51 @@ func (r *BuildRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			}
 			return ctrl.Result{RequeueAfter: buildRunPollInterval}, nil
 		case buildPhaseSucceeded, buildPhaseFailed:
-			r.Builds.delete(key)
+			// Persist the terminal outcome BEFORE dropping the tracker. If the
+			// tracker is deleted first and any write below fails, the next
+			// reconcile sees phase Running with no tracker and treats a
+			// finished build as lost — triggering a duplicate rebuild or a
+			// terminal BuildInterrupted failure.
 			logRef, err := r.persistBuildRunLog(ctx, &br, tracker)
 			if err != nil {
 				return ctrl.Result{}, err
 			}
 
 			now := metav1.NewTime(r.clock().Now())
-			br.Status.FinishedAt = &now
-			br.Status.CompletedAt = &now
-			br.Status.LogRef = logRef
-			if phase == buildPhaseSucceeded {
-				br.Status.Phase = mortisev1alpha1.BuildRunPhaseSucceeded
-				br.Status.Image = image
-				br.Status.Digest = digest
-				br.Status.DetectedPort = detectedPort
-				br.Status.FailureReason = ""
-				br.Status.FailureMessage = ""
-				setBuildRunCondition(&br.Status.Conditions, mortisev1alpha1.BuildRunPhaseSucceeded, br.Generation, "build completed", now)
-			} else {
-				br.Status.Phase = mortisev1alpha1.BuildRunPhaseFailed
-				br.Status.FailureReason = "BuildFailed"
-				br.Status.FailureMessage = errMsg
-				setBuildRunCondition(&br.Status.Conditions, mortisev1alpha1.BuildRunPhaseFailed, br.Generation, errMsg, now)
-			}
-			if err := r.Status().Update(ctx, &br); err != nil {
+			if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+				var latest mortisev1alpha1.BuildRun
+				if err := r.Get(ctx, req.NamespacedName, &latest); err != nil {
+					return err
+				}
+				latest.Status.FinishedAt = &now
+				latest.Status.CompletedAt = &now
+				latest.Status.LogRef = logRef
+				if phase == buildPhaseSucceeded {
+					latest.Status.Phase = mortisev1alpha1.BuildRunPhaseSucceeded
+					latest.Status.Image = image
+					latest.Status.Digest = digest
+					latest.Status.DetectedPort = detectedPort
+					latest.Status.FailureReason = ""
+					latest.Status.FailureMessage = ""
+					setBuildRunCondition(&latest.Status.Conditions, mortisev1alpha1.BuildRunPhaseSucceeded, latest.Generation, "build completed", now)
+				} else {
+					latest.Status.Phase = mortisev1alpha1.BuildRunPhaseFailed
+					latest.Status.FailureReason = "BuildFailed"
+					latest.Status.FailureMessage = errMsg
+					setBuildRunCondition(&latest.Status.Conditions, mortisev1alpha1.BuildRunPhaseFailed, latest.Generation, errMsg, now)
+				}
+				if err := r.Status().Update(ctx, &latest); err != nil {
+					return err
+				}
+				br = latest
+				return nil
+			}); err != nil {
 				return ctrl.Result{}, err
 			}
 			if err := r.projectTerminalBuildRunStatus(ctx, &br); err != nil {
 				return ctrl.Result{}, err
 			}
+			r.Builds.delete(key)
 			if err := r.gcBuildRunHistory(ctx, &br); err != nil {
 				return ctrl.Result{}, err
 			}
@@ -150,6 +171,21 @@ func (r *BuildRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 }
 
 func (r *BuildRunReconciler) handleLostBuildRunTracker(ctx context.Context, br *mortisev1alpha1.BuildRun, key types.NamespacedName) (ctrl.Result, error) {
+	// A concurrent reconcile may have persisted the terminal outcome and
+	// dropped the tracker after our (possibly cached) read. Re-read before
+	// treating a finished build as lost.
+	var latest mortisev1alpha1.BuildRun
+	if err := r.Get(ctx, key, &latest); err != nil {
+		if errors.IsNotFound(err) {
+			return ctrl.Result{}, nil
+		}
+		return ctrl.Result{}, err
+	}
+	if isBuildRunTerminal(&latest) {
+		return ctrl.Result{}, nil
+	}
+	br = &latest
+
 	if br.Status.StartedAt == nil {
 		return ctrl.Result{RequeueAfter: buildRunTrackerLossGrace}, nil
 	}
@@ -356,6 +392,20 @@ func (r *BuildRunReconciler) mergedBuildRunLogLines(ctx context.Context, br *mor
 	if existing.Data["lines"] != "" {
 		merged = append(merged, strings.Split(existing.Data["lines"], "\n")...)
 	}
+	// A terminal persist can be retried after a failed status write; if the
+	// current lines already landed verbatim, don't append them again.
+	if n := len(current); n > 0 && len(merged) >= n {
+		dup := true
+		for i, line := range merged[len(merged)-n:] {
+			if line != current[i] {
+				dup = false
+				break
+			}
+		}
+		if dup {
+			return merged, nil
+		}
+	}
 	if len(merged) > 0 && len(current) > 0 && merged[len(merged)-1] == current[0] {
 		current = current[1:]
 	}
@@ -545,19 +595,26 @@ func buildRunRetentionSortTime(run *mortisev1alpha1.BuildRun) time.Time {
 }
 
 func upsertConfigMap(ctx context.Context, c client.Client, desired *corev1.ConfigMap) error {
-	var existing corev1.ConfigMap
+	// The legacy app-scoped log ConfigMap is shared across all envs of an
+	// app, so concurrent reconciles genuinely race on this read-modify-write:
+	// retry both update conflicts and lost create races.
 	key := types.NamespacedName{Name: desired.Name, Namespace: desired.Namespace}
-	if err := c.Get(ctx, key, &existing); err != nil {
-		if errors.IsNotFound(err) {
-			return c.Create(ctx, desired)
+	return retry.OnError(retry.DefaultRetry, func(err error) bool {
+		return errors.IsConflict(err) || errors.IsAlreadyExists(err)
+	}, func() error {
+		var existing corev1.ConfigMap
+		if err := c.Get(ctx, key, &existing); err != nil {
+			if errors.IsNotFound(err) {
+				return c.Create(ctx, desired)
+			}
+			return err
 		}
-		return err
-	}
-	existing.Labels = desired.Labels
-	existing.Annotations = desired.Annotations
-	existing.Data = desired.Data
-	existing.OwnerReferences = desired.OwnerReferences
-	return c.Update(ctx, &existing)
+		existing.Labels = desired.Labels
+		existing.Annotations = desired.Annotations
+		existing.Data = desired.Data
+		existing.OwnerReferences = desired.OwnerReferences
+		return c.Update(ctx, &existing)
+	})
 }
 
 func parseImageRef(full string) registry.ImageRef {

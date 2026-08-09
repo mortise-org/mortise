@@ -156,6 +156,19 @@ func (s *BuildTrackerStore) delete(key types.NamespacedName) {
 	s.trackers.Delete(key)
 }
 
+// cancelAndDelete atomically removes the tracker for the given key and cancels
+// its build goroutine, releasing the build context and log buffer. Used when
+// the BuildRun disappears mid-build (e.g. App deletion cascades to it).
+func (s *BuildTrackerStore) cancelAndDelete(key types.NamespacedName) {
+	v, ok := s.trackers.LoadAndDelete(key)
+	if !ok {
+		return
+	}
+	if t := v.(*buildTracker); t.cancel != nil {
+		t.cancel()
+	}
+}
+
 // GetBuildLogs returns the current build log lines for the given App, or nil
 // if no build is in progress. Exported for use by the API layer.
 func (s *BuildTrackerStore) GetBuildLogs(key types.NamespacedName) []string {
