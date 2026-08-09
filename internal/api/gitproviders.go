@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -300,13 +301,40 @@ func validateGitProviderRequest(req *createGitProviderRequest) string {
 	default:
 		return "type must be one of: github, gitlab, gitea"
 	}
-	host := strings.TrimSpace(req.Host)
+	return validateGitProviderHost(req.Host)
+}
+
+// validateGitProviderHost returns an error message describing why the host is
+// unacceptable, or "" if it is safe to use. It is the single boundary check
+// shared by the admin CreateGitProvider path and the on-demand device-flow
+// creation path. Beyond requiring an absolute http(s) URL, it rejects hosts
+// that point at loopback, private, or link-local addresses so that a
+// user-supplied host cannot drive a server-side request at cluster-internal
+// services or the cloud metadata endpoint (SSRF).
+func validateGitProviderHost(host string) string {
+	host = strings.TrimSpace(host)
 	if host == "" {
 		return "host is required"
 	}
 	u, err := url.Parse(host)
 	if err != nil || u.Scheme == "" || u.Host == "" {
 		return "host must be an absolute URL (e.g. https://github.com)"
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return "host scheme must be http or https"
+	}
+	if u.User != nil {
+		return "host must not contain user information"
+	}
+	hostname := u.Hostname()
+	if hostname == "" {
+		return "host must include a hostname"
+	}
+	if ip := net.ParseIP(hostname); ip != nil {
+		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
+			ip.IsLinkLocalMulticast() || ip.IsUnspecified() {
+			return "host must not be a loopback, private, or link-local address"
+		}
 	}
 	return ""
 }
