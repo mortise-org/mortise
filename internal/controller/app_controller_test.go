@@ -8674,3 +8674,49 @@ func TestResolveEnvVarValueMutualExclusive(t *testing.T) {
 		t.Errorf("error should mention mutual exclusivity, got: %v", err)
 	}
 }
+
+func TestReconcileExternalSourceWithoutExternalConfigSetsFailed(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := mortisev1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add scheme: %v", err)
+	}
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add corev1 scheme: %v", err)
+	}
+
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "deepseek-api",
+			Namespace: "pj-default-project",
+		},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{
+				Type: mortisev1alpha1.SourceTypeExternal,
+			},
+			Environments: []mortisev1alpha1.Environment{{Name: "production"}},
+		},
+	}
+
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(app).
+		WithObjects(app).
+		Build()
+	r := &AppReconciler{Client: c, Scheme: scheme}
+
+	if _, err := r.reconcileExternalSource(context.Background(), app); err != nil {
+		t.Fatalf("reconcile external source: %v", err)
+	}
+
+	var fresh mortisev1alpha1.App
+	if err := c.Get(context.Background(), types.NamespacedName{Name: app.Name, Namespace: app.Namespace}, &fresh); err != nil {
+		t.Fatalf("get app: %v", err)
+	}
+	if fresh.Status.Phase != mortisev1alpha1.AppPhaseFailed {
+		t.Fatalf("expected phase %q, got %q", mortisev1alpha1.AppPhaseFailed, fresh.Status.Phase)
+	}
+	cond := meta.FindStatusCondition(fresh.Status.Conditions, "ExternalSourceValid")
+	if cond == nil || cond.Status != metav1.ConditionFalse {
+		t.Fatalf("expected ExternalSourceValid=False condition, got %+v", cond)
+	}
+}

@@ -4032,6 +4032,21 @@ func toSecretVolumesAndMounts(mounts []mortisev1alpha1.SecretMount) ([]corev1.Vo
 // domain/TLS setup.
 func (r *AppReconciler) reconcileExternalSource(ctx context.Context, app *mortisev1alpha1.App) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
+	if app.Spec.Source.External == nil {
+		if err := r.updateAppStatus(ctx, app, func(status *mortisev1alpha1.AppStatus) {
+			status.Phase = mortisev1alpha1.AppPhaseFailed
+			meta.SetStatusCondition(&status.Conditions, metav1.Condition{
+				Type:               "ExternalSourceValid",
+				Status:             metav1.ConditionFalse,
+				Reason:             "MissingExternalConfig",
+				Message:            "source.type is external but source.external is not set",
+				ObservedGeneration: app.Generation,
+			})
+		}); err != nil {
+			return ctrl.Result{}, fmt.Errorf("update status: %w", err)
+		}
+		return ctrl.Result{}, nil
+	}
 	project, err := r.fetchParentProject(ctx, app)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("fetch parent project: %w", err)
