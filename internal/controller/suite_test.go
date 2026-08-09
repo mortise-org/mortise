@@ -165,6 +165,9 @@ func ensureNamespace(ctx context.Context, name string) {
 	}
 	ns = corev1.Namespace{}
 	ns.Name = name
+	// Mirror the project label the Project controller stamps on every
+	// namespace it owns — cross-namespace finalizer GC scopes by it.
+	ns.Labels = map[string]string{"mortise.dev/project": "default-project"}
 	Expect(k8sClient.Create(ctx, &ns)).To(Succeed())
 }
 

@@ -2272,6 +2272,148 @@ var _ = Describe("App Controller", func() {
 		})
 	})
 
+	Context("domain collision recovery", func() {
+		ctx := context.Background()
+		const envNsStaging = "pj-default-project-staging"
+		const contestedDomain = "contested.example.com"
+
+		newPublicImageApp := func(name string, envs []mortisev1alpha1.Environment) *mortisev1alpha1.App {
+			return &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+				Spec: mortisev1alpha1.AppSpec{
+					Source: mortisev1alpha1.AppSource{
+						Type:  mortisev1alpha1.SourceTypeImage,
+						Image: testImageNginx,
+					},
+					Network:      mortisev1alpha1.NetworkConfig{Public: true},
+					Environments: envs,
+				},
+			}
+		}
+
+		It("defers the failure, keeps other envs reconciling, and recovers when the domain frees up", func() {
+			withStagingEnv(ctx)
+			defer withoutStagingEnv(ctx)
+
+			owner := newPublicImageApp("collision-owner", []mortisev1alpha1.Environment{
+				{Name: "production", Domain: contestedDomain},
+			})
+			Expect(k8sClient.Create(ctx, owner)).To(Succeed())
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: owner.Name, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			var ownerIngress networkingv1.Ingress
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: owner.Name, Namespace: envNsProduction,
+			}, &ownerIngress)).To(Succeed())
+
+			victim := newPublicImageApp("collision-victim", []mortisev1alpha1.Environment{
+				{Name: "production", Domain: contestedDomain},
+				{Name: "staging", Domain: "collision-victim.example.com"},
+			})
+			Expect(k8sClient.Create(ctx, victim)).To(Succeed())
+
+			victimReq := reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: victim.Name, Namespace: namespace},
+			}
+			result, err := reconciler.Reconcile(ctx, victimReq)
+			Expect(err).NotTo(HaveOccurred())
+			// Failed on a collision must requeue: nothing watches the foreign
+			// Ingress, so recovery depends on polling.
+			Expect(result.RequeueAfter).To(Equal(domainCollisionRequeueInterval))
+
+			var got mortisev1alpha1.App
+			Expect(k8sClient.Get(ctx, victimReq.NamespacedName, &got)).To(Succeed())
+			Expect(got.Status.Phase).To(Equal(mortisev1alpha1.AppPhaseFailed))
+			cond := meta.FindStatusCondition(got.Status.Conditions, "DomainCollision")
+			Expect(cond).NotTo(BeNil())
+			Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+
+			// Only the colliding env's Ingress is withheld — the workload for
+			// that env and the entire staging env still reconcile.
+			var ing networkingv1.Ingress
+			err = k8sClient.Get(ctx, types.NamespacedName{Name: victim.Name, Namespace: envNsProduction}, &ing)
+			Expect(kerrors.IsNotFound(err)).To(BeTrue(), "expected no production ingress for colliding app, got %v", err)
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: victim.Name, Namespace: envNsStaging}, &ing)).To(Succeed())
+			var dep appsv1.Deployment
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: victim.Name, Namespace: envNsProduction}, &dep)).To(Succeed())
+
+			// Free the domain and reconcile again: the condition clears and
+			// the App leaves Failed.
+			Expect(k8sClient.Delete(ctx, &ownerIngress)).To(Succeed())
+			_, err = reconciler.Reconcile(ctx, victimReq)
+			Expect(err).NotTo(HaveOccurred())
+
+			got = mortisev1alpha1.App{}
+			Expect(k8sClient.Get(ctx, victimReq.NamespacedName, &got)).To(Succeed())
+			Expect(meta.FindStatusCondition(got.Status.Conditions, "DomainCollision")).To(BeNil())
+			Expect(got.Status.Phase).NotTo(Equal(mortisev1alpha1.AppPhaseFailed))
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: victim.Name, Namespace: envNsProduction}, &ing)).To(Succeed())
+		})
+
+		It("recovers an external-source app from a domain collision", func() {
+			// Distinct domain from the previous test: purged apps leave their
+			// Ingresses behind (purge strips finalizers, so no GC runs), and a
+			// reused host would collide with that leftover.
+			const extContestedDomain = "ext-contested.example.com"
+			owner := newPublicImageApp("ext-collision-owner", []mortisev1alpha1.Environment{
+				{Name: "production", Domain: extContestedDomain},
+			})
+			Expect(k8sClient.Create(ctx, owner)).To(Succeed())
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: owner.Name, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			var ownerIngress networkingv1.Ingress
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: owner.Name, Namespace: envNsProduction,
+			}, &ownerIngress)).To(Succeed())
+
+			ext := &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{Name: "ext-collision", Namespace: namespace},
+				Spec: mortisev1alpha1.AppSpec{
+					Source: mortisev1alpha1.AppSource{
+						Type:     mortisev1alpha1.SourceTypeExternal,
+						External: &mortisev1alpha1.ExternalSource{Host: "db.internal", Port: 5432},
+					},
+					Network: mortisev1alpha1.NetworkConfig{Public: true},
+					Environments: []mortisev1alpha1.Environment{
+						{Name: "production", Domain: extContestedDomain},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, ext)).To(Succeed())
+
+			extReq := reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: ext.Name, Namespace: namespace},
+			}
+			result, err := reconciler.Reconcile(ctx, extReq)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(domainCollisionRequeueInterval))
+
+			var got mortisev1alpha1.App
+			Expect(k8sClient.Get(ctx, extReq.NamespacedName, &got)).To(Succeed())
+			Expect(got.Status.Phase).To(Equal(mortisev1alpha1.AppPhaseFailed))
+			Expect(meta.FindStatusCondition(got.Status.Conditions, "DomainCollision")).NotTo(BeNil())
+
+			Expect(k8sClient.Delete(ctx, &ownerIngress)).To(Succeed())
+			_, err = reconciler.Reconcile(ctx, extReq)
+			Expect(err).NotTo(HaveOccurred())
+
+			got = mortisev1alpha1.App{}
+			Expect(k8sClient.Get(ctx, extReq.NamespacedName, &got)).To(Succeed())
+			Expect(meta.FindStatusCondition(got.Status.Conditions, "DomainCollision")).To(BeNil())
+			Expect(got.Status.Phase).To(Equal(mortisev1alpha1.AppPhaseReady))
+			var ing networkingv1.Ingress
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: ext.Name, Namespace: envNsProduction}, &ing)).To(Succeed())
+		})
+	})
+
 	Context("ExternalDNS annotation on Ingress", func() {
 		const appName = "test-externaldns"
 		ctx := context.Background()

@@ -44,6 +44,13 @@ func TestCreateProjectAsAdmin(t *testing.T) {
 		t.Fatalf("project CRD not found after create: %v", err)
 	}
 
+	// The default env is seeded at create, not left to the controller — a
+	// client adding an env before the first reconcile must not end up with a
+	// project that never gets production.
+	if len(project.Spec.Environments) != 1 || project.Spec.Environments[0].Name != "production" {
+		t.Errorf("expected create to seed the production environment, got %+v", project.Spec.Environments)
+	}
+
 	var activityCM corev1.ConfigMap
 	if err := k8sClient.Get(context.Background(), types.NamespacedName{Namespace: "pj-my-saas", Name: "activity-my-saas"}, &activityCM); !errors.IsNotFound(err) {
 		t.Fatalf("expected API create to leave project activity ConfigMap to the controller, got err=%v configmap=%+v", err, activityCM)

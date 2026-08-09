@@ -83,6 +83,72 @@ var _ = Describe("Project Controller", func() {
 		})
 	})
 
+	Context("default environment seeding", func() {
+		const projectName = "env-seeding"
+		nsName := ProjectNamespace(projectName)
+
+		AfterEach(func() {
+			proj := &mortisev1alpha1.Project{}
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: projectName}, proj); err == nil {
+				proj.Finalizers = nil
+				_ = k8sClient.Update(ctx, proj)
+				_ = k8sClient.Delete(ctx, proj)
+			}
+			_ = k8sClient.Delete(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: nsName}})
+		})
+
+		reconcileOnce := func() {
+			r := &ProjectReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), OperatorNamespace: "mortise-system", ServiceAccountName: "mortise-controller"}
+			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: projectName}})
+			Expect(err).NotTo(HaveOccurred())
+		}
+
+		envNames := func() []string {
+			var proj mortisev1alpha1.Project
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: projectName}, &proj)).To(Succeed())
+			names := make([]string, 0, len(proj.Spec.Environments))
+			for _, e := range proj.Spec.Environments {
+				names = append(names, e.Name)
+			}
+			return names
+		}
+
+		It("seeds production when the environment list is empty", func() {
+			project := &mortisev1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: projectName}}
+			Expect(k8sClient.Create(ctx, project)).To(Succeed())
+			reconcileOnce()
+			Expect(envNames()).To(Equal([]string{DefaultProjectEnvironment}))
+		})
+
+		It("seeds production when only preview environments exist", func() {
+			project := &mortisev1alpha1.Project{
+				ObjectMeta: metav1.ObjectMeta{Name: projectName},
+				Spec: mortisev1alpha1.ProjectSpec{
+					Environments: []mortisev1alpha1.ProjectEnvironment{
+						{Name: "preview-pr-7", Preview: true},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, project)).To(Succeed())
+			reconcileOnce()
+			Expect(envNames()).To(Equal([]string{"preview-pr-7", DefaultProjectEnvironment}))
+		})
+
+		It("does not seed production when a non-preview environment exists", func() {
+			project := &mortisev1alpha1.Project{
+				ObjectMeta: metav1.ObjectMeta{Name: projectName},
+				Spec: mortisev1alpha1.ProjectSpec{
+					Environments: []mortisev1alpha1.ProjectEnvironment{
+						{Name: "staging"},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, project)).To(Succeed())
+			reconcileOnce()
+			Expect(envNames()).To(Equal([]string{"staging"}))
+		})
+	})
+
 	Context("project create activity backfill", func() {
 		const projectName = "activity-backfill"
 

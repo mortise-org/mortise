@@ -77,6 +77,11 @@ const buildTimeout = 30 * time.Minute
 // flight to check for completion.
 const buildPollInterval = 15 * time.Second
 
+// domainCollisionRequeueInterval is how often the reconciler re-queues while
+// an App is Failed on a domain collision. Nothing watches the foreign Ingress
+// that owns the contested host, so recovery has to poll for it going away.
+const domainCollisionRequeueInterval = time.Minute
+
 // AppReconciler reconciles a App object
 type AppReconciler struct {
 	client.Client
@@ -226,6 +231,7 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	needsRequeue := false
 	buildStatusDirty := false
 	clearNoCache := false
+	var domainCollisionErrs []string
 	projectionEnvOrder := make([]string, 0, len(resolvedEnvs))
 	for _, env := range resolvedEnvs {
 		projectionEnvOrder = append(projectionEnvOrder, env.Name)
@@ -309,21 +315,12 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 			if env.Domain != "" {
 				allHosts := append([]string{env.Domain}, env.CustomDomains...)
 				if err := r.checkDomainCollisions(ctx, &app, env.Name, allHosts); err != nil {
-					if updateErr := r.updateAppStatus(ctx, &app, func(status *mortisev1alpha1.AppStatus) {
-						status.Phase = mortisev1alpha1.AppPhaseFailed
-						meta.SetStatusCondition(&status.Conditions, metav1.Condition{
-							Type:               "DomainCollision",
-							Status:             metav1.ConditionTrue,
-							Reason:             "DomainInUse",
-							Message:            err.Error(),
-							ObservedGeneration: app.Generation,
-						})
-					}); updateErr != nil {
-						log.Error(updateErr, "update status after domain collision")
-					}
-					return ctrl.Result{}, nil
-				}
-				if err := r.reconcileIngress(ctx, &app, env, envNs); err != nil {
+					// Defer the failure to after the loop: returning here would
+					// drop build status accumulated for earlier envs, skip
+					// opted-out-env GC, and block every remaining env on one
+					// contested domain. Only this env's Ingress is withheld.
+					domainCollisionErrs = append(domainCollisionErrs, err.Error())
+				} else if err := r.reconcileIngress(ctx, &app, env, envNs); err != nil {
 					return ctrl.Result{}, fmt.Errorf("reconcile ingress for env %s: %w", env.Name, err)
 				}
 			}
@@ -362,7 +359,40 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		}
 	}
 
+	if len(domainCollisionErrs) > 0 {
+		if err := r.updateAppStatus(ctx, &app, func(status *mortisev1alpha1.AppStatus) {
+			status.Phase = mortisev1alpha1.AppPhaseFailed
+			meta.SetStatusCondition(&status.Conditions, metav1.Condition{
+				Type:               "DomainCollision",
+				Status:             metav1.ConditionTrue,
+				Reason:             "DomainInUse",
+				Message:            strings.Join(domainCollisionErrs, "; "),
+				ObservedGeneration: app.Generation,
+			})
+		}); err != nil {
+			return ctrl.Result{}, fmt.Errorf("update status after domain collision: %w", err)
+		}
+		if needsRequeue {
+			return ctrl.Result{RequeueAfter: buildPollInterval}, nil
+		}
+		return ctrl.Result{RequeueAfter: domainCollisionRequeueInterval}, nil
+	}
+
+	// A clean pass over every env means any recorded collision is stale —
+	// clear the condition and force a status refresh so the App can leave
+	// Failed (shouldRefreshFailedAppStatus only covers build failures).
+	domainCollisionCleared := false
+	if meta.FindStatusCondition(app.Status.Conditions, "DomainCollision") != nil {
+		if err := r.updateAppStatus(ctx, &app, func(status *mortisev1alpha1.AppStatus) {
+			meta.RemoveStatusCondition(&status.Conditions, "DomainCollision")
+		}); err != nil {
+			return ctrl.Result{}, fmt.Errorf("clear domain collision condition: %w", err)
+		}
+		domainCollisionCleared = true
+	}
+
 	if !needsRequeue && (app.Status.Phase != mortisev1alpha1.AppPhaseFailed ||
+		domainCollisionCleared ||
 		shouldRefreshFailedAppStatus(&app, resolvedEnvs, previewEnvNames)) {
 		if err := r.updateStatus(ctx, &app, resolvedEnvs, previewEnvNames); err != nil {
 			return ctrl.Result{}, fmt.Errorf("update status: %w", err)
@@ -4031,7 +4061,6 @@ func toSecretVolumesAndMounts(mounts []mortisev1alpha1.SecretMount) ([]corev1.Vo
 // ExternalName Service + Ingress to expose the external host through Mortise's
 // domain/TLS setup.
 func (r *AppReconciler) reconcileExternalSource(ctx context.Context, app *mortisev1alpha1.App) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
 	if app.Spec.Source.External == nil {
 		if err := r.updateAppStatus(ctx, app, func(status *mortisev1alpha1.AppStatus) {
 			status.Phase = mortisev1alpha1.AppPhaseFailed
@@ -4056,6 +4085,7 @@ func (r *AppReconciler) reconcileExternalSource(ctx context.Context, app *mortis
 		resolvedEnvs = resolveEnvs(project, app)
 	}
 
+	var domainCollisionErrs []string
 	for i := range resolvedEnvs {
 		env := &resolvedEnvs[i]
 		envNs, err := appEnvNs(app, env.Name)
@@ -4076,19 +4106,11 @@ func (r *AppReconciler) reconcileExternalSource(ctx context.Context, app *mortis
 			if env.Domain != "" {
 				allHosts := append([]string{env.Domain}, env.CustomDomains...)
 				if err := r.checkDomainCollisions(ctx, app, env.Name, allHosts); err != nil {
-					if updateErr := r.updateAppStatus(ctx, app, func(status *mortisev1alpha1.AppStatus) {
-						status.Phase = mortisev1alpha1.AppPhaseFailed
-						meta.SetStatusCondition(&status.Conditions, metav1.Condition{
-							Type:               "DomainCollision",
-							Status:             metav1.ConditionTrue,
-							Reason:             "DomainInUse",
-							Message:            err.Error(),
-							ObservedGeneration: app.Generation,
-						})
-					}); updateErr != nil {
-						log.Error(updateErr, "update status after domain collision")
-					}
-					return ctrl.Result{}, nil
+					// Defer the failure to after the loop so one contested
+					// domain doesn't block the remaining envs. Only this
+					// env's Service + Ingress are withheld.
+					domainCollisionErrs = append(domainCollisionErrs, err.Error())
+					continue
 				}
 				if err := r.reconcileExternalNameService(ctx, app, env, envNs); err != nil {
 					return ctrl.Result{}, fmt.Errorf("reconcile externalname service for env %s: %w", env.Name, err)
@@ -4100,9 +4122,27 @@ func (r *AppReconciler) reconcileExternalSource(ctx context.Context, app *mortis
 		}
 	}
 
-	// External apps are always Ready — there is no workload to wait for.
+	if len(domainCollisionErrs) > 0 {
+		if err := r.updateAppStatus(ctx, app, func(status *mortisev1alpha1.AppStatus) {
+			status.Phase = mortisev1alpha1.AppPhaseFailed
+			meta.SetStatusCondition(&status.Conditions, metav1.Condition{
+				Type:               "DomainCollision",
+				Status:             metav1.ConditionTrue,
+				Reason:             "DomainInUse",
+				Message:            strings.Join(domainCollisionErrs, "; "),
+				ObservedGeneration: app.Generation,
+			})
+		}); err != nil {
+			return ctrl.Result{}, fmt.Errorf("update status after domain collision: %w", err)
+		}
+		return ctrl.Result{RequeueAfter: domainCollisionRequeueInterval}, nil
+	}
+
+	// External apps are always Ready — there is no workload to wait for. A
+	// clean pass also clears any stale collision left by a previous reconcile.
 	if err := r.updateAppStatus(ctx, app, func(status *mortisev1alpha1.AppStatus) {
 		status.Phase = mortisev1alpha1.AppPhaseReady
+		meta.RemoveStatusCondition(&status.Conditions, "DomainCollision")
 	}); err != nil {
 		return ctrl.Result{}, fmt.Errorf("update status: %w", err)
 	}

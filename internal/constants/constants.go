@@ -216,4 +216,10 @@ const (
 	// EnvironmentLabel is the name of the owning environment; stamped on env
 	// namespaces, preview namespaces, and every per-env resource.
 	EnvironmentLabel = "mortise.dev/environment"
+
+	// ManagedByLabel + ManagedByValue mark every resource Mortise creates.
+	// Selecting on them keeps cluster-wide operations (GC, collision checks)
+	// from touching look-alike resources owned by users or other operators.
+	ManagedByLabel = "app.kubernetes.io/managed-by"
+	ManagedByValue = "mortise"
 )
