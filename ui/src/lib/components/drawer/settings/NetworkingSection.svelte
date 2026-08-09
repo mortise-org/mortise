@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { untrack } from 'svelte';
 	import { api } from '$lib/api';
 	import type { App, AppSpec } from '$lib/types';
 	import { inputCls, labelCls, sectionCls, headingCls, btnPrimary } from './styles';
@@ -6,14 +7,20 @@
 	let {
 		project,
 		app,
+		appIdentity,
+		resetEpoch,
 		cloneSpec,
+		onDirty,
 		onSpecUpdate,
 		onError
 	}: {
 		project: string;
 		app: App;
+		appIdentity: string;
+		resetEpoch: number;
 		cloneSpec: () => AppSpec;
-		onSpecUpdate: (spec: AppSpec) => void;
+		onDirty: () => void;
+		onSpecUpdate: (app: App) => void;
 		onError: (msg: string) => void;
 	} = $props();
 
@@ -22,8 +29,13 @@
 	let saving = $state(false);
 
 	$effect(() => {
-		netPublic = app.spec.network?.public ?? true;
-		netPort = String(app.spec.network?.port ?? '');
+		appIdentity;
+		resetEpoch;
+		untrack(() => {
+			const spec = cloneSpec();
+			netPublic = spec.network?.public ?? true;
+			netPort = String(spec.network?.port ?? '');
+		});
 	});
 
 	async function saveNetworking() {
@@ -34,7 +46,7 @@
 		if (netPort) spec.network.port = parseInt(netPort, 10);
 		try {
 			const result = await api.updateApp(project, app.metadata.name, spec);
-			onSpecUpdate(result.spec);
+			onSpecUpdate(result);
 		} catch (e) {
 			onError(e instanceof Error ? e.message : 'Failed to save');
 		} finally {
@@ -56,7 +68,7 @@
 				role="switch"
 				aria-checked={netPublic}
 				aria-label="Toggle public access"
-				onclick={() => (netPublic = !netPublic)}
+				onclick={() => { netPublic = !netPublic; onDirty(); }}
 				class="relative inline-flex h-5 w-9 items-center rounded-full transition-colors {netPublic ? 'bg-accent' : 'bg-surface-600'}"
 			>
 				<span
@@ -66,7 +78,7 @@
 		</div>
 		<div>
 			<label class={labelCls} for="net-port">Port</label>
-			<input id="net-port" type="number" bind:value={netPort} placeholder="8080" class={inputCls} />
+			<input id="net-port" type="number" bind:value={netPort} oninput={onDirty} placeholder="8080" class={inputCls} />
 		</div>
 	</div>
 	<div class="flex justify-end pt-1">

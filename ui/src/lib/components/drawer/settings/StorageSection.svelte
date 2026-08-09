@@ -7,20 +7,35 @@
 	let {
 		project,
 		app,
+		appIdentity,
+		resetEpoch,
 		cloneSpec,
+		onDirty,
+		onDraftCleared,
 		onSpecUpdate,
 		onError
 	}: {
 		project: string;
 		app: App;
+		appIdentity: string;
+		resetEpoch: number;
 		cloneSpec: () => AppSpec;
-		onSpecUpdate: (spec: AppSpec) => void;
+		onDirty: () => void;
+		onDraftCleared: () => void;
+		onSpecUpdate: (app: App) => void;
 		onError: (msg: string) => void;
 	} = $props();
 
 	let showAddVolume = $state(false);
 	let newVol = $state({ name: '', mountPath: '', size: '', storageClass: '' });
 	let savingVolume = $state(false);
+
+	$effect(() => {
+		appIdentity;
+		resetEpoch;
+		showAddVolume = false;
+		newVol = { name: '', mountPath: '', size: '', storageClass: '' };
+	});
 
 	async function addVolume() {
 		if (!newVol.name || !newVol.mountPath) return;
@@ -37,7 +52,8 @@
 		newVol = { name: '', mountPath: '', size: '', storageClass: '' };
 		try {
 			const result = await api.updateApp(project, app.metadata.name, spec);
-			onSpecUpdate(result.spec);
+			onSpecUpdate(result);
+			onDraftCleared();
 		} catch (e) {
 			onError(e instanceof Error ? e.message : 'Failed to add volume');
 			showAddVolume = true;
@@ -52,7 +68,7 @@
 		spec.storage = (spec.storage ?? []).filter((_: unknown, i: number) => i !== idx);
 		try {
 			const result = await api.updateApp(project, app.metadata.name, spec);
-			onSpecUpdate(result.spec);
+			onSpecUpdate(result);
 		} catch (e) {
 			onError(e instanceof Error ? e.message : 'Failed to remove volume');
 		}
@@ -96,19 +112,19 @@
 			<div class="grid grid-cols-2 gap-2">
 				<div>
 					<label class={labelCls} for="vol-name">Name</label>
-					<input id="vol-name" type="text" bind:value={newVol.name} placeholder="data" class={inputCls} />
+					<input id="vol-name" type="text" bind:value={newVol.name} oninput={onDirty} placeholder="data" class={inputCls} />
 				</div>
 				<div>
 					<label class={labelCls} for="vol-mount">Mount path</label>
-					<input id="vol-mount" type="text" bind:value={newVol.mountPath} placeholder="/data" class={inputCls} />
+					<input id="vol-mount" type="text" bind:value={newVol.mountPath} oninput={onDirty} placeholder="/data" class={inputCls} />
 				</div>
 				<div>
 					<label class={labelCls} for="vol-size">Size</label>
-					<input id="vol-size" type="text" bind:value={newVol.size} placeholder="5Gi" class={inputCls} />
+					<input id="vol-size" type="text" bind:value={newVol.size} oninput={onDirty} placeholder="5Gi" class={inputCls} />
 				</div>
 				<div>
 					<label class={labelCls} for="vol-class">Storage class</label>
-					<input id="vol-class" type="text" bind:value={newVol.storageClass} placeholder="standard" class={inputCls} />
+					<input id="vol-class" type="text" bind:value={newVol.storageClass} oninput={onDirty} placeholder="standard" class={inputCls} />
 				</div>
 			</div>
 			<div class="flex gap-2">
@@ -116,7 +132,7 @@
 					class={btnPrimary}>
 					{savingVolume ? 'Adding...' : 'Add'}
 				</button>
-				<button type="button" onclick={() => { showAddVolume = false; newVol = { name: '', mountPath: '', size: '', storageClass: '' }; }}
+				<button type="button" onclick={() => { showAddVolume = false; newVol = { name: '', mountPath: '', size: '', storageClass: '' }; onDraftCleared(); }}
 					class={btnSecondary}>
 					Cancel
 				</button>

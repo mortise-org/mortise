@@ -272,7 +272,7 @@ export async function getEnvViaAPI(
 	project: string,
 	appName: string,
 	environment: string = 'production'
-): Promise<Array<{ name: string; value: string }>> {
+): Promise<Array<{ name: string; value: string; source?: string; bindingRef?: string; bindingKey?: string; secretRef?: string }>> {
 	const res = await request.get(
 		`/api/projects/${encodeURIComponent(project)}/apps/${encodeURIComponent(appName)}/env?environment=${encodeURIComponent(environment)}`,
 		{ headers: { Authorization: `Bearer ${token}` } }
@@ -281,7 +281,7 @@ export async function getEnvViaAPI(
 		const body = await res.text().catch(() => '');
 		throw new Error(`getEnvViaAPI failed: HTTP ${res.status()} ${body}`);
 	}
-	return (await res.json()) as Array<{ name: string; value: string }>;
+	return (await res.json()) as Array<{ name: string; value: string; source?: string; bindingRef?: string; bindingKey?: string; secretRef?: string }>;
 }
 
 /** List secrets for an app. Returns [{name, keys}, ...]. */

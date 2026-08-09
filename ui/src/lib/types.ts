@@ -67,7 +67,7 @@ export interface VolumeSpec {
 export interface EnvVar {
 	name: string;
 	value?: string;
-	valueFrom?: { secretRef?: string };
+	valueFrom?: { secretRef?: string; fromBinding?: { ref: string; key: string } };
 }
 
 export interface Binding {
@@ -163,6 +163,8 @@ export interface App {
 		name: string;
 		namespace?: string;
 		creationTimestamp?: string;
+		generation?: number;
+		resourceVersion?: string;
 	};
 	spec: AppSpec;
 	status?: AppStatus;

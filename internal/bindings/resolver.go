@@ -29,14 +29,102 @@ type ResolvedVar struct {
 	Value string
 }
 
+// resolvedBinding holds the intermediate state for a single bound app lookup.
+type resolvedBinding struct {
+	app        *mortisev1alpha1.App
+	host       string
+	port       string
+	prefix     string
+	extraCreds []mortisev1alpha1.Credential
+	credSecret *corev1.Secret
+}
+
+// lookupBinding resolves a single bound app and reads its credentials Secret.
+// Returns nil (no error) when the app is missing or disabled — the caller
+// decides whether to skip silently (Resolve) or error (ResolveSingle).
+func (r *Resolver) lookupBinding(ctx context.Context, project, env, ref string) (*resolvedBinding, error) {
+	controlNs := constants.ControlNamespace(project)
+	envNs := constants.EnvNamespace(project, env)
+
+	var boundApp mortisev1alpha1.App
+	key := client.ObjectKey{Name: ref, Namespace: controlNs}
+	if err := r.Client.Get(ctx, key, &boundApp); err != nil {
+		if errors.IsNotFound(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("resolve binding %q in project %q: %w", ref, project, err)
+	}
+
+	rb := &resolvedBinding{
+		app:    &boundApp,
+		prefix: toEnvPrefix(ref),
+	}
+
+	if boundApp.Spec.Source.Type == mortisev1alpha1.SourceTypeExternal && boundApp.Spec.Source.External != nil {
+		rb.host = boundApp.Spec.Source.External.Host
+		if boundApp.Spec.Source.External.Port > 0 {
+			rb.port = fmt.Sprintf("%d", boundApp.Spec.Source.External.Port)
+		}
+	} else {
+		if !boundAppEnabledIn(&boundApp, env) {
+			return nil, nil
+		}
+		rb.host = fmt.Sprintf("%s.%s.svc.cluster.local", boundApp.Name, envNs)
+		port := boundApp.Spec.Network.Port
+		if port == 0 {
+			port = 8080
+		}
+		rb.port = fmt.Sprintf("%d", port)
+	}
+
+	for _, cred := range boundApp.Spec.Credentials {
+		if cred.Name != "host" && cred.Name != "port" {
+			rb.extraCreds = append(rb.extraCreds, cred)
+		}
+	}
+
+	if len(rb.extraCreds) > 0 {
+		secretName := fmt.Sprintf("%s-credentials", boundApp.Name)
+		var credSecret corev1.Secret
+		secretKey := types.NamespacedName{Namespace: envNs, Name: secretName}
+		if err := r.Client.Get(ctx, secretKey, &credSecret); err != nil {
+			return nil, fmt.Errorf("resolve credentials for binding %q: secret %s/%s: %w",
+				ref, envNs, secretName, err)
+		}
+		rb.credSecret = &credSecret
+	}
+
+	return rb, nil
+}
+
+// expandBinding returns all auto-generated vars for a resolved binding.
+func expandBinding(rb *resolvedBinding) []ResolvedVar {
+	var result []ResolvedVar
+	result = append(result,
+		ResolvedVar{Name: rb.prefix + "_HOST", Value: rb.host},
+		ResolvedVar{Name: rb.prefix + "_PORT", Value: rb.port},
+	)
+	if url := autoURL(rb.app.Spec.Source.Image, rb.host, rb.port); url != "" {
+		result = append(result, ResolvedVar{Name: rb.prefix + "_URL", Value: url})
+	}
+	for _, cred := range rb.extraCreds {
+		val := ""
+		if rb.credSecret != nil {
+			val = string(rb.credSecret.Data[cred.Name])
+		}
+		result = append(result, ResolvedVar{
+			Name:  rb.prefix + "_" + strings.ToUpper(cred.Name),
+			Value: val,
+		})
+	}
+	return result
+}
+
 // Resolve looks up each bound App and returns fully-resolved env vars for
 // all declared credentials plus auto-generated host, port, and URL vars.
 //
 // All names are prefixed with the bound app name in UPPER_SNAKE_CASE to
 // avoid collisions (e.g. binding "database" → DATABASE_HOST, DATABASE_URL).
-//
-// Credential values are read from the bound app's {name}-credentials Secret
-// in the project's env namespace.
 //
 // When a bound app no longer exists (e.g. deleted), the binding is skipped
 // and zero vars are produced for it. This lets the caller's ReplaceSource
@@ -53,75 +141,93 @@ func (r *Resolver) Resolve(
 	log := logf.FromContext(ctx)
 	var result []ResolvedVar
 
-	controlNs := constants.ControlNamespace(project)
-	envNs := constants.EnvNamespace(project, env)
-
 	for _, b := range bindings {
-		var boundApp mortisev1alpha1.App
-		key := client.ObjectKey{Name: b.Ref, Namespace: controlNs}
-		if err := r.Client.Get(ctx, key, &boundApp); err != nil {
-			if errors.IsNotFound(err) {
-				log.Info("bound app not found, skipping binding", "binding", b.Ref, "project", project)
-				continue
-			}
-			return nil, fmt.Errorf("resolve binding %q in project %q: %w", b.Ref, project, err)
+		rb, err := r.lookupBinding(ctx, project, env, b.Ref)
+		if err != nil {
+			return nil, err
 		}
-
-		var hostValue, portValue string
-		if boundApp.Spec.Source.Type == mortisev1alpha1.SourceTypeExternal && boundApp.Spec.Source.External != nil {
-			hostValue = boundApp.Spec.Source.External.Host
-			if boundApp.Spec.Source.External.Port > 0 {
-				portValue = fmt.Sprintf("%d", boundApp.Spec.Source.External.Port)
-			}
-		} else {
-			if !boundAppEnabledIn(&boundApp, env) {
-				log.Info("bound app disabled in env, skipping binding", "binding", b.Ref, "env", env, "project", project)
-				continue
-			}
-			hostValue = fmt.Sprintf("%s.%s.svc.cluster.local", boundApp.Name, envNs)
-			port := boundApp.Spec.Network.Port
-			if port == 0 {
-				port = 8080
-			}
-			portValue = fmt.Sprintf("%d", port)
+		if rb == nil {
+			log.Info("bound app not found or disabled, skipping binding", "binding", b.Ref, "project", project, "env", env)
+			continue
 		}
-
-		prefix := toEnvPrefix(b.Ref)
-
-		result = append(result,
-			ResolvedVar{Name: prefix + "_HOST", Value: hostValue},
-			ResolvedVar{Name: prefix + "_PORT", Value: portValue},
-		)
-
-		if url := autoURL(boundApp.Spec.Source.Image, hostValue, portValue); url != "" {
-			result = append(result, ResolvedVar{Name: prefix + "_URL", Value: url})
-		}
-
-		var extraCreds []mortisev1alpha1.Credential
-		for _, cred := range boundApp.Spec.Credentials {
-			if cred.Name != "host" && cred.Name != "port" {
-				extraCreds = append(extraCreds, cred)
-			}
-		}
-		if len(extraCreds) > 0 {
-			secretName := fmt.Sprintf("%s-credentials", boundApp.Name)
-			var credSecret corev1.Secret
-			secretKey := types.NamespacedName{Namespace: envNs, Name: secretName}
-			if err := r.Client.Get(ctx, secretKey, &credSecret); err != nil {
-				return nil, fmt.Errorf("resolve credentials for binding %q: secret %s/%s: %w",
-					b.Ref, envNs, secretName, err)
-			}
-			for _, cred := range extraCreds {
-				val := string(credSecret.Data[cred.Name])
-				result = append(result, ResolvedVar{
-					Name:  prefix + "_" + strings.ToUpper(cred.Name),
-					Value: val,
-				})
-			}
-		}
+		result = append(result, expandBinding(rb)...)
 	}
 
 	return result, nil
+}
+
+// ResolveSingle resolves a single key from a bound app's credentials.
+// Unlike Resolve, this returns an error (not a silent skip) when the
+// bound app is missing or disabled — the caller is explicitly requesting
+// a specific value.
+func (r *Resolver) ResolveSingle(
+	ctx context.Context,
+	project string,
+	env string,
+	ref string,
+	key string,
+) (string, error) {
+	rb, err := r.lookupBinding(ctx, project, env, ref)
+	if err != nil {
+		return "", err
+	}
+	if rb == nil {
+		return "", fmt.Errorf("bound app %q not found or disabled in env %q", ref, env)
+	}
+
+	switch key {
+	case "host":
+		return rb.host, nil
+	case "port":
+		return rb.port, nil
+	case "url":
+		url := autoURL(rb.app.Spec.Source.Image, rb.host, rb.port)
+		if url == "" {
+			return "", fmt.Errorf("binding %q does not expose key %q (auto-URL not available for image %q); available keys: %s",
+				ref, key, rb.app.Spec.Source.Image, strings.Join(availableKeys(rb), ", "))
+		}
+		return url, nil
+	default:
+		for _, cred := range rb.extraCreds {
+			if cred.Name == key {
+				if rb.credSecret != nil {
+					return string(rb.credSecret.Data[cred.Name]), nil
+				}
+				return "", nil
+			}
+		}
+		return "", fmt.Errorf("binding %q does not expose key %q; available keys: %s",
+			ref, key, strings.Join(availableKeys(rb), ", "))
+	}
+}
+
+// AvailableKeys returns the list of valid keys for a bound app in an env.
+// Returns an error if the bound app is missing or disabled.
+func (r *Resolver) AvailableKeys(
+	ctx context.Context,
+	project string,
+	env string,
+	ref string,
+) ([]string, error) {
+	rb, err := r.lookupBinding(ctx, project, env, ref)
+	if err != nil {
+		return nil, err
+	}
+	if rb == nil {
+		return nil, fmt.Errorf("bound app %q not found or disabled in env %q", ref, env)
+	}
+	return availableKeys(rb), nil
+}
+
+func availableKeys(rb *resolvedBinding) []string {
+	keys := []string{"host", "port"}
+	if autoURL(rb.app.Spec.Source.Image, rb.host, rb.port) != "" {
+		keys = append(keys, "url")
+	}
+	for _, cred := range rb.extraCreds {
+		keys = append(keys, cred.Name)
+	}
+	return keys
 }
 
 var envPrefixSanitizer = regexp.MustCompile(`[^A-Z0-9_]`)
@@ -132,7 +238,6 @@ var envPrefixSanitizer = regexp.MustCompile(`[^A-Z0-9_]`)
 func toEnvPrefix(name string) string {
 	upper := strings.ToUpper(name)
 	sanitized := envPrefixSanitizer.ReplaceAllString(upper, "_")
-	// Strip leading digits/underscores to ensure valid identifier.
 	sanitized = strings.TrimLeft(sanitized, "0123456789_")
 	if sanitized == "" {
 		return "BINDING"

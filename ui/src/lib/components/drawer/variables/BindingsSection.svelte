@@ -25,6 +25,9 @@
 	let pendingBindings = $state<Array<{ref: string}> | null>(null);
 	let pendingClearTimer = $state<ReturnType<typeof setTimeout> | null>(null);
 
+	let lastLoadedEnv = $state('');
+	let lastLoadedApp = $state('');
+
 	function setPendingBindings(bindings: Array<{ref: string}>) {
 		pendingBindings = bindings;
 		if (pendingClearTimer) clearTimeout(pendingClearTimer);
@@ -37,8 +40,11 @@
 	});
 
 	$effect(() => {
-		void activeEnv;
-		void app.metadata.name;
+		const env = activeEnv;
+		const appName = app.metadata.name;
+		if (env === lastLoadedEnv && appName === lastLoadedApp) return;
+		lastLoadedEnv = env;
+		lastLoadedApp = appName;
 		showAddBinding = false;
 		newBindingRef = '';
 		bindingError = '';

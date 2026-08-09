@@ -27,12 +27,40 @@ type envVarResponse struct {
 	Value    string `json:"value"`
 	Source   string `json:"source,omitempty"`
 	Redacted bool   `json:"redacted,omitempty"`
+	// BindingRef and BindingKey are set for env vars with valueFrom.fromBinding
+	// on the CRD spec, so the UI can display "app → key" instead of the
+	// resolved value.
+	BindingRef string `json:"bindingRef,omitempty"`
+	BindingKey string `json:"bindingKey,omitempty"`
+	// SecretRef is set for env vars with valueFrom.secretRef on the CRD spec.
+	SecretRef string `json:"secretRef,omitempty"`
 }
 
 // patchEnvRequest is the JSON body for PATCH .../env.
 type patchEnvRequest struct {
 	Set   map[string]string `json:"set"`
 	Unset []string          `json:"unset"`
+}
+
+func declarativeEnvSources(app *mortisev1alpha1.App, envName string) map[string]string {
+	sources := make(map[string]string)
+	for _, envSpec := range app.Spec.Environments {
+		if envSpec.Name != envName {
+			continue
+		}
+		for _, ev := range envSpec.Env {
+			if ev.ValueFrom == nil {
+				continue
+			}
+			if ev.ValueFrom.FromBinding != nil {
+				sources[ev.Name] = "binding"
+			} else if ev.ValueFrom.SecretRef != "" {
+				sources[ev.Name] = "secret reference"
+			}
+		}
+		break
+	}
+	return sources
 }
 
 // GetEnv returns env vars for a specific environment on an app.
@@ -77,9 +105,35 @@ func (s *Server) GetEnv(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Build maps of declarative specs so we can enrich the response without
+	// treating their resolved values as editable literals.
+	fromBindingSpecs := make(map[string]*mortisev1alpha1.BindingVarSource)
+	secretRefSpecs := make(map[string]string)
+	for _, envSpec := range app.Spec.Environments {
+		if envSpec.Name == envName {
+			for _, ev := range envSpec.Env {
+				if ev.ValueFrom != nil && ev.ValueFrom.FromBinding != nil {
+					fromBindingSpecs[ev.Name] = ev.ValueFrom.FromBinding
+				}
+				if ev.ValueFrom != nil && ev.ValueFrom.SecretRef != "" {
+					secretRefSpecs[ev.Name] = ev.ValueFrom.SecretRef
+				}
+			}
+			break
+		}
+	}
+
 	resp := make([]envVarResponse, 0, len(envs))
 	for _, e := range envs {
-		resp = append(resp, envResponseVar(e, plaintext))
+		ev := envResponseVar(e, plaintext)
+		if fb, ok := fromBindingSpecs[e.Name]; ok {
+			ev.BindingRef = fb.Ref
+			ev.BindingKey = fb.Key
+		}
+		if secretRef, ok := secretRefSpecs[e.Name]; ok {
+			ev.SecretRef = secretRef
+		}
+		resp = append(resp, ev)
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -134,7 +188,13 @@ func (s *Server) PutEnv(w http.ResponseWriter, r *http.Request) {
 	for _, e := range existing {
 		existingSource[e.Name] = e.Source
 	}
+	declarativeSource := declarativeEnvSources(app, envName)
 	for _, v := range vars {
+		if source, ok := declarativeSource[v.Name]; ok {
+			writeJSON(w, http.StatusConflict, errorResponse{fmt.Sprintf(
+				"cannot overwrite %q: managed by %s (only user-set vars can be modified)", v.Name, source)})
+			return
+		}
 		if src, ok := existingSource[v.Name]; ok && src != "" && src != "user" {
 			writeJSON(w, http.StatusConflict, errorResponse{fmt.Sprintf(
 				"cannot overwrite %q: managed by %s (only user-set vars can be modified)", v.Name, src)})
@@ -142,10 +202,12 @@ func (s *Server) PutEnv(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Start with non-user vars from the existing Secret.
+	// Start with non-user vars and declarative projections from the existing
+	// Secret. secretRef values resolve with source "user", so the App spec is
+	// the ownership signal that distinguishes them from editable literals.
 	var merged []envstore.Env
 	for _, e := range existing {
-		if e.Source != "user" && e.Source != "" {
+		if (e.Source != "user" && e.Source != "") || declarativeSource[e.Name] != "" {
 			merged = append(merged, e)
 		}
 	}
@@ -225,10 +287,16 @@ func (s *Server) PatchEnv(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
+	declarativeSource := declarativeEnvSources(app, envName)
 
 	// Apply unsets — reject non-user sources.
 	unsetMap := make(map[string]bool, len(req.Unset))
 	for _, k := range req.Unset {
+		if source, ok := declarativeSource[k]; ok {
+			writeJSON(w, http.StatusConflict, errorResponse{fmt.Sprintf(
+				"cannot unset %q: managed by %s (only user-set vars can be removed)", k, source)})
+			return
+		}
 		unsetMap[k] = true
 	}
 	for _, e := range existing {
@@ -251,6 +319,11 @@ func (s *Server) PatchEnv(w http.ResponseWriter, r *http.Request) {
 		existingSource[e.Name] = e.Source
 	}
 	for k := range req.Set {
+		if source, ok := declarativeSource[k]; ok {
+			writeJSON(w, http.StatusConflict, errorResponse{fmt.Sprintf(
+				"cannot overwrite %q: managed by %s (only user-set vars can be modified)", k, source)})
+			return
+		}
 		if src, ok := existingSource[k]; ok && src != "" && src != "user" {
 			writeJSON(w, http.StatusConflict, errorResponse{fmt.Sprintf(
 				"cannot overwrite %q: managed by %s (only user-set vars can be modified)", k, src)})

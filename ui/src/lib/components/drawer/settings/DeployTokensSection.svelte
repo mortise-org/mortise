@@ -8,12 +8,20 @@
 	let {
 		project,
 		app,
+		appIdentity,
+		resetEpoch,
 		selectedEnv,
+		onDirty,
+		onDraftCleared,
 		onError
 	}: {
 		project: string;
 		app: App;
+		appIdentity: string;
+		resetEpoch: number;
 		selectedEnv: string;
+		onDirty: () => void;
+		onDraftCleared: () => void;
 		onError: (msg: string) => void;
 	} = $props();
 
@@ -24,6 +32,14 @@
 	let createdToken = $state<string | null>(null);
 	let copiedToken = $state(false);
 	let saving = $state(false);
+
+	$effect(() => {
+		appIdentity;
+		selectedEnv;
+		resetEpoch;
+		showTokenForm = false;
+		newTokenName = '';
+	});
 
 	onMount(async () => {
 		await loadTokens();
@@ -49,6 +65,7 @@
 			createdToken = tok.token ?? null;
 			newTokenName = '';
 			showTokenForm = false;
+			onDraftCleared();
 		} catch (e) {
 			onError(e instanceof Error ? e.message : 'Failed to create token');
 		} finally {
@@ -123,10 +140,10 @@
 		<div class="space-y-2 rounded-md border border-surface-600 p-3">
 			<div>
 				<label class={labelCls} for="tok-name">Token name</label>
-				<input id="tok-name" type="text" bind:value={newTokenName} placeholder="ci-deploy" class={inputCls} />
+				<input id="tok-name" type="text" bind:value={newTokenName} oninput={onDirty} placeholder="ci-deploy" class={inputCls} />
 			</div>
 			<div class="flex justify-end gap-2">
-				<button type="button" onclick={() => (showTokenForm = false)} class={btnSecondary}>Cancel</button>
+				<button type="button" onclick={() => { showTokenForm = false; newTokenName = ''; onDraftCleared(); }} class={btnSecondary}>Cancel</button>
 				<button type="button" onclick={createToken} disabled={saving || !newTokenName.trim() || !selectedEnv} class={btnPrimary}>
 					Create
 				</button>

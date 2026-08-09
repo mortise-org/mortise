@@ -7156,6 +7156,52 @@ var _ = Describe("App Controller — git source", func() {
 			Expect(envData).NotTo(HaveKey("DROP_ME"), "removed CRD key should be pruned when still controller-owned")
 		})
 
+		It("removes a deleted secretRef projection when its resolved value is unchanged", func() {
+			appName := "secretref-removal-test"
+			sourceSecret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{Name: "secretref-removal-source", Namespace: envNsProduction},
+				Data:       map[string][]byte{"API_TOKEN": []byte("resolved-token")},
+			}
+			Expect(k8sClient.Create(ctx, sourceSecret)).To(Succeed())
+			defer func() { Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, sourceSecret))).To(Succeed()) }()
+
+			app := &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{Name: appName, Namespace: namespace},
+				Spec: mortisev1alpha1.AppSpec{
+					Source:  mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: testImageNginx},
+					Network: mortisev1alpha1.NetworkConfig{Public: true},
+					Environments: []mortisev1alpha1.Environment{{
+						Name:   "production",
+						Domain: "secretref-removal.example.com",
+						Env: []mortisev1alpha1.EnvVar{{
+							Name:      "API_TOKEN",
+							ValueFrom: &mortisev1alpha1.EnvVarSource{SecretRef: sourceSecret.Name},
+						}},
+					}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, app))).To(Succeed()) }()
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(readAppEnvSecret(ctx, appName, envNsProduction)).To(HaveKeyWithValue("API_TOKEN", "resolved-token"))
+
+			var fetchedApp mortisev1alpha1.App
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: appName, Namespace: namespace}, &fetchedApp)).To(Succeed())
+			fetchedApp.Spec.Environments[0].Env = nil
+			Expect(k8sClient.Update(ctx, &fetchedApp)).To(Succeed())
+
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(readAppEnvSecret(ctx, appName, envNsProduction)).NotTo(HaveKey("API_TOKEN"))
+		})
+
 		It("preserves removed CRD spec env var keys when the user has overridden them", func() {
 			appName := "key-removal-override-test"
 			app := &mortisev1alpha1.App{
@@ -8470,6 +8516,164 @@ var _ = Describe("securityContext on user workloads", func() {
 		})
 	})
 })
+
+// --- resolveEnvVarValue unit tests ---
+
+func newResolveTestReconciler(t *testing.T, objs ...client.Object) *AppReconciler {
+	t.Helper()
+	scheme := newAppStatusTestScheme(t)
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).Build()
+	return &AppReconciler{Client: c}
+}
+
+func TestResolveEnvVarValueLiteral(t *testing.T) {
+	r := newResolveTestReconciler(t)
+	ev := mortisev1alpha1.EnvVar{Name: "PORT", Value: "3000"}
+	val, src, err := r.resolveEnvVarValue(context.Background(), ev, "pj-web-production", "web", "production", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if val != "3000" || src != "user" {
+		t.Errorf("got val=%q src=%q, want val=3000 src=user", val, src)
+	}
+}
+
+func TestResolveEnvVarValueSecretRef(t *testing.T) {
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "my-secret", Namespace: "pj-web-production"},
+		Data:       map[string][]byte{"API_KEY": []byte("sk-12345")},
+	}
+	r := newResolveTestReconciler(t, secret)
+	ev := mortisev1alpha1.EnvVar{
+		Name:      "API_KEY",
+		ValueFrom: &mortisev1alpha1.EnvVarSource{SecretRef: "my-secret"},
+	}
+	val, src, err := r.resolveEnvVarValue(context.Background(), ev, "pj-web-production", "web", "production", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if val != "sk-12345" || src != "user" {
+		t.Errorf("got val=%q src=%q, want val=sk-12345 src=user", val, src)
+	}
+}
+
+func TestResolveEnvVarValueSecretRefMissing(t *testing.T) {
+	r := newResolveTestReconciler(t)
+	ev := mortisev1alpha1.EnvVar{
+		Name:      "API_KEY",
+		ValueFrom: &mortisev1alpha1.EnvVarSource{SecretRef: "nonexistent"},
+	}
+	_, _, err := r.resolveEnvVarValue(context.Background(), ev, "pj-web-production", "web", "production", nil)
+	if err == nil {
+		t.Fatal("expected error for missing secret")
+	}
+}
+
+func TestResolveEnvVarValueFromBinding(t *testing.T) {
+	boundApp := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "db", Namespace: "pj-web"},
+		Spec: mortisev1alpha1.AppSpec{
+			Source:  mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: "postgres:16"},
+			Network: mortisev1alpha1.NetworkConfig{Port: 5432},
+			Credentials: []mortisev1alpha1.Credential{
+				{Name: "host"}, {Name: "port"}, {Name: "password", Value: "secret"},
+			},
+			Environments: []mortisev1alpha1.Environment{{Name: "production"}},
+		},
+	}
+	credSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "db-credentials", Namespace: "pj-web-production"},
+		Data:       map[string][]byte{"password": []byte("secret")},
+	}
+	r := newResolveTestReconciler(t, boundApp, credSecret)
+	ev := mortisev1alpha1.EnvVar{
+		Name: "PGHOST",
+		ValueFrom: &mortisev1alpha1.EnvVarSource{
+			FromBinding: &mortisev1alpha1.BindingVarSource{Ref: "db", Key: "host"},
+		},
+	}
+	bindingRefs := map[string]bool{"db": true}
+	val, src, err := r.resolveEnvVarValue(context.Background(), ev, "pj-web-production", "web", "production", bindingRefs)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(val, "db.pj-web-production.svc.cluster.local") {
+		t.Errorf("got val=%q, want DNS host", val)
+	}
+	if src != "binding" {
+		t.Errorf("got src=%q, want binding", src)
+	}
+}
+
+func TestResolveEnvVarValueFromBindingPassword(t *testing.T) {
+	boundApp := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "db", Namespace: "pj-web"},
+		Spec: mortisev1alpha1.AppSpec{
+			Source:  mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: "postgres:16"},
+			Network: mortisev1alpha1.NetworkConfig{Port: 5432},
+			Credentials: []mortisev1alpha1.Credential{
+				{Name: "host"}, {Name: "port"}, {Name: "password", Value: "hunter2"},
+			},
+			Environments: []mortisev1alpha1.Environment{{Name: "production"}},
+		},
+	}
+	credSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "db-credentials", Namespace: "pj-web-production"},
+		Data:       map[string][]byte{"password": []byte("hunter2")},
+	}
+	r := newResolveTestReconciler(t, boundApp, credSecret)
+	ev := mortisev1alpha1.EnvVar{
+		Name: "DB_PASS",
+		ValueFrom: &mortisev1alpha1.EnvVarSource{
+			FromBinding: &mortisev1alpha1.BindingVarSource{Ref: "db", Key: "password"},
+		},
+	}
+	bindingRefs := map[string]bool{"db": true}
+	val, src, err := r.resolveEnvVarValue(context.Background(), ev, "pj-web-production", "web", "production", bindingRefs)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if val != "hunter2" {
+		t.Errorf("got val=%q, want hunter2", val)
+	}
+	if src != "binding" {
+		t.Errorf("got src=%q, want binding", src)
+	}
+}
+
+func TestResolveEnvVarValueFromBindingRefNotInList(t *testing.T) {
+	r := newResolveTestReconciler(t)
+	ev := mortisev1alpha1.EnvVar{
+		Name: "PGHOST",
+		ValueFrom: &mortisev1alpha1.EnvVarSource{
+			FromBinding: &mortisev1alpha1.BindingVarSource{Ref: "db", Key: "host"},
+		},
+	}
+	bindingRefs := map[string]bool{"cache": true}
+	_, _, err := r.resolveEnvVarValue(context.Background(), ev, "pj-web-production", "web", "production", bindingRefs)
+	if err == nil {
+		t.Fatal("expected error for ref not in bindings list")
+	}
+	if !strings.Contains(err.Error(), "not in this environment's bindings list") {
+		t.Errorf("error should mention bindings list, got: %v", err)
+	}
+}
+
+func TestResolveEnvVarValueMutualExclusive(t *testing.T) {
+	r := newResolveTestReconciler(t)
+	ev := mortisev1alpha1.EnvVar{
+		Name:      "BAD",
+		Value:     "literal",
+		ValueFrom: &mortisev1alpha1.EnvVarSource{SecretRef: "some-secret"},
+	}
+	_, _, err := r.resolveEnvVarValue(context.Background(), ev, "pj-web-production", "web", "production", nil)
+	if err == nil {
+		t.Fatal("expected error for both value and valueFrom")
+	}
+	if !strings.Contains(err.Error(), "only one of") {
+		t.Errorf("error should mention mutual exclusivity, got: %v", err)
+	}
+}
 
 func TestReconcileExternalSourceWithoutExternalConfigSetsFailed(t *testing.T) {
 	scheme := runtime.NewScheme()

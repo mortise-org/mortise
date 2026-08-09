@@ -48,20 +48,6 @@
 	let reloading = $state(false);
 	let errorMsg = $state('');
 
-	let lastAutoSwitchPhase = $state<string | null>(null);
-	$effect(() => {
-		const phase = envPhase;
-		if ((phase === 'Building' || phase === 'Degraded' || phase === 'Failed') && phase !== lastAutoSwitchPhase) {
-			if (liveApp!.spec.source.type !== 'image') {
-				lastAutoSwitchPhase = phase;
-				store.setDrawerTab('buildLogs');
-			}
-		}
-		if (phase !== 'Building' && phase !== 'Degraded' && phase !== 'Failed') {
-			lastAutoSwitchPhase = null;
-		}
-	});
-
 	const appDomain = $derived(envSpecEntry?.domain || envStatusEntry?.domain || envSpecEntry?.customDomains?.[0] || null);
 
 	function openApp() {

@@ -23,6 +23,9 @@
 	let pendingCredentials = $state<Array<{name: string; value?: string; valueFrom?: unknown}> | null>(null);
 	let pendingClearTimer = $state<ReturnType<typeof setTimeout> | null>(null);
 
+	let lastLoadedEnv = $state('');
+	let lastLoadedApp = $state('');
+
 	function setPendingCredentials(creds: Array<{name: string; value?: string; valueFrom?: unknown}>) {
 		pendingCredentials = creds;
 		if (pendingClearTimer) clearTimeout(pendingClearTimer);
@@ -30,8 +33,11 @@
 	}
 
 	$effect(() => {
-		void activeEnv;
-		void app.metadata.name;
+		const env = activeEnv;
+		const appName = app.metadata.name;
+		if (env === lastLoadedEnv && appName === lastLoadedApp) return;
+		lastLoadedEnv = env;
+		lastLoadedApp = appName;
 		showAddCredential = false;
 		newCredName = '';
 		newCredValue = '';
