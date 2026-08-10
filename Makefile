@@ -316,6 +316,12 @@ test-integration: ## Create k3d cluster, install chart + test deps, run integrat
 test-integration-fast: ## Run integration tests against the existing dev cluster (requires make dev-up + chart installed)
 	go test -tags integration -count=1 -timeout 5m ./test/integration/...
 
+##@ CI
+
+.PHONY: ci-local
+ci-local: ## Run every CI gate locally — THE push gate. SKIP_INTEGRATION=1 for fast mode (skips the cluster-backed gates).
+	scripts/ci-local.sh $(if $(SKIP_INTEGRATION),--skip-integration)
+
 ##@ Chart Tests
 
 .PHONY: verify-chart-dependency-drift
@@ -399,8 +405,18 @@ E2E_PASSWORD ?= admin123
 test-e2e: ## Run Playwright E2E suite against the dev cluster (requires make dev-up).
 	@kubectl --context $(DEV_KUBE_CONTEXT) -n mortise-system rollout status deployment/mortise --timeout=30s
 	@cd ui && npm ci --silent && npx playwright install chromium
-	@kubectl --context $(DEV_KUBE_CONTEXT) port-forward -n mortise-system svc/mortise $(E2E_PORT):80 >/dev/null 2>&1 & PF_PID=$$!; \
-	trap "kill $$PF_PID 2>/dev/null || true" EXIT; \
+	@# The port-forward runs under a supervisor loop: kubectl port-forward
+	@# exits on the first dropped backend connection, and a mid-suite death
+	@# fails every in-flight test with ERR_EMPTY_RESPONSE. setsid gives the
+	@# loop its own process group so the trap's group-kill reaps the loop and
+	@# whatever kubectl it currently has, without touching this recipe shell.
+	@# macOS has no setsid: there the loop instead stops cooperatively via a
+	@# sentinel file (created by the trap), after pkill -P reaps the kubectl
+	@# it currently has — no respawn race, no group kill needed.
+	@SETSID="$$(command -v setsid || true)"; \
+	PF_STOP="$$(mktemp -u)"; \
+	$$SETSID bash -c 'while [ ! -e "$$0" ]; do kubectl --context $(DEV_KUBE_CONTEXT) port-forward -n mortise-system svc/mortise $(E2E_PORT):80 >/dev/null 2>&1; sleep 1; done' "$$PF_STOP" & PF_PID=$$!; \
+	trap "touch $$PF_STOP; kill -- -$$PF_PID 2>/dev/null || pkill -P $$PF_PID 2>/dev/null || true; wait $$PF_PID 2>/dev/null || true; rm -f $$PF_STOP" EXIT; \
 	echo "==> Waiting for API at http://localhost:$(E2E_PORT)..."; \
 	for i in $$(seq 1 30); do \
 		curl -sf http://localhost:$(E2E_PORT)/api/auth/status >/dev/null 2>&1 && break; \
