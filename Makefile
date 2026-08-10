@@ -130,7 +130,11 @@ DEV_IMG ?= mortise:dev
 DEV_OBSERVER_IMG ?= mortise-observer:dev
 GITHUB_CLIENT_ID ?= Ov23lizLTd25E32VrWwl
 K3D_RUNTIME_ULIMIT ?= nofile=1048576:1048576
-DEV_HELM_TIMEOUT ?= 300s
+# Single budget for every helm --wait in this repo (#443): hosted CI runners
+# pull traefik/cert-manager/metrics-server images cold, and 180-300s budgets
+# have expired in real runs.
+HELM_WAIT_TIMEOUT ?= 600s
+DEV_HELM_TIMEOUT ?= $(HELM_WAIT_TIMEOUT)
 DEV_PORT_FORWARD_LOG ?= /tmp/$(DEV_CLUSTER)-port-forward.log
 DEV_PORT_FORWARD_READY_URL ?= http://localhost:8090/api/auth/status
 
@@ -232,6 +236,11 @@ dev-reset: ## Tear down dev cluster completely, rebuild, and start fresh
 INT_CLUSTER ?= mortise-int
 INT_IMG ?= mortise:int
 INT_OBSERVER_IMG ?= mortise-observer:int
+# Test fixtures plus the umbrella chart's dependency images (traefik,
+# metrics-server — versions from the packaged subcharts; cert-manager is
+# disabled in the integration install). Pre-importing the chart deps keeps
+# cold-registry pulls out of the helm --wait budget.
+INT_DEP_IMAGES ?= nginx:1.27 postgres:16 redis:7 busybox:1.37 alpine:3.20 docker.io/traefik:v3.3.3 registry.k8s.io/metrics-server/metrics-server:v0.7.2
 
 .PHONY: test-integration
 test-integration: ## Create k3d cluster, install chart + test deps, run integration tests, tear down
@@ -245,13 +254,24 @@ test-integration: ## Create k3d cluster, install chart + test deps, run integrat
 	$(CONTAINER_TOOL) build --target operator -t $(INT_IMG) .
 	$(CONTAINER_TOOL) build --target observer -t $(INT_OBSERVER_IMG) .
 	@echo "==> Pre-pulling test images..."
-	$(CONTAINER_TOOL) pull nginx:1.27
-	$(CONTAINER_TOOL) pull postgres:16
-	$(CONTAINER_TOOL) pull redis:7
-	$(CONTAINER_TOOL) pull busybox:1.37
-	$(CONTAINER_TOOL) pull alpine:3.20
+	for img in $(INT_DEP_IMAGES); do $(CONTAINER_TOOL) pull $$img || exit 1; done
 	@echo "==> Loading images into k3d..."
-	k3d image import $(INT_IMG) $(INT_OBSERVER_IMG) nginx:1.27 postgres:16 redis:7 busybox:1.37 alpine:3.20 -c $(INT_CLUSTER)
+	# With Docker's containerd image store (default on fresh Docker 28+
+	# installs), `docker save` of a pulled multi-arch image emits a tarball
+	# referencing blobs it does not contain, the node-side ctr import fails
+	# with "content digest not found" — and k3d still reports success and
+	# exits 0, so the failure only surfaces later as helm --wait timing out
+	# on ErrImageNeverPull pods (mo-29g). Import per-image with an explicit
+	# platform there; keep the plain k3d import on the legacy store.
+	@if $(CONTAINER_TOOL) info -f '{{json .DriverStatus}}' | grep -q io.containerd.snapshotter; then \
+		echo "containerd image store detected: importing per-image via ctr"; \
+		for img in $(INT_IMG) $(INT_OBSERVER_IMG) $(INT_DEP_IMAGES); do \
+			echo "importing $$img"; \
+			$(CONTAINER_TOOL) save --platform linux/amd64 $$img | docker exec -i k3d-$(INT_CLUSTER)-server-0 ctr -n k8s.io images import - || exit 1; \
+		done; \
+	else \
+		k3d image import $(INT_IMG) $(INT_OBSERVER_IMG) $(INT_DEP_IMAGES) -c $(INT_CLUSTER); \
+	fi
 	@echo "==> Installing CRDs..."
 	kubectl apply -f charts/mortise-core/crds/
 	@echo "==> Waiting for CRDs to be established..."
@@ -285,7 +305,7 @@ test-integration: ## Create k3d cluster, install chart + test deps, run integrat
 		--set platformConfig.enabled=false \
 		--set cert-manager.enabled=false \
 		--set metrics-server.args='{--kubelet-insecure-tls}' \
-		--wait --timeout 180s
+		--wait --timeout $(HELM_WAIT_TIMEOUT)
 	@echo "==> Running integration tests..."
 	go test -v -parallel 25 -tags integration -count=1 -timeout 45m ./test/integration/... || \
 		{ echo "==> Tests failed; leaving cluster for diagnostics (run: k3d cluster delete $(INT_CLUSTER))"; exit 1; }
@@ -378,7 +398,7 @@ E2E_PASSWORD ?= admin123
 .PHONY: test-e2e
 test-e2e: ## Run Playwright E2E suite against the dev cluster (requires make dev-up).
 	@kubectl --context $(DEV_KUBE_CONTEXT) -n mortise-system rollout status deployment/mortise --timeout=30s
-	@cd ui && npm install --silent && npx playwright install chromium
+	@cd ui && npm ci --silent && npx playwright install chromium
 	@kubectl --context $(DEV_KUBE_CONTEXT) port-forward -n mortise-system svc/mortise $(E2E_PORT):80 >/dev/null 2>&1 & PF_PID=$$!; \
 	trap "kill $$PF_PID 2>/dev/null || true" EXIT; \
 	echo "==> Waiting for API at http://localhost:$(E2E_PORT)..."; \
