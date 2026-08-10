@@ -391,7 +391,7 @@ All values are optional. A bare `helm install` with no overrides works.
 | `registry.storage` | `pvc` | `pvc` for persistent, `emptyDir` for ephemeral |
 | `registry.storageSize` | `10Gi` | PVC size for registry image storage |
 | `registry.proxy.hostPort` | `30500` | Node port for the registry DaemonSet proxy |
-| `metricsServer.enabled` | `true` | Deploy metrics-server for real-time CPU/memory |
+| `metrics-server.enabled` | `true` | Deploy metrics-server for real-time CPU/memory |
 | `observer.enabled` | `true` | Deploy built-in observer for log/metrics history |
 | `observer.storage` | `emptyDir` | `emptyDir` or `pvc` for observer SQLite data |
 | `observer.storageSize` | `2Gi` | PVC size (when `observer.storage=pvc`) |

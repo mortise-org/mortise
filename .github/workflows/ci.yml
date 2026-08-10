@@ -48,6 +48,18 @@ jobs:
       - name: Helm lint
         run: make test-charts
 
+      - name: Guard against renamed metrics-server values key
+        # The subchart key was renamed to metrics-server in 1.0.4; Helm
+        # silently ignores the old camelCase key (#454). Keep the old
+        # spelling out of scripts/docs/manifests — CHANGELOG is the only
+        # place it may appear. The bracketed pattern keeps this step from
+        # matching its own definition.
+        run: |
+          if git grep -nE "metricsServ[e]r" -- '*.sh' '*.md' '*.yaml' '*.yml' ':!CHANGELOG.md'; then
+            echo "::error::found stale camelCase metrics-server key (renamed in 1.0.4)"
+            exit 1
+          fi
+
   integration:
     name: Integration tests
     runs-on: ubuntu-latest

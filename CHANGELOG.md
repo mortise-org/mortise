@@ -9,6 +9,14 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Published-chart verification in the release pipeline** (#446, #379
+  residual): after publishing to gh-pages, `release.yml` pulls the chart
+  back through the public repo URL, asserts it is byte-identical to what
+  the run packaged, and renders it to prove the registry-proxy DaemonSet
+  and buildruns RBAC are present. Publishing now also refuses to
+  overwrite an already-published version (chart artifacts are immutable)
+  and refuses to publish the in-repo placeholder version.
+
 - **`valueFrom.fromBinding` env var projection** (SPEC §5.8b): New CRD field
   lets users project specific keys from bound app credentials into custom-named
   env vars (e.g. `DB_PASS` from `pg.password`). Includes new
@@ -22,9 +30,24 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   name/project label keys without the managed-by label) are no longer
   deleted by App-deletion GC. Operators relying on GC to clean up
   pre-appLabels leftovers must remove those by hand once.
+- **In-repo chart placeholder version is now `0.0.0-dev`** (was `0.1.0`,
+  which collided with the genuinely published `mortise-0.1.0` release
+  artifact). CI stamps real versions at release time as before; see
+  RELEASING.md "Placeholder version policy".
 
 ### Fixed
 
+- **`install.sh` dev-path built the wrong binary**: the repo-clone flow's
+  untargeted `docker build` produced the Dockerfile's final stage — the
+  observer binary — tagged as the operator image, so the installed
+  operator crashlooped. Now builds `--target operator` (same fix in the
+  chart-integration harness, which had the identical bug).
+- **`install.sh` no longer disables metrics-server with a dead key**
+  (#454): the script passed `--set metricsServer.enabled=false`, but the
+  subchart key was renamed `metrics-server` in 1.0.4 and Helm silently
+  ignores unknown keys — so metrics-server deployed anyway. Fixed to the
+  new key; a CI guard now fails on any `metricsServer` reference outside
+  the changelog.
 - **`valueFrom.secretRef` resolution**: Field existed on the CRD but the
   controller never resolved it. Now reads the referenced Secret from the env
   namespace.
