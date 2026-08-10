@@ -160,7 +160,7 @@ func (r *BuildRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	}
 
 	if br.Status.Phase == mortisev1alpha1.BuildRunPhaseRunning {
-		return r.handleLostBuildRunTracker(ctx, &br, key)
+		return r.handleLostBuildRunTracker(ctx, key)
 	}
 
 	attempt := br.Status.Attempt
@@ -170,7 +170,7 @@ func (r *BuildRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	return r.startBuildRunAttempt(ctx, &br, key, attempt, "")
 }
 
-func (r *BuildRunReconciler) handleLostBuildRunTracker(ctx context.Context, br *mortisev1alpha1.BuildRun, key types.NamespacedName) (ctrl.Result, error) {
+func (r *BuildRunReconciler) handleLostBuildRunTracker(ctx context.Context, key types.NamespacedName) (ctrl.Result, error) {
 	// A concurrent reconcile may have persisted the terminal outcome and
 	// dropped the tracker after our (possibly cached) read. Re-read before
 	// treating a finished build as lost.
@@ -184,7 +184,7 @@ func (r *BuildRunReconciler) handleLostBuildRunTracker(ctx context.Context, br *
 	if isBuildRunTerminal(&latest) {
 		return ctrl.Result{}, nil
 	}
-	br = &latest
+	br := &latest
 
 	if br.Status.StartedAt == nil {
 		return ctrl.Result{RequeueAfter: buildRunTrackerLossGrace}, nil

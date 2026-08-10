@@ -355,9 +355,7 @@ func TestHandleLostTrackerDoesNotRestartTerminalBuildRun(t *testing.T) {
 	// run to Failed/BuildInfraUnavailable, which the assertions below catch.
 	r := &BuildRunReconciler{Client: c, Scheme: scheme, Clock: clock, Builds: &BuildTrackerStore{}}
 
-	stale := run.DeepCopy()
-	stale.Status.Phase = mortisev1alpha1.BuildRunPhaseRunning
-	res, err := r.handleLostBuildRunTracker(context.Background(), stale, types.NamespacedName{Name: run.Name, Namespace: run.Namespace})
+	res, err := r.handleLostBuildRunTracker(context.Background(), types.NamespacedName{Name: run.Name, Namespace: run.Namespace})
 	if err != nil {
 		t.Fatalf("handleLostBuildRunTracker: %v", err)
 	}
