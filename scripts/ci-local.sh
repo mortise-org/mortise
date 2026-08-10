@@ -28,11 +28,14 @@ for arg in "$@"; do
     esac
 done
 
-# Version-match staticcheck to the CI pin (the 'staticcheck@vX.Y.Z' install
-# line in ci.yml's lint job). Falls back to 'latest' only if the pin is ever
-# removed from ci.yml, which keeps local == CI either way.
-STATICCHECK_VERSION="$(grep -oE 'staticcheck@[^ "]+' "$CI_YML" | head -1 | cut -d@ -f2)"
-STATICCHECK_VERSION="${STATICCHECK_VERSION:-latest}"
+# Version-match staticcheck to the CI pin (the 'go install …staticcheck@vX'
+# line in ci.yml's lint job). A missing pin is a hard error: silently falling
+# back to 'latest' would reintroduce exactly the drift this parse prevents.
+STATICCHECK_VERSION="$(grep -oE 'go install honnef\.co/go/tools/cmd/staticcheck@[^ "]+' "$CI_YML" | head -1 | cut -d@ -f2)"
+if [ -z "$STATICCHECK_VERSION" ]; then
+    echo "ci-local: could not find the staticcheck install line in $CI_YML — the lint gate cannot be version-matched to CI. Fix the parse or the workflow." >&2
+    exit 2
+fi
 
 gate_names=()
 gate_results=()
@@ -89,12 +92,22 @@ gate_ui() {
 gate_integration() { make test-integration; }
 
 gate_ui_e2e() {
-    local rc=0
+    local rc=0 preexisting=false
+    # A live dev cluster belongs to the developer — reconverge it via dev-up
+    # but do NOT tear it down afterwards. Only clusters this gate created get
+    # dev-downed.
+    if k3d cluster list 2>/dev/null | grep -q "^${DEV_CLUSTER:-mortise-dev}\b"; then
+        preexisting=true
+        echo "note: dev cluster already exists — reusing it and leaving it up afterwards"
+    fi
     # CI=true mirrors the hosted runners: Playwright's config keys retries
-    # (2 vs 0) off process.env.CI, and without it local runs are strictly
-    # flakier than the CI gate they're standing in for.
+    # (2 vs 0) and workers (4 vs 8) off process.env.CI, so this is the
+    # CI-parity run the push gate wants. For flake-hunting, run the suite
+    # directly WITHOUT CI=true — zero retries surfaces what parity hides.
     make dev-up && CI=true make test-e2e || rc=$?
-    make dev-down || true
+    if ! $preexisting; then
+        make dev-down || true
+    fi
     return "$rc"
 }
 

@@ -410,8 +410,13 @@ test-e2e: ## Run Playwright E2E suite against the dev cluster (requires make dev
 	@# fails every in-flight test with ERR_EMPTY_RESPONSE. setsid gives the
 	@# loop its own process group so the trap's group-kill reaps the loop and
 	@# whatever kubectl it currently has, without touching this recipe shell.
-	@setsid bash -c 'while true; do kubectl --context $(DEV_KUBE_CONTEXT) port-forward -n mortise-system svc/mortise $(E2E_PORT):80 >/dev/null 2>&1; sleep 1; done' & PF_PID=$$!; \
-	trap "kill -- -$$PF_PID 2>/dev/null || true" EXIT; \
+	@# macOS has no setsid: there the loop instead stops cooperatively via a
+	@# sentinel file (created by the trap), after pkill -P reaps the kubectl
+	@# it currently has — no respawn race, no group kill needed.
+	@SETSID="$$(command -v setsid || true)"; \
+	PF_STOP="$$(mktemp -u)"; \
+	$$SETSID bash -c 'while [ ! -e "$$0" ]; do kubectl --context $(DEV_KUBE_CONTEXT) port-forward -n mortise-system svc/mortise $(E2E_PORT):80 >/dev/null 2>&1; sleep 1; done' "$$PF_STOP" & PF_PID=$$!; \
+	trap "touch $$PF_STOP; kill -- -$$PF_PID 2>/dev/null || pkill -P $$PF_PID 2>/dev/null || true; wait $$PF_PID 2>/dev/null || true; rm -f $$PF_STOP" EXIT; \
 	echo "==> Waiting for API at http://localhost:$(E2E_PORT)..."; \
 	for i in $$(seq 1 30); do \
 		curl -sf http://localhost:$(E2E_PORT)/api/auth/status >/dev/null 2>&1 && break; \
