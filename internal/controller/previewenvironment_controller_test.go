@@ -238,6 +238,104 @@ func TestPreviewEnvironmentReconcileMarksFailedWhenPreviewAppBuildFails(t *testi
 	}
 }
 
+// #447: interruption is retryable — the BuildRun controller relaunches the
+// build — so a BuildInterrupted run must not hard-fail the preview.
+func TestPreviewEnvironmentReconcileNotFailedOnInterruptedBuild(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := mortisev1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add mortise scheme: %v", err)
+	}
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add core scheme: %v", err)
+	}
+
+	project := &mortisev1alpha1.Project{
+		ObjectMeta: metav1.ObjectMeta{Name: "demo"},
+		Spec: mortisev1alpha1.ProjectSpec{
+			Preview:      &mortisev1alpha1.PreviewConfig{Enabled: true},
+			Environments: []mortisev1alpha1.ProjectEnvironment{{Name: "staging"}},
+		},
+	}
+	pe := &mortisev1alpha1.PreviewEnvironment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "preview-pr-7",
+			Namespace: constants.ControlNamespace(project.Name),
+		},
+		Spec: mortisev1alpha1.PreviewEnvironmentSpec{
+			ProjectRef: project.Name,
+			SourceEnv:  "staging",
+			PullRequest: mortisev1alpha1.PullRequestRef{
+				Number: 7,
+				Branch: "feature/interrupted",
+				SHA:    "deadbeef",
+			},
+		},
+	}
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "demo-app",
+			Namespace: pe.Namespace,
+		},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{
+				Type:   mortisev1alpha1.SourceTypeGit,
+				Repo:   "https://github.com/example/repo",
+				Branch: "main",
+			},
+			Environments: []mortisev1alpha1.Environment{{Name: "staging"}},
+		},
+		Status: mortisev1alpha1.AppStatus{
+			Environments: []mortisev1alpha1.EnvironmentStatus{{
+				Name: "pr-7",
+				CurrentBuildRunRef: &mortisev1alpha1.BuildRunReference{
+					Name:  "buildrun-1",
+					Phase: mortisev1alpha1.BuildRunPhaseFailed,
+				},
+			}},
+		},
+	}
+	run := &mortisev1alpha1.BuildRun{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "buildrun-1",
+			Namespace: pe.Namespace,
+		},
+		Status: mortisev1alpha1.BuildRunStatus{
+			Phase:          mortisev1alpha1.BuildRunPhaseFailed,
+			FailureReason:  "BuildInterrupted",
+			FailureMessage: "build tracker lost after recovery attempt 2",
+		},
+	}
+
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(pe).
+		WithObjects(project, pe, app, run).
+		Build()
+	r := &PreviewEnvironmentReconciler{
+		Client: c,
+		Scheme: scheme,
+		Clock:  clocktesting.NewFakeClock(time.Now()),
+	}
+
+	_, err := r.Reconcile(context.Background(), reconcile.Request{
+		NamespacedName: types.NamespacedName{Name: pe.Name, Namespace: pe.Namespace},
+	})
+	if err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	var updated mortisev1alpha1.PreviewEnvironment
+	if err := c.Get(context.Background(), types.NamespacedName{Name: pe.Name, Namespace: pe.Namespace}, &updated); err != nil {
+		t.Fatalf("get preview environment: %v", err)
+	}
+	if updated.Status.Phase == mortisev1alpha1.PreviewPhaseFailed {
+		t.Fatalf("expected preview not to fail on interrupted build, got phase %q", updated.Status.Phase)
+	}
+	if updated.Status.Phase != mortisev1alpha1.PreviewPhaseReady {
+		t.Fatalf("expected preview phase %q, got %q", mortisev1alpha1.PreviewPhaseReady, updated.Status.Phase)
+	}
+}
+
 // This test previously asserted that a PE actively clears the preview branch
 // on non-matching repo apps. That behavior was deliberately removed for
 // GH #435: two same-numbered PRs in different repos share the pr-{N} env
