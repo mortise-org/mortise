@@ -135,6 +135,9 @@ func (s *Store) GetShared(ctx context.Context, namespace string) ([]Env, error) 
 }
 
 // Set writes env vars to an app's env Secret, creating it if needed.
+// Set is a wholesale replace: callers must own the entire var set for this
+// Secret. It is only safe while no partial writer (Apply/Merge-based) shares
+// the Secret — a future partial co-writer would silently lose to it.
 // source indicates where the vars came from ("user", "binding", "generated").
 // If source is empty, existing source annotations for those keys are preserved.
 func (s *Store) Set(ctx context.Context, namespace, appName string, vars []Env, labels map[string]string) error {
@@ -146,6 +149,9 @@ func (s *Store) Set(ctx context.Context, namespace, appName string, vars []Env, 
 }
 
 // SetShared writes env vars to the shared-env Secret, creating it if needed.
+// SetShared is a wholesale replace under the same invariant as Set: safe only
+// while no partial writer shares the shared-env Secret (MergeSharedSource is
+// Apply-based and recomputes, so it does not conflict).
 func (s *Store) SetShared(ctx context.Context, namespace string, vars []Env, labels map[string]string) error {
 	if err := validateEnvVars(vars); err != nil {
 		return err
