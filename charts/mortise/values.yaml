@@ -30,17 +30,31 @@ mortise-core:
   ingress:
     enabled: false
 
+  # See charts/mortise-core/values.yaml for sizing rationale (#447): one pod
+  # runs controllers + API + build orchestration, and concurrent builds OOM
+  # under smaller limits. GOMEMLIMIT auto-tracks limits.memory.
   resources:
     limits:
       cpu: 2000m
-      memory: 512Mi
+      memory: 2Gi
     requests:
       cpu: 200m
-      memory: 128Mi
+      memory: 512Mi
 
   serviceAccount:
     create: true
     name: mortise-controller
+
+  # PSA labels for the release namespace (mortise-system). Default off — see
+  # charts/mortise-core/values.yaml for the Helm ownership caveat: only enable
+  # on a fresh install, without --create-namespace. For existing installs use
+  # kubectl label (docs/install.md, "Namespaces and Pod Security Admission").
+  systemNamespace:
+    create: false
+    podSecurityLabels:
+      enforce: baseline
+      audit: restricted
+      warn: restricted
 
   github:
     clientID: ""
@@ -93,6 +107,16 @@ tls:
 # ---------------------------------------------------------------------------
 buildInfra:
   namespace: mortise-deps
+  # createNamespace renders the (PSA-labeled) Namespace manifest for the build
+  # infra. Set false when the namespace already exists outside Helm's
+  # ownership — the install would otherwise fail — and label it yourself:
+  #   kubectl label namespace mortise-deps \
+  #     pod-security.kubernetes.io/enforce=privileged \
+  #     pod-security.kubernetes.io/audit=privileged \
+  #     pod-security.kubernetes.io/warn=privileged
+  # BuildKit (privileged) and the registry proxy (hostPort) will not start
+  # under a stricter PSA level.
+  createNamespace: true
 
 # ---------------------------------------------------------------------------
 # OCI registry — stores images built from git source
@@ -105,10 +129,38 @@ registry:
   image: distribution/distribution:2.8.3
   storage: pvc
   storageSize: 10Gi
+  # The Distribution registry runs fine as non-root; fsGroup makes the
+  # storage volume (PVC or emptyDir) group-writable for it.
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+    seccompProfile:
+      type: RuntimeDefault
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop:
+        - ALL
   # Node-local pull-through proxy — a DaemonSet that runs on every node so
   # kubelet can pull images from localhost instead of cluster-internal DNS.
   proxy:
     hostPort: 30500
+    podSecurityContext:
+      runAsNonRoot: true
+      runAsUser: 1000
+      runAsGroup: 1000
+      fsGroup: 1000
+      seccompProfile:
+        type: RuntimeDefault
+    securityContext:
+      allowPrivilegeEscalation: false
+      readOnlyRootFilesystem: true
+      capabilities:
+        drop:
+          - ALL
 
 # ---------------------------------------------------------------------------
 # BuildKit — builds container images from git source
@@ -118,7 +170,12 @@ registry:
 buildkit:
   enabled: true
   image: moby/buildkit:v0.29.0
+  # privileged is required for the default (rootful) BuildKit mode. Setting a
+  # non-empty buildkit.securityContext below overrides this flag entirely —
+  # use that to run BuildKit rootless.
   privileged: true
+  podSecurityContext: {}
+  securityContext: {}
   storage: pvc
   storageSize: 10Gi
 

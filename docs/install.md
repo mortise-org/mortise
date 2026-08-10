@@ -98,8 +98,9 @@ helm version --short                             # expect v3.12+
 kubectl get storageclass
 
 # 4. Enough headroom. Rough baseline for the batteries-included chart:
-#    ~800m CPU + 1Gi RAM for operator + Traefik + cert-manager +
-#    BuildKit + registry together. Builds can burst higher.
+#    ~1 CPU + 1.5Gi RAM for operator + Traefik + cert-manager +
+#    BuildKit + registry together. Builds can burst higher — the operator
+#    alone may use up to its 2Gi limit under concurrent builds.
 kubectl top nodes                                # if metrics-server is present
 ```
 
@@ -397,9 +398,17 @@ All values are optional. A bare `helm install` with no overrides works.
 | `observer.storageSize` | `2Gi` | PVC size (when `observer.storage=pvc`) |
 | `observer.retention.metrics` | `72h` | How long to keep metrics history |
 | `observer.retention.logs` | `48h` | How long to keep log history |
+| `buildkit.podSecurityContext` | `{}` | Pod securityContext for BuildKit |
+| `buildkit.securityContext` | `{}` | Container securityContext for BuildKit; when set, replaces the `privileged` flag entirely (use for rootless mode) |
+| `registry.podSecurityContext` | restricted-style | Pod securityContext for the registry (non-root + fsGroup) |
+| `registry.securityContext` | restricted-style | Container securityContext for the registry |
+| `registry.proxy.podSecurityContext` | restricted-style | Pod securityContext for the proxy DaemonSet |
+| `registry.proxy.securityContext` | restricted-style | Container securityContext for the proxy DaemonSet |
 | `platformConfig.enabled` | `true` | Auto-create default PlatformConfig |
 | `platformConfig.domain` | `""` | Platform domain for app URLs |
 | `buildInfra.namespace` | `mortise-deps` | Namespace for BuildKit + registry |
+| `buildInfra.createNamespace` | `true` | Render the PSA-labeled build-infra Namespace; set `false` for a pre-existing namespace |
+| `mortise-core.systemNamespace.create` | `false` | Render a PSA-labeled Namespace for the release namespace (fresh installs only — see [Namespaces and Pod Security Admission](#namespaces-and-pod-security-admission)) |
 
 Operator values are nested under `mortise-core.`:
 
@@ -429,9 +438,86 @@ Operator values are nested under `mortise-core.`:
 | `operator.ingressClassName` | `""` | IngressClass for app Ingresses |
 | `github.clientID` | `""` | GitHub OAuth App client ID (optional) |
 | `resources.requests.cpu` | `200m` | CPU request |
-| `resources.requests.memory` | `128Mi` | Memory request |
+| `resources.requests.memory` | `512Mi` | Memory request |
 | `resources.limits.cpu` | `2000m` | CPU limit |
-| `resources.limits.memory` | `512Mi` | Memory limit |
+| `resources.limits.memory` | `2Gi` | Memory limit (GOMEMLIMIT tracks this automatically) |
+| `systemNamespace.create` | `false` | Render a PSA-labeled Namespace for the release namespace |
+| `systemNamespace.podSecurityLabels` | baseline/restricted | PSA levels for that namespace (`enforce`/`audit`/`warn`) |
+
+### Operator sizing
+
+The operator pod is a single process running the controllers, the REST API,
+and all build orchestration goroutines. Its memory use scales with the
+number of apps and, above all, with **concurrent builds** — each active
+build streams logs and holds build state, and build-log ConfigMaps
+(~900KB each, up to 10 per app environment) sit in the operator's informer
+cache. Under the previous 512Mi default limit, several concurrent preview
+builds could OOM-kill the operator and terminally fail the in-flight
+BuildRuns.
+
+Defaults are now `requests.memory=512Mi` / `limits.memory=2Gi`, values
+known to survive concurrent preview builds. The chart also sets
+`GOMEMLIMIT` from the container memory limit automatically, so the Go
+runtime collects garbage more aggressively as it approaches the limit
+instead of running into the OOM killer — if you override
+`resources.limits.memory`, GOMEMLIMIT follows it with no extra
+configuration.
+
+Guidance:
+
+- **Small installs** (a handful of apps, occasional builds): the defaults
+  are fine, and you can drop `requests.memory` to 256Mi on tight clusters.
+- **Build-heavy installs** (many apps, several previews building at once):
+  keep the 2Gi limit or raise it. Symptoms of a too-low limit are operator
+  restarts with `OOMKilled` and BuildRuns failing with
+  `build tracker lost`.
+
+## Namespaces and Pod Security Admission
+
+Clusters that enforce [Pod Security Admission](https://kubernetes.io/docs/concepts/security/pod-security-admission/)
+(PSA) at a `baseline` or `restricted` default will silently refuse to start
+some Mortise components unless the namespaces carry the right PSA labels —
+pods just never appear, with no error pointing at PSA.
+
+What each namespace needs:
+
+| Namespace | Needs | Why |
+|---|---|---|
+| `mortise-deps` | `privileged` | BuildKit runs `privileged: true`; the registry proxy binds a `hostPort` |
+| `mortise-system` | `baseline` (or `restricted` if only the operator runs there) | The operator itself satisfies `restricted` |
+
+**`mortise-deps`** is created by the umbrella chart with
+`privileged` PSA labels applied — nothing to do on a default install. If the
+namespace **already exists** outside Helm's ownership (pre-created by you or
+an earlier tooling pass), the install fails on the ownership conflict; set
+`buildInfra.createNamespace=false` and label the namespace yourself:
+
+```bash
+kubectl label namespace mortise-deps \
+  pod-security.kubernetes.io/enforce=privileged \
+  pod-security.kubernetes.io/audit=privileged \
+  pod-security.kubernetes.io/warn=privileged
+```
+
+**`mortise-system`** is normally created by `helm install --create-namespace`,
+which cannot attach labels. Two options:
+
+- **Fresh install:** let the chart create it instead — drop
+  `--create-namespace` and set `--set mortise-core.systemNamespace.create=true`
+  (`--set systemNamespace.create=true` for the operator-only chart). The
+  namespace is then Helm-owned and labeled
+  (`enforce=baseline`, `audit=warn=restricted` by default; tune via
+  `systemNamespace.podSecurityLabels`). Don't combine this with
+  `--create-namespace`, and don't enable it on an existing install — Helm
+  refuses to adopt a namespace it doesn't own.
+- **Existing install:** label the namespace directly:
+
+```bash
+kubectl label namespace mortise-system \
+  pod-security.kubernetes.io/enforce=baseline \
+  pod-security.kubernetes.io/audit=restricted \
+  pod-security.kubernetes.io/warn=restricted
+```
 
 ## Persistence and storage
 

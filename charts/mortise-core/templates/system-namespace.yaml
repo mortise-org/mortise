@@ -1,0 +1,14 @@
+{{- if .Values.systemNamespace.create }}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: mortise
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    {{- with .Values.systemNamespace.podSecurityLabels }}
+    {{- range $mode, $level := . }}
+    pod-security.kubernetes.io/{{ $mode }}: {{ $level }}
+    {{- end }}
+    {{- end }}
+{{- end }}

@@ -52,6 +52,15 @@ spec:
             # writable emptyDir so readOnlyRootFilesystem doesn't fail builds.
             - name: DOCKER_CONFIG
               value: /tmp/.docker
+            # Soft memory limit for the Go runtime, auto-tracking the container
+            # limit (divisor 1 renders plain bytes, which Go reads as bytes).
+            # Keeps the GC from letting the heap run into an OOM kill.
+            - name: GOMEMLIMIT
+              valueFrom:
+                resourceFieldRef:
+                  containerName: mortise
+                  resource: limits.memory
+                  divisor: "1"
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:

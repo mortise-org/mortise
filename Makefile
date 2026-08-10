@@ -388,6 +388,38 @@ test-charts: ## Lint and template-test both Helm charts (no cluster required)
 		--show-only templates/registry.yaml | grep "PersistentVolumeClaim" >/dev/null
 	@echo "==> Template: mortise-core standalone..."
 	helm template test charts/mortise-core --namespace mortise-system >/dev/null
+	@echo "==> Verifying operator GOMEMLIMIT tracks the memory limit..."
+	helm template test charts/mortise-core --namespace mortise-system \
+		--show-only templates/deployment.yaml | grep "GOMEMLIMIT" >/dev/null
+	@echo "==> Verifying registry + proxy securityContexts render by default..."
+	helm template test charts/mortise --namespace mortise-system \
+		--show-only templates/registry.yaml | grep "runAsNonRoot" >/dev/null
+	helm template test charts/mortise --namespace mortise-system \
+		--show-only templates/registry-proxy.yaml | grep "runAsNonRoot" >/dev/null
+	@echo "==> Verifying buildkit is privileged by default but overridable..."
+	helm template test charts/mortise --namespace mortise-system \
+		--show-only templates/buildkit.yaml | grep "privileged: true" >/dev/null
+	! helm template test charts/mortise --namespace mortise-system \
+		--set buildkit.privileged=false \
+		--show-only templates/buildkit.yaml | grep "privileged: true" >/dev/null
+	! helm template test charts/mortise --namespace mortise-system \
+		--set buildkit.securityContext.runAsUser=1000 \
+		--show-only templates/buildkit.yaml | grep "privileged: true" >/dev/null
+	@echo "==> Verifying deps namespace PSA labels + createNamespace toggle..."
+	helm template test charts/mortise --namespace mortise-system \
+		--show-only templates/namespace.yaml \
+		| grep "pod-security.kubernetes.io/enforce: privileged" >/dev/null
+# --show-only errors when the template renders empty, so `!` asserts absence.
+	! helm template test charts/mortise --namespace mortise-system \
+		--set buildInfra.createNamespace=false \
+		--show-only templates/namespace.yaml >/dev/null 2>&1
+	@echo "==> Verifying system namespace toggle (default off)..."
+	! helm template test charts/mortise --namespace mortise-system \
+		--show-only charts/mortise-core/templates/system-namespace.yaml >/dev/null 2>&1
+	helm template test charts/mortise --namespace mortise-system \
+		--set mortise-core.systemNamespace.create=true \
+		--show-only charts/mortise-core/templates/system-namespace.yaml \
+		| grep "pod-security.kubernetes.io/enforce: baseline" >/dev/null
 	@echo ""
 	@echo "All chart lint and template tests passed."
 
