@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	testclock "k8s.io/utils/clock/testing"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
 )
@@ -191,5 +193,163 @@ func TestForbiddenFastRequeueClassification(t *testing.T) {
 				t.Fatalf("RequeueAfter = %v, want %v", res.RequeueAfter, rbacPropagationRequeue)
 			}
 		})
+	}
+}
+
+// ── Phase C bound (NamespacePending) ─────────────────────────────────────
+
+func TestEnvResourceErrorMissingNamespaceSetsPendingCondition(t *testing.T) {
+	r, app, _ := forbiddenTestFixtures(t, 30*time.Second)
+
+	res, err := r.envResourceError(context.Background(), app, "pj-demo-gone", "staging", "reconcile PVCs", newForbiddenErr())
+	if err != nil {
+		t.Fatalf("expected nil error on first missing-namespace hit, got %v", err)
+	}
+	if res.RequeueAfter != rbacPropagationRequeue {
+		t.Fatalf("expected RequeueAfter %v, got %v", rbacPropagationRequeue, res.RequeueAfter)
+	}
+
+	var fresh mortisev1alpha1.App
+	if err := r.Get(context.Background(), client.ObjectKeyFromObject(app), &fresh); err != nil {
+		t.Fatalf("get app: %v", err)
+	}
+	cond := meta.FindStatusCondition(fresh.Status.Conditions, appNamespacePendingCondition)
+	if cond == nil || cond.Status != metav1.ConditionTrue || cond.Reason != "NamespaceNotFound" {
+		t.Fatalf("expected NamespacePending=True/NamespaceNotFound, got %+v", cond)
+	}
+	if fresh.Status.Phase == mortisev1alpha1.AppPhaseFailed {
+		t.Fatal("first missing-namespace hit must not mark the app Failed")
+	}
+}
+
+func TestEnvResourceErrorMissingNamespaceEscalatesPastBudget(t *testing.T) {
+	r, app, _ := forbiddenTestFixtures(t, 30*time.Second)
+	ctx := context.Background()
+
+	// First hit stamps the condition.
+	if _, err := r.envResourceError(ctx, app, "pj-demo-gone", "staging", "reconcile PVCs", newForbiddenErr()); err != nil {
+		t.Fatalf("first hit: %v", err)
+	}
+	// Re-read so the reconciler sees its own condition (as a fresh reconcile would).
+	if err := r.Get(ctx, client.ObjectKeyFromObject(app), app); err != nil {
+		t.Fatalf("refresh app: %v", err)
+	}
+
+	// Within budget: still a fast requeue, and the transition time survives.
+	r.Clock.(*testclock.FakeClock).Step(namespaceCreationBudget / 2)
+	res, err := r.envResourceError(ctx, app, "pj-demo-gone", "staging", "reconcile PVCs", newForbiddenErr())
+	if err != nil || res.RequeueAfter != rbacPropagationRequeue {
+		t.Fatalf("within budget: expected fast requeue, got res=%v err=%v", res, err)
+	}
+	if err := r.Get(ctx, client.ObjectKeyFromObject(app), app); err != nil {
+		t.Fatalf("refresh app: %v", err)
+	}
+
+	// Past budget: Failed + NamespaceCreationTimeout + real error.
+	r.Clock.(*testclock.FakeClock).Step(namespaceCreationBudget)
+	res, err = r.envResourceError(ctx, app, "pj-demo-gone", "staging", "reconcile PVCs", newForbiddenErr())
+	if err == nil {
+		t.Fatal("expected error once the namespace-creation budget is exhausted")
+	}
+	if res.RequeueAfter != 0 {
+		t.Fatalf("expected no fast requeue past budget, got %v", res.RequeueAfter)
+	}
+
+	var fresh mortisev1alpha1.App
+	if err := r.Get(ctx, client.ObjectKeyFromObject(app), &fresh); err != nil {
+		t.Fatalf("get app: %v", err)
+	}
+	if fresh.Status.Phase != mortisev1alpha1.AppPhaseFailed {
+		t.Fatalf("expected phase Failed, got %q", fresh.Status.Phase)
+	}
+	cond := meta.FindStatusCondition(fresh.Status.Conditions, appNamespacePendingCondition)
+	if cond == nil || cond.Reason != "NamespaceCreationTimeout" {
+		t.Fatalf("expected NamespaceCreationTimeout reason, got %+v", cond)
+	}
+}
+
+// ── mo-tpe: git-preflight env-secret path routes through the classifier ──
+
+func preflightTestFixtures(t *testing.T, nsAge time.Duration, secretErr error) (*AppReconciler, *mortisev1alpha1.App) {
+	t.Helper()
+	scheme := newForbiddenTestScheme(t)
+	now := time.Unix(1_700_000_000, 0)
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
+		Name:              "pj-demo-production",
+		CreationTimestamp: metav1.NewTime(now.Add(-nsAge)),
+	}}
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "demo", Namespace: "pj-demo"},
+		Spec: mortisev1alpha1.AppSpec{
+			Source:       mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeGit, Repo: "https://example.com/repo.git"},
+			Environments: []mortisev1alpha1.Environment{{Name: "production"}},
+		},
+	}
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(ns, app).
+		WithStatusSubresource(&mortisev1alpha1.App{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Create: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+				if _, ok := obj.(*corev1.Secret); ok && secretErr != nil {
+					return secretErr
+				}
+				return cl.Create(ctx, obj, opts...)
+			},
+		}).
+		Build()
+	r := &AppReconciler{Client: c, Scheme: scheme, Clock: testclock.NewFakeClock(now)}
+	return r, app
+}
+
+func TestReconcileResolvedEnvSecretsForbiddenInYoungNamespaceFastRequeues(t *testing.T) {
+	r, app := preflightTestFixtures(t, 30*time.Second, newForbiddenErr())
+
+	res, err := r.reconcileResolvedEnvSecrets(context.Background(), app, app.Spec.Environments)
+	if err != nil {
+		t.Fatalf("expected nil error (fast requeue), got %v", err)
+	}
+	if res.RequeueAfter != rbacPropagationRequeue {
+		t.Fatalf("expected RequeueAfter %v, got %v", rbacPropagationRequeue, res.RequeueAfter)
+	}
+}
+
+func TestReconcileResolvedEnvSecretsForbiddenInOldNamespaceFailsApp(t *testing.T) {
+	r, app := preflightTestFixtures(t, rbacPropagationWindow+time.Minute, newForbiddenErr())
+
+	res, err := r.reconcileResolvedEnvSecrets(context.Background(), app, app.Spec.Environments)
+	if err == nil {
+		t.Fatal("expected error for old-namespace forbidden on the preflight path")
+	}
+	if res.RequeueAfter != 0 {
+		t.Fatalf("expected no fast requeue, got %v", res.RequeueAfter)
+	}
+
+	var fresh mortisev1alpha1.App
+	if err := r.Get(context.Background(), client.ObjectKeyFromObject(app), &fresh); err != nil {
+		t.Fatalf("get app: %v", err)
+	}
+	if fresh.Status.Phase != mortisev1alpha1.AppPhaseFailed {
+		t.Fatalf("expected phase Failed, got %q", fresh.Status.Phase)
+	}
+	if cond := meta.FindStatusCondition(fresh.Status.Conditions, appRBACForbiddenCondition); cond == nil {
+		t.Fatal("expected RBACForbidden condition on persistent preflight forbidden")
+	}
+}
+
+func TestReconcileResolvedEnvSecretsNonForbiddenPassesThrough(t *testing.T) {
+	cause := apierrors.NewServiceUnavailable("etcd down")
+	r, app := preflightTestFixtures(t, 30*time.Second, cause)
+
+	res, err := r.reconcileResolvedEnvSecrets(context.Background(), app, app.Spec.Environments)
+	if err == nil || !errors.Is(err, cause) {
+		t.Fatalf("expected wrapped original error, got %v", err)
+	}
+	if res.RequeueAfter != 0 {
+		t.Fatalf("expected no fast requeue, got %v", res.RequeueAfter)
+	}
+	// The classifier's message shape is part of the operator's log contract.
+	if !strings.Contains(err.Error(), "reconcile env secret for env production") {
+		t.Fatalf("expected preflight wrap preserved, got %q", err.Error())
 	}
 }
