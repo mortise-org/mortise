@@ -35,8 +35,11 @@ import (
 // via k8s GC on their respective owner deletes.
 //
 // Selection is by `app.kubernetes.io/name=<app>` + `mortise.dev/project=<proj>`
-// — that excludes look-alikes from other projects or foreign operators even
-// if someone reuses our label key.
+// + `app.kubernetes.io/managed-by=mortise`, restricted to namespaces the
+// project owns (labelled `mortise.dev/project=<proj>` by the Project and
+// PreviewEnvironment controllers). Both scopes matter: a cluster-wide list
+// with only the name+project labels would delete look-alike resources from
+// foreign operators or users who happen to reuse our label keys.
 func (r *AppReconciler) gcAppAcrossEnvs(ctx context.Context, app *mortisev1alpha1.App) error {
 	projectName, err := appProjectName(app)
 	if err != nil {
@@ -46,38 +49,48 @@ func (r *AppReconciler) gcAppAcrossEnvs(ctx context.Context, app *mortisev1alpha
 		// every App delete on a mal-formed namespace.
 		return nil
 	}
-	selector := client.MatchingLabels{
-		constants.AppNameLabel: app.Name,
+	var namespaces corev1.NamespaceList
+	if err := r.List(ctx, &namespaces, client.MatchingLabels{
 		constants.ProjectLabel: projectName,
+	}); err != nil {
+		return fmt.Errorf("list project namespaces: %w", err)
+	}
+	selector := client.MatchingLabels{
+		constants.AppNameLabel:   app.Name,
+		constants.ProjectLabel:   projectName,
+		constants.ManagedByLabel: constants.ManagedByValue,
 	}
 	tokenSelector := client.MatchingLabels{
 		"mortise.dev/deploy-token": "true",
 		"mortise.dev/app":          app.Name,
 	}
 
-	if err := r.deleteMatching(ctx, &appsv1.DeploymentList{}, selector); err != nil {
-		return fmt.Errorf("gc deployments: %w", err)
-	}
-	if err := r.deleteMatching(ctx, &batchv1.CronJobList{}, selector); err != nil {
-		return fmt.Errorf("gc cronjobs: %w", err)
-	}
-	if err := r.deleteMatching(ctx, &corev1.ServiceList{}, selector); err != nil {
-		return fmt.Errorf("gc services: %w", err)
-	}
-	if err := r.deleteMatching(ctx, &networkingv1.IngressList{}, selector); err != nil {
-		return fmt.Errorf("gc ingresses: %w", err)
-	}
-	if err := r.deleteMatching(ctx, &corev1.ConfigMapList{}, selector); err != nil {
-		return fmt.Errorf("gc configmaps: %w", err)
-	}
-	if err := r.deleteMatching(ctx, &corev1.SecretList{}, selector); err != nil {
-		return fmt.Errorf("gc secrets: %w", err)
-	}
-	if err := r.deleteMatching(ctx, &corev1.ServiceAccountList{}, selector); err != nil {
-		return fmt.Errorf("gc serviceaccounts: %w", err)
-	}
-	if err := r.deleteMatching(ctx, &corev1.PersistentVolumeClaimList{}, selector); err != nil {
-		return fmt.Errorf("gc pvcs: %w", err)
+	for i := range namespaces.Items {
+		inNs := client.InNamespace(namespaces.Items[i].Name)
+		if err := r.deleteMatching(ctx, &appsv1.DeploymentList{}, selector, inNs); err != nil {
+			return fmt.Errorf("gc deployments: %w", err)
+		}
+		if err := r.deleteMatching(ctx, &batchv1.CronJobList{}, selector, inNs); err != nil {
+			return fmt.Errorf("gc cronjobs: %w", err)
+		}
+		if err := r.deleteMatching(ctx, &corev1.ServiceList{}, selector, inNs); err != nil {
+			return fmt.Errorf("gc services: %w", err)
+		}
+		if err := r.deleteMatching(ctx, &networkingv1.IngressList{}, selector, inNs); err != nil {
+			return fmt.Errorf("gc ingresses: %w", err)
+		}
+		if err := r.deleteMatching(ctx, &corev1.ConfigMapList{}, selector, inNs); err != nil {
+			return fmt.Errorf("gc configmaps: %w", err)
+		}
+		if err := r.deleteMatching(ctx, &corev1.SecretList{}, selector, inNs); err != nil {
+			return fmt.Errorf("gc secrets: %w", err)
+		}
+		if err := r.deleteMatching(ctx, &corev1.ServiceAccountList{}, selector, inNs); err != nil {
+			return fmt.Errorf("gc serviceaccounts: %w", err)
+		}
+		if err := r.deleteMatching(ctx, &corev1.PersistentVolumeClaimList{}, selector, inNs); err != nil {
+			return fmt.Errorf("gc pvcs: %w", err)
+		}
 	}
 	if err := r.deleteMatching(ctx, &corev1.SecretList{}, tokenSelector, client.InNamespace(app.Namespace)); err != nil {
 		return fmt.Errorf("gc app deploy tokens: %w", err)
@@ -103,8 +116,9 @@ func (r *AppReconciler) gcOptedOutEnvs(ctx context.Context, app *mortisev1alpha1
 		}
 		envNs := constants.EnvNamespace(projectName, projEnv.Name)
 		selector := client.MatchingLabels{
-			constants.AppNameLabel: app.Name,
-			constants.ProjectLabel: projectName,
+			constants.AppNameLabel:   app.Name,
+			constants.ProjectLabel:   projectName,
+			constants.ManagedByLabel: constants.ManagedByValue,
 		}
 		inNs := client.InNamespace(envNs)
 		if err := r.deleteMatching(ctx, &appsv1.DeploymentList{}, selector, inNs); err != nil {
