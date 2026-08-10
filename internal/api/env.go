@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	stderrors "errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -40,6 +41,23 @@ type envVarResponse struct {
 type patchEnvRequest struct {
 	Set   map[string]string `json:"set"`
 	Unset []string          `json:"unset"`
+}
+
+// envConflictError is returned from envstore.Apply callbacks when a request
+// tries to modify a managed (non-user) var. Maps to HTTP 409.
+type envConflictError struct{ msg string }
+
+func (e *envConflictError) Error() string { return e.msg }
+
+// writeEnvStoreError maps an envstore.Apply error to the HTTP response:
+// envConflictError → 409, everything else → the generic error mapping.
+func writeEnvStoreError(w http.ResponseWriter, r *http.Request, err error) {
+	var conflict *envConflictError
+	if stderrors.As(err, &conflict) {
+		writeJSON(w, http.StatusConflict, errorResponse{conflict.msg})
+		return
+	}
+	writeError(w, r, err)
 }
 
 func declarativeEnvSources(app *mortisev1alpha1.App, envName string) map[string]string {
@@ -178,44 +196,6 @@ func (s *Server) PutEnv(w http.ResponseWriter, r *http.Request) {
 	}
 	store := &envstore.Store{Client: s.client}
 
-	// Read existing vars so we can preserve non-user sources (binding, generated, shared).
-	existing, err := store.Get(r.Context(), envNs, app.Name)
-	if err != nil {
-		writeError(w, r, err)
-		return
-	}
-	existingSource := make(map[string]string, len(existing))
-	for _, e := range existing {
-		existingSource[e.Name] = e.Source
-	}
-	declarativeSource := declarativeEnvSources(app, envName)
-	for _, v := range vars {
-		if source, ok := declarativeSource[v.Name]; ok {
-			writeJSON(w, http.StatusConflict, errorResponse{fmt.Sprintf(
-				"cannot overwrite %q: managed by %s (only user-set vars can be modified)", v.Name, source)})
-			return
-		}
-		if src, ok := existingSource[v.Name]; ok && src != "" && src != "user" {
-			writeJSON(w, http.StatusConflict, errorResponse{fmt.Sprintf(
-				"cannot overwrite %q: managed by %s (only user-set vars can be modified)", v.Name, src)})
-			return
-		}
-	}
-
-	// Start with non-user vars and declarative projections from the existing
-	// Secret. secretRef values resolve with source "user", so the App spec is
-	// the ownership signal that distinguishes them from editable literals.
-	var merged []envstore.Env
-	for _, e := range existing {
-		if (e.Source != "user" && e.Source != "") || declarativeSource[e.Name] != "" {
-			merged = append(merged, e)
-		}
-	}
-	// Append the new user vars.
-	for _, v := range vars {
-		merged = append(merged, envstore.Env{Name: v.Name, Value: v.Value, Source: "user"})
-	}
-
 	projectName, ok2 := constants.ProjectFromControlNs(app.Namespace)
 	if !ok2 {
 		writeJSON(w, http.StatusInternalServerError, errorResponse{fmt.Sprintf("app %q not in a control namespace (%q)", app.Name, app.Namespace)})
@@ -226,8 +206,43 @@ func (s *Server) PutEnv(w http.ResponseWriter, r *http.Request) {
 		constants.EnvironmentLabel: envName,
 		constants.AppNameLabel:     app.Name,
 	}
-	if err := store.Set(r.Context(), envNs, app.Name, merged, labels); err != nil {
-		writeError(w, r, err)
+	declarativeSource := declarativeEnvSources(app, envName)
+
+	// Compute the replacement set inside the conflict-retry callback so a
+	// concurrent writer's vars are re-read fresh instead of being clobbered.
+	err = store.Apply(r.Context(), envNs, app.Name, labels, func(existing []envstore.Env) ([]envstore.Env, error) {
+		existingSource := make(map[string]string, len(existing))
+		for _, e := range existing {
+			existingSource[e.Name] = e.Source
+		}
+		for _, v := range vars {
+			if source, ok := declarativeSource[v.Name]; ok {
+				return nil, &envConflictError{fmt.Sprintf(
+					"cannot overwrite %q: managed by %s (only user-set vars can be modified)", v.Name, source)}
+			}
+			if src, ok := existingSource[v.Name]; ok && src != "" && src != "user" {
+				return nil, &envConflictError{fmt.Sprintf(
+					"cannot overwrite %q: managed by %s (only user-set vars can be modified)", v.Name, src)}
+			}
+		}
+
+		// Start with non-user vars and declarative projections from the existing
+		// Secret. secretRef values resolve with source "user", so the App spec is
+		// the ownership signal that distinguishes them from editable literals.
+		var merged []envstore.Env
+		for _, e := range existing {
+			if (e.Source != "user" && e.Source != "") || declarativeSource[e.Name] != "" {
+				merged = append(merged, e)
+			}
+		}
+		// Append the new user vars.
+		for _, v := range vars {
+			merged = append(merged, envstore.Env{Name: v.Name, Value: v.Value, Source: "user"})
+		}
+		return merged, nil
+	})
+	if err != nil {
+		writeEnvStoreError(w, r, err)
 		return
 	}
 
@@ -281,70 +296,6 @@ func (s *Server) PatchEnv(w http.ResponseWriter, r *http.Request) {
 	}
 	store := &envstore.Store{Client: s.client}
 
-	// Read existing vars from Secret.
-	existing, err := store.Get(r.Context(), envNs, app.Name)
-	if err != nil {
-		writeError(w, r, err)
-		return
-	}
-	declarativeSource := declarativeEnvSources(app, envName)
-
-	// Apply unsets — reject non-user sources.
-	unsetMap := make(map[string]bool, len(req.Unset))
-	for _, k := range req.Unset {
-		if source, ok := declarativeSource[k]; ok {
-			writeJSON(w, http.StatusConflict, errorResponse{fmt.Sprintf(
-				"cannot unset %q: managed by %s (only user-set vars can be removed)", k, source)})
-			return
-		}
-		unsetMap[k] = true
-	}
-	for _, e := range existing {
-		if unsetMap[e.Name] && e.Source != "" && e.Source != "user" {
-			writeJSON(w, http.StatusConflict, errorResponse{fmt.Sprintf(
-				"cannot unset %q: managed by %s (only user-set vars can be removed)", e.Name, e.Source)})
-			return
-		}
-	}
-	var result []envstore.Env
-	for _, e := range existing {
-		if !unsetMap[e.Name] {
-			result = append(result, e)
-		}
-	}
-
-	// Apply sets — reject overwrites of non-user sources.
-	existingSource := make(map[string]string, len(result))
-	for _, e := range result {
-		existingSource[e.Name] = e.Source
-	}
-	for k := range req.Set {
-		if source, ok := declarativeSource[k]; ok {
-			writeJSON(w, http.StatusConflict, errorResponse{fmt.Sprintf(
-				"cannot overwrite %q: managed by %s (only user-set vars can be modified)", k, source)})
-			return
-		}
-		if src, ok := existingSource[k]; ok && src != "" && src != "user" {
-			writeJSON(w, http.StatusConflict, errorResponse{fmt.Sprintf(
-				"cannot overwrite %q: managed by %s (only user-set vars can be modified)", k, src)})
-			return
-		}
-	}
-	for k, v := range req.Set {
-		found := false
-		for i := range result {
-			if result[i].Name == k {
-				result[i].Value = v
-				result[i].Source = "user"
-				found = true
-				break
-			}
-		}
-		if !found {
-			result = append(result, envstore.Env{Name: k, Value: v, Source: "user"})
-		}
-	}
-
 	projectName, ok2 := constants.ProjectFromControlNs(app.Namespace)
 	if !ok2 {
 		writeJSON(w, http.StatusInternalServerError, errorResponse{fmt.Sprintf("app %q not in a control namespace (%q)", app.Name, app.Namespace)})
@@ -355,8 +306,66 @@ func (s *Server) PatchEnv(w http.ResponseWriter, r *http.Request) {
 		constants.EnvironmentLabel: envName,
 		constants.AppNameLabel:     app.Name,
 	}
-	if err := store.Set(r.Context(), envNs, app.Name, result, labels); err != nil {
-		writeError(w, r, err)
+	declarativeSource := declarativeEnvSources(app, envName)
+
+	// Apply the patch inside the conflict-retry callback so concurrent PATCHes
+	// each recompute from a fresh read — no dropped keys on races.
+	err = store.Apply(r.Context(), envNs, app.Name, labels, func(existing []envstore.Env) ([]envstore.Env, error) {
+		// Apply unsets — reject non-user sources.
+		unsetMap := make(map[string]bool, len(req.Unset))
+		for _, k := range req.Unset {
+			if source, ok := declarativeSource[k]; ok {
+				return nil, &envConflictError{fmt.Sprintf(
+					"cannot unset %q: managed by %s (only user-set vars can be removed)", k, source)}
+			}
+			unsetMap[k] = true
+		}
+		for _, e := range existing {
+			if unsetMap[e.Name] && e.Source != "" && e.Source != "user" {
+				return nil, &envConflictError{fmt.Sprintf(
+					"cannot unset %q: managed by %s (only user-set vars can be removed)", e.Name, e.Source)}
+			}
+		}
+		var result []envstore.Env
+		for _, e := range existing {
+			if !unsetMap[e.Name] {
+				result = append(result, e)
+			}
+		}
+
+		// Apply sets — reject overwrites of non-user sources.
+		existingSource := make(map[string]string, len(result))
+		for _, e := range result {
+			existingSource[e.Name] = e.Source
+		}
+		for k := range req.Set {
+			if source, ok := declarativeSource[k]; ok {
+				return nil, &envConflictError{fmt.Sprintf(
+					"cannot overwrite %q: managed by %s (only user-set vars can be modified)", k, source)}
+			}
+			if src, ok := existingSource[k]; ok && src != "" && src != "user" {
+				return nil, &envConflictError{fmt.Sprintf(
+					"cannot overwrite %q: managed by %s (only user-set vars can be modified)", k, src)}
+			}
+		}
+		for k, v := range req.Set {
+			found := false
+			for i := range result {
+				if result[i].Name == k {
+					result[i].Value = v
+					result[i].Source = "user"
+					found = true
+					break
+				}
+			}
+			if !found {
+				result = append(result, envstore.Env{Name: k, Value: v, Source: "user"})
+			}
+		}
+		return result, nil
+	})
+	if err != nil {
+		writeEnvStoreError(w, r, err)
 		return
 	}
 
