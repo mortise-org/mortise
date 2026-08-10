@@ -32,13 +32,19 @@ ingress:
   # host: mortise.example.com
   # certManagerClusterIssuer: letsencrypt-prod
 
+# One pod runs the controllers, the API server, and all build orchestration
+# goroutines; the informer cache also holds build-log ConfigMaps (~900KB each,
+# up to 10 per app environment). Concurrent builds under the old 512Mi limit
+# OOM-killed the controller and terminally failed active BuildRuns (#447).
+# GOMEMLIMIT is derived from limits.memory automatically (see deployment.yaml).
+# Scale limits.memory up with concurrent-build count and number of apps.
 resources:
   limits:
     cpu: 2000m
-    memory: 512Mi
+    memory: 2Gi
   requests:
     cpu: 200m
-    memory: 128Mi
+    memory: 512Mi
 
 # Security context defaults — hardened out of the box.
 # Override per-environment in your values override file.
@@ -58,6 +64,28 @@ containerSecurityContext:
   capabilities:
     drop:
       - ALL
+
+# Pod Security Admission labels for the namespace the operator installs into.
+# Default off: Helm refuses to adopt a namespace it does not own, so enabling
+# this on an EXISTING install (or together with --create-namespace) fails.
+# For a FRESH install, enable it and drop --create-namespace — the chart then
+# creates the namespace, labeled and Helm-owned:
+#   helm install mortise ... --namespace mortise-system \
+#     --set systemNamespace.create=true
+# For existing installs, label the namespace directly instead:
+#   kubectl label namespace mortise-system \
+#     pod-security.kubernetes.io/enforce=baseline \
+#     pod-security.kubernetes.io/audit=restricted \
+#     pod-security.kubernetes.io/warn=restricted
+systemNamespace:
+  create: false
+  # The operator itself satisfies "restricted". "baseline" enforce leaves
+  # headroom for anything else you run in the namespace; tighten to
+  # "restricted" if the operator is alone there.
+  podSecurityLabels:
+    enforce: baseline
+    audit: restricted
+    warn: restricted
 
 serviceAccount:
   create: true

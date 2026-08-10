@@ -38,6 +38,10 @@ spec:
       labels:
         app.kubernetes.io/name: buildkitd
     spec:
+      {{- with .Values.buildkit.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: buildkitd
           image: {{ .Values.buildkit.image }}
@@ -56,7 +60,10 @@ spec:
           ports:
             - name: grpc
               containerPort: 1234
-          {{- if .Values.buildkit.privileged }}
+          {{- if .Values.buildkit.securityContext }}
+          securityContext:
+            {{- toYaml .Values.buildkit.securityContext | nindent 12 }}
+          {{- else if .Values.buildkit.privileged }}
           securityContext:
             privileged: true
           {{- end }}

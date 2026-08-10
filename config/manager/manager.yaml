@@ -84,15 +84,25 @@ spec:
             port: 8081
           initialDelaySeconds: 5
           periodSeconds: 10
-        # TODO(user): Configure the resources accordingly based on the project requirements.
-        # More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+        env:
+          # Soft memory limit for the Go runtime, auto-tracking the container
+          # limit (divisor 1 renders plain bytes, which Go reads as bytes).
+          - name: GOMEMLIMIT
+            valueFrom:
+              resourceFieldRef:
+                containerName: manager
+                resource: limits.memory
+                divisor: "1"
+        # One pod runs controllers + API + build orchestration; concurrent
+        # builds OOM under small limits (#447). Keep in sync with the chart
+        # defaults in charts/mortise-core/values.yaml.
         resources:
           limits:
-            cpu: 500m
-            memory: 128Mi
+            cpu: 2000m
+            memory: 2Gi
           requests:
-            cpu: 10m
-            memory: 64Mi
+            cpu: 200m
+            memory: 512Mi
         volumeMounts: []
       volumes: []
       serviceAccountName: controller-manager
