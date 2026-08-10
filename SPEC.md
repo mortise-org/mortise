@@ -1126,18 +1126,25 @@ Mortise UI. Default retention:
 | Data type | Retention |
 |---|---|
 | Logs | 48 hours |
-| Metrics | 72 hours |
+| Metrics | 72 hours (raw for 24h, then 5-minute averages) |
 | Traffic | 48 hours |
+| PVC usage | 72 hours (follows metrics) |
 
 Observer HTTP endpoints (served at the adapter base URL):
 
 | Endpoint | Description |
 |---|---|
 | `GET /v1/logs` | Historical log lines (time range query) |
-| `GET /v1/metrics` | Historical metrics |
+| `GET /v1/metrics` | Historical metrics (includes `coverage` gap markers) |
 | `GET /v1/metrics/live` | Live metrics stream (SSE) |
 | `GET /v1/traffic` | Historical traffic data |
 | `GET /v1/traffic/live` | Live traffic stream (SSE) |
+| `GET /v1/pvc` | Historical per-PVC capacity/usage (includes `coverage`) |
+| `GET /v1/health/collectors` | Observer self-health: per-collector last tick/success/error |
+
+`coverage` is the gap-visibility contract: `[bucketTs, 1]` marks a window the
+collector observed (even if it found nothing), `[bucketTs, 0]` one it did not.
+Consumers render 0-buckets as gaps and never interpolate across them.
 
 The observer is wired in via `PlatformConfig.spec.observability`:
 `metricsAdapterEndpoint`, `logsAdapterEndpoint`, `trafficAdapterEndpoint`.
