@@ -354,13 +354,11 @@ func (r *AppReconciler) ensureAppBuildRun(ctx context.Context, app *mortisev1alp
 		}
 		return nil, err
 	}
-	if app.Annotations[rebuildRequestedAtAnnotation] != "" || app.Annotations[rebuildNoCacheRequestedAtAnnotation] != "" || app.Annotations["mortise.dev/no-cache-build"] != "" {
-		patch := client.MergeFrom(app.DeepCopy())
-		clearRebuildRequestMarkers(app)
-		if err := r.Patch(ctx, app, patch); err != nil && !errors.IsNotFound(err) {
-			return nil, err
-		}
-	}
+	// Rebuild request markers are deliberately NOT cleared here: the env loop
+	// reuses one *App across environments, so clearing after the first env's
+	// Create would make envs 2..N short-circuit and skip the rebuild. The
+	// caller clears the markers once after every env has consumed them
+	// (reconcileEnvBuild's shouldClearNoCache return).
 	return &run, nil
 }
 

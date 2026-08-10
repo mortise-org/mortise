@@ -17,6 +17,8 @@ set -euo pipefail
 # Configuration
 # ---------------------------------------------------------------------------
 HELM_VERSION="${HELM_VERSION:-v3.17.3}"
+# Single helm --wait budget, matching HELM_WAIT_TIMEOUT in the Makefile (#443).
+HELM_WAIT_TIMEOUT="${HELM_WAIT_TIMEOUT:-600s}"
 MORTISE_CHART_REPO="${MORTISE_CHART_REPO:-https://mortise-org.github.io/mortise}"
 MORTISE_CHART_VERSION="${MORTISE_CHART_VERSION:-}"
 MORTISE_NAMESPACE="mortise-system"
@@ -254,7 +256,7 @@ install_mortise() {
         $traefik_flag \
         $storage_flags \
         $dev_image_flags \
-        --wait --timeout 300s \
+        --wait --timeout "$HELM_WAIT_TIMEOUT" \
         $chart_version_flag
 
     info "Mortise installed"

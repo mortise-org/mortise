@@ -23,6 +23,8 @@ NAMESPACE="mortise-system"
 DEPS_NAMESPACE="mortise-deps"
 CHART_IMG="mortise:chart-test"
 K3D_RUNTIME_ULIMIT="${K3D_RUNTIME_ULIMIT:-nofile=1048576:1048576}"
+# Single helm --wait budget, matching HELM_WAIT_TIMEOUT in the Makefile (#443).
+HELM_WAIT_TIMEOUT="${HELM_WAIT_TIMEOUT:-600s}"
 
 passed=0
 failed=0
@@ -88,7 +90,7 @@ helm upgrade --install mortise "${REPO_ROOT}/charts/mortise" \
     --set mortise-core.image.tag=chart-test \
     --set mortise-core.image.pullPolicy=Never \
     --set platformConfig.domain=test.mortise.local \
-    --wait --timeout 300s 2>&1 || { fail "Umbrella chart install"; fatal "Cannot continue without chart installed"; }
+    --wait --timeout "$HELM_WAIT_TIMEOUT" 2>&1 || { fail "Umbrella chart install"; fatal "Cannot continue without chart installed"; }
 
 # Verify each component deployment exists and is available.
 components_ok=true
@@ -231,7 +233,7 @@ helm upgrade mortise "${REPO_ROOT}/charts/mortise" \
     --set mortise-core.image.pullPolicy=Never \
     --set platformConfig.domain=test.mortise.local \
     --set buildkit.enabled=false \
-    --wait --timeout 180s 2>&1 || { fail "Condition toggle upgrade"; }
+    --wait --timeout "$HELM_WAIT_TIMEOUT" 2>&1 || { fail "Condition toggle upgrade"; }
 
 sleep 5
 buildkit_exists=$(kubectl get deployment -n "$DEPS_NAMESPACE" buildkitd --no-headers 2>/dev/null | wc -l || true)
@@ -248,7 +250,7 @@ helm upgrade mortise "${REPO_ROOT}/charts/mortise" \
     --set mortise-core.image.tag=chart-test \
     --set mortise-core.image.pullPolicy=Never \
     --set platformConfig.domain=test.mortise.local \
-    --wait --timeout 180s 2>&1 || { fail "Re-enable upgrade"; }
+    --wait --timeout "$HELM_WAIT_TIMEOUT" 2>&1 || { fail "Re-enable upgrade"; }
 
 # ── Test 4: mortise-core standalone ─────────────────────────────────────
 
@@ -264,7 +266,7 @@ helm upgrade --install mortise-core "${REPO_ROOT}/charts/mortise-core" \
     --set image.repository=mortise \
     --set image.tag=chart-test \
     --set image.pullPolicy=Never \
-    --wait --timeout 180s 2>&1 || { fail "mortise-core standalone install"; }
+    --wait --timeout "$HELM_WAIT_TIMEOUT" 2>&1 || { fail "mortise-core standalone install"; }
 
 if wait_for_deployment "$NAMESPACE" "mortise" 60; then
     pass "mortise-core standalone — operator runs without infrastructure"
