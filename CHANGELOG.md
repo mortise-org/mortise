@@ -14,6 +14,15 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   env vars (e.g. `DB_PASS` from `pg.password`). Includes new
   `GET /binding-keys` API endpoint and BindingsPicker UI rewrite.
 
+### Changed
+
+- **Finalizer GC now requires the `app.kubernetes.io/managed-by=mortise`
+  label and is scoped to project-labelled namespaces**: resources created
+  before the appLabels era (or by anything else that reuses Mortise's
+  name/project label keys without the managed-by label) are no longer
+  deleted by App-deletion GC. Operators relying on GC to clean up
+  pre-appLabels leftovers must remove those by hand once.
+
 ### Fixed
 
 - **`valueFrom.secretRef` resolution**: Field existed on the CRD but the

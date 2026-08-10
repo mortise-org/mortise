@@ -47,10 +47,6 @@ const (
 	// projectFinalizer ensures the controller gets one last reconcile on delete
 	// so it can tear down owned namespaces before the CRD disappears.
 	projectFinalizer = "mortise.dev/project-finalizer"
-
-	// DefaultProjectEnvironment is seeded into spec.environments when the
-	// controller observes an empty list. Matches Railway's default.
-	DefaultProjectEnvironment = "production"
 )
 
 // Condition types and reasons exposed on Project.status.conditions.
@@ -158,12 +154,22 @@ func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, nil
 	}
 
-	// Seed finalizer + default env in one spec-update pass.
+	// Seed finalizer + default env in one spec-update pass. This seed must
+	// stay even though the API also seeds production at create — it covers
+	// kubectl-created Projects. The guard is "no non-preview env present",
+	// not "no envs at all": preview envs written before the first reconcile
+	// don't count as a usable default and must not suppress the seed.
 	specChanged := controllerutil.AddFinalizer(&project, projectFinalizer)
-	if len(project.Spec.Environments) == 0 {
-		project.Spec.Environments = []mortisev1alpha1.ProjectEnvironment{
-			{Name: DefaultProjectEnvironment},
+	hasNonPreviewEnv := false
+	for _, env := range project.Spec.Environments {
+		if !env.Preview {
+			hasNonPreviewEnv = true
+			break
 		}
+	}
+	if !hasNonPreviewEnv {
+		project.Spec.Environments = append(project.Spec.Environments,
+			mortisev1alpha1.ProjectEnvironment{Name: constants.DefaultProjectEnvironment})
 		specChanged = true
 	}
 	if specChanged {

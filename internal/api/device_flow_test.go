@@ -17,6 +17,7 @@ import (
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
+	"github.com/mortise-org/mortise/internal/auth"
 )
 
 // TestDeviceFlowRequestCodeNoProvider verifies that when no GitProvider exists,
@@ -564,5 +565,74 @@ func TestPerUserTokenStorage(t *testing.T) {
 	// Verify secret names are different.
 	if secret1Name == secret2Name {
 		t.Error("expected different secret names for different users")
+	}
+}
+
+// TestDeviceFlowViewerCannotCreateProvider verifies that a non-admin
+// (viewer) cannot trigger on-demand creation of a cluster-scoped GitProvider
+// via the device-flow endpoints. Creation is admin-only, mirroring the gate on
+// CreateGitProvider; without this a viewer could mint platform-scoped resources.
+func TestDeviceFlowViewerCannotCreateProvider(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv, _ := newTestServerAs(t, k8sClient, auth.RoleViewer)
+	h := srv.Handler()
+
+	// Every route that can reach getOrCreateGitProvider must 403 a viewer.
+	// No GitProvider exists, so each request would otherwise create one.
+	creatingRoutes := []struct {
+		name string
+		path string
+		body any
+	}{
+		{"RequestCode", "/api/auth/git/github/device", nil},
+		{"Poll", "/api/auth/git/github/device/poll", map[string]string{"device_code": "code-123"}},
+		{"StorePAT", "/api/auth/git/github/token", map[string]string{"token": "ghp_viewer"}},
+	}
+	for _, route := range creatingRoutes {
+		w := doRequest(h, http.MethodPost, route.path, route.body)
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("%s: expected 403 for viewer, got %d: %s", route.name, w.Code, w.Body.String())
+		}
+	}
+
+	// GitTokenStatus never creates a provider — a viewer may read their own
+	// token status. Pin that: 200, not 403, and still no GitProvider minted.
+	w := doRequest(h, http.MethodGet, "/api/auth/git/github/status", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GitTokenStatus: expected 200 for viewer, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var list mortisev1alpha1.GitProviderList
+	if err := k8sClient.List(context.Background(), &list); err != nil {
+		t.Fatalf("list GitProviders: %v", err)
+	}
+	if len(list.Items) != 0 {
+		t.Errorf("expected no GitProviders created by viewer, got %d", len(list.Items))
+	}
+}
+
+// TestDeviceFlowStorePATRejectsHostileHost verifies that a caller-supplied host
+// pointing at a link-local/metadata address is rejected at the API boundary,
+// closing the SSRF where StorePAT would otherwise persist Spec.Host verbatim
+// and a later RequestCode would issue a server-side request to it.
+func TestDeviceFlowStorePATRejectsHostileHost(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	// Admin so the request clears the authz gate and reaches host validation.
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+
+	body := map[string]string{"token": "ghp_example", "host": "http://169.254.169.254"}
+	w := doRequest(h, http.MethodPost, "/api/auth/git/github/token", body)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for hostile host, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// The hostile host must never have been persisted into a GitProvider.
+	var list mortisev1alpha1.GitProviderList
+	if err := k8sClient.List(context.Background(), &list); err != nil {
+		t.Fatalf("list GitProviders: %v", err)
+	}
+	if len(list.Items) != 0 {
+		t.Errorf("expected no GitProvider created for hostile host, got %d", len(list.Items))
 	}
 }

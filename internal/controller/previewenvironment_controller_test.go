@@ -238,6 +238,12 @@ func TestPreviewEnvironmentReconcileMarksFailedWhenPreviewAppBuildFails(t *testi
 	}
 }
 
+// This test previously asserted that a PE actively clears the preview branch
+// on non-matching repo apps. That behavior was deliberately removed for
+// GH #435: two same-numbered PRs in different repos share the pr-{N} env
+// name, so the clearing PE and the owning PE overwrote each other in a
+// closed loop via the App watch. A PE now leaves override branches it does
+// not own untouched.
 func TestPreviewEnvironmentReconcileOnlyAppliesPRBranchToMatchingRepoApps(t *testing.T) {
 	scheme := runtime.NewScheme()
 	if err := mortisev1alpha1.AddToScheme(scheme); err != nil {
@@ -283,6 +289,8 @@ func TestPreviewEnvironmentReconcileOnlyAppliesPRBranchToMatchingRepoApps(t *tes
 			Environments: []mortisev1alpha1.Environment{{Name: "staging"}},
 		},
 	}
+	// repo-b's pr-7 override branch was set by repo-b's own PE (PR #7 in
+	// repo-b shares the pr-7 env name); repo-a's PE must not touch it.
 	nonMatching := &mortisev1alpha1.App{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "repo-b",
@@ -296,15 +304,29 @@ func TestPreviewEnvironmentReconcileOnlyAppliesPRBranchToMatchingRepoApps(t *tes
 			},
 			Environments: []mortisev1alpha1.Environment{
 				{Name: "staging"},
-				{Name: "pr-7", Branch: "wrong/old-branch"},
+				{Name: "pr-7", Branch: "fix/repo-b-change"},
 			},
+		},
+	}
+	nonMatchingNoOverride := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "repo-c",
+			Namespace: pe.Namespace,
+		},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{
+				Type:   mortisev1alpha1.SourceTypeGit,
+				Repo:   "https://github.com/example/repo-c.git",
+				Branch: "main",
+			},
+			Environments: []mortisev1alpha1.Environment{{Name: "staging"}},
 		},
 	}
 
 	c := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithStatusSubresource(pe).
-		WithObjects(project, pe, matching, nonMatching).
+		WithObjects(project, pe, matching, nonMatching, nonMatchingNoOverride).
 		Build()
 	r := &PreviewEnvironmentReconciler{
 		Client: c,
@@ -342,8 +364,143 @@ func TestPreviewEnvironmentReconcileOnlyAppliesPRBranchToMatchingRepoApps(t *tes
 			nonMatchingBranch = env.Branch
 		}
 	}
-	if nonMatchingBranch != "" {
-		t.Fatalf("expected non-matching repo preview branch to be cleared, got %q", nonMatchingBranch)
+	if nonMatchingBranch != "fix/repo-b-change" {
+		t.Fatalf("expected non-matching repo preview branch to be left untouched, got %q", nonMatchingBranch)
+	}
+
+	var gotNoOverride mortisev1alpha1.App
+	if err := c.Get(context.Background(), types.NamespacedName{Name: nonMatchingNoOverride.Name, Namespace: nonMatchingNoOverride.Namespace}, &gotNoOverride); err != nil {
+		t.Fatalf("get non-matching app without override: %v", err)
+	}
+	found := false
+	for _, env := range gotNoOverride.Spec.Environments {
+		if env.Name == "pr-7" {
+			found = true
+			if env.Branch != "" {
+				t.Fatalf("expected cloned override for non-matching repo to have no branch, got %q", env.Branch)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected pr-7 override to be cloned onto non-matching app")
+	}
+}
+
+// Regression test for GH #435: two PEs for same-numbered PRs in different
+// repos share the pr-{N} env name. Repeated reconciles of both PEs must
+// converge — each app keeps the branch set by its own repo's PE, with no
+// further writes (the old code had PE-A set / PE-B clear in a closed loop).
+func TestPreviewEnvironmentReconcileSameNumberPRsDoNotFlipFlopBranch(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := mortisev1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add mortise scheme: %v", err)
+	}
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add core scheme: %v", err)
+	}
+
+	project := &mortisev1alpha1.Project{
+		ObjectMeta: metav1.ObjectMeta{Name: "demo"},
+		Spec: mortisev1alpha1.ProjectSpec{
+			Preview:      &mortisev1alpha1.PreviewConfig{Enabled: true},
+			Environments: []mortisev1alpha1.ProjectEnvironment{{Name: "staging"}},
+		},
+	}
+	controlNs := constants.ControlNamespace(project.Name)
+	newPE := func(repo, branch string) *mortisev1alpha1.PreviewEnvironment {
+		return &mortisev1alpha1.PreviewEnvironment{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      constants.PreviewEnvironmentName(repo, 7, true),
+				Namespace: controlNs,
+			},
+			Spec: mortisev1alpha1.PreviewEnvironmentSpec{
+				ProjectRef: project.Name,
+				SourceEnv:  "staging",
+				PullRequest: mortisev1alpha1.PullRequestRef{
+					Number: 7,
+					Branch: branch,
+					SHA:    "deadbeef",
+					Repo:   repo,
+				},
+			},
+		}
+	}
+	newApp := func(name, repo string) *mortisev1alpha1.App {
+		return &mortisev1alpha1.App{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: controlNs},
+			Spec: mortisev1alpha1.AppSpec{
+				Source: mortisev1alpha1.AppSource{
+					Type: mortisev1alpha1.SourceTypeGit,
+					Repo: repo,
+				},
+				Environments: []mortisev1alpha1.Environment{{Name: "staging"}},
+			},
+		}
+	}
+	peA := newPE("https://github.com/example/repo-a.git", "feat/repo-a")
+	peB := newPE("https://github.com/example/repo-b.git", "feat/repo-b")
+	appA := newApp("repo-a", "https://github.com/example/repo-a.git")
+	appB := newApp("repo-b", "https://github.com/example/repo-b.git")
+
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(peA, peB).
+		WithObjects(project, peA, peB, appA, appB).
+		Build()
+	r := &PreviewEnvironmentReconciler{
+		Client: c,
+		Scheme: scheme,
+		Clock:  clocktesting.NewFakeClock(time.Now()),
+	}
+
+	reconcileBoth := func() {
+		t.Helper()
+		for _, pe := range []*mortisev1alpha1.PreviewEnvironment{peA, peB} {
+			if _, err := r.Reconcile(context.Background(), reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: pe.Name, Namespace: pe.Namespace},
+			}); err != nil {
+				t.Fatalf("reconcile %s: %v", pe.Name, err)
+			}
+		}
+	}
+	branchOf := func(appName string) (branch, resourceVersion string) {
+		t.Helper()
+		var app mortisev1alpha1.App
+		if err := c.Get(context.Background(), types.NamespacedName{Name: appName, Namespace: controlNs}, &app); err != nil {
+			t.Fatalf("get app %s: %v", appName, err)
+		}
+		for _, env := range app.Spec.Environments {
+			if env.Name == "pr-7" {
+				return env.Branch, app.ResourceVersion
+			}
+		}
+		t.Fatalf("app %s has no pr-7 override", appName)
+		return "", ""
+	}
+
+	reconcileBoth()
+
+	branchA, rvA := branchOf("repo-a")
+	branchB, rvB := branchOf("repo-b")
+	if branchA != "feat/repo-a" {
+		t.Fatalf("expected repo-a preview branch %q, got %q", "feat/repo-a", branchA)
+	}
+	if branchB != "feat/repo-b" {
+		t.Fatalf("expected repo-b preview branch %q, got %q", "feat/repo-b", branchB)
+	}
+
+	// Simulate the App-watch storm: further reconciles of either PE must not
+	// write to either app at all.
+	reconcileBoth()
+	reconcileBoth()
+
+	branchA2, rvA2 := branchOf("repo-a")
+	branchB2, rvB2 := branchOf("repo-b")
+	if branchA2 != branchA || branchB2 != branchB {
+		t.Fatalf("preview branches flip-flopped: repo-a %q -> %q, repo-b %q -> %q", branchA, branchA2, branchB, branchB2)
+	}
+	if rvA2 != rvA || rvB2 != rvB {
+		t.Fatalf("apps were rewritten on steady-state reconcile: repo-a rv %s -> %s, repo-b rv %s -> %s", rvA, rvA2, rvB, rvB2)
 	}
 }
 
@@ -1117,6 +1274,135 @@ var _ = Describe("PreviewEnvironment Controller", func() {
 			Expect(appEnvNames).NotTo(ContainElement("pr-99"))
 
 			var previewNs corev1.Namespace
+			err = k8sClient.Get(ctx, types.NamespacedName{Name: previewNsName}, &previewNs)
+			if err == nil {
+				Expect(previewNs.DeletionTimestamp).NotTo(BeNil())
+			} else {
+				Expect(errors.IsNotFound(err)).To(BeTrue())
+			}
+		})
+
+		It("should not tear down a shared preview env while another PE still uses it", func() {
+			ctx := context.Background()
+			project, ns := createPreviewTestProject(ctx, true)
+			project.Spec.Environments = []mortisev1alpha1.ProjectEnvironment{{Name: "staging"}}
+			Expect(k8sClient.Update(ctx, project)).To(Succeed())
+			previewNsName := constants.PreviewNamespace(project.Name, 42)
+			Expect(k8sClient.Create(ctx, &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: previewNsName,
+					Labels: map[string]string{
+						"app.kubernetes.io/managed-by": "mortise",
+						constants.ProjectLabel:         project.Name,
+					},
+				},
+			})).To(Succeed())
+
+			// Two git-source apps from different repos, and one PE per repo
+			// for PR #42 in each — both PEs resolve to the same pr-42 env.
+			repoA := "https://github.com/example/shared-a.git"
+			repoB := "https://github.com/example/shared-b.git"
+			for name, repo := range map[string]string{"shared-app-a": repoA, "shared-app-b": repoB} {
+				Expect(k8sClient.Create(ctx, &mortisev1alpha1.App{
+					ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+					Spec: mortisev1alpha1.AppSpec{
+						Source: mortisev1alpha1.AppSource{
+							Type:        mortisev1alpha1.SourceTypeGit,
+							Repo:        repo,
+							Branch:      "main",
+							ProviderRef: "github-main",
+						},
+						Environments: []mortisev1alpha1.Environment{{Name: "staging"}},
+					},
+				})).To(Succeed())
+			}
+			newPE := func(repo, branch string) *mortisev1alpha1.PreviewEnvironment {
+				pe := &mortisev1alpha1.PreviewEnvironment{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      constants.PreviewEnvironmentName(repo, 42, true),
+						Namespace: ns,
+					},
+					Spec: mortisev1alpha1.PreviewEnvironmentSpec{
+						ProjectRef: project.Name,
+						SourceEnv:  "staging",
+						PullRequest: mortisev1alpha1.PullRequestRef{
+							Number: 42,
+							Branch: branch,
+							SHA:    "sha42",
+							Repo:   repo,
+						},
+					},
+				}
+				Expect(k8sClient.Create(ctx, pe)).To(Succeed())
+				return pe
+			}
+			peA := newPE(repoA, "feat/shared-a")
+			peB := newPE(repoB, "feat/shared-b")
+
+			reconciler := newPEReconciler()
+			for _, pe := range []*mortisev1alpha1.PreviewEnvironment{peA, peB} {
+				_, err := reconciler.Reconcile(ctx, reconcile.Request{
+					NamespacedName: types.NamespacedName{Name: pe.Name, Namespace: ns},
+				})
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			// Close PR #42 in repo A: PE-A is deleted but PE-B still uses the
+			// pr-42 env, so shared resources must survive.
+			Expect(k8sClient.Delete(ctx, peA)).To(Succeed())
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: peA.Name, Namespace: ns},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var gonePE mortisev1alpha1.PreviewEnvironment
+			err = k8sClient.Get(ctx, types.NamespacedName{Name: peA.Name, Namespace: ns}, &gonePE)
+			Expect(errors.IsNotFound(err)).To(BeTrue())
+
+			var proj mortisev1alpha1.Project
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: project.Name}, &proj)).To(Succeed())
+			envNames := make([]string, len(proj.Spec.Environments))
+			for i, e := range proj.Spec.Environments {
+				envNames[i] = e.Name
+			}
+			Expect(envNames).To(ContainElement("pr-42"))
+
+			var appB mortisev1alpha1.App
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "shared-app-b", Namespace: ns}, &appB)).To(Succeed())
+			var appBBranch string
+			foundOverride := false
+			for _, e := range appB.Spec.Environments {
+				if e.Name == "pr-42" {
+					foundOverride = true
+					appBBranch = e.Branch
+				}
+			}
+			Expect(foundOverride).To(BeTrue(), "surviving PE's app override must not be removed")
+			Expect(appBBranch).To(Equal("feat/shared-b"))
+
+			var previewNs corev1.Namespace
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: previewNsName}, &previewNs)).To(Succeed())
+			Expect(previewNs.DeletionTimestamp.IsZero()).To(BeTrue(), "shared preview namespace must not be deleted")
+
+			// Close PR #42 in repo B: last PE gone, full teardown now runs.
+			Expect(k8sClient.Delete(ctx, peB)).To(Succeed())
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: peB.Name, Namespace: ns},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: project.Name}, &proj)).To(Succeed())
+			envNames = make([]string, len(proj.Spec.Environments))
+			for i, e := range proj.Spec.Environments {
+				envNames[i] = e.Name
+			}
+			Expect(envNames).NotTo(ContainElement("pr-42"))
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "shared-app-b", Namespace: ns}, &appB)).To(Succeed())
+			for _, e := range appB.Spec.Environments {
+				Expect(e.Name).NotTo(Equal("pr-42"))
+			}
+
 			err = k8sClient.Get(ctx, types.NamespacedName{Name: previewNsName}, &previewNs)
 			if err == nil {
 				Expect(previewNs.DeletionTimestamp).NotTo(BeNil())

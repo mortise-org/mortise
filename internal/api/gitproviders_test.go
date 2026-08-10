@@ -205,6 +205,38 @@ func TestCreateGitProviderValidation(t *testing.T) {
 				"host": "not-a-url",
 			},
 		},
+		{
+			name: "link-local metadata host",
+			body: map[string]any{
+				"name": "my-provider",
+				"type": "github",
+				"host": "http://169.254.169.254",
+			},
+		},
+		{
+			name: "loopback host",
+			body: map[string]any{
+				"name": "my-provider",
+				"type": "github",
+				"host": "http://127.0.0.1",
+			},
+		},
+		{
+			name: "private host",
+			body: map[string]any{
+				"name": "my-provider",
+				"type": "github",
+				"host": "https://10.0.0.5",
+			},
+		},
+		{
+			name: "non-http scheme",
+			body: map[string]any{
+				"name": "my-provider",
+				"type": "github",
+				"host": "file:///etc/passwd",
+			},
+		},
 	}
 
 	for _, tc := range cases {
