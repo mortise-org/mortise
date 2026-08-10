@@ -577,10 +577,29 @@ func TestDeviceFlowViewerCannotCreateProvider(t *testing.T) {
 	srv, _ := newTestServerAs(t, k8sClient, auth.RoleViewer)
 	h := srv.Handler()
 
-	// No GitProvider exists, so this request would otherwise create one.
-	w := doRequest(h, http.MethodPost, "/api/auth/git/github/device", nil)
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("expected 403 for viewer, got %d: %s", w.Code, w.Body.String())
+	// Every route that can reach getOrCreateGitProvider must 403 a viewer.
+	// No GitProvider exists, so each request would otherwise create one.
+	creatingRoutes := []struct {
+		name string
+		path string
+		body any
+	}{
+		{"RequestCode", "/api/auth/git/github/device", nil},
+		{"Poll", "/api/auth/git/github/device/poll", map[string]string{"device_code": "code-123"}},
+		{"StorePAT", "/api/auth/git/github/token", map[string]string{"token": "ghp_viewer"}},
+	}
+	for _, route := range creatingRoutes {
+		w := doRequest(h, http.MethodPost, route.path, route.body)
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("%s: expected 403 for viewer, got %d: %s", route.name, w.Code, w.Body.String())
+		}
+	}
+
+	// GitTokenStatus never creates a provider — a viewer may read their own
+	// token status. Pin that: 200, not 403, and still no GitProvider minted.
+	w := doRequest(h, http.MethodGet, "/api/auth/git/github/status", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GitTokenStatus: expected 200 for viewer, got %d: %s", w.Code, w.Body.String())
 	}
 
 	var list mortisev1alpha1.GitProviderList
