@@ -1,5 +1,11 @@
 //go:build integration
 
+// These tests pin the shared-vars propagation contract (GH #351): env-set changes
+// cascade via ProjectEnvsRevAnnotation and apps re-materialize shared-env from the
+// control namespace. NOTE: they create fresh namespaces and wait on app readiness,
+// so until the RBAC-propagation race (mo-k5p) is fixed, a timeout here is almost
+// certainly that race — not a contract break.
+
 package integration
 
 import (
