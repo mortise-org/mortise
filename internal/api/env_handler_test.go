@@ -3,7 +3,9 @@ package api_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"sync"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -182,6 +184,68 @@ func TestPatchEnvSetAndUnset(t *testing.T) {
 	}
 	if names["REMOVE"] {
 		t.Error("expected REMOVE to be unset")
+	}
+}
+
+// TestPatchEnvConcurrentPatchesNoLostUpdates exercises the lost-update race:
+// concurrent PATCHes each setting a distinct key must all survive, because the
+// handler recomputes the result from a fresh read inside the conflict-retry
+// callback. A PATCH may fail on retry exhaustion under contention (retried
+// here); what it must never do is succeed while dropping another PATCH's key.
+func TestPatchEnvConcurrentPatchesNoLostUpdates(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+	seedProject(t, k8sClient, "default")
+	seedAppForEnv(t, h)
+
+	doRequest(h, http.MethodPut, "/api/projects/default/apps/webapp/env?environment=production", []map[string]string{
+		{"name": "SEEDED", "value": "yes"},
+	})
+
+	const writers = 6
+	var wg sync.WaitGroup
+	errs := make([]error, writers)
+	for i := range writers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			key := fmt.Sprintf("CONCURRENT_%d", i)
+			for attempt := 0; attempt < 20; attempt++ {
+				w := doRequest(h, http.MethodPatch, "/api/projects/default/apps/webapp/env?environment=production", map[string]any{
+					"set": map[string]string{key: fmt.Sprintf("v%d", i)},
+				})
+				if w.Code == http.StatusOK {
+					return
+				}
+			}
+			errs[i] = fmt.Errorf("PATCH setting %s never returned 200", key)
+		}()
+	}
+	wg.Wait()
+	for _, err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	w := doRequest(h, http.MethodGet, "/api/projects/default/apps/webapp/env?environment=production", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("get: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var got []map[string]any
+	_ = json.NewDecoder(w.Body).Decode(&got)
+	names := map[string]bool{}
+	for _, v := range got {
+		names[v["name"].(string)] = true
+	}
+	if !names["SEEDED"] {
+		t.Error("expected SEEDED to survive concurrent patches")
+	}
+	for i := range writers {
+		if key := fmt.Sprintf("CONCURRENT_%d", i); !names[key] {
+			t.Errorf("expected %s to survive concurrent patches — lost update", key)
+		}
 	}
 }
 
