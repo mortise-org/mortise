@@ -246,6 +246,10 @@ func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	// which is what pushed app-side denials past their propagation window
 	// (mo-k5p). A Forbidden inside the young control namespace fast-requeues
 	// without feeding the rate limiter; older ones are genuine errors.
+	// Known trade: an env-namespace bootstrap failure now also blocks
+	// owner-member creation (previously membership survived env failures) —
+	// accepted, since the reconcile retries and the alternative reintroduces
+	// the hostage ordering.
 	if err := r.ensureOwnerMember(ctx, &project, controlNs); err != nil {
 		if res, ok := forbiddenFastRequeue(ctx, r.Client, r.clock(), controlNs, err); ok {
 			log.Info("forbidden while control-namespace RBAC propagates; fast requeue", "op", "ensure owner member")
