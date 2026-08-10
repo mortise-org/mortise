@@ -6201,6 +6201,334 @@ var _ = Describe("App Controller — git source", func() {
 		})
 	})
 
+	Context("ownership guards on workload paths (#437)", func() {
+		ctx := context.Background()
+
+		makeImageApp := func(appName string, mutate func(*mortisev1alpha1.AppSpec)) *mortisev1alpha1.App {
+			app := &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{Name: appName, Namespace: namespace},
+				Spec: mortisev1alpha1.AppSpec{
+					Source: mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: testImageNginx},
+					Environments: []mortisev1alpha1.Environment{
+						{Name: "production", Replicas: ptr.To[int32](1)},
+					},
+				},
+			}
+			if mutate != nil {
+				mutate(&app.Spec)
+			}
+			return app
+		}
+
+		// reconcileExpectingConflict reconciles the App, expecting the
+		// ownership guard to hard-fail and envResourceError to stamp the
+		// Failed phase + ResourceConflict condition.
+		reconcileExpectingConflict := func(appName string) {
+			GinkgoHelper()
+			r := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := r.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("not managed by Mortise"))
+
+			var fresh mortisev1alpha1.App
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: appName, Namespace: namespace}, &fresh)).To(Succeed())
+			Expect(fresh.Status.Phase).To(Equal(mortisev1alpha1.AppPhaseFailed))
+			cond := meta.FindStatusCondition(fresh.Status.Conditions, appResourceConflictCondition)
+			Expect(cond).NotTo(BeNil())
+			Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+			Expect(cond.Reason).To(Equal("ResourceConflict"))
+		}
+
+		It("does not delete a pre-existing unmanaged Deployment on selector mismatch", func() {
+			const appName = "own-guard-deploy"
+			userDep := &appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      deploymentName(appName),
+					Namespace: envNsProduction,
+					// No managed-by label — not ours.
+				},
+				Spec: appsv1.DeploymentSpec{
+					Replicas: ptr.To[int32](2),
+					Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "legacy"}},
+					Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "legacy"}},
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{{Name: "legacy", Image: "busybox:1.36"}},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, userDep)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, userDep) }()
+
+			app := makeImageApp(appName, nil)
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+
+			reconcileExpectingConflict(appName)
+
+			// The foreign Deployment survives with its own selector — the
+			// selector-mismatch delete must not fire on unmanaged resources.
+			var got appsv1.Deployment
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: deploymentName(appName), Namespace: envNsProduction}, &got)).To(Succeed())
+			Expect(got.DeletionTimestamp.IsZero()).To(BeTrue())
+			Expect(got.Spec.Selector.MatchLabels).To(HaveKeyWithValue("app", "legacy"))
+			Expect(got.Spec.Template.Spec.Containers[0].Image).To(Equal("busybox:1.36"))
+		})
+
+		It("does not adopt a pre-existing unmanaged CronJob", func() {
+			const appName = "own-guard-cron"
+			userCJ := &batchv1.CronJob{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      cronJobName(appName),
+					Namespace: envNsProduction,
+				},
+				Spec: batchv1.CronJobSpec{
+					Schedule: "0 0 * * *",
+					JobTemplate: batchv1.JobTemplateSpec{
+						Spec: batchv1.JobSpec{
+							Template: corev1.PodTemplateSpec{
+								Spec: corev1.PodSpec{
+									RestartPolicy: corev1.RestartPolicyOnFailure,
+									Containers:    []corev1.Container{{Name: "legacy", Image: "busybox:1.36"}},
+								},
+							},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, userCJ)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, userCJ) }()
+
+			app := makeImageApp(appName, func(spec *mortisev1alpha1.AppSpec) {
+				spec.Kind = mortisev1alpha1.AppKindCron
+				spec.Environments[0].Schedule = "*/5 * * * *"
+			})
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+
+			reconcileExpectingConflict(appName)
+
+			var got batchv1.CronJob
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: cronJobName(appName), Namespace: envNsProduction}, &got)).To(Succeed())
+			Expect(got.Spec.Schedule).To(Equal("0 0 * * *"))
+			Expect(got.Spec.JobTemplate.Spec.Template.Spec.Containers[0].Image).To(Equal("busybox:1.36"))
+		})
+
+		It("does not overwrite the selector and ports of a pre-existing unmanaged Service", func() {
+			const appName = "own-guard-svc"
+			userSvc := &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      serviceName(appName),
+					Namespace: envNsProduction,
+				},
+				Spec: corev1.ServiceSpec{
+					Selector: map[string]string{"app": "legacy"},
+					Ports:    []corev1.ServicePort{{Name: "legacy", Port: 9999}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, userSvc)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, userSvc) }()
+
+			app := makeImageApp(appName, nil)
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+
+			reconcileExpectingConflict(appName)
+
+			var got corev1.Service
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: serviceName(appName), Namespace: envNsProduction}, &got)).To(Succeed())
+			Expect(got.Spec.Selector).To(HaveKeyWithValue("app", "legacy"))
+			Expect(got.Spec.Ports[0].Port).To(Equal(int32(9999)))
+			Expect(got.Labels).NotTo(HaveKey("app.kubernetes.io/managed-by"))
+		})
+
+		It("does not redirect image pulls of a pre-existing unmanaged ServiceAccount", func() {
+			const appName = "own-guard-sa"
+			userSA := &corev1.ServiceAccount{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      appName,
+					Namespace: envNsProduction,
+				},
+				ImagePullSecrets: []corev1.LocalObjectReference{{Name: "user-pull-secret"}},
+			}
+			Expect(k8sClient.Create(ctx, userSA)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, userSA) }()
+
+			app := makeImageApp(appName, nil)
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+
+			reconcileExpectingConflict(appName)
+
+			var got corev1.ServiceAccount
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: appName, Namespace: envNsProduction}, &got)).To(Succeed())
+			Expect(got.ImagePullSecrets).To(Equal([]corev1.LocalObjectReference{{Name: "user-pull-secret"}}))
+			Expect(got.Labels).NotTo(HaveKey("app.kubernetes.io/managed-by"))
+		})
+
+		It("does not replace the spec of a pre-existing unmanaged Ingress", func() {
+			const appName = "own-guard-ing"
+			pathType := networkingv1.PathTypePrefix
+			userIng := &networkingv1.Ingress{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      ingressName(appName),
+					Namespace: envNsProduction,
+				},
+				Spec: networkingv1.IngressSpec{
+					Rules: []networkingv1.IngressRule{{
+						Host: "user-owned.example.com",
+						IngressRuleValue: networkingv1.IngressRuleValue{
+							HTTP: &networkingv1.HTTPIngressRuleValue{
+								Paths: []networkingv1.HTTPIngressPath{{
+									Path:     "/",
+									PathType: &pathType,
+									Backend: networkingv1.IngressBackend{
+										Service: &networkingv1.IngressServiceBackend{
+											Name: "user-svc",
+											Port: networkingv1.ServiceBackendPort{Number: 8080},
+										},
+									},
+								}},
+							},
+						},
+					}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, userIng)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, userIng) }()
+
+			app := makeImageApp(appName, func(spec *mortisev1alpha1.AppSpec) {
+				spec.Network = mortisev1alpha1.NetworkConfig{Public: true}
+				spec.Environments[0].Domain = "own-guard-ing.example.com"
+			})
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+
+			reconcileExpectingConflict(appName)
+
+			var got networkingv1.Ingress
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: ingressName(appName), Namespace: envNsProduction}, &got)).To(Succeed())
+			Expect(got.Spec.Rules[0].Host).To(Equal("user-owned.example.com"))
+			Expect(got.Spec.Rules[0].HTTP.Paths[0].Backend.Service.Name).To(Equal("user-svc"))
+		})
+
+		It("does not resize or relabel a pre-existing unmanaged PVC", func() {
+			const appName = "own-guard-pvc"
+			pvcNm := pvcName(appName, "data")
+			userPVC := &corev1.PersistentVolumeClaim{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      pvcNm,
+					Namespace: envNsProduction,
+				},
+				Spec: corev1.PersistentVolumeClaimSpec{
+					AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+					Resources: corev1.VolumeResourceRequirements{
+						Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("1Gi")},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, userPVC)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, userPVC) }()
+
+			app := makeImageApp(appName, func(spec *mortisev1alpha1.AppSpec) {
+				spec.Storage = []mortisev1alpha1.VolumeSpec{
+					{Name: "data", MountPath: "/data", Size: resource.MustParse("2Gi")},
+				}
+			})
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+
+			reconcileExpectingConflict(appName)
+
+			var got corev1.PersistentVolumeClaim
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: pvcNm, Namespace: envNsProduction}, &got)).To(Succeed())
+			storageReq := got.Spec.Resources.Requests[corev1.ResourceStorage]
+			Expect(storageReq.Equal(resource.MustParse("1Gi"))).To(BeTrue())
+			Expect(got.Labels).NotTo(HaveKey("app.kubernetes.io/managed-by"))
+		})
+
+		It("does not delete a pre-existing unmanaged Service on the external-source type-change path", func() {
+			const appName = "own-guard-extsvc"
+			// A foreign ClusterIP Service: the ExternalName type-change logic
+			// would otherwise delete-and-recreate it on sight.
+			userSvc := &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      serviceName(appName),
+					Namespace: envNsProduction,
+				},
+				Spec: corev1.ServiceSpec{
+					Selector: map[string]string{"app": "legacy"},
+					Ports:    []corev1.ServicePort{{Name: "legacy", Port: 9999}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, userSvc)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, userSvc) }()
+
+			app := makeImageApp(appName, func(spec *mortisev1alpha1.AppSpec) {
+				spec.Source = mortisev1alpha1.AppSource{
+					Type:     mortisev1alpha1.SourceTypeExternal,
+					External: &mortisev1alpha1.ExternalSource{Host: "db.internal", Port: 5432},
+				}
+				// The ExternalName Service is only reconciled for public apps
+				// with a domain.
+				spec.Network = mortisev1alpha1.NetworkConfig{Public: true}
+				spec.Environments[0].Domain = "own-guard-extsvc.example.com"
+			})
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+
+			reconcileExpectingConflict(appName)
+
+			var got corev1.Service
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: serviceName(appName), Namespace: envNsProduction}, &got)).To(Succeed())
+			Expect(got.DeletionTimestamp.IsZero()).To(BeTrue())
+			Expect(got.Spec.Type).NotTo(Equal(corev1.ServiceTypeExternalName))
+			Expect(got.Spec.Selector).To(HaveKeyWithValue("app", "legacy"))
+		})
+
+		It("clears the ResourceConflict condition once the foreign resource is gone", func() {
+			const appName = "own-guard-recover"
+			userSvc := &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      serviceName(appName),
+					Namespace: envNsProduction,
+				},
+				Spec: corev1.ServiceSpec{
+					Selector: map[string]string{"app": "legacy"},
+					Ports:    []corev1.ServicePort{{Name: "legacy", Port: 9999}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, userSvc)).To(Succeed())
+
+			app := makeImageApp(appName, nil)
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+
+			reconcileExpectingConflict(appName)
+
+			// User resolves the conflict; the next pass recovers.
+			Expect(k8sClient.Delete(ctx, userSvc)).To(Succeed())
+
+			r := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := r.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var fresh mortisev1alpha1.App
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: appName, Namespace: namespace}, &fresh)).To(Succeed())
+			Expect(meta.FindStatusCondition(fresh.Status.Conditions, appResourceConflictCondition)).To(BeNil())
+			Expect(fresh.Status.Phase).NotTo(Equal(mortisev1alpha1.AppPhaseFailed))
+
+			var svc corev1.Service
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: serviceName(appName), Namespace: envNsProduction}, &svc)).To(Succeed())
+			Expect(svc.Labels).To(HaveKeyWithValue("app.kubernetes.io/managed-by", "mortise"))
+		})
+	})
+
 	Context("custom network port", func() {
 		const appName = "custom-port-app"
 		ctx := context.Background()

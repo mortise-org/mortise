@@ -21,6 +21,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	stderrors "errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -116,6 +117,14 @@ const appNamespacePendingCondition = "NamespacePending"
 // rbacPropagationWindow (same default) because it times a different thing:
 // namespace creation by the Project controller, not authorizer propagation.
 const namespaceCreationBudget = 2 * time.Minute
+
+// appResourceConflictCondition is set when a workload reconcile finds a
+// pre-existing resource carrying one of this App's reserved names without the
+// Mortise managed-by label. Per CLAUDE.md "Mortise owns only what it creates"
+// the reconciler refuses to adopt, update, or delete such a resource; the
+// condition makes the conflict visible on the App instead of only in operator
+// logs.
+const appResourceConflictCondition = "ResourceConflict"
 
 // AppReconciler reconciles a App object
 type AppReconciler struct {
@@ -445,10 +454,22 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		}
 		rbacForbiddenCleared = true
 	}
+	// Same for a stale ResourceConflict condition: every workload write this
+	// pass passed its ownership guard, so the foreign resource is gone.
+	resourceConflictCleared := false
+	if meta.FindStatusCondition(app.Status.Conditions, appResourceConflictCondition) != nil {
+		if err := r.updateAppStatus(ctx, &app, func(status *mortisev1alpha1.AppStatus) {
+			meta.RemoveStatusCondition(&status.Conditions, appResourceConflictCondition)
+		}); err != nil {
+			return ctrl.Result{}, fmt.Errorf("clear resource conflict condition: %w", err)
+		}
+		resourceConflictCleared = true
+	}
 
 	if !needsRequeue && (app.Status.Phase != mortisev1alpha1.AppPhaseFailed ||
 		domainCollisionCleared ||
 		rbacForbiddenCleared ||
+		resourceConflictCleared ||
 		shouldRefreshFailedAppStatus(&app, resolvedEnvs, previewEnvNames)) {
 		if err := r.updateStatus(ctx, &app, resolvedEnvs, previewEnvNames); err != nil {
 			return ctrl.Result{}, fmt.Errorf("update status: %w", err)
@@ -471,7 +492,10 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 }
 
 // envResourceError converts a failure from a per-env resource reconcile into
-// the (Result, error) pair Reconcile should return. The scoped-RBAC model
+// the (Result, error) pair Reconcile should return. An ownership-guard
+// conflict (resourceConflictError) marks the App Failed with a
+// ResourceConflict condition — it cannot resolve until the user renames or
+// deletes the foreign resource. The scoped-RBAC model
 // grants the operator write access to each pj-* namespace via a RoleBinding
 // created during namespace bootstrap, and App reconciles race that
 // propagation: a Forbidden inside a young env namespace is transient, so
@@ -480,6 +504,22 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 // misconfiguration — mark the App Failed and return the error.
 func (r *AppReconciler) envResourceError(ctx context.Context, app *mortisev1alpha1.App, envNs, envName, op string, err error) (ctrl.Result, error) {
 	wrapped := fmt.Errorf("%s for env %s: %w", op, envName, err)
+	var conflict *resourceConflictError
+	if stderrors.As(err, &conflict) {
+		if updateErr := r.updateAppStatus(ctx, app, func(status *mortisev1alpha1.AppStatus) {
+			status.Phase = mortisev1alpha1.AppPhaseFailed
+			meta.SetStatusCondition(&status.Conditions, metav1.Condition{
+				Type:               appResourceConflictCondition,
+				Status:             metav1.ConditionTrue,
+				Reason:             "ResourceConflict",
+				Message:            wrapped.Error(),
+				ObservedGeneration: app.Generation,
+			})
+		}); updateErr != nil {
+			logf.FromContext(ctx).Error(updateErr, "update status after resource conflict", "namespace", envNs)
+		}
+		return ctrl.Result{}, wrapped
+	}
 	if !errors.IsForbidden(err) {
 		return ctrl.Result{}, wrapped
 	}
@@ -1660,6 +1700,13 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 		return err
 	}
 
+	// Ownership guard before the selector-mismatch delete below: a foreign
+	// Deployment's selector never matches ours, so without this check it
+	// would be deleted on sight.
+	if err := conflictIfUnmanaged(&existing, "Deployment"); err != nil {
+		return err
+	}
+
 	if deploymentSelectorMismatch(&existing, desired) {
 		if err := r.Delete(ctx, &existing); err != nil {
 			return fmt.Errorf("delete Deployment with stale selector: %w", err)
@@ -1675,6 +1722,9 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 	return envstore.UpdateWithConflictRetry(ctx, r.Client, types.NamespacedName{Name: name, Namespace: envNs}, func() *appsv1.Deployment {
 		return &appsv1.Deployment{}
 	}, func(existing *appsv1.Deployment) (bool, error) {
+		if err := conflictIfUnmanaged(existing, "Deployment"); err != nil {
+			return false, err
+		}
 		desiredAnnotations := mergeAnnotations(nil, desired.Annotations)
 		for k, v := range existing.Annotations {
 			if strings.HasPrefix(k, "deployment.kubernetes.io/") {
@@ -1911,9 +1961,16 @@ func (r *AppReconciler) reconcileCronJob(ctx context.Context, app *mortisev1alph
 		return err
 	}
 
+	if err := conflictIfUnmanaged(&existing, "CronJob"); err != nil {
+		return err
+	}
+
 	return envstore.UpdateWithConflictRetry(ctx, r.Client, types.NamespacedName{Name: name, Namespace: envNs}, func() *batchv1.CronJob {
 		return &batchv1.CronJob{}
 	}, func(existing *batchv1.CronJob) (bool, error) {
+		if err := conflictIfUnmanaged(existing, "CronJob"); err != nil {
+			return false, err
+		}
 		desiredPodAnnotations := mergeAnnotations(nil, desired.Spec.JobTemplate.Spec.Template.Annotations)
 		if v, ok := existing.Spec.JobTemplate.Spec.Template.Annotations["mortise.dev/restartedAt"]; ok {
 			desiredPodAnnotations = mergeAnnotations(desiredPodAnnotations, map[string]string{
@@ -2044,10 +2101,19 @@ func (r *AppReconciler) reconcileService(ctx context.Context, app *mortisev1alph
 		return err
 	}
 
+	// The goto path skips this guard (the racing creator may be foreign);
+	// the closure guard below re-checks against the re-fetched object.
+	if err := conflictIfUnmanaged(&existing, "Service"); err != nil {
+		return err
+	}
+
 update:
 	return envstore.UpdateWithConflictRetry(ctx, r.Client, types.NamespacedName{Name: name, Namespace: envNs}, func() *corev1.Service {
 		return &corev1.Service{}
 	}, func(existing *corev1.Service) (bool, error) {
+		if err := conflictIfUnmanaged(existing, "Service"); err != nil {
+			return false, err
+		}
 		changed := false
 		if !equality.Semantic.DeepEqual(existing.Annotations, desired.Annotations) {
 			existing.Annotations = desired.Annotations
@@ -2168,9 +2234,16 @@ func (r *AppReconciler) reconcileIngress(ctx context.Context, app *mortisev1alph
 		return err
 	}
 
+	if err := conflictIfUnmanaged(&existing, "Ingress"); err != nil {
+		return err
+	}
+
 	return envstore.UpdateWithConflictRetry(ctx, r.Client, types.NamespacedName{Name: name, Namespace: envNs}, func() *networkingv1.Ingress {
 		return &networkingv1.Ingress{}
 	}, func(existing *networkingv1.Ingress) (bool, error) {
+		if err := conflictIfUnmanaged(existing, "Ingress"); err != nil {
+			return false, err
+		}
 		changed := false
 		if !equality.Semantic.DeepEqual(existing.Spec, desired.Spec) {
 			existing.Spec = desired.Spec
@@ -2286,10 +2359,19 @@ func (r *AppReconciler) reconcileServiceAccount(ctx context.Context, app *mortis
 		return err
 	}
 
+	// Ownership guard: silently relabeling a foreign ServiceAccount and
+	// swapping its imagePullSecrets would redirect its pods' image pulls.
+	if err := conflictIfUnmanaged(&existing, "ServiceAccount"); err != nil {
+		return err
+	}
+
 	if !equality.Semantic.DeepEqual(existing.Labels, desired.Labels) || !imagePullSecretsEqual(existing.ImagePullSecrets, desired.ImagePullSecrets) {
 		return envstore.UpdateWithConflictRetry(ctx, r.Client, types.NamespacedName{Name: app.Name, Namespace: envNs}, func() *corev1.ServiceAccount {
 			return &corev1.ServiceAccount{}
 		}, func(existing *corev1.ServiceAccount) (bool, error) {
+			if err := conflictIfUnmanaged(existing, "ServiceAccount"); err != nil {
+				return false, err
+			}
 			changed := false
 			if !equality.Semantic.DeepEqual(existing.Labels, desired.Labels) {
 				existing.Labels = desired.Labels
@@ -2380,10 +2462,19 @@ func (r *AppReconciler) reconcilePVCs(ctx context.Context, app *mortisev1alpha1.
 			return err
 		}
 
+		// The goto path skips this guard (the racing creator may be foreign);
+		// the closure guard below re-checks against the re-fetched object.
+		if err := conflictIfUnmanaged(&existing, "PersistentVolumeClaim"); err != nil {
+			return err
+		}
+
 	updatePVC:
 		if err := envstore.UpdateWithConflictRetry(ctx, r.Client, types.NamespacedName{Name: name, Namespace: envNs}, func() *corev1.PersistentVolumeClaim {
 			return &corev1.PersistentVolumeClaim{}
 		}, func(existing *corev1.PersistentVolumeClaim) (bool, error) {
+			if err := conflictIfUnmanaged(existing, "PersistentVolumeClaim"); err != nil {
+				return false, err
+			}
 			// PVC spec is largely immutable; only storage size can be expanded (requires bound claim + expandable SC)
 			changed := false
 			currentSize := existing.Spec.Resources.Requests[corev1.ResourceStorage]
@@ -3066,6 +3157,31 @@ func (r *AppReconciler) hashEnvSecretData(ctx context.Context, appName, envNs st
 func isMortiseManaged(obj client.Object) bool {
 	labels := obj.GetLabels()
 	return labels[envstore.ManagedByLabel] == envstore.ManagedByValue
+}
+
+// resourceConflictError reports a pre-existing resource that carries one of
+// this App's reserved names but not the Mortise managed-by label. Terminal
+// until the user renames or deletes the conflicting resource;
+// envResourceError translates it into a Failed ResourceConflict condition.
+type resourceConflictError struct {
+	kind      string
+	name      string
+	namespace string
+}
+
+func (e *resourceConflictError) Error() string {
+	return fmt.Sprintf("%s %q already exists in namespace %q and is not managed by Mortise; rename or delete it to let Mortise deploy this app", e.kind, e.name, e.namespace)
+}
+
+// conflictIfUnmanaged is the ownership guard for workload reconcile paths:
+// it returns a *resourceConflictError when obj is not Mortise-managed. Call
+// it both after the initial read AND inside the conflict-retry closure so a
+// foreign resource created between the two is still refused.
+func conflictIfUnmanaged(obj client.Object, kind string) error {
+	if isMortiseManaged(obj) {
+		return nil
+	}
+	return &resourceConflictError{kind: kind, name: obj.GetName(), namespace: obj.GetNamespace()}
 }
 
 // ensureWebhook registers a webhook on the git repo if not already done.
@@ -4361,6 +4477,13 @@ func (r *AppReconciler) reconcileExternalNameService(ctx context.Context, app *m
 		return r.Create(ctx, desired)
 	}
 	if err != nil {
+		return err
+	}
+
+	// Ownership guard before the type-change delete below: a foreign
+	// Service is almost never ExternalName-typed, so without this check it
+	// would be deleted on sight.
+	if err := conflictIfUnmanaged(&existing, "Service"); err != nil {
 		return err
 	}
 
