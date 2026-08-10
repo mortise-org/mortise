@@ -225,7 +225,9 @@ install_mortise() {
 
         if command -v docker >/dev/null 2>&1 && [ -f "${script_dir}/../Dockerfile" ]; then
             info "Building Mortise Docker image..."
-            docker build -t mortise:dev "${script_dir}/.." -q
+            # --target is load-bearing: the Dockerfile's final stage is the
+            # observer binary; untargeted builds tag the wrong binary.
+            docker build --target operator -t mortise:dev "${script_dir}/.." -q
             if command -v k3d >/dev/null 2>&1; then
                 local k3d_cluster
                 k3d_cluster=$(k3d cluster list -o json 2>/dev/null | grep -o '"name":"[^"]*"' | head -1 | cut -d'"' -f4 || true)
@@ -252,7 +254,7 @@ install_mortise() {
     helm upgrade --install mortise "$chart_ref" \
         --namespace "$MORTISE_NAMESPACE" --create-namespace \
         --set platformConfig.buildPlatform="${BUILD_PLATFORM}" \
-        --set metricsServer.enabled=false \
+        --set "metrics-server.enabled=false" \
         $traefik_flag \
         $storage_flags \
         $dev_image_flags \

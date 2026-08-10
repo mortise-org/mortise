@@ -1,7 +1,7 @@
 dependencies:
 - name: mortise-core
   repository: file://../mortise-core
-  version: 0.1.0
+  version: 0.0.0-dev
 - name: traefik
   repository: https://traefik.github.io/charts
   version: 34.3.0
@@ -11,5 +11,5 @@ dependencies:
 - name: metrics-server
   repository: https://kubernetes-sigs.github.io/metrics-server/
   version: 3.12.2
-digest: sha256:7af329cec186992d2a89305d93892b891ba8b8f66e19c3391180c7f3a6ad8fb6
-generated: "2026-07-04T21:59:42.119163-06:00"
+digest: sha256:be5fbef6ae37d1db4b0c804cff9cbc702aed97635680ab04591f01647c57f61b
+generated: "2026-08-09T21:48:47.719843194-07:00"
