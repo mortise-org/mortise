@@ -28,6 +28,7 @@ func main() {
 		enableTraffic = flag.Bool("enable-traffic", true, "Enable traffic collection from ingress access logs")
 		ingressNs     = flag.String("ingress-namespace", "mortise-deps", "Namespace where ingress controller pods run")
 		trafficBucket = flag.Duration("traffic-bucket-size", 5*time.Second, "Traffic aggregation bucket size")
+		pvcInterval   = flag.Duration("pvc-poll-interval", time.Minute, "PVC usage collection interval (0 disables)")
 	)
 	flag.Parse()
 
@@ -62,17 +63,24 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()
 
+	health := NewHealthTracker(store, log)
+
 	if mc != nil {
-		metricsCollector := NewMetricsCollector(cs, mc, store, liveCache, *pollInterval, log)
+		metricsCollector := NewMetricsCollector(cs, mc, store, liveCache, health, *pollInterval, log)
 		go metricsCollector.Run(ctx)
 	}
 
-	logCollector := NewLogCollector(cs, store, *pollInterval, *maxLogPods, log)
+	logCollector := NewLogCollector(cs, store, health, *pollInterval, *maxLogPods, log)
 	go logCollector.Run(ctx)
 
 	if *enableTraffic {
-		trafficCollector := NewTrafficCollector(cs, store, liveTrafficCache, *pollInterval, *trafficBucket, *ingressNs, log)
+		trafficCollector := NewTrafficCollector(cs, store, liveTrafficCache, health, *pollInterval, *trafficBucket, *ingressNs, log)
 		go trafficCollector.Run(ctx)
+	}
+
+	if *pvcInterval > 0 {
+		pvcCollector := NewPVCCollector(cs, store, health, *pvcInterval, log)
+		go pvcCollector.Run(ctx)
 	}
 
 	go func() {
@@ -95,7 +103,7 @@ func main() {
 
 	srv := &http.Server{
 		Addr:    *listen,
-		Handler: NewObserverServer(store, liveCache, liveTrafficCache),
+		Handler: NewObserverServer(store, liveCache, liveTrafficCache, health),
 	}
 
 	go func() {

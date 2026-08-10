@@ -184,7 +184,7 @@ func TestMetricsCollectorCollect(t *testing.T) {
 	}
 	defer store.Close()
 
-	collector := NewMetricsCollector(cs, mc, store, NewLiveMetricsCache(time.Hour), time.Minute, discardLogger())
+	collector := NewMetricsCollector(cs, mc, store, NewLiveMetricsCache(time.Hour), NewHealthTracker(store, discardLogger()), time.Minute, discardLogger())
 
 	collector.collect(context.Background())
 
@@ -227,7 +227,7 @@ func TestMetricsCollectorSkipsNonMortiseNamespaces(t *testing.T) {
 	}
 	defer store.Close()
 
-	collector := NewMetricsCollector(cs, mc, store, NewLiveMetricsCache(time.Hour), time.Minute, discardLogger())
+	collector := NewMetricsCollector(cs, mc, store, NewLiveMetricsCache(time.Hour), NewHealthTracker(store, discardLogger()), time.Minute, discardLogger())
 	collector.collect(context.Background())
 
 	results, err := store.QueryMetrics("default", "web", "prod", 0, time.Now().Unix()+60, 60)
@@ -266,7 +266,7 @@ func TestMetricsCollectorSkipsUnlabeledPods(t *testing.T) {
 	}
 	defer store.Close()
 
-	collector := NewMetricsCollector(cs, mc, store, NewLiveMetricsCache(time.Hour), time.Minute, discardLogger())
+	collector := NewMetricsCollector(cs, mc, store, NewLiveMetricsCache(time.Hour), NewHealthTracker(store, discardLogger()), time.Minute, discardLogger())
 	collector.collect(context.Background())
 
 	results, err := store.QueryMetrics("pj-demo-prod", "", "", 0, time.Now().Unix()+60, 60)
@@ -316,7 +316,7 @@ func TestMetricsCollectorMultiContainer(t *testing.T) {
 	}
 	defer store.Close()
 
-	collector := NewMetricsCollector(cs, mc, store, NewLiveMetricsCache(time.Hour), time.Minute, discardLogger())
+	collector := NewMetricsCollector(cs, mc, store, NewLiveMetricsCache(time.Hour), NewHealthTracker(store, discardLogger()), time.Minute, discardLogger())
 	collector.collect(context.Background())
 
 	results, err := store.QueryMetrics("pj-demo-prod", "web", "prod", 0, time.Now().Unix()+60, 60)
@@ -362,7 +362,7 @@ func TestLogCollectorSyncFindsEnvPods(t *testing.T) {
 	}
 	defer store.Close()
 
-	collector := NewLogCollector(withBlockingPodLogs(t, cs), store, time.Minute, 100, discardLogger())
+	collector := NewLogCollector(withBlockingPodLogs(t, cs), store, NewHealthTracker(store, discardLogger()), time.Minute, 100, discardLogger())
 	collector.sync(context.Background())
 
 	collector.mu.Lock()
@@ -414,7 +414,7 @@ func TestLogCollectorMaxPods(t *testing.T) {
 	}
 	defer store.Close()
 
-	collector := NewLogCollector(withBlockingPodLogs(t, cs), store, time.Minute, 2, discardLogger())
+	collector := NewLogCollector(withBlockingPodLogs(t, cs), store, NewHealthTracker(store, discardLogger()), time.Minute, 2, discardLogger())
 	collector.sync(context.Background())
 
 	collector.mu.Lock()
@@ -447,7 +447,7 @@ func TestLogCollectorSyncCleansUpRemovedPods(t *testing.T) {
 	}
 	defer store.Close()
 
-	collector := NewLogCollector(withBlockingPodLogs(t, cs), store, time.Minute, 100, discardLogger())
+	collector := NewLogCollector(withBlockingPodLogs(t, cs), store, NewHealthTracker(store, discardLogger()), time.Minute, 100, discardLogger())
 	collector.sync(context.Background())
 
 	collector.mu.Lock()
@@ -492,7 +492,7 @@ func TestLogCollectorSyncSkipsNonMortiseNamespaces(t *testing.T) {
 	}
 	defer store.Close()
 
-	collector := NewLogCollector(withBlockingPodLogs(t, cs), store, time.Minute, 100, discardLogger())
+	collector := NewLogCollector(withBlockingPodLogs(t, cs), store, NewHealthTracker(store, discardLogger()), time.Minute, 100, discardLogger())
 	collector.sync(context.Background())
 
 	collector.mu.Lock()
@@ -514,7 +514,7 @@ func TestLogCollectorStartTailerIdempotent(t *testing.T) {
 	}
 	defer store.Close()
 
-	collector := NewLogCollector(withBlockingPodLogs(t, cs), store, time.Minute, 100, discardLogger())
+	collector := NewLogCollector(withBlockingPodLogs(t, cs), store, NewHealthTracker(store, discardLogger()), time.Minute, 100, discardLogger())
 
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
@@ -551,7 +551,7 @@ func TestLogCollectorStopAll(t *testing.T) {
 	}
 	defer store.Close()
 
-	collector := NewLogCollector(withBlockingPodLogs(t, cs), store, time.Minute, 100, discardLogger())
+	collector := NewLogCollector(withBlockingPodLogs(t, cs), store, NewHealthTracker(store, discardLogger()), time.Minute, 100, discardLogger())
 
 	ctx := context.Background()
 	for _, name := range []string{"pod-1", "pod-2", "pod-3"} {
@@ -600,7 +600,7 @@ func TestMetricsCollectorRunStopsOnCancel(t *testing.T) {
 	}
 	defer store.Close()
 
-	collector := NewMetricsCollector(cs, mc, store, NewLiveMetricsCache(time.Hour), time.Hour, discardLogger())
+	collector := NewMetricsCollector(cs, mc, store, NewLiveMetricsCache(time.Hour), NewHealthTracker(store, discardLogger()), time.Hour, discardLogger())
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -628,7 +628,7 @@ func TestLogCollectorRunStopsOnCancel(t *testing.T) {
 	}
 	defer store.Close()
 
-	collector := NewLogCollector(cs, store, time.Hour, 100, discardLogger())
+	collector := NewLogCollector(cs, store, NewHealthTracker(store, discardLogger()), time.Hour, 100, discardLogger())
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -658,7 +658,7 @@ func TestLogTailerCleansUpOnExit(t *testing.T) {
 	}
 	defer store.Close()
 
-	collector := NewLogCollector(withBlockingPodLogs(t, cs), store, time.Minute, 100, discardLogger())
+	collector := NewLogCollector(withBlockingPodLogs(t, cs), store, NewHealthTracker(store, discardLogger()), time.Minute, 100, discardLogger())
 
 	ctx, cancel := context.WithCancel(context.Background())
 	pod := &corev1.Pod{
@@ -705,7 +705,7 @@ func TestTrafficTailerCleansUpOnExit(t *testing.T) {
 	}
 	defer store.Close()
 
-	tc := NewTrafficCollector(cs, store, NewLiveTrafficCache(time.Hour), time.Minute, 5*time.Second, "traefik", discardLogger())
+	tc := NewTrafficCollector(cs, store, NewLiveTrafficCache(time.Hour), NewHealthTracker(store, discardLogger()), time.Minute, 5*time.Second, "traefik", discardLogger())
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -732,7 +732,7 @@ func TestTrafficTailerCleansUpOnExit(t *testing.T) {
 // --- Reservoir sampling (P2-5) ---
 
 func TestReservoirSamplingCapsLatencies(t *testing.T) {
-	tc := NewTrafficCollector(fake.NewClientset(), nil, nil, time.Minute, 5*time.Second, "traefik", discardLogger())
+	tc := NewTrafficCollector(fake.NewClientset(), nil, nil, nil, time.Minute, 5*time.Second, "traefik", discardLogger())
 
 	tc.svcMu.Lock()
 	tc.svcCache["pj-demo-app@kubernetes"] = appEnvKey{namespace: "pj-demo", app: "web", env: "prod"}
