@@ -2,8 +2,8 @@ apiVersion: v2
 name: mortise-core
 description: Mortise operator — the controller, API, CRDs, and RBAC
 type: application
-version: 0.1.0
-appVersion: "0.1.0"
+version: 0.0.0-dev
+appVersion: "0.0.0-dev"
 
 # Operator-only chart. No infrastructure dependencies — bring your own ingress
 # controller, cert-manager, BuildKit, and registry. For a batteries-included

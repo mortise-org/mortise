@@ -48,6 +48,19 @@ commit, cut a prerelease tag (e.g. `v0.2.0-rc.1`).
 
 ## Hotfix / rollback
 
+## Placeholder version policy
+
+The in-repo charts carry the placeholder version `0.0.0-dev`. It is not a
+release: CI stamps the real tag-derived version at release time, and
+`release.yml` refuses to publish a chart still carrying the placeholder.
+The placeholder is deliberately NOT a plausible release number — it used
+to be `0.1.0`, which collided with the genuinely published `mortise-0.1.0`
+artifact on gh-pages, making "am I looking at the dev tree or the 0.1.0
+release?" unanswerable (the mechanism behind #446/#379's stale-template
+reports). `release.yml` also refuses to overwrite a version that already
+exists on gh-pages: published chart artifacts are immutable, same as
+images.
+
 If a release is broken:
 
 - **Roll back a Helm install**: `helm rollback mortise` or reinstall with
