@@ -5,6 +5,7 @@ import (
 	cryptorand "crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -22,7 +23,18 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
+	"github.com/mortise-org/mortise/internal/authz"
 	"github.com/mortise-org/mortise/internal/git"
+)
+
+// Sentinel errors returned by getOrCreateGitProvider so handlers can map the
+// on-demand creation failure modes to the right HTTP status.
+var (
+	// errProviderCreateForbidden means the caller lacks permission to create a
+	// GitProvider on-demand (creation is admin-only, matching CreateGitProvider).
+	errProviderCreateForbidden = errors.New("creating a git provider requires admin privileges")
+	// errProviderHostInvalid means the caller-supplied host failed validation.
+	errProviderHostInvalid = errors.New("invalid git provider host")
 )
 
 const (
@@ -37,6 +49,7 @@ type DeviceFlowHandler struct {
 	client     client.Client
 	clientset  kubernetes.Interface
 	httpClient HTTPClient
+	authz      authz.PolicyEngine
 }
 
 // HTTPClient abstracts HTTP requests for testability.
@@ -44,8 +57,8 @@ type HTTPClient interface {
 	Do(req *http.Request) (*http.Response, error)
 }
 
-func newDeviceFlowHandler(c client.Client, cs kubernetes.Interface) *DeviceFlowHandler {
-	return &DeviceFlowHandler{client: c, clientset: cs, httpClient: http.DefaultClient}
+func newDeviceFlowHandler(c client.Client, cs kubernetes.Interface, policy authz.PolicyEngine) *DeviceFlowHandler {
+	return &DeviceFlowHandler{client: c, clientset: cs, httpClient: http.DefaultClient, authz: policy}
 }
 
 // deviceCodeResponse is the JSON body returned from the device code request.
@@ -103,7 +116,7 @@ func (d *DeviceFlowHandler) RequestCode(w http.ResponseWriter, r *http.Request) 
 	gp, err := d.getOrCreateGitProvider(r.Context(), providerName, providerType, defaultHost)
 	if err != nil {
 		log.Error(err, "get git provider", "provider", providerName)
-		writeJSON(w, http.StatusNotFound, errorResponse{err.Error()})
+		writeGetOrCreateProviderError(w, providerName, err)
 		return
 	}
 
@@ -197,7 +210,7 @@ func (d *DeviceFlowHandler) Poll(w http.ResponseWriter, r *http.Request) {
 	gp, err := d.getOrCreateGitProvider(r.Context(), providerName, providerType, defaultHost)
 	if err != nil {
 		log.Error(err, "get git provider", "provider", providerName)
-		writeJSON(w, http.StatusNotFound, errorResponse{"git provider not found: " + providerName})
+		writeGetOrCreateProviderError(w, providerName, err)
 		return
 	}
 
@@ -369,7 +382,7 @@ func (d *DeviceFlowHandler) StorePAT(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if _, err := d.getOrCreateGitProvider(r.Context(), providerName, providerType, host); err != nil {
-		writeJSON(w, http.StatusNotFound, errorResponse{"git provider not found: " + providerName})
+		writeGetOrCreateProviderError(w, providerName, err)
 		return
 	}
 
@@ -418,6 +431,26 @@ func (d *DeviceFlowHandler) getOrCreateGitProvider(ctx context.Context, name str
 	}
 	if !k8serrors.IsNotFound(err) {
 		return nil, fmt.Errorf("get git provider %q: %w", name, err)
+	}
+
+	// Provider doesn't exist — creating one on-demand is a platform-scoped,
+	// admin-only act (it mirrors CreateGitProvider). Gate it before touching
+	// any host input so a viewer cannot mint cluster-scoped resources or drive
+	// a server-side request at an attacker-chosen host.
+	principal := PrincipalFromContext(ctx)
+	if principal == nil {
+		return nil, errProviderCreateForbidden
+	}
+	allowed, err := d.authz.Authorize(ctx, *principal, authz.Resource{Kind: "gitprovider"}, authz.ActionCreate)
+	if err != nil {
+		return nil, fmt.Errorf("authorize git provider creation: %w", err)
+	}
+	if !allowed {
+		return nil, errProviderCreateForbidden
+	}
+
+	if msg := validateGitProviderHost(host); msg != "" {
+		return nil, fmt.Errorf("%w: %s", errProviderHostInvalid, msg)
 	}
 
 	// Provider doesn't exist — try to create with the appropriate type.
@@ -510,6 +543,20 @@ func (d *DeviceFlowHandler) getGitProviderWithRetry(ctx context.Context, name st
 	}
 
 	return err
+}
+
+// writeGetOrCreateProviderError maps a getOrCreateGitProvider failure to the
+// appropriate HTTP status: 403 when on-demand creation is denied, 400 when the
+// supplied host is invalid, and 404 otherwise (provider genuinely absent).
+func writeGetOrCreateProviderError(w http.ResponseWriter, providerName string, err error) {
+	switch {
+	case errors.Is(err, errProviderCreateForbidden):
+		writeJSON(w, http.StatusForbidden, errorResponse{errProviderCreateForbidden.Error()})
+	case errors.Is(err, errProviderHostInvalid):
+		writeJSON(w, http.StatusBadRequest, errorResponse{err.Error()})
+	default:
+		writeJSON(w, http.StatusNotFound, errorResponse{"git provider not found: " + providerName})
+	}
 }
 
 // storeUserToken persists a git provider access token in a k8s Secret keyed
