@@ -765,6 +765,9 @@ func resolveEnvBuildIdentity(app *mortisev1alpha1.App, env mortisev1alpha1.Envir
 // the image to use for this env's deployment, or "" if a build is still in
 // flight (caller should skip deployment and requeue). statusDirty is true when
 // applyEnvBuildSuccess mutated app.Status and the caller must flush.
+// shouldClearNoCache is true when this env consumed a pending rebuild request;
+// the caller clears the rebuild markers once after the env loop, so a mid-loop
+// error return leaves them in place and the rebuild stays pending.
 func (r *AppReconciler) reconcileEnvBuild(ctx context.Context, app *mortisev1alpha1.App, projectionEnvOrder []string, envName, branch, revision string) (image string, requeue bool, statusDirty bool, shouldClearNoCache bool, err error) {
 	log := logf.FromContext(ctx)
 
@@ -830,6 +833,12 @@ func (r *AppReconciler) reconcileEnvBuild(ctx context.Context, app *mortisev1alp
 		}
 	}
 
+	// Reaching ensureAppBuildRun with markers pending means this env consumes
+	// the rebuild request: the ensured BuildRun carries its RequestID/NoCache.
+	// Report that so the caller clears the app-wide markers once after the
+	// env loop — clearing mid-loop would starve the remaining envs.
+	consumedRebuild := hasPendingRebuildRequest(app)
+
 	run, err := r.ensureAppBuildRun(ctx, app, envName, branch, revision, imageRef.Full, pullRef.Full)
 	if err != nil {
 		log.Error(err, "ensure buildrun failed", "env", envName)
@@ -840,15 +849,15 @@ func (r *AppReconciler) reconcileEnvBuild(ctx context.Context, app *mortisev1alp
 	switch run.Status.Phase {
 	case mortisev1alpha1.BuildRunPhaseSucceeded:
 		r.applyEnvBuildSuccess(ctx, app, projectionEnvOrder, envName, revision, run.Status.Image, run.Status.Digest, run.Status.DetectedPort)
-		return run.Status.Image, false, true, false, nil
+		return run.Status.Image, false, true, consumedRebuild, nil
 	case mortisev1alpha1.BuildRunPhaseFailed:
 		if err := r.setBuildFailureCondition(ctx, app, firstNonEmpty(run.Status.FailureReason, "BuildFailed"), run.Status.FailureMessage); err != nil {
 			return "", false, false, false, err
 		}
-		return "", false, true, false, nil
+		return "", false, true, consumedRebuild, nil
 	default:
 		r.markEnvBuildInProgress(app, envName, revision)
-		return "", true, true, false, nil
+		return "", true, true, consumedRebuild, nil
 	}
 }
 
