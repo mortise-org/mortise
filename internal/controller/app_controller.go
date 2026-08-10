@@ -82,6 +82,25 @@ const buildPollInterval = 15 * time.Second
 // that owns the contested host, so recovery has to poll for it going away.
 const domainCollisionRequeueInterval = time.Minute
 
+// rbacPropagationWindow bounds how long after an env namespace's creation a
+// Forbidden error is attributed to the per-namespace RoleBinding (created by
+// the Project controller during namespace bootstrap) not having reached the
+// authorizer yet. Past this window a Forbidden is a genuine RBAC
+// misconfiguration and is surfaced as a Failed condition instead.
+const rbacPropagationWindow = 2 * time.Minute
+
+// rbacPropagationRequeue is the fast retry used while a young env namespace's
+// RBAC is still propagating. Returned without an error so the workqueue's
+// exponential rate limiter isn't fed — a streak of propagation-race denials
+// during a busy bootstrap would otherwise compound into minutes of requeue
+// delay far beyond the actual propagation window.
+const rbacPropagationRequeue = 2 * time.Second
+
+// appRBACForbiddenCondition is set when the operator is persistently forbidden
+// from writing into an env namespace old enough that RBAC propagation cannot
+// explain it.
+const appRBACForbiddenCondition = "RBACForbidden"
+
 // AppReconciler reconciles a App object
 type AppReconciler struct {
 	client.Client
@@ -245,17 +264,17 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		}
 
 		if err := r.reconcilePVCs(ctx, &app, envNs, env.Name); err != nil {
-			return ctrl.Result{}, fmt.Errorf("reconcile PVCs for env %s: %w", env.Name, err)
+			return r.envResourceError(ctx, &app, envNs, env.Name, "reconcile PVCs", err)
 		}
 		if err := r.reconcileConfigMaps(ctx, &app, envNs, env.Name); err != nil {
-			return ctrl.Result{}, fmt.Errorf("reconcile config maps for env %s: %w", env.Name, err)
+			return r.envResourceError(ctx, &app, envNs, env.Name, "reconcile config maps", err)
 		}
 		if err := r.reconcileServiceAccount(ctx, &app, envNs, env.Name); err != nil {
-			return ctrl.Result{}, fmt.Errorf("reconcile service account for env %s: %w", env.Name, err)
+			return r.envResourceError(ctx, &app, envNs, env.Name, "reconcile service account", err)
 		}
 		credentialsHash, err := r.reconcileCredentialsSecret(ctx, &app, envNs, env.Name)
 		if err != nil {
-			return ctrl.Result{}, fmt.Errorf("reconcile credentials secret for env %s: %w", env.Name, err)
+			return r.envResourceError(ctx, &app, envNs, env.Name, "reconcile credentials secret", err)
 		}
 
 		autoRedeploy := project != nil && project.Spec.AutoRedeploy
@@ -293,17 +312,17 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 				continue
 			}
 			if err := r.reconcileCronJob(ctx, &app, env, envNs, image, credentialsHash, autoRedeploy); err != nil {
-				return ctrl.Result{}, fmt.Errorf("reconcile cronjob for env %s: %w", env.Name, err)
+				return r.envResourceError(ctx, &app, envNs, env.Name, "reconcile cronjob", err)
 			}
 			continue
 		}
 
 		if err := r.reconcileDeployment(ctx, &app, env, envNs, image, credentialsHash, autoRedeploy); err != nil {
-			return ctrl.Result{}, fmt.Errorf("reconcile deployment for env %s: %w", env.Name, err)
+			return r.envResourceError(ctx, &app, envNs, env.Name, "reconcile deployment", err)
 		}
 
 		if err := r.reconcileService(ctx, &app, env, envNs); err != nil {
-			return ctrl.Result{}, fmt.Errorf("reconcile service for env %s: %w", env.Name, err)
+			return r.envResourceError(ctx, &app, envNs, env.Name, "reconcile service", err)
 		}
 
 		if app.Spec.Network.Public {
@@ -321,7 +340,7 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 					// contested domain. Only this env's Ingress is withheld.
 					domainCollisionErrs = append(domainCollisionErrs, err.Error())
 				} else if err := r.reconcileIngress(ctx, &app, env, envNs); err != nil {
-					return ctrl.Result{}, fmt.Errorf("reconcile ingress for env %s: %w", env.Name, err)
+					return r.envResourceError(ctx, &app, envNs, env.Name, "reconcile ingress", err)
 				}
 			}
 		}
@@ -390,9 +409,21 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		}
 		domainCollisionCleared = true
 	}
+	// Same for a stale RBACForbidden condition: writes into every env ns
+	// succeeded this pass, so the operator's access is live again.
+	rbacForbiddenCleared := false
+	if meta.FindStatusCondition(app.Status.Conditions, appRBACForbiddenCondition) != nil {
+		if err := r.updateAppStatus(ctx, &app, func(status *mortisev1alpha1.AppStatus) {
+			meta.RemoveStatusCondition(&status.Conditions, appRBACForbiddenCondition)
+		}); err != nil {
+			return ctrl.Result{}, fmt.Errorf("clear rbac forbidden condition: %w", err)
+		}
+		rbacForbiddenCleared = true
+	}
 
 	if !needsRequeue && (app.Status.Phase != mortisev1alpha1.AppPhaseFailed ||
 		domainCollisionCleared ||
+		rbacForbiddenCleared ||
 		shouldRefreshFailedAppStatus(&app, resolvedEnvs, previewEnvNames)) {
 		if err := r.updateStatus(ctx, &app, resolvedEnvs, previewEnvNames); err != nil {
 			return ctrl.Result{}, fmt.Errorf("update status: %w", err)
@@ -412,6 +443,54 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	}
 
 	return ctrl.Result{}, nil
+}
+
+// envResourceError converts a failure from a per-env resource reconcile into
+// the (Result, error) pair Reconcile should return. The scoped-RBAC model
+// grants the operator write access to each pj-* namespace via a RoleBinding
+// created during namespace bootstrap, and App reconciles race that
+// propagation: a Forbidden inside a young env namespace is transient, so
+// requeue quickly without an error rather than feeding the workqueue's
+// exponential rate limiter. A Forbidden in an older namespace is a genuine
+// misconfiguration — mark the App Failed and return the error.
+func (r *AppReconciler) envResourceError(ctx context.Context, app *mortisev1alpha1.App, envNs, envName, op string, err error) (ctrl.Result, error) {
+	wrapped := fmt.Errorf("%s for env %s: %w", op, envName, err)
+	if !errors.IsForbidden(err) {
+		return ctrl.Result{}, wrapped
+	}
+	var ns corev1.Namespace
+	if getErr := r.Get(ctx, client.ObjectKey{Name: envNs}, &ns); getErr != nil {
+		if errors.IsNotFound(getErr) {
+			// The env namespace doesn't exist yet: with scoped RBAC the
+			// authorizer denies before existence is even checked, so a write
+			// that races the Project controller's namespace bootstrap (e.g.
+			// a preview env override landing on the App before the ns is
+			// created) surfaces as Forbidden-in-a-missing-namespace. That is
+			// the earliest phase of the same propagation race — fast requeue.
+			logf.FromContext(ctx).Info("forbidden before env namespace exists; fast requeue",
+				"namespace", envNs, "op", op, "cause", err.Error())
+			return ctrl.Result{RequeueAfter: rbacPropagationRequeue}, nil
+		}
+		return ctrl.Result{}, wrapped
+	}
+	if r.clock().Since(ns.CreationTimestamp.Time) < rbacPropagationWindow {
+		logf.FromContext(ctx).Info("forbidden while namespace RBAC propagates; fast requeue",
+			"namespace", envNs, "op", op, "cause", err.Error())
+		return ctrl.Result{RequeueAfter: rbacPropagationRequeue}, nil
+	}
+	if updateErr := r.updateAppStatus(ctx, app, func(status *mortisev1alpha1.AppStatus) {
+		status.Phase = mortisev1alpha1.AppPhaseFailed
+		meta.SetStatusCondition(&status.Conditions, metav1.Condition{
+			Type:               appRBACForbiddenCondition,
+			Status:             metav1.ConditionTrue,
+			Reason:             "OperatorForbidden",
+			Message:            wrapped.Error(),
+			ObservedGeneration: app.Generation,
+		})
+	}); updateErr != nil {
+		logf.FromContext(ctx).Error(updateErr, "update status after persistent forbidden", "namespace", envNs)
+	}
+	return ctrl.Result{}, wrapped
 }
 
 // appFinalizer is the finalizer string applied to every App. Cleared only
@@ -4131,7 +4210,7 @@ func (r *AppReconciler) reconcileExternalSource(ctx context.Context, app *mortis
 		}
 
 		if _, err := r.reconcileCredentialsSecret(ctx, app, envNs, env.Name); err != nil {
-			return ctrl.Result{}, fmt.Errorf("reconcile credentials secret for env %s: %w", env.Name, err)
+			return r.envResourceError(ctx, app, envNs, env.Name, "reconcile credentials secret", err)
 		}
 
 		if app.Spec.Network.Public {
@@ -4150,10 +4229,10 @@ func (r *AppReconciler) reconcileExternalSource(ctx context.Context, app *mortis
 					continue
 				}
 				if err := r.reconcileExternalNameService(ctx, app, env, envNs); err != nil {
-					return ctrl.Result{}, fmt.Errorf("reconcile externalname service for env %s: %w", env.Name, err)
+					return r.envResourceError(ctx, app, envNs, env.Name, "reconcile externalname service", err)
 				}
 				if err := r.reconcileIngress(ctx, app, env, envNs); err != nil {
-					return ctrl.Result{}, fmt.Errorf("reconcile ingress for env %s: %w", env.Name, err)
+					return r.envResourceError(ctx, app, envNs, env.Name, "reconcile ingress", err)
 				}
 			}
 		}
