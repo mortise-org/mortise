@@ -244,6 +244,149 @@ func TestDeleteVarRetriesOnConflict(t *testing.T) {
 	}
 }
 
+func TestApplyConcurrentWritersBothSurvive(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+
+	existing := buildSecret("ns", AppEnvSecretName("app"), []Env{{Name: "FOO", Value: "1", Source: "user"}}, nil)
+	updateCalls := 0
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(existing).WithInterceptorFuncs(interceptor.Funcs{
+		Update: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+			updateCalls++
+			if updateCalls == 1 {
+				// Simulate a second Apply landing between this writer's read
+				// and its update, then fail the stale update with a conflict.
+				competing := &Store{Client: c}
+				if err := competing.Apply(ctx, "ns", "app", nil, func(current []Env) ([]Env, error) {
+					return append(current, Env{Name: "BAZ", Value: "3", Source: "user"}), nil
+				}); err != nil {
+					return err
+				}
+				return apierrors.NewConflict(schema.GroupResource{Group: "", Resource: "secrets"}, obj.GetName(), errors.New("conflict"))
+			}
+			return c.Update(ctx, obj, opts...)
+		},
+	}).Build()
+
+	store := &Store{Client: c}
+	err := store.Apply(context.Background(), "ns", "app", nil, func(current []Env) ([]Env, error) {
+		return append(current, Env{Name: "BAR", Value: "2", Source: "user"}), nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := store.Get(context.Background(), "ns", "app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := map[string]bool{}
+	for _, e := range got {
+		names[e.Name] = true
+	}
+	for _, want := range []string{"FOO", "BAR", "BAZ"} {
+		if !names[want] {
+			t.Errorf("expected %s to survive concurrent Apply calls, got %v", want, got)
+		}
+	}
+}
+
+func TestApplyCreatesWhenMissing(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	c := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	store := &Store{Client: c}
+	err := store.Apply(context.Background(), "ns", "app", nil, func(current []Env) ([]Env, error) {
+		if current != nil {
+			t.Errorf("expected nil current for missing secret, got %v", current)
+		}
+		return []Env{{Name: "A", Value: "1", Source: "user"}}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := store.Get(context.Background(), "ns", "app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Name != "A" {
+		t.Fatalf("expected [A], got %v", got)
+	}
+}
+
+func TestApplyErrSkipDoesNotCreateSecret(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	c := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	store := &Store{Client: c}
+	err := store.Apply(context.Background(), "ns", "app", nil, func(current []Env) ([]Env, error) {
+		return nil, ErrSkip
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	exists, err := store.SecretExists(context.Background(), "ns", "app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exists {
+		t.Fatal("ErrSkip should not create the secret")
+	}
+}
+
+func TestApplyRetriesAsUpdateOnLostCreateRace(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+
+	createCalls := 0
+	c := fake.NewClientBuilder().WithScheme(scheme).WithInterceptorFuncs(interceptor.Funcs{
+		Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+			createCalls++
+			if createCalls == 1 {
+				// Simulate another writer creating the secret first.
+				winner := buildSecret("ns", AppEnvSecretName("app"), []Env{{Name: "WINNER", Value: "1", Source: "user"}}, nil)
+				if err := c.Create(ctx, winner); err != nil {
+					return err
+				}
+				return apierrors.NewAlreadyExists(schema.GroupResource{Group: "", Resource: "secrets"}, obj.GetName())
+			}
+			return c.Create(ctx, obj, opts...)
+		},
+	}).Build()
+
+	store := &Store{Client: c}
+	err := store.Apply(context.Background(), "ns", "app", nil, func(current []Env) ([]Env, error) {
+		return append(current, Env{Name: "LOSER", Value: "2", Source: "user"}), nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := store.Get(context.Background(), "ns", "app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := map[string]bool{}
+	for _, e := range got {
+		names[e.Name] = true
+	}
+	if !names["WINNER"] || !names["LOSER"] {
+		t.Fatalf("expected both writers' vars after create race, got %v", got)
+	}
+}
+
 func TestUpdateWithConflictRetryStopsWhenUnchanged(t *testing.T) {
 	scheme := runtime.NewScheme()
 	if err := corev1.AddToScheme(scheme); err != nil {
