@@ -32,6 +32,7 @@ import (
 
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
 	"github.com/mortise-org/mortise/internal/activity"
+	"github.com/mortise-org/mortise/internal/constants"
 )
 
 var _ = Describe("Project Controller", func() {
@@ -117,7 +118,7 @@ var _ = Describe("Project Controller", func() {
 			project := &mortisev1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: projectName}}
 			Expect(k8sClient.Create(ctx, project)).To(Succeed())
 			reconcileOnce()
-			Expect(envNames()).To(Equal([]string{DefaultProjectEnvironment}))
+			Expect(envNames()).To(Equal([]string{constants.DefaultProjectEnvironment}))
 		})
 
 		It("seeds production when only preview environments exist", func() {
@@ -131,7 +132,7 @@ var _ = Describe("Project Controller", func() {
 			}
 			Expect(k8sClient.Create(ctx, project)).To(Succeed())
 			reconcileOnce()
-			Expect(envNames()).To(Equal([]string{"preview-pr-7", DefaultProjectEnvironment}))
+			Expect(envNames()).To(Equal([]string{"preview-pr-7", constants.DefaultProjectEnvironment}))
 		})
 
 		It("does not seed production when a non-preview environment exists", func() {

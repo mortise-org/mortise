@@ -9,6 +9,10 @@ import (
 )
 
 const (
+	// DefaultProjectEnvironment is seeded into spec.environments when the
+	// controller observes an empty list. Matches Railway's default.
+	DefaultProjectEnvironment = "production"
+
 	// ControlNamespacePrefix prefixes the Project control namespace: `pj-{name}`.
 	// The control namespace holds App CRDs, GitProvider webhook secrets scoped to
 	// the project, and other project-owned objects that aren't env-scoped.

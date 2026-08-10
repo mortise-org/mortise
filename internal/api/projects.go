@@ -16,7 +16,6 @@ import (
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
 	"github.com/mortise-org/mortise/internal/authz"
 	"github.com/mortise-org/mortise/internal/constants"
-	"github.com/mortise-org/mortise/internal/controller"
 )
 
 // maxProjectNameLen caps the Project name so env namespaces (`pj-{name}-{env}`)
@@ -190,7 +189,7 @@ func (s *Server) CreateProject(w http.ResponseWriter, r *http.Request) {
 			// suppress the controller's seed and leave the project without
 			// a production env.
 			Environments: []mortisev1alpha1.ProjectEnvironment{
-				{Name: controller.DefaultProjectEnvironment},
+				{Name: constants.DefaultProjectEnvironment},
 			},
 		},
 	}

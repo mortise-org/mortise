@@ -47,10 +47,6 @@ const (
 	// projectFinalizer ensures the controller gets one last reconcile on delete
 	// so it can tear down owned namespaces before the CRD disappears.
 	projectFinalizer = "mortise.dev/project-finalizer"
-
-	// DefaultProjectEnvironment is seeded into spec.environments when the
-	// controller observes an empty list. Matches Railway's default.
-	DefaultProjectEnvironment = "production"
 )
 
 // Condition types and reasons exposed on Project.status.conditions.
@@ -173,7 +169,7 @@ func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 	if !hasNonPreviewEnv {
 		project.Spec.Environments = append(project.Spec.Environments,
-			mortisev1alpha1.ProjectEnvironment{Name: DefaultProjectEnvironment})
+			mortisev1alpha1.ProjectEnvironment{Name: constants.DefaultProjectEnvironment})
 		specChanged = true
 	}
 	if specChanged {
