@@ -151,11 +151,19 @@ func (r *PreviewEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.R
 		}
 	}
 
-	// Copy shared-env and per-app env Secrets from source env namespace to preview namespace.
+	// Copy shared-env and per-app env Secrets from source env namespace to
+	// preview namespace. A Forbidden inside the freshly bootstrapped preview
+	// namespace is the RBAC-propagation race (mo-k5p): fast-requeue without
+	// feeding the rate limiter, same as the app controller's env writes.
+	previewNs := constants.EnvNamespace(projectName, envName)
 	if err := r.copySharedEnvSecret(ctx, projectName, sourceEnv, envName); err != nil {
 		if _, ok := err.(*previewNamespaceNotReadyError); ok {
 			log.Info("preview namespace not ready yet, waiting for project controller", "project", projectName, "env", envName)
 			return ctrl.Result{RequeueAfter: previewNamespaceReadyRequeue}, nil
+		}
+		if res, ok := forbiddenFastRequeue(ctx, r.Client, r.clock(), previewNs, err); ok {
+			log.Info("forbidden while preview-namespace RBAC propagates; fast requeue", "namespace", previewNs)
+			return res, nil
 		}
 		log.Error(err, "copy shared-env secret")
 		return ctrl.Result{}, err
@@ -165,6 +173,10 @@ func (r *PreviewEnvironmentReconciler) Reconcile(ctx context.Context, req ctrl.R
 			if _, ok := err.(*previewNamespaceNotReadyError); ok {
 				log.Info("preview namespace not ready yet, waiting for project controller", "project", projectName, "env", envName)
 				return ctrl.Result{RequeueAfter: previewNamespaceReadyRequeue}, nil
+			}
+			if res, ok := forbiddenFastRequeue(ctx, r.Client, r.clock(), previewNs, err); ok {
+				log.Info("forbidden while preview-namespace RBAC propagates; fast requeue", "namespace", previewNs)
+				return res, nil
 			}
 			log.Error(err, "copy app env secret", "app", apps.Items[i].Name)
 			return ctrl.Result{}, err
