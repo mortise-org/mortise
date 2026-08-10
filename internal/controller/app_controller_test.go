@@ -6412,6 +6412,45 @@ var _ = Describe("App Controller — git source", func() {
 			Expect(got.Labels).NotTo(HaveKey("app.kubernetes.io/managed-by"))
 		})
 
+		It("does not delete a pre-existing unmanaged Service on the external-source type-change path", func() {
+			const appName = "own-guard-extsvc"
+			// A foreign ClusterIP Service: the ExternalName type-change logic
+			// would otherwise delete-and-recreate it on sight.
+			userSvc := &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      serviceName(appName),
+					Namespace: envNsProduction,
+				},
+				Spec: corev1.ServiceSpec{
+					Selector: map[string]string{"app": "legacy"},
+					Ports:    []corev1.ServicePort{{Name: "legacy", Port: 9999}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, userSvc)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, userSvc) }()
+
+			app := makeImageApp(appName, func(spec *mortisev1alpha1.AppSpec) {
+				spec.Source = mortisev1alpha1.AppSource{
+					Type:     mortisev1alpha1.SourceTypeExternal,
+					External: &mortisev1alpha1.ExternalSource{Host: "db.internal", Port: 5432},
+				}
+				// The ExternalName Service is only reconciled for public apps
+				// with a domain.
+				spec.Network = mortisev1alpha1.NetworkConfig{Public: true}
+				spec.Environments[0].Domain = "own-guard-extsvc.example.com"
+			})
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+
+			reconcileExpectingConflict(appName)
+
+			var got corev1.Service
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: serviceName(appName), Namespace: envNsProduction}, &got)).To(Succeed())
+			Expect(got.DeletionTimestamp.IsZero()).To(BeTrue())
+			Expect(got.Spec.Type).NotTo(Equal(corev1.ServiceTypeExternalName))
+			Expect(got.Spec.Selector).To(HaveKeyWithValue("app", "legacy"))
+		})
+
 		It("clears the ResourceConflict condition once the foreign resource is gone", func() {
 			const appName = "own-guard-recover"
 			userSvc := &corev1.Service{

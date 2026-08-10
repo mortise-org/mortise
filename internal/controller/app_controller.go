@@ -4412,6 +4412,13 @@ func (r *AppReconciler) reconcileExternalNameService(ctx context.Context, app *m
 		return err
 	}
 
+	// Ownership guard before the type-change delete below: a foreign
+	// Service is almost never ExternalName-typed, so without this check it
+	// would be deleted on sight.
+	if err := conflictIfUnmanaged(&existing, "Service"); err != nil {
+		return err
+	}
+
 	// Transitioning between Service types (e.g. ClusterIP → ExternalName)
 	// requires deleting and recreating the Service because the API server
 	// rejects updates that clear ClusterIP on a ClusterIP-type Service.
