@@ -2412,35 +2412,10 @@ func (r *AppReconciler) reconcileEnvSecret(ctx context.Context, app *mortisev1al
 	//   when the CRD spec changes (no user override detected).
 	// - Keys whose Secret value differs from last-applied are preserved (the
 	//   user or UI changed them out-of-band).
-	existing, err := store.Get(ctx, envNs, app.Name)
-	if err != nil {
-		return fmt.Errorf("read existing env vars: %w", err)
-	}
-	existingByName := make(map[string]string, len(existing))
-	for _, e := range existing {
-		existingByName[e.Name] = e.Value
-	}
-
 	lastSpec := r.readLastSpecEnv(ctx, envNs, app.Name)
 	specEnvKeys := make(map[string]struct{}, len(env.Env))
 	for _, ev := range env.Env {
 		specEnvKeys[ev.Name] = struct{}{}
-	}
-	for _, existingEnv := range existing {
-		if existingEnv.Source != "" && existingEnv.Source != "user" {
-			continue
-		}
-		if _, stillInSpec := specEnvKeys[existingEnv.Name]; stillInSpec {
-			continue
-		}
-		lastVal, tracked := lastSpec[existingEnv.Name]
-		if !tracked || existingEnv.Value != lastVal {
-			continue
-		}
-		if err := store.Delete(ctx, envNs, app.Name, existingEnv.Name); err != nil {
-			return fmt.Errorf("remove stale spec env %q: %w", existingEnv.Name, err)
-		}
-		delete(existingByName, existingEnv.Name)
 	}
 
 	bindingRefs := make(map[string]bool, len(env.Bindings))
@@ -2448,7 +2423,12 @@ func (r *AppReconciler) reconcileEnvSecret(ctx context.Context, app *mortisev1al
 		bindingRefs[b.Ref] = true
 	}
 
-	var toMerge []envstore.Env
+	// Resolve spec env values outside the retry callback — they read other
+	// Secrets, not the app-env Secret being mutated.
+	type resolvedVar struct {
+		name, value, source string
+	}
+	var specVars []resolvedVar
 	var fromBindingEnvs []envstore.Env
 	resolvedSpecEnv := make(map[string]string, len(env.Env))
 	for _, ev := range env.Env {
@@ -2460,37 +2440,12 @@ func (r *AppReconciler) reconcileEnvSecret(ctx context.Context, app *mortisev1al
 		resolvedSpecEnv[ev.Name] = resolved
 
 		// fromBinding vars go into the binding-source list so they survive
-		// ReplaceSource("binding", ...) below.
+		// the binding-source replacement below.
 		if source == "binding" {
 			fromBindingEnvs = append(fromBindingEnvs, envstore.Env{Name: ev.Name, Value: resolved, Source: source})
 			continue
 		}
-
-		existingVal, exists := existingByName[ev.Name]
-		if !exists {
-			toMerge = append(toMerge, envstore.Env{Name: ev.Name, Value: resolved, Source: source})
-			continue
-		}
-		if resolved == existingVal {
-			continue
-		}
-		if lastVal, tracked := lastSpec[ev.Name]; tracked && existingVal == lastVal {
-			toMerge = append(toMerge, envstore.Env{Name: ev.Name, Value: resolved, Source: source})
-		}
-	}
-	for _, sv := range app.Spec.SharedVars {
-		if _, exists := existingByName[sv.Name]; !exists {
-			toMerge = append(toMerge, envstore.Env{Name: sv.Name, Value: sv.Value, Source: "shared"})
-		}
-	}
-	if len(toMerge) > 0 {
-		if err := store.Merge(ctx, envNs, app.Name, toMerge, labels); err != nil {
-			return fmt.Errorf("seed env secret: %w", err)
-		}
-	}
-
-	if err := r.writeLastSpecEnv(ctx, envNs, app.Name, resolvedSpecEnv); err != nil {
-		return fmt.Errorf("write last-spec-env: %w", err)
+		specVars = append(specVars, resolvedVar{name: ev.Name, value: resolved, source: source})
 	}
 
 	var bindingEnvs []envstore.Env
@@ -2512,16 +2467,89 @@ func (r *AppReconciler) reconcileEnvSecret(ctx context.Context, app *mortisev1al
 	// auto-generated binding vars when names collide.
 	bindingEnvs = append(bindingEnvs, fromBindingEnvs...)
 	if len(bindingEnvs) == 0 {
-		if deleted, err := r.deleteBindingOnlyEnvSecret(ctx, envNs, app.Name); err != nil {
+		if _, err := r.deleteBindingOnlyEnvSecret(ctx, envNs, app.Name); err != nil {
 			return fmt.Errorf("delete empty binding-only env secret: %w", err)
-		} else if deleted {
-			return nil
 		}
 	}
-	if len(existing) == 0 && len(toMerge) == 0 && len(bindingEnvs) == 0 {
-		return nil
+
+	// Stale-spec removal, spec seeding, and binding-source replacement all
+	// recompute from the fresh read inside the conflict-retry callback, so
+	// this reconcile can't clobber a concurrent user PATCH (and vice versa).
+	err = store.Apply(ctx, envNs, app.Name, labels, func(current []envstore.Env) ([]envstore.Env, error) {
+		// Drop user-visible vars that were removed from the spec and never
+		// overridden out-of-band.
+		kept := make([]envstore.Env, 0, len(current))
+		for _, e := range current {
+			if e.Source == "" || e.Source == "user" {
+				if _, stillInSpec := specEnvKeys[e.Name]; !stillInSpec {
+					if lastVal, tracked := lastSpec[e.Name]; tracked && e.Value == lastVal {
+						continue
+					}
+				}
+			}
+			kept = append(kept, e)
+		}
+		keptByName := make(map[string]string, len(kept))
+		for _, e := range kept {
+			keptByName[e.Name] = e.Value
+		}
+
+		// Seed spec vars that are missing or whose value tracks the last
+		// applied spec (no user override detected).
+		seed := make(map[string]envstore.Env)
+		for _, sv := range specVars {
+			existingVal, exists := keptByName[sv.name]
+			if !exists {
+				seed[sv.name] = envstore.Env{Name: sv.name, Value: sv.value, Source: sv.source}
+				continue
+			}
+			if sv.value == existingVal {
+				continue
+			}
+			if lastVal, tracked := lastSpec[sv.name]; tracked && existingVal == lastVal {
+				seed[sv.name] = envstore.Env{Name: sv.name, Value: sv.value, Source: sv.source}
+			}
+		}
+		for _, sv := range app.Spec.SharedVars {
+			if _, exists := keptByName[sv.Name]; !exists {
+				seed[sv.Name] = envstore.Env{Name: sv.Name, Value: sv.Value, Source: "shared"}
+			}
+		}
+
+		// Assemble: kept vars (binding-source dropped, seeds overriding by
+		// name), remaining seeds, then the recomputed binding vars last so
+		// they win on name collisions.
+		result := make([]envstore.Env, 0, len(kept)+len(seed)+len(bindingEnvs))
+		for _, e := range kept {
+			if e.Source == "binding" {
+				continue
+			}
+			if ne, ok := seed[e.Name]; ok {
+				result = append(result, ne)
+				delete(seed, e.Name)
+				continue
+			}
+			result = append(result, e)
+		}
+		for _, ne := range seed {
+			result = append(result, ne)
+		}
+		result = append(result, bindingEnvs...)
+
+		if len(current) == 0 && len(result) == 0 {
+			// Nothing to write — don't create an empty Secret.
+			return nil, envstore.ErrSkip
+		}
+		return result, nil
+	})
+	if err != nil {
+		return fmt.Errorf("apply env secret: %w", err)
 	}
-	return store.ReplaceSource(ctx, envNs, app.Name, "binding", bindingEnvs, labels)
+
+	if err := r.writeLastSpecEnv(ctx, envNs, app.Name, resolvedSpecEnv); err != nil {
+		return fmt.Errorf("write last-spec-env: %w", err)
+	}
+	return nil
 }
 
 // resolveEnvVarValue resolves the effective value and source for a spec env var.

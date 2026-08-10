@@ -3,15 +3,14 @@ package envstore
 import (
 	"context"
 
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-const maxConflictRetries = 3
-
 // UpdateWithConflictRetry re-reads the latest object and retries the update
-// when the API server rejects it with an optimistic-lock conflict.
+// when the API server rejects it with an optimistic-lock conflict. Backed by
+// retry.DefaultRetry (5 attempts with jittered backoff).
 func UpdateWithConflictRetry[T client.Object](
 	ctx context.Context,
 	c client.Client,
@@ -19,27 +18,16 @@ func UpdateWithConflictRetry[T client.Object](
 	newObject func() T,
 	mutate func(T) (bool, error),
 ) error {
-	for attempt := 0; attempt < maxConflictRetries; attempt++ {
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		obj := newObject()
 		if err := c.Get(ctx, key, obj); err != nil {
 			return err
 		}
 
 		changed, err := mutate(obj)
-		if err != nil {
+		if err != nil || !changed {
 			return err
 		}
-		if !changed {
-			return nil
-		}
-
-		if err := c.Update(ctx, obj); err != nil {
-			if !apierrors.IsConflict(err) || attempt == maxConflictRetries-1 {
-				return err
-			}
-			continue
-		}
-		return nil
-	}
-	return nil
+		return c.Update(ctx, obj)
+	})
 }

@@ -11,6 +11,7 @@ package envstore
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"sort"
@@ -20,6 +21,7 @@ import (
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/mortise-org/mortise/internal/constants"
@@ -151,33 +153,29 @@ func (s *Store) SetShared(ctx context.Context, namespace string, vars []Env, lab
 	return s.upsertSecret(ctx, namespace, SharedEnvName, vars, labels)
 }
 
+// ErrSkip can be returned by an Apply mutate callback to abort the apply
+// without writing anything (and without surfacing an error). Used to avoid
+// creating a Secret that would be empty.
+var ErrSkip = errors.New("envstore: skip apply")
+
+// Apply atomically mutates an app's env Secret. mutate receives the current
+// vars — freshly read on every conflict-retry attempt, nil if the Secret does
+// not exist — and returns the full desired set. Because the result is
+// recomputed from the latest read inside the retry loop, concurrent writers
+// cannot lose each other's updates.
+func (s *Store) Apply(ctx context.Context, namespace, appName string, labels map[string]string, mutate func(current []Env) ([]Env, error)) error {
+	return s.applySecret(ctx, namespace, AppEnvSecretName(appName), labels, mutate)
+}
+
 // Merge reads the existing Secret, merges in new vars (overwriting duplicates),
 // and writes back. Returns the merged set.
 func (s *Store) Merge(ctx context.Context, namespace, appName string, vars []Env, labels map[string]string) error {
 	if err := validateEnvVars(vars); err != nil {
 		return err
 	}
-	name := AppEnvSecretName(appName)
-	existing, err := s.getSecret(ctx, namespace, name)
-	if err != nil && !k8serrors.IsNotFound(err) {
-		return err
-	}
-
-	merged := make(map[string]Env)
-	if existing != nil {
-		for _, e := range secretToEnvs(existing) {
-			merged[e.Name] = e
-		}
-	}
-	for _, e := range vars {
-		merged[e.Name] = e
-	}
-
-	flat := make([]Env, 0, len(merged))
-	for _, e := range merged {
-		flat = append(flat, e)
-	}
-	return s.upsertSecret(ctx, namespace, name, flat, labels)
+	return s.Apply(ctx, namespace, appName, labels, func(current []Env) ([]Env, error) {
+		return mergeEnvs(current, vars), nil
+	})
 }
 
 // MergeShared is like Merge but for the shared-env Secret.
@@ -185,26 +183,9 @@ func (s *Store) MergeShared(ctx context.Context, namespace string, vars []Env, l
 	if err := validateEnvVars(vars); err != nil {
 		return err
 	}
-	existing, err := s.getSecret(ctx, namespace, SharedEnvName)
-	if err != nil && !k8serrors.IsNotFound(err) {
-		return err
-	}
-
-	merged := make(map[string]Env)
-	if existing != nil {
-		for _, e := range secretToEnvs(existing) {
-			merged[e.Name] = e
-		}
-	}
-	for _, e := range vars {
-		merged[e.Name] = e
-	}
-
-	flat := make([]Env, 0, len(merged))
-	for _, e := range merged {
-		flat = append(flat, e)
-	}
-	return s.upsertSecret(ctx, namespace, SharedEnvName, flat, labels)
+	return s.applySecret(ctx, namespace, SharedEnvName, labels, func(current []Env) ([]Env, error) {
+		return mergeEnvs(current, vars), nil
+	})
 }
 
 // ReplaceSource replaces all vars with the given source in an app's env Secret.
@@ -214,22 +195,15 @@ func (s *Store) ReplaceSource(ctx context.Context, namespace, appName, source st
 	if err := validateEnvVars(vars); err != nil {
 		return err
 	}
-	name := AppEnvSecretName(appName)
-	existing, err := s.getSecret(ctx, namespace, name)
-	if err != nil && !k8serrors.IsNotFound(err) {
-		return err
-	}
-
-	var kept []Env
-	if existing != nil {
-		for _, e := range secretToEnvs(existing) {
+	return s.Apply(ctx, namespace, appName, labels, func(current []Env) ([]Env, error) {
+		var kept []Env
+		for _, e := range current {
 			if e.Source != source {
 				kept = append(kept, e)
 			}
 		}
-	}
-	kept = append(kept, vars...)
-	return s.upsertSecret(ctx, namespace, name, kept, labels)
+		return append(kept, vars...), nil
+	})
 }
 
 // Delete removes a key from an app's env Secret.
@@ -320,24 +294,9 @@ func (s *Store) MergeSharedSource(ctx context.Context, controlNs string, vars []
 	if err := validateEnvVars(vars); err != nil {
 		return err
 	}
-	existing, err := s.getSecret(ctx, controlNs, SharedVarsSourceName)
-	if err != nil && !k8serrors.IsNotFound(err) {
-		return err
-	}
-	merged := make(map[string]Env)
-	if existing != nil {
-		for _, e := range secretToEnvs(existing) {
-			merged[e.Name] = e
-		}
-	}
-	for _, e := range vars {
-		merged[e.Name] = e
-	}
-	flat := make([]Env, 0, len(merged))
-	for _, e := range merged {
-		flat = append(flat, e)
-	}
-	return s.upsertSecret(ctx, controlNs, SharedVarsSourceName, flat, labels)
+	return s.applySecret(ctx, controlNs, SharedVarsSourceName, labels, func(current []Env) ([]Env, error) {
+		return mergeEnvs(current, vars), nil
+	})
 }
 
 // EnsureSharedExists creates the shared-env Secret if it doesn't exist.
@@ -372,61 +331,112 @@ func (s *Store) getSecret(ctx context.Context, namespace, name string) (*corev1.
 }
 
 func (s *Store) upsertSecret(ctx context.Context, namespace, name string, vars []Env, labels map[string]string) error {
-	desired := buildSecret(namespace, name, vars, labels)
+	return s.applySecret(ctx, namespace, name, labels, func([]Env) ([]Env, error) {
+		return vars, nil
+	})
+}
 
-	var existing corev1.Secret
-	err := s.Client.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, &existing)
-	if k8serrors.IsNotFound(err) {
-		if err := s.Client.Create(ctx, desired); err != nil {
-			if k8serrors.IsAlreadyExists(err) {
-				goto update
-			}
-			return fmt.Errorf("create env secret %s/%s: %w", namespace, name, err)
+// applySecret runs mutate against a fresh read of the Secret inside the
+// conflict-retry loop: every attempt re-reads the latest vars and recomputes
+// the desired set, so a retry after a conflict picks up the competing write
+// instead of clobbering it with a stale precomputed result.
+func (s *Store) applySecret(ctx context.Context, namespace, name string, labels map[string]string, mutate func(current []Env) ([]Env, error)) error {
+	key := types.NamespacedName{Namespace: namespace, Name: name}
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var existing corev1.Secret
+		getErr := s.Client.Get(ctx, key, &existing)
+		if getErr != nil && !k8serrors.IsNotFound(getErr) {
+			return fmt.Errorf("get env secret %s/%s: %w", namespace, name, getErr)
 		}
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("get env secret %s/%s: %w", namespace, name, err)
+
+		var current []Env
+		if getErr == nil {
+			current = secretToEnvs(&existing)
+		}
+		vars, err := mutate(current)
+		if err != nil {
+			if errors.Is(err, ErrSkip) {
+				return nil
+			}
+			return err
+		}
+		if err := validateEnvVars(vars); err != nil {
+			return err
+		}
+		desired := buildSecret(namespace, name, vars, labels)
+
+		if k8serrors.IsNotFound(getErr) {
+			if createErr := s.Client.Create(ctx, desired); createErr != nil {
+				if k8serrors.IsAlreadyExists(createErr) {
+					// Lost a create race — surface as a conflict so the retry
+					// loop re-reads and applies as an update.
+					return k8serrors.NewConflict(corev1.Resource("secrets"), name, createErr)
+				}
+				return fmt.Errorf("create env secret %s/%s: %w", namespace, name, createErr)
+			}
+			return nil
+		}
+
+		if !applyDesiredSecret(&existing, desired) {
+			return nil
+		}
+		return s.Client.Update(ctx, &existing)
+	})
+}
+
+// applyDesiredSecret copies desired data, source annotations, and labels onto
+// existing, reporting whether anything changed. Non-Mortise annotations and
+// labels on existing are preserved.
+func applyDesiredSecret(existing, desired *corev1.Secret) bool {
+	changed := false
+	if !secretDataEqual(existing.Data, desired.Data) {
+		existing.Data = desired.Data
+		changed = true
 	}
 
-update:
-	return UpdateWithConflictRetry(ctx, s.Client, types.NamespacedName{Namespace: namespace, Name: name}, func() *corev1.Secret {
-		return &corev1.Secret{}
-	}, func(existing *corev1.Secret) (bool, error) {
-		changed := false
-		if !secretDataEqual(existing.Data, desired.Data) {
-			existing.Data = desired.Data
+	if existing.Annotations == nil {
+		existing.Annotations = make(map[string]string)
+	}
+	for _, key := range []string{AnnotationBindingKeys, AnnotationGeneratedKeys, AnnotationSharedKeys} {
+		if _, ok := existing.Annotations[key]; ok {
+			delete(existing.Annotations, key)
 			changed = true
 		}
+	}
+	for k, v := range desired.Annotations {
+		if existing.Annotations[k] != v {
+			existing.Annotations[k] = v
+			changed = true
+		}
+	}
 
-		if existing.Annotations == nil {
-			existing.Annotations = make(map[string]string)
+	if existing.Labels == nil {
+		existing.Labels = make(map[string]string)
+	}
+	for k, v := range desired.Labels {
+		if existing.Labels[k] != v {
+			existing.Labels[k] = v
+			changed = true
 		}
-		for _, key := range []string{AnnotationBindingKeys, AnnotationGeneratedKeys, AnnotationSharedKeys} {
-			if _, ok := existing.Annotations[key]; ok {
-				delete(existing.Annotations, key)
-				changed = true
-			}
-		}
-		for k, v := range desired.Annotations {
-			if existing.Annotations[k] != v {
-				existing.Annotations[k] = v
-				changed = true
-			}
-		}
+	}
 
-		if existing.Labels == nil {
-			existing.Labels = make(map[string]string)
-		}
-		for k, v := range desired.Labels {
-			if existing.Labels[k] != v {
-				existing.Labels[k] = v
-				changed = true
-			}
-		}
+	return changed
+}
 
-		return changed, nil
-	})
+// mergeEnvs overlays vars onto current, overwriting duplicates by name.
+func mergeEnvs(current, vars []Env) []Env {
+	merged := make(map[string]Env, len(current)+len(vars))
+	for _, e := range current {
+		merged[e.Name] = e
+	}
+	for _, e := range vars {
+		merged[e.Name] = e
+	}
+	flat := make([]Env, 0, len(merged))
+	for _, e := range merged {
+		flat = append(flat, e)
+	}
+	return flat
 }
 
 func buildSecret(namespace, name string, vars []Env, extraLabels map[string]string) *corev1.Secret {
