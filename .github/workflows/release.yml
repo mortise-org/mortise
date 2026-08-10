@@ -146,6 +146,12 @@ jobs:
       - name: Stamp chart version + image tag
         run: |
           VERSION="${{ steps.v.outputs.version }}"
+          # The in-repo placeholder must never escape as a release (see
+          # RELEASING.md "Placeholder version policy").
+          if [ -z "$VERSION" ] || [ "$VERSION" = "0.0.0-dev" ]; then
+            echo "::error::refusing to publish placeholder version '$VERSION'"
+            exit 1
+          fi
           for chart in charts/mortise charts/mortise-core; do
             sed -i "s/^version: .*/version: ${VERSION}/" "${chart}/Chart.yaml"
             sed -i "s/^appVersion: .*/appVersion: \"${VERSION}\"/" "${chart}/Chart.yaml"
@@ -174,6 +180,16 @@ jobs:
 
       - name: Merge new charts into gh-pages index
         run: |
+          # Published chart artifacts are immutable (RELEASING.md): a version
+          # that already exists on gh-pages must never be overwritten — that
+          # would change what a pinned --version serves.
+          for tgz in /tmp/charts/*.tgz; do
+            name="$(basename "$tgz")"
+            if [ -e "gh-pages/$name" ] && ! cmp -s "$tgz" "gh-pages/$name"; then
+              echo "::error::$name already published with different content; refusing to overwrite"
+              exit 1
+            fi
+          done
           cp /tmp/charts/*.tgz gh-pages/
           cd gh-pages
           helm repo index . --url https://mortise-org.github.io/mortise --merge index.yaml
@@ -186,6 +202,46 @@ jobs:
           git add -A
           git commit -m "Publish charts ${{ steps.v.outputs.version }}"
           git push origin gh-pages
+
+      - name: Verify published chart
+        # The published artifact is what users install — verify what actually
+        # landed, not what we think we packaged. Pull the just-published
+        # version back through the public repo URL and prove it (a) is
+        # byte-identical to the tarball this run built, and (b) renders the
+        # bits whose absence caused #446/#379: the registry-proxy DaemonSet
+        # under registry.enabled=true, and the buildruns RBAC. This is the
+        # published-artifact counterpart of make verify-chart-dependency-drift
+        # (which guards the in-repo vendored subchart).
+        run: |
+          VERSION="${{ steps.v.outputs.version }}"
+          # gh-pages deployment is asynchronous — poll until the new version
+          # is served (or fail after ~5 minutes).
+          for i in $(seq 1 30); do
+            if curl -fsSL "https://mortise-org.github.io/mortise/index.yaml" | grep -q "version: ${VERSION}\$"; then
+              break
+            fi
+            [ "$i" = 30 ] && { echo "::error::published index never served version ${VERSION}"; exit 1; }
+            sleep 10
+          done
+          helm repo add mortise-published https://mortise-org.github.io/mortise
+          helm repo update mortise-published
+          pulldir=$(mktemp -d)
+          helm pull mortise-published/mortise --version "${VERSION}" -d "$pulldir"
+          # (a) byte-identical to what this run packaged.
+          cmp "$pulldir/mortise-${VERSION}.tgz" "/tmp/charts/mortise-${VERSION}.tgz"
+          # (b) semantic spot-checks on the rendered output of the PULLED copy.
+          rendered=$(mktemp)
+          helm template mortise "$pulldir/mortise-${VERSION}.tgz" \
+            --namespace mortise-system \
+            --set registry.enabled=true \
+            --set platformConfig.domain=example.com > "$rendered"
+          grep -B5 "name: registry-proxy" "$rendered" | grep -q "kind: DaemonSet" \
+            || { echo "::error::published chart does not render the registry-proxy DaemonSet"; exit 1; }
+          for res in buildruns buildruns/finalizers buildruns/status; do
+            grep -q "$res" "$rendered" \
+              || { echo "::error::published chart RBAC is missing ${res}"; exit 1; }
+          done
+          echo "published chart ${VERSION} verified: byte-identical + renders registry-proxy and buildruns RBAC"
 
   release:
     name: GitHub Release

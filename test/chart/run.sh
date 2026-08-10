@@ -74,7 +74,10 @@ k3d cluster delete "$CLUSTER_NAME" 2>/dev/null || true
 k3d cluster create --config "${SCRIPT_DIR}/k3d-config.yaml" --runtime-ulimit "${K3D_RUNTIME_ULIMIT}" --wait
 
 info "Building operator image..."
-docker build -t "$CHART_IMG" "$REPO_ROOT" -q
+# --target is load-bearing: the Dockerfile's final stage is the observer
+# binary, so an untargeted build tags the wrong binary as the operator
+# image and the mortise deployment crashloops.
+docker build --target operator -t "$CHART_IMG" "$REPO_ROOT" -q
 k3d image import "$CHART_IMG" -c "$CLUSTER_NAME"
 
 info "Building chart dependencies..."
@@ -103,10 +106,11 @@ for dep in mortise; do
     fi
 done
 
-# Traefik deployment name is release-prefixed by the subchart.
-traefik_dep=$(kubectl get deployment -n "$NAMESPACE" -l "app.kubernetes.io/name=traefik" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
-if [ -n "$traefik_dep" ] && wait_for_deployment "$NAMESPACE" "$traefik_dep" 120; then
-    info "  ✓ $NAMESPACE/$traefik_dep (traefik) is ready"
+# Traefik deployment name is release-prefixed by the subchart. It deploys
+# into the deps namespace, not the release namespace.
+traefik_dep=$(kubectl get deployment -n "$DEPS_NAMESPACE" -l "app.kubernetes.io/name=traefik" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+if [ -n "$traefik_dep" ] && wait_for_deployment "$DEPS_NAMESPACE" "$traefik_dep" 120; then
+    info "  ✓ $DEPS_NAMESPACE/$traefik_dep (traefik) is ready"
 else
     info "  ✗ Traefik deployment not found or not ready"
     components_ok=false
@@ -251,6 +255,60 @@ helm upgrade mortise "${REPO_ROOT}/charts/mortise" \
     --set mortise-core.image.pullPolicy=Never \
     --set platformConfig.domain=test.mortise.local \
     --wait --timeout "$HELM_WAIT_TIMEOUT" 2>&1 || { fail "Re-enable upgrade"; }
+
+# ── Test 3b: registry-proxy survives --reuse-values (#446) ──────────────
+# The #446 report was a registry-proxy DaemonSet that vanished across an
+# upgrade. Assert the full lifecycle: present after fresh install, STILL
+# present after a bare `--reuse-values` upgrade (no --set flags — exactly
+# the upgrade shape that lost it), gone when registry.enabled=false, and
+# back on re-enable.
+
+info "Test 3b: registry-proxy survives --reuse-values"
+
+registry_proxy_exists() {
+    kubectl get daemonset -n "$DEPS_NAMESPACE" registry-proxy --no-headers 2>/dev/null | wc -l
+}
+
+if [ "$(registry_proxy_exists)" -eq 1 ]; then
+    pass "registry-proxy DaemonSet present after install"
+else
+    fail "registry-proxy DaemonSet missing after install"
+fi
+
+helm upgrade mortise "${REPO_ROOT}/charts/mortise" \
+    --namespace "$NAMESPACE" \
+    --reuse-values \
+    --wait --timeout "$HELM_WAIT_TIMEOUT" 2>&1 || { fail "--reuse-values upgrade"; }
+sleep 5
+if [ "$(registry_proxy_exists)" -eq 1 ]; then
+    pass "registry-proxy survives --reuse-values upgrade"
+else
+    fail "registry-proxy lost by --reuse-values upgrade (#446)"
+fi
+
+helm upgrade mortise "${REPO_ROOT}/charts/mortise" \
+    --namespace "$NAMESPACE" \
+    --reuse-values \
+    --set registry.enabled=false \
+    --wait --timeout "$HELM_WAIT_TIMEOUT" 2>&1 || { fail "registry disable upgrade"; }
+sleep 5
+if [ "$(registry_proxy_exists)" -eq 0 ]; then
+    pass "registry-proxy removed when registry.enabled=false"
+else
+    fail "registry-proxy still present after registry.enabled=false"
+fi
+
+helm upgrade mortise "${REPO_ROOT}/charts/mortise" \
+    --namespace "$NAMESPACE" \
+    --reuse-values \
+    --set registry.enabled=true \
+    --wait --timeout "$HELM_WAIT_TIMEOUT" 2>&1 || { fail "registry re-enable upgrade"; }
+sleep 5
+if [ "$(registry_proxy_exists)" -eq 1 ]; then
+    pass "registry-proxy back after re-enable"
+else
+    fail "registry-proxy missing after re-enable"
+fi
 
 # ── Test 4: mortise-core standalone ─────────────────────────────────────
 
