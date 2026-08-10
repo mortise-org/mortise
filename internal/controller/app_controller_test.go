@@ -2272,6 +2272,44 @@ var _ = Describe("App Controller", func() {
 		})
 	})
 
+	Context("NamespacePending condition clearing", func() {
+		ctx := context.Background()
+
+		It("clears a stale NamespacePending condition on a clean pass", func() {
+			app := &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{Name: "ns-pending-clear", Namespace: namespace},
+				Spec: mortisev1alpha1.AppSpec{
+					Source:       mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: testImageNginx},
+					Environments: []mortisev1alpha1.Environment{{Name: "production"}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+
+			// Simulate a resolved bootstrap race: the condition was set while
+			// the env namespace was missing; the namespace now exists (envtest
+			// pre-creates it), so the next pass must clear the condition.
+			app.Status.Conditions = []metav1.Condition{{
+				Type:               appNamespacePendingCondition,
+				Status:             metav1.ConditionTrue,
+				Reason:             "NamespaceNotFound",
+				Message:            "waiting for namespace to be created",
+				LastTransitionTime: metav1.Now(),
+			}}
+			Expect(k8sClient.Status().Update(ctx, app)).To(Succeed())
+
+			r := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := r.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: app.Name, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var fresh mortisev1alpha1.App
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: namespace}, &fresh)).To(Succeed())
+			Expect(meta.FindStatusCondition(fresh.Status.Conditions, appNamespacePendingCondition)).To(BeNil())
+		})
+	})
+
 	Context("domain collision recovery", func() {
 		ctx := context.Background()
 		const envNsStaging = "pj-default-project-staging"
