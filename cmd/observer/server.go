@@ -12,17 +12,20 @@ type ObserverServer struct {
 	store            *Store
 	liveCache        *LiveMetricsCache
 	liveTrafficCache *LiveTrafficCache
+	health           *HealthTracker
 	mux              *http.ServeMux
 }
 
-func NewObserverServer(store *Store, liveCache *LiveMetricsCache, liveTrafficCache *LiveTrafficCache) *ObserverServer {
-	s := &ObserverServer{store: store, liveCache: liveCache, liveTrafficCache: liveTrafficCache}
+func NewObserverServer(store *Store, liveCache *LiveMetricsCache, liveTrafficCache *LiveTrafficCache, health *HealthTracker) *ObserverServer {
+	s := &ObserverServer{store: store, liveCache: liveCache, liveTrafficCache: liveTrafficCache, health: health}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/metrics", s.handleMetrics)
 	mux.HandleFunc("GET /v1/metrics/live", s.handleMetricsLive)
 	mux.HandleFunc("GET /v1/logs", s.handleLogs)
 	mux.HandleFunc("GET /v1/traffic", s.handleTraffic)
 	mux.HandleFunc("GET /v1/traffic/live", s.handleTrafficLive)
+	mux.HandleFunc("GET /v1/pvc", s.handlePVC)
+	mux.HandleFunc("GET /v1/health/collectors", s.handleCollectorHealth)
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 	s.mux = mux
 	return s
@@ -68,7 +71,62 @@ func (s *ObserverServer) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		writeJSONResp(w, 500, map[string]string{"error": err.Error()})
 		return
 	}
-	writeJSONResp(w, 200, map[string]any{"pods": pods})
+	// coverage is the gap-visibility contract: [bucket, 1] = the collector
+	// observed this window (even if it found nothing), [bucket, 0] = it did
+	// not — consumers render 0-buckets as gaps and must never interpolate
+	// across them.
+	coverage, err := s.store.QueryCoverage(collectorMetrics, start, end, step)
+	if err != nil {
+		writeJSONResp(w, 500, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSONResp(w, 200, map[string]any{"pods": pods, "coverage": coverage})
+}
+
+func (s *ObserverServer) handlePVC(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	namespace := q.Get("namespace")
+	app := q.Get("app")
+	env := q.Get("env")
+	startStr := q.Get("start")
+	endStr := q.Get("end")
+
+	if namespace == "" || app == "" || env == "" || startStr == "" || endStr == "" {
+		writeJSONResp(w, 400, map[string]string{"error": "namespace, app, env, start, end are required"})
+		return
+	}
+	start, err := strconv.ParseInt(startStr, 10, 64)
+	if err != nil {
+		writeJSONResp(w, 400, map[string]string{"error": "invalid start"})
+		return
+	}
+	end, err := strconv.ParseInt(endStr, 10, 64)
+	if err != nil {
+		writeJSONResp(w, 400, map[string]string{"error": "invalid end"})
+		return
+	}
+	step := int64(300)
+	if s := q.Get("step"); s != "" {
+		if n, err := strconv.ParseInt(s, 10, 64); err == nil && n > 0 {
+			step = n
+		}
+	}
+
+	pvcs, err := s.store.QueryPVCMetrics(namespace, app, env, start, end, step)
+	if err != nil {
+		writeJSONResp(w, 500, map[string]string{"error": err.Error()})
+		return
+	}
+	coverage, err := s.store.QueryCoverage(collectorPVC, start, end, step)
+	if err != nil {
+		writeJSONResp(w, 500, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSONResp(w, 200, map[string]any{"pvcs": pvcs, "coverage": coverage})
+}
+
+func (s *ObserverServer) handleCollectorHealth(w http.ResponseWriter, r *http.Request) {
+	writeJSONResp(w, 200, s.health.Snapshot())
 }
 
 func (s *ObserverServer) handleMetricsLive(w http.ResponseWriter, r *http.Request) {

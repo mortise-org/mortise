@@ -9,6 +9,18 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Observer reliability + PVC usage** (obs-v2 O1, #214): two new observer
+  endpoints — `GET /v1/pvc` (per-PVC capacity/usage series, collected from
+  the kubelet Summary API) and `GET /v1/health/collectors` (per-collector
+  last tick/success/error plus tailer and dropped-line gauges). `/v1/metrics`
+  and `/v1/pvc` responses gain a `coverage` array marking observed vs
+  unobserved windows so UIs render gaps instead of interpolating. The
+  observer ClusterRole widens by read-only `nodes` get/list and
+  `nodes/proxy` get for kubelet stats (justified inline in the chart).
+  Retention change: raw metrics downsample to 5-minute averages after 24
+  hours (was raw for the full 72h window); log tailers now resume from a
+  stored cursor across restarts instead of re-reading (and duplicating)
+  the last 100 lines. Full audit: `docs/observer-reliability.md`.
 - **Published-chart verification in the release pipeline** (#446, #379
   residual): after publishing to gh-pages, `release.yml` pulls the chart
   back through the public repo URL, asserts it is byte-identical to what

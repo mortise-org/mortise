@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
@@ -17,6 +18,7 @@ import (
 type LogCollector struct {
 	clientset   kubernetes.Interface
 	store       *Store
+	health      *HealthTracker
 	interval    time.Duration
 	maxPods     int
 	log         *slog.Logger
@@ -27,10 +29,11 @@ type LogCollector struct {
 	dropped     atomic.Int64
 }
 
-func NewLogCollector(cs kubernetes.Interface, store *Store, interval time.Duration, maxPods int, log *slog.Logger) *LogCollector {
+func NewLogCollector(cs kubernetes.Interface, store *Store, health *HealthTracker, interval time.Duration, maxPods int, log *slog.Logger) *LogCollector {
 	return &LogCollector{
 		clientset: cs,
 		store:     store,
+		health:    health,
 		interval:  interval,
 		maxPods:   maxPods,
 		log:       log,
@@ -80,6 +83,7 @@ func (c *LogCollector) flushLoop(ctx context.Context) {
 			}
 			if n := c.dropped.Swap(0); n > 0 {
 				c.log.Warn("log channel full, lines dropped", "count", n)
+				c.health.AddGauge("logLinesDropped", n)
 			}
 		}
 	}
@@ -109,10 +113,13 @@ func (c *LogCollector) sync(ctx context.Context) {
 	nsList, err := c.clientset.CoreV1().Namespaces().List(ctx, metav1.ListOptions{})
 	if err != nil {
 		c.log.Error("failed to list namespaces", "error", err)
+		c.health.Record(collectorLogs, 0, fmt.Errorf("list namespaces: %w", err))
 		return
 	}
 
 	activePods := map[string]bool{}
+	skipped := 0
+	var partialErr error
 
 	for _, ns := range nsList.Items {
 		if !strings.HasPrefix(ns.Name, "pj-") {
@@ -124,13 +131,18 @@ func (c *LogCollector) sync(ctx context.Context) {
 		})
 		if err != nil {
 			c.log.Warn("failed to list pods", "namespace", ns.Name, "error", err)
+			if partialErr == nil {
+				partialErr = fmt.Errorf("list pods in %s: %w", ns.Name, err)
+			}
 			continue
 		}
 
 		for _, pod := range pods.Items {
 			key := ns.Name + "/" + pod.Name
 			activePods[key] = true
-			c.startTailer(ctx, ns.Name, &pod)
+			if !c.startTailer(ctx, ns.Name, &pod) {
+				skipped++
+			}
 		}
 	}
 
@@ -142,20 +154,29 @@ func (c *LogCollector) sync(ctx context.Context) {
 			c.tailerCount--
 		}
 	}
+	count := c.tailerCount
 	c.mu.Unlock()
+
+	// Pods beyond maxPods silently had no logs before; now at least the
+	// health surface says so.
+	c.health.SetGauge("logTailers", int64(count))
+	c.health.SetGauge("logTailersSkipped", int64(skipped))
+	c.health.Record(collectorLogs, count, partialErr)
 }
 
-func (c *LogCollector) startTailer(ctx context.Context, namespace string, pod *corev1.Pod) {
+// startTailer reports whether the pod is being tailed (false when the
+// maxPods cap skipped it).
+func (c *LogCollector) startTailer(ctx context.Context, namespace string, pod *corev1.Pod) bool {
 	key := namespace + "/" + pod.Name
 
 	c.mu.Lock()
 	if _, exists := c.tailers[key]; exists {
 		c.mu.Unlock()
-		return
+		return true
 	}
 	if c.tailerCount >= c.maxPods {
 		c.mu.Unlock()
-		return
+		return false
 	}
 
 	tailCtx, cancel := context.WithCancel(ctx)
@@ -167,6 +188,7 @@ func (c *LogCollector) startTailer(ctx context.Context, namespace string, pod *c
 	envName := pod.Labels["mortise.dev/environment"]
 
 	go c.tailPod(tailCtx, namespace, pod.Name, appName, envName)
+	return true
 }
 
 func (c *LogCollector) tailPod(ctx context.Context, namespace, podName, app, env string) {
@@ -180,11 +202,25 @@ func (c *LogCollector) tailPod(ctx context.Context, namespace, podName, app, env
 		c.mu.Unlock()
 	}()
 
-	tail := int64(100)
 	opts := &corev1.PodLogOptions{
 		Follow:     true,
-		TailLines:  &tail,
 		Timestamps: true,
+	}
+	// Resume from the last stored line for this pod: a (re)started tailer
+	// with a bare TailLines re-ingested up to 100 duplicate lines every
+	// time, and lost anything beyond 100 written while it was down. With a
+	// cursor the only remaining loss window is kubelet log rotation.
+	if last, err := c.store.LastLogTimestamp(namespace, podName); err == nil && last != "" {
+		if t, parseErr := time.Parse(time.RFC3339Nano, last); parseErr == nil {
+			// SinceTime has second granularity; truncating DOWN re-reads at
+			// most one second of already-stored lines rather than skipping
+			// the sub-second remainder — bounded duplication beats loss.
+			since := metav1.NewTime(t.Truncate(time.Second))
+			opts.SinceTime = &since
+		}
+	} else {
+		tail := int64(100)
+		opts.TailLines = &tail
 	}
 
 	stream, err := c.clientset.CoreV1().Pods(namespace).GetLogs(podName, opts).Stream(ctx)

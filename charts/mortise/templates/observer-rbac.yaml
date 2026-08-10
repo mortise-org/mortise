@@ -28,6 +28,16 @@ rules:
   - apiGroups: [metrics.k8s.io]
     resources: [pods]
     verbs: [get, list]
+  # PVC usage collection (#214): the kubelet Summary API is the only
+  # interface reporting actual per-volume filesystem usage, and it is
+  # reachable only via nodes/proxy (GET stats/summary). Read-only; the
+  # collector degrades to metrics-absent where clusters block it.
+  - apiGroups: [""]
+    resources: [nodes]
+    verbs: [get, list]
+  - apiGroups: [""]
+    resources: [nodes/proxy]
+    verbs: [get]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

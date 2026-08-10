@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"math"
 	"math/rand/v2"
@@ -49,10 +50,15 @@ type TrafficCollector struct {
 	clientset    kubernetes.Interface
 	store        *Store
 	liveCache    *LiveTrafficCache
+	health       *HealthTracker
 	syncInterval time.Duration
 	bucketSize   time.Duration
 	ingressNs    string
 	log          *slog.Logger
+
+	// pending holds flushed-but-uninserted entries after a store failure so
+	// a transient SQLite error delays the data instead of losing it.
+	pending []TrafficEntry
 
 	mu      sync.Mutex
 	tailers map[string]context.CancelFunc
@@ -70,11 +76,12 @@ type accKey struct {
 	bucket int64
 }
 
-func NewTrafficCollector(cs kubernetes.Interface, store *Store, liveCache *LiveTrafficCache, syncInterval, bucketSize time.Duration, ingressNs string, log *slog.Logger) *TrafficCollector {
+func NewTrafficCollector(cs kubernetes.Interface, store *Store, liveCache *LiveTrafficCache, health *HealthTracker, syncInterval, bucketSize time.Duration, ingressNs string, log *slog.Logger) *TrafficCollector {
 	return &TrafficCollector{
 		clientset:    cs,
 		store:        store,
 		liveCache:    liveCache,
+		health:       health,
 		syncInterval: syncInterval,
 		bucketSize:   bucketSize,
 		ingressNs:    ingressNs,
@@ -100,6 +107,9 @@ func (c *TrafficCollector) Run(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			c.stopAll()
+			// Final flush: without it every unflushed bucket (up to one
+			// bucket size of traffic) died with the process on restart.
+			c.flushAll()
 			return
 		case <-syncTicker.C:
 			c.refreshServiceCache(ctx)
@@ -291,15 +301,21 @@ func (c *TrafficCollector) processLine(line []byte) {
 }
 
 func (c *TrafficCollector) flush() {
+	c.flushBefore(time.Now().Unix())
+}
+
+// flushAll drains every bucket including the still-open current one; used
+// only at shutdown.
+func (c *TrafficCollector) flushBefore(now int64) {
 	bucketSec := int64(c.bucketSize / time.Second)
 	if bucketSec <= 0 {
 		bucketSec = 5
 	}
-	now := time.Now().Unix()
 	currentBucket := (now / bucketSec) * bucketSec
 
 	c.accMu.Lock()
-	var entries []TrafficEntry
+	entries := c.pending
+	c.pending = nil
 	for key, b := range c.accumulator {
 		if key.bucket >= currentBucket {
 			continue
@@ -325,16 +341,29 @@ func (c *TrafficCollector) flush() {
 	c.accMu.Unlock()
 
 	if len(entries) == 0 {
+		c.health.Record(collectorTraffic, 0, nil)
 		return
 	}
 
 	c.liveCache.Add(entries)
 	c.liveCache.Sweep()
 	if err := c.store.InsertTraffic(entries); err != nil {
-		c.log.Error("traffic: failed to insert", "count", len(entries), "error", err)
-	} else {
-		c.log.Debug("traffic: flushed", "count", len(entries))
+		// Keep the batch for the next flush — a transient SQLite error must
+		// delay traffic data, not lose it.
+		c.accMu.Lock()
+		c.pending = append(c.pending, entries...)
+		c.accMu.Unlock()
+		c.log.Error("traffic: failed to insert; retrying next flush", "count", len(entries), "error", err)
+		c.health.Record(collectorTraffic, 0, fmt.Errorf("insert traffic: %w", err))
+		return
 	}
+	c.log.Debug("traffic: flushed", "count", len(entries))
+	c.health.Record(collectorTraffic, len(entries), nil)
+}
+
+func (c *TrafficCollector) flushAll() {
+	// Push "now" past every open bucket so shutdown drains them all.
+	c.flushBefore(time.Now().Unix() + int64(c.bucketSize/time.Second) + 1)
 }
 
 func (c *TrafficCollector) stopAll() {

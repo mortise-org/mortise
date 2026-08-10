@@ -123,6 +123,28 @@ func NewStore(path string) (*Store, error) {
 			bytes_out   INTEGER NOT NULL DEFAULT 0
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_traffic_query ON traffic(namespace, app, env, ts)`,
+		// Collector heartbeats are the gap-visibility primitive: a window
+		// with rows here but no series rows was OBSERVED EMPTY; a window
+		// with no rows here was NOT OBSERVED (collector down/erroring) and
+		// must render as a gap, never be interpolated over.
+		`CREATE TABLE IF NOT EXISTS collector_ticks (
+			collector TEXT NOT NULL,
+			ts        INTEGER NOT NULL,
+			ok        INTEGER NOT NULL,
+			items     INTEGER NOT NULL DEFAULT 0,
+			error     TEXT NOT NULL DEFAULT ''
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_ticks_query ON collector_ticks(collector, ts)`,
+		`CREATE TABLE IF NOT EXISTS pvc_metrics (
+			ts        INTEGER NOT NULL,
+			namespace TEXT NOT NULL,
+			app       TEXT NOT NULL,
+			env       TEXT NOT NULL,
+			pvc       TEXT NOT NULL,
+			capacity  INTEGER NOT NULL,
+			used      INTEGER NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_pvc_query ON pvc_metrics(namespace, app, env, ts)`,
 	} {
 		if _, err := db.Exec(ddl); err != nil {
 			return nil, fmt.Errorf("exec DDL: %w", err)
@@ -230,6 +252,21 @@ func (s *Store) InsertLogs(entries []LogEntry) error {
 		}
 	}
 	return tx.Commit()
+}
+
+// LastLogTimestamp returns the newest stored log timestamp for a pod ("" when
+// none). Tailers resume from it so a restart neither re-ingests the tail nor
+// silently drops the downtime window (within kubelet log rotation limits).
+func (s *Store) LastLogTimestamp(namespace, pod string) (string, error) {
+	var ts sql.NullString
+	err := s.db.QueryRow(
+		"SELECT MAX(ts) FROM logs WHERE namespace = ? AND pod = ?",
+		namespace, pod,
+	).Scan(&ts)
+	if err != nil {
+		return "", err
+	}
+	return ts.String, nil
 }
 
 func (s *Store) QueryLogs(namespace, app, env string, start, end int64, limit int, filter, before string) ([]LogLine, bool, error) {
@@ -346,13 +383,186 @@ func (s *Store) QueryTraffic(namespace, app, env string, start, end, step int64)
 	return series, rows.Err()
 }
 
+// Tick records one collector cycle. ok=false ticks carry the error summary;
+// items is how many series rows the cycle produced (0 is a valid,
+// observed-empty cycle).
+type Tick struct {
+	Collector string
+	Ts        int64
+	OK        bool
+	Items     int
+	Error     string
+}
+
+func (s *Store) InsertTick(t Tick) error {
+	ok := 0
+	if t.OK {
+		ok = 1
+	}
+	_, err := s.db.Exec(
+		"INSERT INTO collector_ticks (collector, ts, ok, items, error) VALUES (?, ?, ?, ?, ?)",
+		t.Collector, t.Ts, ok, t.Items, t.Error,
+	)
+	return err
+}
+
+// QueryCoverage buckets successful heartbeats for a collector over
+// [start,end]: [bucketTs, 1] where at least one successful tick landed in the
+// bucket, [bucketTs, 0] where none did. Consumers render 0-buckets as gaps.
+func (s *Store) QueryCoverage(collector string, start, end, step int64) ([][2]int64, error) {
+	rows, err := s.db.Query(
+		`SELECT (ts / ? * ?) AS bucket, MAX(ok)
+		 FROM collector_ticks
+		 WHERE collector = ? AND ts >= ? AND ts <= ?
+		 GROUP BY bucket`,
+		step, step, collector, start, end,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	observed := map[int64]int64{}
+	for rows.Next() {
+		var bucket, ok int64
+		if err := rows.Scan(&bucket, &ok); err != nil {
+			return nil, err
+		}
+		observed[bucket] = ok
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	var out [][2]int64
+	for b := (start / step) * step; b <= end; b += step {
+		out = append(out, [2]int64{b, observed[b]})
+	}
+	return out, nil
+}
+
+// LastTicks returns the most recent tick per collector (for self-health).
+func (s *Store) LastTicks() ([]Tick, error) {
+	rows, err := s.db.Query(
+		`SELECT collector, ts, ok, items, error FROM collector_ticks t
+		 WHERE ts = (SELECT MAX(ts) FROM collector_ticks WHERE collector = t.collector)
+		 GROUP BY collector`,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []Tick
+	for rows.Next() {
+		var t Tick
+		var ok int
+		if err := rows.Scan(&t.Collector, &t.Ts, &ok, &t.Items, &t.Error); err != nil {
+			return nil, err
+		}
+		t.OK = ok == 1
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+type PVCEntry struct {
+	Ts        int64
+	Namespace string
+	App       string
+	Env       string
+	PVC       string
+	Capacity  int64
+	Used      int64
+}
+
+type PVCSeries struct {
+	Name     string       `json:"name"`
+	Capacity [][2]float64 `json:"capacity"`
+	Used     [][2]float64 `json:"used"`
+}
+
+func (s *Store) InsertPVCMetrics(entries []PVCEntry) error {
+	if len(entries) == 0 {
+		return nil
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	stmt, err := tx.Prepare("INSERT INTO pvc_metrics (ts, namespace, app, env, pvc, capacity, used) VALUES (?, ?, ?, ?, ?, ?, ?)")
+	if err != nil {
+		tx.Rollback()
+		return err
+	}
+	defer stmt.Close()
+	for _, e := range entries {
+		if _, err := stmt.Exec(e.Ts, e.Namespace, e.App, e.Env, e.PVC, e.Capacity, e.Used); err != nil {
+			tx.Rollback()
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func (s *Store) QueryPVCMetrics(namespace, app, env string, start, end, step int64) ([]PVCSeries, error) {
+	rows, err := s.db.Query(
+		`SELECT pvc, (ts / ? * ?) AS bucket, AVG(capacity), AVG(used)
+		 FROM pvc_metrics
+		 WHERE namespace = ? AND app = ? AND env = ? AND ts >= ? AND ts <= ?
+		 GROUP BY pvc, bucket
+		 ORDER BY pvc, bucket`,
+		step, step, namespace, app, env, start, end,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	byPVC := map[string]*PVCSeries{}
+	var order []string
+	for rows.Next() {
+		var pvc string
+		var bucket int64
+		var capacity, used float64
+		if err := rows.Scan(&pvc, &bucket, &capacity, &used); err != nil {
+			return nil, err
+		}
+		ps, ok := byPVC[pvc]
+		if !ok {
+			ps = &PVCSeries{Name: pvc}
+			byPVC[pvc] = ps
+			order = append(order, pvc)
+		}
+		ps.Capacity = append(ps.Capacity, [2]float64{float64(bucket), capacity})
+		ps.Used = append(ps.Used, [2]float64{float64(bucket), used})
+	}
+
+	result := make([]PVCSeries, 0, len(order))
+	for _, name := range order {
+		result = append(result, *byPVC[name])
+	}
+	return result, rows.Err()
+}
+
 const trimChunkSize = 1000
+
+// downsampleAge is how long metrics stay at raw poll-interval resolution
+// before being collapsed to downsampleStep buckets. Retention policy: raw
+// points for 24h, 5-minute averages until the age cutoff, everything gone
+// after it. Traffic is already bucket-aggregated at collection time and
+// logs cannot be downsampled, so both are age-trimmed only.
+const downsampleAge = 24 * time.Hour
+const downsampleStep = int64(300)
 
 func (s *Store) Trim(metricsRetention, logRetention, trafficRetention time.Duration) (int64, int64, error) {
 	metricsCutoff := time.Now().Add(-metricsRetention).Unix()
 	metricsDeleted, err := s.chunkedDelete("metrics", "ts < ?", metricsCutoff)
 	if err != nil {
 		return 0, 0, err
+	}
+	if err := s.downsampleMetrics(time.Now().Add(-downsampleAge).Unix()); err != nil {
+		return metricsDeleted, 0, err
 	}
 
 	logsCutoff := time.Now().Add(-logRetention).UTC().Format(time.RFC3339Nano)
@@ -366,7 +576,63 @@ func (s *Store) Trim(metricsRetention, logRetention, trafficRetention time.Durat
 		return metricsDeleted, logsDeleted, err
 	}
 
+	// Heartbeats and PVC samples follow the metrics window.
+	if _, err := s.chunkedDelete("collector_ticks", "ts < ?", metricsCutoff); err != nil {
+		return metricsDeleted, logsDeleted, err
+	}
+	if _, err := s.chunkedDelete("pvc_metrics", "ts < ?", metricsCutoff); err != nil {
+		return metricsDeleted, logsDeleted, err
+	}
+
 	return metricsDeleted, logsDeleted, nil
+}
+
+// downsampleMetrics collapses metric rows older than cutoff into one averaged
+// row per (pod, series, downsampleStep bucket). Idempotent: already-collapsed
+// rows re-collapse to themselves, and the bucket timestamp marker (ts aligned
+// to the bucket) makes the second pass a no-op via the row-count guard.
+func (s *Store) downsampleMetrics(cutoff int64) error {
+	// Skip when there is nothing finer than the target resolution: collapsed
+	// rows sit exactly on bucket boundaries, so any off-boundary row below
+	// the cutoff means work to do.
+	var pending int
+	if err := s.db.QueryRow(
+		"SELECT COUNT(1) FROM metrics WHERE ts < ? AND ts % ? != 0 LIMIT 1",
+		cutoff, downsampleStep,
+	).Scan(&pending); err != nil {
+		return err
+	}
+	if pending == 0 {
+		return nil
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(
+		`CREATE TEMP TABLE downsampled AS
+		 SELECT (ts / ? * ?) AS ts, pod, namespace, app, env, AVG(cpu) AS cpu, CAST(AVG(memory) AS INTEGER) AS memory
+		 FROM metrics WHERE ts < ?
+		 GROUP BY (ts / ?), pod, namespace, app, env`,
+		downsampleStep, downsampleStep, cutoff, downsampleStep,
+	); err != nil {
+		tx.Rollback()
+		return err
+	}
+	if _, err := tx.Exec("DELETE FROM metrics WHERE ts < ?", cutoff); err != nil {
+		tx.Rollback()
+		return err
+	}
+	if _, err := tx.Exec("INSERT INTO metrics SELECT ts, pod, namespace, app, env, cpu, memory FROM downsampled"); err != nil {
+		tx.Rollback()
+		return err
+	}
+	if _, err := tx.Exec("DROP TABLE downsampled"); err != nil {
+		tx.Rollback()
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *Store) chunkedDelete(table, where string, cutoff any) (int64, error) {
