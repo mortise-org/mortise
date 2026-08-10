@@ -18,7 +18,10 @@ import (
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
 )
 
-func TestEnsureAppBuildRunCreatesAndClearsRebuildMarkers(t *testing.T) {
+// ensureAppBuildRun must NOT clear the rebuild markers itself: the env loop
+// shares one *App, so a mid-loop clear starves envs after the first (GH #436).
+// Markers are cleared once by the app controller after the env loop.
+func TestEnsureAppBuildRunCreatesRunAndPreservesRebuildMarkers(t *testing.T) {
 	scheme := runtime.NewScheme()
 	if err := mortisev1alpha1.AddToScheme(scheme); err != nil {
 		t.Fatalf("add scheme: %v", err)
@@ -69,11 +72,17 @@ func TestEnsureAppBuildRunCreatesAndClearsRebuildMarkers(t *testing.T) {
 	if len(run.OwnerReferences) != 1 || run.OwnerReferences[0].Kind != "App" || run.OwnerReferences[0].Name != app.Name {
 		t.Fatalf("expected buildrun owner App/%s, got %+v", app.Name, run.OwnerReferences)
 	}
-	if got := app.Annotations[rebuildRequestedAtAnnotation]; got != "" {
-		t.Fatalf("expected rebuild request marker cleared, got %q", got)
+	if run.Spec.RequestID != "req-1" {
+		t.Fatalf("expected run to carry rebuild request id, got %q", run.Spec.RequestID)
 	}
-	if got := app.Annotations[rebuildNoCacheRequestedAtAnnotation]; got != "" {
-		t.Fatalf("expected no-cache rebuild marker cleared, got %q", got)
+	if !run.Spec.NoCache {
+		t.Fatal("expected no-cache rebuild request to set NoCache on the run")
+	}
+	if got := app.Annotations[rebuildRequestedAtAnnotation]; got != "req-1" {
+		t.Fatalf("expected rebuild request marker preserved for later envs, got %q", got)
+	}
+	if got := app.Annotations[rebuildNoCacheRequestedAtAnnotation]; got != "req-2" {
+		t.Fatalf("expected no-cache rebuild marker preserved for later envs, got %q", got)
 	}
 }
 
@@ -636,7 +645,7 @@ func TestReconcileEnvBuildSkipsTerminalCurrentRunWhenManualRebuildRequested(t *t
 		RegistryBackend: &fakeRegistryBackend{},
 	}
 
-	image, requeue, statusDirty, _, err := r.reconcileEnvBuild(context.Background(), app, []string{"production"}, "production", "main", "same-sha")
+	image, requeue, statusDirty, shouldClearNoCache, err := r.reconcileEnvBuild(context.Background(), app, []string{"production"}, "production", "main", "same-sha")
 	if err != nil {
 		t.Fatalf("reconcileEnvBuild: %v", err)
 	}
@@ -649,8 +658,112 @@ func TestReconcileEnvBuildSkipsTerminalCurrentRunWhenManualRebuildRequested(t *t
 	if !statusDirty {
 		t.Fatal("expected manual rebuild to dirty status")
 	}
+	if !shouldClearNoCache {
+		t.Fatal("expected consumed rebuild request to arm shouldClearNoCache")
+	}
 	if app.Status.CurrentBuildRunName == "manual-run" {
 		t.Fatal("expected manual rebuild to replace the previous terminal run")
+	}
+}
+
+// Regression for GH #436: a rebuild request must reach every environment.
+// Under the old mid-loop marker clear, the first env's ensureAppBuildRun
+// cleared the app-wide annotations in place, so later envs short-circuited on
+// LastBuiltSHA and never rebuilt.
+func TestReconcileEnvBuildRebuildRequestReachesEveryEnv(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := mortisev1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add scheme: %v", err)
+	}
+
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "demo",
+			Namespace: "pj-default-project",
+			Annotations: map[string]string{
+				"mortise.dev/revision":        "same-sha",
+				"mortise.dev/git-token-owner": "owner@example.com",
+			},
+		},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{
+				Type:        mortisev1alpha1.SourceTypeGit,
+				Repo:        "https://example.com/repo.git",
+				Branch:      "main",
+				ProviderRef: "github",
+			},
+		},
+	}
+
+	envs := []string{"production", "staging"}
+	objs := []client.Object{}
+	for _, env := range envs {
+		target := "registry.example.com/mortise/demo:same-sh-" + env
+		lastRun := &mortisev1alpha1.BuildRun{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      env + "-last-run",
+				Namespace: app.Namespace,
+			},
+			Spec: appBuildRunSpec(app, env, "main", "same-sha", target, target),
+			Status: mortisev1alpha1.BuildRunStatus{
+				Phase: mortisev1alpha1.BuildRunPhaseSucceeded,
+				Image: "registry.example.com/demo:" + env + "-old",
+			},
+		}
+		objs = append(objs, lastRun)
+		app.Status.Environments = append(app.Status.Environments, mortisev1alpha1.EnvironmentStatus{
+			Name:           env,
+			LastBuiltSHA:   "same-sha",
+			LastBuiltImage: lastRun.Status.Image,
+			LastSuccessfulBuildRunRef: &mortisev1alpha1.BuildRunReference{
+				Name:  lastRun.Name,
+				Phase: mortisev1alpha1.BuildRunPhaseSucceeded,
+			},
+		})
+	}
+
+	// Markers set AFTER computing the last runs' specs, so those runs match
+	// the marker-free spec each env would otherwise short-circuit against.
+	app.Annotations[rebuildRequestedAtAnnotation] = "req-1"
+
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(append(objs, app)...).Build()
+	r := &AppReconciler{
+		Client:          c,
+		Scheme:          scheme,
+		RegistryBackend: &fakeRegistryBackend{},
+	}
+
+	for _, env := range envs {
+		image, requeue, _, shouldClearNoCache, err := r.reconcileEnvBuild(context.Background(), app, envs, env, "main", "same-sha")
+		if err != nil {
+			t.Fatalf("reconcileEnvBuild %s: %v", env, err)
+		}
+		if image != "" {
+			t.Fatalf("expected env %s to start a rebuild instead of reusing %q", env, image)
+		}
+		if !requeue {
+			t.Fatalf("expected env %s rebuild to requeue", env)
+		}
+		if !shouldClearNoCache {
+			t.Fatalf("expected env %s to arm the post-loop marker clear", env)
+		}
+	}
+
+	if got := app.Annotations[rebuildRequestedAtAnnotation]; got != "req-1" {
+		t.Fatalf("expected rebuild marker intact until the post-loop clear, got %q", got)
+	}
+
+	var runs mortisev1alpha1.BuildRunList
+	if err := c.List(context.Background(), &runs, client.InNamespace(app.Namespace)); err != nil {
+		t.Fatalf("list buildruns: %v", err)
+	}
+	if len(runs.Items) != 4 {
+		t.Fatalf("expected a fresh rebuild run per env (4 total), got %d", len(runs.Items))
+	}
+	for _, env := range envs {
+		if name := currentBuildRunNameForEnv(app, env); name == "" || name == env+"-last-run" {
+			t.Fatalf("expected env %s to point at a fresh rebuild run, got %q", env, name)
+		}
 	}
 }
 

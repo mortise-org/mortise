@@ -21,6 +21,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	"github.com/mortise-org/mortise/internal/constants"
 )
 
 const (
@@ -38,8 +40,8 @@ const (
 	SharedVarsSourceName = "shared-vars"
 
 	// ManagedByLabel marks Secrets owned by Mortise.
-	ManagedByLabel = "app.kubernetes.io/managed-by"
-	ManagedByValue = "mortise"
+	ManagedByLabel = constants.ManagedByLabel
+	ManagedByValue = constants.ManagedByValue
 
 	// Source annotations — comma-separated key lists tracking origin of each var.
 	AnnotationBindingKeys   = "mortise.dev/binding-keys"

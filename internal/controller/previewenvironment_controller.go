@@ -258,12 +258,16 @@ func (r *PreviewEnvironmentReconciler) ensureAppEnvOverride(ctx context.Context,
 		for idx := range fresh.Spec.Environments {
 			if fresh.Spec.Environments[idx].Name == envName {
 				// Already exists — ensure branch is correct for git-source apps.
-				desiredBranch := ""
-				if fresh.Spec.Source.Type == mortisev1alpha1.SourceTypeGit && previewTargetsAppRepo(pe, &fresh) {
-					desiredBranch = pe.Spec.PullRequest.Branch
+				// Only the PE targeting this app's repo owns the branch value.
+				// Two same-numbered PRs in different repos share this env name,
+				// and every App event enqueues every PE in the namespace: if a
+				// non-matching PE cleared the branch here, it and the owning PE
+				// would overwrite each other forever.
+				if !previewTargetsAppRepo(pe, &fresh) {
+					return nil
 				}
-				if fresh.Spec.Environments[idx].Branch != desiredBranch {
-					fresh.Spec.Environments[idx].Branch = desiredBranch
+				if fresh.Spec.Environments[idx].Branch != pe.Spec.PullRequest.Branch {
+					fresh.Spec.Environments[idx].Branch = pe.Spec.PullRequest.Branch
 					return r.Update(ctx, &fresh)
 				}
 				return nil
@@ -479,6 +483,26 @@ func copySourceAnnotations(src map[string]string) map[string]string {
 // per-app env overrides for the preview env name, and requests deletion of
 // the preview namespace before the PE finalizer is removed.
 func (r *PreviewEnvironmentReconciler) cleanupPreview(ctx context.Context, pe *mortisev1alpha1.PreviewEnvironment, projectName, envName string) error {
+	// Two same-numbered PRs in different repos of one project resolve to the
+	// same env name (pr-{N}) and share its namespace. Only the last live PE
+	// tears the shared resources down; otherwise closing one PR would destroy
+	// the other's running preview, which the surviving PE then recreates —
+	// an endless create/terminate thrash.
+	inUse, err := r.envInUseByAnotherPreview(ctx, pe, envName)
+	if err != nil {
+		return err
+	}
+	if inUse {
+		// Deliberate last-close-wins tradeoff: skipping ALL cleanup means the
+		// closed PR's own app keeps its pr-{N} override, so its workload keeps
+		// running from the closed branch until the last same-numbered PE
+		// closes. Removing just that app's override instead would rebuild the
+		// app from its default branch INTO the shared preview env — a worse
+		// lie than a briefly-stale zombie. Revisit if the L2 env-rename gives
+		// same-numbered PRs distinct env names.
+		return nil
+	}
+
 	if err := r.removeProjectEnv(ctx, projectName, envName); err != nil {
 		return err
 	}
@@ -495,6 +519,25 @@ func (r *PreviewEnvironmentReconciler) cleanupPreview(ctx context.Context, pe *m
 	}
 
 	return r.deletePreviewNamespace(ctx, projectName, envName)
+}
+
+// envInUseByAnotherPreview reports whether a different, non-deleting
+// PreviewEnvironment in the same namespace resolves to the same env name.
+func (r *PreviewEnvironmentReconciler) envInUseByAnotherPreview(ctx context.Context, pe *mortisev1alpha1.PreviewEnvironment, envName string) (bool, error) {
+	var peList mortisev1alpha1.PreviewEnvironmentList
+	if err := r.List(ctx, &peList, client.InNamespace(pe.Namespace)); err != nil {
+		return false, err
+	}
+	for i := range peList.Items {
+		other := &peList.Items[i]
+		if other.Name == pe.Name || !other.DeletionTimestamp.IsZero() {
+			continue
+		}
+		if fmt.Sprintf("pr-%d", other.Spec.PullRequest.Number) == envName {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (r *PreviewEnvironmentReconciler) deletePreviewNamespace(ctx context.Context, projectName, envName string) error {

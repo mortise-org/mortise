@@ -183,6 +183,14 @@ func (s *Server) CreateProject(w http.ResponseWriter, r *http.Request) {
 		},
 		Spec: mortisev1alpha1.ProjectSpec{
 			Description: req.Description,
+			// Seed the default env at create instead of leaving it to the
+			// controller: a client adding an env (e.g. the UI POSTing
+			// staging) between create and first reconcile would otherwise
+			// suppress the controller's seed and leave the project without
+			// a production env.
+			Environments: []mortisev1alpha1.ProjectEnvironment{
+				{Name: constants.DefaultProjectEnvironment},
+			},
 		},
 	}
 

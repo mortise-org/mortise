@@ -101,9 +101,13 @@ jobs:
         run: go vet ./...
 
       - name: staticcheck
-        uses: dominikh/staticcheck-action@v1
-        with:
-          version: latest
+        # Direct pinned install instead of dominikh/staticcheck-action: the
+        # action's internal cache collides with setup-go's cache:true
+        # (deterministic 'File exists' tar errors on restore), and setup-go's
+        # module cache already covers the install.
+        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@v0.7.0
+          staticcheck ./...
 
   ui:
     name: UI typecheck + build
@@ -152,7 +156,14 @@ jobs:
       - name: Install k3d
         run: |
           curl -fsSL -o /usr/local/bin/k3d "https://github.com/k3d-io/k3d/releases/download/v5.8.3/k3d-linux-amd64"
+          echo "dbaa79a76ace7f4ca230a1ff41dc7d8a5036a8ad0309e9c54f9bf3836dbe853e  /usr/local/bin/k3d" | sha256sum --check
           chmod +x /usr/local/bin/k3d
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ hashFiles('ui/package-lock.json') }}
 
       - name: Start dev cluster
         run: make dev-up
