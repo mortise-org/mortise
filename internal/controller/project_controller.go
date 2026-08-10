@@ -30,6 +30,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/clock"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -114,6 +115,15 @@ type ProjectReconciler struct {
 	APIReader          client.Reader
 	OperatorNamespace  string
 	ServiceAccountName string
+	// Clock is injectable for tests; nil means the real clock.
+	Clock clock.Clock
+}
+
+func (r *ProjectReconciler) clock() clock.Clock {
+	if r.Clock != nil {
+		return r.Clock
+	}
+	return clock.RealClock{}
 }
 
 // +kubebuilder:rbac:groups=mortise.mortise.dev,resources=projects,verbs=get;list;watch;create;update;patch;delete
@@ -210,14 +220,6 @@ func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, fmt.Errorf("ensure role binding in %q: %w", controlNs, err)
 	}
 
-	// Auto-create an owner ProjectMember for the project creator.
-	if err := r.ensureOwnerMember(ctx, &project, controlNs); err != nil {
-		return ctrl.Result{}, fmt.Errorf("ensure owner member: %w", err)
-	}
-	if err := r.ensureProjectCreateActivity(ctx, &project); err != nil {
-		return ctrl.Result{}, fmt.Errorf("ensure project create activity: %w", err)
-	}
-
 	// Ensure one namespace per declared env.
 	envNsMap := make(map[string]string, len(project.Spec.Environments))
 	for _, env := range project.Spec.Environments {
@@ -235,6 +237,32 @@ func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 			return ctrl.Result{}, fmt.Errorf("ensure role binding in %q: %w", ns, err)
 		}
 		envNsMap[env.Name] = ns
+	}
+
+	// Control-namespace bookkeeping runs AFTER the env namespaces and their
+	// RoleBindings exist: these writes race the control namespace's own RBAC
+	// propagation, and when they sat before the env loop a single Forbidden
+	// here held every env RoleBinding hostage to this reconciler's backoff —
+	// which is what pushed app-side denials past their propagation window
+	// (mo-k5p). A Forbidden inside the young control namespace fast-requeues
+	// without feeding the rate limiter; older ones are genuine errors.
+	// Known trade: an env-namespace bootstrap failure now also blocks
+	// owner-member creation (previously membership survived env failures) —
+	// accepted, since the reconcile retries and the alternative reintroduces
+	// the hostage ordering.
+	if err := r.ensureOwnerMember(ctx, &project, controlNs); err != nil {
+		if res, ok := forbiddenFastRequeue(ctx, r.Client, r.clock(), controlNs, err); ok {
+			log.Info("forbidden while control-namespace RBAC propagates; fast requeue", "op", "ensure owner member")
+			return res, nil
+		}
+		return ctrl.Result{}, fmt.Errorf("ensure owner member: %w", err)
+	}
+	if err := r.ensureProjectCreateActivity(ctx, &project); err != nil {
+		if res, ok := forbiddenFastRequeue(ctx, r.Client, r.clock(), controlNs, err); ok {
+			log.Info("forbidden while control-namespace RBAC propagates; fast requeue", "op", "ensure project create activity")
+			return res, nil
+		}
+		return ctrl.Result{}, fmt.Errorf("ensure project create activity: %w", err)
 	}
 
 	// GC env namespaces that are no longer in spec.
