@@ -46,8 +46,6 @@ build or publish an image. For local development, use `make dev-up` (k3d +
 Tilt) or `make build` to build a local image. If you need a specific
 commit, cut a prerelease tag (e.g. `v0.2.0-rc.1`).
 
-## Hotfix / rollback
-
 ## Placeholder version policy
 
 The in-repo charts carry the placeholder version `0.0.0-dev`. It is not a
@@ -60,6 +58,8 @@ release?" unanswerable (the mechanism behind #446/#379's stale-template
 reports). `release.yml` also refuses to overwrite a version that already
 exists on gh-pages: published chart artifacts are immutable, same as
 images.
+
+## Hotfix / rollback
 
 If a release is broken:
 
