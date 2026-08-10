@@ -4548,6 +4548,9 @@ func (f *fakeGitClient) Fetch(_ context.Context, _, _ string) error {
 type fakeRegistryBackend struct {
 	imageRef       registry.ImageRef
 	pullSecretName string
+	resolveDigest  string
+	resolveFound   bool
+	resolveErr     error
 }
 
 func (f *fakeRegistryBackend) PushTarget(app, tag string) (registry.ImageRef, error) {
@@ -4570,6 +4573,10 @@ func (f *fakeRegistryBackend) PullSecretRef() string { return f.pullSecretName }
 
 func (f *fakeRegistryBackend) Tags(_ context.Context, _ string) ([]string, error) {
 	return nil, nil
+}
+
+func (f *fakeRegistryBackend) ResolveTag(_ context.Context, _, _ string) (string, bool, error) {
+	return f.resolveDigest, f.resolveFound, f.resolveErr
 }
 
 func (f *fakeRegistryBackend) DeleteTag(_ context.Context, _, _ string) error {

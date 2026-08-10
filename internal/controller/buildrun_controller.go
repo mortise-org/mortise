@@ -25,6 +25,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -33,6 +34,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
 	"github.com/mortise-org/mortise/internal/build"
@@ -41,16 +43,29 @@ import (
 )
 
 const (
-	buildRunPollInterval        = 15 * time.Second
-	buildRunTrackerLossGrace    = 5 * time.Second
-	maxBuildRunRecoveryAttempts = 2
-	buildRunHistoryLimit        = 10
+	buildRunPollInterval     = 15 * time.Second
+	buildRunTrackerLossGrace = 5 * time.Second
+	buildRunHistoryLimit     = 10
+
+	// Interruption (tracker loss, e.g. an OOM-killed operator) is retryable:
+	// the first loss relaunches immediately, later losses back off
+	// exponentially from this base so a crash-looping operator doesn't spend
+	// the whole retry budget in seconds. After the attempt budget is spent the
+	// run fails terminally with BuildRetriesExhausted.
+	maxBuildRunInterruptionAttempts = 5
+	buildRunInterruptionBackoffBase = time.Minute
+
+	buildRunInterruptedCondition = "Interrupted"
 )
 
 // BuildRunReconciler reconciles durable BuildRun objects.
 type BuildRunReconciler struct {
 	client.Client
-	Scheme          *runtime.Scheme
+	Scheme *runtime.Scheme
+	// APIReader reads straight from the API server, bypassing the informer
+	// cache. The lost-tracker path uses it because a cached read can present
+	// a finished build as still Running right after the terminal persist.
+	APIReader       client.Reader
 	Clock           clock.Clock
 	BuildClient     build.BuildClient
 	GitClient       git.GitClient
@@ -110,8 +125,7 @@ func (r *BuildRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			// Persist the terminal outcome BEFORE dropping the tracker. If the
 			// tracker is deleted first and any write below fails, the next
 			// reconcile sees phase Running with no tracker and treats a
-			// finished build as lost — triggering a duplicate rebuild or a
-			// terminal BuildInterrupted failure.
+			// finished build as lost — triggering a duplicate rebuild.
 			logRef, err := r.persistBuildRunLog(ctx, &br, tracker)
 			if err != nil {
 				return ctrl.Result{}, err
@@ -172,10 +186,13 @@ func (r *BuildRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 func (r *BuildRunReconciler) handleLostBuildRunTracker(ctx context.Context, key types.NamespacedName) (ctrl.Result, error) {
 	// A concurrent reconcile may have persisted the terminal outcome and
-	// dropped the tracker after our (possibly cached) read. Re-read before
-	// treating a finished build as lost.
+	// dropped the tracker after our (possibly cached) read. Re-read through
+	// the uncached APIReader before treating a finished build as lost:
+	// informer lag can present Running-with-no-tracker long after StartedAt's
+	// grace window has elapsed, and a cached re-read would restart a build
+	// that already finished.
 	var latest mortisev1alpha1.BuildRun
-	if err := r.Get(ctx, key, &latest); err != nil {
+	if err := r.uncachedReader().Get(ctx, key, &latest); err != nil {
 		if errors.IsNotFound(err) {
 			return ctrl.Result{}, nil
 		}
@@ -195,30 +212,162 @@ func (r *BuildRunReconciler) handleLostBuildRunTracker(ctx context.Context, key 
 		return ctrl.Result{RequeueAfter: buildRunTrackerLossGrace - elapsed}, nil
 	}
 
+	// The interrupted attempt may have finished pushing before the tracker
+	// was lost; adopt the pushed image instead of rebuilding (#290).
+	if adopted, err := r.adoptPushedBuildResult(ctx, br, key); adopted || err != nil {
+		return ctrl.Result{}, err
+	}
+
 	attempt := br.Status.Attempt
 	if attempt < 1 {
 		attempt = 1
 	}
-	if attempt < maxBuildRunRecoveryAttempts {
-		marker := fmt.Sprintf("[recovery] build tracker lost; restarting attempt %d", attempt+1)
-		if err := r.appendBuildRunLogMarker(ctx, br, marker); err != nil {
+	if attempt >= maxBuildRunInterruptionAttempts {
+		message := fmt.Sprintf("build interrupted %d times without completing", attempt)
+		if err := r.appendBuildRunLogMarker(ctx, br, "[interrupted] "+message); err != nil {
 			return ctrl.Result{}, err
 		}
-		return r.startBuildRunAttempt(ctx, br, key, attempt+1, marker)
+		if err := r.failBuildRun(ctx, br, attempt, "BuildRetriesExhausted", message); err != nil {
+			return ctrl.Result{}, err
+		}
+		if err := r.projectTerminalBuildRunStatus(ctx, br); err != nil {
+			return ctrl.Result{}, err
+		}
+		r.Builds.delete(key)
+		return ctrl.Result{}, nil
 	}
 
-	message := fmt.Sprintf("build tracker lost after recovery attempt %d", attempt)
-	if err := r.appendBuildRunLogMarker(ctx, br, "[interrupted] "+message); err != nil {
+	if delay := buildRunInterruptionBackoff(attempt); delay > 0 {
+		remaining, err := r.awaitInterruptionBackoff(ctx, br, delay)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		if remaining > 0 {
+			return ctrl.Result{RequeueAfter: remaining}, nil
+		}
+	}
+
+	marker := fmt.Sprintf("[recovery] build tracker lost; restarting attempt %d", attempt+1)
+	if err := r.appendBuildRunLogMarker(ctx, br, marker); err != nil {
 		return ctrl.Result{}, err
 	}
-	if err := r.failBuildRun(ctx, br, attempt, "BuildInterrupted", message); err != nil {
-		return ctrl.Result{}, err
+	return r.startBuildRunAttempt(ctx, br, key, attempt+1, marker)
+}
+
+// adoptPushedBuildResult probes the registry for the interrupted build's push
+// target and, when the image is already there, persists the success instead of
+// rebuilding. Requested rebuilds (RequestID/NoCache) are exempt: their push
+// tag can pre-exist from the previous build, so adoption would silently skip
+// the rebuild the user asked for.
+func (r *BuildRunReconciler) adoptPushedBuildResult(ctx context.Context, br *mortisev1alpha1.BuildRun, key types.NamespacedName) (bool, error) {
+	if r.RegistryBackend == nil || br.Spec.NoCache || br.Spec.RequestID != "" {
+		return false, nil
+	}
+	appName := firstNonEmpty(br.Spec.AppName, br.Spec.TargetRef.Name)
+	pushRef := parseImageRef(br.Spec.PushTarget)
+	if appName == "" || pushRef.Tag == "" {
+		return false, nil
+	}
+
+	digest, found, err := r.RegistryBackend.ResolveTag(ctx, appName, pushRef.Tag)
+	if err != nil {
+		// The probe is an optimization; registry trouble must not block recovery.
+		logf.FromContext(ctx).Error(err, "registry probe for interrupted build failed; falling back to rebuild",
+			"buildrun", key, "tag", pushRef.Tag)
+		return false, nil
+	}
+	if !found {
+		return false, nil
+	}
+
+	pullRef := parseImageRef(firstNonEmpty(br.Spec.PullTarget, br.Spec.PushTarget))
+	image := pullRef.Full
+	if digest != "" {
+		image = pullRef.Registry + "/" + pullRef.Path + "@" + digest
+	}
+
+	if err := r.appendBuildRunLogMarker(ctx, br, fmt.Sprintf("[recovery] image %s already pushed by interrupted attempt; adopting", image)); err != nil {
+		return false, err
+	}
+
+	now := metav1.NewTime(r.clock().Now())
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var current mortisev1alpha1.BuildRun
+		if err := r.Get(ctx, key, &current); err != nil {
+			return err
+		}
+		current.Status.Phase = mortisev1alpha1.BuildRunPhaseSucceeded
+		current.Status.Image = image
+		current.Status.Digest = digest
+		current.Status.FinishedAt = &now
+		current.Status.CompletedAt = &now
+		current.Status.LogRef = &corev1.LocalObjectReference{Name: buildRunLogConfigMapName(br.Name)}
+		current.Status.FailureReason = ""
+		current.Status.FailureMessage = ""
+		meta.RemoveStatusCondition(&current.Status.Conditions, buildRunInterruptedCondition)
+		setBuildRunCondition(&current.Status.Conditions, mortisev1alpha1.BuildRunPhaseSucceeded, current.Generation, "build completed (adopted image pushed by interrupted attempt)", now)
+		if err := r.Status().Update(ctx, &current); err != nil {
+			return err
+		}
+		*br = current
+		return nil
+	}); err != nil {
+		return false, err
 	}
 	if err := r.projectTerminalBuildRunStatus(ctx, br); err != nil {
-		return ctrl.Result{}, err
+		return true, err
 	}
 	r.Builds.delete(key)
-	return ctrl.Result{}, nil
+	if err := r.gcBuildRunHistory(ctx, br); err != nil {
+		return true, err
+	}
+	return true, nil
+}
+
+// buildRunInterruptionBackoff returns how long to wait before relaunching
+// after the given attempt was interrupted. The first loss restarts
+// immediately; later ones back off exponentially.
+func buildRunInterruptionBackoff(attempt int32) time.Duration {
+	if attempt < 2 {
+		return 0
+	}
+	return buildRunInterruptionBackoffBase << (attempt - 2)
+}
+
+// awaitInterruptionBackoff marks the run interrupted (if not already) and
+// returns the remaining backoff before the next relaunch, using the
+// Interrupted condition's transition time as the durable reference point.
+// Zero means the backoff has elapsed and the caller may restart now.
+func (r *BuildRunReconciler) awaitInterruptionBackoff(ctx context.Context, br *mortisev1alpha1.BuildRun, delay time.Duration) (time.Duration, error) {
+	now := r.clock().Now()
+	cond := meta.FindStatusCondition(br.Status.Conditions, buildRunInterruptedCondition)
+	if cond == nil || cond.Status != metav1.ConditionTrue {
+		meta.SetStatusCondition(&br.Status.Conditions, metav1.Condition{
+			Type:               buildRunInterruptedCondition,
+			Status:             metav1.ConditionTrue,
+			Reason:             "BuildInterrupted",
+			Message:            fmt.Sprintf("build tracker lost on attempt %d; retrying after backoff", br.Status.Attempt),
+			ObservedGeneration: br.Generation,
+			LastTransitionTime: metav1.NewTime(now),
+		})
+		if err := r.Status().Update(ctx, br); err != nil {
+			return 0, err
+		}
+		return delay, nil
+	}
+	if waited := now.Sub(cond.LastTransitionTime.Time); waited < delay {
+		return delay - waited, nil
+	}
+	return 0, nil
+}
+
+// uncachedReader returns the APIReader when configured, falling back to the
+// manager client for tests that don't wire one.
+func (r *BuildRunReconciler) uncachedReader() client.Reader {
+	if r.APIReader != nil {
+		return r.APIReader
+	}
+	return r.Client
 }
 
 func (r *BuildRunReconciler) startBuildRunAttempt(ctx context.Context, br *mortisev1alpha1.BuildRun, key types.NamespacedName, attempt int32, marker string) (ctrl.Result, error) {
@@ -245,6 +394,7 @@ func (r *BuildRunReconciler) startBuildRunAttempt(ctx context.Context, br *morti
 	if attempt > 1 {
 		message = fmt.Sprintf("build recovered after tracker loss (attempt %d)", attempt)
 	}
+	meta.RemoveStatusCondition(&br.Status.Conditions, buildRunInterruptedCondition)
 	setBuildRunCondition(&br.Status.Conditions, mortisev1alpha1.BuildRunPhaseRunning, br.Generation, message, now)
 	if err := r.Status().Update(ctx, br); err != nil {
 		return ctrl.Result{}, err

@@ -213,6 +213,12 @@ func (r *PreviewEnvironmentReconciler) previewBuildFailure(ctx context.Context, 
 			return "", "", false, err
 		}
 
+		// Interruption is retryable — the BuildRun controller relaunches the
+		// build — so it must not hard-fail the preview.
+		if run.Status.FailureReason == "BuildInterrupted" {
+			continue
+		}
+
 		return firstNonEmpty(run.Status.FailureReason, reason),
 			firstNonEmpty(run.Status.FailureMessage, msg),
 			true,
