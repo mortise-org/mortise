@@ -101,6 +101,22 @@ const rbacPropagationRequeue = 2 * time.Second
 // explain it.
 const appRBACForbiddenCondition = "RBACForbidden"
 
+// appNamespacePendingCondition is set while an env write is denied because the
+// env namespace does not exist yet (the authorizer rejects before existence is
+// checked, so a write racing namespace bootstrap surfaces as Forbidden). Its
+// LastTransitionTime is the bound: a namespace has no age of its own to bound
+// against, so the condition's first-set time stands in for it. Past
+// namespaceCreationBudget the App goes Failed — a namespace that never
+// appears means the Project controller cannot create it, which is a genuine
+// misconfiguration, not a race.
+const appNamespacePendingCondition = "NamespacePending"
+
+// namespaceCreationBudget bounds how long an App fast-requeues on
+// Forbidden-in-a-missing-namespace before escalating. Kept separate from
+// rbacPropagationWindow (same default) because it times a different thing:
+// namespace creation by the Project controller, not authorizer propagation.
+const namespaceCreationBudget = 2 * time.Minute
+
 // AppReconciler reconciles a App object
 type AppReconciler struct {
 	client.Client
@@ -219,11 +235,15 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		if r.BuildClient != nil && !r.allEnvBuildsCurrentForRevision(&app, resolvedEnvs, previewBuildIdentities) {
 			result, proceed, err := r.prepareGitSource(ctx, &app)
 			if !proceed || err != nil {
-				if syncErr := r.reconcileResolvedEnvSecrets(ctx, &app, resolvedEnvs); syncErr != nil {
+				if syncRes, syncErr := r.reconcileResolvedEnvSecrets(ctx, &app, resolvedEnvs); syncErr != nil || syncRes.RequeueAfter > 0 {
+					// A preflight error still wins the return below; the env
+					// Secret outcome is logged so it isn't silently lost.
 					if err == nil {
-						return ctrl.Result{}, syncErr
+						return syncRes, syncErr
 					}
-					log.Error(syncErr, "reconcile env secrets after git preflight failure", "app", app.Name)
+					if syncErr != nil {
+						log.Error(syncErr, "reconcile env secrets after git preflight failure", "app", app.Name)
+					}
 				}
 			}
 			if err != nil {
@@ -409,14 +429,19 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		}
 		domainCollisionCleared = true
 	}
-	// Same for a stale RBACForbidden condition: writes into every env ns
-	// succeeded this pass, so the operator's access is live again.
+	// Same for stale RBACForbidden / NamespacePending conditions: writes into
+	// every env ns succeeded this pass, so the operator's access is live and
+	// every env namespace exists.
 	rbacForbiddenCleared := false
-	if meta.FindStatusCondition(app.Status.Conditions, appRBACForbiddenCondition) != nil {
+	for _, condType := range []string{appRBACForbiddenCondition, appNamespacePendingCondition} {
+		if meta.FindStatusCondition(app.Status.Conditions, condType) == nil {
+			continue
+		}
+		cleared := condType
 		if err := r.updateAppStatus(ctx, &app, func(status *mortisev1alpha1.AppStatus) {
-			meta.RemoveStatusCondition(&status.Conditions, appRBACForbiddenCondition)
+			meta.RemoveStatusCondition(&status.Conditions, cleared)
 		}); err != nil {
-			return ctrl.Result{}, fmt.Errorf("clear rbac forbidden condition: %w", err)
+			return ctrl.Result{}, fmt.Errorf("clear %s condition: %w", cleared, err)
 		}
 		rbacForbiddenCleared = true
 	}
@@ -466,7 +491,42 @@ func (r *AppReconciler) envResourceError(ctx context.Context, app *mortisev1alph
 			// that races the Project controller's namespace bootstrap (e.g.
 			// a preview env override landing on the App before the ns is
 			// created) surfaces as Forbidden-in-a-missing-namespace. That is
-			// the earliest phase of the same propagation race — fast requeue.
+			// the earliest phase of the same propagation race — fast requeue,
+			// bounded by the NamespacePending condition's transition time
+			// (the namespace itself has no age to bound against).
+			if cond := meta.FindStatusCondition(app.Status.Conditions, appNamespacePendingCondition); cond != nil &&
+				cond.Status == metav1.ConditionTrue &&
+				r.clock().Since(cond.LastTransitionTime.Time) >= namespaceCreationBudget {
+				if updateErr := r.updateAppStatus(ctx, app, func(status *mortisev1alpha1.AppStatus) {
+					status.Phase = mortisev1alpha1.AppPhaseFailed
+					meta.SetStatusCondition(&status.Conditions, metav1.Condition{
+						Type:               appNamespacePendingCondition,
+						Status:             metav1.ConditionTrue,
+						Reason:             "NamespaceCreationTimeout",
+						Message:            fmt.Sprintf("namespace %q still absent after %s; the Project controller cannot create it — check its status and operator RBAC (%s)", envNs, namespaceCreationBudget, wrapped.Error()),
+						ObservedGeneration: app.Generation,
+					})
+				}); updateErr != nil {
+					logf.FromContext(ctx).Error(updateErr, "update status after namespace-creation timeout", "namespace", envNs)
+				}
+				return ctrl.Result{}, wrapped
+			}
+			if updateErr := r.updateAppStatus(ctx, app, func(status *mortisev1alpha1.AppStatus) {
+				// SetStatusCondition only advances LastTransitionTime when
+				// Status changes, so repeated hits keep the original
+				// timestamp — that is the escalation timer. Stamped from the
+				// injected clock so tests can drive it.
+				meta.SetStatusCondition(&status.Conditions, metav1.Condition{
+					Type:               appNamespacePendingCondition,
+					Status:             metav1.ConditionTrue,
+					Reason:             "NamespaceNotFound",
+					Message:            fmt.Sprintf("waiting for namespace %q to be created (%s)", envNs, op),
+					ObservedGeneration: app.Generation,
+					LastTransitionTime: metav1.NewTime(r.clock().Now()),
+				})
+			}); updateErr != nil {
+				logf.FromContext(ctx).Error(updateErr, "update status while namespace pending", "namespace", envNs)
+			}
 			logf.FromContext(ctx).Info("forbidden before env namespace exists; fast requeue",
 				"namespace", envNs, "op", op, "cause", err.Error())
 			return ctrl.Result{RequeueAfter: rbacPropagationRequeue}, nil
@@ -1450,18 +1510,26 @@ func (r *AppReconciler) setBuildFailureCondition(ctx context.Context, app *morti
 	return nil
 }
 
-func (r *AppReconciler) reconcileResolvedEnvSecrets(ctx context.Context, app *mortisev1alpha1.App, resolvedEnvs []mortisev1alpha1.Environment) error {
+// reconcileResolvedEnvSecrets syncs every resolved env's Secret. It runs on
+// the git-source preflight path (bindings and shared vars must materialize
+// even when prepareGitSource says don't-proceed), which means it writes into
+// freshly bootstrapped env namespaces and races the same RBAC propagation as
+// the main env loop — so its errors route through envResourceError instead of
+// feeding the workqueue's exponential rate limiter (the 12th env-write call
+// site; the other eleven were classified when the classifier landed). A
+// non-zero RequeueAfter on the returned Result means "requeue, no error".
+func (r *AppReconciler) reconcileResolvedEnvSecrets(ctx context.Context, app *mortisev1alpha1.App, resolvedEnvs []mortisev1alpha1.Environment) (ctrl.Result, error) {
 	for i := range resolvedEnvs {
 		env := &resolvedEnvs[i]
 		envNs, err := appEnvNs(app, env.Name)
 		if err != nil {
-			return err
+			return ctrl.Result{}, err
 		}
 		if err := r.reconcileEnvSecret(ctx, app, env, envNs); err != nil {
-			return fmt.Errorf("reconcile env secret for env %s: %w", env.Name, err)
+			return r.envResourceError(ctx, app, envNs, env.Name, "reconcile env secret", err)
 		}
 	}
-	return nil
+	return ctrl.Result{}, nil
 }
 
 func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1alpha1.App, env *mortisev1alpha1.Environment, envNs, image, credentialsHash string, autoRedeploy bool) error {

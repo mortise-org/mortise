@@ -45,7 +45,12 @@ func forbiddenFastRequeue(ctx context.Context, c client.Reader, clk clock.Clock,
 		// A Forbidden write into a namespace that doesn't exist yet is the
 		// earliest phase of the same bootstrap race: the authorizer denies
 		// before existence is checked, so this races namespace creation
-		// itself. Fast-requeue; the namespace is on its way.
+		// itself. This arm is deliberately unbounded HERE: the App
+		// controller bounds it via the NamespacePending condition in
+		// envResourceError, and the remaining callers cannot loop on it —
+		// the PE controller checks previewNamespaceNotReadyError before this
+		// classifier, and the Project controller passes a namespace it
+		// ensured earlier in the same reconcile.
 		if errors.IsNotFound(getErr) {
 			return ctrl.Result{RequeueAfter: rbacPropagationRequeue}, true
 		}
