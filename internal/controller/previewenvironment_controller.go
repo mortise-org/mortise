@@ -493,6 +493,13 @@ func (r *PreviewEnvironmentReconciler) cleanupPreview(ctx context.Context, pe *m
 		return err
 	}
 	if inUse {
+		// Deliberate last-close-wins tradeoff: skipping ALL cleanup means the
+		// closed PR's own app keeps its pr-{N} override, so its workload keeps
+		// running from the closed branch until the last same-numbered PE
+		// closes. Removing just that app's override instead would rebuild the
+		// app from its default branch INTO the shared preview env — a worse
+		// lie than a briefly-stale zombie. Revisit if the L2 env-rename gives
+		// same-numbered PRs distinct env names.
 		return nil
 	}
 
