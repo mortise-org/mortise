@@ -9,6 +9,10 @@ import (
 )
 
 const (
+	// DefaultProjectEnvironment is seeded into spec.environments when the
+	// controller observes an empty list. Matches Railway's default.
+	DefaultProjectEnvironment = "production"
+
 	// ControlNamespacePrefix prefixes the Project control namespace: `pj-{name}`.
 	// The control namespace holds App CRDs, GitProvider webhook secrets scoped to
 	// the project, and other project-owned objects that aren't env-scoped.
@@ -216,4 +220,10 @@ const (
 	// EnvironmentLabel is the name of the owning environment; stamped on env
 	// namespaces, preview namespaces, and every per-env resource.
 	EnvironmentLabel = "mortise.dev/environment"
+
+	// ManagedByLabel + ManagedByValue mark every resource Mortise creates.
+	// Selecting on them keeps cluster-wide operations (GC, collision checks)
+	// from touching look-alike resources owned by users or other operators.
+	ManagedByLabel = "app.kubernetes.io/managed-by"
+	ManagedByValue = "mortise"
 )
