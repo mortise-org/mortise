@@ -146,7 +146,7 @@ async function refreshSession(force = false): Promise<boolean> {
 	return refreshPromise;
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+async function request<T>(path: string, init?: RequestInit, onResponse?: (res: Response) => void): Promise<T> {
 	const method = init?.method?.toUpperCase();
 	const retryable = method === 'PUT' || method === 'PATCH';
 	const maxRetries = retryable ? 3 : 0;
@@ -203,8 +203,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 		}
 
 		if (res.status === 204) {
+			onResponse?.(res);
 			return undefined as T;
 		}
+		onResponse?.(res);
 		const text = await res.text();
 		if (!text) {
 			return undefined as T;
@@ -584,6 +586,25 @@ export const api = {
 	// --- activity ---
 	listActivity: (project: string) =>
 		request<ActivityEvent[]>(`/projects/${enc(project)}/activity`),
+	// Cursor-paginated variant: the next-page cursor arrives via the
+	// X-Next-Cursor response header (null when there are no more pages).
+	listActivityPage: async (
+		project: string,
+		cursor?: string,
+		limit = 100
+	): Promise<{ events: ActivityEvent[]; nextCursor: string | null }> => {
+		let nextCursor: string | null = null;
+		const params = new URLSearchParams({ limit: String(limit) });
+		if (cursor) params.set('cursor', cursor);
+		const events = await request<ActivityEvent[]>(
+			`/projects/${enc(project)}/activity?${params}`,
+			undefined,
+			(res) => {
+				nextCursor = res.headers.get('X-Next-Cursor');
+			}
+		);
+		return { events: events ?? [], nextCursor };
+	},
 	listPlatformActivity: (limit = 100) =>
 		request<ActivityEvent[]>(`/activity?limit=${limit}`),
 

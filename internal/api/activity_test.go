@@ -3,6 +3,7 @@ package api_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"testing"
 	"time"
@@ -380,5 +381,89 @@ func TestListPlatformActivityLimitValidation(t *testing.T) {
 	w := doRequest(h, http.MethodGet, "/api/activity?limit=abc", nil)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestListActivityCursorPagination(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+
+	seedProject(t, k8sClient, "pag-cursor")
+	store := activity.NewConfigMapStore(k8sClient)
+	for i := 0; i < 7; i++ {
+		if err := store.Append(context.Background(), activity.Event{
+			Timestamp:    time.Now().Add(time.Duration(i) * time.Second),
+			Actor:        "a@example.com",
+			Action:       "update",
+			ResourceKind: "app",
+			ResourceName: "web",
+			Project:      "pag-cursor",
+			Message:      fmt.Sprintf("event %d", i),
+		}); err != nil {
+			t.Fatalf("append %d: %v", i, err)
+		}
+	}
+
+	// Page 1: 3 newest, with the next-page cursor in the header.
+	w := doRequest(h, http.MethodGet, "/api/projects/pag-cursor/activity?limit=3", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("page1: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	cursor := w.Header().Get("X-Next-Cursor")
+	if cursor == "" {
+		t.Fatal("page1: expected X-Next-Cursor header")
+	}
+	var page1 []activityEventResponse
+	if err := json.NewDecoder(w.Body).Decode(&page1); err != nil {
+		t.Fatalf("decode page1: %v", err)
+	}
+	if len(page1) != 3 || page1[0].Msg != "event 6" {
+		t.Fatalf("page1 = %d events, first %q", len(page1), page1[0].Msg)
+	}
+
+	// Page 2 continues exactly where page 1 ended.
+	w = doRequest(h, http.MethodGet, "/api/projects/pag-cursor/activity?limit=3&cursor="+cursor, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("page2: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var page2 []activityEventResponse
+	if err := json.NewDecoder(w.Body).Decode(&page2); err != nil {
+		t.Fatalf("decode page2: %v", err)
+	}
+	if len(page2) != 3 || page2[0].Msg != "event 3" {
+		t.Fatalf("page2 = %d events, first %q", len(page2), page2[0].Msg)
+	}
+
+	// Final page: one event, no cursor header.
+	cursor = w.Header().Get("X-Next-Cursor")
+	if cursor == "" {
+		t.Fatal("page2: expected X-Next-Cursor header")
+	}
+	w = doRequest(h, http.MethodGet, "/api/projects/pag-cursor/activity?limit=3&cursor="+cursor, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("page3: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var page3 []activityEventResponse
+	if err := json.NewDecoder(w.Body).Decode(&page3); err != nil {
+		t.Fatalf("decode page3: %v", err)
+	}
+	if len(page3) != 1 || page3[0].Msg != "event 0" {
+		t.Fatalf("page3 = %d events, first %q", len(page3), page3[0].Msg)
+	}
+	if got := w.Header().Get("X-Next-Cursor"); got != "" {
+		t.Fatalf("final page must omit X-Next-Cursor, got %q", got)
+	}
+}
+
+func TestListActivityInvalidCursor(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+	seedProject(t, k8sClient, "pag-badcursor")
+
+	w := doRequest(h, http.MethodGet, "/api/projects/pag-badcursor/activity?cursor=bogus", nil)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for bad cursor, got %d: %s", w.Code, w.Body.String())
 	}
 }
