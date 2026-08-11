@@ -8,6 +8,8 @@
 
   let events = $state<ActivityEvent[]>([]);
   let loading = $state(false);
+  let loadingMore = $state(false);
+  let nextCursor = $state<string | null>(null);
   let filter = $state<'all' | 'deploys' | 'changes' | 'members'>('all');
 
   $effect(() => {
@@ -21,11 +23,28 @@
     if (!project) return;
     loading = true;
     try {
-      events = await api.listActivity(project);
+      const page = await api.listActivityPage(project);
+      events = page.events;
+      nextCursor = page.nextCursor;
     } catch {
       events = [];
+      nextCursor = null;
     } finally {
       loading = false;
+    }
+  }
+
+  async function loadMore() {
+    if (!project || !nextCursor || loadingMore) return;
+    loadingMore = true;
+    try {
+      const page = await api.listActivityPage(project, nextCursor);
+      events = [...events, ...page.events];
+      nextCursor = page.nextCursor;
+    } catch {
+      // Keep what we have; the button stays for a retry.
+    } finally {
+      loadingMore = false;
     }
   }
 
@@ -143,6 +162,18 @@
             </div>
           {/each}
         </div>
+        {#if nextCursor}
+          <div class="p-3">
+            <button
+              type="button"
+              onclick={() => void loadMore()}
+              disabled={loadingMore}
+              class="w-full rounded-md border border-surface-600 py-1.5 text-xs text-gray-400 hover:bg-surface-700 hover:text-white disabled:opacity-50"
+            >
+              {loadingMore ? 'Loading…' : 'Load more'}
+            </button>
+          </div>
+        {/if}
       {/if}
     </div>
   </div>

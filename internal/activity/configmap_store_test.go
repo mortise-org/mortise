@@ -26,8 +26,10 @@ func newFakeClient(t *testing.T) client.Client {
 }
 
 func baseEvent(project string, i int) activity.Event {
+	// Recent, strictly ordered stamps: retention pruning (30d) must not
+	// touch fixture events.
 	return activity.Event{
-		Timestamp:    time.Unix(int64(i), 0).UTC(),
+		Timestamp:    time.Now().UTC().Add(time.Duration(i) * time.Second),
 		Actor:        "jane@example.com",
 		Action:       "app.deploy",
 		ResourceKind: "App",
