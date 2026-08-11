@@ -1,8 +1,11 @@
 // Fixed-order categorical series palette, validated (dataviz six checks) on
 // the app's dark surface #181E18: lightness band, chroma floor, CVD
 // separation, normal-vision floor, and contrast all pass. Slots are assigned
-// by series index in a stable sort order — never hash-cycled, so two series
-// can never collide and a series keeps its color when the set changes.
+// by series index in a stable sort order — never hash-cycled — so the first
+// 8 series are guaranteed distinct and a series keeps its color when the
+// set changes. Past 8, seriesColor clamps to the last slot: callers that
+// can exceed 8 must cap what they chart (see maxDistinctSeries) or accept
+// the shared tail color.
 const SERIES_COLORS = [
 	'#3987e5', // blue
 	'#d95926', // orange

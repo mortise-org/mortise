@@ -1,7 +1,14 @@
 <script lang="ts">
 	import { seriesColor, maxDistinctSeries } from '$lib/series-colors';
+	import {
+		coverageStepOf,
+		gapRanges as computeGapRanges,
+		splitAtGaps,
+		unobservedBuckets,
+		type SeriesPoint
+	} from '$lib/chart-gaps';
 
-	export type SeriesPoint = [number, number];
+	export type { SeriesPoint };
 	export type ChartSeries = { name: string; points: SeriesPoint[] };
 
 	let {
@@ -32,27 +39,11 @@
 	const shown = $derived(sortedSeries.slice(0, maxDistinctSeries));
 	const overflow = $derived(sortedSeries.length - shown.length);
 
-	const gapRanges = $derived.by(() => {
-		// Consecutive 0-buckets merge into one [start, end) range. The bucket
-		// width comes from the coverage array's own spacing.
-		const out: Array<{ start: number; end: number }> = [];
-		if (coverage.length < 1) return out;
-		const step = coverage.length > 1 ? coverage[1][0] - coverage[0][0] : 60;
-		for (const [ts, observed] of coverage) {
-			if (observed === 1) continue;
-			const last = out[out.length - 1];
-			if (last && ts === last.end) last.end = ts + step;
-			else out.push({ start: ts, end: ts + step });
-		}
-		return out;
-	});
-
-	const unobserved = $derived.by(() => {
-		const set = new Set<number>();
-		for (const [ts, observed] of coverage) if (observed === 0) set.add(ts);
-		return set;
-	});
-	const coverageStep = $derived(coverage.length > 1 ? coverage[1][0] - coverage[0][0] : 60);
+	// Gap math lives in $lib/chart-gaps — pure and unit-tested, since it IS
+	// the no-interpolation contract.
+	const gapRanges = $derived(computeGapRanges(coverage));
+	const unobserved = $derived(unobservedBuckets(coverage));
+	const coverageStep = $derived(coverageStepOf(coverage));
 
 	const domain = $derived.by(() => {
 		let minX = Infinity;
@@ -97,41 +88,12 @@
 		return padding.top + (1 - (v - domain.minY) / (domain.maxY - domain.minY)) * h;
 	}
 
-	// segmentPaths splits a series at unobserved buckets: a point falling in
-	// an unobserved bucket ends the current segment, so no line is ever drawn
-	// across a gap. Single-point segments render as dots (a path can't).
+	// splitAtGaps breaks a series at unobserved buckets so no line is ever
+	// drawn across a gap. Single-point segments render as dots (a path can't).
 	function segments(points: SeriesPoint[]): { paths: string[]; dots: SeriesPoint[] } {
-		const sorted = [...points].sort((a, b) => a[0] - b[0]);
-		const segs: SeriesPoint[][] = [];
-		let cur: SeriesPoint[] = [];
-		for (const p of sorted) {
-			const bucket = coverageStep > 0 ? Math.floor(p[0] / coverageStep) * coverageStep : p[0];
-			const inGap = unobserved.has(bucket);
-			// A gap between the previous point and this one (any unobserved
-			// bucket strictly between them) also breaks the segment.
-			if (cur.length > 0) {
-				const prev = cur[cur.length - 1][0];
-				let broken = inGap;
-				if (!broken) {
-					for (let b = Math.floor(prev / coverageStep) * coverageStep + coverageStep; b < p[0]; b += coverageStep) {
-						if (unobserved.has(b)) {
-							broken = true;
-							break;
-						}
-					}
-				}
-				if (broken) {
-					segs.push(cur);
-					cur = [];
-				}
-			}
-			if (!inGap) cur.push(p);
-		}
-		if (cur.length > 0) segs.push(cur);
-
 		const paths: string[] = [];
 		const dots: SeriesPoint[] = [];
-		for (const seg of segs) {
+		for (const seg of splitAtGaps(points, unobserved, coverageStep)) {
 			if (seg.length === 1) dots.push(seg[0]);
 			else
 				paths.push(

@@ -728,6 +728,8 @@ export const api = {
 	getObservabilityHealth: () => request<ObservabilityHealthResponse>(`/observability/health`),
 	listBuildRuns: (project: string, app: string) =>
 		request<BuildRunItem[]>(`/projects/${enc(project)}/apps/${enc(app)}/buildruns`),
+	getBuildRunLogs: (project: string, app: string, run: string) =>
+		request<BuildLogsResponse>(`/projects/${enc(project)}/apps/${enc(app)}/buildruns/${enc(run)}/logs`),
 	getLogHistory: (project: string, app: string, env: string, start: number, end: number, opts?: { limit?: number; filter?: string; before?: string }) => {
 		const params = new URLSearchParams({ env, start: String(start), end: String(end) });
 		if (opts?.limit) params.set('limit', String(opts.limit));

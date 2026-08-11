@@ -2,7 +2,7 @@
 	import { api } from '$lib/api';
 	import { store } from '$lib/store.svelte';
 	import { appNeedsRedeploy, appPhaseForEnvironment, resolveAppEnvironment } from '$lib/types';
-	import type { App, BuildRunItem } from '$lib/types';
+	import type { App, BuildLogsResponse, BuildRunItem } from '$lib/types';
 	import { RotateCw, Hammer, Rocket } from 'lucide-svelte';
 
 	let {
@@ -49,6 +49,31 @@
 	}
 
 	let buildRuns = $state<BuildRunItem[]>([]);
+
+	// Per-run logs expand inline, fetched through the api client so the
+	// request carries the bearer token — a raw <a href> to the logs route
+	// can't authenticate (tokens live in localStorage, not cookies).
+	let expandedRun = $state<string | null>(null);
+	let runLogs = $state<Record<string, BuildLogsResponse>>({});
+	let runLogsError = $state<Record<string, string>>({});
+
+	async function toggleRunLogs(run: string) {
+		if (expandedRun === run) {
+			expandedRun = null;
+			return;
+		}
+		expandedRun = run;
+		if (runLogs[run]) return;
+		try {
+			const resp = await api.getBuildRunLogs(project, app.metadata.name, run);
+			runLogs = { ...runLogs, [run]: resp };
+		} catch (e) {
+			runLogsError = {
+				...runLogsError,
+				[run]: e instanceof Error ? e.message : 'Failed to load build logs'
+			};
+		}
+	}
 
 	$effect(() => {
 		void selectedEnv;
@@ -226,33 +251,49 @@
 			<h3 class="mb-2 text-xs font-medium uppercase tracking-wide text-gray-500">Timeline</h3>
 			<div class="space-y-1.5" data-testid="deploy-timeline">
 				{#each timeline as entry}
-					<div class="flex items-center gap-3 rounded-md bg-surface-900 px-3 py-2">
-						{#if entry.kind === 'build'}
-							<Hammer class="h-3.5 w-3.5 shrink-0 {entry.result === 'failure' ? 'text-danger' : entry.result === 'running' ? 'text-warning' : 'text-gray-400'}" />
-						{:else}
-							<Rocket class="h-3.5 w-3.5 shrink-0 text-gray-400" />
+					<div class="rounded-md bg-surface-900">
+						<div class="flex items-center gap-3 px-3 py-2">
+							{#if entry.kind === 'build'}
+								<Hammer class="h-3.5 w-3.5 shrink-0 {entry.result === 'failure' ? 'text-danger' : entry.result === 'running' ? 'text-warning' : 'text-gray-400'}" />
+							{:else}
+								<Rocket class="h-3.5 w-3.5 shrink-0 text-gray-400" />
+							{/if}
+							<div class="min-w-0 flex-1">
+								<p class="truncate text-xs {entry.result === 'failure' ? 'text-danger' : 'text-gray-300'}">
+									{entry.kind === 'deploy' ? 'Deployed ' : ''}{entry.title}
+								</p>
+								{#if entry.detail}
+									<p class="truncate text-xs text-gray-500">{entry.detail}</p>
+								{/if}
+							</div>
+							<div class="ml-3 flex shrink-0 items-center gap-3">
+								<span class="text-xs text-gray-500">{fmtTime(new Date(entry.ts).toISOString())}</span>
+								{#if entry.buildName}
+									{@const run = entry.buildName}
+									<button
+										type="button"
+										onclick={() => toggleRunLogs(run)}
+										class="text-xs text-accent hover:text-accent-hover"
+									>
+										{expandedRun === run ? 'Hide logs' : 'Logs'}
+									</button>
+								{/if}
+							</div>
+						</div>
+						{#if entry.buildName && expandedRun === entry.buildName}
+							{@const run = entry.buildName}
+							<div class="border-t border-surface-700 px-3 py-2" data-testid="run-logs">
+								{#if runLogsError[run]}
+									<p class="text-xs text-danger">{runLogsError[run]}</p>
+								{:else if !runLogs[run]}
+									<p class="text-xs text-gray-500">Loading...</p>
+								{:else if (runLogs[run].lines?.length ?? 0) === 0}
+									<p class="text-xs italic text-gray-600">No log output recorded for this run</p>
+								{:else}
+									<pre class="max-h-48 overflow-y-auto whitespace-pre-wrap break-all font-mono text-xs text-gray-300">{runLogs[run].lines.join('\n')}</pre>
+								{/if}
+							</div>
 						{/if}
-						<div class="min-w-0 flex-1">
-							<p class="truncate text-xs {entry.result === 'failure' ? 'text-danger' : 'text-gray-300'}">
-								{entry.kind === 'deploy' ? 'Deployed ' : ''}{entry.title}
-							</p>
-							{#if entry.detail}
-								<p class="truncate text-xs text-gray-500">{entry.detail}</p>
-							{/if}
-						</div>
-						<div class="ml-3 flex shrink-0 items-center gap-3">
-							<span class="text-xs text-gray-500">{fmtTime(new Date(entry.ts).toISOString())}</span>
-							{#if entry.buildName}
-								<a
-									href={`/api/projects/${project}/apps/${app.metadata.name}/buildruns/${entry.buildName}/logs`}
-									target="_blank"
-									rel="noopener"
-									class="text-xs text-accent hover:text-accent-hover"
-								>
-									Logs
-								</a>
-							{/if}
-						</div>
 					</div>
 				{/each}
 			</div>
