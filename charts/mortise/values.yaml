@@ -16,6 +16,13 @@ mortise-core:
   # stale operator version that release.yml never restamped.
   replicaCount: 1
 
+  # Mirrors the subchart default: parent templates cannot see subchart
+  # defaults, and the operator ServiceMonitor's condition must read the
+  # real value — a `| default true` there would eat an explicit false.
+  metrics:
+    enabled: true
+    port: 8080
+
   api:
     port: 8090
 

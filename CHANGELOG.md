@@ -9,6 +9,17 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Prometheus exposition** (obs-v2 O2): the observer serves `GET /metrics`
+  (per-app CPU/memory/restarts, PVC usage, HTTP traffic counters, observer
+  self-health — full set in SPEC §5.11b), and the operator's
+  controller-runtime metrics endpoint — previously disabled by default and
+  unexposed — is now bound (plain HTTP, `mortise-core.metrics.*`) with
+  `mortise_builds_total`, `mortise_build_duration_seconds`, and
+  `mortise_app_status_phase`. Both Services carry `prometheus.io/*` scrape
+  annotations by default; optional ServiceMonitors for kube-prometheus-stack
+  sit behind `observer.prometheus.serviceMonitor.enabled`. A Grafana recipe
+  and import-ready dashboard live in `docs/recipes/`.
+
 - **Observer reliability + PVC usage** (obs-v2 O1, #214): two new observer
   endpoints — `GET /v1/pvc` (per-PVC capacity/usage series, collected from
   the kubelet Summary API) and `GET /v1/health/collectors` (per-collector

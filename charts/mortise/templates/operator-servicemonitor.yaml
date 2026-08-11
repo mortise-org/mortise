@@ -1,4 +1,4 @@
-{{- if and (index .Values "mortise-core" "metrics" "enabled" | default true) .Values.observer.prometheus.serviceMonitor.enabled }}
+{{- if and (index .Values "mortise-core" "metrics" "enabled") .Values.observer.prometheus.serviceMonitor.enabled }}
 # Operator metrics (build outcomes, App phases) for kube-prometheus-stack
 # users; same toggle as the observer's ServiceMonitor.
 apiVersion: monitoring.coreos.com/v1

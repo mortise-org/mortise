@@ -258,6 +258,13 @@ Code that works but confuses future readers is a maintenance liability.
 - [ ] CI checks pass: `make test`, `make test-charts`, `go vet`,
       `staticcheck`, `svelte-check`
 - [ ] PR template checklist is filled out honestly
+- [ ] **Metrics dependency carve-out respected**: the operator may use
+      `prometheus/client_golang` (controller-runtime already ships it and
+      hosts the registry); the observer binary must NOT import it — its
+      exposition is hand-rolled (`cmd/observer/prom.go`) precisely to keep
+      the observer's dependency tree flat. New observer metrics extend the
+      hand-rolled writer; new operator metrics register on
+      `controller-runtime/pkg/metrics.Registry`.
 
 ## 13. Security
 
