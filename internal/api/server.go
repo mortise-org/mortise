@@ -243,6 +243,7 @@ func (s *Server) Handler() http.Handler {
 			r.Get("/projects/{project}/bindings", s.ListBindings)
 			r.Get("/projects/{project}/activity", s.ListActivity)
 			r.Get("/activity", s.ListPlatformActivity)
+			r.Get("/dashboard", s.Dashboard)
 
 			r.Get("/projects/{project}/environments", s.ListProjectEnvironments)
 			r.Post("/projects/{project}/environments", s.CreateProjectEnvironment)

@@ -241,6 +241,104 @@ definitions:
       role:
         type: string
     type: object
+  api.dashboardApp:
+    properties:
+      cpu:
+        type: number
+      envs:
+        items:
+          $ref: '#/definitions/api.dashboardEnvPhase'
+        type: array
+      memory:
+        type: integer
+      metricsAvailable:
+        description: |-
+          MetricsAvailable distinguishes "using zero" from "usage unknown"
+          (adapter absent or this app's series missing/stale).
+        type: boolean
+      name:
+        type: string
+      phase:
+        type: string
+      project:
+        type: string
+      restarts:
+        type: integer
+    type: object
+  api.dashboardCluster:
+    properties:
+      apps:
+        type: integer
+      appsByPhase:
+        additionalProperties:
+          type: integer
+        type: object
+      buildsQueued:
+        type: integer
+      buildsRunning:
+        type: integer
+      cpuAllocatable:
+        description: 'Admin-only (omitted otherwise): cluster capacity and observer
+          health.'
+        type: number
+      cpuUsed:
+        description: |-
+          Usage totals cover the caller's readable scope, so a member's strip
+          is consistent with their table.
+        type: number
+      memoryAllocatable:
+        type: integer
+      memoryUsed:
+        type: integer
+      metricsAvailable:
+        type: boolean
+      observer:
+        items:
+          $ref: '#/definitions/api.dashboardCollector'
+        type: array
+      projects:
+        type: integer
+    type: object
+  api.dashboardCollector:
+    properties:
+      collector:
+        type: string
+      lastSuccess:
+        type: integer
+      ok:
+        type: boolean
+    type: object
+  api.dashboardEnvPhase:
+    properties:
+      name:
+        type: string
+      phase:
+        type: string
+    type: object
+  api.dashboardProject:
+    properties:
+      appCount:
+        type: integer
+      envHealth:
+        additionalProperties:
+          $ref: '#/definitions/api.EnvHealth'
+        type: object
+      name:
+        type: string
+    type: object
+  api.dashboardResponse:
+    properties:
+      apps:
+        items:
+          $ref: '#/definitions/api.dashboardApp'
+        type: array
+      cluster:
+        $ref: '#/definitions/api.dashboardCluster'
+      projects:
+        items:
+          $ref: '#/definitions/api.dashboardProject'
+        type: array
+    type: object
   api.deployRequest:
     properties:
       environment:
@@ -2697,6 +2795,27 @@ paths:
       summary: Check setup status
       tags:
       - auth
+  /dashboard:
+    get:
+      description: Returns the apps table, per-project environment health, and cluster
+        strip for the caller's readable projects. Node capacity and observer health
+        are included for admins only.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.dashboardResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/api.errorResponse'
+      security:
+      - BearerAuth: []
+      summary: Cluster rollup dashboard
+      tags:
+      - dashboard
   /domains/validate:
     post:
       consumes:
