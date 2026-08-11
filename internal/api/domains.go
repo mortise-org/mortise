@@ -157,9 +157,12 @@ func (s *Server) AddDomain(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 		fenv := ensureEnvironment(&fresh, envName)
-		if !slices.Contains(fenv.CustomDomains, req.Domain) {
-			fenv.CustomDomains = append(fenv.CustomDomains, req.Domain)
+		if slices.Contains(fenv.CustomDomains, req.Domain) {
+			// Added by a concurrent request — skip the no-op Update.
+			custom = fenv.CustomDomains
+			return nil
 		}
+		fenv.CustomDomains = append(fenv.CustomDomains, req.Domain)
 		custom = fenv.CustomDomains
 		return s.client.Update(r.Context(), &fresh)
 	}); err != nil {
@@ -224,11 +227,19 @@ func (s *Server) RemoveDomain(w http.ResponseWriter, r *http.Request) {
 		}
 		fenv := findEnvironment(&fresh, envName)
 		if fenv == nil {
+			// Env deleted concurrently: nothing to remove, and no write to make.
+			custom = []string{}
 			return nil
 		}
-		if idx := slices.Index(fenv.CustomDomains, domain); idx >= 0 {
-			fenv.CustomDomains = slices.Delete(fenv.CustomDomains, idx, idx+1)
+		idx := slices.Index(fenv.CustomDomains, domain)
+		if idx < 0 {
+			// Already removed by a concurrent request — skip the no-op Update
+			// (it would bump resourceVersion and churn the retry loop for
+			// nothing) and return the current list.
+			custom = fenv.CustomDomains
+			return nil
 		}
+		fenv.CustomDomains = slices.Delete(fenv.CustomDomains, idx, idx+1)
 		custom = fenv.CustomDomains
 		return s.client.Update(r.Context(), &fresh)
 	}); err != nil {
