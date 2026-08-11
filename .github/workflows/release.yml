@@ -175,9 +175,14 @@ jobs:
       - name: Run chart integration suite
         run: make test-chart-integration
 
-      - name: Dump cluster diagnostics on failure
+      - name: Dump diagnostics on failure
         if: failure()
         run: |
+          # Disk first: ubuntu-latest has ~14GB usable and the umbrella chart
+          # pulls are heavy, so a k3d image-import failure ("tar: no such file
+          # or directory") self-classifies as pressure-vs-transient here.
+          df -h || true
+          docker system df || true
           kubectl get pods -A -o wide || true
           kubectl get events -A --sort-by=.lastTimestamp | tail -50 || true
           kubectl -n mortise-system logs deploy/mortise --tail=100 || true

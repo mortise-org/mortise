@@ -78,10 +78,35 @@ info "Building operator image..."
 # binary, so an untargeted build tags the wrong binary as the operator
 # image and the mortise deployment crashloops.
 docker build --target operator -t "$CHART_IMG" "$REPO_ROOT" -q
-k3d image import "$CHART_IMG" -c "$CLUSTER_NAME"
+# k3d image import intermittently fails staging its tar into the node
+# ("ctr: open /k3d/images/...tar: no such file or directory") on some hosts,
+# including GitHub runners. Retry a few times with short backoff; a genuine
+# failure (e.g. disk pressure) still exhausts the retries and aborts.
+import_attempts=3
+for attempt in $(seq 1 "$import_attempts"); do
+    if k3d image import "$CHART_IMG" -c "$CLUSTER_NAME"; then
+        break
+    fi
+    if [ "$attempt" -eq "$import_attempts" ]; then
+        fatal "k3d image import failed after ${import_attempts} attempts"
+    fi
+    info "k3d image import attempt ${attempt} failed; retrying in 5s..."
+    sleep 5
+done
 
 info "Building chart dependencies..."
-helm dependency build "${REPO_ROOT}/charts/mortise" 2>/dev/null || true
+# The umbrella chart's external subcharts (traefik, cert-manager,
+# metrics-server) are fetched by `helm dependency build`, which needs their
+# repos configured. A dev box usually has them from prior `make dev-up` runs,
+# but a clean runner does not — so add them explicitly rather than relying on
+# ambient helm state. mortise-core is vendored as a .tgz and needs no repo.
+helm repo add traefik https://traefik.github.io/charts >/dev/null 2>&1 || true
+helm repo add jetstack https://charts.jetstack.io >/dev/null 2>&1 || true
+helm repo add metrics-server https://kubernetes-sigs.github.io/metrics-server/ >/dev/null 2>&1 || true
+helm repo update >/dev/null
+# A dependency-build failure must abort — silently proceeding produces a
+# "missing in charts/ directory" install failure that hides the real cause.
+helm dependency build "${REPO_ROOT}/charts/mortise" || fatal "helm dependency build failed; chart subcharts are missing"
 
 # ── Test 1: Umbrella chart deploys all components ────────────────────────
 
