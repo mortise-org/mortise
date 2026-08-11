@@ -119,6 +119,13 @@ rules:
   - apiGroups: [""]
     resources: ["pods", "pods/log"]
     verbs: ["get", "list", "watch"]
+  # Cluster dashboard (obs-v2 O5): node allocatable totals for the
+  # capacity strip on /api/dashboard. Read-only, list/get only, no proxy —
+  # the observer holds the nodes/proxy grant for kubelet stats, not the
+  # operator.
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list"]
 ---
 # -----------------------------------------------------------------------------
 # ClusterRole: mortise-controller-ns

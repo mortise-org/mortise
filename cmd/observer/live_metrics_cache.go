@@ -152,3 +152,64 @@ func trimPoints(points []metricPoint, cutoff int64) []metricPoint {
 	}
 	return append([]metricPoint(nil), points[idx:]...)
 }
+
+// AppUsage is one app-env's latest resource usage summed across its pods,
+// as served by /v1/summary for the cluster rollup dashboard.
+type AppUsage struct {
+	Namespace string  `json:"namespace"`
+	App       string  `json:"app"`
+	Env       string  `json:"env"`
+	CPU       float64 `json:"cpu"`
+	Memory    int64   `json:"memory"`
+	Pods      int     `json:"pods"`
+}
+
+// LatestByApp aggregates each series' most recent point (no older than
+// staleCutoff) per app-env: the cluster-wide "what is everything using right
+// now" view. Pods whose series went stale simply drop out — absence over
+// interpolation, same contract as everything else here. "Most recent" is
+// points[len-1]: collectors append in time order by construction (every
+// cycle stamps time.Now), so append order IS time order.
+func (c *LiveMetricsCache) LatestByApp(staleCutoff int64) []AppUsage {
+	if c == nil {
+		return nil
+	}
+	type aggKey struct{ namespace, app, env string }
+	agg := map[aggKey]*AppUsage{}
+
+	c.mu.RLock()
+	for key, points := range c.series {
+		if len(points) == 0 {
+			continue
+		}
+		latest := points[len(points)-1]
+		if latest.ts < staleCutoff {
+			continue
+		}
+		k := aggKey{key.namespace, key.app, key.env}
+		u := agg[k]
+		if u == nil {
+			u = &AppUsage{Namespace: k.namespace, App: k.app, Env: k.env}
+			agg[k] = u
+		}
+		u.CPU += latest.cpu
+		u.Memory += latest.memory
+		u.Pods++
+	}
+	c.mu.RUnlock()
+
+	out := make([]AppUsage, 0, len(agg))
+	for _, u := range agg {
+		out = append(out, *u)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Namespace != out[j].Namespace {
+			return out[i].Namespace < out[j].Namespace
+		}
+		if out[i].App != out[j].App {
+			return out[i].App < out[j].App
+		}
+		return out[i].Env < out[j].Env
+	})
+	return out
+}
