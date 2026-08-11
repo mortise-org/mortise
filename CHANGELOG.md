@@ -81,6 +81,18 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Build interruption is retryable, not terminal** (#447, #290): losing a
+  build tracker (e.g. an OOM-killed or restarted operator) no longer fails
+  the BuildRun terminally at the second loss. The run relaunches with
+  exponential backoff (immediately on first loss, then 1m/2m/4m…) up to 5
+  attempts before failing with the distinct `BuildRetriesExhausted` reason;
+  only that exhausted state latches the App and hard-fails a preview
+  environment. Before relaunching, the controller probes the registry for
+  the interrupted attempt's push tag and adopts the image if the push
+  already completed — no pointless rebuild (explicitly requested rebuilds
+  are exempt from adoption). The lost-tracker re-read now bypasses the
+  informer cache via an APIReader so a just-finished build is never
+  mistaken for a lost one and restarted.
 - **`install.sh` dev-path built the wrong binary**: the repo-clone flow's
   untargeted `docker build` produced the Dockerfile's final stage — the
   observer binary — tagged as the operator image, so the installed
