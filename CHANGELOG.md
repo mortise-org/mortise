@@ -44,6 +44,14 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   hours (was raw for the full 72h window); log tailers now resume from a
   stored cursor across restarts instead of re-reading (and duplicating)
   the last 100 lines. Full audit: `docs/observer-reliability.md`.
+- **Chart-integration suite wired into the release pipeline as a
+  pre-publish gate** (mo-jp7): `release.yml` now runs
+  `make test-chart-integration` (full umbrella-chart deploy on k3d —
+  PVC persistence, toggle lifecycle, standalone core, install script)
+  and the chart-publish job depends on it. The suite was documented as
+  release-gating but was invoked by no workflow; runtime chart
+  regressions (securityContexts, PVC wiring) previously had no gate
+  before publish.
 - **Published-chart verification in the release pipeline** (#446, #379
   residual): after publishing to gh-pages, `release.yml` pulls the chart
   back through the public repo URL, asserts it is byte-identical to what
