@@ -99,6 +99,36 @@ func TestBackfillAssignsLegacyZeroSeq(t *testing.T) {
 	}
 }
 
+// TestBackfillMixedHistoryRollbackEdge pins the operator-rollback edge: old
+// code appended zero-seq entries after seq-carrying ones. Backfill must keep
+// buffer order as recency order (later entries get higher seqs) and must
+// never mint a duplicate seq.
+func TestBackfillMixedHistoryRollbackEdge(t *testing.T) {
+	events := []Event{{Seq: 5}, {Seq: 6}, {Seq: 0}, {Seq: 0}}
+	backfillSeq(events)
+	want := []int64{5, 6, 7, 8}
+	for i, e := range events {
+		if e.Seq != want[i] {
+			t.Fatalf("mixed backfill events[%d].Seq = %d, want %d", i, e.Seq, want[i])
+		}
+	}
+
+	// The duplicate-minting shape: positional assignment would turn
+	// [2,3,0] into [2,3,3].
+	events = []Event{{Seq: 2}, {Seq: 3}, {Seq: 0}}
+	backfillSeq(events)
+	seen := map[int64]bool{}
+	for _, e := range events {
+		if seen[e.Seq] {
+			t.Fatalf("backfill minted duplicate seq %d in %v", e.Seq, events)
+		}
+		seen[e.Seq] = true
+	}
+	if events[2].Seq != 4 {
+		t.Fatalf("trailing legacy entry seq = %d, want 4", events[2].Seq)
+	}
+}
+
 func TestListPagePaginatesStableAcrossAppends(t *testing.T) {
 	s := newStore(t)
 	ctx := context.Background()

@@ -173,22 +173,22 @@ func (s *ConfigMapStore) appendOnce(ctx context.Context, e Event) error {
 	return s.Client.Update(ctx, &cm)
 }
 
-// backfillSeq assigns 1..n positions to legacy zero-seq entries, preserving
-// order and staying below any already-assigned seq.
+// backfillSeq assigns sequence numbers to legacy zero-seq entries by
+// continuing the sequence seen so far in buffer order. For an all-legacy
+// buffer that yields positions 1..n. In the mixed-history edge (an operator
+// rollback appends zero-seq entries after seq-carrying ones, e.g.
+// [5,6,0,0]), the zero-seq entries were appended later — so continuing past
+// the running max ([5,6,7,8]) both preserves true recency order and makes
+// duplicate seqs impossible, which positional assignment could mint
+// ([2,3,0] must not become [2,3,3]).
 func backfillSeq(events []Event) {
-	needsBackfill := false
+	var runningMax int64
 	for i := range events {
 		if events[i].Seq == 0 {
-			needsBackfill = true
-			break
+			events[i].Seq = runningMax + 1
 		}
-	}
-	if !needsBackfill {
-		return
-	}
-	for i := range events {
-		if events[i].Seq == 0 {
-			events[i].Seq = int64(i + 1)
+		if events[i].Seq > runningMax {
+			runningMax = events[i].Seq
 		}
 	}
 }
