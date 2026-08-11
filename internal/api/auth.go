@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -230,11 +231,20 @@ func (s *Server) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	key := loginRateKey(req.Email, r)
+	if ok, retryAfter := s.loginLimiter.allow(key); !ok {
+		w.Header().Set("Retry-After", strconv.Itoa(int(retryAfter.Seconds())+1))
+		writeJSON(w, http.StatusTooManyRequests, errorResponse{"too many login attempts; try again later"})
+		return
+	}
+
 	principal, err := s.auth.Authenticate(r.Context(), auth.Credentials{Email: req.Email, Password: req.Password})
 	if err != nil {
+		s.loginLimiter.recordFailure(key)
 		writeJSON(w, http.StatusUnauthorized, errorResponse{"invalid credentials"})
 		return
 	}
+	s.loginLimiter.recordSuccess(key)
 
 	token, err := s.jwt.GenerateToken(r.Context(), principal)
 	if err != nil {

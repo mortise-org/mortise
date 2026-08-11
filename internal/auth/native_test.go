@@ -474,3 +474,69 @@ func TestJWTRejectsTokenWithWrongAudience(t *testing.T) {
 		t.Fatal("token with wrong audience should be rejected")
 	}
 }
+
+// countBcryptCompares swaps the compare seam for one test and reports how
+// many times it ran. The timing-oracle guarantee is structural — every
+// Authenticate/VerifyPassword path performs exactly one bcrypt comparison —
+// which a counter asserts deterministically where wall-clock timing cannot.
+func countBcryptCompares(t *testing.T) *int {
+	t.Helper()
+	orig := compareHashAndPassword
+	count := 0
+	compareHashAndPassword = func(hash, password []byte) error {
+		count++
+		return orig(hash, password)
+	}
+	t.Cleanup(func() { compareHashAndPassword = orig })
+	return &count
+}
+
+func TestAuthenticateTimingOracle(t *testing.T) {
+	provider, ctx := setup(t)
+	if err := provider.CreateUser(ctx, "alice@example.com", "s3cret12", RoleAdmin); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	cases := []struct {
+		name  string
+		email string
+	}{
+		{"existing user, wrong password", "alice@example.com"},
+		{"unknown user", "nobody@example.com"},
+	}
+	var wantErr string
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			count := countBcryptCompares(t)
+			_, err := provider.Authenticate(ctx, Credentials{Email: tc.email, Password: "wrongpwd"})
+			if err == nil {
+				t.Fatal("expected authentication failure")
+			}
+			if *count != 1 {
+				t.Fatalf("expected exactly 1 bcrypt compare, got %d", *count)
+			}
+			if i == 0 {
+				wantErr = err.Error()
+			} else if err.Error() != wantErr {
+				t.Fatalf("error strings differ between paths: %q vs %q", err.Error(), wantErr)
+			}
+		})
+	}
+}
+
+func TestVerifyPasswordTimingOracle(t *testing.T) {
+	provider, ctx := setup(t)
+	if err := provider.CreateUser(ctx, "carol@example.com", "s3cret12", RoleMember); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	for _, email := range []string{"carol@example.com", "nobody@example.com"} {
+		count := countBcryptCompares(t)
+		if err := provider.VerifyPassword(ctx, email, "wrongpwd"); err == nil {
+			t.Fatalf("expected failure for %s", email)
+		}
+		if *count != 1 {
+			t.Fatalf("expected exactly 1 bcrypt compare for %s, got %d", email, *count)
+		}
+	}
+}
