@@ -18,6 +18,13 @@ definitions:
         type: string
       resource:
         type: string
+      seq:
+        description: |-
+          Seq is a per-project monotonically increasing sequence number assigned
+          at append time. It makes pagination cursors stable when timestamps
+          collide. Entries written before pagination existed carry Seq 0 until
+          the one-time backfill in appendOnce assigns them positions.
+        type: integer
       ts:
         type: string
     type: object
@@ -3132,22 +3139,32 @@ paths:
       - projects
   /projects/{project}/activity:
     get:
-      description: Returns recent activity events for a project, newest first
+      description: Returns recent activity events for a project, newest first. The
+        X-Next-Cursor response header carries the cursor for the next page; pass it
+        back via the cursor query parameter. No header means no further pages.
       parameters:
       - description: Project name
         in: path
         name: project
         required: true
         type: string
-      - description: 'Max number of events (default: 100)'
+      - description: 'Max number of events per page (default: 100, max: 500)'
         in: query
         name: limit
         type: integer
+      - description: Opaque cursor from a previous page's X-Next-Cursor header
+        in: query
+        name: cursor
+        type: string
       produces:
       - application/json
       responses:
         "200":
           description: OK
+          headers:
+            X-Next-Cursor:
+              description: Cursor for the next page; absent on the last page
+              type: string
           schema:
             items:
               $ref: '#/definitions/activity.Event'

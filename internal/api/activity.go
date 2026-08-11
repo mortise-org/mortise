@@ -1,6 +1,7 @@
 package api
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -19,21 +20,31 @@ import (
 
 const (
 	defaultActivityLimit = 100
-	maxActivityLimit     = activity.Cap
+	// maxActivityLimit caps one page/response. Deliberately far below
+	// activity.Cap (2000): a full buffer is ~500 KiB of JSON — that is
+	// what cursor pagination is for.
+	maxActivityLimit = 500
 )
 
 // ListActivity returns recent project activity, newest first.
 //
-// GET /api/projects/{project}/activity?limit=100
+// GET /api/projects/{project}/activity?limit=100&cursor=...
+//
+// Pagination is cursor-based and additive: the response body stays a bare
+// array for compatibility, and the opaque cursor for the next page is
+// returned in the X-Next-Cursor response header (absent on the last page).
+// Pass it back via ?cursor= to fetch the next page.
 //
 // @Summary List project activity
-// @Description Returns recent activity events for a project, newest first
+// @Description Returns recent activity events for a project, newest first. The X-Next-Cursor response header carries the cursor for the next page; pass it back via the cursor query parameter. No header means no further pages.
 // @Tags activity
 // @Produce json
 // @Security BearerAuth
 // @Param project path string true "Project name"
-// @Param limit query integer false "Max number of events (default: 100)"
+// @Param limit query integer false "Max number of events per page (default: 100, max: 500)"
+// @Param cursor query string false "Opaque cursor from a previous page's X-Next-Cursor header"
 // @Success 200 {array} activity.Event
+// @Header 200 {string} X-Next-Cursor "Cursor for the next page; absent on the last page"
 // @Failure 400 {object} errorResponse
 // @Failure 403 {object} errorResponse
 // @Failure 404 {object} errorResponse
@@ -60,16 +71,26 @@ func (s *Server) ListActivity(w http.ResponseWriter, r *http.Request) {
 		limit = parsed
 	}
 
-	events, err := s.activityStore.List(r.Context(), projectName, limit)
+	events, nextCursor, err := s.activityStore.ListPage(r.Context(), projectName, limit, r.URL.Query().Get("cursor"))
 	if err != nil {
+		if errors.Is(err, activity.ErrBadCursor) {
+			writeJSON(w, http.StatusBadRequest, errorResponse{"invalid cursor"})
+			return
+		}
 		writeError(w, r, err)
 		return
+	}
+	if nextCursor != "" {
+		w.Header().Set("X-Next-Cursor", nextCursor)
 	}
 	writeJSON(w, http.StatusOK, events)
 }
 
 // ListPlatformActivity returns recent activity across all projects the caller
-// can read, newest first.
+// can read, newest first. Deliberately limit-only: per-project cursors do not
+// compose across a merged stream, and the platform dashboard (obs-v2 O5) will
+// consume its own aggregate endpoint. Page depth here stays bounded by
+// maxActivityLimit.
 //
 // GET /api/activity?limit=100
 //
