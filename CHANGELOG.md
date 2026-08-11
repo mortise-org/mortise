@@ -98,8 +98,18 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   every resource in the generated `config/rbac/role.yaml` is granted by
   the packaged chart's rendered roles, so chart-vs-code RBAC drift fails
   CI instead of failing at runtime.
-
-
+- **Auth-surface hardening** (#444, auth items): login is rate-limited
+  per username+IP (token bucket 5/min burst 10, 15-minute lockout after
+  10 consecutive failures, `429` + `Retry-After`, env-overridable via
+  `MORTISE_LOGIN_*`); the user-not-found path now pays the same bcrypt
+  cost as a wrong password, closing a username-enumeration timing
+  oracle; unauthenticated webhook deliveries get a uniform `401` whether
+  the provider is unknown, secretless, or the signature is bad (the
+  distinction moved to server logs); and an App with empty
+  `spec.source.providerRef` matches webhooks only while exactly one
+  GitProvider is registered instead of accepting events from any
+  provider — a **behavior change** for multi-provider installs, see
+  "Breaking changes → Authentication" in docs/migration-v1.md.
 - **Build interruption is retryable, not terminal** (#447, #290): losing a
   build tracker (e.g. an OOM-killed or restarted operator) no longer fails
   the BuildRun terminally at the second loss. The run relaunches with

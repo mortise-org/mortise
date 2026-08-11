@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -589,5 +591,47 @@ func TestProtectedRouteAcceptsValidToken(t *testing.T) {
 	w := doRequestWithToken(h, http.MethodGet, "/api/projects", nil, token)
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200 with valid token, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestLoginRateLimitReturns429WithRetryAfter pins the handler-level contract:
+// after the burst is spent, /api/auth/login returns 429 with a positive
+// Retry-After header (the limiter internals are covered in loginlimit_test.go;
+// this covers the wiring through the mux).
+func TestLoginRateLimitReturns429WithRetryAfter(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	ctx := context.Background()
+	_ = k8sClient.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "mortise-system"}})
+	authProvider := auth.NewNativeAuthProvider(k8sClient)
+	jwtHelper := auth.NewJWTHelper(k8sClient)
+	if err := authProvider.CreateUser(ctx, "admin@example.com", "initialpass", auth.RoleAdmin); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	srv := api.NewServer(k8sClient, fake.NewClientset(), nil, nil, authProvider, jwtHelper, nil, authz.NewNativePolicyEngine(k8sClient))
+	h := srv.Handler()
+
+	body := map[string]string{"email": "admin@example.com", "password": "wrong-password"}
+
+	// Burst is 10; the 11th attempt from the same key must be throttled.
+	var got429 *httptest.ResponseRecorder
+	for i := 0; i < 12; i++ {
+		w := doRequestWithToken(h, http.MethodPost, "/api/auth/login", body, "")
+		if w.Code == http.StatusTooManyRequests {
+			got429 = w
+			break
+		}
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("attempt %d: expected 401 before throttling, got %d", i+1, w.Code)
+		}
+	}
+	if got429 == nil {
+		t.Fatal("expected a 429 within the burst+1 window")
+	}
+	ra := got429.Header().Get("Retry-After")
+	if ra == "" {
+		t.Fatal("429 response missing Retry-After header")
+	}
+	if secs, err := strconv.Atoi(ra); err != nil || secs <= 0 {
+		t.Fatalf("expected positive integer Retry-After, got %q", ra)
 	}
 }
