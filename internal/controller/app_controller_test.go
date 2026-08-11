@@ -4582,10 +4582,40 @@ func (f *fakeGitClient) Fetch(_ context.Context, _, _ string) error {
 	return f.err
 }
 
+// #447: interruption is retryable and must not latch the app into refusing
+// future builds; only genuine failures and the exhausted-retry escape do.
+func TestIsTerminalBuildFailureCondition(t *testing.T) {
+	cases := []struct {
+		reason string
+		want   bool
+	}{
+		{"BuildFailed", true},
+		{"BuildRetriesExhausted", true},
+		{"BuildInterrupted", false},
+		{"GitAuthFailed", false},
+	}
+	for _, tc := range cases {
+		got := isTerminalBuildFailureCondition(&metav1.Condition{
+			Type:   "BuildSucceeded",
+			Status: metav1.ConditionFalse,
+			Reason: tc.reason,
+		})
+		if got != tc.want {
+			t.Errorf("isTerminalBuildFailureCondition(reason=%s) = %v, want %v", tc.reason, got, tc.want)
+		}
+	}
+	if isTerminalBuildFailureCondition(nil) {
+		t.Error("nil condition must not be terminal")
+	}
+}
+
 // fakeRegistryBackend implements registry.RegistryBackend for tests.
 type fakeRegistryBackend struct {
 	imageRef       registry.ImageRef
 	pullSecretName string
+	resolveDigest  string
+	resolveFound   bool
+	resolveErr     error
 }
 
 func (f *fakeRegistryBackend) PushTarget(app, tag string) (registry.ImageRef, error) {
@@ -4608,6 +4638,10 @@ func (f *fakeRegistryBackend) PullSecretRef() string { return f.pullSecretName }
 
 func (f *fakeRegistryBackend) Tags(_ context.Context, _ string) ([]string, error) {
 	return nil, nil
+}
+
+func (f *fakeRegistryBackend) ResolveTag(_ context.Context, _, _ string) (string, bool, error) {
+	return f.resolveDigest, f.resolveFound, f.resolveErr
 }
 
 func (f *fakeRegistryBackend) DeleteTag(_ context.Context, _, _ string) error {

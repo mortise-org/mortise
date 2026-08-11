@@ -234,6 +234,12 @@ dev-reset: ## Tear down dev cluster completely, rebuild, and start fresh
 ##@ Integration Tests
 
 INT_CLUSTER ?= mortise-int
+# Every kubectl/helm/go-test step below pins this context explicitly. The
+# setup must never ride the ambient current-context: k3d cluster create
+# SWITCHES current-context, so any concurrent cluster creation on the box
+# (another crew's gate, a dev-up) would silently redirect an unpinned
+# install or test suite into the wrong cluster mid-run.
+INT_KUBE_CONTEXT ?= k3d-$(INT_CLUSTER)
 INT_IMG ?= mortise:int
 INT_OBSERVER_IMG ?= mortise-observer:int
 # Test fixtures plus the umbrella chart's dependency images (traefik,
@@ -249,7 +255,13 @@ test-integration: ## Create k3d cluster, install chart + test deps, run integrat
 	@echo "==> Creating k3d cluster $(INT_CLUSTER)..."
 	# --config wires the containerd mirror rule that makes
 	# registry.mortise-test-deps.svc:5000 pulls reachable from the node.
-	k3d cluster create --config test/integration/k3d-config.yaml --runtime-ulimit $(K3D_RUNTIME_ULIMIT) --wait
+	# The config hardcodes metadata.name, so stamp INT_CLUSTER into it the
+	# same way dev-up stamps DEV_CLUSTER — otherwise create ignores the
+	# variable and concurrent gates collide on the shared name.
+	@tmp_config=$$(mktemp); \
+	trap 'rm -f "$$tmp_config"' EXIT; \
+	sed 's/name: mortise-int/name: $(INT_CLUSTER)/' test/integration/k3d-config.yaml > "$$tmp_config"; \
+	k3d cluster create --config "$$tmp_config" --runtime-ulimit $(K3D_RUNTIME_ULIMIT) --wait
 	@echo "==> Building Docker images..."
 	$(CONTAINER_TOOL) build --target operator -t $(INT_IMG) .
 	$(CONTAINER_TOOL) build --target observer -t $(INT_OBSERVER_IMG) .
@@ -273,16 +285,16 @@ test-integration: ## Create k3d cluster, install chart + test deps, run integrat
 		k3d image import $(INT_IMG) $(INT_OBSERVER_IMG) $(INT_DEP_IMAGES) -c $(INT_CLUSTER); \
 	fi
 	@echo "==> Installing CRDs..."
-	kubectl apply -f charts/mortise-core/crds/
+	kubectl --context $(INT_KUBE_CONTEXT) apply -f charts/mortise-core/crds/
 	@echo "==> Waiting for CRDs to be established..."
-	kubectl wait --for=condition=Established crd/platformconfigs.mortise.mortise.dev --timeout=30s
+	kubectl --context $(INT_KUBE_CONTEXT) wait --for=condition=Established crd/platformconfigs.mortise.mortise.dev --timeout=30s
 	@echo "==> Installing test-only dependencies (registry, Gitea, BuildKit)..."
-	kubectl create namespace mortise-system --dry-run=client -o yaml | kubectl apply -f -
-	kubectl apply -f test/integration/manifests/
+	kubectl --context $(INT_KUBE_CONTEXT) create namespace mortise-system --dry-run=client -o yaml | kubectl --context $(INT_KUBE_CONTEXT) apply -f -
+	kubectl --context $(INT_KUBE_CONTEXT) apply -f test/integration/manifests/
 	@echo "==> Waiting for test dependencies to become ready..."
-	kubectl -n mortise-test-deps rollout status deployment/registry  --timeout=120s
-	kubectl -n mortise-test-deps rollout status deployment/gitea     --timeout=180s
-	kubectl -n mortise-test-deps rollout status deployment/buildkitd --timeout=180s
+	kubectl --context $(INT_KUBE_CONTEXT) -n mortise-test-deps rollout status deployment/registry  --timeout=120s
+	kubectl --context $(INT_KUBE_CONTEXT) -n mortise-test-deps rollout status deployment/gitea     --timeout=180s
+	kubectl --context $(INT_KUBE_CONTEXT) -n mortise-test-deps rollout status deployment/buildkitd --timeout=180s
 	@echo "==> Fetching Helm chart dependencies..."
 	helm repo add traefik https://traefik.github.io/charts
 	helm repo add jetstack https://charts.jetstack.io
@@ -290,7 +302,7 @@ test-integration: ## Create k3d cluster, install chart + test deps, run integrat
 	helm repo update
 	helm dependency build charts/mortise
 	@echo "==> Installing Mortise via Helm..."
-	helm upgrade --install mortise charts/mortise \
+	helm --kube-context $(INT_KUBE_CONTEXT) upgrade --install mortise charts/mortise \
 		--namespace mortise-system --create-namespace \
 		--skip-crds \
 		--set mortise-core.image.repository=mortise \
@@ -307,7 +319,9 @@ test-integration: ## Create k3d cluster, install chart + test deps, run integrat
 		--set metrics-server.args='{--kubelet-insecure-tls}' \
 		--wait --timeout $(HELM_WAIT_TIMEOUT)
 	@echo "==> Running integration tests..."
-	go test -v -parallel 25 -tags integration -count=1 -timeout 45m ./test/integration/... || \
+	# The suite builds its client from KUBECONFIG's current context; a
+	# standalone kubeconfig from k3d pins it to this run's cluster.
+	KUBECONFIG=$$(k3d kubeconfig write $(INT_CLUSTER)) go test -v -parallel 25 -tags integration -count=1 -timeout 45m ./test/integration/... || \
 		{ echo "==> Tests failed; leaving cluster for diagnostics (run: k3d cluster delete $(INT_CLUSTER))"; exit 1; }
 	@echo "==> Tearing down cluster..."
 	k3d cluster delete $(INT_CLUSTER)

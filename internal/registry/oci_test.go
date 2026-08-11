@@ -166,6 +166,80 @@ func TestTagsEmptyList(t *testing.T) {
 	}
 }
 
+// ---- ResolveTag ----
+
+func TestResolveTagFound(t *testing.T) {
+	const digest = "sha256:abc123def456"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodHead || r.URL.Path != "/v2/mortise/my-app/manifests/v1" {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Docker-Content-Digest", digest)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	b := newTestBackend(t, srv, Config{})
+	got, found, err := b.ResolveTag(context.Background(), "my-app", "v1")
+	if err != nil {
+		t.Fatalf("ResolveTag: %v", err)
+	}
+	if !found {
+		t.Fatal("expected tag to be found")
+	}
+	if got != digest {
+		t.Errorf("expected digest %q, got %q", digest, got)
+	}
+}
+
+func TestResolveTagNotFound(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	b := newTestBackend(t, srv, Config{})
+	_, found, err := b.ResolveTag(context.Background(), "app", "missing")
+	if err != nil {
+		t.Fatalf("expected nil error for 404, got: %v", err)
+	}
+	if found {
+		t.Error("expected found=false for 404")
+	}
+}
+
+func TestResolveTagServerError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	b := newTestBackend(t, srv, Config{})
+	if _, _, err := b.ResolveTag(context.Background(), "app", "v1"); err == nil {
+		t.Fatal("expected error for 500")
+	}
+}
+
+func TestResolveTagNoDigestHeader(t *testing.T) {
+	// Tag exists but the registry omits the digest header — still found,
+	// with an empty digest.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	b := newTestBackend(t, srv, Config{})
+	digest, found, err := b.ResolveTag(context.Background(), "app", "v1")
+	if err != nil {
+		t.Fatalf("ResolveTag: %v", err)
+	}
+	if !found || digest != "" {
+		t.Errorf("expected found with empty digest, got found=%v digest=%q", found, digest)
+	}
+}
+
 // ---- DeleteTag ----
 
 func TestDeleteTagHappyPath(t *testing.T) {
