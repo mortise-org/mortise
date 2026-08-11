@@ -438,6 +438,13 @@
 						<Folder class="h-5 w-5" />
 					</a>
 					<a
+						href="/dashboard"
+						class="{isActive('/dashboard') ? railIconActive : railIcon}"
+						title="Dashboard"
+					>
+						<LayoutDashboard class="h-5 w-5" />
+					</a>
+					<a
 						href="/extensions"
 						class="{isActive('/extensions') ? railIconActive : railIcon}"
 						title="Extensions"

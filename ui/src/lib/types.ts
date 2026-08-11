@@ -521,3 +521,53 @@ export interface LogHistoryLine {
 	text: string;
 	stream?: string;
 }
+
+// --- cluster dashboard (obs-v2 O5) ---
+
+export interface DashboardEnvPhase {
+	name: string;
+	phase: string;
+}
+
+export interface DashboardApp {
+	project: string;
+	name: string;
+	phase: string;
+	envs: DashboardEnvPhase[] | null;
+	cpu: number;
+	memory: number;
+	restarts: number;
+	metricsAvailable: boolean;
+}
+
+export interface DashboardProject {
+	name: string;
+	appCount: number;
+	envHealth: Record<string, string>;
+}
+
+export interface DashboardCollector {
+	collector: string;
+	ok: boolean;
+	lastSuccess: number;
+}
+
+export interface DashboardCluster {
+	projects: number;
+	apps: number;
+	appsByPhase: Record<string, number>;
+	buildsRunning: number;
+	buildsQueued: number;
+	cpuUsed: number;
+	memoryUsed: number;
+	metricsAvailable: boolean;
+	cpuAllocatable?: number;
+	memoryAllocatable?: number;
+	observer?: DashboardCollector[];
+}
+
+export interface DashboardResponse {
+	cluster: DashboardCluster;
+	projects: DashboardProject[] | null;
+	apps: DashboardApp[] | null;
+}

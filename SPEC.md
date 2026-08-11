@@ -325,6 +325,7 @@ domain" concept does not exist.
 | `GET /api/projects/{p}/bindings` | list binding edges |
 | `GET /api/projects/{p}/activity` | project activity feed |
 | `GET /api/activity` | platform-wide activity feed |
+| `GET /api/dashboard` | cluster rollup: apps table, project env health, cluster strip (obs-v2 O5) |
 | `GET /api/projects/{p}/events` | SSE project event stream |
 | `GET /api/repos` | list git repos |
 | `GET /api/repos/{owner}/{repo}/branches` | list branches |

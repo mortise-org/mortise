@@ -1,6 +1,7 @@
 import { browser } from '$app/environment';
 import { goto } from '$app/navigation';
 import type {
+	DashboardResponse,
 	App,
 	AppSpec,
 	ActivityEvent,
@@ -585,6 +586,9 @@ export const api = {
 			method: 'PATCH',
 			body: JSON.stringify(body)
 		}),
+
+	// --- dashboard ---
+	getDashboard: () => request<DashboardResponse>('/dashboard'),
 
 	// --- activity ---
 	listActivity: (project: string) =>

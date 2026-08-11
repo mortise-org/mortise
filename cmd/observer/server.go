@@ -27,6 +27,7 @@ func NewObserverServer(store *Store, liveCache *LiveMetricsCache, liveTrafficCac
 	mux.HandleFunc("GET /v1/traffic", s.handleTraffic)
 	mux.HandleFunc("GET /v1/traffic/live", s.handleTrafficLive)
 	mux.HandleFunc("GET /v1/pvc", s.handlePVC)
+	mux.HandleFunc("GET /v1/summary", s.handleSummary)
 	mux.HandleFunc("GET /v1/health/collectors", s.handleCollectorHealth)
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 	s.mux = mux
@@ -125,6 +126,15 @@ func (s *ObserverServer) handlePVC(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSONResp(w, 200, map[string]any{"pvcs": pvcs, "coverage": coverage})
+}
+
+// handleSummary serves the cluster-wide latest-usage rollup: every app-env's
+// most recent per-pod points summed, from the live cache. Consumed by the
+// operator's /api/dashboard aggregate endpoint (obs-v2 O5).
+func (s *ObserverServer) handleSummary(w http.ResponseWriter, r *http.Request) {
+	// Points older than two collection intervals are stale pods, not data.
+	staleCutoff := time.Now().Add(-5 * time.Minute).Unix()
+	writeJSONResp(w, 200, map[string]any{"apps": s.liveCache.LatestByApp(staleCutoff)})
 }
 
 func (s *ObserverServer) handleCollectorHealth(w http.ResponseWriter, r *http.Request) {
