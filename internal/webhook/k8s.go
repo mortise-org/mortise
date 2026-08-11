@@ -31,6 +31,16 @@ func (r *K8sReader) getGitProvider(ctx context.Context, name string) (*mortisev1
 	return &gp, nil
 }
 
+// countGitProviders returns how many GitProviders are registered — the
+// input to the empty-providerRef matching policy.
+func (r *K8sReader) countGitProviders(ctx context.Context) (int, error) {
+	var list mortisev1alpha1.GitProviderList
+	if err := r.client.List(ctx, &list); err != nil {
+		return 0, fmt.Errorf("list GitProviders: %w", err)
+	}
+	return len(list.Items), nil
+}
+
 // getProject fetches the cluster-scoped Project CR by name.
 func (r *K8sReader) getProject(ctx context.Context, name string) (*mortisev1alpha1.Project, error) {
 	var project mortisev1alpha1.Project

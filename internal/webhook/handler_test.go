@@ -29,6 +29,9 @@ type fakeK8sReader struct {
 	projects map[string]*mortisev1alpha1.Project // name -> project
 	err      error
 
+	// providerCount overrides the derived GitProvider count when > 0.
+	providerCount int
+
 	// patched records calls to patchAppRevision: app namespace/name -> sha
 	patched map[string]string
 
@@ -37,6 +40,19 @@ type fakeK8sReader struct {
 	createdPreviews []mortisev1alpha1.PreviewEnvironment
 	updatedPreviews []mortisev1alpha1.PreviewEnvironment
 	deletedKeys     []string // "ns/name" keys
+}
+
+// providerCount overrides countGitProviders when set; otherwise the count
+// mirrors whether `provider` is populated (the single-provider default that
+// keeps empty-providerRef fixtures matching, as they did pre-policy).
+func (f *fakeK8sReader) countGitProviders(_ context.Context) (int, error) {
+	if f.providerCount > 0 {
+		return f.providerCount, nil
+	}
+	if f.provider != nil {
+		return 1, nil
+	}
+	return 0, nil
 }
 
 func (f *fakeK8sReader) getGitProvider(_ context.Context, name string) (*mortisev1alpha1.GitProvider, error) {
@@ -336,17 +352,45 @@ func TestGitLabWebhook_ValidToken(t *testing.T) {
 	}
 }
 
-func TestWebhook_ProviderNotFound(t *testing.T) {
-	kr := &fakeK8sReader{err: fmt.Errorf("not found")}
-	h := New(kr)
+// TestWebhook_PreVerificationFailuresAreUniform pins the anti-enumeration
+// contract: an unauthenticated caller gets the identical 401 body whether the
+// provider does not exist, exists without a webhook secret, or fails
+// signature verification — no probing which provider names are registered.
+func TestWebhook_PreVerificationFailuresAreUniform(t *testing.T) {
+	cases := []struct {
+		name string
+		kr   *fakeK8sReader
+	}{
+		{name: "provider not found", kr: &fakeK8sReader{err: fmt.Errorf("not found")}},
+		{name: "webhook secret not configured", kr: &fakeK8sReader{
+			provider: &mortisev1alpha1.GitProvider{
+				Spec: mortisev1alpha1.GitProviderSpec{Type: mortisev1alpha1.GitProviderTypeGitea},
+			},
+		}},
+		{name: "invalid signature", kr: &fakeK8sReader{
+			provider: makeGitProvider(mortisev1alpha1.GitProviderTypeGitHub, "mortise-system", "hook", "secret"),
+			secrets:  map[string]string{"mortise-system/hook/secret": "topsecret"},
+		}},
+	}
 
-	req := httptest.NewRequest(http.MethodPost, "/unknown-provider", http.NoBody)
+	var wantBody string
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := New(tc.kr)
+			req := httptest.NewRequest(http.MethodPost, "/some-provider", strings.NewReader("{}"))
 
-	rr := httptest.NewRecorder()
-	h.Routes().ServeHTTP(rr, req)
+			rr := httptest.NewRecorder()
+			h.Routes().ServeHTTP(rr, req)
 
-	if rr.Code != http.StatusNotFound {
-		t.Fatalf("expected 404, got %d", rr.Code)
+			if rr.Code != http.StatusUnauthorized {
+				t.Fatalf("expected uniform 401, got %d", rr.Code)
+			}
+			if i == 0 {
+				wantBody = rr.Body.String()
+			} else if rr.Body.String() != wantBody {
+				t.Fatalf("response bodies differ between pre-verification failures: %q vs %q", rr.Body.String(), wantBody)
+			}
+		})
 	}
 }
 
@@ -1749,5 +1793,70 @@ func TestRepoMatches(t *testing.T) {
 		if got != tc.match {
 			t.Errorf("repoMatches(%q, %q) = %v, want %v", tc.a, tc.b, got, tc.match)
 		}
+	}
+}
+
+// TestWebhook_EmptyProviderRefPolicy pins the empty-providerRef matching
+// decision: an empty ref matches only when exactly one GitProvider is
+// registered (the delivery necessarily came from it); with several
+// registered, empty-ref apps are skipped instead of matching webhooks from
+// ANY provider. A non-empty ref must equal the delivering provider.
+func TestWebhook_EmptyProviderRefPolicy(t *testing.T) {
+	const secret = "secret"
+
+	emptyRef := makeGitApp("app-empty", "pj-a", "https://github.com/org/repo", "main")
+	matchingRef := makeGitApp("app-match", "pj-a", "https://github.com/org/repo", "main")
+	matchingRef.Spec.Source.ProviderRef = "github-main"
+	otherRef := makeGitApp("app-other", "pj-a", "https://github.com/org/repo", "main")
+	otherRef.Spec.Source.ProviderRef = "gitlab-main"
+
+	tests := []struct {
+		name          string
+		providerCount int
+		wantPatched   []string // ns/name expected patched
+	}{
+		{
+			name:          "single provider: empty ref matches, foreign ref does not",
+			providerCount: 1,
+			wantPatched:   []string{"pj-a/app-empty", "pj-a/app-match"},
+		},
+		{
+			name:          "multiple providers: empty ref is ambiguous and skipped",
+			providerCount: 2,
+			wantPatched:   []string{"pj-a/app-match"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			body := pushPayloadJSON("refs/heads/main", "shaaaaa", "org/repo")
+			gp := makeGitProvider(mortisev1alpha1.GitProviderTypeGitHub, "mortise-system", "wh-secret", "value")
+			kr := &fakeK8sReader{
+				provider:      gp,
+				providerCount: tc.providerCount,
+				secrets:       map[string]string{"mortise-system/wh-secret/value": secret},
+				apps:          []mortisev1alpha1.App{emptyRef, matchingRef, otherRef},
+			}
+			h := newTestHandler(kr)
+
+			req := httptest.NewRequest(http.MethodPost, "/github-main", bytes.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("X-Hub-Signature-256", githubSignature(body, secret))
+
+			rr := httptest.NewRecorder()
+			h.Routes().ServeHTTP(rr, req)
+			if rr.Code != http.StatusAccepted {
+				t.Fatalf("expected 202, got %d: %s", rr.Code, rr.Body.String())
+			}
+
+			if len(kr.patched) != len(tc.wantPatched) {
+				t.Fatalf("expected %d patched apps, got %v", len(tc.wantPatched), kr.patched)
+			}
+			for _, key := range tc.wantPatched {
+				if kr.patched[key] != "shaaaaa" {
+					t.Errorf("expected %s patched, got %v", key, kr.patched)
+				}
+			}
+		})
 	}
 }

@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/go-logr/logr"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -34,6 +35,7 @@ type Handler struct {
 // import controller-runtime directly in tests.
 type k8sReader interface {
 	getGitProvider(ctx context.Context, name string) (*mortisev1alpha1.GitProvider, error)
+	countGitProviders(ctx context.Context) (int, error)
 	getSecret(ctx context.Context, namespace, name, key string) (string, error)
 	getProject(ctx context.Context, name string) (*mortisev1alpha1.Project, error)
 	listGitApps(ctx context.Context) ([]mortisev1alpha1.App, error)
@@ -78,10 +80,15 @@ func (h *Handler) handleWebhook(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	// Every pre-verification failure below returns the identical 401 body.
+	// Distinguishable responses (provider-not-found 404, secret-not-configured
+	// 403, bad-signature 401) let an unauthenticated caller enumerate which
+	// provider names exist and how far their probe got; the distinction is
+	// logged server-side only.
 	gp, err := h.k8s.getGitProvider(req.Context(), providerName)
 	if err != nil {
 		log.Error(err, "get GitProvider", "provider", providerName)
-		http.Error(w, "provider not found", http.StatusNotFound)
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 
@@ -97,7 +104,8 @@ func (h *Handler) handleWebhook(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 	} else {
-		http.Error(w, "webhook secret not configured", http.StatusForbidden)
+		log.Info("webhook rejected: provider has no webhook secret configured", "provider", providerName)
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 
@@ -138,6 +146,41 @@ func (h *Handler) handleWebhook(w http.ResponseWriter, req *http.Request) {
 	w.WriteHeader(http.StatusAccepted)
 }
 
+// providerMatches implements the empty-providerRef policy: a non-empty ref
+// must equal the delivering provider; an empty ref matches only when exactly
+// one GitProvider is registered, because the delivery then necessarily came
+// from it. Empty-ref matching against ANY of several providers would let a
+// push arriving via one provider trigger builds of Apps that belong to a
+// different forge entirely.
+func providerMatches(ref, delivering string, soleProvider bool) bool {
+	if ref != "" {
+		return ref == delivering
+	}
+	return soleProvider
+}
+
+// logSkippedAmbiguousProvider surfaces only the ambiguity skip — an ordinary
+// non-empty-ref mismatch is routine filtering and stays silent, as before.
+func logSkippedAmbiguousProvider(log logr.Logger, ref, app, namespace, delivering string) {
+	if ref != "" {
+		return
+	}
+	log.Info("skipping app: spec.source.providerRef is empty and multiple GitProviders are registered — set providerRef to receive webhooks",
+		"app", app, "namespace", namespace, "deliveringProvider", delivering)
+}
+
+// soleProvider reports whether exactly one GitProvider is registered. On a
+// count error it returns false — empty-providerRef matching then fails
+// closed (skip) rather than guessing.
+func (h *Handler) soleProvider(ctx context.Context) bool {
+	n, err := h.k8s.countGitProviders(ctx)
+	if err != nil {
+		logf.FromContext(ctx).Error(err, "count GitProviders for empty-providerRef matching")
+		return false
+	}
+	return n == 1
+}
+
 // dispatchToApps lists all git-source Apps and patches mortise.dev/revision on
 // those whose repo URL and branch match the push event. Errors are logged but
 // do not fail the HTTP response — the forge has already delivered the event.
@@ -149,6 +192,7 @@ func (h *Handler) dispatchToApps(ctx context.Context, br BuildRequest) {
 		log.Error(err, "list git apps for dispatch")
 		return
 	}
+	soleProvider := h.soleProvider(ctx)
 
 	pushedBranch := branchFromRef(br.Ref)
 
@@ -163,7 +207,8 @@ func (h *Handler) dispatchToApps(ctx context.Context, br BuildRequest) {
 		if src.Type != mortisev1alpha1.SourceTypeGit {
 			continue
 		}
-		if src.ProviderRef != "" && src.ProviderRef != br.Provider {
+		if !providerMatches(src.ProviderRef, br.Provider, soleProvider) {
+			logSkippedAmbiguousProvider(log, src.ProviderRef, app.Name, app.Namespace, br.Provider)
 			continue
 		}
 		if !repoMatches(src.Repo, br.Repo) {
@@ -203,6 +248,7 @@ func (h *Handler) dispatchPREvent(ctx context.Context, pr PREvent) {
 		log.Error(err, "list git apps for PR dispatch")
 		return
 	}
+	soleProvider := h.soleProvider(ctx)
 
 	// Collect the set of projects that have at least one app matching the
 	// PR's repo and provider. We only need one PE per project.
@@ -216,7 +262,8 @@ func (h *Handler) dispatchPREvent(ctx context.Context, pr PREvent) {
 		if src.Type != mortisev1alpha1.SourceTypeGit {
 			continue
 		}
-		if src.ProviderRef != "" && src.ProviderRef != pr.Provider {
+		if !providerMatches(src.ProviderRef, pr.Provider, soleProvider) {
+			logSkippedAmbiguousProvider(log, src.ProviderRef, app.Name, app.Namespace, pr.Provider)
 			continue
 		}
 		if !repoMatches(src.Repo, pr.Repo) {

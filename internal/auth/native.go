@@ -40,6 +40,22 @@ func NewNativeAuthProvider(c client.Client) *NativeAuthProvider {
 	}
 }
 
+// dummyPasswordHash is compared against when the user does not exist, so the
+// not-found path pays the same bcrypt cost as the found path. Without it the
+// fast not-found return is a username-enumeration timing oracle.
+var dummyPasswordHash = func() []byte {
+	h, err := bcrypt.GenerateFromPassword([]byte("mortise-timing-equalizer"), bcrypt.DefaultCost)
+	if err != nil {
+		panic(err)
+	}
+	return h
+}()
+
+// compareHashAndPassword is a seam for tests to count bcrypt invocations —
+// the timing-oracle guarantee is "exactly one compare on every path", which
+// a counting hook asserts without flaky wall-clock measurement.
+var compareHashAndPassword = bcrypt.CompareHashAndPassword
+
 func userSecretName(email string) string {
 	return "user-" + hex.EncodeToString([]byte(email))
 }
@@ -55,6 +71,7 @@ func (n *NativeAuthProvider) Authenticate(ctx context.Context, creds Credentials
 		Namespace: namespace,
 	}, &secret)
 	if errors.IsNotFound(err) {
+		_ = compareHashAndPassword(dummyPasswordHash, []byte(creds.Password))
 		return Principal{}, fmt.Errorf("invalid credentials")
 	}
 	if err != nil {
@@ -62,7 +79,7 @@ func (n *NativeAuthProvider) Authenticate(ctx context.Context, creds Credentials
 	}
 
 	hash := secret.Data["password_hash"]
-	if err := bcrypt.CompareHashAndPassword(hash, []byte(creds.Password)); err != nil {
+	if err := compareHashAndPassword(hash, []byte(creds.Password)); err != nil {
 		return Principal{}, fmt.Errorf("invalid credentials")
 	}
 
@@ -284,13 +301,14 @@ func (n *NativeAuthProvider) VerifyPassword(ctx context.Context, email, password
 		Namespace: namespace,
 	}, &secret)
 	if errors.IsNotFound(err) {
+		_ = compareHashAndPassword(dummyPasswordHash, []byte(password))
 		return fmt.Errorf("invalid credentials")
 	}
 	if err != nil {
 		return fmt.Errorf("reading user secret: %w", err)
 	}
 
-	if err := bcrypt.CompareHashAndPassword(secret.Data["password_hash"], []byte(password)); err != nil {
+	if err := compareHashAndPassword(secret.Data["password_hash"], []byte(password)); err != nil {
 		return fmt.Errorf("invalid credentials")
 	}
 	return nil
