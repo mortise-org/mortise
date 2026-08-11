@@ -123,6 +123,17 @@ func (l *loginLimiter) recordFailure(key string) {
 	now := l.now()
 	e := l.entries[key]
 	if e == nil {
+		// Same cap discipline as allow(): a new key under a full table gets
+		// neither throttling nor failure-tracking. Without this, failed logins
+		// for distinct usernames grow the map without bound (allow() fails open
+		// without inserting, so recordFailure is the only insert path) — the
+		// unbounded-process-memory class #447 paid for.
+		if len(l.entries) >= loginLimiterMaxEntries {
+			l.pruneLocked(now)
+		}
+		if len(l.entries) >= loginLimiterMaxEntries {
+			return
+		}
 		e = &loginEntry{tokens: l.burst, lastRefill: now}
 		l.entries[key] = e
 	}

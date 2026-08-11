@@ -87,8 +87,18 @@ func (h *Handler) handleWebhook(w http.ResponseWriter, req *http.Request) {
 	// logged server-side only.
 	gp, err := h.k8s.getGitProvider(req.Context(), providerName)
 	if err != nil {
+		// Not-found is an auth decision and must be indistinguishable from the
+		// other pre-verification failures (401). A transient API error is an
+		// infrastructure fault, not an auth outcome, and returns 500 like the
+		// secret-fetch path below — it reveals nothing about provider existence
+		// since it fires regardless of whether the named provider exists.
+		if apierrors.IsNotFound(err) {
+			log.Info("webhook rejected: provider not found", "provider", providerName)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
 		log.Error(err, "get GitProvider", "provider", providerName)
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 

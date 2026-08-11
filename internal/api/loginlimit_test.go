@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http/httptest"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -123,6 +124,22 @@ func TestLoginLimiterFailsOpenWhenFull(t *testing.T) {
 	// service by the table being full.
 	if ok, _ := l.allow("fresh|key"); !ok {
 		t.Fatal("limiter must fail open for new keys when the table is full")
+	}
+}
+
+func TestLoginLimiterRecordFailureRespectsCap(t *testing.T) {
+	l, _ := newTestLimiter(time.Unix(1_700_000_000, 0))
+	// Fill with fresh (unprunable) entries so the cap is genuinely hit.
+	for i := 0; i < loginLimiterMaxEntries; i++ {
+		l.entries[string(rune(i))+"-filler"] = &loginEntry{lastSeen: l.now()}
+	}
+	// recordFailure is the only insert path when allow() fails open, so a
+	// spray of distinct failed-login keys must not grow the map past the cap.
+	for i := 0; i < 100; i++ {
+		l.recordFailure("spray-" + strconv.Itoa(i))
+	}
+	if len(l.entries) > loginLimiterMaxEntries {
+		t.Fatalf("recordFailure grew the map past the cap: %d > %d", len(l.entries), loginLimiterMaxEntries)
 	}
 }
 

@@ -60,7 +60,7 @@ func (f *fakeK8sReader) getGitProvider(_ context.Context, name string) (*mortise
 		return nil, f.err
 	}
 	if f.provider == nil {
-		return nil, fmt.Errorf("not found")
+		return nil, apierrors.NewNotFound(schema.GroupResource{Group: "mortise.mortise.dev", Resource: "gitproviders"}, name)
 	}
 	return f.provider, nil
 }
@@ -361,7 +361,9 @@ func TestWebhook_PreVerificationFailuresAreUniform(t *testing.T) {
 		name string
 		kr   *fakeK8sReader
 	}{
-		{name: "provider not found", kr: &fakeK8sReader{err: fmt.Errorf("not found")}},
+		{name: "provider not found", kr: &fakeK8sReader{
+			err: apierrors.NewNotFound(schema.GroupResource{Group: "mortise.mortise.dev", Resource: "gitproviders"}, "some-provider"),
+		}},
 		{name: "webhook secret not configured", kr: &fakeK8sReader{
 			provider: &mortisev1alpha1.GitProvider{
 				Spec: mortisev1alpha1.GitProviderSpec{Type: mortisev1alpha1.GitProviderTypeGitea},
