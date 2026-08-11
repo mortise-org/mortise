@@ -23,6 +23,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
+	"net/url"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -224,4 +227,66 @@ func resolveSecret(ctx context.Context, c client.Reader, ref mortisev1alpha1.Sec
 		return nil, fmt.Errorf("get secret %s/%s: %w", ref.Namespace, ref.Name, err)
 	}
 	return &secret, nil
+}
+
+// LooksClusterInternal reports whether rawURL's host is a cluster-internal
+// Service DNS name (…​.svc or …​.svc.cluster.local) — the shape kubelets
+// cannot resolve from the node's DNS, making it unusable as a pull URL.
+// Substring checks false-positive on external hosts that merely contain
+// ".svc" and miss ports; this anchors on the hostname suffix instead.
+func LooksClusterInternal(rawURL string) bool {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	host := u.Hostname()
+	if host == "" {
+		// Bare host[:port] without a scheme parses into Path.
+		if h, _, splitErr := net.SplitHostPort(rawURL); splitErr == nil {
+			host = h
+		} else {
+			host = rawURL
+		}
+	}
+	host = strings.TrimSuffix(host, ".")
+	return strings.HasSuffix(host, ".svc") || strings.HasSuffix(host, ".svc.cluster.local")
+}
+
+// DiffSections compares the config the operator booted with against a
+// freshly resolved one and returns the top-level spec sections that differ
+// ("spec.registry", "spec.build", ...). Resolved secret material
+// participates, so rotating a referenced Secret reads as drift in its
+// section (names only — no values are exposed). A nil side compares as an
+// empty config. Boot stores its snapshot; the PlatformConfig controller
+// diffs it against the CURRENT spec to surface restart-required drift.
+func DiffSections(booted, current *Config) []string {
+	if booted == nil {
+		booted = &Config{}
+	}
+	if current == nil {
+		current = &Config{}
+	}
+	var changed []string
+	if booted.Domain != current.Domain {
+		changed = append(changed, "spec.domain")
+	}
+	if booted.Storage != current.Storage {
+		changed = append(changed, "spec.storage")
+	}
+	if booted.Registry != current.Registry {
+		changed = append(changed, "spec.registry")
+	}
+	if booted.Build != current.Build {
+		changed = append(changed, "spec.build")
+	}
+	if booted.TLS != current.TLS {
+		changed = append(changed, "spec.tls")
+	}
+	if booted.Observability != current.Observability {
+		changed = append(changed, "spec.observability")
+	}
+	if booted.DefaultCPU != current.DefaultCPU || booted.DefaultMemory != current.DefaultMemory {
+		changed = append(changed, "spec.defaultResources")
+	}
+	return changed
 }

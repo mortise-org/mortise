@@ -258,3 +258,54 @@ func TestLoad_BuildTLS(t *testing.T) {
 		t.Errorf("Build.TLSKey = %q, want KEY", cfg.Build.TLSKey)
 	}
 }
+
+func TestLooksClusterInternal(t *testing.T) {
+	cases := []struct {
+		url  string
+		want bool
+	}{
+		// The shapes the old strings.Contains heuristic got right.
+		{"http://registry.mortise-deps.svc:5000", true},
+		{"http://registry.mortise-deps.svc.cluster.local:5000", true},
+		// The miss: bare host without scheme.
+		{"registry.mortise-deps.svc:5000", true},
+		// The false positive: external host merely containing ".svc".
+		{"https://my.svc.example.com", false},
+		{"https://registry.example.com", false},
+		{"http://localhost:30500", false},
+		// Trailing-dot FQDN form.
+		{"http://registry.mortise-deps.svc.", true},
+		{"", false},
+	}
+	for _, tc := range cases {
+		if got := platformconfig.LooksClusterInternal(tc.url); got != tc.want {
+			t.Errorf("LooksClusterInternal(%q) = %v, want %v", tc.url, got, tc.want)
+		}
+	}
+}
+
+func TestDiffSections(t *testing.T) {
+	a := &platformconfig.Config{Registry: platformconfig.RegistryConfig{URL: "http://r.svc:5000", PullURL: "http://localhost:30500"}}
+	b := &platformconfig.Config{Registry: platformconfig.RegistryConfig{URL: "http://r.svc:5000", PullURL: "http://localhost:30500"}}
+	if diff := platformconfig.DiffSections(a, b); len(diff) != 0 {
+		t.Errorf("identical configs must not diff, got %v", diff)
+	}
+	b.Registry.PullURL = ""
+	b.Build.BuildkitAddr = "tcp://elsewhere:1234"
+	diff := platformconfig.DiffSections(a, b)
+	if len(diff) != 2 || diff[0] != "spec.registry" || diff[1] != "spec.build" {
+		t.Errorf("want [spec.registry spec.build], got %v", diff)
+	}
+	// Secret-derived material participates: rotation reads as drift.
+	b = &platformconfig.Config{Registry: a.Registry}
+	b.Registry.Password = "rotated"
+	if diff := platformconfig.DiffSections(a, b); len(diff) != 1 || diff[0] != "spec.registry" {
+		t.Errorf("credential rotation must diff spec.registry, got %v", diff)
+	}
+	if diff := platformconfig.DiffSections(nil, nil); len(diff) != 0 {
+		t.Errorf("nil-vs-nil must not diff, got %v", diff)
+	}
+	if diff := platformconfig.DiffSections(nil, a); len(diff) == 0 {
+		t.Error("nil-vs-config must diff")
+	}
+}
