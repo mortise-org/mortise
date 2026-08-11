@@ -326,3 +326,89 @@ func (s *Server) handleLogHistory(w http.ResponseWriter, r *http.Request) {
 
 	s.proxyToAdapter(w, r, cfg.Observability.LogsAdapterEndpoint+"/v1/logs", cfg.Observability.LogsAdapterToken, q)
 }
+
+// handlePVCMetrics proxies per-PVC usage series from the metrics adapter.
+//
+// GET /api/projects/{project}/apps/{app}/pvc-metrics?env=production&start=...&end=...&step=300
+//
+// @Summary Historical PVC capacity/usage series
+// @Description Proxies per-PVC capacity and usage series (with coverage gap markers) from the metrics adapter
+// @Tags metrics
+// @Produce json
+// @Security BearerAuth
+// @Param project path string true "Project name"
+// @Param app path string true "App name"
+// @Param env query string false "Environment (defaults to the app's first env)"
+// @Param start query integer true "Range start (unix seconds)"
+// @Param end query integer true "Range end (unix seconds)"
+// @Param step query integer false "Bucket size in seconds (default 300)"
+// @Success 200 {object} map[string]any
+// @Failure 400 {object} errorResponse
+// @Failure 403 {object} errorResponse
+// @Router /projects/{project}/apps/{app}/pvc-metrics [get]
+func (s *Server) handlePVCMetrics(w http.ResponseWriter, r *http.Request) {
+	projectName := chi.URLParam(r, "project")
+	if !s.authorize(w, r, authz.Resource{Kind: "app", Project: projectName}, authz.ActionRead) {
+		return
+	}
+	_, projectName, ok := s.resolveProject(w, r)
+	if !ok {
+		return
+	}
+	app, env, ok := s.resolveDefaultedAppEnv(w, r)
+	if !ok {
+		return
+	}
+
+	start := r.URL.Query().Get("start")
+	end := r.URL.Query().Get("end")
+	if start == "" || end == "" {
+		writeJSON(w, http.StatusBadRequest, errorResponse{"start and end are required"})
+		return
+	}
+
+	cfg, err := platformconfig.Load(r.Context(), s.client)
+	if err != nil || cfg.Observability.MetricsAdapterEndpoint == "" {
+		writeJSON(w, http.StatusOK, map[string]any{"available": false})
+		return
+	}
+
+	step := r.URL.Query().Get("step")
+	if step == "" {
+		step = "300"
+	}
+
+	q := url.Values{
+		"namespace": {constants.EnvNamespace(projectName, env)},
+		"app":       {app.Name},
+		"env":       {env},
+		"start":     {start},
+		"end":       {end},
+		"step":      {step},
+	}
+	s.proxyToAdapter(w, r, cfg.Observability.MetricsAdapterEndpoint+"/v1/pvc", cfg.Observability.MetricsAdapterToken, q)
+}
+
+// handleObserverHealth proxies the observer's collector self-health report,
+// the source of the dashboard's "metrics stale since X" banner.
+//
+// GET /api/observability/health
+//
+// @Summary Observability collector health
+// @Description Proxies the metrics adapter's per-collector self-health report (last tick/success/error)
+// @Tags metrics
+// @Produce json
+// @Security BearerAuth
+// @Success 200 {object} map[string]any
+// @Router /observability/health [get]
+func (s *Server) handleObserverHealth(w http.ResponseWriter, r *http.Request) {
+	if !s.authorize(w, r, authz.Resource{Kind: "platform"}, authz.ActionRead) {
+		return
+	}
+	cfg, err := platformconfig.Load(r.Context(), s.client)
+	if err != nil || cfg.Observability.MetricsAdapterEndpoint == "" {
+		writeJSON(w, http.StatusOK, map[string]any{"available": false})
+		return
+	}
+	s.proxyToAdapter(w, r, cfg.Observability.MetricsAdapterEndpoint+"/v1/health/collectors", cfg.Observability.MetricsAdapterToken, url.Values{})
+}

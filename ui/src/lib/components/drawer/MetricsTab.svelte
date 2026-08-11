@@ -1,11 +1,11 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { BarChart3, Activity } from 'lucide-svelte';
+	import { BarChart3, Activity, AlertTriangle } from 'lucide-svelte';
 	import { api } from '$lib/api';
-	import { hashPodColor } from '$lib/pod-colors';
-	import MetricsLineChart from '$lib/components/drawer/MetricsLineChart.svelte';
+	import { seriesColor } from '$lib/series-colors';
+	import UtilizationChart from '$lib/components/drawer/UtilizationChart.svelte';
 	import TrafficChart from '$lib/components/drawer/TrafficChart.svelte';
-	import type { App, PodMetricsCurrent, PodMetricsSeries, TrafficSeries } from '$lib/types';
+	import type { App, PodMetricsCurrent, PodMetricsSeries, PVCSeries, TrafficSeries } from '$lib/types';
 
 	let { app, project, env }: { app: App; project: string; env: string } = $props();
 
@@ -40,10 +40,22 @@
 	let metricsAvailable = $state(false);
 	let currentPods = $state<PodMetricsCurrent[]>([]);
 	let historyPods = $state<PodMetricsSeries[]>([]);
+	let coverage = $state<[number, number][]>([]);
+	let pvcSeries = $state<PVCSeries[]>([]);
+	let pvcCoverage = $state<[number, number][]>([]);
 	let trafficAvailable = $state(false);
 	let trafficSeries = $state<TrafficSeries | null>(null);
+	// metricsStaleSince: unix seconds of the metrics collector's last
+	// successful cycle when it is NOT current — the observer's self-health
+	// signal. null = healthy or health unknown.
+	let metricsStaleSince = $state<number | null>(null);
 	let loading = $state(true);
 	let pollTimer: ReturnType<typeof setInterval> | undefined;
+
+	// A collector is stale when its last success is older than this. Matches
+	// several observer poll intervals so a single slow cycle doesn't flap the
+	// banner.
+	const staleAfterSeconds = 180;
 
 	function formatCPU(cores: number): string {
 		if (cores < 1) return `${(cores * 1000).toFixed(0)}m`;
@@ -99,15 +111,18 @@
 		const start = end - hours * 3600;
 		const trafficStep = Math.max(step, 5);
 
-		const [metricsRes, trafficRes] = await Promise.allSettled([
+		const [metricsRes, trafficRes, pvcRes, healthRes] = await Promise.allSettled([
 			api.getMetricsHistory(project, app.metadata.name, env, start, end, step),
-			api.getTrafficHistory(project, app.metadata.name, env, start, end, trafficStep)
+			api.getTrafficHistory(project, app.metadata.name, env, start, end, trafficStep),
+			api.getPVCMetrics(project, app.metadata.name, env, start, end, Math.max(step, 300)),
+			api.getObservabilityHealth()
 		]);
 
 		if (metricsRes.status === 'fulfilled') {
 			metricsAvailable = metricsRes.value.available !== false;
 			const pods = metricsRes.value.pods ?? [];
 			historyPods = pods;
+			coverage = metricsRes.value.coverage ?? [];
 			currentPods = historyPodsToCurrent(pods);
 		}
 
@@ -119,7 +134,28 @@
 			trafficSeries = null;
 		}
 
+		if (pvcRes.status === 'fulfilled' && pvcRes.value.available !== false) {
+			pvcSeries = pvcRes.value.pvcs ?? [];
+			pvcCoverage = pvcRes.value.coverage ?? [];
+		} else {
+			pvcSeries = [];
+			pvcCoverage = [];
+		}
+
+		metricsStaleSince = null;
+		if (healthRes.status === 'fulfilled' && healthRes.value.available !== false) {
+			const m = healthRes.value.collectors?.find((c) => c.collector === 'metrics');
+			if (m && end - m.lastSuccess > staleAfterSeconds) {
+				metricsStaleSince = m.lastSuccess;
+			}
+		}
+
 		loading = false;
+	}
+
+	function formatStaleSince(ts: number | null): string {
+		if (ts === null || ts <= 0) return 'startup';
+		return new Date(ts * 1000).toLocaleTimeString();
 	}
 
 	function historyPodsToCurrent(series: PodMetricsSeries[]): PodMetricsCurrent[] {
@@ -186,7 +222,7 @@
 					<div class="absolute right-0 top-full z-10 mt-1 min-w-[220px] rounded-lg border border-surface-600 bg-surface-800 p-2 shadow-xl">
 						{#each currentPods as pod}
 							<div class="flex items-center gap-2 rounded px-2 py-1.5 text-xs text-gray-300">
-								<span class="h-2.5 w-2.5 shrink-0 rounded-full" style={`background-color:${hashPodColor(pod.name)}`}></span>
+								<span class="h-2.5 w-2.5 shrink-0 rounded-full" style={`background-color:${seriesColor(currentPods.map((p) => p.name).sort().indexOf(pod.name))}`}></span>
 								<span class="truncate font-medium">{pod.name}</span>
 							</div>
 						{/each}
@@ -201,6 +237,19 @@
 			<div class="h-5 w-5 animate-spin rounded-full border-2 border-gray-600 border-t-accent"></div>
 		</div>
 	{:else}
+		{#if metricsStaleSince !== null}
+			<div
+				class="flex items-center gap-2 rounded-lg border border-amber-700/60 bg-amber-950/40 px-3 py-2"
+				data-testid="metrics-stale-banner"
+			>
+				<AlertTriangle class="h-4 w-4 shrink-0 text-amber-400" />
+				<p class="text-xs text-amber-200">
+					Metrics stale since {formatStaleSince(metricsStaleSince)} — the collector has not completed a
+					cycle recently. Charts show the last observed data; hatched regions were not observed.
+				</p>
+			</div>
+		{/if}
+
 		<!-- Resources Section -->
 		<p class="mt-1 text-xs font-semibold uppercase tracking-wider text-gray-500">Resources</p>
 		{#if !metricsAvailable}
@@ -212,8 +261,36 @@
 			<p class="py-6 text-center text-sm text-gray-500">No resource data for this range.</p>
 		{:else}
 			<div class="grid grid-cols-1 gap-3">
-				<MetricsLineChart title="CPU" pods={historyPods} metric="cpu" formatValue={formatCPU} limitValue={cpuLimit || undefined} />
-				<MetricsLineChart title="Memory" pods={historyPods} metric="memory" formatValue={formatMemory} limitValue={memoryLimit || undefined} />
+				<UtilizationChart
+					title="CPU"
+					series={historyPods.map((p) => ({ name: p.name, points: p.cpu }))}
+					{coverage}
+					formatValue={formatCPU}
+					limitValue={cpuLimit || undefined}
+				/>
+				<UtilizationChart
+					title="Memory"
+					series={historyPods.map((p) => ({ name: p.name, points: p.memory }))}
+					{coverage}
+					formatValue={formatMemory}
+					limitValue={memoryLimit || undefined}
+				/>
+			</div>
+		{/if}
+
+		<!-- Storage Section -->
+		{#if pvcSeries.length > 0}
+			<p class="mt-3 text-xs font-semibold uppercase tracking-wider text-gray-500">Storage</p>
+			<div class="grid grid-cols-1 gap-3">
+				<UtilizationChart
+					title="PVC usage"
+					series={pvcSeries.map((p) => ({ name: p.name, points: p.used }))}
+					coverage={pvcCoverage}
+					formatValue={formatBytes}
+					limitValue={pvcSeries.length === 1 && pvcSeries[0].capacity.length > 0
+						? pvcSeries[0].capacity[pvcSeries[0].capacity.length - 1][1]
+						: undefined}
+				/>
 			</div>
 		{/if}
 

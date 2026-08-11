@@ -121,9 +121,11 @@ test.describe('deployments tab', () => {
 			timeout: 10_000
 		});
 
-		// Deployments tab is default. Verify the current deploy digest is visible.
-		// shortDigest("nginx:1.27") yields "1.27".
-		await expect(page.getByText('1.27')).toBeVisible({ timeout: 10_000 });
+		// Deployments tab is default. Verify the current deploy digest is
+		// visible. shortDigest("nginx:1.27") yields "1.27"; the unified
+		// timeline also renders it, so assert on the first (current-deploy
+		// card) rather than an ambiguous page-wide match.
+		await expect(page.getByText('1.27').first()).toBeVisible({ timeout: 10_000 });
 
 		await deleteAppViaAPI(request, token, project, appName);
 	});
