@@ -86,6 +86,44 @@ func observerTryGet(t *testing.T, path string, params map[string]string) (map[st
 	return result, true
 }
 
+// requireCollectorAlive fails fast if the named collector never records a
+// tick — i.e. its goroutine is dead or stuck — instead of letting the
+// downstream data-wait blow its full ceiling with an opaque timeout. Every
+// collector ticks each cycle regardless of whether our app's data is present
+// (empty cycles still Record), so a recent lastTick means "alive, maybe slow"
+// and its absence means "broken." This separates slow from broken so the
+// data-waits below can carry generous ceilings for loaded/CI runners without
+// masking a genuinely dead collector (mo-90d).
+//
+// The thresholds must outlast the test-peak load, not just be "big": under
+// full-suite parallelism the observer briefly starves — its collectors' flush
+// goroutines and even the health endpoint can stall for a sustained window
+// (the traffic collector is most exposed, since the traffic test drives
+// continuous load through the same observer it queries). A collector ticks
+// every ~5s at rest, so no tick within 60s is genuinely stuck rather than
+// slow; the 120s observation window rides out a bounded load spike before
+// concluding the collector is dead. A truly dead collector never ticks and
+// still fails at 120s with a clear signal.
+func requireCollectorAlive(t *testing.T, collector string) {
+	t.Helper()
+	helpers.RequireEventually(t, 120*time.Second, func() bool {
+		res, ok := observerTryGet(t, "/v1/health/collectors", nil)
+		if !ok {
+			return false
+		}
+		cols, _ := res["collectors"].([]any)
+		for _, c := range cols {
+			m, _ := c.(map[string]any)
+			if name, _ := m["collector"].(string); name != collector {
+				continue
+			}
+			lastTick, _ := m["lastTick"].(float64)
+			return int64(lastTick) >= time.Now().Add(-60*time.Second).Unix()
+		}
+		return false
+	})
+}
+
 func TestObserverHealth(t *testing.T) {
 	t.Parallel()
 	skipIfObserverUnavailable(t)
@@ -147,8 +185,12 @@ func TestObserverMetrics(t *testing.T) {
 
 	start := fmt.Sprintf("%d", time.Now().Add(-1*time.Minute).Unix())
 
+	// Fail fast if the metrics collector never ticks; otherwise give
+	// metrics-server warmup + scrape headroom on loaded runners (mo-90d).
+	requireCollectorAlive(t, "metrics")
+
 	// Poll until the observer has collected at least one metrics data point.
-	helpers.RequireEventually(t, 90*time.Second, func() bool {
+	helpers.RequireEventually(t, 180*time.Second, func() bool {
 		end := fmt.Sprintf("%d", time.Now().Unix())
 		result, ok := observerTryGet(t, "/v1/metrics", map[string]string{
 			"namespace": envNs,
@@ -268,8 +310,12 @@ func TestObserverLogs(t *testing.T) {
 
 	start := fmt.Sprintf("%d", time.Now().Add(-2*time.Minute).Unix())
 
+	// Fail fast if the logs collector never ticks; otherwise give the
+	// tail-to-store pipeline headroom on loaded runners (mo-90d).
+	requireCollectorAlive(t, "logs")
+
 	// Poll until the observer has collected at least one log line.
-	helpers.RequireEventually(t, 90*time.Second, func() bool {
+	helpers.RequireEventually(t, 180*time.Second, func() bool {
 		end := fmt.Sprintf("%d", time.Now().Add(1*time.Minute).Unix())
 		result, ok := observerTryGet(t, "/v1/logs", map[string]string{
 			"namespace": envNs,
@@ -402,8 +448,13 @@ func TestObserverTraffic(t *testing.T) {
 		}
 	}()
 
+	// Fail fast if the traffic collector never ticks (dead); otherwise give
+	// the end-to-end pipeline (traefik route discovery → access log → collect)
+	// headroom on loaded runners (mo-90d).
+	requireCollectorAlive(t, "traffic")
+
 	// Poll until the observer has traffic data for our app.
-	helpers.RequireEventually(t, 120*time.Second, func() bool {
+	helpers.RequireEventually(t, 180*time.Second, func() bool {
 		end := fmt.Sprintf("%d", time.Now().Unix())
 		result, ok := observerTryGet(t, "/v1/traffic", map[string]string{
 			"namespace": envNs,
@@ -517,9 +568,13 @@ func TestObserverMetricsAfterRedeploy(t *testing.T) {
 	helpers.WaitForAppReady(t, k8sClient, ns, app.Name, 2*time.Minute)
 	helpers.AssertPodsRunning(t, k8sClient, envNs, app.Name, 1)
 
+	// Fail fast if the metrics collector never ticks (dead); otherwise give
+	// metrics-server warmup + scrape headroom on loaded runners (mo-90d).
+	requireCollectorAlive(t, "metrics")
+
 	// Wait for observer to collect metrics from the initial deployment.
 	start := fmt.Sprintf("%d", time.Now().Add(-1*time.Minute).Unix())
-	helpers.RequireEventually(t, 90*time.Second, func() bool {
+	helpers.RequireEventually(t, 180*time.Second, func() bool {
 		end := fmt.Sprintf("%d", time.Now().Unix())
 		result, ok := observerTryGet(t, "/v1/metrics", map[string]string{
 			"namespace": envNs,
@@ -579,9 +634,11 @@ func TestObserverMetricsAfterRedeploy(t *testing.T) {
 		t.Fatalf("get post-deploy deployment: %v", err)
 	}
 
-	// Poll until the observer returns metrics referencing the new pod.
+	// Poll until the observer returns metrics referencing the new pod. The
+	// metrics collector was already proven alive above, so this only needs the
+	// same loaded-runner headroom, not another liveness gate (mo-90d).
 	redeployStart := fmt.Sprintf("%d", time.Now().Add(-1*time.Minute).Unix())
-	helpers.RequireEventually(t, 90*time.Second, func() bool {
+	helpers.RequireEventually(t, 180*time.Second, func() bool {
 		end := fmt.Sprintf("%d", time.Now().Unix())
 		result, ok := observerTryGet(t, "/v1/metrics", map[string]string{
 			"namespace": envNs,
