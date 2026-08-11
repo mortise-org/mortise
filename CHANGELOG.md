@@ -9,6 +9,20 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **PlatformConfig misconfiguration conditions** (#449): the PlatformConfig
+  status now surfaces two problems that previously lived only in operator
+  logs. `RegistryPullConfig=False/PullURLMissing` flags a cluster-internal
+  `spec.registry.url` (`*.svc` / `*.svc.cluster.local`, precise host-suffix
+  match instead of the old substring check) with no `spec.registry.pullURL` —
+  the config shape where kubelet image pulls fail. `ConfigApplied=False/
+  RestartRequired` flags that the running operator booted with a different
+  config than the current spec, naming the drifted sections in the message
+  (or that it started before the PlatformConfig existed, on env-var
+  fallback). The env-var fallback path also warns at boot when the registry
+  URL is cluster-internal. There is still no hot reload: conditions tell
+  you when a `rollout restart deployment/mortise` is needed
+  (docs/configuration.md).
+
 - **Bundled build-infra hardening** (#440, #113): the registry and its
   node-local proxy now run with restricted-style securityContexts by
   default (non-root, no privilege escalation, read-only rootfs, fsGroup
@@ -44,6 +58,14 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   hours (was raw for the full 72h window); log tailers now resume from a
   stored cursor across restarts instead of re-reading (and duplicating)
   the last 100 lines. Full audit: `docs/observer-reliability.md`.
+- **Chart-integration suite wired into the release pipeline as a
+  pre-publish gate** (mo-jp7): `release.yml` now runs
+  `make test-chart-integration` (full umbrella-chart deploy on k3d —
+  PVC persistence, toggle lifecycle, standalone core, install script)
+  and the chart-publish job depends on it. The suite was documented as
+  release-gating but was invoked by no workflow; runtime chart
+  regressions (securityContexts, PVC wiring) previously had no gate
+  before publish.
 - **Published-chart verification in the release pipeline** (#446, #379
   residual): after publishing to gh-pages, `release.yml` pulls the chart
   back through the public repo URL, asserts it is byte-identical to what
@@ -99,8 +121,18 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   every resource in the generated `config/rbac/role.yaml` is granted by
   the packaged chart's rendered roles, so chart-vs-code RBAC drift fails
   CI instead of failing at runtime.
-
-
+- **Auth-surface hardening** (#444, auth items): login is rate-limited
+  per username+IP (token bucket 5/min burst 10, 15-minute lockout after
+  10 consecutive failures, `429` + `Retry-After`, env-overridable via
+  `MORTISE_LOGIN_*`); the user-not-found path now pays the same bcrypt
+  cost as a wrong password, closing a username-enumeration timing
+  oracle; unauthenticated webhook deliveries get a uniform `401` whether
+  the provider is unknown, secretless, or the signature is bad (the
+  distinction moved to server logs); and an App with empty
+  `spec.source.providerRef` matches webhooks only while exactly one
+  GitProvider is registered instead of accepting events from any
+  provider — a **behavior change** for multi-provider installs, see
+  "Breaking changes → Authentication" in docs/migration-v1.md.
 - **Build interruption is retryable, not terminal** (#447, #290): losing a
   build tracker (e.g. an OOM-killed or restarted operator) no longer fails
   the BuildRun terminally at the second loss. The run relaunches with

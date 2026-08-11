@@ -98,6 +98,11 @@ type stacks struct {
 	registry *registry.OCIBackend
 	git      git.GitClient
 
+	// bootConfig is the resolved PlatformConfig these stacks were built
+	// from (nil on the env fallback). The PlatformConfig controller diffs
+	// it against the live spec to surface restart-required drift (#449).
+	bootConfig *platformconfig.Config
+
 	// TLS is the resolved cert-manager / TLS configuration from PlatformConfig.
 	// Currently only CertManagerClusterIssuer is consumed (by the App
 	// reconciler); kept as a struct so future TLS settings can land here
@@ -122,7 +127,9 @@ type stacks struct {
 func buildStacks(ctx context.Context, reader client.Reader, log logr.Logger) stacks {
 	cfg, err := platformconfig.Load(ctx, reader)
 	if err == nil {
-		return stacksFromPlatformConfig(cfg, log)
+		stk := stacksFromPlatformConfig(cfg, log)
+		stk.bootConfig = cfg
+		return stk
 	}
 	if errors.Is(err, platformconfig.ErrNotFound) {
 		log.Info("PlatformConfig \"platform\" not found; using env-var fallback. " +
@@ -159,7 +166,7 @@ func stacksFromPlatformConfig(cfg *platformconfig.Config, log logr.Logger) stack
 	// Kubelet resolves image refs via host DNS, so cluster-internal .svc
 	// registry URLs are unpullable from nodes. Without pullURL the pull ref
 	// falls back to the push URL and every fresh deploy ImagePullBackOffs.
-	if cfg.Registry.URL != "" && cfg.Registry.PullURL == "" && strings.Contains(cfg.Registry.URL, ".svc") {
+	if cfg.Registry.URL != "" && cfg.Registry.PullURL == "" && platformconfig.LooksClusterInternal(cfg.Registry.URL) {
 		log.Info("WARNING: spec.registry.pullURL is empty and spec.registry.url is cluster-internal; "+
 			"kubelet-facing image refs will use the push URL, which nodes typically cannot resolve. "+
 			"Set spec.registry.pullURL (and restart the operator) if pods fail to pull built images.",
@@ -188,6 +195,16 @@ func stacksFromPlatformConfig(cfg *platformconfig.Config, log logr.Logger) stack
 func stacksFromEnv(log logr.Logger) stacks {
 	buildkitAddr := envOrDefault("MORTISE_BUILDKIT_ADDR", "tcp://buildkitd.mortise-system.svc:1234")
 	registryURL := envOrDefault("MORTISE_REGISTRY_URL", "http://zot.mortise-system.svc:5000")
+
+	// Same kubelet-unpullable shape the PlatformConfig path warns about —
+	// and the env fallback has no pullURL at all, so it always applies to
+	// cluster-internal URLs (including this default).
+	if platformconfig.LooksClusterInternal(registryURL) {
+		log.Info("WARNING: registry URL is cluster-internal and the env fallback has no pull URL; "+
+			"kubelet-facing image refs will use it directly, which nodes typically cannot resolve. "+
+			"Create a PlatformConfig with spec.registry.pullURL and restart the operator.",
+			"url", registryURL)
+	}
 
 	var bc build.BuildClient
 	if bk, err := build.New(build.Config{Addr: buildkitAddr}); err != nil {
@@ -463,8 +480,9 @@ func main() {
 		os.Exit(1)
 	}
 	if err := (&controller.PlatformConfigReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:     mgr.GetClient(),
+		Scheme:     mgr.GetScheme(),
+		BootConfig: stk.bootConfig,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "PlatformConfig")
 		os.Exit(1)

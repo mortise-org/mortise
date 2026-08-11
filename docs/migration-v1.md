@@ -57,6 +57,41 @@ cannot be re-created via the API.
 field (initialized to `"0"`). Changing a password increments this value
 and invalidates all tokens issued before the change.
 
+**Login rate limiting**: `/api/auth/login` is throttled per
+username-and-IP (token bucket, 5/min sustained with a burst of 10, and a
+15-minute lockout after 10 consecutive failures — a successful login
+resets the counters). Throttled requests get `429` with a `Retry-After`
+header. Automation that retries logins in a tight loop must respect
+`Retry-After` or switch to a long-lived token. Override the defaults
+with `MORTISE_LOGIN_RATE_PER_MIN`, `MORTISE_LOGIN_BURST`,
+`MORTISE_LOGIN_LOCKOUT_FAILURES`, and `MORTISE_LOGIN_LOCKOUT_MINUTES`
+on the operator Deployment.
+
+**Webhook rejections are uniform**: unauthenticated webhook deliveries
+that previously received `404 provider not found` or `403 webhook secret
+not configured` now receive the same `401 unauthorized` as a bad
+signature. The distinction still appears in the operator logs; only the
+HTTP response is uniform. Anything alerting on webhook 404/403s should
+watch for 401s instead.
+
+**Empty `providerRef` no longer matches every provider**: a git-source
+App whose `spec.source.providerRef` is empty previously accepted webhook
+events from *any* registered GitProvider. It now matches only while
+exactly **one** GitProvider is registered (the delivery necessarily came
+from it). With two or more providers registered, empty-ref apps are
+skipped — the operator logs which apps were skipped and why. If you run
+multiple GitProviders, set `spec.source.providerRef` explicitly on every
+git-source App **before** registering the second provider:
+
+```bash
+kubectl get apps -A -o json | jq -r '
+  .items[] | select(.spec.source.type == "git" and
+                    (.spec.source.providerRef // "") == "") |
+  "\(.metadata.namespace)/\(.metadata.name)"'
+```
+
+lists the apps that need it.
+
 ### SSE (server-sent events) authentication
 
 Log streams and live event feeds no longer accept a JWT in the `?token=`
