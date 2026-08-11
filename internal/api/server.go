@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"k8s.io/apimachinery/pkg/types"
@@ -49,6 +50,7 @@ type Server struct {
 	activityStore activity.Store
 	Clock         kclock.Clock
 	sseTokens     *sseTokenStore
+	loginLimiter  *loginLimiter
 	GitAPIFactory func(*mortisev1alpha1.GitProvider, string, string) (git.GitAPI, error)
 
 	// operatorNamespace/serviceAccountName identify the operator's own SA so
@@ -113,6 +115,9 @@ func NewServer(c client.Client, cs kubernetes.Interface, dc dynamic.Interface, r
 		GitAPIFactory: git.NewGitAPIFromProvider,
 	}
 	srv.sseTokens = newSSETokenStore(srv.clock())
+	// Closure (not srv.clock() directly) so a Clock injected after NewServer
+	// — the test pattern — still drives the limiter.
+	srv.loginLimiter = newLoginLimiter(func() time.Time { return srv.clock().Now() })
 	return srv
 }
 
