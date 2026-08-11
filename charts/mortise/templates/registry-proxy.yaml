@@ -16,10 +16,18 @@ spec:
       labels:
         app.kubernetes.io/name: registry-proxy
     spec:
+      {{- with .Values.registry.proxy.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: registry
           image: {{ .Values.registry.image }}
           imagePullPolicy: IfNotPresent
+          {{- with .Values.registry.proxy.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           env:
             - name: REGISTRY_HTTP_ADDR
               value: "0.0.0.0:5000"

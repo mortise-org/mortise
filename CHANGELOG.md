@@ -9,6 +9,18 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Bundled build-infra hardening** (#440, #113): the registry and its
+  node-local proxy now run with restricted-style securityContexts by
+  default (non-root, no privilege escalation, read-only rootfs, fsGroup
+  for storage); BuildKit's contexts are values-driven
+  (`buildkit.securityContext` replaces the `privileged` flag entirely,
+  enabling rootless mode). New `buildInfra.createNamespace` and
+  `systemNamespace.create` toggles cover pre-existing namespaces and
+  PSA-labeling the release namespace on fresh installs; see
+  "Namespaces and Pod Security Admission" in docs/install.md for the
+  Helm ownership caveat and kubectl fallbacks.
+
+
 - **Prometheus exposition** (obs-v2 O2): the observer serves `GET /metrics`
   (per-app CPU/memory/restarts, PVC usage, HTTP traffic counters, observer
   self-health — full set in SPEC §5.11b), and the operator's
@@ -46,6 +58,15 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `GET /binding-keys` API endpoint and BindingsPicker UI rewrite.
 
 ### Changed
+
+- **Operator memory defaults raised** (#447): `requests.memory`
+  128Mi → 512Mi and `limits.memory` 512Mi → 2Gi in both charts and the
+  kustomize manifests — the old limit OOM-killed the operator under
+  concurrent builds, terminally failing in-flight BuildRuns. The chart
+  now also derives `GOMEMLIMIT` from the container memory limit
+  automatically. Upgrading raises the operator's scheduling request;
+  see "Operator sizing" in docs/install.md.
+
 
 - **Finalizer GC now requires the `app.kubernetes.io/managed-by=mortise`
   label and is scoped to project-labelled namespaces**: resources created
