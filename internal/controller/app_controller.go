@@ -1452,8 +1452,12 @@ func isTerminalBuildFailureCondition(cond *metav1.Condition) bool {
 	if cond == nil || cond.Type != "BuildSucceeded" || cond.Status != metav1.ConditionFalse {
 		return false
 	}
+	// BuildInterrupted is deliberately absent: interruption is retryable (the
+	// BuildRun controller relaunches the build) and must not latch the app
+	// into refusing future builds. Only the exhausted-retry-budget escape
+	// (BuildRetriesExhausted) is terminal.
 	switch cond.Reason {
-	case "BuildFailed", "BuildInterrupted":
+	case "BuildFailed", "BuildRetriesExhausted":
 		return true
 	default:
 		return false

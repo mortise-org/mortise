@@ -452,6 +452,7 @@ func main() {
 	controller.NewAppPhaseCollector(mgr.GetClient())
 	if err := (&controller.BuildRunReconciler{
 		Client:          mgr.GetClient(),
+		APIReader:       mgr.GetAPIReader(),
 		Scheme:          mgr.GetScheme(),
 		BuildClient:     stk.build,
 		GitClient:       stk.git,

@@ -179,6 +179,33 @@ func (b *OCIBackend) Tags(ctx context.Context, app string) ([]string, error) {
 	return payload.Tags, nil
 }
 
+// ResolveTag reports whether app:tag exists in the registry and, if so, its
+// manifest digest. Calls HEAD /v2/<namespace>/<app>/manifests/<tag> per OCI
+// Distribution Spec §9.2.
+func (b *OCIBackend) ResolveTag(ctx context.Context, app, tag string) (string, bool, error) {
+	path := b.imagePath(app)
+	headURL := b.cfg.URL + "/v2/" + path + "/manifests/" + tag
+
+	resp, err := b.do(ctx, http.MethodHead, headURL, nil)
+	if err != nil {
+		return "", false, fmt.Errorf("resolving manifest for %s:%s: %w", app, tag, err)
+	}
+	resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return "", false, nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", false, fmt.Errorf("HEAD manifests returned %d for %s:%s", resp.StatusCode, app, tag)
+	}
+
+	digest := resp.Header.Get("Docker-Content-Digest")
+	if digest == "" {
+		digest = resp.Header.Get("Content-Digest")
+	}
+	return digest, true, nil
+}
+
 // DeleteTag deletes the manifest identified by tag from the registry.
 // OCI Distribution Spec §10.4 requires deleting by digest, so DeleteTag first
 // resolves the digest via a HEAD on the manifests endpoint, then issues
