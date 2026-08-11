@@ -339,7 +339,7 @@ ci-local: ## Run every CI gate locally — THE push gate. SKIP_INTEGRATION=1 for
 ##@ Chart Tests
 
 .PHONY: verify-chart-dependency-drift
-verify-chart-dependency-drift: ## Verify the vendored mortise-core package matches the local chart source
+verify-chart-dependency-drift: ## Verify vendored mortise-core matches source AND chart RBAC covers the generated role
 	@echo "==> Verifying vendored mortise-core package matches local chart source..."
 	@subchart_version=$$(awk -F': ' '/^version:/ {print $$2; exit}' charts/mortise-core/Chart.yaml); \
 	tgz="charts/mortise/charts/mortise-core-$${subchart_version}.tgz"; \
@@ -353,13 +353,16 @@ verify-chart-dependency-drift: ## Verify the vendored mortise-core package match
 	diff -qr charts/mortise-core/crds "$$tmpdir/mortise-core/crds"; \
 	diff -q charts/mortise-core/values.yaml "$$tmpdir/mortise-core/values.yaml"; \
 	helm template packaged-core "$$tgz" --show-only templates/rbac.yaml --namespace mortise-system > "$$rbac_manifest"; \
-	awk '/^kind:/ {kind=$$2} kind=="ClusterRole" && /^[[:space:]]*resources:/ {sub(/.*resources:/, ""); gsub(/[][",]/, " "); print}' "$$rbac_manifest" \
-		| tr -s ' ' '\n' | sed '/^$$/d' | sort -u > "$$tmpdir/clusterrole-resources.txt"; \
-	missing=""; \
-	for res in buildruns buildruns/finalizers buildruns/status; do \
-		grep -Fxq "$$res" "$$tmpdir/clusterrole-resources.txt" || missing="$$missing $$res"; \
-	done; \
-	if [ -n "$$missing" ]; then echo "missing RBAC resources in packaged subchart:$$missing" >&2; exit 1; fi
+	awk '/^kind:/ {kind=$$2} (kind=="ClusterRole" || kind=="Role") && /^[[:space:]]*resources:/ {sub(/.*resources:/, ""); gsub(/[][",]/, " "); print}' "$$rbac_manifest" \
+		| tr -s ' ' '\n' | sed '/^$$/d' | sort -u > "$$tmpdir/chart-resources.txt"; \
+	awk '/^ *resources:/{f=1;next} /^ *verbs:/{f=0} f&&/^ *- /{sub(/^ *- */,"");print}' config/rbac/role.yaml \
+		| sort -u > "$$tmpdir/generated-resources.txt"; \
+	missing=$$(comm -23 "$$tmpdir/generated-resources.txt" "$$tmpdir/chart-resources.txt" | tr '\n' ' '); \
+	if [ -n "$$(echo $$missing)" ]; then \
+		echo "chart RBAC (packaged) is missing resources the generated role grants: $$missing" >&2; \
+		echo "sync charts/mortise-core/templates/rbac.yaml with config/rbac/role.yaml and repack the vendored tgz" >&2; \
+		exit 1; \
+	fi
 
 .PHONY: test-charts
 test-charts: ## Lint and template-test both Helm charts (no cluster required)

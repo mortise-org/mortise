@@ -37,7 +37,11 @@ rules:
     resources: ["platformconfigs", "gitproviders", "previewenvironments", "projectmembers"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: ["mortise.mortise.dev"]
-    resources: ["apps/finalizers", "buildruns/finalizers"]
+    # Keep in sync with config/rbac/role.yaml (kubebuilder-generated) — the
+    # verify-chart-dependency-drift target asserts every generated resource
+    # is granted here, so a marker added in code without a chart update
+    # fails CI instead of failing finalizer writes at runtime.
+    resources: ["apps/finalizers", "buildruns/finalizers", "gitproviders/finalizers", "platformconfigs/finalizers", "previewenvironments/finalizers", "projects/finalizers"]
     verbs: ["update"]
   - apiGroups: ["mortise.mortise.dev"]
     resources: ["apps/status", "buildruns/status", "gitproviders/status", "platformconfigs/status", "previewenvironments/status", "projectmembers/status"]
@@ -54,6 +58,10 @@ rules:
   # RoleBindings — the Project controller creates one per pj-* namespace to
   # bind the SA to the namespace-scoped ClusterRole.
   # ---------------------------------------------------------------------------
+  # NOTE (self-grant caveat, #441): cluster-wide rolebindings write means the
+  # operator can bind mortise-controller-ns into ANY namespace — required for
+  # per-project namespace bootstrap. Operators who want to fence this can use
+  # OPA/Kyverno; recipes live in docs/hardening.md (mo-r6i).
   - apiGroups: ["rbac.authorization.k8s.io"]
     resources: ["rolebindings"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]

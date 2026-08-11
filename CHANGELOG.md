@@ -81,6 +81,17 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Chart ClusterRole missing three finalizer grants** (#444): the chart
+  granted `finalizers` update only for `apps` and `buildruns`, while the
+  generated role also requires it for `gitproviders`, `platformconfigs`,
+  and `previewenvironments` — on chart-based installs, controllers using
+  finalizers on those kinds (preview cleanup among them) got Forbidden.
+  The chart is synced, and `verify-chart-dependency-drift` now asserts
+  every resource in the generated `config/rbac/role.yaml` is granted by
+  the packaged chart's rendered roles, so chart-vs-code RBAC drift fails
+  CI instead of failing at runtime.
+
+
 - **Build interruption is retryable, not terminal** (#447, #290): losing a
   build tracker (e.g. an OOM-killed or restarted operator) no longer fails
   the BuildRun terminally at the second loss. The run relaunches with
