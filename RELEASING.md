@@ -29,11 +29,18 @@ That single push does everything:
 
 1. **`image` job**: builds multi-arch (`linux/amd64` + `linux/arm64`) and
    pushes `ghcr.io/mortise-org/mortise:0.1.1` plus `0.1` (major.minor) tags.
-2. **`chart` job**: stamps `version:` and `appVersion:` in both
-   `charts/mortise/Chart.yaml` and `charts/mortise-core/Chart.yaml` to
-   `0.1.1`, packages both charts, merges them into the `gh-pages` branch
-   `index.yaml`, and pushes.
-3. **`release` job**: creates a GitHub Release at `v0.1.1` with auto-
+2. **`chart-integration` job**: runs `make test-chart-integration` — the
+   full umbrella chart deployed on a real k3d cluster (PVC persistence
+   across pod restart, toggle lifecycle, standalone core, install
+   script). This is the *behavioral* pre-publish gate: the chart job
+   will not run if it fails. It pairs with the post-publish artifact
+   verification below — this proves the chart behaves before publishing;
+   that proves the published bytes are the ones this run packaged.
+3. **`chart` job** (needs image + chart-integration): stamps `version:`
+   and `appVersion:` in both `charts/mortise/Chart.yaml` and
+   `charts/mortise-core/Chart.yaml` to `0.1.1`, packages both charts,
+   merges them into the `gh-pages` branch `index.yaml`, and pushes.
+4. **`release` job**: creates a GitHub Release at `v0.1.1` with auto-
    generated release notes.
 
 Nothing else is required. Do not manually edit `Chart.yaml` version fields
