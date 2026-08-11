@@ -8,6 +8,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/retry"
 
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
 	"github.com/mortise-org/mortise/internal/authz"
@@ -133,13 +134,20 @@ func (s *Server) Deploy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.Environment != "" {
-		env := ensureEnvironment(&app, req.Environment)
-		env.Image = req.Image
-	} else {
-		app.Spec.Source.Image = req.Image
-	}
-	if err := s.client.Update(r.Context(), &app); err != nil {
+	// Re-read inside the retry so a concurrent App write doesn't surface as a
+	// user-facing 409. The participation/authz checks above stay outside.
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var fresh mortisev1alpha1.App
+		if err := s.client.Get(r.Context(), types.NamespacedName{Name: appName, Namespace: ns}, &fresh); err != nil {
+			return err
+		}
+		if req.Environment != "" {
+			ensureEnvironment(&fresh, req.Environment).Image = req.Image
+		} else {
+			fresh.Spec.Source.Image = req.Image
+		}
+		return s.client.Update(r.Context(), &fresh)
+	}); err != nil {
 		writeError(w, r, err)
 		return
 	}

@@ -8,6 +8,8 @@ import (
 	"slices"
 
 	"github.com/go-chi/chi/v5"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
@@ -145,8 +147,22 @@ func (s *Server) AddDomain(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	env.CustomDomains = append(env.CustomDomains, req.Domain)
-	if err := s.client.Update(r.Context(), app); err != nil {
+	// Re-read inside the retry so a concurrent App write (controller or
+	// another request) doesn't surface as a user-facing 409. The collision
+	// check above stays outside — a conflict on our own App doesn't change it.
+	var custom []string
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var fresh mortisev1alpha1.App
+		if err := s.client.Get(r.Context(), types.NamespacedName{Name: app.Name, Namespace: app.Namespace}, &fresh); err != nil {
+			return err
+		}
+		fenv := ensureEnvironment(&fresh, envName)
+		if !slices.Contains(fenv.CustomDomains, req.Domain) {
+			fenv.CustomDomains = append(fenv.CustomDomains, req.Domain)
+		}
+		custom = fenv.CustomDomains
+		return s.client.Update(r.Context(), &fresh)
+	}); err != nil {
 		writeError(w, r, err)
 		return
 	}
@@ -155,7 +171,7 @@ func (s *Server) AddDomain(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, domainsResponse{
 		Primary: env.Domain,
-		Custom:  env.CustomDomains,
+		Custom:  custom,
 		Auto:    autoDomain,
 	})
 }
@@ -193,14 +209,29 @@ func (s *Server) RemoveDomain(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	idx := slices.Index(env.CustomDomains, domain)
-	if idx < 0 {
+	if !slices.Contains(env.CustomDomains, domain) {
 		writeJSON(w, http.StatusNotFound, errorResponse{"domain not found"})
 		return
 	}
 
-	env.CustomDomains = slices.Delete(env.CustomDomains, idx, idx+1)
-	if err := s.client.Update(r.Context(), app); err != nil {
+	// Re-read inside the retry so a concurrent App write doesn't surface as a
+	// user-facing 409.
+	var custom []string
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var fresh mortisev1alpha1.App
+		if err := s.client.Get(r.Context(), types.NamespacedName{Name: app.Name, Namespace: app.Namespace}, &fresh); err != nil {
+			return err
+		}
+		fenv := findEnvironment(&fresh, envName)
+		if fenv == nil {
+			return nil
+		}
+		if idx := slices.Index(fenv.CustomDomains, domain); idx >= 0 {
+			fenv.CustomDomains = slices.Delete(fenv.CustomDomains, idx, idx+1)
+		}
+		custom = fenv.CustomDomains
+		return s.client.Update(r.Context(), &fresh)
+	}); err != nil {
 		writeError(w, r, err)
 		return
 	}
@@ -209,7 +240,7 @@ func (s *Server) RemoveDomain(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, domainsResponse{
 		Primary: env.Domain,
-		Custom:  env.CustomDomains,
+		Custom:  custom,
 		Auto:    statusAutoDomain(app, envName),
 	})
 }
