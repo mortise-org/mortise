@@ -297,6 +297,27 @@ set `registry.enabled: false` in your Helm values and configure
 `PlatformConfig.spec.registry` to point at your registry. The DaemonSet
 proxy is not deployed when the bundled registry is disabled.
 
+**Registry and build changes require an operator restart.** The operator
+reads `spec.registry` and `spec.build` once at startup. After editing
+them, restart it:
+
+```
+kubectl -n mortise-system rollout restart deployment/mortise
+```
+
+The PlatformConfig's status reports this state: `ConfigApplied=False`
+with reason `RestartRequired` means the running operator booted with
+different settings (or started before the PlatformConfig existed) and a
+restart is needed. `RegistryPullConfig=False` with reason
+`PullURLMissing` means `spec.registry.url` is a cluster-internal address
+(`*.svc` / `*.svc.cluster.local`) but `spec.registry.pullURL` is empty —
+kubelet cannot resolve cluster-internal DNS, so fresh deploys would fail
+to pull. Check with:
+
+```
+kubectl get platformconfig platform -o jsonpath='{.status.conditions}'
+```
+
 ## Environments
 
 Every project starts with a **production** environment. You can add more

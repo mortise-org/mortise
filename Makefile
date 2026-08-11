@@ -193,6 +193,8 @@ dev-up: build-ui ## Create k3d dev cluster with build infra, install Mortise, po
 	@echo "==> Applying dev PlatformConfig..."
 	kubectl --context $(DEV_KUBE_CONTEXT) apply -f test/dev/platform-config.yaml
 	@echo "==> Restarting operator to pick up config..."
+	# The operator consumes PlatformConfig registry/build settings once at
+	# boot (no hot reload; ConfigApplied=RestartRequired tracks drift).
 	kubectl --context $(DEV_KUBE_CONTEXT) -n mortise-system rollout restart deployment/mortise
 	kubectl --context $(DEV_KUBE_CONTEXT) -n mortise-system rollout status deployment/mortise --timeout=60s
 	@echo "==> Starting port-forward..."
@@ -506,6 +508,7 @@ dev-reload: build-ui ## Rebuild image, re-apply CRDs + chart, restart Mortise in
 		--set platformConfig.enabled=false \
 		--set cert-manager.enabled=false \
 		--set metrics-server.args='{--kubelet-insecure-tls}'
+	# Restart required: PlatformConfig registry/build settings load at boot only.
 	kubectl --context $(DEV_KUBE_CONTEXT) rollout restart deployment/mortise -n mortise-system
 	kubectl --context $(DEV_KUBE_CONTEXT) rollout status deployment/mortise -n mortise-system --timeout 60s
 	@-pkill -f "[k]ubectl port-forward.*8090" >/dev/null 2>&1

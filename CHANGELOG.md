@@ -9,6 +9,20 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **PlatformConfig misconfiguration conditions** (#449): the PlatformConfig
+  status now surfaces two problems that previously lived only in operator
+  logs. `RegistryPullConfig=False/PullURLMissing` flags a cluster-internal
+  `spec.registry.url` (`*.svc` / `*.svc.cluster.local`, precise host-suffix
+  match instead of the old substring check) with no `spec.registry.pullURL` —
+  the config shape where kubelet image pulls fail. `ConfigApplied=False/
+  RestartRequired` flags that the running operator booted with a different
+  config than the current spec, naming the drifted sections in the message
+  (or that it started before the PlatformConfig existed, on env-var
+  fallback). The env-var fallback path also warns at boot when the registry
+  URL is cluster-internal. There is still no hot reload: conditions tell
+  you when a `rollout restart deployment/mortise` is needed
+  (docs/configuration.md).
+
 - **Bundled build-infra hardening** (#440, #113): the registry and its
   node-local proxy now run with restricted-style securityContexts by
   default (non-root, no privilege escalation, read-only rootfs, fsGroup
