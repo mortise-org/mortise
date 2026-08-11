@@ -58,8 +58,10 @@ test.describe('cluster dashboard', () => {
 		await page.getByRole('button', { name: 'Refresh', exact: true }).click();
 		await expect(page.getByRole('heading', { name: 'Apps', exact: true })).toBeVisible();
 
-		// Row click-through lands on the project page.
+		// Row click-through lands on the project page. The project route may
+		// carry an env query param (added by the O4 dashboard work), so
+		// anchor on the path and tolerate a query string.
 		await row.click();
-		await expect(page).toHaveURL(new RegExp(`/projects/${project}$`));
+		await expect(page).toHaveURL(new RegExp(`/projects/${project}(\?.*)?$`));
 	});
 });
