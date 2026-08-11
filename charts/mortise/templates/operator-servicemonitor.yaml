@@ -1,0 +1,24 @@
+{{- if and (index .Values "mortise-core" "metrics" "enabled" | default true) .Values.observer.prometheus.serviceMonitor.enabled }}
+# Operator metrics (build outcomes, App phases) for kube-prometheus-stack
+# users; same toggle as the observer's ServiceMonitor.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: mortise-operator
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: mortise
+    {{- include "mortise.labels" . | nindent 4 }}
+    {{- with .Values.observer.prometheus.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mortise
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: {{ .Values.observer.prometheus.serviceMonitor.interval }}
+      honorLabels: true
+{{- end }}

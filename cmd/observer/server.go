@@ -13,12 +13,14 @@ type ObserverServer struct {
 	liveCache        *LiveMetricsCache
 	liveTrafficCache *LiveTrafficCache
 	health           *HealthTracker
+	promState        *promState
 	mux              *http.ServeMux
 }
 
-func NewObserverServer(store *Store, liveCache *LiveMetricsCache, liveTrafficCache *LiveTrafficCache, health *HealthTracker) *ObserverServer {
-	s := &ObserverServer{store: store, liveCache: liveCache, liveTrafficCache: liveTrafficCache, health: health}
+func NewObserverServer(store *Store, liveCache *LiveMetricsCache, liveTrafficCache *LiveTrafficCache, health *HealthTracker, prom *promState) *ObserverServer {
+	s := &ObserverServer{store: store, liveCache: liveCache, liveTrafficCache: liveTrafficCache, health: health, promState: prom}
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /metrics", s.handlePromMetrics)
 	mux.HandleFunc("GET /v1/metrics", s.handleMetrics)
 	mux.HandleFunc("GET /v1/metrics/live", s.handleMetricsLive)
 	mux.HandleFunc("GET /v1/logs", s.handleLogs)

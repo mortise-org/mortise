@@ -1,0 +1,28 @@
+{{- if and .Values.observer.enabled .Values.observer.prometheus.serviceMonitor.enabled }}
+# For kube-prometheus-stack (prometheus-operator) users. Off by default:
+# the ServiceMonitor CRD does not exist on clusters without the operator
+# and templating it there would break install.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: mortise-observer
+  namespace: {{ include "mortise.depsNamespace" . }}
+  labels:
+    app.kubernetes.io/name: mortise-observer
+    {{- include "mortise.labels" . | nindent 4 }}
+    {{- with .Values.observer.prometheus.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mortise-observer
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: {{ .Values.observer.prometheus.serviceMonitor.interval }}
+      # The exposition's pod label identifies the APP pod; without
+      # honorLabels Prometheus renames it exported_pod in favor of the
+      # observer's own pod, breaking per-pod queries.
+      honorLabels: true
+{{- end }}

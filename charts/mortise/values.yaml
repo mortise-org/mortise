@@ -149,6 +149,16 @@ observer:
   metricsPollInterval: 60s
   maxLogPods: 100
   trafficBucketSize: 5s
+  prometheus:
+    # prometheus.io/* scrape annotations on the observer Service. On by
+    # default — the endpoint is read-only text exposition.
+    scrapeAnnotations: true
+    # ServiceMonitor for kube-prometheus-stack users. Off by default: the
+    # CRD does not exist without prometheus-operator installed.
+    serviceMonitor:
+      enabled: false
+      interval: 30s
+      labels: {}
 
 # ---------------------------------------------------------------------------
 # PlatformConfig — auto-created default configuration

@@ -30,6 +30,7 @@ type appEnvKey struct {
 	namespace string
 	app       string
 	env       string
+	project   string
 }
 
 const maxLatencySamples = 1024
@@ -51,6 +52,7 @@ type TrafficCollector struct {
 	store        *Store
 	liveCache    *LiveTrafficCache
 	health       *HealthTracker
+	prom         *promState
 	syncInterval time.Duration
 	bucketSize   time.Duration
 	ingressNs    string
@@ -76,12 +78,13 @@ type accKey struct {
 	bucket int64
 }
 
-func NewTrafficCollector(cs kubernetes.Interface, store *Store, liveCache *LiveTrafficCache, health *HealthTracker, syncInterval, bucketSize time.Duration, ingressNs string, log *slog.Logger) *TrafficCollector {
+func NewTrafficCollector(cs kubernetes.Interface, store *Store, liveCache *LiveTrafficCache, health *HealthTracker, prom *promState, syncInterval, bucketSize time.Duration, ingressNs string, log *slog.Logger) *TrafficCollector {
 	return &TrafficCollector{
 		clientset:    cs,
 		store:        store,
 		liveCache:    liveCache,
 		health:       health,
+		prom:         prom,
 		syncInterval: syncInterval,
 		bucketSize:   bucketSize,
 		ingressNs:    ingressNs,
@@ -145,6 +148,7 @@ func (c *TrafficCollector) refreshServiceCache(ctx context.Context) {
 				namespace: ns.Name,
 				app:       svc.Labels["app.kubernetes.io/name"],
 				env:       svc.Labels["mortise.dev/environment"],
+				project:   svc.Labels["mortise.dev/project"],
 			}
 		}
 	}
@@ -325,6 +329,7 @@ func (c *TrafficCollector) flushBefore(now int64) {
 			Namespace:  key.namespace,
 			App:        key.app,
 			Env:        key.env,
+			Project:    key.project,
 			Requests:   b.requests,
 			Status2xx:  b.status2xx,
 			Status3xx:  b.status3xx,
@@ -358,6 +363,13 @@ func (c *TrafficCollector) flushBefore(now int64) {
 		return
 	}
 	c.log.Debug("traffic: flushed", "count", len(entries))
+	// Counters advance only on durable flush so a pending-retry cannot
+	// double-count.
+	if c.prom != nil {
+		for _, e := range entries {
+			c.prom.AddTraffic(e.Project, e.App, e.Env, e)
+		}
+	}
 	c.health.Record(collectorTraffic, len(entries), nil)
 }
 

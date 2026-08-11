@@ -81,6 +81,12 @@ metadata:
   labels:
     app.kubernetes.io/name: mortise-observer
     {{- include "mortise.labels" . | nindent 4 }}
+  {{- if .Values.observer.prometheus.scrapeAnnotations }}
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "9091"
+    prometheus.io/path: /metrics
+  {{- end }}
 spec:
   selector:
     app.kubernetes.io/name: mortise-observer

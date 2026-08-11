@@ -48,6 +48,7 @@ type PVCCollector struct {
 	clientset kubernetes.Interface
 	store     *Store
 	health    *HealthTracker
+	prom      *promState
 	interval  time.Duration
 	log       *slog.Logger
 	// summaryFn fetches one node's kubelet summary; a field so tests can
@@ -55,11 +56,12 @@ type PVCCollector struct {
 	summaryFn func(ctx context.Context, nodeName string) (*kubeletSummary, error)
 }
 
-func NewPVCCollector(cs kubernetes.Interface, store *Store, health *HealthTracker, interval time.Duration, log *slog.Logger) *PVCCollector {
+func NewPVCCollector(cs kubernetes.Interface, store *Store, health *HealthTracker, prom *promState, interval time.Duration, log *slog.Logger) *PVCCollector {
 	c := &PVCCollector{
 		clientset: cs,
 		store:     store,
 		health:    health,
+		prom:      prom,
 		interval:  interval,
 		log:       log,
 	}
@@ -112,7 +114,7 @@ func (c *PVCCollector) collect(ctx context.Context) {
 				if vol.PVCRef == nil {
 					continue
 				}
-				app, env := c.podAppEnv(ctx, pod.PodRef.Namespace, pod.PodRef.Name)
+				app, env, project := c.podAppEnv(ctx, pod.PodRef.Namespace, pod.PodRef.Name)
 				if app == "" {
 					continue
 				}
@@ -125,6 +127,7 @@ func (c *PVCCollector) collect(ctx context.Context) {
 					Capacity:  vol.CapacityBytes,
 					Used:      vol.UsedBytes,
 				})
+				c.prom.SetPVC(project, app, env, vol.PVCRef.Name, vol.CapacityBytes, vol.UsedBytes)
 			}
 		}
 	}
@@ -158,10 +161,10 @@ func (c *PVCCollector) nodeSummary(ctx context.Context, nodeName string) (*kubel
 // podAppEnv resolves the owning app/env labels for a pod named in a kubelet
 // summary. Cached per collect cycle would be an optimization; at the poll
 // interval and pod counts involved a direct Get is fine and always fresh.
-func (c *PVCCollector) podAppEnv(ctx context.Context, namespace, podName string) (string, string) {
+func (c *PVCCollector) podAppEnv(ctx context.Context, namespace, podName string) (string, string, string) {
 	pod, err := c.clientset.CoreV1().Pods(namespace).Get(ctx, podName, metav1.GetOptions{})
 	if err != nil {
-		return "", ""
+		return "", "", ""
 	}
-	return pod.Labels["app.kubernetes.io/name"], pod.Labels["mortise.dev/environment"]
+	return pod.Labels["app.kubernetes.io/name"], pod.Labels["mortise.dev/environment"], pod.Labels["mortise.dev/project"]
 }

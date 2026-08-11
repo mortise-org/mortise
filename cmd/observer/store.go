@@ -43,10 +43,13 @@ type LogLine struct {
 }
 
 type TrafficEntry struct {
-	Ts         int64
-	Namespace  string
-	App        string
-	Env        string
+	Ts        int64
+	Namespace string
+	App       string
+	Env       string
+	// Project is carried for the Prometheus exposition only; the traffic
+	// table keys on namespace like every other series.
+	Project    string
 	Requests   int64
 	Status2xx  int64
 	Status3xx  int64

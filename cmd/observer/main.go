@@ -64,9 +64,10 @@ func main() {
 	defer cancel()
 
 	health := NewHealthTracker(store, log)
+	prom := newPromState()
 
 	if mc != nil {
-		metricsCollector := NewMetricsCollector(cs, mc, store, liveCache, health, *pollInterval, log)
+		metricsCollector := NewMetricsCollector(cs, mc, store, liveCache, health, prom, *pollInterval, log)
 		go metricsCollector.Run(ctx)
 	}
 
@@ -74,12 +75,12 @@ func main() {
 	go logCollector.Run(ctx)
 
 	if *enableTraffic {
-		trafficCollector := NewTrafficCollector(cs, store, liveTrafficCache, health, *pollInterval, *trafficBucket, *ingressNs, log)
+		trafficCollector := NewTrafficCollector(cs, store, liveTrafficCache, health, prom, *pollInterval, *trafficBucket, *ingressNs, log)
 		go trafficCollector.Run(ctx)
 	}
 
 	if *pvcInterval > 0 {
-		pvcCollector := NewPVCCollector(cs, store, health, *pvcInterval, log)
+		pvcCollector := NewPVCCollector(cs, store, health, prom, *pvcInterval, log)
 		go pvcCollector.Run(ctx)
 	}
 
@@ -103,7 +104,7 @@ func main() {
 
 	srv := &http.Server{
 		Addr:    *listen,
-		Handler: NewObserverServer(store, liveCache, liveTrafficCache, health),
+		Handler: NewObserverServer(store, liveCache, liveTrafficCache, health, prom),
 	}
 
 	go func() {
