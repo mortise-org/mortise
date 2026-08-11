@@ -429,8 +429,56 @@ export interface PodMetricsCurrent {
 export interface MetricsHistoryResponse {
 	available: boolean;
 	pods?: PodMetricsSeries[];
+	// Gap-visibility contract (SPEC §5.11a): [bucketTs, 0|1] per step bucket.
+	// 0 = the collector did not observe this window; render as a gap, never
+	// interpolate across it.
+	coverage?: [number, number][];
 	error?: string;
 	detail?: string;
+}
+
+export interface PVCSeries {
+	name: string;
+	capacity: [number, number][];
+	used: [number, number][];
+}
+
+export interface PVCMetricsResponse {
+	available?: boolean;
+	pvcs?: PVCSeries[];
+	coverage?: [number, number][];
+}
+
+// BuildRunItem is the subset of the BuildRun CRD the timeline consumes.
+export interface BuildRunItem {
+	metadata: { name: string; creationTimestamp?: string };
+	spec?: {
+		environment?: string;
+		trigger?: string;
+	};
+	status?: {
+		phase?: string;
+		startedAt?: string;
+		finishedAt?: string;
+		image?: string;
+		digest?: string;
+		failureReason?: string;
+	};
+}
+
+export interface CollectorHealth {
+	collector: string;
+	lastTick: number;
+	lastSuccess: number;
+	lastError?: string;
+	lastErrorTime?: number;
+	itemsLastTick: number;
+}
+
+export interface ObservabilityHealthResponse {
+	available?: boolean;
+	collectors?: CollectorHealth[];
+	gauges?: Record<string, number>;
 }
 
 export interface PodMetricsSeries {

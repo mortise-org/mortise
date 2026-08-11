@@ -286,6 +286,8 @@ func (s *Server) Handler() http.Handler {
 			r.Get("/projects/{project}/apps/{app}/pods", s.handleListPods)
 			r.Get("/projects/{project}/apps/{app}/metrics/current", s.handleMetricsCurrent)
 			r.Get("/projects/{project}/apps/{app}/metrics", s.handleMetricsHistory)
+			r.Get("/projects/{project}/apps/{app}/pvc-metrics", s.handlePVCMetrics)
+			r.Get("/observability/health", s.handleObserverHealth)
 			r.Get("/projects/{project}/apps/{app}/logs/history", s.handleLogHistory)
 			r.Get("/projects/{project}/apps/{app}/traffic", s.handleTrafficHistory)
 			r.Get("/projects/{project}/apps/{app}/traffic/current", s.handleTrafficCurrent)

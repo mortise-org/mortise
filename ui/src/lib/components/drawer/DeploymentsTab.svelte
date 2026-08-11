@@ -2,8 +2,8 @@
 	import { api } from '$lib/api';
 	import { store } from '$lib/store.svelte';
 	import { appNeedsRedeploy, appPhaseForEnvironment, resolveAppEnvironment } from '$lib/types';
-	import type { App } from '$lib/types';
-	import { RotateCw } from 'lucide-svelte';
+	import type { App, BuildLogsResponse, BuildRunItem } from '$lib/types';
+	import { RotateCw, Hammer, Rocket } from 'lucide-svelte';
 
 	let {
 		project,
@@ -47,6 +47,85 @@
 			reloading = false;
 		}
 	}
+
+	let buildRuns = $state<BuildRunItem[]>([]);
+
+	// Per-run logs expand inline, fetched through the api client so the
+	// request carries the bearer token — a raw <a href> to the logs route
+	// can't authenticate (tokens live in localStorage, not cookies).
+	let expandedRun = $state<string | null>(null);
+	let runLogs = $state<Record<string, BuildLogsResponse>>({});
+	let runLogsError = $state<Record<string, string>>({});
+
+	async function toggleRunLogs(run: string) {
+		if (expandedRun === run) {
+			expandedRun = null;
+			return;
+		}
+		expandedRun = run;
+		if (runLogs[run]) return;
+		try {
+			const resp = await api.getBuildRunLogs(project, app.metadata.name, run);
+			runLogs = { ...runLogs, [run]: resp };
+		} catch (e) {
+			runLogsError = {
+				...runLogsError,
+				[run]: e instanceof Error ? e.message : 'Failed to load build logs'
+			};
+		}
+	}
+
+	$effect(() => {
+		void selectedEnv;
+		api
+			.listBuildRuns(project, app.metadata.name)
+			.then((runs) => (buildRuns = runs ?? []))
+			.catch(() => (buildRuns = []));
+	});
+
+	// Unified timeline: deploy records + build runs for the selected env,
+	// newest first. Read-only — actions stay on the current-deploy card.
+	type TimelineEntry = {
+		kind: 'deploy' | 'build';
+		ts: number;
+		title: string;
+		detail: string;
+		result: 'success' | 'failure' | 'running';
+		buildName?: string;
+	};
+
+	const timeline = $derived.by(() => {
+		const out: TimelineEntry[] = [];
+		for (const rec of envStatus?.deployHistory ?? []) {
+			out.push({
+				kind: 'deploy',
+				ts: new Date(rec.timestamp).getTime(),
+				title: shortDigest(rec.image),
+				detail: rec.gitSHA ? `git ${rec.gitSHA.slice(0, 7)}` : 'image deploy',
+				result: 'success'
+			});
+		}
+		for (const run of buildRuns) {
+			if (run.spec?.environment && run.spec.environment !== selectedEnv) continue;
+			const started = run.status?.startedAt ? new Date(run.status.startedAt).getTime() : 0;
+			const finished = run.status?.finishedAt ? new Date(run.status.finishedAt).getTime() : 0;
+			const phase = run.status?.phase ?? 'Pending';
+			const durationSec = started && finished ? Math.max(0, Math.round((finished - started) / 1000)) : null;
+			const bits: string[] = [];
+			if (run.spec?.trigger) bits.push(run.spec.trigger);
+			if (durationSec !== null) bits.push(`${durationSec}s`);
+			if (run.status?.digest) bits.push(run.status.digest.replace('sha256:', '').slice(0, 7));
+			out.push({
+				kind: 'build',
+				ts: finished || started || new Date(run.metadata.creationTimestamp ?? 0).getTime(),
+				title: phase === 'Succeeded' ? 'Build succeeded' : phase === 'Failed' ? 'Build failed' : `Build ${phase.toLowerCase()}`,
+				detail: bits.join(' · '),
+				result: phase === 'Succeeded' ? 'success' : phase === 'Failed' ? 'failure' : 'running',
+				buildName: run.metadata.name
+			});
+		}
+		return out.sort((a, b) => b.ts - a.ts).slice(0, 30);
+	});
 
 	const phaseChip: Record<string, string> = {
 		Ready: 'bg-success/10 text-success',
@@ -165,6 +244,61 @@
 			<p class="mt-1.5 text-xs text-gray-500">No deploy yet</p>
 		{/if}
 	</div>
+
+	<!-- Unified build + deploy timeline -->
+	{#if timeline.length > 0}
+		<div>
+			<h3 class="mb-2 text-xs font-medium uppercase tracking-wide text-gray-500">Timeline</h3>
+			<div class="space-y-1.5" data-testid="deploy-timeline">
+				{#each timeline as entry}
+					<div class="rounded-md bg-surface-900">
+						<div class="flex items-center gap-3 px-3 py-2">
+							{#if entry.kind === 'build'}
+								<Hammer class="h-3.5 w-3.5 shrink-0 {entry.result === 'failure' ? 'text-danger' : entry.result === 'running' ? 'text-warning' : 'text-gray-400'}" />
+							{:else}
+								<Rocket class="h-3.5 w-3.5 shrink-0 text-gray-400" />
+							{/if}
+							<div class="min-w-0 flex-1">
+								<p class="truncate text-xs {entry.result === 'failure' ? 'text-danger' : 'text-gray-300'}">
+									{entry.kind === 'deploy' ? 'Deployed ' : ''}{entry.title}
+								</p>
+								{#if entry.detail}
+									<p class="truncate text-xs text-gray-500">{entry.detail}</p>
+								{/if}
+							</div>
+							<div class="ml-3 flex shrink-0 items-center gap-3">
+								<span class="text-xs text-gray-500">{fmtTime(new Date(entry.ts).toISOString())}</span>
+								{#if entry.buildName}
+									{@const run = entry.buildName}
+									<button
+										type="button"
+										onclick={() => toggleRunLogs(run)}
+										class="text-xs text-accent hover:text-accent-hover"
+									>
+										{expandedRun === run ? 'Hide logs' : 'Logs'}
+									</button>
+								{/if}
+							</div>
+						</div>
+						{#if entry.buildName && expandedRun === entry.buildName}
+							{@const run = entry.buildName}
+							<div class="border-t border-surface-700 px-3 py-2" data-testid="run-logs">
+								{#if runLogsError[run]}
+									<p class="text-xs text-danger">{runLogsError[run]}</p>
+								{:else if !runLogs[run]}
+									<p class="text-xs text-gray-500">Loading...</p>
+								{:else if (runLogs[run].lines?.length ?? 0) === 0}
+									<p class="text-xs italic text-gray-600">No log output recorded for this run</p>
+								{:else}
+									<pre class="max-h-48 overflow-y-auto whitespace-pre-wrap break-all font-mono text-xs text-gray-300">{runLogs[run].lines.join('\n')}</pre>
+								{/if}
+							</div>
+						{/if}
+					</div>
+				{/each}
+			</div>
+		</div>
+	{/if}
 
 	<!-- Deploy history -->
 	{#if envStatus?.deployHistory && envStatus.deployHistory.length > 1}

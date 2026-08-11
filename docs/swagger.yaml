@@ -2997,6 +2997,23 @@ paths:
       summary: Change own password
       tags:
       - auth
+  /observability/health:
+    get:
+      description: Proxies the metrics adapter's per-collector self-health report
+        (last tick/success/error)
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Observability collector health
+      tags:
+      - metrics
   /platform:
     get:
       description: Returns the current PlatformConfig singleton
@@ -4652,6 +4669,60 @@ paths:
       summary: Set pull credentials for an app
       tags:
       - apps
+  /projects/{project}/apps/{app}/pvc-metrics:
+    get:
+      description: Proxies per-PVC capacity and usage series (with coverage gap markers)
+        from the metrics adapter
+      parameters:
+      - description: Project name
+        in: path
+        name: project
+        required: true
+        type: string
+      - description: App name
+        in: path
+        name: app
+        required: true
+        type: string
+      - description: Environment (defaults to the app's first env)
+        in: query
+        name: env
+        type: string
+      - description: Range start (unix seconds)
+        in: query
+        name: start
+        required: true
+        type: integer
+      - description: Range end (unix seconds)
+        in: query
+        name: end
+        required: true
+        type: integer
+      - description: Bucket size in seconds (default 300)
+        in: query
+        name: step
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.errorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/api.errorResponse'
+      security:
+      - BearerAuth: []
+      summary: Historical PVC capacity/usage series
+      tags:
+      - metrics
   /projects/{project}/apps/{app}/rebuild:
     post:
       description: Resolve the current branch head, sync mortise.dev/revision to that

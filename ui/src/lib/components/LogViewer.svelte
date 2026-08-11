@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onDestroy, tick } from 'svelte';
 	import { AuthRequiredError, api } from '$lib/api';
-	import { hashPodColor } from '$lib/pod-colors';
+	import { seriesColor } from '$lib/series-colors';
 	import LogStreamFatalBanner from '$lib/components/LogStreamFatalBanner.svelte';
 	import { isFatalLogStreamEvent, parseLogStreamEvent } from '$lib/log-stream-events';
 
@@ -40,11 +40,37 @@
 
 	const MAX_ENTRIES = 5000;
 
-	const filtered = $derived(
-		selectedPod === '' ? entries : entries.filter((e) => e.pod === selectedPod)
-	);
+	let search = $state('');
+	let selectedLevel = $state<'' | 'error' | 'warn' | 'info'>('');
+
+	// Best-effort level classification from line content: app logs are plain
+	// text with no structured level field, so this matches the common
+	// spellings and nothing more. Unmatched lines pass every level filter
+	// except when one is active (they count as unleveled).
+	function lineLevel(line: string): 'error' | 'warn' | 'info' | null {
+		if (/\b(ERROR|ERR|FATAL|PANIC|error|fatal|panic)\b/.test(line)) return 'error';
+		if (/\b(WARN|WARNING|warn|warning)\b/.test(line)) return 'warn';
+		if (/\b(INFO|info|DEBUG|debug)\b/.test(line)) return 'info';
+		return null;
+	}
+
+	const filtered = $derived.by(() => {
+		let out = selectedPod === '' ? entries : entries.filter((e) => e.pod === selectedPod);
+		if (selectedLevel !== '') out = out.filter((e) => lineLevel(e.line) === selectedLevel);
+		if (search !== '') {
+			const needle = search.toLowerCase();
+			out = out.filter((e) => e.line.toLowerCase().includes(needle));
+		}
+		return out;
+	});
 
 	const podList = $derived(Array.from(pods).sort());
+
+	// Fixed-order colors by sorted pod index — never hash-cycled, so two
+	// pods can't collide.
+	function podColor(pod: string): string {
+		return seriesColor(podList.indexOf(pod));
+	}
 
 	function clearReconnectTimer() {
 		if (reconnectTimer) {
@@ -230,8 +256,25 @@
 	<div class="mb-3 flex flex-wrap items-center justify-between gap-2">
 		<h2 class="text-sm font-medium text-gray-300">Logs</h2>
 		<div class="flex flex-wrap items-center gap-2">
+			<input
+				type="search"
+				bind:value={search}
+				placeholder="Search logs"
+				class="w-40 rounded-md border border-surface-600 bg-surface-700 px-2 py-1 text-xs text-white outline-none placeholder:text-gray-500 focus:border-accent"
+			/>
+			<select
+				bind:value={selectedLevel}
+				aria-label="Level filter"
+				class="rounded-md border border-surface-600 bg-surface-700 px-2 py-1 text-xs text-white outline-none focus:border-accent"
+			>
+				<option value="">All levels</option>
+				<option value="error">Errors</option>
+				<option value="warn">Warnings</option>
+				<option value="info">Info</option>
+			</select>
 			<select
 				bind:value={selectedPod}
+				aria-label="Pod filter"
 				class="rounded-md border border-surface-600 bg-surface-700 px-2 py-1 text-xs text-white outline-none focus:border-accent"
 			>
 				<option value="">All pods ({podList.length})</option>
@@ -289,7 +332,7 @@
 					{/if}
 					<div class="flex gap-2">
 						{#if entry.pod}
-							<span style="color: {hashPodColor(entry.pod)};" class="shrink-0 opacity-80">
+							<span style="color: {podColor(entry.pod)};" class="shrink-0 opacity-80">
 								[{entry.pod}]
 							</span>
 						{/if}

@@ -29,6 +29,9 @@ import type {
 	SharedVarEntry,
 	MetricsCurrentResponse,
 	MetricsHistoryResponse,
+	PVCMetricsResponse,
+	ObservabilityHealthResponse,
+	BuildRunItem,
 	LogHistoryResponse,
 	TrafficHistoryResponse
 } from './types';
@@ -722,6 +725,15 @@ export const api = {
 		request<MetricsHistoryResponse>(
 			`/projects/${enc(project)}/apps/${enc(app)}/metrics?env=${enc(env)}&start=${start}&end=${end}&step=${step}`
 		),
+	getPVCMetrics: (project: string, app: string, env: string, start: number, end: number, step = 300) =>
+		request<PVCMetricsResponse>(
+			`/projects/${enc(project)}/apps/${enc(app)}/pvc-metrics?env=${enc(env)}&start=${start}&end=${end}&step=${step}`
+		),
+	getObservabilityHealth: () => request<ObservabilityHealthResponse>(`/observability/health`),
+	listBuildRuns: (project: string, app: string) =>
+		request<BuildRunItem[]>(`/projects/${enc(project)}/apps/${enc(app)}/buildruns`),
+	getBuildRunLogs: (project: string, app: string, run: string) =>
+		request<BuildLogsResponse>(`/projects/${enc(project)}/apps/${enc(app)}/buildruns/${enc(run)}/logs`),
 	getLogHistory: (project: string, app: string, env: string, start: number, end: number, opts?: { limit?: number; filter?: string; before?: string }) => {
 		const params = new URLSearchParams({ env, start: String(start), end: String(end) });
 		if (opts?.limit) params.set('limit', String(opts.limit));

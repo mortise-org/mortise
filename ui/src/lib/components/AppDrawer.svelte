@@ -9,6 +9,7 @@
 	import DeployLogsTab from './drawer/DeployLogsTab.svelte';
 	import BuildLogsTab from './drawer/BuildLogsTab.svelte';
 	import MetricsTab from './drawer/MetricsTab.svelte';
+	import LogViewer from './LogViewer.svelte';
 	import SettingsTab from './drawer/SettingsTab.svelte';
 
 	let {
@@ -161,8 +162,8 @@
 	});
 
 	const tabs = $derived.by(() => {
-		const base: Array<'deployments' | 'variables' | 'deployLogs' | 'buildLogs' | 'metrics' | 'settings'> =
-			['deployments', 'variables', 'deployLogs', 'metrics', 'settings'];
+		const base: Array<'deployments' | 'variables' | 'deployLogs' | 'buildLogs' | 'logs' | 'metrics' | 'settings'> =
+			['deployments', 'variables', 'deployLogs', 'logs', 'metrics', 'settings'];
 		if (liveApp?.spec.source.type !== 'image') {
 			base.splice(3, 0, 'buildLogs');
 		}
@@ -314,6 +315,8 @@
 				<DeployLogsTab {project} app={liveApp} {livePods} />
 			{:else if store.drawerTab === 'buildLogs'}
 				<BuildLogsTab {project} app={liveApp} sseBuildLogs={liveBuildLogs} />
+			{:else if store.drawerTab === 'logs'}
+				<LogViewer {project} appName={liveApp.metadata.name} env={selectedEnv} />
 			{:else if store.drawerTab === 'metrics'}
 				<MetricsTab app={liveApp} {project} env={selectedEnv} />
 			{:else if store.drawerTab === 'settings'}
