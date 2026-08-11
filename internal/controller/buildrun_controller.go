@@ -148,6 +148,11 @@ func (r *BuildRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			}); err != nil {
 				return ctrl.Result{}, err
 			}
+			result := "success"
+			if phase != buildPhaseSucceeded {
+				result = "failure"
+			}
+			recordBuildOutcome(&br, result, now.Time)
 			if err := r.projectTerminalBuildRunStatus(ctx, &br); err != nil {
 				return ctrl.Result{}, err
 			}

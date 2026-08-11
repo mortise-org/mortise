@@ -26,17 +26,19 @@ type MetricsCollector struct {
 	store         *Store
 	liveCache     *LiveMetricsCache
 	health        *HealthTracker
+	prom          *promState
 	interval      time.Duration
 	log           *slog.Logger
 }
 
-func NewMetricsCollector(cs kubernetes.Interface, mc metricsv.Interface, store *Store, liveCache *LiveMetricsCache, health *HealthTracker, interval time.Duration, log *slog.Logger) *MetricsCollector {
+func NewMetricsCollector(cs kubernetes.Interface, mc metricsv.Interface, store *Store, liveCache *LiveMetricsCache, health *HealthTracker, prom *promState, interval time.Duration, log *slog.Logger) *MetricsCollector {
 	return &MetricsCollector{
 		clientset:     cs,
 		metricsClient: mc,
 		store:         store,
 		liveCache:     liveCache,
 		health:        health,
+		prom:          prom,
 		interval:      interval,
 		log:           log,
 	}
@@ -87,9 +89,25 @@ func (c *MetricsCollector) collect(ctx context.Context) {
 			continue
 		}
 
+		// Restart counts come from pod status, not the metrics API. A failed
+		// list only costs the restart gauge for this cycle.
+		restarts := map[string]int64{}
+		if pods, err := c.clientset.CoreV1().Pods(ns.Name).List(ctx, metav1.ListOptions{
+			LabelSelector: "app.kubernetes.io/name",
+		}); err == nil {
+			for _, pod := range pods.Items {
+				var n int64
+				for _, cs := range pod.Status.ContainerStatuses {
+					n += int64(cs.RestartCount)
+				}
+				restarts[pod.Name] = n
+			}
+		}
+
 		for _, pm := range podMetrics.Items {
 			appName := pm.Labels["app.kubernetes.io/name"]
 			envName := pm.Labels["mortise.dev/environment"]
+			projectName := pm.Labels["mortise.dev/project"]
 			if appName == "" {
 				continue
 			}
@@ -110,6 +128,7 @@ func (c *MetricsCollector) collect(ctx context.Context) {
 				CPU:       cpu,
 				Memory:    mem,
 			})
+			c.prom.SetResource(projectName, appName, envName, pm.Name, cpu, mem, restarts[pm.Name])
 		}
 	}
 

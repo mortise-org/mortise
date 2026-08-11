@@ -1146,6 +1146,47 @@ Observer HTTP endpoints (served at the adapter base URL):
 collector observed (even if it found nothing), `[bucketTs, 0]` one it did not.
 Consumers render 0-buckets as gaps and never interpolate across them.
 
+#### 5.11b Prometheus exposition (public API)
+
+Everything the built-in dashboard shows is scrapeable. Two endpoints, both
+text exposition format; the metric names below are a compatibility contract.
+
+**Observer `GET /metrics`** (port 9091; Service ships `prometheus.io/*`
+scrape annotations by default, plus an optional ServiceMonitor via
+`observer.prometheus.serviceMonitor.enabled`):
+
+| Metric | Type | Labels |
+|---|---|---|
+| `mortise_app_cpu_cores` | gauge | project, app, environment, pod |
+| `mortise_app_memory_bytes` | gauge | project, app, environment, pod |
+| `mortise_app_pod_restarts_total` | counter | project, app, environment, pod |
+| `mortise_app_pvc_capacity_bytes` | gauge | project, app, environment, pvc |
+| `mortise_app_pvc_used_bytes` | gauge | project, app, environment, pvc |
+| `mortise_app_http_requests_total` | counter | project, app, environment |
+| `mortise_app_http_responses_total` | counter | project, app, environment, class |
+| `mortise_app_http_request_bytes_total` | counter | project, app, environment |
+| `mortise_app_http_response_bytes_total` | counter | project, app, environment |
+| `mortise_app_http_latency_seconds` | gauge (latest bucket) | project, app, environment, quantile |
+| `mortise_observer_collector_up` | gauge | collector |
+| `mortise_observer_collector_last_success_timestamp_seconds` | gauge | collector |
+| `mortise_observer_log_tailers` / `_skipped` | gauge | — |
+| `mortise_observer_log_lines_dropped_total` | counter | — |
+
+Counters reset on observer restart (normal Prometheus semantics). Series
+for deleted pods/PVCs age out of the exposition within ~5 minutes.
+
+**Operator `GET /metrics`** (controller-runtime endpoint) additionally
+exports control-plane facts the observer cannot see:
+
+| Metric | Type | Labels |
+|---|---|---|
+| `mortise_builds_total` | counter | project, app, result |
+| `mortise_build_duration_seconds` | histogram | project, app, result |
+| `mortise_app_status_phase` | gauge (1 per app) | project, app, phase |
+
+See `docs/recipes/grafana.md` for scrape configs and an import-ready
+dashboard.
+
 The observer is wired in via `PlatformConfig.spec.observability`:
 `metricsAdapterEndpoint`, `logsAdapterEndpoint`, `trafficAdapterEndpoint`.
 When those are unset, the operator defaults to the in-cluster observer URL

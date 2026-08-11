@@ -54,7 +54,7 @@ func TestMetricsCollectorRecordsFailedTickOnNamespaceListError(t *testing.T) {
 	mc := metricsfake.NewSimpleClientset()
 	store := newTestStore(t)
 
-	collector := NewMetricsCollector(cs, mc, store, NewLiveMetricsCache(time.Hour), NewHealthTracker(store, discardLogger()), time.Minute, discardLogger())
+	collector := NewMetricsCollector(cs, mc, store, NewLiveMetricsCache(time.Hour), NewHealthTracker(store, discardLogger()), newPromState(), time.Minute, discardLogger())
 	collector.collect(context.Background())
 
 	tick := lastTick(t, store, collectorMetrics)
@@ -76,7 +76,7 @@ func TestMetricsCollectorRecordsObservedEmptyTick(t *testing.T) {
 	mc := metricsfake.NewSimpleClientset()
 	store := newTestStore(t)
 
-	collector := NewMetricsCollector(cs, mc, store, NewLiveMetricsCache(time.Hour), NewHealthTracker(store, discardLogger()), time.Minute, discardLogger())
+	collector := NewMetricsCollector(cs, mc, store, NewLiveMetricsCache(time.Hour), NewHealthTracker(store, discardLogger()), newPromState(), time.Minute, discardLogger())
 	collector.collect(context.Background())
 
 	tick := lastTick(t, store, collectorMetrics)
@@ -162,7 +162,7 @@ func TestLogTailerResumesFromStoredCursor(t *testing.T) {
 func TestTrafficFlushRetainsBatchOnInsertFailure(t *testing.T) {
 	store := newTestStore(t)
 	cs := fake.NewClientset()
-	tc := NewTrafficCollector(cs, store, NewLiveTrafficCache(time.Hour), NewHealthTracker(store, discardLogger()), time.Minute, 5*time.Second, "mortise-deps", discardLogger())
+	tc := NewTrafficCollector(cs, store, NewLiveTrafficCache(time.Hour), NewHealthTracker(store, discardLogger()), newPromState(), time.Minute, 5*time.Second, "mortise-deps", discardLogger())
 
 	// Accumulate one closed bucket, then break the store by closing it.
 	key := accKey{appEnvKey: appEnvKey{namespace: "pj-d-prod", app: "web", env: "prod"}, bucket: 0}
@@ -273,7 +273,7 @@ func TestPVCCollectorDegradesGracefully(t *testing.T) {
 		&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "node-1"}},
 	)
 	store := newTestStore(t)
-	c := NewPVCCollector(cs, store, NewHealthTracker(store, discardLogger()), time.Minute, discardLogger())
+	c := NewPVCCollector(cs, store, NewHealthTracker(store, discardLogger()), newPromState(), time.Minute, discardLogger())
 	c.summaryFn = func(context.Context, string) (*kubeletSummary, error) {
 		return nil, errors.New("nodes/proxy blocked")
 	}
@@ -299,7 +299,7 @@ func TestPVCCollectorStoresLabeledSeries(t *testing.T) {
 		}},
 	)
 	store := newTestStore(t)
-	c := NewPVCCollector(cs, store, NewHealthTracker(store, discardLogger()), time.Minute, discardLogger())
+	c := NewPVCCollector(cs, store, NewHealthTracker(store, discardLogger()), newPromState(), time.Minute, discardLogger())
 	c.summaryFn = func(context.Context, string) (*kubeletSummary, error) {
 		var s kubeletSummary
 		s.Pods = make([]kubeletSummaryPod, 1)

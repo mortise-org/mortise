@@ -447,6 +447,9 @@ func main() {
 		setupLog.Error(err, "Failed to create controller", "controller", "App")
 		os.Exit(1)
 	}
+	// App phase gauge on the operator /metrics endpoint (SPEC §5.11b);
+	// backed by the manager cache so scrapes cost no apiserver calls.
+	controller.NewAppPhaseCollector(mgr.GetClient())
 	if err := (&controller.BuildRunReconciler{
 		Client:          mgr.GetClient(),
 		Scheme:          mgr.GetScheme(),

@@ -29,8 +29,20 @@ spec:
             - name: api
               containerPort: {{ .Values.api.port }}
               protocol: TCP
+            {{- if .Values.metrics.enabled }}
+            - name: metrics
+              containerPort: {{ .Values.metrics.port }}
+              protocol: TCP
+            {{- end }}
           args:
             - --api-bind-address=:{{ .Values.api.port }}
+            {{- if .Values.metrics.enabled }}
+            - --metrics-bind-address=:{{ .Values.metrics.port }}
+            # Plain HTTP like the observer: cluster-internal, read-only
+            # telemetry; secure serving would force every scraper through
+            # kube-rbac authn.
+            - --metrics-secure=false
+            {{- end }}
           env:
             - name: POD_NAMESPACE
               valueFrom:

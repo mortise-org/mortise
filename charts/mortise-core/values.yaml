@@ -16,6 +16,12 @@ operator:
   # Leave unset to let Kubernetes choose the default behavior.
   tmpSizeLimit: null
 
+metrics:
+  # Prometheus text exposition on the operator (build outcomes, App
+  # phases). Plain HTTP, cluster-internal, read-only.
+  enabled: true
+  port: 8080
+
 service:
   type: ClusterIP
   port: 80
