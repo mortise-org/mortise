@@ -167,7 +167,9 @@ type AppUsage struct {
 // LatestByApp aggregates each series' most recent point (no older than
 // staleCutoff) per app-env: the cluster-wide "what is everything using right
 // now" view. Pods whose series went stale simply drop out — absence over
-// interpolation, same contract as everything else here.
+// interpolation, same contract as everything else here. "Most recent" is
+// points[len-1]: collectors append in time order by construction (every
+// cycle stamps time.Now), so append order IS time order.
 func (c *LiveMetricsCache) LatestByApp(staleCutoff int64) []AppUsage {
 	if c == nil {
 		return nil
