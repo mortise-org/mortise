@@ -103,6 +103,14 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Picker-added variables now render immediately** (mo-baq): a variable
+  added via the bindings/secret picker was written to the App spec but
+  frequently did not appear in the variables table until the drawer was
+  reopened — the single post-save refetch races the controller reconcile
+  that materializes the resolved env Secret (`GET /env` reads that Secret,
+  not the spec), and nothing refetched the section afterwards. The UI now
+  seeds the saved row locally (`ref → key` display, `binding`/`secret`
+  badge); a later fetch supplies the resolved value.
 - **Chart ClusterRole missing three finalizer grants** (#444): the chart
   granted `finalizers` update only for `apps` and `buildruns`, while the
   generated role also requires it for `gitproviders`, `platformconfigs`,

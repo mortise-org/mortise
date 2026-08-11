@@ -161,6 +161,18 @@
 		}
 	}
 
+	// GET /env reads the resolved {app}-env Secret, which the controller only
+	// rewrites on its next reconcile of the spec change we just PUT — so the
+	// single refetch after a picker save can land before the new var exists
+	// server-side, and nothing refetches the section again. Guarantee the row
+	// the user just saved renders; a later fetch supplies the resolved value.
+	function ensureEnvEntry(entry: EnvEntry) {
+		if (envSection.entries.some((e) => e.name === entry.name)) return;
+		const byName = (a: EnvEntry, b: EnvEntry) => a.name.localeCompare(b.name);
+		envSection.entries = [...envSection.entries, entry].sort(byName);
+		envSection.originalEntries = [...envSection.originalEntries, { ...entry }].sort(byName);
+	}
+
 	async function loadShared() {
 		sharedSection.loading = true;
 		sharedSection.error = '';
@@ -263,6 +275,7 @@
 			envSection.newValue = '';
 			markStale();
 			await loadEnv(activeEnv);
+			ensureEnvEntry({ name: varName, value: '', source: 'binding', revealed: false, bindingRef: ref, bindingKey: key });
 		} catch (e) {
 			envSection.error = e instanceof Error ? e.message : 'Failed to add binding var';
 		} finally {
@@ -291,6 +304,7 @@
 			envSection.newValue = '';
 			markStale();
 			await loadEnv(activeEnv);
+			ensureEnvEntry({ name: varName, value: '', source: 'user', revealed: false, secretRef: secretName });
 		} catch (e) {
 			envSection.error = e instanceof Error ? e.message : 'Failed to add secret ref var';
 		} finally {
