@@ -9,6 +9,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	appsv1 "k8s.io/api/apps/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
@@ -163,19 +164,7 @@ func (s *Server) Redeploy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.client.Get(r.Context(), types.NamespacedName{Name: appName, Namespace: ns}, app); err != nil {
-		writeError(w, r, err)
-		return
-	}
-
-	app.Status.Phase = mortisev1alpha1.AppPhaseDeploying
-	for i := range app.Status.Environments {
-		if app.Status.Environments[i].Name == env {
-			app.Status.Environments[i].Phase = mortisev1alpha1.AppPhaseDeploying
-			break
-		}
-	}
-	if err := s.client.Status().Update(r.Context(), app); err != nil {
+	if err := s.setEnvsDeploying(r.Context(), ns, appName, map[string]bool{env: true}); err != nil {
 		writeError(w, r, err)
 		return
 	}
@@ -246,21 +235,11 @@ func (s *Server) RedeployStale(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if len(restarted) > 0 {
-		if err := s.client.Get(r.Context(), types.NamespacedName{Name: appName, Namespace: ns}, &app); err != nil {
-			writeError(w, r, err)
-			return
-		}
-		app.Status.Phase = mortisev1alpha1.AppPhaseDeploying
 		restartedSet := make(map[string]bool, len(restarted))
 		for _, name := range restarted {
 			restartedSet[name] = true
 		}
-		for i := range app.Status.Environments {
-			if restartedSet[app.Status.Environments[i].Name] {
-				app.Status.Environments[i].Phase = mortisev1alpha1.AppPhaseDeploying
-			}
-		}
-		if err := s.client.Status().Update(r.Context(), &app); err != nil {
+		if err := s.setEnvsDeploying(r.Context(), ns, appName, restartedSet); err != nil {
 			writeError(w, r, err)
 			return
 		}
@@ -283,18 +262,43 @@ func envStatusPendingHash(envStatuses []mortisev1alpha1.EnvironmentStatus, envNa
 	return ""
 }
 
+// restartDeployment stamps the rollout annotations that trigger a redeploy.
+// The app controller concurrently writes env-hash/rollout stamps to the same
+// Deployment, so the Get→mutate→Update runs inside RetryOnConflict — otherwise
+// a controller write between our Get and Update surfaces as a user-facing 409.
 func restartDeployment(ctx context.Context, c client.Client, namespace, appName, pendingEnvHash string, now time.Time) error {
-	var dep appsv1.Deployment
-	if err := c.Get(ctx, types.NamespacedName{Name: appName, Namespace: namespace}, &dep); err != nil {
-		return err
-	}
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var dep appsv1.Deployment
+		if err := c.Get(ctx, types.NamespacedName{Name: appName, Namespace: namespace}, &dep); err != nil {
+			return err
+		}
 
-	if dep.Spec.Template.Annotations == nil {
-		dep.Spec.Template.Annotations = make(map[string]string)
-	}
-	dep.Spec.Template.Annotations["mortise.dev/restartedAt"] = fmt.Sprintf("%d", now.UnixMilli())
-	if pendingEnvHash != "" {
-		dep.Spec.Template.Annotations["mortise.dev/env-hash"] = pendingEnvHash
-	}
-	return c.Update(ctx, &dep)
+		if dep.Spec.Template.Annotations == nil {
+			dep.Spec.Template.Annotations = make(map[string]string)
+		}
+		dep.Spec.Template.Annotations["mortise.dev/restartedAt"] = fmt.Sprintf("%d", now.UnixMilli())
+		if pendingEnvHash != "" {
+			dep.Spec.Template.Annotations["mortise.dev/env-hash"] = pendingEnvHash
+		}
+		return c.Update(ctx, &dep)
+	})
+}
+
+// setEnvsDeploying marks the App and the named environments as Deploying,
+// re-reading inside a conflict-retry loop so a concurrent controller status
+// write doesn't surface as a user-facing 409.
+func (s *Server) setEnvsDeploying(ctx context.Context, ns, appName string, envs map[string]bool) error {
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var app mortisev1alpha1.App
+		if err := s.client.Get(ctx, types.NamespacedName{Name: appName, Namespace: ns}, &app); err != nil {
+			return err
+		}
+		app.Status.Phase = mortisev1alpha1.AppPhaseDeploying
+		for i := range app.Status.Environments {
+			if envs[app.Status.Environments[i].Name] {
+				app.Status.Environments[i].Phase = mortisev1alpha1.AppPhaseDeploying
+			}
+		}
+		return s.client.Status().Update(ctx, &app)
+	})
 }
