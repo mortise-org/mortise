@@ -111,6 +111,15 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   not the spec), and nothing refetched the section afterwards. The UI now
   seeds the saved row locally (`ref → key` display, `binding`/`secret`
   badge); a later fetch supplies the resolved value.
+- **Spurious 409s from App-mutating REST handlers under load** (mo-e4y):
+  handlers that did read→modify→write on an App or its Deployment without
+  a conflict retry surfaced controller-write races as raw HTTP 409s — a
+  user clicking Redeploy (or adding a domain, setting build args, etc.)
+  during normal controller activity could get a spurious failure. The
+  Redeploy/RedeployStale, AddDomain/RemoveDomain, deploy, build-args, and
+  pull-credential handlers now wrap their writes in
+  `retry.RetryOnConflict` with the Get inside the closure, matching the
+  house pattern already used by rollback and app update.
 - **Chart ClusterRole missing three finalizer grants** (#444): the chart
   granted `finalizers` update only for `apps` and `buildruns`, while the
   generated role also requires it for `gitproviders`, `platformconfigs`,

@@ -5,6 +5,8 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/retry"
 
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
 	"github.com/mortise-org/mortise/internal/authz"
@@ -88,10 +90,20 @@ func (s *Server) PutBuildArgs(w http.ResponseWriter, r *http.Request) {
 		args[v.Name] = v.Value
 	}
 
-	env := ensureEnvironment(app, envName)
-	env.BuildArgs = args
-
-	if err := s.client.Update(r.Context(), app); err != nil {
+	// Re-read inside the retry so a concurrent App write (controller or
+	// another request) doesn't surface as a user-facing 409.
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var fresh mortisev1alpha1.App
+		if err := s.client.Get(r.Context(), types.NamespacedName{Name: app.Name, Namespace: app.Namespace}, &fresh); err != nil {
+			return err
+		}
+		ensureEnvironment(&fresh, envName).BuildArgs = args
+		if err := s.client.Update(r.Context(), &fresh); err != nil {
+			return err
+		}
+		*app = fresh
+		return nil
+	}); err != nil {
 		writeError(w, r, err)
 		return
 	}
