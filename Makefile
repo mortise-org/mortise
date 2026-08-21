@@ -47,41 +47,6 @@ manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and Cust
 	"$(CONTROLLER_GEN)" rbac:roleName=manager-role crd webhook paths="./..." output:crd:artifacts:config=config/crd/bases output:webhook:dir=config/webhook
 	# Sync generated CRDs into the Helm chart so `helm install` ships the real schema.
 	cp config/crd/bases/*.yaml charts/mortise-core/crds/
-	@echo "==> CRDs regenerated. If charts/mortise-core/crds changed, run 'make vendor-chart'."
-
-.PHONY: vendor-chart
-vendor-chart: ## Repack mortise-core into the umbrella chart's vendored subchart (run after changing CRDs).
-	@command -v helm >/dev/null 2>&1 || { \
-		echo "helm not found: cannot repack the vendored mortise-core subchart." >&2; \
-		exit 1; \
-	}
-	@helm package charts/mortise-core -d charts/mortise/charts/ >/dev/null
-	@echo "==> Repacked charts/mortise/charts/mortise-core-*.tgz — commit it."
-
-.PHONY: verify-chart-crds
-verify-chart-crds: ## Fast check that the vendored subchart's CRDs match source (no helm required).
-	@# The umbrella chart vendors a packaged mortise-core. Regenerating CRDs
-	@# updates the chart source but not the vendored copy, and nothing local
-	@# caught the difference -- which left main red for an hour. This is the
-	@# cheap half of verify-chart-dependency-drift: CRDs only, tar and diff, no
-	@# helm, fast enough to belong in `make test`. The full check still runs in
-	@# `make test-charts`.
-	@subchart_version=$$(awk -F': ' '/^version:/ {print $$2; exit}' charts/mortise-core/Chart.yaml); \
-	tgz="charts/mortise/charts/mortise-core-$${subchart_version}.tgz"; \
-	if [ ! -f "$$tgz" ]; then echo "missing vendored subchart $$tgz — run 'make vendor-chart'" >&2; exit 1; fi; \
-	tmpdir=$$(mktemp -d); \
-	trap 'rm -rf "$$tmpdir"' EXIT; \
-	tar -xzf "$$tgz" -C "$$tmpdir" 2>/dev/null; \
-	if ! diff -qr charts/mortise-core/crds "$$tmpdir/mortise-core/crds" >/dev/null; then \
-		echo "" >&2; \
-		echo "The vendored mortise-core subchart is out of date with charts/mortise-core/crds." >&2; \
-		echo "This is what CI's verify-chart-dependency-drift will fail on." >&2; \
-		echo "Fix: make vendor-chart && git add charts/mortise/charts/" >&2; \
-		echo "" >&2; \
-		diff -qr charts/mortise-core/crds "$$tmpdir/mortise-core/crds" >&2 || true; \
-		exit 1; \
-	fi
-
 .PHONY: generate
 generate: controller-gen generate-api ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
 	"$(CONTROLLER_GEN)" object:headerFile="hack/boilerplate.go.txt" paths="./..."
@@ -100,7 +65,7 @@ vet: ## Run go vet against code.
 	go vet ./...
 
 .PHONY: test
-test: manifests generate fmt vet setup-envtest check-ui verify-chart-crds ## Run tests.
+test: manifests generate fmt vet setup-envtest check-ui ## Run tests.
 	KUBEBUILDER_ASSETS="$(shell "$(ENVTEST)" use $(ENVTEST_K8S_VERSION) --bin-dir "$(LOCALBIN)" -p path)" go test $$(go list ./... | grep -v /e2e) -coverprofile cover.out
 
 .PHONY: check-ui
@@ -374,29 +339,25 @@ ci-local: ## Run every CI gate locally — THE push gate. SKIP_INTEGRATION=1 for
 
 ##@ Chart Tests
 
-.PHONY: verify-chart-dependency-drift
-verify-chart-dependency-drift: ## Verify vendored mortise-core matches source AND chart RBAC covers the generated role
-	@echo "==> Verifying vendored mortise-core package matches local chart source..."
-	@subchart_version=$$(awk -F': ' '/^version:/ {print $$2; exit}' charts/mortise-core/Chart.yaml); \
-	tgz="charts/mortise/charts/mortise-core-$${subchart_version}.tgz"; \
-	tmpdir=$$(mktemp -d); \
+.PHONY: verify-chart-rbac
+verify-chart-rbac: ## Verify the chart's RBAC covers every resource the generated role grants
+	@# Was verify-chart-dependency-drift, which also diffed the vendored
+	@# mortise-core tgz against chart source. That comparison only existed
+	@# because the tgz was committed; it is now generated from source on every
+	@# build, so the drift it guarded against cannot occur.
+	@echo "==> Verifying chart RBAC covers the generated role..."
+	@tmpdir=$$(mktemp -d); \
 	rbac_manifest="$$tmpdir/rbac.yaml"; \
 	trap 'rm -rf "$$tmpdir"' EXIT; \
-	test -f "$$tgz"; \
-	tar -xzf "$$tgz" -C "$$tmpdir"; \
-	diff -u <(helm show chart charts/mortise-core) <(helm show chart "$$tgz"); \
-	diff -qr charts/mortise-core/templates "$$tmpdir/mortise-core/templates"; \
-	diff -qr charts/mortise-core/crds "$$tmpdir/mortise-core/crds"; \
-	diff -q charts/mortise-core/values.yaml "$$tmpdir/mortise-core/values.yaml"; \
-	helm template packaged-core "$$tgz" --show-only templates/rbac.yaml --namespace mortise-system > "$$rbac_manifest"; \
+	helm template packaged-core charts/mortise-core --show-only templates/rbac.yaml --namespace mortise-system > "$$rbac_manifest"; \
 	awk '/^kind:/ {kind=$$2} (kind=="ClusterRole" || kind=="Role") && /^[[:space:]]*resources:/ {sub(/.*resources:/, ""); gsub(/[][",]/, " "); print}' "$$rbac_manifest" \
 		| tr -s ' ' '\n' | sed '/^$$/d' | sort -u > "$$tmpdir/chart-resources.txt"; \
 	awk '/^ *resources:/{f=1;next} /^ *verbs:/{f=0} f&&/^ *- /{sub(/^ *- */,"");print}' config/rbac/role.yaml \
 		| sort -u > "$$tmpdir/generated-resources.txt"; \
 	missing=$$(comm -23 "$$tmpdir/generated-resources.txt" "$$tmpdir/chart-resources.txt" | tr '\n' ' '); \
 	if [ -n "$$(echo $$missing)" ]; then \
-		echo "chart RBAC (packaged) is missing resources the generated role grants: $$missing" >&2; \
-		echo "sync charts/mortise-core/templates/rbac.yaml with config/rbac/role.yaml and repack the vendored tgz" >&2; \
+		echo "chart RBAC is missing resources the generated role grants: $$missing" >&2; \
+		echo "sync charts/mortise-core/templates/rbac.yaml with config/rbac/role.yaml" >&2; \
 		exit 1; \
 	fi
 
@@ -405,7 +366,11 @@ test-charts: ## Lint and template-test both Helm charts (no cluster required)
 	@echo "==> Linting mortise-core..."
 	helm lint charts/mortise-core
 	@echo "==> Linting mortise (umbrella)..."
-	$(MAKE) verify-chart-dependency-drift
+	$(MAKE) verify-chart-rbac
+	@# Remove any locally-built subchart so `helm dependency build` repackages
+	@# it from source. Without this a stale tgz in a working tree is linted
+	@# instead of the current chart.
+	rm -f charts/mortise/charts/mortise-core-*.tgz
 	helm dependency build charts/mortise
 	helm lint charts/mortise
 	@echo "==> Template: umbrella defaults (all enabled, PVC storage)..."
