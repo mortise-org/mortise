@@ -4276,17 +4276,24 @@ func normalizeStructPointers(v reflect.Value) {
 
 func (r *AppReconciler) effectiveResources(ctx context.Context, env *mortisev1alpha1.Environment) mortisev1alpha1.ResourceRequirements {
 	res := env.Resources
-	if res.CPU == "" && res.Memory == "" {
+	// Take the whole platform default, limits included. Copying only CPU and
+	// Memory meant a cpuLimit/memoryLimit set on PlatformConfig validated,
+	// stored, and was silently dropped.
+	if res.CPU == "" && res.Memory == "" && res.CPULimit == "" && res.MemoryLimit == "" {
 		var pc mortisev1alpha1.PlatformConfig
 		if err := r.Get(ctx, types.NamespacedName{Name: "platform"}, &pc); err == nil {
-			res.CPU = pc.Spec.Defaults.Resources.CPU
-			res.Memory = pc.Spec.Defaults.Resources.Memory
+			res = pc.Spec.Defaults.Resources
 		}
 	}
-	if res.CPU == "" {
+	// Only default the reservation when nothing was said about this resource
+	// at all. Someone who sets just a limit means "cap it here", and injecting
+	// a 100m request under a 50m limit turns that into a validation error
+	// about a request they never wrote. With no request, Kubernetes defaults
+	// it to the limit, which is what they meant.
+	if res.CPU == "" && res.CPULimit == "" {
 		res.CPU = "100m"
 	}
-	if res.Memory == "" {
+	if res.Memory == "" && res.MemoryLimit == "" {
 		res.Memory = "256Mi"
 	}
 	return res

@@ -9609,3 +9609,85 @@ var _ = Describe("a secretRef that breaks after resolving (CAI-162 follow-up)", 
 		}
 	})
 })
+
+var _ = Describe("effectiveResources with limits (CAI-163 follow-up)", func() {
+	const namespace = "pj-default-project"
+	ctx := context.Background()
+
+	newReconciler := func(objs ...client.Object) *AppReconciler {
+		scheme := k8sClient.Scheme()
+		b := fake.NewClientBuilder().WithScheme(scheme)
+		if len(objs) > 0 {
+			b = b.WithObjects(objs...)
+		}
+		return &AppReconciler{Client: b.Build(), Scheme: scheme}
+	}
+
+	platformWith := func(res mortisev1alpha1.ResourceRequirements) *mortisev1alpha1.PlatformConfig {
+		return &mortisev1alpha1.PlatformConfig{
+			ObjectMeta: metav1.ObjectMeta{Name: "platform"},
+			Spec: mortisev1alpha1.PlatformConfigSpec{
+				Defaults: mortisev1alpha1.DefaultsConfig{Resources: res},
+			},
+		}
+	}
+
+	// The field is in the CRD schema, so it validates and stores. Dropping it
+	// on the floor is the platform accepting configuration and ignoring it.
+	It("carries platform default limits, not just requests", func() {
+		r := newReconciler(platformWith(mortisev1alpha1.ResourceRequirements{
+			CPU: "200m", CPULimit: "800m",
+			Memory: "512Mi", MemoryLimit: "2Gi",
+		}))
+		got := r.effectiveResources(ctx, &mortisev1alpha1.Environment{Name: "production"})
+		Expect(got.CPU).To(Equal("200m"))
+		Expect(got.CPULimit).To(Equal("800m"), "platform cpuLimit was silently dropped")
+		Expect(got.Memory).To(Equal("512Mi"))
+		Expect(got.MemoryLimit).To(Equal("2Gi"), "platform memoryLimit was silently dropped")
+	})
+
+	It("lets an env override win over the platform default", func() {
+		r := newReconciler(platformWith(mortisev1alpha1.ResourceRequirements{CPU: "200m"}))
+		got := r.effectiveResources(ctx, &mortisev1alpha1.Environment{
+			Name:      "production",
+			Resources: mortisev1alpha1.ResourceRequirements{CPU: "50m"},
+		})
+		Expect(got.CPU).To(Equal("50m"))
+	})
+
+	// Someone setting only a limit means "cap it here". Injecting the 100m
+	// default request under a 50m limit made that a validation error about a
+	// request they never wrote -- and "memory means cap" is exactly the wrong
+	// mental model CAI-163 exists to correct, so this is the likely mistake.
+	It("does not inject a default request under a lower explicit limit", func() {
+		r := newReconciler()
+		got := r.effectiveResources(ctx, &mortisev1alpha1.Environment{
+			Name:      "production",
+			Resources: mortisev1alpha1.ResourceRequirements{CPULimit: "50m"},
+		})
+		Expect(got.CPU).To(BeEmpty(), "a default request was injected above the explicit limit")
+		Expect(got.CPULimit).To(Equal("50m"))
+
+		req, err := toResourceRequirements(got)
+		Expect(err).NotTo(HaveOccurred(), "the limit-only case must not fail validation")
+		Expect(req.Limits.Cpu().String()).To(Equal("50m"))
+	})
+
+	It("still defaults both when nothing is specified", func() {
+		r := newReconciler()
+		got := r.effectiveResources(ctx, &mortisev1alpha1.Environment{Name: "production"})
+		Expect(got.CPU).To(Equal("100m"))
+		Expect(got.Memory).To(Equal("256Mi"))
+	})
+
+	It("defaults the unmentioned resource only", func() {
+		r := newReconciler()
+		got := r.effectiveResources(ctx, &mortisev1alpha1.Environment{
+			Name:      "production",
+			Resources: mortisev1alpha1.ResourceRequirements{MemoryLimit: "1Gi"},
+		})
+		Expect(got.CPU).To(Equal("100m"), "cpu was unmentioned and should still default")
+		Expect(got.Memory).To(BeEmpty())
+		Expect(got.MemoryLimit).To(Equal("1Gi"))
+	})
+})
