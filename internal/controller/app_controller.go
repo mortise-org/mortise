@@ -209,8 +209,15 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	// Strip plaintext literals out of the client-side-apply snapshot. Placed
 	// after the deletion path: an App on its way out is not worth writing to,
 	// and the write would race finalizer removal (CAI-151).
+	//
+	// Logged rather than returned. This is a hygiene write on an annotation
+	// nothing else reads, and it goes through the same validating webhook as
+	// any other App update -- so returning the error would let an unavailable
+	// webhook, or an App whose parent Project is momentarily unresolvable,
+	// block the deploy AND the status pass that exists precisely to keep
+	// reporting during that state.
 	if err := r.redactAppLastApplied(ctx, req.NamespacedName); err != nil {
-		return ctrl.Result{}, fmt.Errorf("redact last-applied-configuration: %w", err)
+		log.Error(err, "could not redact last-applied-configuration; continuing")
 	}
 
 	if controllerutil.AddFinalizer(&app, appFinalizer) {
