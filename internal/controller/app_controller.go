@@ -1583,6 +1583,31 @@ func (r *AppReconciler) reconcileResolvedEnvSecrets(ctx context.Context, app *mo
 	return ctrl.Result{}, nil
 }
 
+// restartMarkerAnnotations are pod-template annotations that mean "roll this
+// workload", and must survive the reconciler rebuilding the template from
+// desired state.
+//
+// mortise.dev/restartedAt is written by the API's redeploy path.
+// kubectl.kubernetes.io/restartedAt is what `kubectl rollout restart` writes --
+// the standard Kubernetes verb for the same intent. Dropping it made the
+// operator silently revert a rollout the user had asked for and kubectl had
+// reported as done (CAI-152).
+var restartMarkerAnnotations = []string{
+	"mortise.dev/restartedAt",
+	"kubectl.kubernetes.io/restartedAt",
+}
+
+// carryRestartMarkers copies any restart markers present on the live pod
+// template onto the desired annotations.
+func carryRestartMarkers(desired, existing map[string]string) map[string]string {
+	for _, key := range restartMarkerAnnotations {
+		if v, ok := existing[key]; ok {
+			desired = mergeAnnotations(desired, map[string]string{key: v})
+		}
+	}
+	return desired
+}
+
 func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1alpha1.App, env *mortisev1alpha1.Environment, envNs, image, credentialsHash string, autoRedeploy bool) error {
 	name := deploymentName(app.Name)
 	replicas := int32(1)
@@ -1746,11 +1771,8 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 		// Re-derive desired annotations from the (possibly re-fetched) existing
 		// Deployment so stale values from a prior iteration don't persist.
 		desiredPodAnnotations := mergeAnnotations(nil, desired.Spec.Template.Annotations)
-		if v, ok := existing.Spec.Template.Annotations["mortise.dev/restartedAt"]; ok {
-			desiredPodAnnotations = mergeAnnotations(desiredPodAnnotations, map[string]string{
-				"mortise.dev/restartedAt": v,
-			})
-		}
+		desiredPodAnnotations = carryRestartMarkers(
+			desiredPodAnnotations, existing.Spec.Template.Annotations)
 		// When autoRedeploy is off, freeze the deployed env-hash so the new
 		// hash doesn't trigger a rolling update. Users redeploy manually.
 		if !autoRedeploy {
@@ -1983,11 +2005,8 @@ func (r *AppReconciler) reconcileCronJob(ctx context.Context, app *mortisev1alph
 			return false, err
 		}
 		desiredPodAnnotations := mergeAnnotations(nil, desired.Spec.JobTemplate.Spec.Template.Annotations)
-		if v, ok := existing.Spec.JobTemplate.Spec.Template.Annotations["mortise.dev/restartedAt"]; ok {
-			desiredPodAnnotations = mergeAnnotations(desiredPodAnnotations, map[string]string{
-				"mortise.dev/restartedAt": v,
-			})
-		}
+		desiredPodAnnotations = carryRestartMarkers(
+			desiredPodAnnotations, existing.Spec.JobTemplate.Spec.Template.Annotations)
 		if !autoRedeploy {
 			if v, ok := existing.Spec.JobTemplate.Spec.Template.Annotations["mortise.dev/env-hash"]; ok {
 				desiredPodAnnotations = mergeAnnotations(desiredPodAnnotations, map[string]string{

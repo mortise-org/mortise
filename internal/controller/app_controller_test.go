@@ -9262,3 +9262,66 @@ func TestReconcileExternalSourceWithoutExternalConfigSetsFailed(t *testing.T) {
 		t.Fatalf("expected ExternalSourceValid=False condition, got %+v", cond)
 	}
 }
+
+var _ = Describe("kubectl rollout restart is not reverted (CAI-152)", func() {
+	const namespace = "pj-default-project"
+	const envNsProduction = "pj-default-project-production"
+	const appName = "restart-marker"
+	ctx := context.Background()
+
+	var app *mortisev1alpha1.App
+
+	AfterEach(func() {
+		if app != nil {
+			_ = k8sClient.Delete(ctx, app)
+			app = nil
+		}
+		purgeAllAppsIn(ctx, namespace)
+	})
+
+	It("preserves kubectl.kubernetes.io/restartedAt across a reconcile", func() {
+		app = &mortisev1alpha1.App{
+			ObjectMeta: metav1.ObjectMeta{Name: appName, Namespace: namespace},
+			Spec: mortisev1alpha1.AppSpec{
+				Source: mortisev1alpha1.AppSource{
+					Type:  mortisev1alpha1.SourceTypeImage,
+					Image: testImageNginx,
+				},
+				Network: mortisev1alpha1.NetworkConfig{Public: false},
+				Environments: []mortisev1alpha1.Environment{
+					{Name: "production", Replicas: ptr.To[int32](1)},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, app)).To(Succeed())
+
+		reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+		key := types.NamespacedName{Name: appName, Namespace: namespace}
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+		Expect(err).NotTo(HaveOccurred())
+
+		depKey := types.NamespacedName{Name: appName, Namespace: envNsProduction}
+		var dep appsv1.Deployment
+		Expect(k8sClient.Get(ctx, depKey, &dep)).To(Succeed())
+
+		// What `kubectl rollout restart deployment/<app>` does.
+		const restartedAt = "2026-08-21T12:00:00Z"
+		if dep.Spec.Template.Annotations == nil {
+			dep.Spec.Template.Annotations = map[string]string{}
+		}
+		dep.Spec.Template.Annotations["kubectl.kubernetes.io/restartedAt"] = restartedAt
+		Expect(k8sClient.Update(ctx, &dep)).To(Succeed())
+
+		// The operator reconciles and rebuilds the pod template from desired
+		// state. Before the fix this dropped the marker, reverting the rollout.
+		_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+		Expect(err).NotTo(HaveOccurred())
+
+		var depAfter appsv1.Deployment
+		Expect(k8sClient.Get(ctx, depKey, &depAfter)).To(Succeed())
+		Expect(depAfter.Spec.Template.Annotations).To(
+			HaveKeyWithValue("kubectl.kubernetes.io/restartedAt", restartedAt),
+			"the operator reverted a rollout the user asked for and kubectl reported as done",
+		)
+	})
+})
