@@ -967,6 +967,22 @@ spec:
                     readyReplicas:
                       format: int32
                       type: integer
+                    unresolvedEnvKeys:
+                      description: |-
+                        UnresolvedEnvKeys are variable names whose valueFrom.secretRef cannot
+                        currently be resolved -- the referenced Secret is missing, or it has no
+                        key matching the variable name.
+
+                        These do not clear the variable. A value that resolved before and then
+                        broke keeps serving its last resolved value, which is the safe
+                        behaviour and an invisible one: without this field, a renamed key looks
+                        identical to a working reference while the workload runs a stale
+                        credential.
+
+                        Names only, never values.
+                      items:
+                        type: string
+                      type: array
                   required:
                   - name
                   type: object
