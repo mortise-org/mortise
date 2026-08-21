@@ -4581,7 +4581,8 @@ func (r *AppReconciler) appRequestsForSecret(ctx context.Context, obj client.Obj
 //
 // It matches Mortise-created resources ONLY. A user-managed Secret referenced
 // by valueFrom.secretRef carries none of these labels, so a change to one does
-// not enqueue the App that reads it. See appRequestsForManagedResource's tests.
+// not enqueue the App that reads it. appRequestsForReferencedSecret covers that
+// half; appRequestsForSecret composes the two.
 func appRequestsForManagedResource(_ context.Context, obj client.Object) []reconcile.Request {
 	labels := obj.GetLabels()
 	if labels == nil {
