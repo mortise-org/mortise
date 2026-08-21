@@ -617,6 +617,20 @@ type EnvironmentStatus struct {
 	// +optional
 	DeployedEnvHash string `json:"deployedEnvHash,omitempty"`
 
+	// UnresolvedEnvKeys are variable names whose valueFrom.secretRef cannot
+	// currently be resolved -- the referenced Secret is missing, or it has no
+	// key matching the variable name.
+	//
+	// These do not clear the variable. A value that resolved before and then
+	// broke keeps serving its last resolved value, which is the safe
+	// behaviour and an invisible one: without this field, a renamed key looks
+	// identical to a working reference while the workload runs a stale
+	// credential.
+	//
+	// Names only, never values.
+	// +optional
+	UnresolvedEnvKeys []string `json:"unresolvedEnvKeys,omitempty"`
+
 	// CertificateStatus is the readiness state of the TLS certificate for
 	// this environment. Empty when cert-manager is not in use. Possible
 	// values: "Ready", "Pending", "Failed".
