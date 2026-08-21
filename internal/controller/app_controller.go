@@ -209,8 +209,15 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	// Strip plaintext literals out of the client-side-apply snapshot. Placed
 	// after the deletion path: an App on its way out is not worth writing to,
 	// and the write would race finalizer removal (CAI-151).
+	//
+	// Logged rather than returned. This is a hygiene write on an annotation
+	// nothing else reads, and it goes through the same validating webhook as
+	// any other App update -- so returning the error would let an unavailable
+	// webhook, or an App whose parent Project is momentarily unresolvable,
+	// block the deploy AND the status pass that exists precisely to keep
+	// reporting during that state.
 	if err := r.redactAppLastApplied(ctx, req.NamespacedName); err != nil {
-		return ctrl.Result{}, fmt.Errorf("redact last-applied-configuration: %w", err)
+		log.Error(err, "could not redact last-applied-configuration; continuing")
 	}
 
 	if controllerutil.AddFinalizer(&app, appFinalizer) {
@@ -1597,10 +1604,21 @@ var restartMarkerAnnotations = []string{
 	"kubectl.kubernetes.io/restartedAt",
 }
 
-// carryRestartMarkers copies any restart markers present on the live pod
-// template onto the desired annotations.
+// carryRestartMarkers copies restart markers from the live pod template onto
+// the desired annotations, so rebuilding the template from desired state does
+// not undo a restart someone asked for.
+//
+// A marker the spec itself declares wins instead. spec.environments[].annotations
+// is a documented passthrough, so a user can legitimately set either key there
+// and bump it to force a roll -- a standard declarative idiom. Carrying the live
+// value unconditionally made that edit silently do nothing, and left the object
+// incoherent: the Deployment's own metadata moved to the new value while its pod
+// template kept the old one.
 func carryRestartMarkers(desired, existing map[string]string) map[string]string {
 	for _, key := range restartMarkerAnnotations {
+		if _, declared := desired[key]; declared {
+			continue
+		}
 		if v, ok := existing[key]; ok {
 			desired = mergeAnnotations(desired, map[string]string{key: v})
 		}
@@ -3641,11 +3659,9 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 			es.PendingEnvHash = r.hashEnvSecretData(ctx, app.Name, envNs)
 			es.DeployedEnvHash = deployedHash
 
-			// Keys the derived Secret still carries that the spec no longer
-			// declares. Surfacing them is the point: the override guard
-			// deliberately preserves some removals, and from outside that is
-			// indistinguishable from removal being broken (CAI-157).
-			es.StaleEnvKeys = r.staleEnvKeysFor(ctx, app.Name, envNs, &env)
+			// An unresolvable secretRef leaves the last resolved value in
+			// place, which is correct and invisible -- report it (CAI-162).
+			es.UnresolvedEnvKeys = r.unresolvedEnvKeysFor(ctx, &env, envNs)
 
 			// Carry forward deploy history, restart tracking, and build info.
 			if prev, ok := existingByName[env.Name]; ok {
@@ -4278,17 +4294,24 @@ func normalizeStructPointers(v reflect.Value) {
 
 func (r *AppReconciler) effectiveResources(ctx context.Context, env *mortisev1alpha1.Environment) mortisev1alpha1.ResourceRequirements {
 	res := env.Resources
-	if res.CPU == "" && res.Memory == "" {
+	// Take the whole platform default, limits included. Copying only CPU and
+	// Memory meant a cpuLimit/memoryLimit set on PlatformConfig validated,
+	// stored, and was silently dropped.
+	if res.CPU == "" && res.Memory == "" && res.CPULimit == "" && res.MemoryLimit == "" {
 		var pc mortisev1alpha1.PlatformConfig
 		if err := r.Get(ctx, types.NamespacedName{Name: "platform"}, &pc); err == nil {
-			res.CPU = pc.Spec.Defaults.Resources.CPU
-			res.Memory = pc.Spec.Defaults.Resources.Memory
+			res = pc.Spec.Defaults.Resources
 		}
 	}
-	if res.CPU == "" {
+	// Only default the reservation when nothing was said about this resource
+	// at all. Someone who sets just a limit means "cap it here", and injecting
+	// a 100m request under a 50m limit turns that into a validation error
+	// about a request they never wrote. With no request, Kubernetes defaults
+	// it to the limit, which is what they meant.
+	if res.CPU == "" && res.CPULimit == "" {
 		res.CPU = "100m"
 	}
-	if res.Memory == "" {
+	if res.Memory == "" && res.MemoryLimit == "" {
 		res.Memory = "256Mi"
 	}
 	return res
@@ -4590,6 +4613,16 @@ func (r *AppReconciler) reconcileExternalNameService(ctx context.Context, app *m
 // none of the labels appRequestsForManagedResource matches on (CAI-160).
 const referencedSecretIndex = "spec.environments.env.valueFrom.secretRef"
 
+// referencedCredentialSecretIndex indexes Apps by the bare NAME of every
+// Secret spec.credentials[] reads through valueFrom.secretRef.
+//
+// Name only, not namespace-qualified: credentials are app-level, but
+// resolveCredential reads them from each environment's workload namespace, and
+// an App participates in every environment its parent Project declares -- not
+// only the ones it overrides in spec.environments. That set can't be derived
+// inside a pure index function, so the namespace is checked at lookup time.
+const referencedCredentialSecretIndex = "spec.credentials.valueFrom.secretRef"
+
 // indexAppReferencedSecrets is the index function for referencedSecretIndex.
 //
 // Apps whose namespace does not follow the `pj-{project}` convention are not
@@ -4618,6 +4651,35 @@ func indexAppReferencedSecrets(obj client.Object) []string {
 	return keys
 }
 
+// indexAppCredentialSecrets is the index function for
+// referencedCredentialSecretIndex.
+func indexAppCredentialSecrets(obj client.Object) []string {
+	app, ok := obj.(*mortisev1alpha1.App)
+	if !ok {
+		return nil
+	}
+	var names []string
+	for _, c := range app.Spec.Credentials {
+		if c.ValueFrom == nil || c.ValueFrom.SecretRef == nil || c.ValueFrom.SecretRef.Name == "" {
+			continue
+		}
+		names = append(names, c.ValueFrom.SecretRef.Name)
+	}
+	return names
+}
+
+// appEnvNamespacePrefix is the prefix every one of an App's environment
+// namespaces shares: `pj-{project}-`. Derived from the App's own control
+// namespace, so it needs no Project lookup and is unambiguous even when the
+// project name contains hyphens.
+func appEnvNamespacePrefix(appNamespace string) (string, bool) {
+	projectName, ok := constants.ProjectFromControlNs(appNamespace)
+	if !ok {
+		return "", false
+	}
+	return constants.ControlNamespace(projectName) + "-", true
+}
+
 // appRequestsForReferencedSecret maps a Secret back to every App that reads a
 // value out of it via valueFrom.secretRef.
 func (r *AppReconciler) appRequestsForReferencedSecret(ctx context.Context, obj client.Object) []reconcile.Request {
@@ -4634,6 +4696,29 @@ func (r *AppReconciler) appRequestsForReferencedSecret(ctx context.Context, obj 
 		reqs = append(reqs, reconcile.Request{NamespacedName: types.NamespacedName{
 			Name:      apps.Items[i].Name,
 			Namespace: apps.Items[i].Namespace,
+		}})
+	}
+
+	// Credentials read the same user-managed Secrets, from each environment's
+	// workload namespace, and their hash is stamped on the pod template
+	// unconditionally -- so this is the path that actually rolls a workload
+	// when a referenced Secret rotates.
+	var credApps mortisev1alpha1.AppList
+	if err := r.List(ctx, &credApps, client.MatchingFields{
+		referencedCredentialSecretIndex: obj.GetName(),
+	}); err != nil {
+		logf.FromContext(ctx).Error(err, "listing Apps with credentials referencing Secret",
+			"secret", obj.GetNamespace()+"/"+obj.GetName())
+		return reqs
+	}
+	for i := range credApps.Items {
+		prefix, ok := appEnvNamespacePrefix(credApps.Items[i].Namespace)
+		if !ok || !strings.HasPrefix(obj.GetNamespace(), prefix) {
+			continue
+		}
+		reqs = append(reqs, reconcile.Request{NamespacedName: types.NamespacedName{
+			Name:      credApps.Items[i].Name,
+			Namespace: credApps.Items[i].Namespace,
 		}})
 	}
 	return reqs
@@ -4726,6 +4811,11 @@ func (r *AppReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		context.Background(), &mortisev1alpha1.App{}, referencedSecretIndex, indexAppReferencedSecrets,
 	); err != nil {
 		return fmt.Errorf("index apps by referenced secret: %w", err)
+	}
+	if err := mgr.GetFieldIndexer().IndexField(
+		context.Background(), &mortisev1alpha1.App{}, referencedCredentialSecretIndex, indexAppCredentialSecrets,
+	); err != nil {
+		return fmt.Errorf("index apps by referenced credential secret: %w", err)
 	}
 
 	enqueueAppFromSecret := handler.EnqueueRequestsFromMapFunc(r.appRequestsForSecret)

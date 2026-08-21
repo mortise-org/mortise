@@ -27,15 +27,26 @@ const redactedValue = "[redacted by mortise]"
 // snapshot, leaving its structure intact. Returns the rewritten JSON and
 // whether anything changed.
 //
-// It redacts values rather than deleting the annotation outright, and the
-// distinction is load-bearing. `kubectl apply` uses this annotation as the only
-// record of what the user previously declared, and computes deletions from it
-// via each list's merge key — `name`, for both env and credentials. Deleting
-// the annotation would drop kubectl to a two-way merge, at which point fields
-// removed from the user's YAML stop being removed from the live object: a
-// removal-doesn't-remove bug, which is the defect family this annotation's leak
-// already sits in. Redaction preserves every merge key, so deletion detection
-// keeps working, while the secrets stop being there.
+// It redacts rather than deleting the annotation, and the reason is narrower
+// than it first appears. An App is a custom resource, so kubectl does NOT use
+// strategic merge patch on it: the API server publishes no merge-key metadata
+// for CRD lists, and kubectl falls back to an RFC 7386 JSON merge patch, in
+// which arrays are atomic. Measured against a real cluster with this CRD:
+//
+//	warning: OpenAPI V3 path does not support strategic merge patch -
+//	  group: mortise.mortise.dev, version v1alpha1, kind App
+//	PATCH ...?fieldManager=kubectl-client-side-apply
+//	        Content-Type: application/merge-patch+json
+//
+// So list entries are not deletion-detected by a merge key at all. kubectl
+// replaces the whole array from the file, and removing an env entry propagates
+// even with the annotation absent.
+//
+// What the annotation IS load-bearing for is whole-field deletion: with it
+// gone, removing an entire field from the file (`sharedVars`, say) does not
+// propagate and the old value survives on the live object. That is the
+// removal-doesn't-remove bug this must not cause, so the annotation stays and
+// only its secrets go.
 //
 // This bounds the exposure window rather than closing it: the next client-side
 // apply rewrites the annotation from the user's file, and the operator redacts
@@ -53,7 +64,9 @@ func redactLastApplied(raw string) (string, bool, error) {
 	}
 
 	changed := false
-	redactList := func(entries any) {
+
+	// redactField blanks one named string field on every element of a list.
+	redactField := func(entries any, field string) {
 		list, ok := entries.([]any)
 		if !ok {
 			return
@@ -63,26 +76,57 @@ func redactLastApplied(raw string) (string, bool, error) {
 			if !ok {
 				continue
 			}
-			v, present := item["value"]
+			v, present := item[field]
 			if !present {
 				continue
 			}
-			if s, ok := v.(string); ok && (s == "" || s == redactedValue) {
+			if str, ok := v.(string); ok && (str == "" || str == redactedValue) {
 				continue
 			}
-			item["value"] = redactedValue
+			item[field] = redactedValue
 			changed = true
 		}
 	}
 
-	redactList(spec["credentials"])
+	// redactMap blanks every value of a string-keyed map field.
+	redactMap := func(parent map[string]any, field string) {
+		m, ok := parent[field].(map[string]any)
+		if !ok {
+			return
+		}
+		for k, v := range m {
+			if str, ok := v.(string); ok && (str == "" || str == redactedValue) {
+				continue
+			}
+			m[k] = redactedValue
+			changed = true
+		}
+	}
+
+	// The annotation is a verbatim copy of the WHOLE spec, so every field that
+	// can hold a literal has to be covered, not only the two that motivated the
+	// original report. sharedVars is the same EnvVar type as
+	// environments[].env and its own doc names SENTRY_DSN as an example; build
+	// args routinely carry NPM_TOKEN-class values; configFiles hold arbitrary
+	// file content.
+	redactField(spec["credentials"], "value")
+	redactField(spec["sharedVars"], "value")
+	redactField(spec["configFiles"], "content")
+
+	if source, ok := spec["source"].(map[string]any); ok {
+		if build, ok := source["build"].(map[string]any); ok {
+			redactMap(build, "args")
+		}
+	}
+
 	if envs, ok := spec["environments"].([]any); ok {
 		for _, e := range envs {
 			env, ok := e.(map[string]any)
 			if !ok {
 				continue
 			}
-			redactList(env["env"])
+			redactField(env["env"], "value")
+			redactMap(env, "buildArgs")
 		}
 	}
 

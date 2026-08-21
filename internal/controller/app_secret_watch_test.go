@@ -267,3 +267,82 @@ func TestAppRequestsForSecret_Composed(t *testing.T) {
 		}
 	})
 }
+
+// spec.credentials[].valueFrom.secretRef reads a user-managed Secret from each
+// environment's workload namespace, exactly like the env path -- and its hash
+// is stamped on the pod template unconditionally, while the env-hash is frozen
+// when autoRedeploy is off. So this is the path that actually rolls a workload
+// when a referenced Secret rotates, and the first CAI-160 fix missed it.
+func TestAppRequestsForSecret_CredentialRefs(t *testing.T) {
+	scheme := gcTestScheme(t)
+
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "pgdb", Namespace: constants.ControlNamespace("demo")},
+		Spec: mortisev1alpha1.AppSpec{
+			Credentials: []mortisev1alpha1.Credential{
+				{Name: "username", Value: "postgres"},
+				{
+					Name: "password",
+					ValueFrom: &mortisev1alpha1.CredentialSource{
+						SecretRef: &mortisev1alpha1.SecretKeyRef{Name: "pgdb-backing", Key: "pw"},
+					},
+				},
+			},
+			// Deliberately no spec.environments override: an App participates
+			// in every environment its parent Project declares, and the common
+			// case is not overriding them.
+		},
+	}
+
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithIndex(&mortisev1alpha1.App{}, referencedSecretIndex, indexAppReferencedSecrets).
+		WithIndex(&mortisev1alpha1.App{}, referencedCredentialSecretIndex, indexAppCredentialSecrets).
+		WithObjects(app).
+		Build()
+	r := &AppReconciler{Client: c, Scheme: scheme}
+
+	secret := func(name, ns string) *corev1.Secret {
+		return &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns}}
+	}
+
+	t.Run("a rotated credential source enqueues the App, with no env override", func(t *testing.T) {
+		got := r.appRequestsForSecret(context.Background(), secret("pgdb-backing", "pj-demo-production"))
+		if len(got) != 1 {
+			t.Fatalf("expected the App to be enqueued, got %d requests", len(got))
+		}
+		if got[0].Name != "pgdb" {
+			t.Errorf("expected pgdb, got %q", got[0].Name)
+		}
+	})
+
+	t.Run("it matches any environment namespace of that project", func(t *testing.T) {
+		got := r.appRequestsForSecret(context.Background(), secret("pgdb-backing", "pj-demo-staging"))
+		if len(got) != 1 {
+			t.Fatalf("expected the App to be enqueued for a second environment, got %d", len(got))
+		}
+	})
+
+	// The name-only index would otherwise match a same-named Secret anywhere,
+	// which is how a staging change could enqueue another project's App.
+	t.Run("a same-named Secret in another project does not match", func(t *testing.T) {
+		got := r.appRequestsForSecret(context.Background(), secret("pgdb-backing", "pj-other-production"))
+		if len(got) != 0 {
+			t.Fatalf("expected no requests for another project's namespace, got %d", len(got))
+		}
+	})
+
+	t.Run("the control namespace does not match", func(t *testing.T) {
+		got := r.appRequestsForSecret(context.Background(), secret("pgdb-backing", constants.ControlNamespace("demo")))
+		if len(got) != 0 {
+			t.Fatalf("credentials resolve from env namespaces, not the control namespace; got %d", len(got))
+		}
+	})
+
+	t.Run("an unreferenced Secret still enqueues nothing", func(t *testing.T) {
+		got := r.appRequestsForSecret(context.Background(), secret("unrelated", "pj-demo-production"))
+		if len(got) != 0 {
+			t.Fatalf("expected no requests, got %d", len(got))
+		}
+	})
+}

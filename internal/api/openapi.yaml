@@ -2055,17 +2055,19 @@ definitions:
         $ref: '#/definitions/v1alpha1.AppPhase'
       readyReplicas:
         type: integer
-      staleEnvKeys:
+      unresolvedEnvKeys:
         description: |-
-          StaleEnvKeys are variable names present in the derived {app}-env Secret
-          that are no longer declared in this environment's spec.env, and which
-          the reconciler did not remove -- either because they were never tracked
-          or because their value was changed out-of-band, both of which the
-          override guard deliberately preserves.
+          UnresolvedEnvKeys are variable names whose valueFrom.secretRef cannot
+          currently be resolved -- the referenced Secret is missing, or it has no
+          key matching the variable name.
 
-          Names only, never values: this is meant to be safe to read, paste, and
-          screenshot. Its purpose is that "the platform declined to remove this"
-          stops being indistinguishable from "removal is broken" (CAI-157).
+          These do not clear the variable. A value that resolved before and then
+          broke keeps serving its last resolved value, which is the safe
+          behaviour and an invisible one: without this field, a renamed key looks
+          identical to a working reference while the workload runs a stale
+          credential.
+
+          Names only, never values.
           +optional
         items:
           type: string

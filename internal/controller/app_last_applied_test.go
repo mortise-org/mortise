@@ -21,7 +21,17 @@ const leakySnapshot = `{
   "kind": "App",
   "metadata": {"name": "demo-api", "namespace": "pj-demo"},
   "spec": {
-    "source": {"type": "image", "image": "demo:1.2.3"},
+    "source": {
+      "type": "git",
+      "image": "demo:1.2.3",
+      "build": {"args": {"NPM_TOKEN": "npm_live_tok", "PUBLIC_FLAG": "on"}}
+    },
+    "sharedVars": [
+      {"name": "SENTRY_DSN", "value": "https://abc123@sentry.io/42"}
+    ],
+    "configFiles": [
+      {"path": "/etc/app/creds.ini", "content": "password = hunter3"}
+    ],
     "credentials": [
       {"name": "password", "value": "hunter2"},
       {"name": "username", "value": "postgres"}
@@ -30,6 +40,7 @@ const leakySnapshot = `{
       {
         "name": "production",
         "replicas": 2,
+        "buildArgs": {"SENTRY_AUTH_TOKEN": "sntrys_live_xyz"},
         "env": [
           {"name": "NODE_ENV", "value": "production"},
           {"name": "STRIPE_SECRET_KEY", "value": "sk_live_abc123"},
@@ -53,7 +64,13 @@ func TestRedactLastApplied(t *testing.T) {
 		t.Fatal("expected the snapshot to be reported as changed")
 	}
 
-	for _, secret := range []string{"hunter2", "sk_live_abc123", "lin_api_xyz789", "postgres"} {
+	// The annotation is a copy of the whole spec, so the fixture is the whole
+	// spec -- scoping it to the fields the implementation handles is how the
+	// first version of this hid four leaks.
+	for _, secret := range []string{
+		"hunter2", "sk_live_abc123", "lin_api_xyz789", "postgres",
+		"npm_live_tok", "https://abc123@sentry.io/42", "hunter3", "sntrys_live_xyz",
+	} {
 		if strings.Contains(out, secret) {
 			t.Errorf("plaintext value %q survived redaction", secret)
 		}
@@ -65,8 +82,10 @@ func TestRedactLastApplied(t *testing.T) {
 	}
 	spec := got["spec"].(map[string]any)
 
-	// The merge keys kubectl computes deletions from must survive, or removing
-	// an entry from the user's YAML would stop removing it from the object.
+	// Structure must survive. Not because kubectl deletion-detects list entries
+	// by merge key -- it does not, an App is a CRD and gets an RFC 7386 merge
+	// patch with atomic arrays -- but because the annotation is what makes
+	// whole-field removal propagate at all.
 	envs := spec["environments"].([]any)
 	if len(envs) != 2 {
 		t.Fatalf("expected 2 environments preserved, got %d", len(envs))
@@ -89,7 +108,7 @@ func TestRedactLastApplied(t *testing.T) {
 	}
 	for i, want := range []string{"NODE_ENV", "STRIPE_SECRET_KEY", "FROM_SECRET"} {
 		if names[i] != want {
-			t.Errorf("env merge key %d: expected %q, got %q", i, want, names[i])
+			t.Errorf("env entry name %d: expected %q, got %q", i, want, names[i])
 		}
 	}
 
@@ -200,7 +219,7 @@ func TestRedactAppLastApplied_OnObject(t *testing.T) {
 			}
 		}
 		if !strings.Contains(raw, "STRIPE_SECRET_KEY") {
-			t.Error("env merge key was lost from the annotation")
+			t.Error("env entry name was lost from the annotation")
 		}
 	})
 
