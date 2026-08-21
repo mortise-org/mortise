@@ -617,18 +617,6 @@ type EnvironmentStatus struct {
 	// +optional
 	DeployedEnvHash string `json:"deployedEnvHash,omitempty"`
 
-	// StaleEnvKeys are variable names present in the derived {app}-env Secret
-	// that are no longer declared in this environment's spec.env, and which
-	// the reconciler did not remove -- either because they were never tracked
-	// or because their value was changed out-of-band, both of which the
-	// override guard deliberately preserves.
-	//
-	// Names only, never values: this is meant to be safe to read, paste, and
-	// screenshot. Its purpose is that "the platform declined to remove this"
-	// stops being indistinguishable from "removal is broken" (CAI-157).
-	// +optional
-	StaleEnvKeys []string `json:"staleEnvKeys,omitempty"`
-
 	// CertificateStatus is the readiness state of the TLS certificate for
 	// this environment. Empty when cert-manager is not in use. Possible
 	// values: "Ready", "Pending", "Failed".
