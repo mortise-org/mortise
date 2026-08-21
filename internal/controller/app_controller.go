@@ -185,12 +185,6 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		}
 		return ctrl.Result{}, err
 	}
-	// Strip plaintext literals out of the client-side-apply snapshot before
-	// anything else reads or copies the spec (CAI-151).
-	if err := r.redactAppLastApplied(ctx, req.NamespacedName); err != nil {
-		return ctrl.Result{}, fmt.Errorf("redact last-applied-configuration: %w", err)
-	}
-
 	cacheKey := gitTokenCacheKey(&app)
 	r.gitTokenCache.Delete(cacheKey)
 	defer r.gitTokenCache.Delete(cacheKey)
@@ -212,6 +206,13 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		}
 		return ctrl.Result{}, nil
 	}
+	// Strip plaintext literals out of the client-side-apply snapshot. Placed
+	// after the deletion path: an App on its way out is not worth writing to,
+	// and the write would race finalizer removal (CAI-151).
+	if err := r.redactAppLastApplied(ctx, req.NamespacedName); err != nil {
+		return ctrl.Result{}, fmt.Errorf("redact last-applied-configuration: %w", err)
+	}
+
 	if controllerutil.AddFinalizer(&app, appFinalizer) {
 		if err := r.addAppFinalizerWithRetry(ctx, req.NamespacedName); err != nil {
 			return ctrl.Result{}, fmt.Errorf("add finalizer: %w", err)
