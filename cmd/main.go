@@ -42,7 +42,6 @@ import (
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
 	"github.com/go-logr/logr"
-	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/dynamic"
@@ -55,10 +54,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
-	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
-	"github.com/mortise-org/mortise/internal/admission"
 	"github.com/mortise-org/mortise/internal/api"
 	"github.com/mortise-org/mortise/internal/auth"
 	"github.com/mortise-org/mortise/internal/authz"
@@ -275,26 +272,10 @@ func operatorServiceAccount() string {
 	return "mortise-controller"
 }
 
-func isCRDDiscoveryNotReady(err error) bool {
-	if err == nil {
-		return false
-	}
-
-	var noKindMatchErr *meta.NoKindMatchError
-	if errors.As(err, &noKindMatchErr) {
-		return true
-	}
-
-	errText := strings.ToLower(err.Error())
-	return strings.Contains(errText, "no matches for kind") ||
-		strings.Contains(errText, "failed to get restmapping")
-}
-
 // nolint:gocyclo
 func main() {
 	var metricsAddr string
 	var metricsCertPath, metricsCertName, metricsCertKey string
-	var webhookCertPath, webhookCertName, webhookCertKey string
 	var enableLeaderElection bool
 	var probeAddr string
 	var apiAddr string
@@ -309,9 +290,6 @@ func main() {
 			"Enabling this will ensure there is only one active controller manager.")
 	flag.BoolVar(&secureMetrics, "metrics-secure", true,
 		"If set, the metrics endpoint is served securely via HTTPS. Use --metrics-secure=false to use HTTP instead.")
-	flag.StringVar(&webhookCertPath, "webhook-cert-path", "", "The directory that contains the webhook certificate.")
-	flag.StringVar(&webhookCertName, "webhook-cert-name", "tls.crt", "The name of the webhook certificate file.")
-	flag.StringVar(&webhookCertKey, "webhook-cert-key", "tls.key", "The name of the webhook key file.")
 	flag.StringVar(&metricsCertPath, "metrics-cert-path", "",
 		"The directory that contains the metrics server certificate.")
 	flag.StringVar(&metricsCertName, "metrics-cert-name", "tls.crt", "The name of the metrics server certificate file.")
@@ -341,23 +319,6 @@ func main() {
 	if !enableHTTP2 {
 		tlsOpts = append(tlsOpts, disableHTTP2)
 	}
-
-	// Initial webhook TLS options
-	webhookTLSOpts := tlsOpts
-	webhookServerOptions := webhook.Options{
-		TLSOpts: webhookTLSOpts,
-	}
-
-	if len(webhookCertPath) > 0 {
-		setupLog.Info("Initializing webhook certificate watcher using provided certificates",
-			"webhook-cert-path", webhookCertPath, "webhook-cert-name", webhookCertName, "webhook-cert-key", webhookCertKey)
-
-		webhookServerOptions.CertDir = webhookCertPath
-		webhookServerOptions.CertName = webhookCertName
-		webhookServerOptions.KeyName = webhookCertKey
-	}
-
-	webhookServer := webhook.NewServer(webhookServerOptions)
 
 	// Metrics endpoint is enabled in 'config/default/kustomization.yaml'. The Metrics options configure the server.
 	// More info:
@@ -397,7 +358,6 @@ func main() {
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:                 scheme,
 		Metrics:                metricsServerOptions,
-		WebhookServer:          webhookServer,
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
 		LeaderElectionID:       "00121253.mortise.dev",
@@ -508,36 +468,6 @@ func main() {
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "PreviewConvergence")
 		os.Exit(1)
-	}
-	// Admission webhooks — enforce cross-resource invariants (App env names
-	// must exist on the parent Project; a Project can't delete its last env
-	// or remove an env still referenced by an App override).
-	//
-	// Wiring is conditional on webhook TLS being configured, so `make dev-up`
-	// continues to work without cert-manager churn. Production installs pass
-	// --webhook-cert-path and the webhooks engage automatically.
-	if webhookCertPath != "" {
-		if err := (&admission.AppValidator{Client: mgr.GetClient()}).SetupWithManager(mgr); err != nil {
-			if isCRDDiscoveryNotReady(err) {
-				setupLog.Info("Skipped admission webhook registration because CRDs are not yet discoverable",
-					"webhook", "App", "error", err)
-			} else {
-				setupLog.Error(err, "Failed to register admission webhook", "webhook", "App")
-				os.Exit(1)
-			}
-		}
-		if err := (&admission.ProjectValidator{Client: mgr.GetClient()}).SetupWithManager(mgr); err != nil {
-			if isCRDDiscoveryNotReady(err) {
-				setupLog.Info("Skipped admission webhook registration because CRDs are not yet discoverable",
-					"webhook", "Project", "error", err)
-			} else {
-				setupLog.Error(err, "Failed to register admission webhook", "webhook", "Project")
-				os.Exit(1)
-			}
-		}
-	} else {
-		setupLog.Info("Webhook TLS not configured — admission validators disabled; same checks still run in the REST API layer",
-			"hint", "pass --webhook-cert-path to enable admission webhooks")
 	}
 	// +kubebuilder:scaffold:builder
 
