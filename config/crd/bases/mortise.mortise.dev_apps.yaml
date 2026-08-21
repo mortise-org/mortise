@@ -110,7 +110,8 @@ spec:
                               description: Key within the Secret.
                               type: string
                             name:
-                              description: Name of the Secret in the App's namespace.
+                              description: Name of the Secret in the environment's
+                                workload namespace.
                               type: string
                           required:
                           - key
@@ -189,6 +190,9 @@ spec:
                       type: boolean
                     env:
                       items:
+                        description: |-
+                          EnvVar is one environment variable for an App environment. Set exactly one
+                          of Value or ValueFrom.
                         properties:
                           name:
                             description: Name is the environment variable name.
@@ -196,15 +200,27 @@ spec:
                             pattern: ^[a-zA-Z_][a-zA-Z0-9_]*$
                             type: string
                           value:
+                            description: |-
+                              Value is a literal, stored in plaintext in this resource.
+
+                              Do not use it for credentials. Anyone who can read this App can read the
+                              value -- a wider audience than those who can read Secrets -- and
+                              client-side `kubectl apply` additionally copies it into the
+                              kubectl.kubernetes.io/last-applied-configuration annotation, so removing
+                              it from here later does not remove it from the object.
+
+                              For anything secret use ValueFrom.SecretRef instead. Mutually exclusive
+                              with ValueFrom.
                             type: string
                           valueFrom:
+                            description: |-
+                              ValueFrom resolves the value from somewhere other than this resource.
+                              Mutually exclusive with Value. Use this for credentials.
                             properties:
                               fromBinding:
                                 description: |-
-                                  BindingVarSource references a single key from a bound App's credentials.
-                                  The Ref must match a binding declared in the same environment's bindings[]
-                                  list. The Key must be a valid credential name exposed by the bound App
-                                  (e.g. "host", "port", "url", "password").
+                                  FromBinding projects a single credential key from another App in the
+                                  same project, which must be declared in this environment's bindings[].
                                 properties:
                                   key:
                                     description: Key is the credential key to project
@@ -219,6 +235,24 @@ spec:
                                 - ref
                                 type: object
                               secretRef:
+                                description: "SecretRef is the NAME of a Secret in
+                                  this environment's workload\nnamespace (`pj-{project}-{environment}`).\n\nNote
+                                  the shape, which differs from core-v1 on purpose
+                                  and trips up\nevery Kubernetes intuition: this is
+                                  a bare string, not an object, and\nthere is no `key`
+                                  field. The key read from the Secret is always the
+                                  env\nvar's own Name. To project a Secret key called
+                                  `pw` into `DB_PASSWORD`,\nthe Secret must contain
+                                  a key literally called `DB_PASSWORD`.\n\n\t - name:
+                                  DB_PASSWORD                 # core-v1 would be:\n\t
+                                  \  valueFrom:                        #   valueFrom:\n\t
+                                  \    secretRef: my-app-credentials   #     secretKeyRef:\n\t
+                                  \                                    #       name:
+                                  my-app-credentials\n\t                                     #
+                                  \      key: pw\n\nThe referenced Secret is user-managed:
+                                  Mortise reads it, it does not\ncreate or own it.
+                                  A Secret that exists but has no key matching the
+                                  env\nvar name is an error, not an empty value."
                                 type: string
                             type: object
                         required:
@@ -432,6 +466,9 @@ spec:
                   env-level vars. Use for values like LOG_LEVEL, SENTRY_DSN, or feature
                   flags that should not be repeated per environment.
                 items:
+                  description: |-
+                    EnvVar is one environment variable for an App environment. Set exactly one
+                    of Value or ValueFrom.
                   properties:
                     name:
                       description: Name is the environment variable name.
@@ -439,15 +476,27 @@ spec:
                       pattern: ^[a-zA-Z_][a-zA-Z0-9_]*$
                       type: string
                     value:
+                      description: |-
+                        Value is a literal, stored in plaintext in this resource.
+
+                        Do not use it for credentials. Anyone who can read this App can read the
+                        value -- a wider audience than those who can read Secrets -- and
+                        client-side `kubectl apply` additionally copies it into the
+                        kubectl.kubernetes.io/last-applied-configuration annotation, so removing
+                        it from here later does not remove it from the object.
+
+                        For anything secret use ValueFrom.SecretRef instead. Mutually exclusive
+                        with ValueFrom.
                       type: string
                     valueFrom:
+                      description: |-
+                        ValueFrom resolves the value from somewhere other than this resource.
+                        Mutually exclusive with Value. Use this for credentials.
                       properties:
                         fromBinding:
                           description: |-
-                            BindingVarSource references a single key from a bound App's credentials.
-                            The Ref must match a binding declared in the same environment's bindings[]
-                            list. The Key must be a valid credential name exposed by the bound App
-                            (e.g. "host", "port", "url", "password").
+                            FromBinding projects a single credential key from another App in the
+                            same project, which must be declared in this environment's bindings[].
                           properties:
                             key:
                               description: Key is the credential key to project from
@@ -462,6 +511,23 @@ spec:
                           - ref
                           type: object
                         secretRef:
+                          description: "SecretRef is the NAME of a Secret in this
+                            environment's workload\nnamespace (`pj-{project}-{environment}`).\n\nNote
+                            the shape, which differs from core-v1 on purpose and trips
+                            up\nevery Kubernetes intuition: this is a bare string,
+                            not an object, and\nthere is no `key` field. The key read
+                            from the Secret is always the env\nvar's own Name. To
+                            project a Secret key called `pw` into `DB_PASSWORD`,\nthe
+                            Secret must contain a key literally called `DB_PASSWORD`.\n\n\t
+                            - name: DB_PASSWORD                 # core-v1 would be:\n\t
+                            \  valueFrom:                        #   valueFrom:\n\t
+                            \    secretRef: my-app-credentials   #     secretKeyRef:\n\t
+                            \                                    #       name: my-app-credentials\n\t
+                            \                                    #       key: pw\n\nThe
+                            referenced Secret is user-managed: Mortise reads it, it
+                            does not\ncreate or own it. A Secret that exists but has
+                            no key matching the env\nvar name is an error, not an
+                            empty value."
                           type: string
                       type: object
                   required:

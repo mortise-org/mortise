@@ -163,18 +163,61 @@ type ConfigFile struct {
 	Content string `json:"content"`
 }
 
+// EnvVar is one environment variable for an App environment. Set exactly one
+// of Value or ValueFrom.
 type EnvVar struct {
 	// Name is the environment variable name.
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:Pattern=`^[a-zA-Z_][a-zA-Z0-9_]*$`
 	// +kubebuilder:validation:MaxLength=253
-	Name      string        `json:"name"`
-	Value     string        `json:"value,omitempty"`
+	Name string `json:"name"`
+
+	// Value is a literal, stored in plaintext in this resource.
+	//
+	// Do not use it for credentials. Anyone who can read this App can read the
+	// value -- a wider audience than those who can read Secrets -- and
+	// client-side `kubectl apply` additionally copies it into the
+	// kubectl.kubernetes.io/last-applied-configuration annotation, so removing
+	// it from here later does not remove it from the object.
+	//
+	// For anything secret use ValueFrom.SecretRef instead. Mutually exclusive
+	// with ValueFrom.
+	// +optional
+	Value string `json:"value,omitempty"`
+
+	// ValueFrom resolves the value from somewhere other than this resource.
+	// Mutually exclusive with Value. Use this for credentials.
+	// +optional
 	ValueFrom *EnvVarSource `json:"valueFrom,omitempty"`
 }
 
+// EnvVarSource resolves an env var's value from outside the App spec. Set
+// exactly one field.
 type EnvVarSource struct {
-	SecretRef   string            `json:"secretRef,omitempty"`
+	// SecretRef is the NAME of a Secret in this environment's workload
+	// namespace (`pj-{project}-{environment}`).
+	//
+	// Note the shape, which differs from core-v1 on purpose and trips up
+	// every Kubernetes intuition: this is a bare string, not an object, and
+	// there is no `key` field. The key read from the Secret is always the env
+	// var's own Name. To project a Secret key called `pw` into `DB_PASSWORD`,
+	// the Secret must contain a key literally called `DB_PASSWORD`.
+	//
+	//	 - name: DB_PASSWORD                 # core-v1 would be:
+	//	   valueFrom:                        #   valueFrom:
+	//	     secretRef: my-app-credentials   #     secretKeyRef:
+	//	                                     #       name: my-app-credentials
+	//	                                     #       key: pw
+	//
+	// The referenced Secret is user-managed: Mortise reads it, it does not
+	// create or own it. A Secret that exists but has no key matching the env
+	// var name is an error, not an empty value.
+	// +optional
+	SecretRef string `json:"secretRef,omitempty"`
+
+	// FromBinding projects a single credential key from another App in the
+	// same project, which must be declared in this environment's bindings[].
+	// +optional
 	FromBinding *BindingVarSource `json:"fromBinding,omitempty"`
 }
 
@@ -223,11 +266,18 @@ type CredentialSource struct {
 	SecretRef *SecretKeyRef `json:"secretRef,omitempty"`
 }
 
-// SecretKeyRef identifies a single key inside a Secret located in the App's
-// own namespace. Cross-namespace references are intentionally not supported
-// here — credentials must live beside the App that owns them.
+// SecretKeyRef identifies a single key inside a Secret. The Secret is read
+// from the per-environment workload namespace (`pj-{project}-{environment}`),
+// not the App's own control namespace, so a per-env source can be placed
+// beside the workload that consumes it. Cross-project references are
+// intentionally not supported.
+//
+// Note that this is a different shape from EnvVarSource.SecretRef, which is a
+// bare Secret name with an implicit key. Credentials name their key
+// explicitly; env vars take the key from the variable's own name. Same field
+// name, two shapes -- check which one you are editing.
 type SecretKeyRef struct {
-	// Name of the Secret in the App's namespace.
+	// Name of the Secret in the environment's workload namespace.
 	// +kubebuilder:validation:Required
 	Name string `json:"name"`
 
