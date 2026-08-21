@@ -3173,46 +3173,15 @@ func (r *AppReconciler) resolveCredential(ctx context.Context, namespace string,
 }
 
 // hashCredentialData produces a sha256 over the sorted key=value pairs.
-// Key sorting is load-bearing: Go maps randomise iteration order, and an
-// unstable hash would cause gratuitous pod restarts on every reconcile.
+// Shared with the `mortise diff` CLI, which must reproduce the pod-template
+// env-hash byte for byte to tell "pods are running an older env" from
+// "pods are current".
 func hashCredentialData(data map[string][]byte) string {
-	if len(data) == 0 {
-		return ""
-	}
-	keys := make([]string, 0, len(data))
-	for k := range data {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-
-	h := sha256.New()
-	for _, k := range keys {
-		h.Write([]byte(k))
-		h.Write([]byte{'='})
-		h.Write(data[k])
-		h.Write([]byte{0})
-	}
-	return hex.EncodeToString(h.Sum(nil))
+	return envstore.HashData(data)
 }
 
 func hashEnvSecretData(ctx context.Context, reader client.Reader, appName, envNs string) string {
-	combined := make(map[string][]byte)
-
-	var appSecret corev1.Secret
-	if err := reader.Get(ctx, types.NamespacedName{Name: envstore.AppEnvSecretName(appName), Namespace: envNs}, &appSecret); err == nil {
-		for k, v := range appSecret.Data {
-			combined[k] = v
-		}
-	}
-
-	var sharedSecret corev1.Secret
-	if err := reader.Get(ctx, types.NamespacedName{Name: envstore.SharedEnvName, Namespace: envNs}, &sharedSecret); err == nil {
-		for k, v := range sharedSecret.Data {
-			combined[k] = v
-		}
-	}
-
-	return hashCredentialData(combined)
+	return envstore.EnvHash(ctx, reader, appName, envNs)
 }
 
 func (r *AppReconciler) hashEnvSecretData(ctx context.Context, appName, envNs string) string {

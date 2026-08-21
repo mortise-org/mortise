@@ -11,6 +11,8 @@ package envstore
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"regexp"
@@ -570,3 +572,50 @@ func secretDataEqual(existing, desired map[string][]byte) bool {
 }
 
 func boolPtr(b bool) *bool { return &b }
+
+// HashData produces a sha256 over the sorted key=value pairs.
+// Key sorting is load-bearing: Go maps randomise iteration order, and an
+// unstable hash would cause gratuitous pod restarts on every reconcile.
+func HashData(data map[string][]byte) string {
+	if len(data) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(data))
+	for k := range data {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	h := sha256.New()
+	for _, k := range keys {
+		h.Write([]byte(k))
+		h.Write([]byte{'='})
+		h.Write(data[k])
+		h.Write([]byte{0})
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// EnvHash is the hash the controller stamps onto the pod template as
+// `mortise.dev/env-hash`: a HashData over the merged contents of the app's
+// {app}-env Secret and the project's shared-env Secret in the workload
+// namespace. Missing Secrets contribute nothing. Read-only.
+func EnvHash(ctx context.Context, reader client.Reader, appName, envNs string) string {
+	combined := make(map[string][]byte)
+
+	var appSecret corev1.Secret
+	if err := reader.Get(ctx, types.NamespacedName{Name: AppEnvSecretName(appName), Namespace: envNs}, &appSecret); err == nil {
+		for k, v := range appSecret.Data {
+			combined[k] = v
+		}
+	}
+
+	var sharedSecret corev1.Secret
+	if err := reader.Get(ctx, types.NamespacedName{Name: SharedEnvName, Namespace: envNs}, &sharedSecret); err == nil {
+		for k, v := range sharedSecret.Data {
+			combined[k] = v
+		}
+	}
+
+	return HashData(combined)
+}

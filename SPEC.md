@@ -1021,6 +1021,15 @@ full `PUT` on the App CRD to change a variable.
 - `mortise env pull [--env NAME] > .env`
 - Shortcuts: `@secret:name` and `@from:app.key` so users don't round-trip
   through a separate secret create.
+- `mortise diff APP [--env NAME] [--all] [-o json] [-f FILE]`: reports where
+  an App's environment configuration disagrees with itself across three
+  layers — `spec.environments[].env` on the App, the derived `{app}-env`
+  Secret pods mount, and the `mortise.dev/env-hash` the running workload was
+  started with. Prints names, sources, and 12-hex-char SHA-256 digests only,
+  never a value, so the output is safe to share during an incident. Reads the
+  cluster directly through the standard kubeconfig resolution rather than the
+  HTTP API, never writes, and exits non-zero only on an operational failure.
+  With `-f` it is a dry run against an App manifest.
 
 **UI:**
 - Variables tab on App detail page.
