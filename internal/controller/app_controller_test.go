@@ -9611,7 +9611,6 @@ var _ = Describe("a secretRef that breaks after resolving (CAI-162 follow-up)", 
 })
 
 var _ = Describe("effectiveResources with limits (CAI-163 follow-up)", func() {
-	const namespace = "pj-default-project"
 	ctx := context.Background()
 
 	newReconciler := func(objs ...client.Object) *AppReconciler {
