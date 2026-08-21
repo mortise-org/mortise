@@ -175,13 +175,21 @@ type EnvVar struct {
 	// Value is a literal, stored in plaintext in this resource.
 	//
 	// Do not use it for credentials. Anyone who can read this App can read the
-	// value -- a wider audience than those who can read Secrets -- and
-	// client-side `kubectl apply` additionally copies it into the
-	// kubectl.kubernetes.io/last-applied-configuration annotation, so removing
-	// it from here later does not remove it from the object.
+	// value, which is a wider audience than those who can read Secrets.
 	//
-	// For anything secret use ValueFrom.SecretRef instead. Mutually exclusive
-	// with ValueFrom.
+	// Client-side `kubectl apply` also copies it into the
+	// kubectl.kubernetes.io/last-applied-configuration annotation. The
+	// controller redacts that annotation on reconcile, so the duplicate is
+	// short-lived rather than permanent -- but it exists between the apply and
+	// the next reconcile, and only `kubectl apply --server-side` avoids
+	// writing it at all.
+	//
+	// For anything secret use ValueFrom.SecretRef instead.
+	//
+	// Setting both Value and ValueFrom is rejected when the variable is
+	// resolved, and the effect is that the variable is DROPPED from the
+	// container with only a controller log line -- the apply itself succeeds.
+	// Set exactly one.
 	// +optional
 	Value string `json:"value,omitempty"`
 
@@ -209,9 +217,14 @@ type EnvVarSource struct {
 	//	                                     #       name: my-app-credentials
 	//	                                     #       key: pw
 	//
-	// The referenced Secret is user-managed: Mortise reads it, it does not
-	// create or own it. A Secret that exists but has no key matching the env
-	// var name is an error, not an empty value.
+	// Mortise reads the referenced Secret; resolving this reference never
+	// creates it. The Secret may have been created by anything -- an external
+	// tool, Helm, kubectl, or Mortise's own secrets API, which does create
+	// Secrets in this namespace. Either way it is not owned by the App: it is
+	// not garbage-collected when the App is deleted.
+	//
+	// A Secret that exists but has no key matching the env var name is an
+	// error, not an empty value.
 	// +optional
 	SecretRef string `json:"secretRef,omitempty"`
 
