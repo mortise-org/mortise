@@ -4506,6 +4506,76 @@ func (r *AppReconciler) reconcileExternalNameService(ctx context.Context, app *m
 	return r.Update(ctx, &existing)
 }
 
+// referencedSecretIndex indexes Apps by the "{envNamespace}/{secretName}" of
+// every Secret their env vars reference through valueFrom.secretRef.
+//
+// secretRef does not project the referenced Secret into the pod: the reconciler
+// reads it and copies the value into the derived {app}-env Secret, which is
+// what the pod mounts. So a change to a referenced Secret only reaches the
+// workload if it causes the App to reconcile, and a user-managed Secret carries
+// none of the labels appRequestsForManagedResource matches on (CAI-160).
+const referencedSecretIndex = "spec.environments.env.valueFrom.secretRef"
+
+// indexAppReferencedSecrets is the index function for referencedSecretIndex.
+//
+// Apps whose namespace does not follow the `pj-{project}` convention are not
+// indexed, because the env namespace can't be derived without a client lookup.
+// fetchParentProject's label-based fallback covers those on the reconcile path;
+// they fall back to the cache resync here.
+func indexAppReferencedSecrets(obj client.Object) []string {
+	app, ok := obj.(*mortisev1alpha1.App)
+	if !ok {
+		return nil
+	}
+	projectName, ok := constants.ProjectFromControlNs(app.Namespace)
+	if !ok {
+		return nil
+	}
+	var keys []string
+	for _, env := range app.Spec.Environments {
+		envNs := constants.EnvNamespace(projectName, env.Name)
+		for _, ev := range env.Env {
+			if ev.ValueFrom == nil || ev.ValueFrom.SecretRef == "" {
+				continue
+			}
+			keys = append(keys, envNs+"/"+ev.ValueFrom.SecretRef)
+		}
+	}
+	return keys
+}
+
+// appRequestsForReferencedSecret maps a Secret back to every App that reads a
+// value out of it via valueFrom.secretRef.
+func (r *AppReconciler) appRequestsForReferencedSecret(ctx context.Context, obj client.Object) []reconcile.Request {
+	var apps mortisev1alpha1.AppList
+	if err := r.List(ctx, &apps, client.MatchingFields{
+		referencedSecretIndex: obj.GetNamespace() + "/" + obj.GetName(),
+	}); err != nil {
+		logf.FromContext(ctx).Error(err, "listing Apps referencing Secret",
+			"secret", obj.GetNamespace()+"/"+obj.GetName())
+		return nil
+	}
+	reqs := make([]reconcile.Request, 0, len(apps.Items))
+	for i := range apps.Items {
+		reqs = append(reqs, reconcile.Request{NamespacedName: types.NamespacedName{
+			Name:      apps.Items[i].Name,
+			Namespace: apps.Items[i].Namespace,
+		}})
+	}
+	return reqs
+}
+
+// appRequestsForSecret is the App controller's Secret handler. A Secret reaches
+// an App two ways: as a resource Mortise created for it, and as a user-managed
+// Secret the App reads through valueFrom.secretRef. Both have to enqueue, and
+// this is deliberately a named method rather than a closure so the composition
+// itself is testable -- the CAI-160 gap existed because the watch wiring had no
+// test, only the resolution logic it feeds.
+func (r *AppReconciler) appRequestsForSecret(ctx context.Context, obj client.Object) []reconcile.Request {
+	reqs := appRequestsForManagedResource(ctx, obj)
+	return append(reqs, r.appRequestsForReferencedSecret(ctx, obj)...)
+}
+
 // appRequestsForManagedResource maps a resource the reconciler created back to
 // its owning App, via the labels the reconciler stamps on everything it makes.
 //
@@ -4577,13 +4647,21 @@ func (r *AppReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		}
 		return reqs
 	})
+	if err := mgr.GetFieldIndexer().IndexField(
+		context.Background(), &mortisev1alpha1.App{}, referencedSecretIndex, indexAppReferencedSecrets,
+	); err != nil {
+		return fmt.Errorf("index apps by referenced secret: %w", err)
+	}
+
+	enqueueAppFromSecret := handler.EnqueueRequestsFromMapFunc(r.appRequestsForSecret)
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&mortisev1alpha1.App{}).
 		Watches(&appsv1.Deployment{}, enqueueAppFromManagedResource).
 		Watches(&batchv1.CronJob{}, enqueueAppFromManagedResource).
 		Watches(&corev1.Service{}, enqueueAppFromManagedResource).
 		Watches(&corev1.PersistentVolumeClaim{}, enqueueAppFromManagedResource).
-		Watches(&corev1.Secret{}, enqueueAppFromManagedResource).
+		Watches(&corev1.Secret{}, enqueueAppFromSecret).
 		Watches(&corev1.ServiceAccount{}, enqueueAppFromManagedResource).
 		Watches(&networkingv1.Ingress{}, enqueueAppFromManagedResource).
 		Watches(&mortisev1alpha1.BuildRun{}, enqueueAppFromBuildRun).
