@@ -64,8 +64,12 @@ fmt: ## Run go fmt against code.
 vet: ## Run go vet against code.
 	go vet ./...
 
+.PHONY: staticcheck
+staticcheck: staticcheck-bin ## Run staticcheck (the same check CI runs).
+	"$(STATICCHECK)" ./...
+
 .PHONY: test
-test: manifests generate fmt vet setup-envtest check-ui ## Run tests.
+test: manifests generate fmt vet staticcheck setup-envtest check-ui ## Run tests.
 	KUBEBUILDER_ASSETS="$(shell "$(ENVTEST)" use $(ENVTEST_K8S_VERSION) --bin-dir "$(LOCALBIN)" -p path)" go test $$(go list ./... | grep -v /e2e) -coverprofile cover.out
 
 .PHONY: check-ui
@@ -606,6 +610,7 @@ KUSTOMIZE ?= $(LOCALBIN)/kustomize
 CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
 ENVTEST ?= $(LOCALBIN)/setup-envtest
 GOLANGCI_LINT = $(LOCALBIN)/golangci-lint
+STATICCHECK ?= $(LOCALBIN)/staticcheck
 
 ## Tool Versions
 KUSTOMIZE_VERSION ?= v5.8.1
@@ -622,10 +627,18 @@ ENVTEST_K8S_VERSION ?= $(shell v='$(call gomodver,k8s.io/api)'; \
   printf '%s\n' "$$v" | sed -E 's/^v?[0-9]+\.([0-9]+).*/1.\1/')
 
 GOLANGCI_LINT_VERSION ?= v2.8.0
+# Keep in step with the staticcheck job in .github/workflows/ci.yml, which
+# invokes `make staticcheck` so this is the single source of the pin.
+STATICCHECK_VERSION ?= v0.7.0
 .PHONY: kustomize
 kustomize: $(KUSTOMIZE) ## Download kustomize locally if necessary.
 $(KUSTOMIZE): $(LOCALBIN)
 	$(call go-install-tool,$(KUSTOMIZE),sigs.k8s.io/kustomize/kustomize/v5,$(KUSTOMIZE_VERSION))
+
+.PHONY: staticcheck-bin
+staticcheck-bin: $(STATICCHECK) ## Download staticcheck locally if necessary.
+$(STATICCHECK): $(LOCALBIN)
+	$(call go-install-tool,$(STATICCHECK),honnef.co/go/tools/cmd/staticcheck,$(STATICCHECK_VERSION))
 
 .PHONY: controller-gen
 controller-gen: $(CONTROLLER_GEN) ## Download controller-gen locally if necessary.
