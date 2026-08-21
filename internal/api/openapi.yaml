@@ -2202,8 +2202,29 @@ definitions:
   v1alpha1.ResourceRequirements:
     properties:
       cpu:
+        description: |-
+          CPU is the reserved CPU (e.g. "100m"). Also the limit unless CPULimit
+          is set.
+          +optional
+        type: string
+      cpuLimit:
+        description: |-
+          CPULimit is the ceiling this workload may burst to, above the CPU
+          reservation. Exceeding it throttles the container. Defaults to CPU.
+          +optional
         type: string
       memory:
+        description: |-
+          Memory is the reserved memory (e.g. "128Mi"). Also the limit unless
+          MemoryLimit is set.
+          +optional
+        type: string
+      memoryLimit:
+        description: |-
+          MemoryLimit is the ceiling this workload may burst to, above the Memory
+          reservation. Exceeding it is an OOM kill, not throttling, so leave
+          headroom. Defaults to Memory.
+          +optional
         type: string
     type: object
   v1alpha1.SecretKeyRef:

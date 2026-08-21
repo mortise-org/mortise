@@ -291,9 +291,37 @@ type Binding struct {
 	Ref string `json:"ref"`
 }
 
+// ResourceRequirements sets the compute resources for a workload.
+//
+// CPU and Memory are Kubernetes *requests* -- what the scheduler reserves on a
+// node, not a ceiling. Setting `memory: 2Gi` demands 2Gi of reservable memory
+// and the pod will not schedule without it.
+//
+// By default the limit equals the request, which is Guaranteed QoS: predictable
+// and a good default, but it means a workload that idles low and peaks briefly
+// must reserve its peak permanently. Set CPULimit or MemoryLimit to allow
+// bursting above the reservation (Burstable QoS).
 type ResourceRequirements struct {
-	CPU    string `json:"cpu,omitempty"`
+	// CPU is the reserved CPU (e.g. "100m"). Also the limit unless CPULimit
+	// is set.
+	// +optional
+	CPU string `json:"cpu,omitempty"`
+
+	// Memory is the reserved memory (e.g. "128Mi"). Also the limit unless
+	// MemoryLimit is set.
+	// +optional
 	Memory string `json:"memory,omitempty"`
+
+	// CPULimit is the ceiling this workload may burst to, above the CPU
+	// reservation. Exceeding it throttles the container. Defaults to CPU.
+	// +optional
+	CPULimit string `json:"cpuLimit,omitempty"`
+
+	// MemoryLimit is the ceiling this workload may burst to, above the Memory
+	// reservation. Exceeding it is an OOM kill, not throttling, so leave
+	// headroom. Defaults to Memory.
+	// +optional
+	MemoryLimit string `json:"memoryLimit,omitempty"`
 }
 
 type ProbeConfig struct {

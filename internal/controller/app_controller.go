@@ -4284,21 +4284,37 @@ func toResourceRequirements(r mortisev1alpha1.ResourceRequirements) (corev1.Reso
 		Requests: corev1.ResourceList{},
 		Limits:   corev1.ResourceList{},
 	}
-	if r.CPU != "" {
-		q, err := resource.ParseQuantity(r.CPU)
-		if err != nil {
-			return req, fmt.Errorf("invalid cpu %q: %w", r.CPU, err)
+	// The limit defaults to the request (Guaranteed QoS), which is what this
+	// has always done. An explicit limit opts into Burstable (CAI-163).
+	set := func(name corev1.ResourceName, request, limit string) error {
+		if request == "" && limit == "" {
+			return nil
 		}
-		req.Requests[corev1.ResourceCPU] = q
-		req.Limits[corev1.ResourceCPU] = q
+		if request != "" {
+			q, err := resource.ParseQuantity(request)
+			if err != nil {
+				return fmt.Errorf("invalid %s %q: %w", name, request, err)
+			}
+			req.Requests[name] = q
+			req.Limits[name] = q
+		}
+		if limit != "" {
+			q, err := resource.ParseQuantity(limit)
+			if err != nil {
+				return fmt.Errorf("invalid %s limit %q: %w", name, limit, err)
+			}
+			if request != "" && q.Cmp(req.Requests[name]) < 0 {
+				return fmt.Errorf("%s limit %q is below the request %q", name, limit, request)
+			}
+			req.Limits[name] = q
+		}
+		return nil
 	}
-	if r.Memory != "" {
-		q, err := resource.ParseQuantity(r.Memory)
-		if err != nil {
-			return req, fmt.Errorf("invalid memory %q: %w", r.Memory, err)
-		}
-		req.Requests[corev1.ResourceMemory] = q
-		req.Limits[corev1.ResourceMemory] = q
+	if err := set(corev1.ResourceCPU, r.CPU, r.CPULimit); err != nil {
+		return req, err
+	}
+	if err := set(corev1.ResourceMemory, r.Memory, r.MemoryLimit); err != nil {
+		return req, err
 	}
 	return req, nil
 }
