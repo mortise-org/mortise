@@ -4506,6 +4506,31 @@ func (r *AppReconciler) reconcileExternalNameService(ctx context.Context, app *m
 	return r.Update(ctx, &existing)
 }
 
+// appRequestsForManagedResource maps a resource the reconciler created back to
+// its owning App, via the labels the reconciler stamps on everything it makes.
+//
+// It matches Mortise-created resources ONLY. A user-managed Secret referenced
+// by valueFrom.secretRef carries none of these labels, so a change to one does
+// not enqueue the App that reads it. See appRequestsForManagedResource's tests.
+func appRequestsForManagedResource(_ context.Context, obj client.Object) []reconcile.Request {
+	labels := obj.GetLabels()
+	if labels == nil {
+		return nil
+	}
+	appName := labels[constants.AppNameLabel]
+	projectName := labels[constants.ProjectLabel]
+	if appName == "" || projectName == "" {
+		return nil
+	}
+	if labels["app.kubernetes.io/managed-by"] != "mortise" {
+		return nil
+	}
+	return []reconcile.Request{{NamespacedName: types.NamespacedName{
+		Name:      appName,
+		Namespace: constants.ControlNamespace(projectName),
+	}}}
+}
+
 // SetupWithManager sets up the controller with the Manager.
 //
 // Owned resources live in per-env namespaces (`pj-{project}-{env}`) while the
@@ -4516,24 +4541,7 @@ func (r *AppReconciler) reconcileExternalNameService(ctx context.Context, app *m
 // creates. Finalizer GC handles delete cleanup; this mapping handles drift
 // reconciliation (e.g. someone scales a Deployment manually).
 func (r *AppReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	enqueueAppFromManagedResource := handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []reconcile.Request {
-		labels := obj.GetLabels()
-		if labels == nil {
-			return nil
-		}
-		appName := labels[constants.AppNameLabel]
-		projectName := labels[constants.ProjectLabel]
-		if appName == "" || projectName == "" {
-			return nil
-		}
-		if labels["app.kubernetes.io/managed-by"] != "mortise" {
-			return nil
-		}
-		return []reconcile.Request{{NamespacedName: types.NamespacedName{
-			Name:      appName,
-			Namespace: constants.ControlNamespace(projectName),
-		}}}
-	})
+	enqueueAppFromManagedResource := handler.EnqueueRequestsFromMapFunc(appRequestsForManagedResource)
 	enqueueAppFromBuildRun := handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []reconcile.Request {
 		br, ok := obj.(*mortisev1alpha1.BuildRun)
 		if !ok {
