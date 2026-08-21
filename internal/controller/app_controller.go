@@ -1597,10 +1597,21 @@ var restartMarkerAnnotations = []string{
 	"kubectl.kubernetes.io/restartedAt",
 }
 
-// carryRestartMarkers copies any restart markers present on the live pod
-// template onto the desired annotations.
+// carryRestartMarkers copies restart markers from the live pod template onto
+// the desired annotations, so rebuilding the template from desired state does
+// not undo a restart someone asked for.
+//
+// A marker the spec itself declares wins instead. spec.environments[].annotations
+// is a documented passthrough, so a user can legitimately set either key there
+// and bump it to force a roll -- a standard declarative idiom. Carrying the live
+// value unconditionally made that edit silently do nothing, and left the object
+// incoherent: the Deployment's own metadata moved to the new value while its pod
+// template kept the old one.
 func carryRestartMarkers(desired, existing map[string]string) map[string]string {
 	for _, key := range restartMarkerAnnotations {
+		if _, declared := desired[key]; declared {
+			continue
+		}
 		if v, ok := existing[key]; ok {
 			desired = mergeAnnotations(desired, map[string]string{key: v})
 		}
