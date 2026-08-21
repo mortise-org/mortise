@@ -324,12 +324,44 @@ type ResourceRequirements struct {
 	MemoryLimit string `json:"memoryLimit,omitempty"`
 }
 
+// ProbeConfig configures one health probe. When Path is set the probe is an
+// HTTP GET, otherwise it is a TCP dial against Port.
+//
+// Omitting livenessProbe and readinessProbe does not mean "no probes": Mortise
+// injects TCP defaults against the app's port. Set Enabled to false to opt out.
 type ProbeConfig struct {
-	Path                string `json:"path,omitempty"`
-	Port                int32  `json:"port,omitempty"`
-	InitialDelaySeconds int32  `json:"initialDelaySeconds,omitempty"`
-	PeriodSeconds       int32  `json:"periodSeconds,omitempty"`
-	TimeoutSeconds      int32  `json:"timeoutSeconds,omitempty"`
+	// Enabled, when set to false, suppresses this probe entirely. A nil
+	// pointer means enabled. Use it for a container that legitimately does
+	// not listen on a port, or one whose health the platform cannot judge.
+	// +optional
+	Enabled *bool `json:"enabled,omitempty"`
+
+	// Path makes this an HTTP GET probe. Omit for a TCP dial.
+	// +optional
+	Path string `json:"path,omitempty"`
+
+	// Port to probe. Defaults to the app's network port.
+	// +optional
+	Port int32 `json:"port,omitempty"`
+
+	// InitialDelaySeconds delays the first probe after container start.
+	// +optional
+	InitialDelaySeconds int32 `json:"initialDelaySeconds,omitempty"`
+
+	// PeriodSeconds is the interval between probes. Defaults to 10.
+	// +optional
+	PeriodSeconds int32 `json:"periodSeconds,omitempty"`
+
+	// TimeoutSeconds is how long a single probe may take. Defaults to 3.
+	// +optional
+	TimeoutSeconds int32 `json:"timeoutSeconds,omitempty"`
+
+	// FailureThreshold is how many consecutive failures count as failed.
+	// Defaults to 3. Raise this for a container that is slow to start rather
+	// than inflating InitialDelaySeconds, which pays the cost on every
+	// restart forever rather than just the first.
+	// +optional
+	FailureThreshold int32 `json:"failureThreshold,omitempty"`
 }
 
 type Environment struct {

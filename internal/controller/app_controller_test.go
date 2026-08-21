@@ -9461,3 +9461,95 @@ var _ = Describe("burstable resource limits (CAI-163)", func() {
 		Expect(got.Limits).To(BeEmpty())
 	})
 })
+
+var _ = Describe("probe safety (CAI-159)", func() {
+	It("honours failureThreshold instead of forcing 3", func() {
+		p := buildProbe(&mortisev1alpha1.ProbeConfig{Port: 5432, FailureThreshold: 30}, 8080)
+		Expect(p).NotTo(BeNil())
+		Expect(p.FailureThreshold).To(Equal(int32(30)))
+		// The knob exists so a slow starter doesn't need a huge initialDelay,
+		// which pays its cost on every restart forever.
+		Expect(p.InitialDelaySeconds).To(Equal(int32(5)))
+	})
+
+	It("defaults failureThreshold to 3 when unset", func() {
+		p := buildProbe(&mortisev1alpha1.ProbeConfig{Port: 8080}, 8080)
+		Expect(p.FailureThreshold).To(Equal(int32(3)))
+	})
+
+	It("suppresses a probe when explicitly disabled", func() {
+		Expect(buildProbe(&mortisev1alpha1.ProbeConfig{Enabled: ptr.To(false)}, 8080)).To(BeNil())
+	})
+
+	It("treats a nil enabled as enabled", func() {
+		Expect(buildProbe(&mortisev1alpha1.ProbeConfig{Port: 8080}, 8080)).NotTo(BeNil())
+		Expect(buildProbe(&mortisev1alpha1.ProbeConfig{Enabled: ptr.To(true)}, 8080)).NotTo(BeNil())
+	})
+
+	Context("stateful workloads", func() {
+		const namespace = "pj-default-project"
+		const envNsProduction = "pj-default-project-production"
+		ctx := context.Background()
+
+		var app *mortisev1alpha1.App
+
+		AfterEach(func() {
+			if app != nil {
+				_ = k8sClient.Delete(ctx, app)
+				app = nil
+			}
+			purgeAllAppsIn(ctx, namespace)
+		})
+
+		reconcileApp := func(name string, storage []mortisev1alpha1.VolumeSpec, probe *mortisev1alpha1.ProbeConfig) *appsv1.Deployment {
+			app = &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+				Spec: mortisev1alpha1.AppSpec{
+					Source:  mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: testImageNginx},
+					Network: mortisev1alpha1.NetworkConfig{Public: false},
+					Storage: storage,
+					Environments: []mortisev1alpha1.Environment{
+						{Name: "production", Replicas: ptr.To[int32](1), LivenessProbe: probe},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: name, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			var dep appsv1.Deployment
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: envNsProduction}, &dep)).To(Succeed())
+			return &dep
+		}
+
+		// The postgres case: initdb runs 60-90s on a Unix socket only, the
+		// injected liveness probe kills it mid-bootstrap, and the half-written
+		// data directory then reports "Skipping initialization" forever.
+		It("does not inject a default liveness probe for an App with storage", func() {
+			dep := reconcileApp("stateful-noprobe", []mortisev1alpha1.VolumeSpec{
+				{Name: "data", MountPath: "/var/lib/postgresql/data", Size: resource.MustParse("1Gi")},
+			}, nil)
+			c := dep.Spec.Template.Spec.Containers[0]
+			Expect(c.LivenessProbe).To(BeNil(),
+				"a default liveness probe can interrupt first-boot init and poison the volume")
+			Expect(c.ReadinessProbe).NotTo(BeNil(),
+				"readiness should still default on -- withholding traffic is safe")
+		})
+
+		It("still injects a default liveness probe for a stateless App", func() {
+			dep := reconcileApp("stateless-probe", nil, nil)
+			Expect(dep.Spec.Template.Spec.Containers[0].LivenessProbe).NotTo(BeNil())
+		})
+
+		It("honours an explicit liveness probe on a stateful App", func() {
+			dep := reconcileApp("stateful-explicit", []mortisev1alpha1.VolumeSpec{
+				{Name: "data", MountPath: "/data", Size: resource.MustParse("1Gi")},
+			}, &mortisev1alpha1.ProbeConfig{Port: 5432, InitialDelaySeconds: 300})
+			lp := dep.Spec.Template.Spec.Containers[0].LivenessProbe
+			Expect(lp).NotTo(BeNil())
+			Expect(lp.InitialDelaySeconds).To(Equal(int32(300)))
+		})
+	})
+})
