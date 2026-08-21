@@ -1812,15 +1812,50 @@ definitions:
           +kubebuilder:validation:MaxLength=253
         type: string
       value:
+        description: |-
+          Value is a literal, stored in plaintext in this resource.
+
+          Do not use it for credentials. Anyone who can read this App can read the
+          value -- a wider audience than those who can read Secrets -- and
+          client-side `kubectl apply` additionally copies it into the
+          kubectl.kubernetes.io/last-applied-configuration annotation, so removing
+          it from here later does not remove it from the object.
+
+          For anything secret use ValueFrom.SecretRef instead. Mutually exclusive
+          with ValueFrom.
+          +optional
         type: string
       valueFrom:
-        $ref: '#/definitions/v1alpha1.EnvVarSource'
+        allOf:
+        - $ref: '#/definitions/v1alpha1.EnvVarSource'
+        description: |-
+          ValueFrom resolves the value from somewhere other than this resource.
+          Mutually exclusive with Value. Use this for credentials.
+          +optional
     type: object
   v1alpha1.EnvVarSource:
     properties:
       fromBinding:
-        $ref: '#/definitions/v1alpha1.BindingVarSource'
+        allOf:
+        - $ref: '#/definitions/v1alpha1.BindingVarSource'
+        description: |-
+          FromBinding projects a single credential key from another App in the
+          same project, which must be declared in this environment's bindings[].
+          +optional
       secretRef:
+        description: "SecretRef is the NAME of a Secret in this environment's workload\nnamespace
+          (`pj-{project}-{environment}`).\n\nNote the shape, which differs from core-v1
+          on purpose and trips up\nevery Kubernetes intuition: this is a bare string,
+          not an object, and\nthere is no `key` field. The key read from the Secret
+          is always the env\nvar's own Name. To project a Secret key called `pw` into
+          `DB_PASSWORD`,\nthe Secret must contain a key literally called `DB_PASSWORD`.\n\n\t
+          - name: DB_PASSWORD                 # core-v1 would be:\n\t   valueFrom:
+          \                       #   valueFrom:\n\t     secretRef: my-app-credentials
+          \  #     secretKeyRef:\n\t                                     #       name:
+          my-app-credentials\n\t                                     #       key:
+          pw\n\nThe referenced Secret is user-managed: Mortise reads it, it does not\ncreate
+          or own it. A Secret that exists but has no key matching the env\nvar name
+          is an error, not an empty value.\n+optional"
         type: string
     type: object
   v1alpha1.Environment:
@@ -2180,7 +2215,7 @@ definitions:
         type: string
       name:
         description: |-
-          Name of the Secret in the App's namespace.
+          Name of the Secret in the environment's workload namespace.
           +kubebuilder:validation:Required
         type: string
     type: object
