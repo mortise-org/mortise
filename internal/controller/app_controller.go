@@ -3648,11 +3648,9 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 			es.PendingEnvHash = r.hashEnvSecretData(ctx, app.Name, envNs)
 			es.DeployedEnvHash = deployedHash
 
-			// Keys the derived Secret still carries that the spec no longer
-			// declares. Surfacing them is the point: the override guard
-			// deliberately preserves some removals, and from outside that is
-			// indistinguishable from removal being broken (CAI-157).
-			es.StaleEnvKeys = r.staleEnvKeysFor(ctx, app.Name, envNs, &env)
+			// An unresolvable secretRef leaves the last resolved value in
+			// place, which is correct and invisible -- report it (CAI-162).
+			es.UnresolvedEnvKeys = r.unresolvedEnvKeysFor(ctx, &env, envNs)
 
 			// Carry forward deploy history, restart tracking, and build info.
 			if prev, ok := existingByName[env.Name]; ok {

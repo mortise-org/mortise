@@ -693,8 +693,8 @@ func (in *EnvironmentStatus) DeepCopyInto(out *EnvironmentStatus) {
 		*out = new(BuildRunReference)
 		**out = **in
 	}
-	if in.StaleEnvKeys != nil {
-		in, out := &in.StaleEnvKeys, &out.StaleEnvKeys
+	if in.UnresolvedEnvKeys != nil {
+		in, out := &in.UnresolvedEnvKeys, &out.UnresolvedEnvKeys
 		*out = make([]string, len(*in))
 		copy(*out, *in)
 	}

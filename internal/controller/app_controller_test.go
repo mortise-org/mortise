@@ -9326,89 +9326,6 @@ var _ = Describe("kubectl rollout restart is not reverted (CAI-152)", func() {
 	})
 })
 
-var _ = Describe("stale env keys surface in status (CAI-157)", func() {
-	const namespace = "pj-default-project"
-	const envNsProduction = "pj-default-project-production"
-	const appName = "drift-report"
-	ctx := context.Background()
-
-	var app *mortisev1alpha1.App
-
-	AfterEach(func() {
-		if app != nil {
-			_ = k8sClient.Delete(ctx, app)
-			app = nil
-		}
-		purgeAllAppsIn(ctx, namespace)
-	})
-
-	It("reports a key the derived Secret carries but the spec no longer declares", func() {
-		app = &mortisev1alpha1.App{
-			ObjectMeta: metav1.ObjectMeta{Name: appName, Namespace: namespace},
-			Spec: mortisev1alpha1.AppSpec{
-				Source: mortisev1alpha1.AppSource{
-					Type:  mortisev1alpha1.SourceTypeImage,
-					Image: testImageNginx,
-				},
-				Network: mortisev1alpha1.NetworkConfig{Public: false},
-				Environments: []mortisev1alpha1.Environment{
-					{
-						Name:     "production",
-						Replicas: ptr.To[int32](1),
-						Env: []mortisev1alpha1.EnvVar{
-							{Name: "NODE_ENV", Value: "production"},
-						},
-					},
-				},
-			},
-		}
-		Expect(k8sClient.Create(ctx, app)).To(Succeed())
-
-		reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
-		key := types.NamespacedName{Name: appName, Namespace: namespace}
-		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
-		Expect(err).NotTo(HaveOccurred())
-
-		// A key the operator declined to prune: present in the derived Secret,
-		// absent from the spec. This is CAI-154's shape -- an untracked key the
-		// override guard preserves on purpose.
-		secretKey := types.NamespacedName{
-			Name: envstore.AppEnvSecretName(appName), Namespace: envNsProduction,
-		}
-		var sec corev1.Secret
-		Expect(k8sClient.Get(ctx, secretKey, &sec)).To(Succeed())
-		if sec.Data == nil {
-			sec.Data = map[string][]byte{}
-		}
-		sec.Data["YOUTUBE_REDIRECT_URI"] = []byte("https://example.com/cb")
-		Expect(k8sClient.Update(ctx, &sec)).To(Succeed())
-
-		_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
-		Expect(err).NotTo(HaveOccurred())
-
-		var fresh mortisev1alpha1.App
-		Expect(k8sClient.Get(ctx, key, &fresh)).To(Succeed())
-
-		var prod *mortisev1alpha1.EnvironmentStatus
-		for i := range fresh.Status.Environments {
-			if fresh.Status.Environments[i].Name == "production" {
-				prod = &fresh.Status.Environments[i]
-			}
-		}
-		Expect(prod).NotTo(BeNil(), "no production environment status")
-		Expect(prod.StaleEnvKeys).To(
-			ContainElement("YOUTUBE_REDIRECT_URI"),
-			"drift between the derived Secret and the spec was invisible in status",
-		)
-		Expect(prod.StaleEnvKeys).NotTo(ContainElement("NODE_ENV"))
-
-		// Names only: the report has to be safe to paste into an incident channel.
-		for _, k := range prod.StaleEnvKeys {
-			Expect(k).NotTo(ContainSubstring("example.com"))
-		}
-	})
-})
-
 var _ = Describe("burstable resource limits (CAI-163)", func() {
 	toReq := func(r mortisev1alpha1.ResourceRequirements) corev1.ResourceRequirements {
 		got, err := toResourceRequirements(r)
@@ -9551,5 +9468,144 @@ var _ = Describe("probe safety (CAI-159)", func() {
 			Expect(lp).NotTo(BeNil())
 			Expect(lp.InitialDelaySeconds).To(Equal(int32(300)))
 		})
+	})
+})
+
+var _ = Describe("a secretRef that breaks after resolving (CAI-162 follow-up)", func() {
+	const namespace = "pj-default-project"
+	const envNsProduction = "pj-default-project-production"
+	const appName = "broken-ref"
+	ctx := context.Background()
+
+	var app *mortisev1alpha1.App
+
+	AfterEach(func() {
+		if app != nil {
+			_ = k8sClient.Delete(ctx, app)
+			app = nil
+		}
+		purgeAllAppsIn(ctx, namespace)
+	})
+
+	// CAI-162 made an unresolvable secretRef an error instead of an empty
+	// string. The caller logs and skips. For a variable that never resolved,
+	// that means absent -- loud, which is the point. But for one that resolved
+	// before and then broke (key renamed in the Secret), the previously
+	// resolved value stays in the derived Secret and keeps serving.
+	It("keeps serving the last resolved value rather than reporting the break", func() {
+		sec := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: "app-credentials", Namespace: envNsProduction},
+			Data:       map[string][]byte{"API_KEY": []byte("original-value")},
+		}
+		Expect(k8sClient.Create(ctx, sec)).To(Succeed())
+		defer func() { _ = k8sClient.Delete(ctx, sec) }()
+
+		app = &mortisev1alpha1.App{
+			ObjectMeta: metav1.ObjectMeta{Name: appName, Namespace: namespace},
+			Spec: mortisev1alpha1.AppSpec{
+				Source:  mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: testImageNginx},
+				Network: mortisev1alpha1.NetworkConfig{Public: false},
+				Environments: []mortisev1alpha1.Environment{
+					{
+						Name:     "production",
+						Replicas: ptr.To[int32](1),
+						Env: []mortisev1alpha1.EnvVar{
+							{Name: "API_KEY", ValueFrom: &mortisev1alpha1.EnvVarSource{SecretRef: "app-credentials"}},
+						},
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, app)).To(Succeed())
+
+		reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+		key := types.NamespacedName{Name: appName, Namespace: namespace}
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+		Expect(err).NotTo(HaveOccurred())
+
+		derived := types.NamespacedName{
+			Name: envstore.AppEnvSecretName(appName), Namespace: envNsProduction,
+		}
+		var envSec corev1.Secret
+		Expect(k8sClient.Get(ctx, derived, &envSec)).To(Succeed())
+		Expect(string(envSec.Data["API_KEY"])).To(Equal("original-value"))
+
+		// Break the reference the way a rename does: same Secret, different key.
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name: "app-credentials", Namespace: envNsProduction,
+		}, sec)).To(Succeed())
+		sec.Data = map[string][]byte{"RENAMED_KEY": []byte("rotated-value")}
+		Expect(k8sClient.Update(ctx, sec)).To(Succeed())
+
+		_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+		Expect(err).NotTo(HaveOccurred())
+
+		// The stale value keeps serving, which is the safe behaviour: clearing
+		// a credential because a Secret was briefly unreadable would be worse.
+		Expect(k8sClient.Get(ctx, derived, &envSec)).To(Succeed())
+		Expect(string(envSec.Data["API_KEY"])).To(Equal("original-value"),
+			"the previously resolved value should be preserved, not cleared")
+
+		// But it must not be silent. Without this, a key renamed during a
+		// rotation is indistinguishable from a working reference while the
+		// workload runs the old credential.
+		var fresh mortisev1alpha1.App
+		Expect(k8sClient.Get(ctx, key, &fresh)).To(Succeed())
+		var prod *mortisev1alpha1.EnvironmentStatus
+		for i := range fresh.Status.Environments {
+			if fresh.Status.Environments[i].Name == "production" {
+				prod = &fresh.Status.Environments[i]
+			}
+		}
+		Expect(prod).NotTo(BeNil())
+		Expect(prod.UnresolvedEnvKeys).To(ContainElement("API_KEY"),
+			"a broken secretRef left the old value serving with nothing reported")
+		for _, k := range prod.UnresolvedEnvKeys {
+			Expect(k).NotTo(ContainSubstring("value"), "names only, never values")
+		}
+	})
+
+	It("reports nothing while the reference resolves", func() {
+		sec := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: "app-credentials", Namespace: envNsProduction},
+			Data:       map[string][]byte{"API_KEY": []byte("fine")},
+		}
+		Expect(k8sClient.Create(ctx, sec)).To(Succeed())
+		defer func() { _ = k8sClient.Delete(ctx, sec) }()
+
+		app = &mortisev1alpha1.App{
+			ObjectMeta: metav1.ObjectMeta{Name: "healthy-ref", Namespace: namespace},
+			Spec: mortisev1alpha1.AppSpec{
+				Source:  mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: testImageNginx},
+				Network: mortisev1alpha1.NetworkConfig{Public: false},
+				Environments: []mortisev1alpha1.Environment{
+					{
+						Name:     "production",
+						Replicas: ptr.To[int32](1),
+						Env: []mortisev1alpha1.EnvVar{
+							{Name: "API_KEY", ValueFrom: &mortisev1alpha1.EnvVarSource{SecretRef: "app-credentials"}},
+							{Name: "NODE_ENV", Value: "production"},
+						},
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, app)).To(Succeed())
+		reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{
+			NamespacedName: types.NamespacedName{Name: "healthy-ref", Namespace: namespace},
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		var fresh mortisev1alpha1.App
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name: "healthy-ref", Namespace: namespace,
+		}, &fresh)).To(Succeed())
+		for i := range fresh.Status.Environments {
+			if fresh.Status.Environments[i].Name == "production" {
+				Expect(fresh.Status.Environments[i].UnresolvedEnvKeys).To(BeEmpty(),
+					"a working reference must not be reported, or the field becomes noise")
+			}
+		}
 	})
 })
