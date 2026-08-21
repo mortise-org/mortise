@@ -378,8 +378,13 @@ type ProbeConfig struct {
 }
 
 type Environment struct {
-	// Name references a `ProjectEnvironment.Name` on the parent Project. The
-	// admission webhook rejects names not present on the parent Project.
+	// Name references a `ProjectEnvironment.Name` on the parent Project.
+	//
+	// A name not declared on the parent Project is SILENTLY IGNORED, not
+	// rejected: resolveEnvs walks the Project's environments and only picks up
+	// an override whose name matches one, so an override for an unknown
+	// environment is never read and the apply still succeeds. Check the name
+	// against the Project if an override appears to have no effect.
 	// +kubebuilder:validation:Required
 	Name string `json:"name"`
 
@@ -558,7 +563,8 @@ type AppSpec struct {
 	// the parent `Project.Spec.Environments`. Any App auto-exists in every
 	// project env; entries here only tune behavior for a specific env or opt
 	// out via `Enabled: false`. Names must match a `ProjectEnvironment.Name`
-	// on the parent Project (enforced by the admission webhook).
+	// on the parent Project; an entry naming anything else is silently
+	// ignored rather than rejected (see Environment.Name).
 	Environments []Environment `json:"environments,omitempty"`
 }
 
