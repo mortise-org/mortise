@@ -4602,6 +4602,16 @@ func (r *AppReconciler) reconcileExternalNameService(ctx context.Context, app *m
 // none of the labels appRequestsForManagedResource matches on (CAI-160).
 const referencedSecretIndex = "spec.environments.env.valueFrom.secretRef"
 
+// referencedCredentialSecretIndex indexes Apps by the bare NAME of every
+// Secret spec.credentials[] reads through valueFrom.secretRef.
+//
+// Name only, not namespace-qualified: credentials are app-level, but
+// resolveCredential reads them from each environment's workload namespace, and
+// an App participates in every environment its parent Project declares -- not
+// only the ones it overrides in spec.environments. That set can't be derived
+// inside a pure index function, so the namespace is checked at lookup time.
+const referencedCredentialSecretIndex = "spec.credentials.valueFrom.secretRef"
+
 // indexAppReferencedSecrets is the index function for referencedSecretIndex.
 //
 // Apps whose namespace does not follow the `pj-{project}` convention are not
@@ -4630,6 +4640,35 @@ func indexAppReferencedSecrets(obj client.Object) []string {
 	return keys
 }
 
+// indexAppCredentialSecrets is the index function for
+// referencedCredentialSecretIndex.
+func indexAppCredentialSecrets(obj client.Object) []string {
+	app, ok := obj.(*mortisev1alpha1.App)
+	if !ok {
+		return nil
+	}
+	var names []string
+	for _, c := range app.Spec.Credentials {
+		if c.ValueFrom == nil || c.ValueFrom.SecretRef == nil || c.ValueFrom.SecretRef.Name == "" {
+			continue
+		}
+		names = append(names, c.ValueFrom.SecretRef.Name)
+	}
+	return names
+}
+
+// appEnvNamespacePrefix is the prefix every one of an App's environment
+// namespaces shares: `pj-{project}-`. Derived from the App's own control
+// namespace, so it needs no Project lookup and is unambiguous even when the
+// project name contains hyphens.
+func appEnvNamespacePrefix(appNamespace string) (string, bool) {
+	projectName, ok := constants.ProjectFromControlNs(appNamespace)
+	if !ok {
+		return "", false
+	}
+	return constants.ControlNamespace(projectName) + "-", true
+}
+
 // appRequestsForReferencedSecret maps a Secret back to every App that reads a
 // value out of it via valueFrom.secretRef.
 func (r *AppReconciler) appRequestsForReferencedSecret(ctx context.Context, obj client.Object) []reconcile.Request {
@@ -4646,6 +4685,29 @@ func (r *AppReconciler) appRequestsForReferencedSecret(ctx context.Context, obj 
 		reqs = append(reqs, reconcile.Request{NamespacedName: types.NamespacedName{
 			Name:      apps.Items[i].Name,
 			Namespace: apps.Items[i].Namespace,
+		}})
+	}
+
+	// Credentials read the same user-managed Secrets, from each environment's
+	// workload namespace, and their hash is stamped on the pod template
+	// unconditionally -- so this is the path that actually rolls a workload
+	// when a referenced Secret rotates.
+	var credApps mortisev1alpha1.AppList
+	if err := r.List(ctx, &credApps, client.MatchingFields{
+		referencedCredentialSecretIndex: obj.GetName(),
+	}); err != nil {
+		logf.FromContext(ctx).Error(err, "listing Apps with credentials referencing Secret",
+			"secret", obj.GetNamespace()+"/"+obj.GetName())
+		return reqs
+	}
+	for i := range credApps.Items {
+		prefix, ok := appEnvNamespacePrefix(credApps.Items[i].Namespace)
+		if !ok || !strings.HasPrefix(obj.GetNamespace(), prefix) {
+			continue
+		}
+		reqs = append(reqs, reconcile.Request{NamespacedName: types.NamespacedName{
+			Name:      credApps.Items[i].Name,
+			Namespace: credApps.Items[i].Namespace,
 		}})
 	}
 	return reqs
@@ -4738,6 +4800,11 @@ func (r *AppReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		context.Background(), &mortisev1alpha1.App{}, referencedSecretIndex, indexAppReferencedSecrets,
 	); err != nil {
 		return fmt.Errorf("index apps by referenced secret: %w", err)
+	}
+	if err := mgr.GetFieldIndexer().IndexField(
+		context.Background(), &mortisev1alpha1.App{}, referencedCredentialSecretIndex, indexAppCredentialSecrets,
+	); err != nil {
+		return fmt.Errorf("index apps by referenced credential secret: %w", err)
 	}
 
 	enqueueAppFromSecret := handler.EnqueueRequestsFromMapFunc(r.appRequestsForSecret)
