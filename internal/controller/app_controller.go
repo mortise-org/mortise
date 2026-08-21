@@ -2854,8 +2854,19 @@ func (r *AppReconciler) resolveEnvVarValue(
 		}, &secret); err != nil {
 			return "", "", fmt.Errorf("env var %q: read secretRef %q in %s: %w", ev.Name, ev.ValueFrom.SecretRef, envNs, err)
 		}
-		val := string(secret.Data[ev.Name])
-		return val, "user", nil
+		// An absent key is a mistake, not an empty value. Mortise's secretRef
+		// is a bare Secret name and the key inside must equal the env var
+		// name -- the opposite of core-v1's explicit secretKeyRef -- so a
+		// rename, a typo, or a key named for the source system all land here.
+		// Returning "" would hand the container an empty credential and
+		// report Ready, which fails somewhere far away and much later.
+		// An explicitly empty value stays legal: the key exists (CAI-162).
+		raw, ok := secret.Data[ev.Name]
+		if !ok {
+			return "", "", fmt.Errorf("env var %q: secretRef %q in %s has no key %q",
+				ev.Name, ev.ValueFrom.SecretRef, envNs, ev.Name)
+		}
+		return string(raw), "user", nil
 	}
 
 	if hasFromBinding {
