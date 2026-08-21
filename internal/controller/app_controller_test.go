@@ -7586,13 +7586,23 @@ var _ = Describe("App Controller — git source", func() {
 			Expect(envData).To(HaveKeyWithValue("R2_BUCKET_NAME", "new-value"), "CRD spec change should propagate to Secret")
 			Expect(envData).To(HaveKeyWithValue("STATIC_VAR", "unchanged"))
 
-			// Verify the last-applied annotation was written.
+			// Verify the last-applied annotation was written, as digests.
 			var sec corev1.Secret
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
 				Name:      envstore.AppEnvSecretName(appName),
 				Namespace: envNsProduction,
 			}, &sec)).To(Succeed())
-			Expect(sec.Annotations).To(HaveKey(envstore.AnnotationLastSpecEnv))
+			Expect(sec.Annotations).To(HaveKey(envstore.AnnotationLastSpecEnvDigest))
+			Expect(sec.Annotations).NotTo(HaveKey(envstore.AnnotationLastSpecEnv),
+				"the legacy plaintext annotation should not be written")
+			// The tracking annotation must never carry the values themselves
+			// (CAI-168) -- that is the whole point of storing digests.
+			for k, v := range sec.Annotations {
+				Expect(v).NotTo(ContainSubstring("new-value"),
+					"a spec env value leaked into annotation %q", k)
+				Expect(v).NotTo(ContainSubstring("unchanged"),
+					"a spec env value leaked into annotation %q", k)
+			}
 		})
 
 		It("preserves user-overridden values even when CRD spec changes", func() {

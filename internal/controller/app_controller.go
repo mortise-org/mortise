@@ -2776,7 +2776,7 @@ func (r *AppReconciler) reconcileEnvSecret(ctx context.Context, app *mortisev1al
 		for _, e := range current {
 			if e.Source == "" || e.Source == "user" {
 				if _, stillInSpec := specEnvKeys[e.Name]; !stillInSpec {
-					if lastVal, tracked := lastSpec[e.Name]; tracked && e.Value == lastVal {
+					if lastVal, tracked := lastSpec[e.Name]; tracked && lastSpecEnvDigest(e.Value) == lastVal {
 						continue
 					}
 				}
@@ -2800,7 +2800,7 @@ func (r *AppReconciler) reconcileEnvSecret(ctx context.Context, app *mortisev1al
 			if sv.value == existingVal {
 				continue
 			}
-			if lastVal, tracked := lastSpec[sv.name]; tracked && existingVal == lastVal {
+			if lastVal, tracked := lastSpec[sv.name]; tracked && lastSpecEnvDigest(existingVal) == lastVal {
 				seed[sv.name] = envstore.Env{Name: sv.name, Value: sv.value, Source: sv.source}
 			}
 		}
@@ -2965,15 +2965,37 @@ func (r *AppReconciler) readLastSpecEnv(ctx context.Context, ns, appName string)
 	}, &sec); err != nil {
 		return nil
 	}
+	if raw := sec.Annotations[envstore.AnnotationLastSpecEnvDigest]; raw != "" {
+		var m map[string]string
+		if err := json.Unmarshal([]byte(raw), &m); err != nil {
+			return nil
+		}
+		return m
+	}
+	// Migration: the legacy annotation holds values, not digests. Hashing them
+	// yields exactly what the digest annotation would have held, so the first
+	// reconcile after upgrade compares correctly instead of seeing every key
+	// as user-overridden and silently freezing spec updates for all of them.
 	raw := sec.Annotations[envstore.AnnotationLastSpecEnv]
 	if raw == "" {
 		return nil
 	}
-	var m map[string]string
-	if err := json.Unmarshal([]byte(raw), &m); err != nil {
+	var legacy map[string]string
+	if err := json.Unmarshal([]byte(raw), &legacy); err != nil {
 		return nil
 	}
+	m := make(map[string]string, len(legacy))
+	for k, v := range legacy {
+		m[k] = lastSpecEnvDigest(v)
+	}
 	return m
+}
+
+// lastSpecEnvDigest is the stored form of a spec env value: a SHA-256 hex
+// digest, never the value.
+func lastSpecEnvDigest(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:])
 }
 
 func (r *AppReconciler) writeLastSpecEnv(ctx context.Context, ns, appName string, envVars map[string]string) error {
@@ -2987,11 +3009,17 @@ func (r *AppReconciler) writeLastSpecEnv(ctx context.Context, ns, appName string
 		}
 		return fmt.Errorf("get env secret for last-spec annotation: %w", err)
 	}
-	data, err := json.Marshal(envVars)
-	if err != nil {
-		return fmt.Errorf("marshal last-spec env: %w", err)
+	digests := make(map[string]string, len(envVars))
+	for name, value := range envVars {
+		digests[name] = lastSpecEnvDigest(value)
 	}
-	if sec.Annotations != nil && sec.Annotations[envstore.AnnotationLastSpecEnv] == string(data) {
+	data, err := json.Marshal(digests)
+	if err != nil {
+		return fmt.Errorf("marshal last-spec env digests: %w", err)
+	}
+	_, hasLegacy := sec.Annotations[envstore.AnnotationLastSpecEnv]
+	if !hasLegacy && sec.Annotations != nil &&
+		sec.Annotations[envstore.AnnotationLastSpecEnvDigest] == string(data) {
 		return nil
 	}
 	if err := envstore.UpdateWithConflictRetry(ctx, r.Client, types.NamespacedName{
@@ -3003,10 +3031,14 @@ func (r *AppReconciler) writeLastSpecEnv(ctx context.Context, ns, appName string
 		if sec.Annotations == nil {
 			sec.Annotations = make(map[string]string)
 		}
-		if sec.Annotations[envstore.AnnotationLastSpecEnv] == string(data) {
+		_, legacy := sec.Annotations[envstore.AnnotationLastSpecEnv]
+		if !legacy && sec.Annotations[envstore.AnnotationLastSpecEnvDigest] == string(data) {
 			return false, nil
 		}
-		sec.Annotations[envstore.AnnotationLastSpecEnv] = string(data)
+		// Removing the legacy annotation is the point of the change, not a
+		// tidy-up: it is where the plaintext lived.
+		delete(sec.Annotations, envstore.AnnotationLastSpecEnv)
+		sec.Annotations[envstore.AnnotationLastSpecEnvDigest] = string(data)
 		return true, nil
 	}); err != nil {
 		return fmt.Errorf("write last-spec-env annotation: %w", err)
