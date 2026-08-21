@@ -1654,7 +1654,15 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 	containers[0].Resources = resources
 
 	port := appPort(app)
-	containers[0].LivenessProbe = buildProbe(env.LivenessProbe, port)
+	// A default liveness probe kills a container that is slow to start
+	// listening. For a stateless app that is a restart; for a stateful one it
+	// can interrupt first-boot initialization and leave the volume
+	// permanently unusable, which no restart recovers. Readiness still
+	// defaults on -- withholding traffic is safe. An App with storage opts
+	// in to liveness explicitly (CAI-159).
+	if len(app.Spec.Storage) == 0 || env.LivenessProbe != nil {
+		containers[0].LivenessProbe = buildProbe(env.LivenessProbe, port)
+	}
 	containers[0].ReadinessProbe = buildProbe(env.ReadinessProbe, port)
 	if env.StartupProbe != nil {
 		containers[0].StartupProbe = buildProbe(env.StartupProbe, port)
@@ -3875,6 +3883,10 @@ func buildProbe(pc *mortisev1alpha1.ProbeConfig, defaultPort int32) *corev1.Prob
 		SuccessThreshold:    1,
 	}
 
+	if pc != nil && pc.Enabled != nil && !*pc.Enabled {
+		return nil
+	}
+
 	if pc == nil {
 		probe.ProbeHandler = corev1.ProbeHandler{
 			TCPSocket: &corev1.TCPSocketAction{
@@ -3892,6 +3904,9 @@ func buildProbe(pc *mortisev1alpha1.ProbeConfig, defaultPort int32) *corev1.Prob
 	}
 	if pc.TimeoutSeconds > 0 {
 		probe.TimeoutSeconds = pc.TimeoutSeconds
+	}
+	if pc.FailureThreshold > 0 {
+		probe.FailureThreshold = pc.FailureThreshold
 	}
 
 	port := defaultPort

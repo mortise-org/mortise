@@ -265,19 +265,49 @@ spec:
                         Set by the deploy handler when a deploy targets a specific environment.
                       type: string
                     livenessProbe:
+                      description: |-
+                        ProbeConfig configures one health probe. When Path is set the probe is an
+                        HTTP GET, otherwise it is a TCP dial against Port.
+
+                        Omitting livenessProbe and readinessProbe does not mean "no probes": Mortise
+                        injects TCP defaults against the app's port. Set Enabled to false to opt out.
                       properties:
+                        enabled:
+                          description: |-
+                            Enabled, when set to false, suppresses this probe entirely. A nil
+                            pointer means enabled. Use it for a container that legitimately does
+                            not listen on a port, or one whose health the platform cannot judge.
+                          type: boolean
+                        failureThreshold:
+                          description: |-
+                            FailureThreshold is how many consecutive failures count as failed.
+                            Defaults to 3. Raise this for a container that is slow to start rather
+                            than inflating InitialDelaySeconds, which pays the cost on every
+                            restart forever rather than just the first.
+                          format: int32
+                          type: integer
                         initialDelaySeconds:
+                          description: InitialDelaySeconds delays the first probe
+                            after container start.
                           format: int32
                           type: integer
                         path:
+                          description: Path makes this an HTTP GET probe. Omit for
+                            a TCP dial.
                           type: string
                         periodSeconds:
+                          description: PeriodSeconds is the interval between probes.
+                            Defaults to 10.
                           format: int32
                           type: integer
                         port:
+                          description: Port to probe. Defaults to the app's network
+                            port.
                           format: int32
                           type: integer
                         timeoutSeconds:
+                          description: TimeoutSeconds is how long a single probe may
+                            take. Defaults to 3.
                           format: int32
                           type: integer
                       type: object
@@ -287,19 +317,49 @@ spec:
                         admission webhook rejects names not present on the parent Project.
                       type: string
                     readinessProbe:
+                      description: |-
+                        ProbeConfig configures one health probe. When Path is set the probe is an
+                        HTTP GET, otherwise it is a TCP dial against Port.
+
+                        Omitting livenessProbe and readinessProbe does not mean "no probes": Mortise
+                        injects TCP defaults against the app's port. Set Enabled to false to opt out.
                       properties:
+                        enabled:
+                          description: |-
+                            Enabled, when set to false, suppresses this probe entirely. A nil
+                            pointer means enabled. Use it for a container that legitimately does
+                            not listen on a port, or one whose health the platform cannot judge.
+                          type: boolean
+                        failureThreshold:
+                          description: |-
+                            FailureThreshold is how many consecutive failures count as failed.
+                            Defaults to 3. Raise this for a container that is slow to start rather
+                            than inflating InitialDelaySeconds, which pays the cost on every
+                            restart forever rather than just the first.
+                          format: int32
+                          type: integer
                         initialDelaySeconds:
+                          description: InitialDelaySeconds delays the first probe
+                            after container start.
                           format: int32
                           type: integer
                         path:
+                          description: Path makes this an HTTP GET probe. Omit for
+                            a TCP dial.
                           type: string
                         periodSeconds:
+                          description: PeriodSeconds is the interval between probes.
+                            Defaults to 10.
                           format: int32
                           type: integer
                         port:
+                          description: Port to probe. Defaults to the app's network
+                            port.
                           format: int32
                           type: integer
                         timeoutSeconds:
+                          description: TimeoutSeconds is how long a single probe may
+                            take. Defaults to 3.
                           format: int32
                           type: integer
                       type: object
@@ -418,19 +478,49 @@ spec:
                         type: object
                       type: array
                     startupProbe:
+                      description: |-
+                        ProbeConfig configures one health probe. When Path is set the probe is an
+                        HTTP GET, otherwise it is a TCP dial against Port.
+
+                        Omitting livenessProbe and readinessProbe does not mean "no probes": Mortise
+                        injects TCP defaults against the app's port. Set Enabled to false to opt out.
                       properties:
+                        enabled:
+                          description: |-
+                            Enabled, when set to false, suppresses this probe entirely. A nil
+                            pointer means enabled. Use it for a container that legitimately does
+                            not listen on a port, or one whose health the platform cannot judge.
+                          type: boolean
+                        failureThreshold:
+                          description: |-
+                            FailureThreshold is how many consecutive failures count as failed.
+                            Defaults to 3. Raise this for a container that is slow to start rather
+                            than inflating InitialDelaySeconds, which pays the cost on every
+                            restart forever rather than just the first.
+                          format: int32
+                          type: integer
                         initialDelaySeconds:
+                          description: InitialDelaySeconds delays the first probe
+                            after container start.
                           format: int32
                           type: integer
                         path:
+                          description: Path makes this an HTTP GET probe. Omit for
+                            a TCP dial.
                           type: string
                         periodSeconds:
+                          description: PeriodSeconds is the interval between probes.
+                            Defaults to 10.
                           format: int32
                           type: integer
                         port:
+                          description: Port to probe. Defaults to the app's network
+                            port.
                           format: int32
                           type: integer
                         timeoutSeconds:
+                          description: TimeoutSeconds is how long a single probe may
+                            take. Defaults to 3.
                           format: int32
                           type: integer
                       type: object
