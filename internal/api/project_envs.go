@@ -229,9 +229,11 @@ func (s *Server) createProjectEnvironment(ctx context.Context, projectName strin
 }
 
 // UpdateProjectEnvironment edits the display order and/or renames an env.
-// Renaming cascades to App overrides in the project namespace so the
-// admission webhook's "override names must exist on project" rule stays
-// satisfied after the update lands.
+// Renaming cascades to App overrides in the project namespace so those
+// overrides keep matching a declared environment. An override whose name
+// matches nothing on the Project is silently ignored by the reconciler --
+// not rejected -- so failing to cascade would leave overrides that look
+// applied and do nothing.
 //
 // PATCH /api/projects/{project}/environments/{name}  { "name": "stage", "displayOrder": 2 }
 //
@@ -294,9 +296,11 @@ func (s *Server) UpdateProjectEnvironment(w http.ResponseWriter, r *http.Request
 			writeError(w, r, err)
 			return
 		}
-		// Rename App overrides first so the admission webhook doesn't reject
-		// the project update when its post-state includes an env name that
-		// disappeared from overrides.
+		// Rename App overrides first so no override is ever left pointing at
+		// an environment name the Project no longer declares. Such an
+		// override is silently ignored rather than rejected, so the window
+		// matters: an App reconciling mid-rename would drop it without a
+		// word.
 		if err := s.renameAppOverrides(r.Context(), projectName, projectNs(project), envName, *req.Name); err != nil {
 			_ = s.deleteProjectEnvNamespace(r.Context(), project, *req.Name)
 			writeError(w, r, err)
@@ -766,8 +770,9 @@ func indexOfEnv(project *mortisev1alpha1.Project, name string) int {
 
 // renameAppOverrides walks every App in the project namespace and rewrites
 // any spec.environments[].name == oldName to newName. Called before updating
-// the Project so the admission webhook's "overrides must exist on project"
-// invariant is preserved throughout the transition.
+// the Project so that no override is ever left naming an environment the
+// Project does not declare -- the reconciler ignores those silently, so the
+// invariant has to hold throughout the transition, not just at the end.
 func (s *Server) renameAppOverrides(ctx context.Context, projectName, ns, oldName, newName string) error {
 	var apps mortisev1alpha1.AppList
 	if err := s.client.List(ctx, &apps, client.InNamespace(ns)); err != nil {
