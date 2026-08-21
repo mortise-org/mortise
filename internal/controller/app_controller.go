@@ -209,8 +209,15 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	// Strip plaintext literals out of the client-side-apply snapshot. Placed
 	// after the deletion path: an App on its way out is not worth writing to,
 	// and the write would race finalizer removal (CAI-151).
+	//
+	// Logged rather than returned. This is a hygiene write on an annotation
+	// nothing else reads, and it goes through the same validating webhook as
+	// any other App update -- so returning the error would let an unavailable
+	// webhook, or an App whose parent Project is momentarily unresolvable,
+	// block the deploy AND the status pass that exists precisely to keep
+	// reporting during that state.
 	if err := r.redactAppLastApplied(ctx, req.NamespacedName); err != nil {
-		return ctrl.Result{}, fmt.Errorf("redact last-applied-configuration: %w", err)
+		log.Error(err, "could not redact last-applied-configuration; continuing")
 	}
 
 	if controllerutil.AddFinalizer(&app, appFinalizer) {
@@ -3641,11 +3648,9 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 			es.PendingEnvHash = r.hashEnvSecretData(ctx, app.Name, envNs)
 			es.DeployedEnvHash = deployedHash
 
-			// Keys the derived Secret still carries that the spec no longer
-			// declares. Surfacing them is the point: the override guard
-			// deliberately preserves some removals, and from outside that is
-			// indistinguishable from removal being broken (CAI-157).
-			es.StaleEnvKeys = r.staleEnvKeysFor(ctx, app.Name, envNs, &env)
+			// An unresolvable secretRef leaves the last resolved value in
+			// place, which is correct and invisible -- report it (CAI-162).
+			es.UnresolvedEnvKeys = r.unresolvedEnvKeysFor(ctx, &env, envNs)
 
 			// Carry forward deploy history, restart tracking, and build info.
 			if prev, ok := existingByName[env.Name]; ok {
@@ -4278,17 +4283,24 @@ func normalizeStructPointers(v reflect.Value) {
 
 func (r *AppReconciler) effectiveResources(ctx context.Context, env *mortisev1alpha1.Environment) mortisev1alpha1.ResourceRequirements {
 	res := env.Resources
-	if res.CPU == "" && res.Memory == "" {
+	// Take the whole platform default, limits included. Copying only CPU and
+	// Memory meant a cpuLimit/memoryLimit set on PlatformConfig validated,
+	// stored, and was silently dropped.
+	if res.CPU == "" && res.Memory == "" && res.CPULimit == "" && res.MemoryLimit == "" {
 		var pc mortisev1alpha1.PlatformConfig
 		if err := r.Get(ctx, types.NamespacedName{Name: "platform"}, &pc); err == nil {
-			res.CPU = pc.Spec.Defaults.Resources.CPU
-			res.Memory = pc.Spec.Defaults.Resources.Memory
+			res = pc.Spec.Defaults.Resources
 		}
 	}
-	if res.CPU == "" {
+	// Only default the reservation when nothing was said about this resource
+	// at all. Someone who sets just a limit means "cap it here", and injecting
+	// a 100m request under a 50m limit turns that into a validation error
+	// about a request they never wrote. With no request, Kubernetes defaults
+	// it to the limit, which is what they meant.
+	if res.CPU == "" && res.CPULimit == "" {
 		res.CPU = "100m"
 	}
-	if res.Memory == "" {
+	if res.Memory == "" && res.MemoryLimit == "" {
 		res.Memory = "256Mi"
 	}
 	return res

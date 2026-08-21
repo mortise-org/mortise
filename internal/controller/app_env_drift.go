@@ -4,49 +4,42 @@ import (
 	"context"
 	"sort"
 
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/types"
+
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
-	"github.com/mortise-org/mortise/internal/envstore"
 )
 
-// staleEnvKeyNames returns the names present in the derived env Secret that are
-// no longer declared in the environment's spec.env.
+// unresolvedEnvKeysFor reports env vars whose valueFrom.secretRef cannot be
+// resolved right now: the referenced Secret is missing, or has no key matching
+// the variable name.
 //
-// Only user-visible entries are considered. Binding- and shared-sourced values
-// legitimately live in the Secret without appearing in spec.env, so counting
-// them would make every app with a binding permanently "drifted" and train
-// people to ignore the field.
+// This exists because an unresolvable reference is silent. The reconciler logs
+// and skips it, which leaves any previously resolved value in place -- correct,
+// since clearing a credential because a Secret was briefly unreadable would be
+// worse, but indistinguishable from a working reference. A key renamed during a
+// rotation therefore leaves the old credential serving while the App reports
+// Deploying with no message. Confirmed by test, not inferred.
 //
-// Names only. The whole point of this report is to be safe to run during an
-// incident and paste into a channel, which a value would not be.
-func staleEnvKeyNames(current []envstore.Env, env *mortisev1alpha1.Environment) []string {
-	inSpec := make(map[string]struct{}, len(env.Env))
+// Names only, never values.
+func (r *AppReconciler) unresolvedEnvKeysFor(ctx context.Context, env *mortisev1alpha1.Environment, envNs string) []string {
+	var unresolved []string
 	for _, ev := range env.Env {
-		inSpec[ev.Name] = struct{}{}
-	}
-	var stale []string
-	for _, e := range current {
-		if e.Source != "" && e.Source != "user" {
+		if ev.ValueFrom == nil || ev.ValueFrom.SecretRef == "" {
 			continue
 		}
-		if _, ok := inSpec[e.Name]; ok {
+		var secret corev1.Secret
+		if err := r.Get(ctx, types.NamespacedName{
+			Name:      ev.ValueFrom.SecretRef,
+			Namespace: envNs,
+		}, &secret); err != nil {
+			unresolved = append(unresolved, ev.Name)
 			continue
 		}
-		stale = append(stale, e.Name)
+		if _, ok := secret.Data[ev.Name]; !ok {
+			unresolved = append(unresolved, ev.Name)
+		}
 	}
-	sort.Strings(stale)
-	return stale
-}
-
-// staleEnvKeysFor reads the derived env Secret and reports which of its keys
-// the spec no longer declares. A read failure reports nothing rather than
-// falsely reporting no drift -- callers treat the result as "what we can see",
-// and an empty slice from an unreadable Secret would be a lie of the same kind
-// this field exists to prevent.
-func (r *AppReconciler) staleEnvKeysFor(ctx context.Context, appName, envNs string, env *mortisev1alpha1.Environment) []string {
-	store := &envstore.Store{Client: r.Client}
-	current, err := store.Get(ctx, envNs, appName)
-	if err != nil {
-		return nil
-	}
-	return staleEnvKeyNames(current, env)
+	sort.Strings(unresolved)
+	return unresolved
 }
