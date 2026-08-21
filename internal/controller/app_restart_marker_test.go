@@ -49,15 +49,30 @@ func TestCarryRestartMarkers(t *testing.T) {
 		}
 	})
 
-	t.Run("the live template wins over a stale desired value", func(t *testing.T) {
-		// A restart is a live-state fact: the value on the running template is
-		// the authority, not whatever the reconciler computed.
+	// The earlier version of this test asserted the live value always wins,
+	// with the naming ("stale" vs "fresh") doing the arguing rather than any
+	// code path. Nothing in the operator ever computes a restart marker into
+	// desired -- the only way desired carries one is the user declaring it in
+	// spec.environments[].annotations, and there the spec must win or the
+	// declarative edit silently does nothing.
+	t.Run("a marker declared in the spec wins over the live value", func(t *testing.T) {
 		got := carryRestartMarkers(
-			map[string]string{"kubectl.kubernetes.io/restartedAt": "stale"},
-			map[string]string{"kubectl.kubernetes.io/restartedAt": "fresh"},
+			map[string]string{"kubectl.kubernetes.io/restartedAt": "V2"},
+			map[string]string{"kubectl.kubernetes.io/restartedAt": "V1"},
 		)
-		if got["kubectl.kubernetes.io/restartedAt"] != "fresh" {
-			t.Errorf("expected the live value to win, got %q", got["kubectl.kubernetes.io/restartedAt"])
+		if got["kubectl.kubernetes.io/restartedAt"] != "V2" {
+			t.Errorf("a spec-declared restart marker was overwritten by the live value: got %q",
+				got["kubectl.kubernetes.io/restartedAt"])
+		}
+	})
+
+	t.Run("the live value is still carried when the spec declares nothing", func(t *testing.T) {
+		got := carryRestartMarkers(
+			map[string]string{"mortise.dev/env-hash": "abc"},
+			map[string]string{"kubectl.kubernetes.io/restartedAt": "V1"},
+		)
+		if got["kubectl.kubernetes.io/restartedAt"] != "V1" {
+			t.Errorf("live marker was dropped, got %v", got)
 		}
 	})
 }
