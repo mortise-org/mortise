@@ -9408,3 +9408,56 @@ var _ = Describe("stale env keys surface in status (CAI-157)", func() {
 		}
 	})
 })
+
+var _ = Describe("burstable resource limits (CAI-163)", func() {
+	toReq := func(r mortisev1alpha1.ResourceRequirements) corev1.ResourceRequirements {
+		got, err := toResourceRequirements(r)
+		Expect(err).NotTo(HaveOccurred())
+		return got
+	}
+
+	It("defaults the limit to the request (Guaranteed, unchanged)", func() {
+		got := toReq(mortisev1alpha1.ResourceRequirements{CPU: "100m", Memory: "128Mi"})
+		Expect(got.Requests.Cpu().String()).To(Equal("100m"))
+		Expect(got.Limits.Cpu().String()).To(Equal("100m"))
+		Expect(got.Requests.Memory().String()).To(Equal("128Mi"))
+		Expect(got.Limits.Memory().String()).To(Equal("128Mi"))
+	})
+
+	It("allows bursting above the reservation when a limit is set", func() {
+		got := toReq(mortisev1alpha1.ResourceRequirements{
+			CPU: "100m", CPULimit: "500m",
+			Memory: "128Mi", MemoryLimit: "1Gi",
+		})
+		Expect(got.Requests.Cpu().String()).To(Equal("100m"))
+		Expect(got.Limits.Cpu().String()).To(Equal("500m"))
+		Expect(got.Requests.Memory().String()).To(Equal("128Mi"))
+		Expect(got.Limits.Memory().String()).To(Equal("1Gi"))
+	})
+
+	It("allows a limit with no request", func() {
+		got := toReq(mortisev1alpha1.ResourceRequirements{MemoryLimit: "1Gi"})
+		Expect(got.Limits.Memory().String()).To(Equal("1Gi"))
+		Expect(got.Requests.Memory().IsZero()).To(BeTrue())
+	})
+
+	It("rejects a limit below its request", func() {
+		_, err := toResourceRequirements(mortisev1alpha1.ResourceRequirements{
+			Memory: "1Gi", MemoryLimit: "128Mi",
+		})
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("below the request"))
+	})
+
+	It("rejects an unparseable limit", func() {
+		_, err := toResourceRequirements(mortisev1alpha1.ResourceRequirements{CPULimit: "banana"})
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("limit"))
+	})
+
+	It("sets nothing when nothing is specified", func() {
+		got := toReq(mortisev1alpha1.ResourceRequirements{})
+		Expect(got.Requests).To(BeEmpty())
+		Expect(got.Limits).To(BeEmpty())
+	})
+})
