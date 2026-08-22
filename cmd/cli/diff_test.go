@@ -101,6 +101,56 @@ func envSecret(data map[string]string, sources map[string]string) *corev1.Secret
 	return s
 }
 
+// sharedEnvSecret builds the project's shared-env Secret in the workload
+// namespace. Pods mount it alongside {app}-env.
+func sharedEnvSecret(data map[string]string) *corev1.Secret {
+	s := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: envstore.SharedEnvName, Namespace: testEnvNs},
+		Data:       map[string][]byte{},
+	}
+	for k, v := range data {
+		s.Data[k] = []byte(v)
+	}
+	return s
+}
+
+// withLastSpecEnv stamps the annotation the controller writes after applying
+// spec env vars: var name -> the value it applied. Whether a spec/Secret
+// mismatch is an unapplied spec change or a user override the platform is
+// honouring is decided entirely by this annotation, so a test that means one
+// of those two states says so here rather than in its assertions.
+func withLastSpecEnv(t *testing.T, s *corev1.Secret, lastApplied map[string]string) *corev1.Secret {
+	t.Helper()
+	digests := make(map[string]string, len(lastApplied))
+	for k, v := range lastApplied {
+		digests[k] = specEnvDigest(v)
+	}
+	raw, err := json.Marshal(digests)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return annotate(s, envstore.AnnotationLastSpecEnvDigest, string(raw))
+}
+
+// withLegacyLastSpecEnv stamps the pre-CAI-168 annotation, which held the
+// applied values themselves rather than digests.
+func withLegacyLastSpecEnv(t *testing.T, s *corev1.Secret, lastApplied map[string]string) *corev1.Secret {
+	t.Helper()
+	raw, err := json.Marshal(lastApplied)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return annotate(s, envstore.AnnotationLastSpecEnv, string(raw))
+}
+
+func annotate(s *corev1.Secret, key, value string) *corev1.Secret {
+	if s.Annotations == nil {
+		s.Annotations = map[string]string{}
+	}
+	s.Annotations[key] = value
+	return s
+}
+
 func newFakeClient(t *testing.T, objs ...client.Object) client.Client {
 	t.Helper()
 	return fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(objs...).Build()
@@ -136,11 +186,15 @@ func findingFor(t *testing.T, rep *diffReport, name string) diffFinding {
 	return diffFinding{}
 }
 
+// The alarm state: the Secret still holds exactly what the CRD last applied
+// (`info`), and the CRD now says something else. Nobody overrode anything —
+// the spec change has not reached the Secret pods mount.
 func TestDiff_SpecDiffersFromSecret(t *testing.T) {
 	c := newFakeClient(t,
 		testProjectObj(false),
 		testAppObj([]mortisev1alpha1.EnvVar{{Name: "LOG_LEVEL", Value: "debug"}}, nil),
-		envSecret(map[string]string{"LOG_LEVEL": "info"}, nil),
+		withLastSpecEnv(t, envSecret(map[string]string{"LOG_LEVEL": "info"}, nil),
+			map[string]string{"LOG_LEVEL": "info"}),
 	)
 
 	rep := runTestDiff(t, c, diffRequest{})
@@ -153,6 +207,79 @@ func TestDiff_SpecDiffersFromSecret(t *testing.T) {
 	}
 	if f.SecretDigest != digestValue("info") {
 		t.Errorf("secret digest: got %q, want %q", f.SecretDigest, digestValue("info"))
+	}
+}
+
+// The designed state, and the one that used to be reported as the top-priority
+// alarm: the Secret no longer holds what the CRD applied, because someone set
+// the var through the API/UI. `internal/api/env.go` permits that for a plain
+// spec literal, and the controller then leaves the override in place forever
+// on purpose. Reporting it as a fault means every healthy cluster leads its
+// report with a red herring.
+func TestDiff_UserOverrideIsNotTheAlarm(t *testing.T) {
+	c := newFakeClient(t,
+		testProjectObj(false),
+		testAppObj([]mortisev1alpha1.EnvVar{{Name: "LOG_LEVEL", Value: "debug"}}, nil),
+		withLastSpecEnv(t, envSecret(map[string]string{"LOG_LEVEL": "trace"}, nil),
+			map[string]string{"LOG_LEVEL": "debug"}),
+	)
+
+	rep := runTestDiff(t, c, diffRequest{})
+	f := findingFor(t, rep, "LOG_LEVEL")
+	if f.Category != catUserOverride {
+		t.Errorf("category: got %q, want %q", f.Category, catUserOverride)
+	}
+	if f.Category == catSpecDiffers {
+		t.Error("an honoured override must not be reported as the CRD-not-in-effect alarm")
+	}
+	if categoryRank(f.Category) <= categoryRank(catSpecDiffers) {
+		t.Errorf("an override must rank below the alarm, got rank %d vs %d",
+			categoryRank(f.Category), categoryRank(catSpecDiffers))
+	}
+	for _, banned := range []string{"error", "invalid", "wrong", "drift"} {
+		if strings.Contains(strings.ToLower(f.Detail), banned) {
+			t.Errorf("detail %q implies the state is wrong (contains %q)", f.Detail, banned)
+		}
+	}
+}
+
+// With no annotation there is nothing in the cluster that separates an
+// unapplied spec change from an override, so the report says exactly that
+// instead of picking the scarier of the two.
+func TestDiff_UntrackedSpecMismatchIsUndetermined(t *testing.T) {
+	c := newFakeClient(t,
+		testProjectObj(false),
+		testAppObj([]mortisev1alpha1.EnvVar{{Name: "LOG_LEVEL", Value: "debug"}}, nil),
+		envSecret(map[string]string{"LOG_LEVEL": "info"}, nil),
+	)
+
+	rep := runTestDiff(t, c, diffRequest{})
+	f := findingFor(t, rep, "LOG_LEVEL")
+	if f.Category != catSpecDiffersUntracked {
+		t.Errorf("category: got %q, want %q", f.Category, catSpecDiffersUntracked)
+	}
+	if f.Category == catSpecDiffers || f.Category == catUserOverride {
+		t.Error("an undetermined mismatch must not be filed as either decided case")
+	}
+	if !strings.Contains(f.Detail, "last-spec-env-digest") {
+		t.Errorf("detail should name the missing signal, got %q", f.Detail)
+	}
+}
+
+// Secrets written before CAI-168 carry values, not digests, under the legacy
+// annotation. The controller migrates by hashing them; so does the report, or
+// every var on an un-reconciled cluster reads as undetermined.
+func TestDiff_LegacyLastSpecEnvAnnotationIsUnderstood(t *testing.T) {
+	c := newFakeClient(t,
+		testProjectObj(false),
+		testAppObj([]mortisev1alpha1.EnvVar{{Name: "LOG_LEVEL", Value: "debug"}}, nil),
+		withLegacyLastSpecEnv(t, envSecret(map[string]string{"LOG_LEVEL": "info"}, nil),
+			map[string]string{"LOG_LEVEL": "info"}),
+	)
+
+	rep := runTestDiff(t, c, diffRequest{})
+	if f := findingFor(t, rep, "LOG_LEVEL"); f.Category != catSpecDiffers {
+		t.Errorf("category: got %q (%s), want %q", f.Category, f.Detail, catSpecDiffers)
 	}
 }
 
@@ -183,6 +310,109 @@ func TestDiff_MissingFromSecret(t *testing.T) {
 	}
 	if f.SecretDigest != "" {
 		t.Errorf("secret digest should be empty, got %q", f.SecretDigest)
+	}
+}
+
+// Pods mount shared-env as well as {app}-env, so "missing from the app's
+// Secret" must not claim the container does not get the variable.
+func TestDiff_MissingFromAppSecretCreditsSharedEnv(t *testing.T) {
+	c := newFakeClient(t,
+		testProjectObj(false),
+		testAppObj([]mortisev1alpha1.EnvVar{{Name: "REGION", Value: "us-east"}}, nil),
+		envSecret(map[string]string{"OTHER": "x"}, nil),
+		sharedEnvSecret(map[string]string{"REGION": "eu-west"}),
+	)
+
+	rep := runTestDiff(t, c, diffRequest{})
+	f := findingFor(t, rep, "REGION")
+	if f.Category != catMissingFromSecret {
+		t.Errorf("category: got %q, want %q", f.Category, catMissingFromSecret)
+	}
+	if strings.Contains(f.Detail, "pods do not get this variable") {
+		t.Errorf("detail claims pods get nothing while shared-env supplies the name: %q", f.Detail)
+	}
+	if !strings.Contains(f.Detail, "shared-env") {
+		t.Errorf("detail should say where pods get the value instead, got %q", f.Detail)
+	}
+}
+
+// A var that lives only in shared-env still reaches the container and is
+// folded into the rollout hash, so leaving it out would make the report's two
+// layers disagree about what the app's environment contains.
+func TestDiff_SharedEnvOnlyVarIsReported(t *testing.T) {
+	c := newFakeClient(t,
+		testProjectObj(false),
+		testAppObj(nil, nil),
+		envSecret(map[string]string{"OTHER": "x"}, nil),
+		sharedEnvSecret(map[string]string{"SENTRY_ENV": "prod"}),
+	)
+
+	rep := runTestDiff(t, c, diffRequest{})
+	f := findingFor(t, rep, "SENTRY_ENV")
+	if f.Category != catFromSharedEnv {
+		t.Errorf("category: got %q, want %q", f.Category, catFromSharedEnv)
+	}
+	if f.SecretDigest != digestValue("prod") {
+		t.Errorf("secret digest: got %q, want %q", f.SecretDigest, digestValue("prod"))
+	}
+	for _, banned := range []string{"error", "invalid", "wrong", "drift"} {
+		if strings.Contains(strings.ToLower(f.Detail), banned) {
+			t.Errorf("detail %q implies the state is wrong (contains %q)", f.Detail, banned)
+		}
+	}
+}
+
+// {app}-env wins at mount, so a name in both is already reported from the app
+// Secret and must not also appear as a shared-env finding.
+func TestDiff_SharedEnvDoesNotDuplicateAppSecretVars(t *testing.T) {
+	c := newFakeClient(t,
+		testProjectObj(false),
+		testAppObj([]mortisev1alpha1.EnvVar{{Name: "LOG_LEVEL", Value: "info"}}, nil),
+		envSecret(map[string]string{"LOG_LEVEL": "info"}, nil),
+		sharedEnvSecret(map[string]string{"LOG_LEVEL": "debug"}),
+	)
+
+	rep := runTestDiff(t, c, diffRequest{})
+	if n := len(rep.Environments[0].Findings); n != 1 {
+		t.Fatalf("expected exactly one finding, got %d: %+v", n, rep.Environments[0].Findings)
+	}
+	if f := findingFor(t, rep, "LOG_LEVEL"); f.Category != catInSync {
+		t.Errorf("category: got %q, want %q", f.Category, catInSync)
+	}
+}
+
+// spec.sharedVars is seeded into the Secret only when the name is absent, so
+// editing one never reaches pods. Filing that under "derived by the controller
+// (expected)" would call a permanent divergence normal.
+func TestDiff_StaleSharedVarIsReportedNotExpected(t *testing.T) {
+	app := testAppObj(nil, nil)
+	app.Spec.SharedVars = []mortisev1alpha1.EnvVar{{Name: "TEAM", Value: "platform"}}
+	c := newFakeClient(t,
+		testProjectObj(false), app,
+		envSecret(map[string]string{"TEAM": "infra"}, map[string]string{"TEAM": "shared"}),
+	)
+
+	rep := runTestDiff(t, c, diffRequest{})
+	f := findingFor(t, rep, "TEAM")
+	if f.Category != catSharedVarStale {
+		t.Errorf("category: got %q (%s), want %q", f.Category, f.Detail, catSharedVarStale)
+	}
+	if f.SpecDigest != digestValue("platform") || f.SecretDigest != digestValue("infra") {
+		t.Errorf("both sides should be digested: %+v", f)
+	}
+}
+
+func TestDiff_MatchingSharedVarStaysDerived(t *testing.T) {
+	app := testAppObj(nil, nil)
+	app.Spec.SharedVars = []mortisev1alpha1.EnvVar{{Name: "TEAM", Value: "platform"}}
+	c := newFakeClient(t,
+		testProjectObj(false), app,
+		envSecret(map[string]string{"TEAM": "platform"}, map[string]string{"TEAM": "shared"}),
+	)
+
+	rep := runTestDiff(t, c, diffRequest{})
+	if f := findingFor(t, rep, "TEAM"); f.Category != catDerived {
+		t.Errorf("category: got %q, want %q", f.Category, catDerived)
 	}
 }
 
@@ -470,6 +700,8 @@ func TestDiff_NeverPrintsAValue(t *testing.T) {
 		"sentinelSharedValue5",
 		"sentinelCredsValue6",
 		"sentinelFileValue7",
+		"sentinelLegacyValue8",
+		"sentinelSharedEnvValue9",
 	}
 
 	creds := &corev1.Secret{
@@ -480,7 +712,10 @@ func TestDiff_NeverPrintsAValue(t *testing.T) {
 		{Name: "LOG_LEVEL", Value: "sentinelLiteralValue1"},
 		{Name: "DB_PASSWORD", ValueFrom: &mortisev1alpha1.EnvVarSource{SecretRef: "web-creds"}},
 	}, nil)
-	secret := envSecret(
+	// The legacy last-spec-env annotation holds plaintext values, and the
+	// shared-env Secret is a second source of values the report now reads.
+	// Both are digested on the way in or not printed at all.
+	secret := withLegacyLastSpecEnv(t, envSecret(
 		map[string]string{
 			"LOG_LEVEL":   "sentinelSecretValue2",
 			"UI_SET":      "sentinelUserSetValue3",
@@ -488,7 +723,8 @@ func TestDiff_NeverPrintsAValue(t *testing.T) {
 			"SHARED_FLAG": "sentinelSharedValue5",
 		},
 		map[string]string{"PGHOST": "binding", "SHARED_FLAG": "shared"},
-	)
+	), map[string]string{"LOG_LEVEL": "sentinelLegacyValue8"})
+	shared := sharedEnvSecret(map[string]string{"PROJECT_TIER": "sentinelSharedEnvValue9"})
 
 	dir := t.TempDir()
 	manifest := filepath.Join(dir, "app.yaml")
@@ -509,7 +745,7 @@ spec:
 		t.Fatal(err)
 	}
 
-	c := newFakeClient(t, testProjectObj(false), app, creds, secret,
+	c := newFakeClient(t, testProjectObj(false), app, creds, secret, shared,
 		deploymentWithEnvHash("0000000000000000"))
 
 	for _, req := range []diffRequest{
@@ -538,10 +774,32 @@ spec:
 	}
 }
 
+// The report is meant to survive being pasted into a channel. An unsalted
+// sha256 of a low-entropy value (`true`, `production`, an account id) does
+// not: anyone holding the report can confirm a guess offline.
+func TestDiff_DigestsAreSaltedNotPlainSHA256(t *testing.T) {
+	for _, v := range []string{"true", "production", "info"} {
+		if digestValue(v) == specEnvDigest(v)[:digestLen] {
+			t.Errorf("digest of %q is a plain sha256 prefix; a guess can be confirmed offline", v)
+		}
+	}
+	first, second := newDigestSalt(), newDigestSalt()
+	if string(first) == string(second) {
+		t.Error("the salt must be random per invocation")
+	}
+	// Within one report equal values must still produce equal digests, which
+	// is the only property the output promises.
+	a, b := digestValue("same"), digestValue("same")
+	if a != b {
+		t.Error("digests must be stable within one invocation")
+	}
+}
+
 func TestDiff_TextOutputCarriesNamesAndDigests(t *testing.T) {
 	c := newFakeClient(t, testProjectObj(false),
 		testAppObj([]mortisev1alpha1.EnvVar{{Name: "LOG_LEVEL", Value: "debug"}}, nil),
-		envSecret(map[string]string{"LOG_LEVEL": "info"}, nil))
+		withLastSpecEnv(t, envSecret(map[string]string{"LOG_LEVEL": "info"}, nil),
+			map[string]string{"LOG_LEVEL": "info"}))
 
 	rep := runTestDiff(t, c, diffRequest{})
 	var buf bytes.Buffer
@@ -559,7 +817,8 @@ func TestDiff_TextOutputCarriesNamesAndDigests(t *testing.T) {
 func TestDiff_JSONOutputIsStructured(t *testing.T) {
 	c := newFakeClient(t, testProjectObj(false),
 		testAppObj([]mortisev1alpha1.EnvVar{{Name: "LOG_LEVEL", Value: "debug"}}, nil),
-		envSecret(map[string]string{"LOG_LEVEL": "info"}, nil))
+		withLastSpecEnv(t, envSecret(map[string]string{"LOG_LEVEL": "info"}, nil),
+			map[string]string{"LOG_LEVEL": "info"}))
 
 	rep := runTestDiff(t, c, diffRequest{})
 	var buf bytes.Buffer
@@ -758,12 +1017,142 @@ spec:
 	}
 }
 
+// A bound var carries no digest to compare, so without the ref on the
+// comparison a manifest that repoints DB_URL at a different backing service
+// produced no change at all and the dry run printed "none".
+func TestDryRun_BindingRepointIsAChange(t *testing.T) {
+	app := testAppObj(
+		[]mortisev1alpha1.EnvVar{{
+			Name: "DB_URL",
+			ValueFrom: &mortisev1alpha1.EnvVarSource{
+				FromBinding: &mortisev1alpha1.BindingVarSource{Ref: "db-a", Key: "url"},
+			},
+		}},
+		[]mortisev1alpha1.Binding{{Ref: "db-a"}, {Ref: "db-b"}},
+	)
+	c := newFakeClient(t, testProjectObj(false), app)
+
+	manifest := writeManifest(t, `apiVersion: mortise.dev/v1alpha1
+kind: App
+metadata:
+  name: web
+spec:
+  source:
+    type: image
+    image: nginx:1.27
+  environments:
+    - name: production
+      bindings:
+        - ref: db-a
+        - ref: db-b
+      env:
+        - name: DB_URL
+          valueFrom:
+            fromBinding:
+              ref: db-b
+              key: url
+`)
+
+	rep := runTestDiff(t, c, diffRequest{file: manifest})
+	if len(rep.CRDChanges) != 1 {
+		t.Fatalf("expected the repoint to be reported, got %+v", rep.CRDChanges)
+	}
+	ch := rep.CRDChanges[0]
+	if ch.Name != "DB_URL" || ch.Change != "change" {
+		t.Errorf("unexpected change: %+v", ch)
+	}
+	if !strings.Contains(ch.Detail, "db-a") || !strings.Contains(ch.Detail, "db-b") {
+		t.Errorf("detail should name both bindings, got %q", ch.Detail)
+	}
+}
+
+// Repointing only the key inside the same binding is a change too.
+func TestDryRun_BindingKeyChangeIsAChange(t *testing.T) {
+	app := testAppObj(
+		[]mortisev1alpha1.EnvVar{{
+			Name: "DB_URL",
+			ValueFrom: &mortisev1alpha1.EnvVarSource{
+				FromBinding: &mortisev1alpha1.BindingVarSource{Ref: "db", Key: "url"},
+			},
+		}},
+		[]mortisev1alpha1.Binding{{Ref: "db"}},
+	)
+	c := newFakeClient(t, testProjectObj(false), app)
+
+	manifest := writeManifest(t, `apiVersion: mortise.dev/v1alpha1
+kind: App
+metadata:
+  name: web
+spec:
+  source:
+    type: image
+    image: nginx:1.27
+  environments:
+    - name: production
+      bindings:
+        - ref: db
+      env:
+        - name: DB_URL
+          valueFrom:
+            fromBinding:
+              ref: db
+              key: readonly_url
+`)
+
+	rep := runTestDiff(t, c, diffRequest{file: manifest})
+	if len(rep.CRDChanges) != 1 {
+		t.Fatalf("expected the key change to be reported, got %+v", rep.CRDChanges)
+	}
+	if !strings.Contains(rep.CRDChanges[0].Detail, "readonly_url") {
+		t.Errorf("detail should name the new key, got %q", rep.CRDChanges[0].Detail)
+	}
+}
+
+// An unchanged bound var is still not a change.
+func TestDryRun_UnchangedBindingIsNotAChange(t *testing.T) {
+	env := []mortisev1alpha1.EnvVar{{
+		Name: "DB_URL",
+		ValueFrom: &mortisev1alpha1.EnvVarSource{
+			FromBinding: &mortisev1alpha1.BindingVarSource{Ref: "db", Key: "url"},
+		},
+	}}
+	c := newFakeClient(t, testProjectObj(false),
+		testAppObj(env, []mortisev1alpha1.Binding{{Ref: "db"}}))
+
+	manifest := writeManifest(t, `apiVersion: mortise.dev/v1alpha1
+kind: App
+metadata:
+  name: web
+spec:
+  source:
+    type: image
+    image: nginx:1.27
+  environments:
+    - name: production
+      bindings:
+        - ref: db
+      env:
+        - name: DB_URL
+          valueFrom:
+            fromBinding:
+              ref: db
+              key: url
+`)
+
+	if rep := runTestDiff(t, c, diffRequest{file: manifest}); len(rep.CRDChanges) != 0 {
+		t.Errorf("expected no changes, got %+v", rep.CRDChanges)
+	}
+}
+
 // In dry-run mode the file's spec becomes layer 1, so the layer 1 -> 2
 // comparison answers "what would the pods disagree with after this apply".
 func TestDryRun_UsesTheFileSpecAsLayerOne(t *testing.T) {
 	app := testAppObj([]mortisev1alpha1.EnvVar{{Name: "LOG_LEVEL", Value: "info"}}, nil)
+	// The Secret holds exactly what the live CRD applied, so the file's `debug`
+	// is an unapplied spec change rather than an override of one.
 	c := newFakeClient(t, testProjectObj(false), app,
-		envSecret(map[string]string{"LOG_LEVEL": "info"}, nil))
+		withLastSpecEnv(t, envSecret(map[string]string{"LOG_LEVEL": "info"}, nil),
+			map[string]string{"LOG_LEVEL": "info"}))
 
 	manifest := writeManifest(t, `apiVersion: mortise.dev/v1alpha1
 kind: App

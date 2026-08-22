@@ -76,9 +76,10 @@ func newDiffCmd() *cobra.Command {
   2. the derived Secret  {app}-env in pj-{project}-{env}, which pods mount via envFrom
   3. the running pods    the mortise.dev/env-hash the workload was started with
 
-Only names, sources, and 12-hex-char sha256 digests are printed. No variable
-value ever reaches the output, so the result is safe to paste into a channel
-during an incident.
+Only names, sources, and 12-hex-char digests are printed. No variable value
+ever reaches the output, so the result is safe to paste into a channel during
+an incident. The digests are salted per invocation — they answer "are these
+two the same value" within one report, and do not compare across runs.
 
 diff talks to Kubernetes directly using the standard kubeconfig resolution,
 not the Mortise HTTP API, and never writes to the cluster.

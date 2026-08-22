@@ -1025,8 +1025,10 @@ full `PUT` on the App CRD to change a variable.
   an App's environment configuration disagrees with itself across three
   layers — `spec.environments[].env` on the App, the derived `{app}-env`
   Secret pods mount, and the `mortise.dev/env-hash` the running workload was
-  started with. Prints names, sources, and 12-hex-char SHA-256 digests only,
-  never a value, so the output is safe to share during an incident. Reads the
+  started with. Prints names, sources, and 12-hex-char digests only, never a
+  value, so the output is safe to share during an incident; the digests are
+  salted per invocation, so a low-entropy value cannot be confirmed by
+  guessing against a report, and digests compare within one report. Reads the
   cluster directly through the standard kubeconfig resolution rather than the
   HTTP API, never writes, and exits non-zero only on an operational failure.
   With `-f` it is a dry run against an App manifest.

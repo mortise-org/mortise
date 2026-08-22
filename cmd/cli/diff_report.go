@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"sort"
@@ -36,12 +38,28 @@ const (
 	// catInSync: declared in the CRD and present in the derived Secret with
 	// the same value. Nothing to do.
 	catInSync = "in-sync"
-	// catSpecDiffers: declared in both, different values. The Secret wins —
-	// it is what pods mount.
+	// catSpecDiffers: declared in both with different values, and the Secret
+	// still holds the value the CRD last applied. The spec has genuinely
+	// moved and has not reached the Secret pods mount.
 	catSpecDiffers = "spec-differs-from-secret"
+	// catUserOverride: declared in both with different values, and the Secret
+	// no longer holds what the CRD last applied. Someone set this through the
+	// API/UI and the controller deliberately leaves such an override alone.
+	// Normal and permanent by design.
+	catUserOverride = "user-override"
+	// catSpecDiffersUntracked: declared in both with different values, and the
+	// Secret records nothing about what the CRD last applied, so the two cases
+	// above cannot be told apart from the cluster.
+	catSpecDiffersUntracked = "spec-differs-untracked"
 	// catMissingFromSecret: declared in the CRD, absent from the derived
-	// Secret. Pods do not get this variable at all.
+	// Secret.
 	catMissingFromSecret = "missing-from-secret"
+	// catSharedVarStale: present in the derived Secret from spec.sharedVars,
+	// with a different value. sharedVars are seeded once and never re-applied.
+	catSharedVarStale = "shared-var-not-updated"
+	// catFromSharedEnv: absent from this app's Secret, present in the project's
+	// shared-env Secret — which pods mount as well.
+	catFromSharedEnv = "from-shared-env"
 	// catNotDeclaredInCRD: present in the derived Secret with source "user",
 	// absent from the CRD. Normal — the API writes user vars straight to the
 	// Secret and never touches the CRD.
@@ -114,10 +132,74 @@ type diffReport struct {
 	Environments []envDiffReport `json:"environments"`
 }
 
+// digestSalt randomises the printed digests once per invocation. They only
+// have to be comparable inside a single report, and an unsalted sha256 of a
+// low-entropy value (`true`, `production`, an account id) can be confirmed
+// offline by anyone holding a report — which this output is meant to survive
+// being pasted into a channel during an incident.
+var digestSalt = newDigestSalt()
+
+func newDigestSalt() []byte {
+	b := make([]byte, 16)
+	// crypto/rand.Read never returns an error; it crashes the program if the
+	// system source fails, which is the right outcome here — carrying on with
+	// an empty salt would silently restore the guessable digests.
+	_, _ = rand.Read(b)
+	return b
+}
+
 // digestValue is the only way a value ever influences output.
 func digestValue(v string) string {
+	h := sha256.New()
+	h.Write(digestSalt)
+	h.Write([]byte(v))
+	return hex.EncodeToString(h.Sum(nil))[:digestLen]
+}
+
+// specEnvDigest is the form the controller stores in
+// mortise.dev/last-spec-env-digest: a full, unsalted sha256 hex of the value.
+// Separate from digestValue because it is only ever compared against what the
+// controller wrote, never printed.
+func specEnvDigest(v string) string {
 	sum := sha256.Sum256([]byte(v))
-	return hex.EncodeToString(sum[:])[:digestLen]
+	return hex.EncodeToString(sum[:])
+}
+
+// lastSpecDigests reads the controller's record of what the spec last applied
+// to this Secret: env var name to the full sha256 of that value. Mirrors the
+// App controller's readLastSpecEnv, legacy-annotation fallback included, so
+// the CLI reads the signal exactly as the controller writes and acts on it.
+func lastSpecDigests(secret *corev1.Secret) map[string]string {
+	if raw := secret.Annotations[envstore.AnnotationLastSpecEnvDigest]; raw != "" {
+		var m map[string]string
+		if err := json.Unmarshal([]byte(raw), &m); err != nil {
+			return nil
+		}
+		return m
+	}
+	// The legacy annotation holds values rather than digests. Hashing them
+	// yields exactly what the digest annotation would have held, so Secrets
+	// written before CAI-168 classify the same way.
+	raw := secret.Annotations[envstore.AnnotationLastSpecEnv]
+	if raw == "" {
+		return nil
+	}
+	var legacy map[string]string
+	if err := json.Unmarshal([]byte(raw), &legacy); err != nil {
+		return nil
+	}
+	m := make(map[string]string, len(legacy))
+	for k, v := range legacy {
+		m[k] = specEnvDigest(v)
+	}
+	return m
+}
+
+// tracksLastAppliedSpec reports whether the Secret still holds the value the
+// controller last applied from the spec — the exact condition under which the
+// controller would overwrite it on the next reconcile.
+func tracksLastAppliedSpec(lastApplied, secretValue string) bool {
+	return lastApplied != "" && lastApplied == specEnvDigest(secretValue)
 }
 
 // shortHash truncates a full env-hash for display.
@@ -138,8 +220,31 @@ type specValue struct {
 	// diff does not reimplement bindings resolution, so there is no digest
 	// to compare — only presence in the derived Secret is checked.
 	binding bool
+	// ref and key identify which binding a fromBinding var projects from.
+	// They are part of what makes two bound vars different: repointing a var
+	// at another binding changes the value the controller will resolve, and
+	// with only `binding: true` to compare, that repoint is invisible. A
+	// binding ref is a name, not a value, so carrying it leaks nothing.
+	ref string
+	key string
 	// problem is non-empty when the effective value could not be determined.
 	problem string
+}
+
+// envLayers is what the cluster says about one App × environment, keyed by var
+// name. Assembled once per environment and read by the per-var comparison.
+type envLayers struct {
+	// app is the {app}-env Secret, mounted second so it wins on conflict.
+	app map[string]envstore.Env
+	// shared is the project's shared-env Secret, mounted first. Pods get it
+	// too, so a name missing from {app}-env is not necessarily missing from
+	// the container.
+	shared map[string]envstore.Env
+	// lastSpec maps a var name to the full sha256 of the value the controller
+	// last applied from the spec (mortise.dev/last-spec-env-digest). It is the
+	// only thing that distinguishes an unapplied spec change from a user
+	// override the platform is deliberately honouring.
+	lastSpec map[string]string
 }
 
 // resolveSpecEnv mirrors the semantics of the App controller's
@@ -181,7 +286,7 @@ func resolveSpecEnv(ctx context.Context, c client.Reader, ev mortisev1alpha1.Env
 		if !bindingRefs[ref] {
 			return specValue{problem: fmt.Sprintf("valueFrom.fromBinding.ref %q is not in this environment's bindings list", ref)}
 		}
-		return specValue{binding: true}
+		return specValue{binding: true, ref: ref, key: ev.ValueFrom.FromBinding.Key}
 	default:
 		return specValue{digest: digestValue(ev.Value)}
 	}
@@ -251,11 +356,26 @@ func buildEnvDiff(
 		return rep, fmt.Errorf("read env Secret %s/%s: %w", envNs, envstore.AppEnvSecretName(liveApp.Name), err)
 	}
 
-	secretEntries := map[string]envstore.Env{}
+	layers := envLayers{app: map[string]envstore.Env{}, shared: map[string]envstore.Env{}}
 	if rep.SecretExists {
 		for _, e := range envstore.SecretToEnvs(&secret) {
-			secretEntries[e.Name] = e
+			layers.app[e.Name] = e
 		}
+		layers.lastSpec = lastSpecDigests(&secret)
+	}
+
+	// The project's shared-env Secret is mounted by the same pods and folded
+	// into the rollout hash below, so the report has to see it or its own two
+	// layers disagree about what the app's environment contains.
+	var sharedSecret corev1.Secret
+	switch err := c.Get(ctx, types.NamespacedName{Name: envstore.SharedEnvName, Namespace: envNs}, &sharedSecret); {
+	case err == nil:
+		for _, e := range envstore.SecretToEnvs(&sharedSecret) {
+			layers.shared[e.Name] = e
+		}
+	case k8serrors.IsNotFound(err):
+	default:
+		return rep, fmt.Errorf("read shared Secret %s/%s: %w", envNs, envstore.SharedEnvName, err)
 	}
 
 	// Layer 1 → layer 2.
@@ -263,12 +383,20 @@ func buildEnvDiff(
 	if specEnv != nil {
 		for _, ev := range specEnv.Env {
 			seen[ev.Name] = true
-			rep.Findings = append(rep.Findings, compareSpecVar(ctx, c, ev, envNs, bindingRefs, secretEntries))
+			rep.Findings = append(rep.Findings, compareSpecVar(ctx, c, ev, envNs, bindingRefs, layers))
 		}
 	}
 
+	// spec.sharedVars is seeded into the Secret only when the name is absent,
+	// so an edited sharedVar never reaches pods. Reporting that as "derived by
+	// the controller (expected)" would file a permanent divergence as normal.
+	sharedVarSpec := map[string]string{}
+	for _, sv := range specApp.Spec.SharedVars {
+		sharedVarSpec[sv.Name] = digestValue(sv.Value)
+	}
+
 	// Whatever is left in the Secret was not declared in spec.env.
-	for name, e := range secretEntries {
+	for name, e := range layers.app {
 		if seen[name] {
 			continue
 		}
@@ -277,8 +405,13 @@ func buildEnvDiff(
 			SecretDigest: digestValue(e.Value),
 			Source:       e.Source,
 		}
-		switch e.Source {
-		case "binding", "shared", "generated":
+		specDigest, fromSharedVars := sharedVarSpec[name]
+		switch {
+		case e.Source == "shared" && fromSharedVars && specDigest != f.SecretDigest:
+			f.Category = catSharedVarStale
+			f.SpecDigest = specDigest
+			f.Detail = "spec.sharedVars is seeded into the Secret only when the name is absent and never re-applied, so the Secret keeps the value it was first given"
+		case e.Source == "binding", e.Source == "shared", e.Source == "generated":
 			f.Category = catDerived
 			f.Detail = "written by the controller from " + derivedOrigin(e.Source) + "; not expected in spec.env"
 		default:
@@ -286,6 +419,24 @@ func buildEnvDiff(
 			f.Detail = "set through the API/UI, which writes the Secret directly and never the CRD"
 		}
 		rep.Findings = append(rep.Findings, f)
+	}
+
+	// Names that exist only in shared-env. Pods get them; {app}-env does not
+	// carry them, so nothing above would have mentioned them.
+	for name, e := range layers.shared {
+		if seen[name] {
+			continue
+		}
+		if _, inApp := layers.app[name]; inApp {
+			continue
+		}
+		rep.Findings = append(rep.Findings, diffFinding{
+			Name:         name,
+			Category:     catFromSharedEnv,
+			SecretDigest: digestValue(e.Value),
+			Source:       envstore.SharedEnvName,
+			Detail:       "a project-level shared variable; pods mount shared-env alongside this app's own Secret",
+		})
 	}
 
 	sort.Slice(rep.Findings, func(i, j int) bool {
@@ -321,10 +472,10 @@ func compareSpecVar(
 	ev mortisev1alpha1.EnvVar,
 	envNs string,
 	bindingRefs map[string]bool,
-	secretEntries map[string]envstore.Env,
+	layers envLayers,
 ) diffFinding {
 	sv := resolveSpecEnv(ctx, c, ev, envNs, bindingRefs)
-	entry, inSecret := secretEntries[ev.Name]
+	entry, inSecret := layers.app[ev.Name]
 
 	f := diffFinding{Name: ev.Name}
 	if inSecret {
@@ -351,7 +502,12 @@ func compareSpecVar(
 	case !inSecret:
 		f.Category = catMissingFromSecret
 		f.SpecDigest = sv.digest
-		f.Detail = "declared in the CRD but absent from the derived Secret; pods do not get this variable"
+		f.Detail = "declared in the CRD but absent from the app's derived Secret"
+		if _, inShared := layers.shared[ev.Name]; inShared {
+			f.Detail += "; pods get the project's shared-env value for this name instead"
+		} else {
+			f.Detail += "; pods do not get this variable"
+		}
 		return f
 	}
 
@@ -360,27 +516,55 @@ func compareSpecVar(
 		f.Category = catInSync
 		return f
 	}
-	f.Category = catSpecDiffers
-	f.Detail = "the Secret is what pods mount, so the CRD value is not in effect"
+
+	// A spec/Secret mismatch is two unrelated states wearing the same face.
+	// The controller re-seeds a spec value only while the Secret still tracks
+	// the last one it applied; past that it leaves the override in place
+	// forever, on purpose. Reporting both as one alarm made the platform's
+	// designed behaviour the report's top finding, so classify on the
+	// annotation rather than assume.
+	lastApplied, tracked := layers.lastSpec[ev.Name]
+	switch {
+	case !tracked:
+		f.Category = catSpecDiffersUntracked
+		f.Detail = "the Secret carries no last-spec-env-digest entry for this variable, so an unapplied spec change and a deliberate override are indistinguishable from here"
+	case tracksLastAppliedSpec(lastApplied, entry.Value):
+		f.Category = catSpecDiffers
+		f.Detail = "the Secret still holds the value the CRD last applied, so this spec change has not reached it; the Secret is what pods mount, so the CRD value is not in effect"
+	default:
+		f.Category = catUserOverride
+		f.Detail = "the value was set through the API/UI after the CRD last applied its own; the controller keeps an override in place, so the Secret winning here is the intended behaviour"
+	}
 	return f
 }
 
+// categoryRank orders findings by how much they want a human. The states that
+// are normal by design sort below the ones that are not, so a healthy app
+// never leads its report with an alarm.
 func categoryRank(cat string) int {
 	switch cat {
 	case catSpecDiffers:
 		return 0
-	case catMissingFromSecret:
+	case catSharedVarStale:
 		return 1
-	case catUnresolved:
+	case catMissingFromSecret:
 		return 2
-	case catNotDeclaredInCRD:
+	case catUnresolved:
 		return 3
-	case catDerived:
+	case catSpecDiffersUntracked:
 		return 4
-	case catInSync:
+	case catNotDeclaredInCRD:
 		return 5
+	case catUserOverride:
+		return 6
+	case catFromSharedEnv:
+		return 7
+	case catDerived:
+		return 8
+	case catInSync:
+		return 9
 	}
-	return 6
+	return 10
 }
 
 // buildRollout is layer 3. It compares the pod template's mortise.dev/env-hash
@@ -480,11 +664,12 @@ func buildCRDChanges(
 				changes = append(changes, crdChange{Environment: envName, Name: n, Change: "add", FileDigest: fv.digest, Detail: specNote(fv)})
 			case !inFile:
 				changes = append(changes, crdChange{Environment: envName, Name: n, Change: "remove", LiveDigest: lv.digest, Detail: specNote(lv)})
-			case lv.digest != fv.digest || lv.binding != fv.binding || lv.problem != fv.problem:
+			case lv.digest != fv.digest || lv.binding != fv.binding ||
+				lv.ref != fv.ref || lv.key != fv.key || lv.problem != fv.problem:
 				changes = append(changes, crdChange{
 					Environment: envName, Name: n, Change: "change",
 					LiveDigest: lv.digest, FileDigest: fv.digest,
-					Detail: strings.TrimSpace(specNote(lv) + " " + specNote(fv)),
+					Detail: changeNote(lv, fv),
 				})
 			}
 		}
@@ -497,9 +682,25 @@ func specNote(sv specValue) string {
 		return "unresolved: " + sv.problem
 	}
 	if sv.binding {
-		return "valueFrom.fromBinding; value not compared"
+		return "valueFrom.fromBinding " + bindingTarget(sv) + "; value not compared"
 	}
 	return ""
+}
+
+// changeNote describes one "change" row. A binding repoint is the case the
+// two digests cannot express — both sides are empty — so it is spelled out.
+func changeNote(lv, fv specValue) string {
+	if lv.binding && fv.binding {
+		return "valueFrom.fromBinding " + bindingTarget(lv) + " -> " + bindingTarget(fv)
+	}
+	return strings.TrimSpace(specNote(lv) + " " + specNote(fv))
+}
+
+func bindingTarget(sv specValue) string {
+	if sv.key == "" {
+		return "ref " + sv.ref
+	}
+	return "ref " + sv.ref + " key " + sv.key
 }
 
 func specDigests(ctx context.Context, c client.Reader, app *mortisev1alpha1.App, envName, envNs string) map[string]specValue {
@@ -521,19 +722,23 @@ func specDigests(ctx context.Context, c client.Reader, app *mortisev1alpha1.App,
 // --- rendering ---
 
 var categoryHeadings = map[string]string{
-	catSpecDiffers:       "CRD and Secret disagree",
-	catMissingFromSecret: "declared in the CRD, missing from the Secret",
-	catUnresolved:        "declared in the CRD, value not resolvable",
-	catNotDeclaredInCRD:  "in the Secret, not declared in the CRD (normal: set via API/UI)",
-	catDerived:           "derived by the controller (expected)",
-	catInSync:            "in sync",
+	catSpecDiffers:          "CRD and Secret disagree",
+	catSharedVarStale:       "spec.sharedVars changed, the Secret was not updated",
+	catMissingFromSecret:    "declared in the CRD, missing from the Secret",
+	catUnresolved:           "declared in the CRD, value not resolvable",
+	catSpecDiffersUntracked: "CRD and Secret disagree, cause undetermined",
+	catNotDeclaredInCRD:     "in the Secret, not declared in the CRD (normal: set via API/UI)",
+	catUserOverride:         "overridden via API/UI (normal: the platform honours overrides)",
+	catFromSharedEnv:        "from the project's shared-env Secret (normal)",
+	catDerived:              "derived by the controller (expected)",
+	catInSync:               "in sync",
 }
 
 // renderText writes the human-readable report. Every field it prints is a
 // name, a namespace, a source label, or a digest.
 func renderText(w io.Writer, rep *diffReport, showInSync bool) {
 	fmt.Fprintf(w, "app %s  project %s\n", rep.App, rep.Project)
-	fmt.Fprintln(w, "values are never shown; each column is a 12-hex-char sha256 prefix")
+	fmt.Fprintln(w, "values are never shown; digests are salted per run and compare only within this report")
 
 	if rep.DryRunFile != "" {
 		fmt.Fprintf(w, "\ndry run against %s — CRD-level changes an apply would make:\n", rep.DryRunFile)
@@ -566,7 +771,11 @@ func renderText(w io.Writer, rep *diffReport, showInSync bool) {
 		for _, f := range e.Findings {
 			byCat[f.Category] = append(byCat[f.Category], f)
 		}
-		for _, cat := range []string{catSpecDiffers, catMissingFromSecret, catUnresolved, catNotDeclaredInCRD, catDerived} {
+		for _, cat := range []string{
+			catSpecDiffers, catSharedVarStale, catMissingFromSecret, catUnresolved,
+			catSpecDiffersUntracked, catNotDeclaredInCRD, catUserOverride,
+			catFromSharedEnv, catDerived,
+		} {
 			renderCategory(w, cat, byCat[cat])
 		}
 		if inSync := byCat[catInSync]; len(inSync) > 0 {
