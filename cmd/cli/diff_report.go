@@ -47,6 +47,16 @@ const (
 	// API/UI and the controller deliberately leaves such an override alone.
 	// Normal and permanent by design.
 	catUserOverride = "user-override"
+	// catSpecShadowed: declared in both with different values, the Secret no
+	// longer holds what the CRD last applied, and — unlike catUserOverride —
+	// the Secret's entry is owned by the controller itself (binding, shared,
+	// or generated), not a user. The controller rewrites that entry from its
+	// source on every reconcile, so it always wins over the spec.env literal:
+	// the spec value is not merely behind, it can never take effect while
+	// this name belongs to that source. The API cannot have produced this
+	// state (it rejects writes to a non-user-owned key), so it is always a
+	// naming collision between spec.env and a binding/shared/generated var.
+	catSpecShadowed = "spec-shadowed-by-controller"
 	// catSpecDiffersUntracked: declared in both with different values, and the
 	// Secret records nothing about what the CRD last applied, so the two cases
 	// above cannot be told apart from the cluster.
@@ -531,9 +541,17 @@ func compareSpecVar(
 	case tracksLastAppliedSpec(lastApplied, entry.Value):
 		f.Category = catSpecDiffers
 		f.Detail = "the Secret still holds the value the CRD last applied, so this spec change has not reached it; the Secret is what pods mount, so the CRD value is not in effect"
-	default:
+	case entry.Source == "user" || entry.Source == "":
 		f.Category = catUserOverride
 		f.Detail = "the value was set through the API/UI after the CRD last applied its own; the controller keeps an override in place, so the Secret winning here is the intended behaviour"
+	default:
+		// entry.Source is binding/shared/generated: the API refuses to write a
+		// key it doesn't already own (internal/api/env.go), so this was never
+		// "set through the API/UI" — that detail would be false. The
+		// controller itself is the one overwriting the spec value, every
+		// reconcile, forever.
+		f.Category = catSpecShadowed
+		f.Detail = fmt.Sprintf("this key is owned by the %s source, which the controller rewrites into the Secret on every reconcile; the spec.env value can never take effect while that source claims the name", entry.Source)
 	}
 	return f
 }
@@ -543,28 +561,36 @@ func compareSpecVar(
 // never leads its report with an alarm.
 func categoryRank(cat string) int {
 	switch cat {
-	case catSpecDiffers:
+	// catSpecShadowed leads the report: it is the only state where the spec
+	// value is not merely stale or pending but permanently unreachable — the
+	// controller itself rewrites over it every reconcile, and until CAI-157
+	// that was misreported as the benign, do-nothing catUserOverride. Ranking
+	// it above catSpecDiffers (which self-heals on the next reconcile) says
+	// plainly that this one won't.
+	case catSpecShadowed:
 		return 0
-	case catSharedVarStale:
+	case catSpecDiffers:
 		return 1
-	case catMissingFromSecret:
+	case catSharedVarStale:
 		return 2
-	case catUnresolved:
+	case catMissingFromSecret:
 		return 3
-	case catSpecDiffersUntracked:
+	case catUnresolved:
 		return 4
-	case catNotDeclaredInCRD:
+	case catSpecDiffersUntracked:
 		return 5
-	case catUserOverride:
+	case catNotDeclaredInCRD:
 		return 6
-	case catFromSharedEnv:
+	case catUserOverride:
 		return 7
-	case catDerived:
+	case catFromSharedEnv:
 		return 8
-	case catInSync:
+	case catDerived:
 		return 9
+	case catInSync:
+		return 10
 	}
-	return 10
+	return 11
 }
 
 // buildRollout is layer 3. It compares the pod template's mortise.dev/env-hash
@@ -729,6 +755,7 @@ var categoryHeadings = map[string]string{
 	catSpecDiffersUntracked: "CRD and Secret disagree, cause undetermined",
 	catNotDeclaredInCRD:     "in the Secret, not declared in the CRD (normal: set via API/UI)",
 	catUserOverride:         "overridden via API/UI (normal: the platform honours overrides)",
+	catSpecShadowed:         "spec.env value shadowed by a controller-owned source (spec is never applied)",
 	catFromSharedEnv:        "from the project's shared-env Secret (normal)",
 	catDerived:              "derived by the controller (expected)",
 	catInSync:               "in sync",
@@ -772,7 +799,7 @@ func renderText(w io.Writer, rep *diffReport, showInSync bool) {
 			byCat[f.Category] = append(byCat[f.Category], f)
 		}
 		for _, cat := range []string{
-			catSpecDiffers, catSharedVarStale, catMissingFromSecret, catUnresolved,
+			catSpecShadowed, catSpecDiffers, catSharedVarStale, catMissingFromSecret, catUnresolved,
 			catSpecDiffersUntracked, catNotDeclaredInCRD, catUserOverride,
 			catFromSharedEnv, catDerived,
 		} {

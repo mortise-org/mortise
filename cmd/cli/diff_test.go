@@ -243,6 +243,43 @@ func TestDiff_UserOverrideIsNotTheAlarm(t *testing.T) {
 	}
 }
 
+// The false-positive state CAI-157 fixes: the Secret's entry for this name is
+// not a user override at all, it is owned by a binding — e.g. a `database`
+// app's binding resolver writing DATABASE_URL (internal/bindings/resolver.go)
+// collides with a spec.env literal of the same name. The controller rewrites
+// that entry from the binding on every reconcile, so the spec literal is
+// permanently dead, not merely superseded by a deliberate override.
+// internal/api/env.go refuses to let the API write a controller-owned key, so
+// this state could never have been produced "through the API/UI".
+func TestDiff_ControllerOwnedSourceShadowsSpecIsNotUserOverride(t *testing.T) {
+	c := newFakeClient(t,
+		testProjectObj(false),
+		testAppObj([]mortisev1alpha1.EnvVar{{Name: "DATABASE_URL", Value: "user-literal"}}, nil),
+		withLastSpecEnv(t,
+			envSecret(map[string]string{"DATABASE_URL": "bound-value"}, map[string]string{"DATABASE_URL": "binding"}),
+			map[string]string{"DATABASE_URL": "previously-applied-literal"}),
+	)
+
+	rep := runTestDiff(t, c, diffRequest{})
+	f := findingFor(t, rep, "DATABASE_URL")
+	if f.Category == catUserOverride {
+		t.Error("a controller-owned Secret entry must not be classified as a user override")
+	}
+	if f.Category != catSpecShadowed {
+		t.Errorf("category: got %q (%s), want %q", f.Category, f.Detail, catSpecShadowed)
+	}
+	if categoryRank(f.Category) >= categoryRank(catNotDeclaredInCRD) {
+		t.Errorf("a permanently-shadowed spec value must rank above the normal-by-design categories, got rank %d vs catNotDeclaredInCRD's %d",
+			categoryRank(f.Category), categoryRank(catNotDeclaredInCRD))
+	}
+	if strings.Contains(f.Detail, "API/UI") {
+		t.Errorf("detail must not claim this was set through the API/UI, got %q", f.Detail)
+	}
+	if !strings.Contains(f.Detail, "binding") {
+		t.Errorf("detail should name the owning source, got %q", f.Detail)
+	}
+}
+
 // With no annotation there is nothing in the cluster that separates an
 // unapplied spec change from an override, so the report says exactly that
 // instead of picking the scarier of the two.
