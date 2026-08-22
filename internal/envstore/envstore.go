@@ -52,10 +52,27 @@ const (
 	AnnotationGeneratedKeys = "mortise.dev/generated-keys"
 	AnnotationSharedKeys    = "mortise.dev/shared-keys"
 
-	// AnnotationLastSpecEnv stores the JSON-encoded CRD spec env vars that
-	// were last applied by the controller. Used to detect CRD spec changes
-	// vs out-of-band user edits to the Secret.
+	// AnnotationLastSpecEnv stores the JSON-encoded CRD spec env VALUES that
+	// were last applied by the controller.
+	//
+	// LEGACY. Superseded by AnnotationLastSpecEnvDigest: it held resolved
+	// credential values in plaintext on the derived Secret, so a value moved
+	// out of the CRD into a Secret was written straight back out one field
+	// over (CAI-168). The controller reads it only to migrate, and deletes it
+	// on the next write.
+	//
+	// Not marked Deprecated: the migration path must keep referencing it, and
+	// a deprecation marker would make staticcheck flag the very code doing the
+	// removal.
 	AnnotationLastSpecEnv = "mortise.dev/last-spec-env"
+
+	// AnnotationLastSpecEnvDigest stores a JSON map of env var name to a
+	// SHA-256 digest of the value the controller last applied from the spec.
+	//
+	// A digest answers the only question this annotation exists to answer --
+	// "does the live value still match what the spec last set?" -- exactly as
+	// well as the value does, without persisting the credential.
+	AnnotationLastSpecEnvDigest = "mortise.dev/last-spec-env-digest"
 )
 
 // AppEnvSecretName returns the Secret name for an app's env vars.
