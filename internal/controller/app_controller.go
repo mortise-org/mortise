@@ -298,6 +298,10 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	for _, env := range resolvedEnvs {
 		projectionEnvOrder = append(projectionEnvOrder, env.Name)
 	}
+	// Same selection updateStatus aggregates on. Computed once here so the env
+	// loop can refuse to write an app-global build failure it would only have
+	// to repair a moment later (CAI-229).
+	buildAggregationEnvNames := buildFailureAggregationEnvNames(resolvedEnvs, previewEnvNames)
 
 	for i := range resolvedEnvs {
 		env := &resolvedEnvs[i]
@@ -326,7 +330,7 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		var image string
 		if app.Spec.Source.Type == mortisev1alpha1.SourceTypeGit && r.BuildClient != nil {
 			buildIdentity := resolveEnvBuildIdentity(&app, *env, previewBuildIdentities)
-			envImage, requeue, dirty, shouldClearNoCache, err := r.reconcileEnvBuild(ctx, &app, projectionEnvOrder, env.Name, buildIdentity.branch, buildIdentity.revision)
+			envImage, requeue, dirty, shouldClearNoCache, err := r.reconcileEnvBuild(ctx, &app, projectionEnvOrder, buildAggregationEnvNames, env.Name, buildIdentity.branch, buildIdentity.revision)
 			if err != nil {
 				return ctrl.Result{}, fmt.Errorf("reconcile buildrun for env %s: %w", env.Name, err)
 			}
@@ -991,8 +995,17 @@ func resolveEnvBuildIdentity(app *mortisev1alpha1.App, env mortisev1alpha1.Envir
 // shouldClearNoCache is true when this env consumed a pending rebuild request;
 // the caller clears the rebuild markers once after the env loop, so a mid-loop
 // error return leaves them in place and the rebuild stays pending.
-func (r *AppReconciler) reconcileEnvBuild(ctx context.Context, app *mortisev1alpha1.App, projectionEnvOrder []string, envName, branch, revision string) (image string, requeue bool, statusDirty bool, shouldClearNoCache bool, err error) {
+// buildAggregationEnvNames is the set of envs allowed to write the app-global
+// BuildSucceeded condition; envs outside it still get their per-env BuildRun
+// status projected, they just don't speak for the whole App.
+func (r *AppReconciler) reconcileEnvBuild(ctx context.Context, app *mortisev1alpha1.App, projectionEnvOrder []string, buildAggregationEnvNames map[string]struct{}, envName, branch, revision string) (image string, requeue bool, statusDirty bool, shouldClearNoCache bool, err error) {
 	log := logf.FromContext(ctx)
+
+	// A preview env's build failure must never reach the app-global condition.
+	// updateStatus repairs such a write later in the same pass, so writing it
+	// here only makes the App oscillate False -> True on every reconcile, and
+	// every reader in between sees the preview's raw build error (CAI-229).
+	_, aggregatesBuildFailure := buildAggregationEnvNames[envName]
 
 	branch = firstNonEmpty(branch, app.Spec.Source.Branch)
 	revision = firstNonEmpty(revision, app.Annotations["mortise.dev/revision"])
@@ -1034,8 +1047,10 @@ func (r *AppReconciler) reconcileEnvBuild(ctx context.Context, app *mortisev1alp
 					r.applyEnvBuildSuccess(ctx, app, projectionEnvOrder, envName, revision, current.Status.Image, current.Status.Digest, current.Status.DetectedPort)
 					return current.Status.Image, false, true, false, nil
 				case mortisev1alpha1.BuildRunPhaseFailed:
-					if err := r.setBuildFailureCondition(ctx, app, firstNonEmpty(current.Status.FailureReason, "BuildFailed"), current.Status.FailureMessage); err != nil {
-						return "", false, false, false, err
+					if aggregatesBuildFailure {
+						if err := r.setBuildFailureCondition(ctx, app, firstNonEmpty(current.Status.FailureReason, "BuildFailed"), current.Status.FailureMessage); err != nil {
+							return "", false, false, false, err
+						}
 					}
 					return "", false, true, false, nil
 				default:
@@ -1074,8 +1089,10 @@ func (r *AppReconciler) reconcileEnvBuild(ctx context.Context, app *mortisev1alp
 		r.applyEnvBuildSuccess(ctx, app, projectionEnvOrder, envName, revision, run.Status.Image, run.Status.Digest, run.Status.DetectedPort)
 		return run.Status.Image, false, true, consumedRebuild, nil
 	case mortisev1alpha1.BuildRunPhaseFailed:
-		if err := r.setBuildFailureCondition(ctx, app, firstNonEmpty(run.Status.FailureReason, "BuildFailed"), run.Status.FailureMessage); err != nil {
-			return "", false, false, false, err
+		if aggregatesBuildFailure {
+			if err := r.setBuildFailureCondition(ctx, app, firstNonEmpty(run.Status.FailureReason, "BuildFailed"), run.Status.FailureMessage); err != nil {
+				return "", false, false, false, err
+			}
 		}
 		return "", false, true, consumedRebuild, nil
 	default:

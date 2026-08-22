@@ -18,6 +18,18 @@ import (
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
 )
 
+// envAggregationSet builds the build-failure aggregation set these tests pass
+// to reconcileEnvBuild. Every env named here may write the app-global
+// BuildSucceeded condition — the shape buildFailureAggregationEnvNames returns
+// for an app with no preview envs, and for a preview-only app.
+func envAggregationSet(names ...string) map[string]struct{} {
+	out := make(map[string]struct{}, len(names))
+	for _, n := range names {
+		out[n] = struct{}{}
+	}
+	return out
+}
+
 // ensureAppBuildRun must NOT clear the rebuild markers itself: the env loop
 // shares one *App, so a mid-loop clear starves envs after the first (GH #436).
 // Markers are cleared once by the app controller after the env loop.
@@ -552,7 +564,7 @@ func TestReconcileEnvBuildProjectsCurrentTerminalRunBeforeRevisionShortCircuit(t
 		RegistryBackend: &fakeRegistryBackend{},
 	}
 
-	image, requeue, statusDirty, _, err := r.reconcileEnvBuild(context.Background(), app, []string{"production"}, "production", "main", "same-sha")
+	image, requeue, statusDirty, _, err := r.reconcileEnvBuild(context.Background(), app, []string{"production"}, envAggregationSet("production"), "production", "main", "same-sha")
 	if err != nil {
 		t.Fatalf("reconcileEnvBuild: %v", err)
 	}
@@ -645,7 +657,7 @@ func TestReconcileEnvBuildSkipsTerminalCurrentRunWhenManualRebuildRequested(t *t
 		RegistryBackend: &fakeRegistryBackend{},
 	}
 
-	image, requeue, statusDirty, shouldClearNoCache, err := r.reconcileEnvBuild(context.Background(), app, []string{"production"}, "production", "main", "same-sha")
+	image, requeue, statusDirty, shouldClearNoCache, err := r.reconcileEnvBuild(context.Background(), app, []string{"production"}, envAggregationSet("production"), "production", "main", "same-sha")
 	if err != nil {
 		t.Fatalf("reconcileEnvBuild: %v", err)
 	}
@@ -734,7 +746,7 @@ func TestReconcileEnvBuildRebuildRequestReachesEveryEnv(t *testing.T) {
 	}
 
 	for _, env := range envs {
-		image, requeue, _, shouldClearNoCache, err := r.reconcileEnvBuild(context.Background(), app, envs, env, "main", "same-sha")
+		image, requeue, _, shouldClearNoCache, err := r.reconcileEnvBuild(context.Background(), app, envs, envAggregationSet(envs...), env, "main", "same-sha")
 		if err != nil {
 			t.Fatalf("reconcileEnvBuild %s: %v", env, err)
 		}
@@ -818,7 +830,7 @@ func TestReconcileEnvBuildProjectsFailedCurrentRunIntoStatus(t *testing.T) {
 		RegistryBackend: &fakeRegistryBackend{},
 	}
 
-	image, requeue, statusDirty, _, err := r.reconcileEnvBuild(context.Background(), app, []string{"pr-6"}, "pr-6", "feature/preview-fail", "same-sha")
+	image, requeue, statusDirty, _, err := r.reconcileEnvBuild(context.Background(), app, []string{"pr-6"}, envAggregationSet("pr-6"), "pr-6", "feature/preview-fail", "same-sha")
 	if err != nil {
 		t.Fatalf("reconcileEnvBuild: %v", err)
 	}
@@ -895,7 +907,7 @@ func TestReconcileEnvBuildDoesNotReuseAnotherEnvsCurrentRun(t *testing.T) {
 		RegistryBackend: &fakeRegistryBackend{},
 	}
 
-	image, requeue, statusDirty, _, err := r.reconcileEnvBuild(context.Background(), app, []string{"production", "staging"}, "staging", "main", "same-sha")
+	image, requeue, statusDirty, _, err := r.reconcileEnvBuild(context.Background(), app, []string{"production", "staging"}, envAggregationSet("production", "staging"), "staging", "main", "same-sha")
 	if err != nil {
 		t.Fatalf("reconcileEnvBuild: %v", err)
 	}
@@ -977,7 +989,7 @@ func TestReconcileEnvBuildDoesNotShortCircuitLastBuiltSHAWhenInputHashChanges(t 
 		RegistryBackend: &fakeRegistryBackend{},
 	}
 
-	image, requeue, statusDirty, _, err := r.reconcileEnvBuild(context.Background(), app, []string{"production"}, "production", "main", "same-sha")
+	image, requeue, statusDirty, _, err := r.reconcileEnvBuild(context.Background(), app, []string{"production"}, envAggregationSet("production"), "production", "main", "same-sha")
 	if err != nil {
 		t.Fatalf("reconcileEnvBuild: %v", err)
 	}
