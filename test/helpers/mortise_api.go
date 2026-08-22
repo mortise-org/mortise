@@ -10,6 +10,31 @@ import (
 	"time"
 )
 
+// doWithRetry issues an HTTP request built by newReq, retrying on transport
+// errors (connection reset, EOF, etc.) a bounded number of times. PortForward
+// proves the tunnel serves a request before handing back its port, but
+// kubectl can still drop and re-establish the tunnel in the window right
+// after that, so a single reset on the very next request shouldn't be fatal.
+// newReq rebuilds the request each attempt since a request with a body can't
+// be replayed.
+func doWithRetry(client *http.Client, newReq func() (*http.Request, error)) (*http.Response, error) {
+	const attempts = 5
+	var lastErr error
+	for i := 0; i < attempts; i++ {
+		req, err := newReq()
+		if err != nil {
+			return nil, err
+		}
+		resp, err := client.Do(req)
+		if err == nil {
+			return resp, nil
+		}
+		lastErr = err
+		time.Sleep(200 * time.Millisecond)
+	}
+	return nil, lastErr
+}
+
 // LoginAsAdmin returns a Mortise JWT for an admin principal identified by
 // (email, password), bootstrapping first-user setup if necessary. Idempotent
 // across test reruns: if setup has already been completed (409 from
@@ -30,10 +55,14 @@ func LoginAsAdmin(t *testing.T, baseURL, email, password string) string {
 		"email":    email,
 		"password": password,
 	})
-	setupReq, _ := http.NewRequest(http.MethodPost, base+"/api/auth/setup",
-		bytes.NewReader(setupBody))
-	setupReq.Header.Set("Content-Type", "application/json")
-	setupResp, err := client.Do(setupReq)
+	setupResp, err := doWithRetry(client, func() (*http.Request, error) {
+		req, err := http.NewRequest(http.MethodPost, base+"/api/auth/setup", bytes.NewReader(setupBody))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		return req, nil
+	})
 	if err != nil {
 		t.Fatalf("mortise: POST /api/auth/setup: %v", err)
 	}
@@ -73,9 +102,14 @@ func LoginAsAdmin(t *testing.T, baseURL, email, password string) string {
 			"email":    c.email,
 			"password": c.password,
 		})
-		loginReq, _ := http.NewRequest(http.MethodPost, base+"/api/auth/login", bytes.NewReader(loginBody))
-		loginReq.Header.Set("Content-Type", "application/json")
-		loginResp, err := client.Do(loginReq)
+		loginResp, err := doWithRetry(client, func() (*http.Request, error) {
+			req, err := http.NewRequest(http.MethodPost, base+"/api/auth/login", bytes.NewReader(loginBody))
+			if err != nil {
+				return nil, err
+			}
+			req.Header.Set("Content-Type", "application/json")
+			return req, nil
+		})
 		if err != nil {
 			return "", 0, "", err
 		}
