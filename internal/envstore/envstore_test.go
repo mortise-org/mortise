@@ -425,3 +425,82 @@ func TestReplaceSourceSkipsEmptySecretDataNilVsEmptyChurn(t *testing.T) {
 		t.Fatalf("expected no update for logically empty secret data, got %d update calls", c.updateCalls)
 	}
 }
+
+func TestHashData(t *testing.T) {
+	t.Run("empty is empty", func(t *testing.T) {
+		if got := HashData(nil); got != "" {
+			t.Errorf("HashData(nil) = %q, want empty", got)
+		}
+	})
+
+	t.Run("stable across map iteration order", func(t *testing.T) {
+		data := map[string][]byte{"A": []byte("1"), "B": []byte("2"), "C": []byte("3")}
+		first := HashData(data)
+		for i := 0; i < 20; i++ {
+			if got := HashData(data); got != first {
+				t.Fatalf("unstable hash: %q != %q", got, first)
+			}
+		}
+	})
+
+	t.Run("value change changes the hash", func(t *testing.T) {
+		a := HashData(map[string][]byte{"K": []byte("v1")})
+		b := HashData(map[string][]byte{"K": []byte("v2")})
+		if a == b {
+			t.Error("expected different hashes for different values")
+		}
+	})
+
+	t.Run("key boundaries are unambiguous", func(t *testing.T) {
+		a := HashData(map[string][]byte{"AB": []byte("C")})
+		b := HashData(map[string][]byte{"A": []byte("BC")})
+		if a == b {
+			t.Error("key/value boundary collision")
+		}
+	})
+}
+
+func TestEnvHash(t *testing.T) {
+	const ns = "pj-p-production"
+
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+
+	appSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: AppEnvSecretName("web"), Namespace: ns},
+		Data:       map[string][]byte{"APP_KEY": []byte("a")},
+	}
+	sharedSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: SharedEnvName, Namespace: ns},
+		Data:       map[string][]byte{"SHARED_KEY": []byte("s")},
+	}
+
+	t.Run("no secrets hashes to empty", func(t *testing.T) {
+		c := fake.NewClientBuilder().WithScheme(scheme).Build()
+		if got := EnvHash(context.Background(), c, "web", ns); got != "" {
+			t.Errorf("EnvHash = %q, want empty", got)
+		}
+	})
+
+	t.Run("covers both the app and shared secrets", func(t *testing.T) {
+		appOnly := fake.NewClientBuilder().WithScheme(scheme).
+			WithObjects(appSecret.DeepCopy()).Build()
+		both := fake.NewClientBuilder().WithScheme(scheme).
+			WithObjects(appSecret.DeepCopy(), sharedSecret.DeepCopy()).Build()
+
+		a := EnvHash(context.Background(), appOnly, "web", ns)
+		b := EnvHash(context.Background(), both, "web", ns)
+		if a == "" || b == "" {
+			t.Fatalf("unexpected empty hashes: %q %q", a, b)
+		}
+		if a == b {
+			t.Error("shared-env contents must contribute to the env hash")
+		}
+		want := HashData(map[string][]byte{"APP_KEY": []byte("a"), "SHARED_KEY": []byte("s")})
+		if b != want {
+			t.Errorf("EnvHash = %q, want %q", b, want)
+		}
+	})
+}

@@ -33,6 +33,7 @@ Quickstart:
 	cmd.AddCommand(newPromoteCmd())
 	cmd.AddCommand(newLogsCmd())
 	cmd.AddCommand(newStatusCmd())
+	cmd.AddCommand(newDiffCmd())
 	cmd.AddCommand(newDomainCmd())
 	cmd.AddCommand(newTokenCmd())
 	cmd.AddCommand(newEnvCmd())
