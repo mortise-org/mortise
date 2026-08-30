@@ -241,13 +241,18 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	if _, err := r.pruneMissingBindingsForConsumer(ctx, &app); err != nil {
 		return ctrl.Result{}, fmt.Errorf("prune missing bindings: %w", err)
 	}
-	var resolvedEnvs []mortisev1alpha1.Environment
-	var previewEnvNames map[string]struct{}
-	var previewBuildIdentities map[string]previewBuildIdentity
-	if project != nil {
-		resolvedEnvs = resolveEnvs(project, &app)
-		previewEnvNames = resolvedPreviewEnvNames(project, resolvedEnvs)
+	if project == nil || len(project.Spec.Environments) == 0 {
+		// Envs derive from the Project. Without it there is nothing to
+		// compute, and running the status pass anyway wrote an empty env
+		// list and Phase=Deploying over a Ready App that nothing re-queued
+		// (CAI-173: 10x main run 33307647979, bindings tests). The cached
+		// Project read lags its creation and its production seed; wait.
+		logf.FromContext(ctx).Info("parent project not resolvable yet; requeueing without a status pass", "projectFound", project != nil)
+		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
+	resolvedEnvs := resolveEnvs(project, &app)
+	previewEnvNames := resolvedPreviewEnvNames(project, resolvedEnvs)
+	var previewBuildIdentities map[string]previewBuildIdentity
 	buildAggregationEnvNames := buildFailureAggregationEnvNames(resolvedEnvs, previewEnvNames)
 	if app.Spec.Source.Type == mortisev1alpha1.SourceTypeGit && len(previewEnvNames) > 0 {
 		previewBuildIdentities, err = r.previewBuildIdentitiesByEnv(ctx, &app, previewEnvNames)
