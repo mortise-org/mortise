@@ -163,6 +163,14 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **A changed webhook Secret now re-registers every hook that used it**
+  (CAI-262): the GitProvider's HMAC Secret was watched by nothing, so
+  recreating it left every registered GitHub hook delivering with the old
+  value and every delivery failing signature verification, silently, until
+  someone read GitHub's delivery log (CAI-261: a month of dead
+  push-to-deploy). Apps sourced from the provider now reconcile on that
+  Secret's change, and the registration input hash does the rest.
+
 - **Picker-added variables now render immediately** (mo-baq): a variable
   added via the bindings/secret picker was written to the App spec but
   frequently did not appear in the variables table until the drawer was

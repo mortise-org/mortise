@@ -346,3 +346,62 @@ func TestAppRequestsForSecret_CredentialRefs(t *testing.T) {
 		}
 	})
 }
+
+// A GitProvider's webhook HMAC Secret is referenced by nothing an App owns
+// or reads, so neither of the other mappings finds the Apps whose hooks were
+// registered with it. Every App on that provider must reconcile so the hook
+// input hash sees the new value and re-registers (CAI-262).
+func TestAppRequestsForSecret_WebhookSecret(t *testing.T) {
+	scheme := gcTestScheme(t)
+
+	gp := &mortisev1alpha1.GitProvider{
+		ObjectMeta: metav1.ObjectMeta{Name: "github"},
+		Spec: mortisev1alpha1.GitProviderSpec{
+			Type: mortisev1alpha1.GitProviderTypeGitHub,
+			WebhookSecretRef: &mortisev1alpha1.SecretRef{
+				Namespace: "mortise-system", Name: "gitprovider-webhook-github", Key: "webhookSecret",
+			},
+		},
+	}
+	onProvider := func(name, project string) *mortisev1alpha1.App {
+		return &mortisev1alpha1.App{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: constants.ControlNamespace(project)},
+			Spec: mortisev1alpha1.AppSpec{Source: mortisev1alpha1.AppSource{
+				Type: mortisev1alpha1.SourceTypeGit, Repo: "https://github.com/org/" + name + ".git", ProviderRef: "github",
+			}},
+		}
+	}
+	other := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "gitea-app", Namespace: constants.ControlNamespace("demo")},
+		Spec:       mortisev1alpha1.AppSpec{Source: mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeGit, ProviderRef: "gitea"}},
+	}
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithIndex(&mortisev1alpha1.App{}, referencedSecretIndex, indexAppReferencedSecrets).
+		WithIndex(&mortisev1alpha1.App{}, referencedCredentialSecretIndex, indexAppCredentialSecrets).
+		WithIndex(&mortisev1alpha1.App{}, providerRefIndex, indexAppProviderRef).
+		WithObjects(gp, onProvider("site", "portfolio"), onProvider("api", "postlab"), other).
+		Build()
+	r := &AppReconciler{Client: c, Scheme: scheme}
+
+	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "gitprovider-webhook-github", Namespace: "mortise-system"}}
+	reqs := r.appRequestsForSecret(context.Background(), secret)
+
+	got := map[string]bool{}
+	for _, req := range reqs {
+		got[req.Namespace+"/"+req.Name] = true
+	}
+	for _, want := range []string{"pj-portfolio/site", "pj-postlab/api"} {
+		if !got[want] {
+			t.Errorf("App %s on the provider was not enqueued; got %v", want, reqs)
+		}
+	}
+	if got["pj-demo/gitea-app"] {
+		t.Errorf("an App on another provider was enqueued: %v", reqs)
+	}
+
+	unrelated := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "something-else", Namespace: "mortise-system"}}
+	if reqs := r.appRequestsForSecret(context.Background(), unrelated); len(reqs) != 0 {
+		t.Errorf("unrelated Secret enqueued Apps: %v", reqs)
+	}
+}

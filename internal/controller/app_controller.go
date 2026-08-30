@@ -4667,6 +4667,19 @@ const referencedCredentialSecretIndex = "spec.credentials.valueFrom.secretRef"
 // indexed, because the env namespace can't be derived without a client lookup.
 // fetchParentProject's label-based fallback covers those on the reconcile path;
 // they fall back to the cache resync here.
+// providerRefIndex indexes git-source Apps by spec.source.providerRef, so a
+// change to a GitProvider's webhook Secret can find every App whose hook was
+// registered with the old value.
+const providerRefIndex = "spec.source.providerRef"
+
+func indexAppProviderRef(obj client.Object) []string {
+	app, ok := obj.(*mortisev1alpha1.App)
+	if !ok || app.Spec.Source.ProviderRef == "" {
+		return nil
+	}
+	return []string{app.Spec.Source.ProviderRef}
+}
+
 func indexAppReferencedSecrets(obj client.Object) []string {
 	app, ok := obj.(*mortisev1alpha1.App)
 	if !ok {
@@ -4770,7 +4783,42 @@ func (r *AppReconciler) appRequestsForReferencedSecret(ctx context.Context, obj 
 // test, only the resolution logic it feeds.
 func (r *AppReconciler) appRequestsForSecret(ctx context.Context, obj client.Object) []reconcile.Request {
 	reqs := appRequestsForManagedResource(ctx, obj)
-	return append(reqs, r.appRequestsForReferencedSecret(ctx, obj)...)
+	reqs = append(reqs, r.appRequestsForReferencedSecret(ctx, obj)...)
+	return append(reqs, r.appRequestsForWebhookSecret(ctx, obj)...)
+}
+
+// appRequestsForWebhookSecret maps a GitProvider's webhook HMAC Secret to
+// every App sourced from that provider. ensureWebhook folds the secret into
+// its registration input hash, so once the App reconciles the hook is
+// re-registered with the new value. Without this mapping nothing triggered
+// that reconcile: a recreated Secret left every registered hook delivering
+// with the old value, and every delivery failed signature verification for a
+// month before anyone looked at GitHub's side (CAI-261, CAI-262).
+func (r *AppReconciler) appRequestsForWebhookSecret(ctx context.Context, obj client.Object) []reconcile.Request {
+	var providers mortisev1alpha1.GitProviderList
+	if err := r.List(ctx, &providers); err != nil {
+		logf.FromContext(ctx).Error(err, "listing GitProviders for webhook secret", "secret", obj.GetNamespace()+"/"+obj.GetName())
+		return nil
+	}
+	var reqs []reconcile.Request
+	for i := range providers.Items {
+		ref := providers.Items[i].Spec.WebhookSecretRef
+		if ref == nil || ref.Name != obj.GetName() || ref.Namespace != obj.GetNamespace() {
+			continue
+		}
+		var apps mortisev1alpha1.AppList
+		if err := r.List(ctx, &apps, client.MatchingFields{providerRefIndex: providers.Items[i].Name}); err != nil {
+			logf.FromContext(ctx).Error(err, "listing Apps for GitProvider", "provider", providers.Items[i].Name)
+			continue
+		}
+		for j := range apps.Items {
+			reqs = append(reqs, reconcile.Request{NamespacedName: types.NamespacedName{
+				Name:      apps.Items[j].Name,
+				Namespace: apps.Items[j].Namespace,
+			}})
+		}
+	}
+	return reqs
 }
 
 // appRequestsForManagedResource maps a resource the reconciler created back to
@@ -4854,6 +4902,11 @@ func (r *AppReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		context.Background(), &mortisev1alpha1.App{}, referencedCredentialSecretIndex, indexAppCredentialSecrets,
 	); err != nil {
 		return fmt.Errorf("index apps by referenced credential secret: %w", err)
+	}
+	if err := mgr.GetFieldIndexer().IndexField(
+		context.Background(), &mortisev1alpha1.App{}, providerRefIndex, indexAppProviderRef,
+	); err != nil {
+		return fmt.Errorf("index apps by git provider: %w", err)
 	}
 
 	enqueueAppFromSecret := handler.EnqueueRequestsFromMapFunc(r.appRequestsForSecret)
