@@ -139,15 +139,23 @@
 		return (!entry.source || entry.source === 'user') && !entry.bindingRef && !entry.secretRef;
 	}
 
+	// A refetch (after a save, or a later fetch resolving) rebuilds the rows;
+	// a value the user revealed must stay revealed or the input they are about
+	// to type into disappears under them.
+	function keepRevealed(prev: EnvEntry[], next: EnvEntry[]): EnvEntry[] {
+		const revealed = new Set(prev.filter((e) => e.revealed).map((e) => e.name));
+		return next.map((e) => (revealed.has(e.name) ? { ...e, revealed: true } : e));
+	}
+
 	async function loadEnv(envName: string, preserveDraftOnError = false): Promise<boolean> {
 		envSection.loading = true;
 		envSection.error = '';
 		try {
 			const rows = await api.getEnv(project, app.metadata.name, envName);
-			const entries: EnvEntry[] = (rows ?? []).map(r => ({
+			const entries: EnvEntry[] = keepRevealed(envSection.entries, (rows ?? []).map(r => ({
 				name: r.name, value: r.value, source: r.source ?? 'user', revealed: false,
 				bindingRef: r.bindingRef, bindingKey: r.bindingKey, secretRef: r.secretRef
-			}));
+			})));
 			envSection.entries = entries;
 			envSection.originalEntries = entries.map(e => ({ ...e }));
 			envSection.editedKeys = new Set();
@@ -178,9 +186,9 @@
 		sharedSection.error = '';
 		try {
 			const rows = await api.getSharedVars(project);
-			sharedSection.entries = (rows ?? []).map(r => ({
+			sharedSection.entries = keepRevealed(sharedSection.entries, (rows ?? []).map(r => ({
 				name: r.name, value: r.value, source: r.source ?? 'shared', revealed: false
-			}));
+			})));
 			sharedSection.originalEntries = sharedSection.entries.map(e => ({ ...e }));
 			sharedSection.editedKeys = new Set();
 		} catch (e) {
@@ -197,9 +205,9 @@
 		buildSection.error = '';
 		try {
 			const rows = await api.getBuildArgs(project, app.metadata.name, activeEnv);
-			const entries: EnvEntry[] = (rows ?? []).map(r => ({
+			const entries: EnvEntry[] = keepRevealed(buildSection.entries, (rows ?? []).map(r => ({
 				name: r.name, value: r.value ?? '', source: 'user', revealed: false
-			}));
+			})));
 			buildSection.entries = entries;
 			buildSection.originalEntries = entries.map(e => ({ ...e }));
 			buildSection.editedKeys = new Set();
@@ -445,9 +453,9 @@
 				.filter(e => e.name.trim() !== '')
 				.map(e => ({ name: e.name, value: e.value }));
 			const result = await api.putBuildArgs(project, app.metadata.name, activeEnv, filtered);
-			buildSection.entries = (result ?? []).map(r => ({
+			buildSection.entries = keepRevealed(buildSection.entries, (result ?? []).map(r => ({
 				name: r.name, value: r.value ?? '', source: 'user', revealed: false
-			}));
+			})));
 			buildSection.originalEntries = buildSection.entries.map(e => ({ ...e }));
 			buildSection.editedKeys = new Set();
 			markStale();
