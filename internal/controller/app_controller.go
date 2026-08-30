@@ -246,6 +246,7 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		resolvedEnvs = resolveEnvs(project, &app)
 		previewEnvNames = resolvedPreviewEnvNames(project, resolvedEnvs)
 	}
+	buildAggregationEnvNames := buildFailureAggregationEnvNames(resolvedEnvs, previewEnvNames)
 	if app.Spec.Source.Type == mortisev1alpha1.SourceTypeGit && len(previewEnvNames) > 0 {
 		previewBuildIdentities, err = r.previewBuildIdentitiesByEnv(ctx, &app, previewEnvNames)
 		if err != nil {
@@ -326,7 +327,7 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		var image string
 		if app.Spec.Source.Type == mortisev1alpha1.SourceTypeGit && r.BuildClient != nil {
 			buildIdentity := resolveEnvBuildIdentity(&app, *env, previewBuildIdentities)
-			envImage, requeue, dirty, shouldClearNoCache, err := r.reconcileEnvBuild(ctx, &app, projectionEnvOrder, env.Name, buildIdentity.branch, buildIdentity.revision)
+			envImage, requeue, dirty, shouldClearNoCache, err := r.reconcileEnvBuild(ctx, &app, projectionEnvOrder, buildAggregationEnvNames, env.Name, buildIdentity.branch, buildIdentity.revision)
 			if err != nil {
 				return ctrl.Result{}, fmt.Errorf("reconcile buildrun for env %s: %w", env.Name, err)
 			}
@@ -984,6 +985,16 @@ func resolveEnvBuildIdentity(app *mortisev1alpha1.App, env mortisev1alpha1.Envir
 	return identity
 }
 
+// envCountsTowardAppBuildFailure reports whether envName's build failure may be
+// written to the App's top-level BuildSucceeded condition.
+func envCountsTowardAppBuildFailure(buildAggregationEnvNames map[string]struct{}, envName string) bool {
+	if len(buildAggregationEnvNames) == 0 {
+		return true
+	}
+	_, ok := buildAggregationEnvNames[envName]
+	return ok
+}
+
 // reconcileEnvBuild handles per-environment builds for git-source apps. Returns
 // the image to use for this env's deployment, or "" if a build is still in
 // flight (caller should skip deployment and requeue). statusDirty is true when
@@ -991,7 +1002,13 @@ func resolveEnvBuildIdentity(app *mortisev1alpha1.App, env mortisev1alpha1.Envir
 // shouldClearNoCache is true when this env consumed a pending rebuild request;
 // the caller clears the rebuild markers once after the env loop, so a mid-loop
 // error return leaves them in place and the rebuild stays pending.
-func (r *AppReconciler) reconcileEnvBuild(ctx context.Context, app *mortisev1alpha1.App, projectionEnvOrder []string, envName, branch, revision string) (image string, requeue bool, statusDirty bool, shouldClearNoCache bool, err error) {
+//
+// buildAggregationEnvNames is the set of envs whose build failures may reach the
+// App's top-level BuildSucceeded condition. An env outside it (a preview) records
+// its failure in env status only: writing it app-wide would both misattribute the
+// failure to production and trip the terminal-failure short-circuit that halts
+// every subsequent build until a manual rebuild. A nil set means every env counts.
+func (r *AppReconciler) reconcileEnvBuild(ctx context.Context, app *mortisev1alpha1.App, projectionEnvOrder []string, buildAggregationEnvNames map[string]struct{}, envName, branch, revision string) (image string, requeue bool, statusDirty bool, shouldClearNoCache bool, err error) {
 	log := logf.FromContext(ctx)
 
 	branch = firstNonEmpty(branch, app.Spec.Source.Branch)
@@ -1034,8 +1051,10 @@ func (r *AppReconciler) reconcileEnvBuild(ctx context.Context, app *mortisev1alp
 					r.applyEnvBuildSuccess(ctx, app, projectionEnvOrder, envName, revision, current.Status.Image, current.Status.Digest, current.Status.DetectedPort)
 					return current.Status.Image, false, true, false, nil
 				case mortisev1alpha1.BuildRunPhaseFailed:
-					if err := r.setBuildFailureCondition(ctx, app, firstNonEmpty(current.Status.FailureReason, "BuildFailed"), current.Status.FailureMessage); err != nil {
-						return "", false, false, false, err
+					if envCountsTowardAppBuildFailure(buildAggregationEnvNames, envName) {
+						if err := r.setBuildFailureCondition(ctx, app, firstNonEmpty(current.Status.FailureReason, "BuildFailed"), current.Status.FailureMessage); err != nil {
+							return "", false, false, false, err
+						}
 					}
 					return "", false, true, false, nil
 				default:
@@ -1074,8 +1093,10 @@ func (r *AppReconciler) reconcileEnvBuild(ctx context.Context, app *mortisev1alp
 		r.applyEnvBuildSuccess(ctx, app, projectionEnvOrder, envName, revision, run.Status.Image, run.Status.Digest, run.Status.DetectedPort)
 		return run.Status.Image, false, true, consumedRebuild, nil
 	case mortisev1alpha1.BuildRunPhaseFailed:
-		if err := r.setBuildFailureCondition(ctx, app, firstNonEmpty(run.Status.FailureReason, "BuildFailed"), run.Status.FailureMessage); err != nil {
-			return "", false, false, false, err
+		if envCountsTowardAppBuildFailure(buildAggregationEnvNames, envName) {
+			if err := r.setBuildFailureCondition(ctx, app, firstNonEmpty(run.Status.FailureReason, "BuildFailed"), run.Status.FailureMessage); err != nil {
+				return "", false, false, false, err
+			}
 		}
 		return "", false, true, consumedRebuild, nil
 	default:

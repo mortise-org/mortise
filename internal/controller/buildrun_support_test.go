@@ -552,7 +552,7 @@ func TestReconcileEnvBuildProjectsCurrentTerminalRunBeforeRevisionShortCircuit(t
 		RegistryBackend: &fakeRegistryBackend{},
 	}
 
-	image, requeue, statusDirty, _, err := r.reconcileEnvBuild(context.Background(), app, []string{"production"}, "production", "main", "same-sha")
+	image, requeue, statusDirty, _, err := r.reconcileEnvBuild(context.Background(), app, []string{"production"}, nil, "production", "main", "same-sha")
 	if err != nil {
 		t.Fatalf("reconcileEnvBuild: %v", err)
 	}
@@ -645,7 +645,7 @@ func TestReconcileEnvBuildSkipsTerminalCurrentRunWhenManualRebuildRequested(t *t
 		RegistryBackend: &fakeRegistryBackend{},
 	}
 
-	image, requeue, statusDirty, shouldClearNoCache, err := r.reconcileEnvBuild(context.Background(), app, []string{"production"}, "production", "main", "same-sha")
+	image, requeue, statusDirty, shouldClearNoCache, err := r.reconcileEnvBuild(context.Background(), app, []string{"production"}, nil, "production", "main", "same-sha")
 	if err != nil {
 		t.Fatalf("reconcileEnvBuild: %v", err)
 	}
@@ -734,7 +734,7 @@ func TestReconcileEnvBuildRebuildRequestReachesEveryEnv(t *testing.T) {
 	}
 
 	for _, env := range envs {
-		image, requeue, _, shouldClearNoCache, err := r.reconcileEnvBuild(context.Background(), app, envs, env, "main", "same-sha")
+		image, requeue, _, shouldClearNoCache, err := r.reconcileEnvBuild(context.Background(), app, envs, nil, env, "main", "same-sha")
 		if err != nil {
 			t.Fatalf("reconcileEnvBuild %s: %v", env, err)
 		}
@@ -818,7 +818,7 @@ func TestReconcileEnvBuildProjectsFailedCurrentRunIntoStatus(t *testing.T) {
 		RegistryBackend: &fakeRegistryBackend{},
 	}
 
-	image, requeue, statusDirty, _, err := r.reconcileEnvBuild(context.Background(), app, []string{"pr-6"}, "pr-6", "feature/preview-fail", "same-sha")
+	image, requeue, statusDirty, _, err := r.reconcileEnvBuild(context.Background(), app, []string{"pr-6"}, nil, "pr-6", "feature/preview-fail", "same-sha")
 	if err != nil {
 		t.Fatalf("reconcileEnvBuild: %v", err)
 	}
@@ -895,7 +895,7 @@ func TestReconcileEnvBuildDoesNotReuseAnotherEnvsCurrentRun(t *testing.T) {
 		RegistryBackend: &fakeRegistryBackend{},
 	}
 
-	image, requeue, statusDirty, _, err := r.reconcileEnvBuild(context.Background(), app, []string{"production", "staging"}, "staging", "main", "same-sha")
+	image, requeue, statusDirty, _, err := r.reconcileEnvBuild(context.Background(), app, []string{"production", "staging"}, nil, "staging", "main", "same-sha")
 	if err != nil {
 		t.Fatalf("reconcileEnvBuild: %v", err)
 	}
@@ -977,7 +977,7 @@ func TestReconcileEnvBuildDoesNotShortCircuitLastBuiltSHAWhenInputHashChanges(t 
 		RegistryBackend: &fakeRegistryBackend{},
 	}
 
-	image, requeue, statusDirty, _, err := r.reconcileEnvBuild(context.Background(), app, []string{"production"}, "production", "main", "same-sha")
+	image, requeue, statusDirty, _, err := r.reconcileEnvBuild(context.Background(), app, []string{"production"}, nil, "production", "main", "same-sha")
 	if err != nil {
 		t.Fatalf("reconcileEnvBuild: %v", err)
 	}
@@ -1136,5 +1136,97 @@ func TestPersistBuildRunLogKeepsLegacyAppConfigMap(t *testing.T) {
 	}
 	if legacy.OwnerReferences[0].Kind != "App" || legacy.OwnerReferences[0].Name != app.Name {
 		t.Fatalf("expected legacy log owner App/%s, got %+v", app.Name, legacy.OwnerReferences)
+	}
+}
+
+// TestReconcileEnvBuildKeepsPreviewFailureOffTopLevelApp is the CAI-229
+// reproduction: a preview env's build failure must stay in that env's status and
+// never reach the App's top-level BuildSucceeded condition. Before the fix the
+// condition was written for every env and only compensated for later in
+// updateStatus, so an interleaving where the clear had not yet run left the
+// parent App reporting a failure for a branch it does not deploy — and tripped
+// the terminal-failure short-circuit that halts all subsequent builds.
+func TestReconcileEnvBuildKeepsPreviewFailureOffTopLevelApp(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := mortisev1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add scheme: %v", err)
+	}
+
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "demo",
+			Namespace: "pj-default-project",
+			Annotations: map[string]string{
+				"mortise.dev/revision": "same-sha",
+			},
+		},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{
+				Type:   mortisev1alpha1.SourceTypeGit,
+				Branch: "main",
+			},
+		},
+		Status: mortisev1alpha1.AppStatus{
+			Environments: []mortisev1alpha1.EnvironmentStatus{{
+				Name: "pr-6",
+				CurrentBuildRunRef: &mortisev1alpha1.BuildRunReference{
+					Name:  "preview-run",
+					Phase: mortisev1alpha1.BuildRunPhaseFailed,
+				},
+			}},
+			CurrentBuildRunName: "preview-run",
+		},
+	}
+	run := &mortisev1alpha1.BuildRun{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "preview-run",
+			Namespace: app.Namespace,
+		},
+		Spec: appBuildRunSpec(app, "pr-6", "feature/preview-fail", "same-sha", "registry.example.com/mortise/demo:same-sh-pr-6", "registry.example.com/mortise/demo:same-sh-pr-6"),
+		Status: mortisev1alpha1.BuildRunStatus{
+			Phase:          mortisev1alpha1.BuildRunPhaseFailed,
+			FailureReason:  "BuildFailed",
+			FailureMessage: `failed to solve: failed to parse stage name "invalid@@image": invalid reference format`,
+		},
+	}
+
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(app, run).WithStatusSubresource(app).Build()
+	r := &AppReconciler{
+		Client:          c,
+		Scheme:          scheme,
+		RegistryBackend: &fakeRegistryBackend{},
+	}
+
+	// production is the only env that may speak for the App; pr-6 is a preview.
+	aggregation := map[string]struct{}{"production": {}}
+
+	image, _, statusDirty, _, err := r.reconcileEnvBuild(context.Background(), app, []string{"production", "pr-6"}, aggregation, "pr-6", "feature/preview-fail", "same-sha")
+	if err != nil {
+		t.Fatalf("reconcileEnvBuild: %v", err)
+	}
+	if image != "" {
+		t.Fatalf("expected no image on failed preview build, got %q", image)
+	}
+	if !statusDirty {
+		t.Fatal("expected failed preview buildrun projection to dirty status")
+	}
+
+	// The preview's own status must still record the failure.
+	es := envStatusFor(app, "pr-6")
+	if es == nil || es.CurrentBuildRunRef == nil || es.CurrentBuildRunRef.Phase != mortisev1alpha1.BuildRunPhaseFailed {
+		t.Fatalf("expected preview env status to record the failed buildrun, got %+v", es)
+	}
+
+	// The App must not.
+	if cond := meta.FindStatusCondition(app.Status.Conditions, "BuildSucceeded"); cond != nil && cond.Status == metav1.ConditionFalse {
+		t.Fatalf("preview build failure reached the top-level App condition: reason=%q message=%q", cond.Reason, cond.Message)
+	}
+
+	var persisted mortisev1alpha1.App
+	if err := c.Get(context.Background(), types.NamespacedName{Namespace: app.Namespace, Name: app.Name}, &persisted); err != nil {
+		t.Fatalf("get persisted app: %v", err)
+	}
+	if cond := meta.FindStatusCondition(persisted.Status.Conditions, "BuildSucceeded"); cond != nil && cond.Status == metav1.ConditionFalse {
+		t.Fatalf("preview build failure persisted onto the App: reason=%q message=%q", cond.Reason, cond.Message)
 	}
 }
