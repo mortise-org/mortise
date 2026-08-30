@@ -3862,6 +3862,19 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 			})
 		}
 
+		if fresh.Status.Phase != phase {
+			// A phase flip is the one status change a reader most wants to
+			// explain after the fact, and nothing recorded why (CAI-173:
+			// Ready -> Deploying between two reads, cause unattributable
+			// from the artifact). Name the envs holding the phase back.
+			var holding []string
+			for _, es := range envStatuses {
+				if es.Phase != mortisev1alpha1.AppPhaseReady {
+					holding = append(holding, fmt.Sprintf("%s=%s(ready=%d)%s", es.Name, es.Phase, es.ReadyReplicas, firstNonEmpty(" "+es.Message, "")))
+				}
+			}
+			logf.FromContext(ctx).Info("app phase changed", "from", fresh.Status.Phase, "to", phase, "envs", strings.Join(holding, "; "))
+		}
 		fresh.Status.Phase = phase
 		fresh.Status.Environments = envStatuses
 		if err := r.projectAppBuildMetadata(ctx, &fresh, projectionEnvOrder); err != nil {
