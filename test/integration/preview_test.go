@@ -379,18 +379,26 @@ func TestPreviewInheritsStagingBindings(t *testing.T) {
 	// --- Verify the preview app-env Secret has binding env vars.
 	previewNs := constants.PreviewNamespace(projectName, 10)
 	store := &envstore.Store{Client: k8sClient}
-	previewVars, err := store.Get(context.Background(), previewNs, apiApp.Name)
-	if err != nil {
-		t.Fatalf("read preview env vars: %v", err)
-	}
+	// Every App fans out into the preview env and bindings resolve in the
+	// preview namespace (SPEC, preview environments): the preview talks to
+	// its own postgres, not staging's. The PE controller first clones the
+	// source env's Secret -- staging hosts included -- and the App
+	// controller then recomputes the binding vars; a single read landed on
+	// either side of that and the old assertion (source-env host) passed
+	// only on the transient. Poll for the steady state.
+	wantHost := fmt.Sprintf("%s.%s.svc.cluster.local", pgApp.Name, previewNs)
 	envMap := make(map[string]string)
-	for _, ev := range previewVars {
-		envMap[ev.Name] = ev.Value
-	}
-
-	// host should resolve to the postgres service in the source env namespace.
-	pgEnvNs := constants.EnvNamespace(projectName, pe.Spec.SourceEnv)
-	wantHost := fmt.Sprintf("%s.%s.svc.cluster.local", pgApp.Name, pgEnvNs)
+	helpers.RequireEventually(t, 2*time.Minute, func() bool {
+		previewVars, err := store.Get(context.Background(), previewNs, apiApp.Name)
+		if err != nil {
+			return false
+		}
+		envMap = make(map[string]string)
+		for _, ev := range previewVars {
+			envMap[ev.Name] = ev.Value
+		}
+		return envMap["TEST_DB_HOST"] == wantHost
+	})
 	if got := envMap["TEST_DB_HOST"]; got != wantHost {
 		t.Errorf("TEST_DB_HOST: got %q, want %q", got, wantHost)
 	}
