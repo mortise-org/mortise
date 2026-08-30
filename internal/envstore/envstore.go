@@ -51,6 +51,11 @@ const (
 	AnnotationBindingKeys   = "mortise.dev/binding-keys"
 	AnnotationGeneratedKeys = "mortise.dev/generated-keys"
 	AnnotationSharedKeys    = "mortise.dev/shared-keys"
+	// AnnotationRetainedKeys lists keys that were removed from the App spec
+	// but kept because their value had been changed out of band. Without
+	// the record, "removed from the CRD" and "still in the process" are
+	// indistinguishable from a key the user added by hand (CAI-154).
+	AnnotationRetainedKeys = "mortise.dev/retained-keys"
 
 	// AnnotationLastSpecEnv stores the JSON-encoded CRD spec env VALUES that
 	// were last applied by the controller.
@@ -114,7 +119,7 @@ type Store struct {
 type Env struct {
 	Name   string `json:"name"`
 	Value  string `json:"value"`
-	Source string `json:"source,omitempty"` // "user", "binding", "generated", "shared", ""
+	Source string `json:"source,omitempty"` // "user", "binding", "generated", "shared", "retained", ""
 }
 
 // validEnvVarName matches POSIX-compliant environment variable names.
@@ -432,7 +437,7 @@ func applyDesiredSecret(existing, desired *corev1.Secret) bool {
 	if existing.Annotations == nil {
 		existing.Annotations = make(map[string]string)
 	}
-	for _, key := range []string{AnnotationBindingKeys, AnnotationGeneratedKeys, AnnotationSharedKeys} {
+	for _, key := range []string{AnnotationBindingKeys, AnnotationGeneratedKeys, AnnotationSharedKeys, AnnotationRetainedKeys} {
 		if _, ok := existing.Annotations[key]; ok {
 			delete(existing.Annotations, key)
 			changed = true
@@ -479,6 +484,7 @@ func buildSecret(namespace, name string, vars []Env, extraLabels map[string]stri
 	bindingKeys := []string{}
 	generatedKeys := []string{}
 	sharedKeys := []string{}
+	retainedKeys := []string{}
 
 	for _, e := range vars {
 		data[e.Name] = []byte(e.Value)
@@ -489,6 +495,8 @@ func buildSecret(namespace, name string, vars []Env, extraLabels map[string]stri
 			generatedKeys = append(generatedKeys, e.Name)
 		case "shared":
 			sharedKeys = append(sharedKeys, e.Name)
+		case "retained":
+			retainedKeys = append(retainedKeys, e.Name)
 		}
 	}
 
@@ -512,6 +520,10 @@ func buildSecret(namespace, name string, vars []Env, extraLabels map[string]stri
 		sort.Strings(sharedKeys)
 		annotations[AnnotationSharedKeys] = strings.Join(sharedKeys, ",")
 	}
+	if len(retainedKeys) > 0 {
+		sort.Strings(retainedKeys)
+		annotations[AnnotationRetainedKeys] = strings.Join(retainedKeys, ",")
+	}
 
 	return &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
@@ -528,6 +540,7 @@ func secretToEnvs(secret *corev1.Secret) []Env {
 	bindingSet := parseKeySet(secret.Annotations[AnnotationBindingKeys])
 	generatedSet := parseKeySet(secret.Annotations[AnnotationGeneratedKeys])
 	sharedSet := parseKeySet(secret.Annotations[AnnotationSharedKeys])
+	retainedSet := parseKeySet(secret.Annotations[AnnotationRetainedKeys])
 
 	envs := make([]Env, 0, len(secret.Data))
 	for k, v := range secret.Data {
@@ -538,6 +551,8 @@ func secretToEnvs(secret *corev1.Secret) []Env {
 			source = "generated"
 		} else if sharedSet[k] {
 			source = "shared"
+		} else if retainedSet[k] {
+			source = "retained"
 		}
 		envs = append(envs, Env{Name: k, Value: string(v), Source: source})
 	}
@@ -564,7 +579,7 @@ func parseKeySet(csv string) map[string]bool {
 }
 
 func removeKeyFromAnnotations(secret *corev1.Secret, key string) {
-	for _, ann := range []string{AnnotationBindingKeys, AnnotationGeneratedKeys, AnnotationSharedKeys} {
+	for _, ann := range []string{AnnotationBindingKeys, AnnotationGeneratedKeys, AnnotationSharedKeys, AnnotationRetainedKeys} {
 		if csv, ok := secret.Annotations[ann]; ok {
 			keys := strings.Split(csv, ",")
 			filtered := keys[:0]
@@ -641,4 +656,21 @@ func EnvHash(ctx context.Context, reader client.Reader, appName, envNs string) s
 		}
 	}
 	return HashData(combined)
+}
+
+// RetainedKeys lists the keys in an app's env Secret that were removed
+// from the spec but kept because their value had been changed out of band.
+// Read-only; missing Secret means none.
+func RetainedKeys(ctx context.Context, reader client.Reader, appName, envNs string) []string {
+	var sec corev1.Secret
+	if err := reader.Get(ctx, types.NamespacedName{Name: AppEnvSecretName(appName), Namespace: envNs}, &sec); err != nil {
+		return nil
+	}
+	set := parseKeySet(sec.Annotations[AnnotationRetainedKeys])
+	keys := make([]string, 0, len(set))
+	for k := range set {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }

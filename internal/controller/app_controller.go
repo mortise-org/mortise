@@ -2810,11 +2810,23 @@ func (r *AppReconciler) reconcileEnvSecret(ctx context.Context, app *mortisev1al
 		// overridden out-of-band.
 		kept := make([]envstore.Env, 0, len(current))
 		for _, e := range current {
-			if e.Source == "" || e.Source == "user" {
-				if _, stillInSpec := specEnvKeys[e.Name]; !stillInSpec {
-					if lastVal, tracked := lastSpec[e.Name]; tracked && lastSpecEnvDigest(e.Value) == lastVal {
-						continue
+			if e.Source == "" || e.Source == "user" || e.Source == "retained" {
+				_, stillInSpec := specEnvKeys[e.Name]
+				switch {
+				case !stillInSpec && e.Source != "retained":
+					if lastVal, tracked := lastSpec[e.Name]; tracked {
+						if lastSpecEnvDigest(e.Value) == lastVal {
+							continue
+						}
+						// Removed from the spec, but the value had been changed
+						// out of band, so it is kept -- and marked, because after
+						// this pass nothing else remembers it was ever a spec key
+						// (CAI-154).
+						e.Source = "retained"
 					}
+				case stillInSpec && e.Source == "retained":
+					// Re-declared: it is a spec key again.
+					e.Source = "user"
 				}
 			}
 			kept = append(kept, e)
@@ -3700,6 +3712,7 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 			// place, which is correct and invisible -- report it (CAI-162).
 			es.UnresolvedEnvKeys = r.unresolvedEnvKeysFor(ctx, &env, envNs)
 			es.OverriddenEnvKeys = r.overriddenEnvKeysFor(ctx, app, &env, envNs)
+			es.RetainedEnvKeys = envstore.RetainedKeys(ctx, r.Client, app.Name, envNs)
 
 			// Carry forward deploy history, restart tracking, and build info.
 			// From the server copy when it knows the env; otherwise from this
@@ -3849,6 +3862,7 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 		setReservedEnvKeysCondition(&fresh.Status.Conditions, app, resolvedEnvs, app.Generation)
 		setPlaintextCredentialsCondition(&fresh.Status.Conditions, app, resolvedEnvs, app.Generation)
 		setSpecEnvAppliedCondition(&fresh.Status.Conditions, envStatuses, app.Generation)
+		setEnvKeysRetainedCondition(&fresh.Status.Conditions, envStatuses, app.Generation)
 		setEnvRolledOutCondition(&fresh.Status.Conditions, envStatuses, app.Generation)
 		setEnvironmentJoinedCondition(&fresh.Status.Conditions, envStatuses, r.clock().Now(), app.Generation)
 		if buildFailed {

@@ -237,6 +237,16 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   in-memory `status.environments` over a freshly read status, so hashes,
   replica counts and anything a concurrent writer had just set could be
   stomped. It now merges only the build fields per environment.
+- **An incomplete prune is reported** (CAI-154): a key removed from
+  `spec.env` is dropped from the derived Secret only while its value still
+  tracks the spec; one edited out of band is kept, by the rule that
+  protects UI edits, and after that pass nothing remembered it had been a
+  spec key — pods kept receiving it while every surface said it was gone.
+  Such keys are now marked `retained` in the Secret
+  (`mortise.dev/retained-keys`), listed in
+  `status.environments[].retainedEnvKeys`, and named by
+  `EnvKeysRetained=False / RemovedButKept` with the way out. Re-declaring
+  the key in the spec clears it.
 
 - **A changed webhook Secret now re-registers every hook that used it**
   (CAI-262): the GitProvider's HMAC Secret was watched by nothing, so
