@@ -213,6 +213,15 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   someone read GitHub's delivery log (CAI-261: a month of dead
   push-to-deploy). Apps sourced from the provider now reconcile on that
   Secret's change, and the registration input hash does the rest.
+- **The env hash now tracks the value the container runs** (CAI-178): the
+  pod-template `mortise.dev/env-hash` merged `{app}-env` then `shared-env`,
+  while the container's `envFrom` lists them the other way round and
+  Kubernetes lets the later source win. For a key present in both, changing
+  the value the process actually used never moved the hash, so no rollout
+  fired even with `autoRedeploy: true`. Both now derive from one ordering.
+  **Upgrade consequence:** every App with a colliding key gets a new hash
+  on its next reconcile: with `autoRedeploy: true` it rolls once; otherwise
+  it shows a pending redeploy. Those pods were running the wrong value.
 
 - **Picker-added variables now render immediately** (mo-baq): a variable
   added via the bindings/secret picker was written to the App spec but

@@ -504,3 +504,37 @@ func TestEnvHash(t *testing.T) {
 		}
 	})
 }
+
+// A key present in both Secrets must hash to the value envFrom delivers:
+// the later source wins in the container, so it must win in the hash, or a
+// change to the value the process actually runs never rolls it (CAI-178).
+func TestEnvHash_CollidingKeyTracksTheContainerValue(t *testing.T) {
+	ctx := context.Background()
+	shared := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: SharedEnvName, Namespace: "pj-demo-production"},
+		Data:       map[string][]byte{"LOG_LEVEL": []byte("info"), "ONLY_SHARED": []byte("s")},
+	}
+	app := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: AppEnvSecretName("web"), Namespace: "pj-demo-production"},
+		Data:       map[string][]byte{"LOG_LEVEL": []byte("debug"), "ONLY_APP": []byte("a")},
+	}
+	c := fake.NewClientBuilder().WithObjects(shared, app).Build()
+
+	got := EnvHash(ctx, c, "web", "pj-demo-production")
+	want := HashData(map[string][]byte{"LOG_LEVEL": []byte("debug"), "ONLY_SHARED": []byte("s"), "ONLY_APP": []byte("a")})
+	if got != want {
+		t.Fatalf("hash tracks the shared value for a colliding key; container runs the app value")
+	}
+
+	// And the two orderings are one ordering.
+	sources := EnvFromSources("web")
+	names := envSourceNames("web")
+	if len(sources) != len(names) {
+		t.Fatalf("EnvFromSources has %d entries, envSourceNames %d", len(sources), len(names))
+	}
+	for i := range names {
+		if sources[i].SecretRef.Name != names[i] {
+			t.Fatalf("source %d is %q, ordering says %q", i, sources[i].SecretRef.Name, names[i])
+		}
+	}
+}

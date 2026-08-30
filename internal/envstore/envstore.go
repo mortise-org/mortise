@@ -83,16 +83,26 @@ func AppEnvSecretName(appName string) string {
 // EnvFromSources returns the envFrom entries for a Deployment container.
 // Order: shared-env (lowest priority) then {app}-env (wins on conflict).
 func EnvFromSources(appName string) []corev1.EnvFromSource {
-	return []corev1.EnvFromSource{
-		{SecretRef: &corev1.SecretEnvSource{
-			LocalObjectReference: corev1.LocalObjectReference{Name: SharedEnvName},
+	names := envSourceNames(appName)
+	sources := make([]corev1.EnvFromSource, 0, len(names))
+	for _, name := range names {
+		sources = append(sources, corev1.EnvFromSource{SecretRef: &corev1.SecretEnvSource{
+			LocalObjectReference: corev1.LocalObjectReference{Name: name},
 			Optional:             boolPtr(true),
-		}},
-		{SecretRef: &corev1.SecretEnvSource{
-			LocalObjectReference: corev1.LocalObjectReference{Name: AppEnvSecretName(appName)},
-			Optional:             boolPtr(true),
-		}},
+		}})
 	}
+	return sources
+}
+
+// envSourceNames is the one ordering of the Secrets a container's env is
+// built from. Kubernetes resolves envFrom collisions in favour of the LATER
+// entry, so {app}-env beats shared-env in the process. EnvFromSources and
+// EnvHash both derive from this list: the hash used to merge in the
+// opposite order, so for a key present in both Secrets the pod-template hash
+// tracked a value the container was not running, and changing the value the
+// container did run never rolled it (CAI-178).
+func envSourceNames(appName string) []string {
+	return []string{SharedEnvName, AppEnvSecretName(appName)}
 }
 
 // Store is the read/write interface for env var Secrets.
@@ -619,20 +629,16 @@ func HashData(data map[string][]byte) string {
 // namespace. Missing Secrets contribute nothing. Read-only.
 func EnvHash(ctx context.Context, reader client.Reader, appName, envNs string) string {
 	combined := make(map[string][]byte)
-
-	var appSecret corev1.Secret
-	if err := reader.Get(ctx, types.NamespacedName{Name: AppEnvSecretName(appName), Namespace: envNs}, &appSecret); err == nil {
-		for k, v := range appSecret.Data {
+	// Same order as the container's envFrom: a later Secret overwrites an
+	// earlier one here exactly as it does in the process.
+	for _, name := range envSourceNames(appName) {
+		var sec corev1.Secret
+		if err := reader.Get(ctx, types.NamespacedName{Name: name, Namespace: envNs}, &sec); err != nil {
+			continue
+		}
+		for k, v := range sec.Data {
 			combined[k] = v
 		}
 	}
-
-	var sharedSecret corev1.Secret
-	if err := reader.Get(ctx, types.NamespacedName{Name: SharedEnvName, Namespace: envNs}, &sharedSecret); err == nil {
-		for k, v := range sharedSecret.Data {
-			combined[k] = v
-		}
-	}
-
 	return HashData(combined)
 }
