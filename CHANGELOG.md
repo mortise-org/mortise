@@ -163,6 +163,12 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **`mortise diff` no longer alarms on opted-out environments** (CAI-226):
+  an environment with `enabled: false` has no Secret and no workload by
+  design, and the report turned every declared variable into a
+  `missing-from-secret` finding. It now states the opt-out once and
+  computes nothing for that environment.
+
 - **A changed webhook Secret now re-registers every hook that used it**
   (CAI-262): the GitProvider's HMAC Secret was watched by nothing, so
   recreating it left every registered GitHub hook delivering with the old
