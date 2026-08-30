@@ -163,6 +163,9 @@ type ConfigFile struct {
 	Content string `json:"content"`
 }
 
+// PORT, MORTISE_IMAGE and MORTISE_REVISION are set by Mortise on the
+// container itself and win over anything declared as an EnvVar; declaring
+// them raises the EnvKeysReserved condition instead of taking effect.
 // EnvVar is one environment variable for an App environment. Set exactly one
 // of Value or ValueFrom.
 type EnvVar struct {

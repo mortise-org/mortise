@@ -9,6 +9,14 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Declaring a reserved variable is reported** (CAI-220): `PORT`,
+  `MORTISE_IMAGE` and `MORTISE_REVISION` are set on the container itself
+  and beat every `envFrom` source, so a user-declared `PORT` landed in the
+  derived Secret, visibly, while the process ran the platform's value.
+  The App now carries `EnvKeysReserved=False / PlatformValueWins` naming
+  the declarations by environment or `sharedVars`. Behaviour is unchanged;
+  the silence is gone.
+
 - **`mortise admin reset-password` and `mortise admin create-user`**
   (CAI-55): cluster-side user administration that needs no API login, for
   the case where nobody can log in. Tokens carry the user's password
