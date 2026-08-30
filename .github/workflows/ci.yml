@@ -91,8 +91,23 @@ jobs:
         run: |
           kubectl get pods -A -o wide || true
           kubectl -n mortise-system describe pods || true
-          kubectl -n mortise-system logs -l app.kubernetes.io/name=mortise --tail=300 --all-containers --prefix || true
-          kubectl get events -A --sort-by=.lastTimestamp | tail -80 || true
+          # The operator writes more than 300 lines in the seconds around a
+          # failure, so a tail lost the "internal API error" line that would
+          # have explained a 500 (CAI-173). Keep the full log as an artifact;
+          # show the tail inline.
+          mkdir -p diagnostics
+          kubectl -n mortise-system logs -l app.kubernetes.io/name=mortise --tail=-1 --all-containers --prefix > diagnostics/operator.log || true
+          tail -300 diagnostics/operator.log || true
+          kubectl get events -A --sort-by=.lastTimestamp > diagnostics/events.txt || true
+          tail -80 diagnostics/events.txt || true
+
+      - name: Upload cluster diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-diagnostics
+          path: diagnostics/
+          if-no-files-found: ignore
 
       - name: Tear down integration cluster
         if: always()
@@ -187,8 +202,19 @@ jobs:
         run: |
           kubectl --context k3d-mortise-dev get pods -A -o wide || true
           kubectl --context k3d-mortise-dev -n mortise-system describe pods || true
-          kubectl --context k3d-mortise-dev -n mortise-system logs -l app.kubernetes.io/name=mortise --tail=300 --all-containers --prefix || true
-          kubectl --context k3d-mortise-dev get events -A --sort-by=.lastTimestamp | tail -80 || true
+          mkdir -p diagnostics
+          kubectl --context k3d-mortise-dev -n mortise-system logs -l app.kubernetes.io/name=mortise --tail=-1 --all-containers --prefix > diagnostics/operator.log || true
+          tail -300 diagnostics/operator.log || true
+          kubectl --context k3d-mortise-dev get events -A --sort-by=.lastTimestamp > diagnostics/events.txt || true
+          tail -80 diagnostics/events.txt || true
+
+      - name: Upload cluster diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-diagnostics
+          path: diagnostics/
+          if-no-files-found: ignore
 
       - name: Upload Playwright report
         if: failure()
