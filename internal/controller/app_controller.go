@@ -26,6 +26,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	goruntime "runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -3965,9 +3966,25 @@ func (r *AppReconciler) updateAppStatus(ctx context.Context, app *mortisev1alpha
 		if err := r.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: app.Namespace}, &fresh); err != nil {
 			return err
 		}
+		before := fresh.Status.Phase
 		mutate(&fresh.Status)
+		if fresh.Status.Phase != before {
+			// Every top-level phase write names itself (CAI-173): the phase
+			// keeps arriving at Deploying with no status pass choosing it.
+			logf.FromContext(ctx).Info("app phase written by mutator", "from", before, "to", fresh.Status.Phase, "site", callerSite(2))
+		}
 		return r.Status().Update(ctx, &fresh)
 	})
+}
+
+// callerSite returns "file:line" of the caller `skip` frames up, for logs
+// that need to say which code path wrote a value.
+func callerSite(skip int) string {
+	_, file, line, ok := goruntime.Caller(skip + 1)
+	if !ok {
+		return "?"
+	}
+	return fmt.Sprintf("%s:%d", filepath.Base(file), line)
 }
 
 // needsDeployRecord returns true when a new deploy record should be created:
