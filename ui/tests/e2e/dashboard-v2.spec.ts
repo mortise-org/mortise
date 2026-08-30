@@ -68,8 +68,11 @@ test.describe('dashboard v2', () => {
 		await expect(page.getByRole('heading', { name: appName })).toBeVisible({ timeout: 10_000 });
 		await page.getByRole('button', { name: 'Metrics', exact: true }).click();
 
-		// Range buttons are the primary filter row.
-		for (const label of ['Live', '1h', '6h', '24h', '7d']) {
+		// Range buttons are the primary filter row. The tab mounts the charts
+		// and their first fetch before the row settles; on a cold CI browser
+		// that can exceed the 5s default (surfaced at retries=0, #546).
+		await expect(page.getByRole('button', { name: 'Live', exact: true })).toBeVisible({ timeout: 15_000 });
+		for (const label of ['1h', '6h', '24h', '7d']) {
 			await expect(page.getByRole('button', { name: label, exact: true })).toBeVisible();
 		}
 		await page.getByRole('button', { name: '1h', exact: true }).click();
