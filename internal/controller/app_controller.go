@@ -1824,16 +1824,6 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 		desiredPodAnnotations := mergeAnnotations(nil, desired.Spec.Template.Annotations)
 		desiredPodAnnotations = carryRestartMarkers(
 			desiredPodAnnotations, existing.Spec.Template.Annotations)
-		// When autoRedeploy is off, freeze the deployed env-hash so the new
-		// hash doesn't trigger a rolling update. Users redeploy manually.
-		if !autoRedeploy {
-			if v, ok := existing.Spec.Template.Annotations["mortise.dev/env-hash"]; ok {
-				desiredPodAnnotations = mergeAnnotations(desiredPodAnnotations, map[string]string{
-					"mortise.dev/env-hash": v,
-				})
-			}
-		}
-
 		// Only update if the fields we manage actually changed. Comparing the
 		// full spec/template doesn't work because k8s adds dozens of default
 		// fields (securityContext, serviceAccount, terminationMessagePolicy, etc.)
@@ -1877,6 +1867,20 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 		}
 		if existing.Spec.Replicas == nil || *existing.Spec.Replicas != *desired.Spec.Replicas {
 			needsUpdate = true
+		}
+		// When autoRedeploy is off, freeze the deployed env-hash so an env
+		// change alone doesn't trigger a rolling update; users redeploy
+		// manually. Only while the image stays put: an image change rolls
+		// the pods regardless, and the new pods read the current Secret, so
+		// carrying the old hash through that roll would leave
+		// deployedEnvHash claiming pods are stale when they are not (CAI-153,
+		// seen on postlab-api: 32/32 keys in sync, hashes disagreeing).
+		if !autoRedeploy && existingContainer.Image == desiredContainer.Image {
+			if v, ok := existing.Spec.Template.Annotations["mortise.dev/env-hash"]; ok {
+				desiredPodAnnotations = mergeAnnotations(desiredPodAnnotations, map[string]string{
+					"mortise.dev/env-hash": v,
+				})
+			}
 		}
 		if !annotationsEqual(existing.Spec.Template.ObjectMeta.Annotations, desiredPodAnnotations) {
 			needsUpdate = true
@@ -2055,14 +2059,6 @@ func (r *AppReconciler) reconcileCronJob(ctx context.Context, app *mortisev1alph
 		desiredPodAnnotations := mergeAnnotations(nil, desired.Spec.JobTemplate.Spec.Template.Annotations)
 		desiredPodAnnotations = carryRestartMarkers(
 			desiredPodAnnotations, existing.Spec.JobTemplate.Spec.Template.Annotations)
-		if !autoRedeploy {
-			if v, ok := existing.Spec.JobTemplate.Spec.Template.Annotations["mortise.dev/env-hash"]; ok {
-				desiredPodAnnotations = mergeAnnotations(desiredPodAnnotations, map[string]string{
-					"mortise.dev/env-hash": v,
-				})
-			}
-		}
-
 		desiredPodSpec := desired.Spec.JobTemplate.Spec.Template.Spec
 		if len(desiredPodSpec.Containers) == 0 {
 			return false, fmt.Errorf("desired CronJob %s/%s has no containers", envNs, name)
@@ -2074,6 +2070,16 @@ func (r *AppReconciler) reconcileCronJob(ctx context.Context, app *mortisev1alph
 			return false, fmt.Errorf("existing CronJob %s/%s has no containers", envNs, name)
 		}
 		existingContainer := existingPodSpec.Containers[0]
+
+		// Same freeze rule as the Deployment path: only while the image is
+		// unchanged, so a code deploy does not carry a stale env-hash.
+		if !autoRedeploy && existingContainer.Image == desiredContainer.Image {
+			if v, ok := existing.Spec.JobTemplate.Spec.Template.Annotations["mortise.dev/env-hash"]; ok {
+				desiredPodAnnotations = mergeAnnotations(desiredPodAnnotations, map[string]string{
+					"mortise.dev/env-hash": v,
+				})
+			}
+		}
 
 		needsUpdate := false
 		if existingContainer.Image != desiredContainer.Image {
@@ -3812,6 +3818,7 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 		} else {
 			meta.RemoveStatusCondition(&fresh.Status.Conditions, "PodHealthy")
 		}
+		setEnvRolledOutCondition(&fresh.Status.Conditions, envStatuses, app.Generation)
 		if buildFailed {
 			if anyServing && !anyCrash {
 				reason := buildFailureCond.Reason
@@ -4856,4 +4863,36 @@ func (r *AppReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(&mortisev1alpha1.PreviewEnvironment{}, enqueueAppsFromPreviewEnvironment).
 		Named("app").
 		Complete(r)
+}
+
+// envRolledOutCondition is the App condition that says whether every
+// environment's running pods carry the env the spec currently resolves to.
+const envRolledOutCondition = "EnvRolledOut"
+
+// setEnvRolledOutCondition reports a pending redeploy as a condition. With
+// Project.spec.autoRedeploy off (the default) the controller freezes the
+// pod-template env-hash, so an applied env change updates the derived Secret
+// and nothing else: the process keeps the values it booted with. The UI reads
+// pendingEnvHash != deployedEnvHash and shows a banner; kubectl and the CLI
+// showed nothing, which is how a credential rotation reported success while
+// the revoked key was still live (CAI-153). Envs with no Deployment yet, or
+// no derived Secret, are not "pending"; nothing has diverged there.
+func setEnvRolledOutCondition(conds *[]metav1.Condition, envStatuses []mortisev1alpha1.EnvironmentStatus, generation int64) {
+	var pending []string
+	for _, es := range envStatuses {
+		if es.PendingEnvHash != "" && es.DeployedEnvHash != "" && es.PendingEnvHash != es.DeployedEnvHash {
+			pending = append(pending, es.Name)
+		}
+	}
+	if len(pending) == 0 {
+		meta.RemoveStatusCondition(conds, envRolledOutCondition)
+		return
+	}
+	meta.SetStatusCondition(conds, metav1.Condition{
+		Type:               envRolledOutCondition,
+		Status:             metav1.ConditionFalse,
+		Reason:             "RedeployPending",
+		Message:            fmt.Sprintf("pods may still be running the previous env in: %s (the env changed after the operator's last rollout; a pod restarted since then already has the current values). Redeploy the app (UI, or POST /api/projects/{project}/apps/{app}/redeploy) or set Project spec.autoRedeploy: true", strings.Join(pending, ", ")),
+		ObservedGeneration: generation,
+	})
 }
