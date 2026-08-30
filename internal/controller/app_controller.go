@@ -294,6 +294,7 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	// time we reach here — we just materialise the per-app objects inside.
 	needsRequeue := false
 	buildStatusDirty := false
+	topLevelBuildDirty := false
 	clearNoCache := false
 	var domainCollisionErrs []string
 	projectionEnvOrder := make([]string, 0, len(resolvedEnvs))
@@ -342,6 +343,9 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 			}
 			if dirty {
 				buildStatusDirty = true
+				if envSelectedForBuildFailureAggregation(env.Name, buildAggregationEnvNames) {
+					topLevelBuildDirty = true
+				}
 			}
 			if shouldClearNoCache {
 				clearNoCache = true
@@ -404,8 +408,17 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 	// avoids resourceVersion conflicts from per-env Status().Update() calls.
 	if buildStatusDirty {
 		if err := r.updateAppStatus(ctx, &app, func(status *mortisev1alpha1.AppStatus) {
-			status.Phase = app.Status.Phase
-			status.Conditions = app.Status.Conditions
+			// Phase and the build conditions are copied only when a top-level
+			// env's build changed them this pass. Copying the in-memory values
+			// unconditionally wrote back whatever the (possibly stale) cached
+			// read held at reconcile start -- a Deploying from minutes ago --
+			// and updateStatus corrected it a moment later: the flip seen in
+			// one integration run in ten, and never logged as Ready ->
+			// Deploying because no status pass ever chose Deploying (CAI-173).
+			if topLevelBuildDirty {
+				status.Phase = app.Status.Phase
+				mergeBuildConditions(&status.Conditions, app.Status.Conditions)
+			}
 			status.LastBuiltSHA = app.Status.LastBuiltSHA
 			status.LastBuiltImage = app.Status.LastBuiltImage
 			status.DetectedPort = app.Status.DetectedPort
@@ -5100,5 +5113,19 @@ func mergeEnvBuildFields(dst *[]mortisev1alpha1.EnvironmentStatus, src []mortise
 		de.LastBuiltImage = se.LastBuiltImage
 		de.CurrentBuildRunRef = se.CurrentBuildRunRef
 		de.LastSuccessfulBuildRunRef = se.LastSuccessfulBuildRunRef
+	}
+}
+
+// mergeBuildConditions carries only the conditions the build path owns
+// (BuildStarted, BuildSucceeded) from the in-memory status onto a fresh
+// one: set when present in src, removed when absent. Everything else on the
+// fresh status is left to its own writers.
+func mergeBuildConditions(dst *[]metav1.Condition, src []metav1.Condition) {
+	for _, t := range []string{"BuildStarted", "BuildSucceeded"} {
+		if c := meta.FindStatusCondition(src, t); c != nil {
+			meta.SetStatusCondition(dst, *c)
+		} else {
+			meta.RemoveStatusCondition(dst, t)
+		}
 	}
 }
