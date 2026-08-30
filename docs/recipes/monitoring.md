@@ -45,16 +45,54 @@ kubectl apply -f servicemonitor.yaml
 
 ## Available metrics
 
-Mortise exposes standard controller-runtime metrics plus:
+Two scrape targets. The **operator** serves controller-runtime's standard
+series (`controller_runtime_*`, `workqueue_*`, Go/process) plus control-plane
+facts only it can see. The **observer** (`observer.enabled=true`, its own
+ServiceMonitor in the chart) serves per-app resource, traffic, and volume
+series it collects from the cluster. Names below are taken from the code;
+everything uses the `mortise_` prefix.
 
-| Metric | Type | Description |
-|--------|------|-------------|
-| `mortise_apps_total` | Gauge | Total number of App resources |
-| `mortise_reconcile_duration_seconds` | Histogram | Reconcile loop duration |
-| `mortise_builds_total` | Counter | Build invocations (by status) |
-| `mortise_deploys_total` | Counter | Deployment rollouts (by app, env) |
+### Operator
 
-All metrics use the `mortise_` prefix.
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `mortise_builds_total` | Counter | `project`, `app`, `result` | Completed builds by result. |
+| `mortise_build_duration_seconds` | Histogram | `project`, `app`, `result` | Wall-clock duration of completed builds (buckets 5s–30m). Runs that failed before starting count in the total but not here. |
+| `mortise_app_status_phase` | Gauge | `project`, `app`, `phase` | One series per App, value 1; the label carries the phase. |
+
+### Observer — per app
+
+All carry `project`, `app`, `env`, plus the label noted.
+
+| Metric | Type | Extra label | Description |
+|--------|------|-------------|-------------|
+| `mortise_app_cpu_cores` | Gauge | `pod` | Current CPU usage of an app pod, in cores. |
+| `mortise_app_memory_bytes` | Gauge | `pod` | Current memory usage of an app pod. |
+| `mortise_app_pod_restarts_total` | Counter | `pod` | Container restarts as reported by the kubelet. |
+| `mortise_app_pvc_capacity_bytes` | Gauge | `pvc` | Capacity of an app PVC's filesystem. |
+| `mortise_app_pvc_used_bytes` | Gauge | `pvc` | Used bytes on an app PVC's filesystem. |
+| `mortise_app_http_requests_total` | Counter | — | HTTP requests routed to the app since observer start. |
+| `mortise_app_http_responses_total` | Counter | `class` | HTTP responses by status class (`2xx`…`5xx`) since observer start. |
+| `mortise_app_http_request_bytes_total` | Counter | — | Request body bytes received since observer start. |
+| `mortise_app_http_response_bytes_total` | Counter | — | Response body bytes sent since observer start. |
+| `mortise_app_http_latency_seconds` | Gauge | `quantile` | Latency quantiles over the most recent completed traffic bucket. |
+
+Traffic counters reset when the observer restarts; use `rate()`/`increase()`
+and expect a counter reset there, not a gap in the app.
+
+### Observer — self-health
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `mortise_observer_collector_up` | Gauge | `collector` | 1 when the collector's most recent cycle succeeded. |
+| `mortise_observer_collector_last_success_timestamp_seconds` | Gauge | `collector` | Unix time of the collector's last successful cycle. |
+| `mortise_observer_log_tailers` | Gauge | — | Active pod log tailers. |
+| `mortise_observer_log_tailers_skipped` | Gauge | — | Pods not tailed because of the max-log-pods cap. |
+| `mortise_observer_log_lines_dropped_total` | Counter | — | Log lines dropped because the ingest channel was full, since observer start. |
+
+Alert on `mortise_observer_collector_up == 0` or a stale
+`last_success_timestamp`: an observer that stopped collecting looks like an
+app with flat graphs otherwise.
 
 ## Grafana dashboard
 
