@@ -30,6 +30,7 @@ import (
 
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
 	"github.com/mortise-org/mortise/internal/platformconfig"
+	"github.com/mortise-org/mortise/internal/version"
 )
 
 var _ = Describe("PlatformConfig Controller", func() {
@@ -98,6 +99,19 @@ var _ = Describe("PlatformConfig Controller", func() {
 			Expect(availableCond).NotTo(BeNil())
 			Expect(availableCond.Status).To(Equal(metav1.ConditionTrue))
 			Expect(availableCond.Reason).To(Equal("Reconciled"))
+		})
+
+		It("stamps the running operator's build identity into status", func() {
+			origV, origC := version.Version, version.Commit
+			version.Version, version.Commit = "9.9.9-test", "abc123def456"
+			DeferCleanup(func() { version.Version, version.Commit = origV, origC })
+
+			Expect(doReconcile(pcName)).To(Succeed())
+
+			var updated mortisev1alpha1.PlatformConfig
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: pcName}, &updated)).To(Succeed())
+			Expect(updated.Status.OperatorVersion).To(Equal("9.9.9-test"))
+			Expect(updated.Status.OperatorCommit).To(Equal("abc123def456"))
 		})
 	})
 

@@ -10,6 +10,8 @@ RUN npm run build
 FROM golang:1.26 AS builder
 ARG TARGETOS
 ARG TARGETARCH
+ARG VERSION=0.0.0-dev
+ARG COMMIT=unknown
 
 WORKDIR /workspace
 COPY go.mod go.sum ./
@@ -20,7 +22,7 @@ COPY . .
 RUN rm -rf internal/ui/build
 COPY --from=ui-builder /ui/build ./internal/ui/build
 
-RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -a -o manager cmd/main.go
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -a -ldflags "-X github.com/mortise-org/mortise/internal/version.Version=${VERSION} -X github.com/mortise-org/mortise/internal/version.Commit=${COMMIT}" -o manager cmd/main.go
 RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -a -o observer ./cmd/observer
 
 # Final image — debian-slim instead of distroless/alpine because Railpack
