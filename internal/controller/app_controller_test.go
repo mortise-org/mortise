@@ -5396,6 +5396,80 @@ var _ = Describe("App Controller — git source", func() {
 		})
 	})
 
+	Context("in-flight build and env propagation (CAI-245)", func() {
+		// A build in flight must not block config propagation. The derived
+		// <app>-env Secret is written by reconcileEnvSecret, which is only
+		// reachable from reconcileDeployment/reconcileCronJob -- both of which
+		// sit AFTER the env loop's build `continue`s. So while a build is
+		// running, a changed env value (or a rotated credential) never reaches
+		// the derived Secret, and the delay is bounded by build duration rather
+		// than by the 15s poll interval. A hung build blocks it indefinitely
+		// while the App, the spec and the referenced Secret all read correct.
+		It("refreshes the derived env Secret while a build is still in flight", func() {
+			ctx := context.Background()
+
+			gp := &mortisev1alpha1.GitProvider{
+				ObjectMeta: metav1.ObjectMeta{Name: "gh-inflight"},
+				Spec: mortisev1alpha1.GitProviderSpec{
+					Type:     mortisev1alpha1.GitProviderTypeGitHub,
+					Host:     "https://github.com",
+					ClientID: "test-client-id",
+				},
+			}
+			Expect(k8sClient.Create(ctx, gp)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, gp)).To(Succeed()) }()
+
+			_ = k8sClient.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "mortise-system"}})
+			tokenSecret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{Name: "user-gh-inflight-token-74657374406578616d706c652e636f6d", Namespace: "mortise-system"},
+				Data:       map[string][]byte{"token": []byte("tok")},
+			}
+			Expect(k8sClient.Create(ctx, tokenSecret)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, tokenSecret)).To(Succeed()) }()
+
+			app := makeGitSourceApp("git-inflight", namespace, "gh-inflight")
+			app.Annotations["mortise.dev/revision"] = "revinflight"
+			app.Spec.Environments[0].Env = []mortisev1alpha1.EnvVar{
+				{Name: "STRIPE_PRICE_ID", Value: "price_new_19"},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+
+			// The build never completes for the duration of this test.
+			release := make(chan struct{})
+			defer close(release)
+			bc := &gatedBuildClient{digest: "sha256:inflightdigest", release: release}
+
+			r := gitSourceReconciler(bc, &fakeGitClient{}, &fakeRegistryBackend{})
+			req := reconcile.Request{NamespacedName: types.NamespacedName{Name: app.Name, Namespace: namespace}}
+
+			// Two reconciles, both with the build still running.
+			_, err := r.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+			_, err = r.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Control read first: the build really is still in flight, so this
+			// test is asserting about the state it claims to be asserting about.
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: namespace}, app)).To(Succeed())
+			Expect(app.Status.Phase).To(Equal(mortisev1alpha1.AppPhaseBuilding))
+			var dep appsv1.Deployment
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name: "git-inflight", Namespace: envNsProduction,
+			}, &dep)).To(MatchError(ContainSubstring("not found")))
+
+			// The config change must have landed anyway. It does not depend on
+			// the image.
+			var envSecret corev1.Secret
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      envstore.AppEnvSecretName("git-inflight"),
+				Namespace: envNsProduction,
+			}, &envSecret)).To(Succeed(), "derived env Secret should exist while the build is in flight")
+			Expect(string(envSecret.Data["STRIPE_PRICE_ID"])).To(Equal("price_new_19"),
+				"a build in flight must not block config/credential propagation")
+		})
+	})
+
 	Context("async build", func() {
 		It("should return Building + requeue on first reconcile and finish on subsequent reconciles", func() {
 			ctx := context.Background()
