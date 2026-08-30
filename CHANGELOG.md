@@ -170,6 +170,13 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   someone read GitHub's delivery log (CAI-261: a month of dead
   push-to-deploy). Apps sourced from the provider now reconcile on that
   Secret's change, and the registration input hash does the rest.
+- **No more reconcile loop on Apps with HTTP probes** (CAI-71): the
+  desired `httpGet` probe left `scheme` unset while the API server stores
+  `HTTP`, so the probe comparison never matched and the operator rewrote
+  the Deployment on every reconcile — a no-op Update every ~2.7s per App,
+  an admission warning per write, resourceVersion never moving, and real
+  CPU and log rotation (it destroyed the history needed for CAI-55). Every
+  App with a path-based probe looped; TCP-probed Apps were quiet.
 
 - **Picker-added variables now render immediately** (mo-baq): a variable
   added via the bindings/secret picker was written to the App spec but
