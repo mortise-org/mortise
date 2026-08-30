@@ -57,7 +57,7 @@ test.describe('left rail navigation', () => {
 		await page.goto('/extensions');
 		await expect(page.getByRole('heading', { name: 'Extensions' })).toBeVisible();
 
-		await page.getByRole('link', { name: 'Mortise' }).click();
+		await page.getByRole('link', { name: 'Mortise', exact: true }).click();
 
 		await expect(page).toHaveURL('/');
 	});
@@ -96,7 +96,7 @@ test.describe('left rail navigation', () => {
 		await page.locator('header button[title="User"], header button').filter({ has: page.locator('svg') }).last().click();
 
 		// Click "Sign out" in the dropdown.
-		await page.getByRole('button', { name: 'Sign out' }).click();
+		await page.getByRole('button', { name: 'Sign out', exact: true }).click();
 
 		await expect(page).toHaveURL('/login', { timeout: 5_000 });
 
@@ -167,7 +167,7 @@ test.describe('project scope left rail', () => {
 
 		await expect(page).toHaveURL(new RegExp(`/projects/${name}/settings(\\?|$)`));
 		// Project settings page has no top-level heading; verify the General tab button.
-		await expect(page.getByRole('button', { name: 'General' })).toBeVisible();
+		await expect(page.getByRole('button', { name: 'General', exact: true })).toBeVisible();
 	});
 });
 
@@ -298,7 +298,7 @@ test.describe('extensions page', () => {
 
 		// cert-manager card should have a "Docs" link pointing to the cert-manager site.
 		const certManagerCard = page.locator('.rounded-lg').filter({ has: page.getByRole('heading', { name: 'cert-manager' }) });
-		const docsLink = certManagerCard.getByRole('link', { name: 'Docs' });
+		const docsLink = certManagerCard.getByRole('link', { name: 'Docs', exact: true });
 		await expect(docsLink).toBeVisible();
 		await expect(docsLink).toHaveAttribute('href', 'https://cert-manager.io/docs/');
 	});

@@ -149,7 +149,7 @@ test.describe('storage volumes', () => {
 		await appNameInput.clear();
 		await appNameInput.fill(pgAppName);
 
-		await page.getByRole('button', { name: 'Create app' }).click();
+		await page.getByRole('button', { name: 'Create app', exact: true }).click();
 
 		// Should navigate to the app drawer.
 		await expect(page).toHaveURL(new RegExp(`/projects/${projectName}/apps/${pgAppName}(\\?|$)`), {

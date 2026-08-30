@@ -221,12 +221,12 @@ test.describe('project settings environments tab (real backend)', () => {
 
     // Navigate to Environments tab.
     await page.getByRole('button', { name: 'Environments', exact: true }).click();
-    await expect(page.getByRole('button', { name: 'New environment' })).toBeVisible({
+    await expect(page.getByRole('button', { name: 'New environment', exact: true })).toBeVisible({
       timeout: 10_000
     });
 
     // --- Invalid DNS label is rejected client-side.
-    await page.getByRole('button', { name: 'New environment' }).click();
+    await page.getByRole('button', { name: 'New environment', exact: true }).click();
     const nameInput = page.locator('input#new-env');
     await expect(nameInput).toBeVisible();
     await nameInput.fill('Bad_Name');
@@ -248,7 +248,7 @@ test.describe('project settings environments tab (real backend)', () => {
     await expect(main.getByText('staging', { exact: true })).toBeVisible();
 
     // --- Reorder: move staging up so it's before production.
-    const upOnStaging = main.getByRole('button', { name: 'Move up' }).last();
+    const upOnStaging = main.getByRole('button', { name: 'Move up', exact: true }).last();
     await upOnStaging.click();
     // Reload so the navbar re-queries the persisted order (the navbar seeds
     // `projectEnvs` once in $effect on mount).
@@ -266,7 +266,7 @@ test.describe('project settings environments tab (real backend)', () => {
     await page.keyboard.press('Escape');
     await page.goto(`/projects/${project}/settings`);
     await page.getByRole('button', { name: 'Environments', exact: true }).click();
-    await expect(page.getByRole('button', { name: 'New environment' })).toBeVisible({
+    await expect(page.getByRole('button', { name: 'New environment', exact: true })).toBeVisible({
       timeout: 10_000
     });
 
@@ -336,7 +336,7 @@ test.describe('app drawer env interpolation', () => {
     await waitForAppCurrentImage(request, token, project, appName);
     await injectToken(page, token);
     await page.goto(`/projects/${project}/apps/${appName}`);
-    await expect(page.getByRole('button', { name: 'Close drawer' })).toBeVisible({
+    await expect(page.getByRole('button', { name: 'Close drawer', exact: true })).toBeVisible({
       timeout: 15_000
     });
 
@@ -482,7 +482,7 @@ test.describe('app drawer respects ?env= on open', () => {
       { project }
     );
     await page.goto(`/projects/${project}/apps/${appName}?env=staging`);
-    await expect(page.getByRole('button', { name: 'Close drawer' })).toBeVisible({
+    await expect(page.getByRole('button', { name: 'Close drawer', exact: true })).toBeVisible({
       timeout: 15_000
     });
 
@@ -524,7 +524,7 @@ test.describe('variables tab has no project-level section', () => {
   test('variables tab shows project-scoped variables section', async ({ page }) => {
     await injectToken(page, token);
     await page.goto(`/projects/${project}/apps/${appName}`);
-    await expect(page.getByRole('button', { name: 'Close drawer' })).toBeVisible({
+    await expect(page.getByRole('button', { name: 'Close drawer', exact: true })).toBeVisible({
       timeout: 15_000
     });
 
@@ -579,7 +579,7 @@ test.describe('drawer tabs show env selector with multi-env', () => {
   }) => {
     await injectToken(page, token);
     await page.goto(`/projects/${project}/apps/${appName}`);
-    await expect(page.getByRole('button', { name: 'Close drawer' })).toBeVisible({
+    await expect(page.getByRole('button', { name: 'Close drawer', exact: true })).toBeVisible({
       timeout: 15_000
     });
 
@@ -596,7 +596,7 @@ test.describe('drawer tabs show env selector with multi-env', () => {
   test('logs tab renders env pills that scope the log stream URL', async ({ page }) => {
     await injectToken(page, token);
     await page.goto(`/projects/${project}/apps/${appName}`);
-    await expect(page.getByRole('button', { name: 'Close drawer' })).toBeVisible({
+    await expect(page.getByRole('button', { name: 'Close drawer', exact: true })).toBeVisible({
       timeout: 15_000
     });
 

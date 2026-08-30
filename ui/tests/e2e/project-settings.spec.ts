@@ -42,7 +42,7 @@ test.describe('project settings', () => {
 		await page.goto(`/projects/${projectName}/settings`);
 
 		// Wait for the tabbed settings page to load (General tab is the default).
-		await expect(page.getByRole('button', { name: 'General' })).toBeVisible({
+		await expect(page.getByRole('button', { name: 'General', exact: true })).toBeVisible({
 			timeout: 10_000
 		});
 
@@ -62,13 +62,13 @@ test.describe('project settings', () => {
 		await expect(descInput).toHaveValue('Initial description');
 
 		// Save button.
-		await expect(page.getByRole('button', { name: 'Save changes' })).toBeVisible();
+		await expect(page.getByRole('button', { name: 'Save changes', exact: true })).toBeVisible();
 	});
 
 	test('project admin updates the project description', async ({ page, request }) => {
 		await injectToken(page, adminToken);
 		await page.goto(`/projects/${projectName}/settings`);
-		await expect(page.getByRole('button', { name: 'General' })).toBeVisible({
+		await expect(page.getByRole('button', { name: 'General', exact: true })).toBeVisible({
 			timeout: 10_000
 		});
 
@@ -76,16 +76,16 @@ test.describe('project settings', () => {
 		await descInput.clear();
 		await descInput.fill('Updated description for E2E test');
 
-		await page.getByRole('button', { name: 'Save changes' }).click();
+		await page.getByRole('button', { name: 'Save changes', exact: true }).click();
 
 		// The button should complete (no spinner remaining or back to normal text).
-		await expect(page.getByRole('button', { name: 'Save changes' })).toBeVisible({
+		await expect(page.getByRole('button', { name: 'Save changes', exact: true })).toBeVisible({
 			timeout: 5_000
 		});
 
 		// Verify the description persisted by reloading.
 		await page.reload();
-		await expect(page.getByRole('button', { name: 'General' })).toBeVisible({
+		await expect(page.getByRole('button', { name: 'General', exact: true })).toBeVisible({
 			timeout: 10_000
 		});
 		await expect(descInput).toHaveValue('Updated description for E2E test');
@@ -102,7 +102,7 @@ test.describe('project settings', () => {
 	test('project admin sees PR Environments section with toggle', async ({ page }) => {
 		await injectToken(page, adminToken);
 		await page.goto(`/projects/${projectName}/settings`);
-		await expect(page.getByRole('button', { name: 'General' })).toBeVisible({
+		await expect(page.getByRole('button', { name: 'General', exact: true })).toBeVisible({
 			timeout: 10_000
 		});
 
@@ -118,7 +118,7 @@ test.describe('project settings', () => {
 	test('project admin can enable PR environments and configure source env', async ({ page }) => {
 		await injectToken(page, adminToken);
 		await page.goto(`/projects/${projectName}/settings`);
-		await expect(page.getByRole('button', { name: 'General' })).toBeVisible({
+		await expect(page.getByRole('button', { name: 'General', exact: true })).toBeVisible({
 			timeout: 10_000
 		});
 
@@ -139,7 +139,7 @@ test.describe('project settings', () => {
 
 		// Reload and verify toggle state persisted.
 		await page.reload();
-		await expect(page.getByRole('button', { name: 'General' })).toBeVisible({
+		await expect(page.getByRole('button', { name: 'General', exact: true })).toBeVisible({
 			timeout: 10_000
 		});
 		const toggleAfterReload = page.getByRole('switch', { name: 'Toggle PR environments' });
@@ -150,7 +150,7 @@ test.describe('project settings', () => {
 		await injectToken(page, adminToken);
 		await page.goto(`/projects/${projectName}/settings`);
 
-		await expect(page.getByRole('button', { name: 'General' })).toBeVisible({
+		await expect(page.getByRole('button', { name: 'General', exact: true })).toBeVisible({
 			timeout: 10_000
 		});
 
@@ -165,7 +165,7 @@ test.describe('project settings', () => {
 		await expect(page.getByPlaceholder(projectName)).toBeVisible();
 
 		// Delete button is disabled when input is empty.
-		const deleteBtn = page.getByRole('button', { name: 'Delete project' });
+		const deleteBtn = page.getByRole('button', { name: 'Delete project', exact: true });
 		await expect(deleteBtn).toBeDisabled();
 	});
 
@@ -173,7 +173,7 @@ test.describe('project settings', () => {
 		await injectToken(page, adminToken);
 		await page.goto(`/projects/${projectName}/settings`);
 
-		await expect(page.getByRole('button', { name: 'General' })).toBeVisible({
+		await expect(page.getByRole('button', { name: 'General', exact: true })).toBeVisible({
 			timeout: 10_000
 		});
 
@@ -185,7 +185,7 @@ test.describe('project settings', () => {
 		await expect(page.getByPlaceholder('username')).toBeVisible({ timeout: 5_000 });
 
 		// Switch back to General and verify general content reappears.
-		await page.getByRole('button', { name: 'General' }).click();
+		await page.getByRole('button', { name: 'General', exact: true }).click();
 		await expect(page.locator('input[placeholder="Optional description"]')).toBeVisible();
 	});
 });
