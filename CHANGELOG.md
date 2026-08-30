@@ -223,6 +223,12 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   status pass corrected it a moment later — so the parent flickered on
   every preview build poll. Preview builds now touch only their own
   environment status; the PreviewEnvironment carries the outcome.
+- **A just-added environment's namespace is no longer garbage-collected
+  by a lagging cache** (CAI-173): the Project controller deleted env
+  namespaces not in its cached view of `spec.environments`, so an
+  environment added by the clone API could have its namespace deleted
+  while the clone was still copying Secrets into it (the API answered
+  500). The GC now confirms against the live Project before deleting.
 
 - **A just-failed preview build no longer flips the parent App to
   Deploying for one reconcile** (CAI-173, CAI-229's sibling): on the pass
