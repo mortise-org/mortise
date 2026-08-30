@@ -320,6 +320,14 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		if err != nil {
 			return r.envResourceError(ctx, &app, envNs, env.Name, "reconcile credentials secret", err)
 		}
+		// Before the build, deliberately. Config and credentials do not depend
+		// on the image, and the build paths below `continue` out of this loop
+		// while a build is in flight — so writing the env Secret after them
+		// made propagation wait for the build to finish, bounded by build
+		// duration rather than by the requeue interval (CAI-245).
+		if err := r.reconcileEnvSecret(ctx, &app, env, envNs); err != nil {
+			return r.envResourceError(ctx, &app, envNs, env.Name, "reconcile env secret", err)
+		}
 
 		autoRedeploy := project != nil && project.Spec.AutoRedeploy
 
@@ -1654,13 +1662,9 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 		replicas = *env.Replicas
 	}
 
-	// Reconcile the {app}-env Secret — merges bindings, shared vars, and
-	// user-set env vars into a single Secret mounted via envFrom. This
-	// replaces the old pattern of baking env var literals onto the
-	// Deployment container spec.
-	if err := r.reconcileEnvSecret(ctx, app, env, envNs); err != nil {
-		return fmt.Errorf("reconcile env secret: %w", err)
-	}
+	// The {app}-env Secret — bindings, shared vars, and user-set env vars
+	// merged into a single Secret mounted via envFrom — is written by the
+	// caller before the build, so it is already current here.
 	envHash := r.hashEnvSecretData(ctx, app.Name, envNs)
 
 	// PORT is injected directly (not via Secret) because it's a Mortise
@@ -1942,10 +1946,7 @@ func deploymentSelectorMismatch(existing, desired *appsv1.Deployment) bool {
 func (r *AppReconciler) reconcileCronJob(ctx context.Context, app *mortisev1alpha1.App, env *mortisev1alpha1.Environment, envNs, image, credentialsHash string, autoRedeploy bool) error {
 	name := cronJobName(app.Name)
 
-	// Reconcile env Secret — same as Deployment path.
-	if err := r.reconcileEnvSecret(ctx, app, env, envNs); err != nil {
-		return fmt.Errorf("reconcile env secret: %w", err)
-	}
+	// Env Secret written by the caller before the build — same as Deployment path.
 	envHash := r.hashEnvSecretData(ctx, app.Name, envNs)
 
 	containers := []corev1.Container{
