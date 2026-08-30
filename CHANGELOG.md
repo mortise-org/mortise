@@ -15,6 +15,13 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   generation, so a hand-minted token is `invalid token` regardless of the
   signing key; the reset bumps the generation and invalidates every prior
   token for that user. Recipe: `docs/recipes/recover-admin-access.md`.
+- **`PlatformConfig.spec.externalScheme`** (CAI-264): the scheme git hosts
+  use to reach the API for webhook deliveries. Unset keeps the old
+  inference (https only when `spec.tls.certManagerClusterIssuer` is set),
+  which registers plain-http hooks wherever TLS terminates ahead of the
+  cluster; a host that then redirects http→https breaks deliveries
+  silently, since git hosts do not follow redirects. Set `https` there.
+  Changing it re-registers every hook.
 
 - **The operator reports its own build** (CAI-185): every binary is stamped
   at link time with its release version (or `<branch>-<sha>` for an untagged
