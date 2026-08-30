@@ -197,8 +197,23 @@ subjects:
     name: {{ .Values.serviceAccount.name }}
     namespace: {{ .Release.Namespace }}
 ---
-# Static RoleBinding in the operator namespace so it can manage its own
-# secrets (GitHub OAuth client secret, etc.).
+# In its own namespace the operator writes only Secrets (users, tokens, the
+# JWT key, git-provider webhook secrets, registry credentials) and
+# ConfigMaps (activity store). It used to bind the full mortise-controller-ns
+# ClusterRole here -- Deployments, Services, PVCs, Ingresses, CronJobs,
+# pods/exec -- none of which it manages in the release namespace (#444,
+# #441's narrowing half). Workload namespaces still get the ClusterRole via
+# the per-project RoleBinding the Project controller creates.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: mortise-operator-ns
+  namespace: {{ .Release.Namespace }}
+rules:
+  - apiGroups: [""]
+    resources: ["secrets", "configmaps"]
+    verbs: ["create", "update", "patch", "delete"]
+---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
@@ -206,8 +221,8 @@ metadata:
   namespace: {{ .Release.Namespace }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: mortise-controller-ns
+  kind: Role
+  name: mortise-operator-ns
 subjects:
   - kind: ServiceAccount
     name: {{ .Values.serviceAccount.name }}

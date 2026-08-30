@@ -141,6 +141,13 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **The operator's grant in its own namespace is narrowed to Secrets and
+  ConfigMaps** (#444, the narrowing half of #441): the release-namespace
+  RoleBinding bound the full workload ClusterRole (Deployments, Services,
+  PVCs, Ingresses, CronJobs, pods/exec) that the operator only needs in
+  `pj-*` namespaces. It now binds a namespaced Role with the two kinds it
+  actually writes there. No behaviour change; a smaller blast radius.
+
 - **Stateful Apps no longer get a default liveness probe** (CAI-159). An
   App that declares `storage[]` and no explicit `livenessProbe` now runs
   without one, matching what Kubernetes does unless asked. The injected
