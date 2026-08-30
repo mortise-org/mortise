@@ -163,6 +163,10 @@ const revisionEnvName = "MORTISE_REVISION"
 // reference the pod is running, digest included.
 const imageEnvName = "MORTISE_IMAGE"
 
+// replicasEnvName is the container env var that carries the Deployment's
+// replica count, from the same variable written to spec.replicas.
+const replicasEnvName = "MORTISE_REPLICAS"
+
 // withRevisionBuildArg adds MORTISE_REVISION to the user's build args. It is
 // added here, at submission, rather than into BuildRunSpec.BuildArgs: the
 // BuildRun input hash already covers the revision, and adding a derived arg

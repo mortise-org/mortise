@@ -1677,6 +1677,10 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 	portEnv := []corev1.EnvVar{
 		{Name: "PORT", Value: strconv.Itoa(int(appPort(app)))},
 		{Name: imageEnvName, Value: image},
+		// The same value written to spec.replicas below, so an app holding
+		// process-local state (a rate limiter, a ledger) can fail closed
+		// when scaled instead of silently running N budgets (CAI-258).
+		{Name: replicasEnvName, Value: strconv.Itoa(int(replicas))},
 	}
 	if es := envStatusFor(app, env.Name); es != nil && es.LastBuiltSHA != "" {
 		portEnv = append(portEnv, corev1.EnvVar{Name: revisionEnvName, Value: es.LastBuiltSHA})

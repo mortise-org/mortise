@@ -9,6 +9,12 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **`MORTISE_REPLICAS` is injected into every container** (CAI-258): the
+  same value written to the Deployment's `replicas`, so an app that holds
+  process-local state (a rate limiter, a spend ledger) can refuse to run
+  scaled instead of silently running N budgets. Joins `PORT`,
+  `MORTISE_IMAGE` and `MORTISE_REVISION` as a reserved name.
+
 - **Declaring a reserved variable is reported** (CAI-220): `PORT`,
   `MORTISE_IMAGE` and `MORTISE_REVISION` are set on the container itself
   and beat every `envFrom` source, so a user-declared `PORT` landed in the
