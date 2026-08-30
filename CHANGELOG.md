@@ -9,6 +9,13 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **`mortise admin reset-password` and `mortise admin create-user`**
+  (CAI-55): cluster-side user administration that needs no API login, for
+  the case where nobody can log in. Tokens carry the user's password
+  generation, so a hand-minted token is `invalid token` regardless of the
+  signing key; the reset bumps the generation and invalidates every prior
+  token for that user. Recipe: `docs/recipes/recover-admin-access.md`.
+
 - **The operator reports its own build** (CAI-185): every binary is stamped
   at link time with its release version (or `<branch>-<sha>` for an untagged
   build) and git commit. The operator writes them to

@@ -47,6 +47,7 @@ Quickstart:
 
 	// Lifecycle commands (cluster management)
 	cmd.AddCommand(newInstallCmd())
+	cmd.AddCommand(newAdminCmd())
 	cmd.AddCommand(newUpCmd())
 	cmd.AddCommand(newDownCmd())
 	cmd.AddCommand(newDestroyCmd())
