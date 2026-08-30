@@ -8887,6 +8887,39 @@ var _ = Describe("securityContext on user workloads", func() {
 			Expect(depAfter.Spec.Template.Spec.Containers[0].SecurityContext).To(BeNil())
 		})
 
+		It("applies the restricted profile when opted in, and keeps it across reconciles (CAI-206)", func() {
+			app = &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{Name: appName, Namespace: namespace},
+				Spec: mortisev1alpha1.AppSpec{
+					Source:          mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: testImageNginx},
+					Network:         mortisev1alpha1.NetworkConfig{Public: true},
+					SecurityProfile: mortisev1alpha1.SecurityProfileRestricted,
+					Environments: []mortisev1alpha1.Environment{{
+						Name: "production", Replicas: ptr.To[int32](1),
+						Resources: mortisev1alpha1.ResourceRequirements{CPU: "100m", Memory: "128Mi"},
+						Domain:    "sc.example.com",
+					}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			req := reconcile.Request{NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace}}
+			for i := 0; i < 2; i++ {
+				_, err := reconciler.Reconcile(ctx, req)
+				Expect(err).NotTo(HaveOccurred())
+			}
+			var dep appsv1.Deployment
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: appName, Namespace: envNsProduction}, &dep)).To(Succeed())
+			podSC := dep.Spec.Template.Spec.SecurityContext
+			Expect(podSC).NotTo(BeNil())
+			Expect(podSC.RunAsNonRoot).To(Equal(ptr.To(true)))
+			Expect(podSC.SeccompProfile.Type).To(Equal(corev1.SeccompProfileTypeRuntimeDefault))
+			csc := dep.Spec.Template.Spec.Containers[0].SecurityContext
+			Expect(csc).NotTo(BeNil())
+			Expect(csc.AllowPrivilegeEscalation).To(Equal(ptr.To(false)))
+			Expect(csc.Capabilities.Drop).To(Equal([]corev1.Capability{"ALL"}))
+		})
+
 		It("should clear previously injected workload securityContext fields", func() {
 			app = &mortisev1alpha1.App{
 				ObjectMeta: metav1.ObjectMeta{

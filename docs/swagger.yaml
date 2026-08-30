@@ -1445,6 +1445,19 @@ definitions:
           +kubebuilder:default="service"
       network:
         $ref: '#/definitions/v1alpha1.NetworkConfig'
+      securityProfile:
+        allOf:
+        - $ref: '#/definitions/v1alpha1.SecurityProfile'
+        description: |-
+          SecurityProfile hardens the generated workload's pod and container
+          securityContext. "restricted" sets what the PodSecurity "restricted"
+          profile requires (runAsNonRoot, allowPrivilegeEscalation: false,
+          drop all capabilities, seccompProfile RuntimeDefault), so the App
+          admits in a namespace that enforces it. The image must then run as
+          a non-root user, or the kubelet refuses to start it. Unset leaves the
+          securityContext alone, which is what every existing App gets.
+          +kubebuilder:validation:Enum=restricted
+          +optional
       sharedVars:
         description: |-
           SharedVars are app-wide env vars visible to every environment of this
@@ -2354,6 +2367,12 @@ definitions:
           +required
         type: string
     type: object
+  v1alpha1.SecurityProfile:
+    enum:
+    - restricted
+    type: string
+    x-enum-varnames:
+    - SecurityProfileRestricted
   v1alpha1.SourceType:
     enum:
     - git
