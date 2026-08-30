@@ -1167,10 +1167,15 @@ func (r *AppReconciler) markEnvBuildInProgress(app *mortisev1alpha1.App, envName
 
 // applyEnvBuildSuccess records the successful build for a specific environment.
 func (r *AppReconciler) applyEnvBuildSuccess(_ context.Context, app *mortisev1alpha1.App, projectionEnvOrder []string, envName, revision, image, digest string, detectedPort int32, countsTopLevel bool) bool {
-	// Update per-env status.
+	// Update per-env status. A BuildRun stays Succeeded for as long as it
+	// exists, so this runs on every reconcile after the build; only the first
+	// application of a given revision+image may move the top-level phase,
+	// otherwise the flush would write Deploying over Ready once a second.
+	alreadyApplied := false
 	found := false
 	for i := range app.Status.Environments {
 		if app.Status.Environments[i].Name == envName {
+			alreadyApplied = app.Status.Environments[i].LastBuiltSHA == revision && app.Status.Environments[i].LastBuiltImage == image
 			app.Status.Environments[i].LastBuiltSHA = revision
 			app.Status.Environments[i].LastBuiltImage = image
 			found = true
@@ -1190,7 +1195,7 @@ func (r *AppReconciler) applyEnvBuildSuccess(_ context.Context, app *mortisev1al
 		app.Status.LastBuiltImage = image
 		app.Status.DetectedPort = detectedPort
 	}
-	if !countsTopLevel {
+	if !countsTopLevel || alreadyApplied {
 		// A preview's build outcome lives on its env status and its
 		// PreviewEnvironment; the parent's phase and conditions stay as the
 		// non-preview envs left them.
@@ -3961,6 +3966,7 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 }
 
 func (r *AppReconciler) updateAppStatus(ctx context.Context, app *mortisev1alpha1.App, mutate func(status *mortisev1alpha1.AppStatus)) error {
+	site := callerSite(1)
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		var fresh mortisev1alpha1.App
 		if err := r.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: app.Namespace}, &fresh); err != nil {
@@ -3971,7 +3977,7 @@ func (r *AppReconciler) updateAppStatus(ctx context.Context, app *mortisev1alpha
 		if fresh.Status.Phase != before {
 			// Every top-level phase write names itself (CAI-173): the phase
 			// keeps arriving at Deploying with no status pass choosing it.
-			logf.FromContext(ctx).Info("app phase written by mutator", "from", before, "to", fresh.Status.Phase, "site", callerSite(2))
+			logf.FromContext(ctx).Info("app phase written by mutator", "from", before, "to", fresh.Status.Phase, "site", site)
 		}
 		return r.Status().Update(ctx, &fresh)
 	})
