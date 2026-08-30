@@ -229,6 +229,12 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   environment added by the clone API could have its namespace deleted
   while the clone was still copying Secrets into it (the API answered
   500). The GC now confirms against the live Project before deleting.
+- **Logging in right after a user is created no longer fails on a cache
+  miss**: authentication read user Secrets only through the manager's
+  cache, which can lag a just-created Secret by milliseconds, so the
+  first login after `POST /api/admin/users` (or `mortise admin
+  create-user`) could answer "invalid credentials". A cache miss now
+  falls back to an uncached read; unknown users still fail.
 
 - **A just-failed preview build no longer flips the parent App to
   Deploying for one reconcile** (CAI-173, CAI-229's sibling): on the pass
