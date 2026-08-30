@@ -3310,11 +3310,7 @@ func (r *AppReconciler) ensureWebhook(ctx context.Context, app *mortisev1alpha1.
 		return nil
 	}
 
-	scheme := "https"
-	if pc.Spec.TLS.CertManagerClusterIssuer == "" {
-		scheme = "http"
-	}
-	webhookURL := fmt.Sprintf("%s://%s/api/webhooks/%s", scheme, host, gp.Name)
+	webhookURL := fmt.Sprintf("%s://%s/api/webhooks/%s", webhookScheme(&pc), host, gp.Name)
 
 	// Resolve webhook secret. The webhook handler rejects every delivery for
 	// a provider without a usable secret, so registering a secretless hook
@@ -4956,4 +4952,18 @@ func setEnvRolledOutCondition(conds *[]metav1.Condition, envStatuses []mortisev1
 		Message:            fmt.Sprintf("pods may still be running the previous env in: %s (the env changed after the operator's last rollout; a pod restarted since then already has the current values). Redeploy the app (UI, or POST /api/projects/{project}/apps/{app}/redeploy) or set Project spec.autoRedeploy: true", strings.Join(pending, ", ")),
 		ObservedGeneration: generation,
 	})
+}
+
+// webhookScheme picks the scheme for the registered webhook URL. An explicit
+// spec.externalScheme wins; otherwise the historical inference from
+// cert-manager config stands, so installs that never set the field keep the
+// hooks they have (CAI-264).
+func webhookScheme(pc *mortisev1alpha1.PlatformConfig) string {
+	if pc.Spec.ExternalScheme != "" {
+		return pc.Spec.ExternalScheme
+	}
+	if pc.Spec.TLS.CertManagerClusterIssuer == "" {
+		return "http"
+	}
+	return "https"
 }
