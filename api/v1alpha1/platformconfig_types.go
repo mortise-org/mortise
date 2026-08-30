@@ -218,6 +218,17 @@ type PlatformConfigStatus struct {
 	// +listMapKey=type
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	// OperatorVersion is the build identity of the operator that last
+	// reconciled this resource: the release tag without "v", or a
+	// "<branch>-<sha>" marker for an untagged build. It answers "which
+	// operator is production actually running" without a cluster spelunk.
+	// +optional
+	OperatorVersion string `json:"operatorVersion,omitempty"`
+
+	// OperatorCommit is the git SHA the running operator was built from.
+	// +optional
+	OperatorCommit string `json:"operatorCommit,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -225,6 +236,7 @@ type PlatformConfigStatus struct {
 // +kubebuilder:resource:scope=Cluster
 // +kubebuilder:printcolumn:name="Domain",type=string,JSONPath=`.spec.domain`
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
+// +kubebuilder:printcolumn:name="Operator",type=string,JSONPath=`.status.operatorVersion`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // PlatformConfig is the Schema for the platformconfigs API. It is cluster-scoped

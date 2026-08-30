@@ -31,6 +31,7 @@ import (
 
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
 	"github.com/mortise-org/mortise/internal/platformconfig"
+	"github.com/mortise-org/mortise/internal/version"
 )
 
 // singletonName is the required metadata.name for the singleton PlatformConfig.
@@ -76,6 +77,11 @@ func (r *PlatformConfigReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		}
 		return ctrl.Result{}, err
 	}
+
+	// Stamp the running operator's identity on every status write, so
+	// `kubectl get platformconfig` names the build production is on.
+	pc.Status.OperatorVersion = version.Version
+	pc.Status.OperatorCommit = version.Commit
 
 	// Enforce singleton: only the instance named "platform" is valid.
 	if pc.Name != singletonName {

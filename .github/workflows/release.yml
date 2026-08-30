@@ -69,6 +69,9 @@ jobs:
           target: operator
           platforms: linux/amd64,linux/arm64
           push: true
+          build-args: |
+            VERSION=${{ steps.meta.outputs.version }}
+            COMMIT=${{ github.sha }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           provenance: mode=max
@@ -122,7 +125,7 @@ jobs:
           go-version-file: go.mod
 
       - name: Cross-compile CLI
-        run: make build-cli-all
+        run: make build-cli-all VERSION="${GITHUB_REF_NAME#v}" COMMIT="${GITHUB_SHA}"
 
       - uses: actions/upload-artifact@v4
         with:

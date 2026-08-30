@@ -495,6 +495,10 @@ func (c *Client) DeleteGitProvider(name string) error {
 // ---------- Platform ----------
 
 type PlatformResponse struct {
+	Operator struct {
+		Version string `json:"version"`
+		Commit  string `json:"commit"`
+	} `json:"operator"`
 	Domain   string `json:"domain"`
 	Registry struct {
 		URL string `json:"url"`
