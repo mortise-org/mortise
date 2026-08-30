@@ -3697,7 +3697,20 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 			es.OverriddenEnvKeys = r.overriddenEnvKeysFor(ctx, app, &env, envNs)
 
 			// Carry forward deploy history, restart tracking, and build info.
-			if prev, ok := existingByName[env.Name]; ok {
+			// From the server copy when it knows the env; otherwise from this
+			// reconcile's own in-memory status. On the pass where a preview
+			// env first appears, its BuildRun ref (set by reconcileEnvBuild
+			// moments earlier) exists only in memory; reading it only from
+			// the server left a just-failed preview counting as not-ready for
+			// exactly one pass, and the parent flipped Ready -> Deploying ->
+			// Ready (CAI-173 phase-flip class, CAI-229's sibling).
+			prev, ok := existingByName[env.Name]
+			if !ok {
+				if inMem := envStatusFor(app, env.Name); inMem != nil {
+					prev, ok = *inMem, true
+				}
+			}
+			if ok {
 				es.JoinedAt = prev.JoinedAt
 				es.DeployHistory = prev.DeployHistory
 				es.LastProcessedRestartedAt = prev.LastProcessedRestartedAt
