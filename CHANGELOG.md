@@ -200,6 +200,11 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `RegistryTargetValid=False / RegistryTargetInvalid` naming the env and
   the error, and the reconcile requeues; the condition clears when a
   target resolves again.
+- **The build-status flush no longer overwrites concurrent status writes**
+  (#444): after the environment loop the controller assigned its whole
+  in-memory `status.environments` over a freshly read status, so hashes,
+  replica counts and anything a concurrent writer had just set could be
+  stomped. It now merges only the build fields per environment.
 
 - **A changed webhook Secret now re-registers every hook that used it**
   (CAI-262): the GitProvider's HMAC Secret was watched by nothing, so
