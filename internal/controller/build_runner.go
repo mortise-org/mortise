@@ -115,7 +115,7 @@ func runBuild(
 		SourceDir:     cloneDir,
 		DockerfileDir: dockerfileDir,
 		Dockerfile:    p.dockerfile,
-		BuildArgs:     p.buildArgs,
+		BuildArgs:     withRevisionBuildArg(p.buildArgs, p.branch, p.revision),
 		ContextMode:   toContextMode(p.buildContext),
 		NoCache:       p.noCache,
 		PushTarget:    p.imageRef.Full,
@@ -151,4 +151,36 @@ func runBuild(
 		pullImage = p.pullImageRef.Registry + "/" + p.pullImageRef.Path + "@" + digest
 	}
 	t.setSucceeded(pullImage, digest, detectedPort)
+}
+
+// revisionEnvName is the build arg and container env var that carries the git
+// revision an image was built from. Mortise is the component that always
+// knows it, so it supplies it rather than every team wiring an ARG through
+// their own CI (CAI-180).
+const revisionEnvName = "MORTISE_REVISION"
+
+// imageEnvName is the container env var that carries the resolved image
+// reference the pod is running, digest included.
+const imageEnvName = "MORTISE_IMAGE"
+
+// withRevisionBuildArg adds MORTISE_REVISION to the user's build args. It is
+// added here, at submission, rather than into BuildRunSpec.BuildArgs: the
+// BuildRun input hash already covers the revision, and adding a derived arg
+// to the spec would change every existing App's hash and force a rebuild
+// on upgrade for no new information. A user-set value wins. When the
+// revision is only the branch fallback there is no commit to report, so the
+// arg is left absent rather than set to a branch name.
+func withRevisionBuildArg(args map[string]string, branch, revision string) map[string]string {
+	if revision == "" || revision == branch {
+		return args
+	}
+	if _, set := args[revisionEnvName]; set {
+		return args
+	}
+	out := make(map[string]string, len(args)+1)
+	for k, v := range args {
+		out[k] = v
+	}
+	out[revisionEnvName] = revision
+	return out
 }

@@ -6926,10 +6926,16 @@ var _ = Describe("App Controller — git source", func() {
 				Name: appName, Namespace: envNsProduction,
 			}, &dep)).To(Succeed())
 
-			// Deployment only carries the PORT literal injected by the controller.
+			// Deployment only carries the literals injected by the controller:
+			// PORT and MORTISE_IMAGE. An image-source App has no built
+			// revision, so MORTISE_REVISION is absent rather than empty.
 			envVars := dep.Spec.Template.Spec.Containers[0].Env
-			Expect(envVars).To(HaveLen(1))
+			Expect(envVars).To(HaveLen(2))
 			Expect(envVars[0].Name).To(Equal("PORT"))
+			Expect(envVars[1]).To(Equal(corev1.EnvVar{Name: "MORTISE_IMAGE", Value: testImageNginx}))
+			for _, ev := range envVars {
+				Expect(ev.Name).NotTo(Equal("MORTISE_REVISION"))
+			}
 
 			// User-defined env vars are in the app-env Secret.
 			envData := readAppEnvSecret(ctx, appName, envNsProduction)
@@ -8489,6 +8495,60 @@ var _ = Describe("App Controller — git source", func() {
 	})
 
 	Context("per-environment build args", func() {
+		It("injects MORTISE_REVISION into the build and the container (CAI-180)", func() {
+			ctx := context.Background()
+
+			gp := &mortisev1alpha1.GitProvider{
+				ObjectMeta: metav1.ObjectMeta{Name: "gh-revision"},
+				Spec: mortisev1alpha1.GitProviderSpec{
+					Type:     mortisev1alpha1.GitProviderTypeGitHub,
+					Host:     "https://github.com",
+					ClientID: "test-client-id",
+				},
+			}
+			Expect(k8sClient.Create(ctx, gp)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, gp)).To(Succeed()) }()
+
+			tokenSecret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "user-gh-revision-token-74657374406578616d706c652e636f6d",
+					Namespace: "mortise-system",
+				},
+				Data: map[string][]byte{"token": []byte("tok")},
+			}
+			Expect(k8sClient.Create(ctx, tokenSecret)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, tokenSecret)).To(Succeed()) }()
+
+			bc := &fakeBuildClient{digest: "sha256:revision"}
+			r := gitSourceReconciler(bc, &fakeGitClient{}, &fakeRegistryBackend{})
+
+			app := makeGitSourceApp("revision-app", namespace, "gh-revision")
+			app.Annotations["mortise.dev/revision"] = "abc123"
+			app.Spec.Environments = []mortisev1alpha1.Environment{{
+				Name:      "production",
+				Replicas:  ptr.To[int32](1),
+				BuildArgs: map[string]string{"FOO": "bar"},
+			}}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+
+			req := reconcile.Request{NamespacedName: client.ObjectKeyFromObject(app)}
+			_, err := reconcileUntilBuildDone(r, ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			bc.mu.Lock()
+			Expect(bc.requests).To(HaveLen(1))
+			Expect(bc.requests[0].BuildArgs).To(HaveKeyWithValue("MORTISE_REVISION", "abc123"))
+			Expect(bc.requests[0].BuildArgs).To(HaveKeyWithValue("FOO", "bar"), "user build args are kept")
+			bc.mu.Unlock()
+
+			var dep appsv1.Deployment
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "revision-app", Namespace: envNsProduction}, &dep)).To(Succeed())
+			envVars := dep.Spec.Template.Spec.Containers[0].Env
+			Expect(envVars).To(ContainElement(corev1.EnvVar{Name: "MORTISE_REVISION", Value: "abc123"}))
+			Expect(envVars).To(ContainElement(corev1.EnvVar{Name: "MORTISE_IMAGE", Value: dep.Spec.Template.Spec.Containers[0].Image}))
+		})
+
 		It("passes per-environment build args to the build client", func() {
 			ctx := context.Background()
 			withStagingEnv(ctx)
@@ -8563,8 +8623,9 @@ var _ = Describe("App Controller — git source", func() {
 				}
 			}
 
-			Expect(prodArgs).To(Equal(map[string]string{"ENV": "prod", "DEBUG": "false"}))
-			Expect(stagingArgs).To(Equal(map[string]string{"ENV": "staging", "DEBUG": "true"}))
+			// MORTISE_REVISION is injected beside the user's args (CAI-180).
+			Expect(prodArgs).To(Equal(map[string]string{"ENV": "prod", "DEBUG": "false", "MORTISE_REVISION": "abc123"}))
+			Expect(stagingArgs).To(Equal(map[string]string{"ENV": "staging", "DEBUG": "true", "MORTISE_REVISION": "abc123"}))
 		})
 	})
 

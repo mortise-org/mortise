@@ -1669,10 +1669,18 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 
 	// PORT is injected directly (not via Secret) because it's a Mortise
 	// convention that must always be present and match the container port.
-	portEnv := []corev1.EnvVar{{
-		Name:  "PORT",
-		Value: strconv.Itoa(int(appPort(app))),
-	}}
+	// MORTISE_IMAGE and MORTISE_REVISION ride the same way: they let the
+	// process report what it is running, independently of the operator's
+	// own bookkeeping (CAI-180). MORTISE_REVISION is absent, not empty, when
+	// there is no built revision (image-source Apps), so an empty value can
+	// never be mistaken for a build that failed to record one.
+	portEnv := []corev1.EnvVar{
+		{Name: "PORT", Value: strconv.Itoa(int(appPort(app)))},
+		{Name: imageEnvName, Value: image},
+	}
+	if es := envStatusFor(app, env.Name); es != nil && es.LastBuiltSHA != "" {
+		portEnv = append(portEnv, corev1.EnvVar{Name: revisionEnvName, Value: es.LastBuiltSHA})
+	}
 
 	containers := []corev1.Container{
 		{
