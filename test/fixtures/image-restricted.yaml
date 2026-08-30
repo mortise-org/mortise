@@ -1,0 +1,19 @@
+apiVersion: mortise.mortise.dev/v1alpha1
+kind: App
+metadata:
+  name: test-restricted
+spec:
+  source:
+    type: image
+    # Runs as UID 101; a root-running image cannot satisfy runAsNonRoot.
+    image: nginxinc/nginx-unprivileged:1.27
+  network:
+    public: false
+    port: 8080
+  securityProfile: restricted
+  environments:
+    - name: production
+      replicas: 1
+      resources:
+        cpu: "100m"
+        memory: "128Mi"
