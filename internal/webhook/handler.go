@@ -13,12 +13,16 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-logr/logr"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+
+	"k8s.io/utils/clock"
 
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
 	"github.com/mortise-org/mortise/internal/constants"
@@ -29,7 +33,19 @@ import (
 type Handler struct {
 	k8s                k8sReader
 	gitAPIFromProvider func(*mortisev1alpha1.GitProvider, string, string) (git.GitAPI, error)
+
+	// Clock drives the rate limit on signature-condition writes.
+	Clock clock.Clock
+
+	mu                 sync.Mutex
+	lastSignatureWrite map[string]time.Time // provider -> last condition write
 }
+
+// signatureWriteInterval bounds how often a delivery outcome is written to
+// the GitProvider's status. The endpoint is unauthenticated by nature, so
+// anyone can produce a mismatch; one status write per provider per minute
+// keeps that from becoming an API-server write amplifier.
+const signatureWriteInterval = time.Minute
 
 // k8sReader is a minimal interface over the k8s client so Handler doesn't
 // import controller-runtime directly in tests.
@@ -44,6 +60,10 @@ type k8sReader interface {
 	createPreviewEnvironment(ctx context.Context, pe *mortisev1alpha1.PreviewEnvironment) error
 	updatePreviewEnvironment(ctx context.Context, pe *mortisev1alpha1.PreviewEnvironment) error
 	deletePreviewEnvironment(ctx context.Context, namespace, name string) error
+	// setWebhookSignatureCondition records on the GitProvider whether the
+	// latest delivery failed HMAC verification (mismatch=true) or verified
+	// (mismatch=false, which clears the condition).
+	setWebhookSignatureCondition(ctx context.Context, providerName string, mismatch bool, now time.Time) error
 }
 
 // New creates a Handler.
@@ -129,9 +149,14 @@ func (h *Handler) handleWebhook(w http.ResponseWriter, req *http.Request) {
 
 	if err := api.VerifyWebhookSignature(body, req.Header); err != nil {
 		log.Info("webhook signature invalid", "provider", providerName, "error", err)
+		// A mismatch was invisible on the platform: a recreated webhook
+		// Secret orphaned every registered hook and every push 401'd for a
+		// month before anyone read GitHub's delivery log (CAI-261, CAI-262).
+		h.recordSignatureOutcome(req.Context(), providerName, true)
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
+	h.recordSignatureOutcome(req.Context(), providerName, false)
 
 	// Try parsing as a PR event first (PR payloads can also contain ref/after
 	// fields that parsePushEvent would match).
@@ -755,4 +780,32 @@ func matchesWatchPaths(watchPaths, changedPaths []string) bool {
 		}
 	}
 	return false
+}
+
+// recordSignatureOutcome writes the delivery's verification outcome to the
+// GitProvider status, at most once per provider per signatureWriteInterval.
+// Failures are logged, never surfaced to the sender.
+func (h *Handler) recordSignatureOutcome(ctx context.Context, providerName string, mismatch bool) {
+	clk := h.Clock
+	if clk == nil {
+		clk = clock.RealClock{}
+	}
+	now := clk.Now()
+	h.mu.Lock()
+	if h.lastSignatureWrite == nil {
+		h.lastSignatureWrite = make(map[string]time.Time)
+	}
+	key := providerName
+	if mismatch {
+		key += "/mismatch"
+	}
+	if last, ok := h.lastSignatureWrite[key]; ok && now.Sub(last) < signatureWriteInterval {
+		h.mu.Unlock()
+		return
+	}
+	h.lastSignatureWrite[key] = now
+	h.mu.Unlock()
+	if err := h.k8s.setWebhookSignatureCondition(ctx, providerName, mismatch, now); err != nil {
+		logf.FromContext(ctx).Error(err, "record webhook signature outcome", "provider", providerName, "mismatch", mismatch)
+	}
 }

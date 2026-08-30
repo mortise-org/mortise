@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
 	"github.com/mortise-org/mortise/internal/constants"
@@ -19,15 +20,17 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	testclock "k8s.io/utils/clock/testing"
 )
 
 // fakeK8sReader is a test double for k8sReader.
 type fakeK8sReader struct {
-	provider *mortisev1alpha1.GitProvider
-	secrets  map[string]string // "ns/name/key" -> value
-	apps     []mortisev1alpha1.App
-	projects map[string]*mortisev1alpha1.Project // name -> project
-	err      error
+	signatureWrites []string // "provider=mismatch" per setWebhookSignatureCondition call
+	provider        *mortisev1alpha1.GitProvider
+	secrets         map[string]string // "ns/name/key" -> value
+	apps            []mortisev1alpha1.App
+	projects        map[string]*mortisev1alpha1.Project // name -> project
+	err             error
 
 	// providerCount overrides the derived GitProvider count when > 0.
 	providerCount int
@@ -45,6 +48,11 @@ type fakeK8sReader struct {
 // providerCount overrides countGitProviders when set; otherwise the count
 // mirrors whether `provider` is populated (the single-provider default that
 // keeps empty-providerRef fixtures matching, as they did pre-policy).
+func (f *fakeK8sReader) setWebhookSignatureCondition(_ context.Context, providerName string, mismatch bool, _ time.Time) error {
+	f.signatureWrites = append(f.signatureWrites, fmt.Sprintf("%s=%t", providerName, mismatch))
+	return nil
+}
+
 func (f *fakeK8sReader) countGitProviders(_ context.Context) (int, error) {
 	if f.providerCount > 0 {
 		return f.providerCount, nil
@@ -1860,5 +1868,39 @@ func TestWebhook_EmptyProviderRefPolicy(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A failed HMAC verification is recorded on the GitProvider, once per
+// provider per minute regardless of how many deliveries fail (CAI-262).
+func TestInvalidSignatureIsRecordedOnTheProvider(t *testing.T) {
+	kr := &fakeK8sReader{
+		provider: makeGitProvider(mortisev1alpha1.GitProviderTypeGitHub, "mortise-system", "wh", "secret"),
+		secrets:  map[string]string{"mortise-system/wh/secret": "right"},
+	}
+	h := New(kr) // real signature verification, unlike newTestHandler
+	fc := testclock.NewFakeClock(time.Date(2026, 8, 30, 4, 0, 0, 0, time.UTC))
+	h.Clock = fc
+
+	send := func() int {
+		req := httptest.NewRequest(http.MethodPost, "/github", bytes.NewReader([]byte(`{}`)))
+		req.Header.Set("X-GitHub-Event", "push")
+		req.Header.Set("X-Hub-Signature-256", "sha256=invalidsignature")
+		rr := httptest.NewRecorder()
+		h.Routes().ServeHTTP(rr, req)
+		return rr.Code
+	}
+	for i := 0; i < 3; i++ {
+		if code := send(); code != http.StatusUnauthorized {
+			t.Fatalf("expected 401, got %d", code)
+		}
+	}
+	if got := kr.signatureWrites; len(got) != 1 || got[0] != "github=true" {
+		t.Fatalf("three mismatches within a minute must write once: %v", got)
+	}
+	fc.Step(2 * time.Minute)
+	send()
+	if got := kr.signatureWrites; len(got) != 2 {
+		t.Fatalf("a mismatch after the interval must write again: %v", got)
 	}
 }

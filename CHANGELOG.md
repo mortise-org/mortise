@@ -9,6 +9,14 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **A webhook delivery that fails HMAC verification is reported on the
+  GitProvider** (CAI-262): `WebhookSignature=False / SignatureMismatch`,
+  with the time and the way out (delete the hook on the git host so the
+  operator re-registers it, or restore the Secret). Cleared by the next
+  verified delivery. Written at most once per provider per minute, since
+  the endpoint is reachable by anyone. Until now the only trace was one
+  operator log line and GitHub's delivery log.
+
 - **`mortise admin reset-password` and `mortise admin create-user`**
   (CAI-55): cluster-side user administration that needs no API login, for
   the case where nobody can log in. Tokens carry the user's password
