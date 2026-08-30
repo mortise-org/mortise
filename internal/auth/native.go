@@ -31,6 +31,13 @@ var (
 type NativeAuthProvider struct {
 	client client.Client
 	jwt    *JWTHelper
+	// uncached, when set, is consulted on a cache miss during
+	// authentication. The cached client can lag a just-created user Secret
+	// by milliseconds; a login that immediately follows user creation then
+	// reads "invalid credentials" (seen in E2E the moment retries went to
+	// zero). Misses are bounded by the login limiter, so this costs an
+	// apiserver read only on the failure path.
+	uncached client.Reader
 }
 
 func NewNativeAuthProvider(c client.Client) *NativeAuthProvider {
@@ -38,6 +45,13 @@ func NewNativeAuthProvider(c client.Client) *NativeAuthProvider {
 		client: c,
 		jwt:    NewJWTHelper(c),
 	}
+}
+
+// WithUncachedReader sets the reader consulted on a cache miss during
+// authentication (typically the manager's APIReader).
+func (n *NativeAuthProvider) WithUncachedReader(r client.Reader) *NativeAuthProvider {
+	n.uncached = r
+	return n
 }
 
 // dummyPasswordHash is compared against when the user does not exist, so the
@@ -70,6 +84,12 @@ func (n *NativeAuthProvider) Authenticate(ctx context.Context, creds Credentials
 		Name:      userSecretName(creds.Email),
 		Namespace: namespace,
 	}, &secret)
+	if errors.IsNotFound(err) && n.uncached != nil {
+		err = n.uncached.Get(ctx, types.NamespacedName{
+			Name:      userSecretName(creds.Email),
+			Namespace: namespace,
+		}, &secret)
+	}
 	if errors.IsNotFound(err) {
 		_ = compareHashAndPassword(dummyPasswordHash, []byte(creds.Password))
 		return Principal{}, fmt.Errorf("invalid credentials")
