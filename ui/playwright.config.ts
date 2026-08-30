@@ -13,7 +13,9 @@ export default defineConfig({
 	globalTeardown: './tests/e2e/global-teardown.ts',
 	fullyParallel: !process.env.CI,
 	forbidOnly: !!process.env.CI,
-	retries: process.env.CI ? 2 : 0,
+	// No retries: a flaky or substring-matched selector must fail visibly, not
+	// pass on the second try (#442). The exact-selector sweep landed first.
+	retries: 0,
 	workers: process.env.CI ? 4 : 8,
 	reporter: 'html',
 	globalTimeout: 30 * 60 * 1000,
