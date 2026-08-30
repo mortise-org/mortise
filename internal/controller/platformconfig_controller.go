@@ -184,6 +184,7 @@ func (r *PlatformConfigReconciler) setConfigAppliedCondition(ctx context.Context
 }
 
 func (r *PlatformConfigReconciler) markReady(ctx context.Context, pc *mortisev1alpha1.PlatformConfig) error {
+	orig := pc.DeepCopy()
 	pc.Status.Phase = mortisev1alpha1.PlatformConfigPhaseReady
 	meta.SetStatusCondition(&pc.Status.Conditions, metav1.Condition{
 		Type:               "Available",
@@ -192,13 +193,17 @@ func (r *PlatformConfigReconciler) markReady(ctx context.Context, pc *mortisev1a
 		Message:            "PlatformConfig is ready",
 		ObservedGeneration: pc.Generation,
 	})
-	if err := r.Status().Update(ctx, pc); err != nil {
+	// Merge-patch rather than Update: the UI edits spec concurrently and the
+	// cached copy this reconcile read is often behind, so an
+	// optimistic-locked Update conflicts and requeues with backoff.
+	if err := r.Status().Patch(ctx, pc, client.MergeFrom(orig)); err != nil {
 		return fmt.Errorf("update status: %w", err)
 	}
 	return nil
 }
 
 func (r *PlatformConfigReconciler) markFailed(ctx context.Context, pc *mortisev1alpha1.PlatformConfig, reason, msg string) error {
+	orig := pc.DeepCopy()
 	pc.Status.Phase = mortisev1alpha1.PlatformConfigPhaseFailed
 	meta.SetStatusCondition(&pc.Status.Conditions, metav1.Condition{
 		Type:               "Available",
@@ -207,7 +212,10 @@ func (r *PlatformConfigReconciler) markFailed(ctx context.Context, pc *mortisev1
 		Message:            msg,
 		ObservedGeneration: pc.Generation,
 	})
-	if err := r.Status().Update(ctx, pc); err != nil {
+	// Merge-patch rather than Update: the UI edits spec concurrently and the
+	// cached copy this reconcile read is often behind, so an
+	// optimistic-locked Update conflicts and requeues with backoff.
+	if err := r.Status().Patch(ctx, pc, client.MergeFrom(orig)); err != nil {
 		return fmt.Errorf("update status: %w", err)
 	}
 	return nil
