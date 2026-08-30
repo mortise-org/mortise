@@ -1,10 +1,10 @@
 name: Integration repeat
 
-# Measures the integration suite's flake rate on one tree (CAI-173). N
-# independent runs of the same job that CI runs, each on its own runner and
-# k3d cluster; a summary tallies pass/fail and names the failing tests. Run
-# it before promoting Integration to a required check (CAI-165), and after
-# any fix that claims to remove a flake class.
+# Measures a suite's flake rate on one tree (CAI-173). N independent runs of
+# the same job that CI runs, each on its own runner and k3d cluster; a summary
+# tallies pass/fail and names the failing tests. Run it before promoting a
+# suite to a required check (CAI-165), and after any fix that claims to
+# remove a flake class.
 on:
   workflow_dispatch:
     inputs:
@@ -12,6 +12,13 @@ on:
         description: Number of independent runs
         default: "10"
         required: true
+      suite:
+        description: Which suite to repeat
+        type: choice
+        default: integration
+        options:
+          - integration
+          - e2e
 
 permissions:
   contents: read
@@ -55,7 +62,34 @@ jobs:
           echo "dbaa79a76ace7f4ca230a1ff41dc7d8a5036a8ad0309e9c54f9bf3836dbe853e  /usr/local/bin/k3d" | sha256sum --check
           chmod +x /usr/local/bin/k3d
 
+      - uses: actions/setup-node@v4
+        if: inputs.suite == 'e2e'
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Cache Playwright browsers
+        if: inputs.suite == 'e2e'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ hashFiles('ui/package-lock.json') }}
+
+      - name: Run UI E2E tests
+        if: inputs.suite == 'e2e'
+        run: |
+          mkdir -p result
+          set +e
+          (make dev-up && make test-e2e) 2>&1 | tee result/output.log
+          rc=${PIPESTATUS[0]}
+          set -e
+          echo "$rc" > result/rc
+          grep -oE '^\s+[0-9]+\) \[chromium\] › [^›]+ › .*$' result/output.log | sed -E 's/^\s+[0-9]+\) \[chromium\] › //; s/ +$//' | sort -u > result/failed-tests.txt || true
+          exit "$rc"
+
       - name: Run integration tests
+        if: inputs.suite != 'e2e'
         id: t
         run: |
           mkdir -p result
@@ -70,6 +104,11 @@ jobs:
       - name: Dump cluster diagnostics on failure
         if: failure()
         run: |
+          if [ "${{ inputs.suite }}" = e2e ]; then
+            kubectl config use-context k3d-mortise-dev || true
+            kubectl -n mortise-system logs -l app.kubernetes.io/name=mortise --tail=-1 --all-containers --prefix --previous > result/operator-previous.log 2>/dev/null || true
+            cp -r ui/test-results result/test-results 2>/dev/null || true
+          fi
           kubectl -n mortise-system logs -l app.kubernetes.io/name=mortise --tail=-1 --all-containers --prefix > result/operator.log || true
           kubectl get events -A --sort-by=.lastTimestamp > result/events.txt || true
           kubectl get apps.mortise.mortise.dev,projects.mortise.mortise.dev,previewenvironments.mortise.mortise.dev -A -o yaml > result/mortise-resources.yaml 2>/dev/null || true
@@ -82,9 +121,9 @@ jobs:
           path: result/
           if-no-files-found: ignore
 
-      - name: Tear down integration cluster
+      - name: Tear down cluster
         if: always()
-        run: k3d cluster delete mortise-int || true
+        run: k3d cluster delete mortise-int mortise-dev || true
 
   summary:
     needs: run
@@ -99,7 +138,7 @@ jobs:
         run: |
           total=0; failed=0
           {
-            echo "## Integration repeat: ${{ github.sha }}"
+            echo "## ${{ inputs.suite }} repeat: ${{ github.sha }}"
             echo
             echo "| run | result | failing tests |"
             echo "|---|---|---|"
