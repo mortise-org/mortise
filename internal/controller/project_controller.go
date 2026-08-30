@@ -699,14 +699,14 @@ func (r *ProjectReconciler) ensureProjectCreateActivity(ctx context.Context, pro
 		return nil
 	}
 
-	if err := r.appendProjectCreateActivityIfMissing(ctx, projectCreateActivityEvent(project)); err != nil {
+	if err := r.appendProjectCreateActivityIfMissing(ctx, projectCreateActivityEvent(project, r.clock().Now())); err != nil {
 		return fmt.Errorf("append project activity: %w", err)
 	}
 	return r.markProjectCreateActivityRecorded(ctx, project.Name)
 }
 
-func projectCreateActivityEvent(project *mortisev1alpha1.Project) activity.Event {
-	ts := time.Now().UTC()
+func projectCreateActivityEvent(project *mortisev1alpha1.Project, now time.Time) activity.Event {
+	ts := now.UTC()
 	if !project.CreationTimestamp.IsZero() {
 		ts = project.CreationTimestamp.UTC()
 	}

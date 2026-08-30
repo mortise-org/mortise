@@ -1031,14 +1031,13 @@ func (r *AppReconciler) reconcileEnvBuild(ctx context.Context, app *mortisev1alp
 
 	imageRef, err := r.RegistryBackend.PushTarget(app.Name, envImageTag(revision, envName))
 	if err != nil {
-		log.Error(err, "push target failed", "env", envName)
-		return "", false, false, false, nil
+		return "", false, false, false, r.setRegistryTargetCondition(ctx, app, envName, "push", err)
 	}
 	pullRef, err := r.RegistryBackend.PullTarget(app.Name, envImageTag(revision, envName))
 	if err != nil {
-		log.Error(err, "pull target failed", "env", envName)
-		return "", false, false, false, nil
+		return "", false, false, false, r.setRegistryTargetCondition(ctx, app, envName, "pull", err)
 	}
+	r.clearRegistryTargetCondition(ctx, app)
 	desiredRunSpec := appBuildRunSpec(app, envName, branch, revision, imageRef.Full, pullRef.Full)
 
 	// Short-circuit: skip rebuild if we already built this revision for this env
