@@ -337,15 +337,12 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		var image string
 		if app.Spec.Source.Type == mortisev1alpha1.SourceTypeGit && r.BuildClient != nil {
 			buildIdentity := resolveEnvBuildIdentity(&app, *env, previewBuildIdentities)
-			envImage, requeue, dirty, shouldClearNoCache, err := r.reconcileEnvBuild(ctx, &app, projectionEnvOrder, buildAggregationEnvNames, env.Name, buildIdentity.branch, buildIdentity.revision)
+			envImage, requeue, dirty, shouldClearNoCache, err := r.reconcileEnvBuild(ctx, &app, projectionEnvOrder, buildAggregationEnvNames, env.Name, buildIdentity.branch, buildIdentity.revision, &topLevelBuildDirty)
 			if err != nil {
 				return ctrl.Result{}, fmt.Errorf("reconcile buildrun for env %s: %w", env.Name, err)
 			}
 			if dirty {
 				buildStatusDirty = true
-				if envSelectedForBuildFailureAggregation(env.Name, buildAggregationEnvNames) {
-					topLevelBuildDirty = true
-				}
 			}
 			if shouldClearNoCache {
 				clearNoCache = true
@@ -1030,7 +1027,7 @@ func envCountsTowardAppBuildFailure(buildAggregationEnvNames map[string]struct{}
 // its failure in env status only: writing it app-wide would both misattribute the
 // failure to production and trip the terminal-failure short-circuit that halts
 // every subsequent build until a manual rebuild. A nil set means every env counts.
-func (r *AppReconciler) reconcileEnvBuild(ctx context.Context, app *mortisev1alpha1.App, projectionEnvOrder []string, buildAggregationEnvNames map[string]struct{}, envName, branch, revision string) (image string, requeue bool, statusDirty bool, shouldClearNoCache bool, err error) {
+func (r *AppReconciler) reconcileEnvBuild(ctx context.Context, app *mortisev1alpha1.App, projectionEnvOrder []string, buildAggregationEnvNames map[string]struct{}, envName, branch, revision string, topLevelPhaseSet *bool) (image string, requeue bool, statusDirty bool, shouldClearNoCache bool, err error) {
 	log := logf.FromContext(ctx)
 
 	branch = firstNonEmpty(branch, app.Spec.Source.Branch)
@@ -1069,7 +1066,9 @@ func (r *AppReconciler) reconcileEnvBuild(ctx context.Context, app *mortisev1alp
 				projectAppBuildRunStatus(app, envName, &current)
 				switch current.Status.Phase {
 				case mortisev1alpha1.BuildRunPhaseSucceeded:
-					r.applyEnvBuildSuccess(ctx, app, projectionEnvOrder, envName, revision, current.Status.Image, current.Status.Digest, current.Status.DetectedPort, envSelectedForBuildFailureAggregation(envName, buildAggregationEnvNames))
+					if r.applyEnvBuildSuccess(ctx, app, projectionEnvOrder, envName, revision, current.Status.Image, current.Status.Digest, current.Status.DetectedPort, envSelectedForBuildFailureAggregation(envName, buildAggregationEnvNames)) && topLevelPhaseSet != nil {
+						*topLevelPhaseSet = true
+					}
 					return current.Status.Image, false, true, false, nil
 				case mortisev1alpha1.BuildRunPhaseFailed:
 					if envCountsTowardAppBuildFailure(buildAggregationEnvNames, envName) {
@@ -1079,7 +1078,9 @@ func (r *AppReconciler) reconcileEnvBuild(ctx context.Context, app *mortisev1alp
 					}
 					return "", false, true, false, nil
 				default:
-					r.markEnvBuildInProgress(app, envName, revision, envSelectedForBuildFailureAggregation(envName, buildAggregationEnvNames))
+					if r.markEnvBuildInProgress(app, envName, revision, envSelectedForBuildFailureAggregation(envName, buildAggregationEnvNames)) && topLevelPhaseSet != nil {
+						*topLevelPhaseSet = true
+					}
 					return "", true, true, false, nil
 				}
 			}
@@ -1111,7 +1112,9 @@ func (r *AppReconciler) reconcileEnvBuild(ctx context.Context, app *mortisev1alp
 	projectAppBuildRunStatus(app, envName, run)
 	switch run.Status.Phase {
 	case mortisev1alpha1.BuildRunPhaseSucceeded:
-		r.applyEnvBuildSuccess(ctx, app, projectionEnvOrder, envName, revision, run.Status.Image, run.Status.Digest, run.Status.DetectedPort, envSelectedForBuildFailureAggregation(envName, buildAggregationEnvNames))
+		if r.applyEnvBuildSuccess(ctx, app, projectionEnvOrder, envName, revision, run.Status.Image, run.Status.Digest, run.Status.DetectedPort, envSelectedForBuildFailureAggregation(envName, buildAggregationEnvNames)) && topLevelPhaseSet != nil {
+			*topLevelPhaseSet = true
+		}
 		return run.Status.Image, false, true, consumedRebuild, nil
 	case mortisev1alpha1.BuildRunPhaseFailed:
 		if envCountsTowardAppBuildFailure(buildAggregationEnvNames, envName) {
@@ -1121,7 +1124,9 @@ func (r *AppReconciler) reconcileEnvBuild(ctx context.Context, app *mortisev1alp
 		}
 		return "", false, true, consumedRebuild, nil
 	default:
-		r.markEnvBuildInProgress(app, envName, revision, envSelectedForBuildFailureAggregation(envName, buildAggregationEnvNames))
+		if r.markEnvBuildInProgress(app, envName, revision, envSelectedForBuildFailureAggregation(envName, buildAggregationEnvNames)) && topLevelPhaseSet != nil {
+			*topLevelPhaseSet = true
+		}
 		return "", true, true, consumedRebuild, nil
 	}
 }
@@ -1132,9 +1137,12 @@ func (r *AppReconciler) reconcileEnvBuild(ctx context.Context, app *mortisev1alp
 // corrected it, so the parent flickered Ready -> Building/Deploying -> Ready
 // on every preview build poll (CAI-173 phase-flip class; CAI-229 fixed only
 // the failure condition).
-func (r *AppReconciler) markEnvBuildInProgress(app *mortisev1alpha1.App, envName, revision string, countsTopLevel bool) {
+// Returns true when it set the App's top-level phase, which is the only
+// case in which the build-status flush may write Phase (CAI-173: copying an
+// unset in-memory phase wrote back the stale cached read).
+func (r *AppReconciler) markEnvBuildInProgress(app *mortisev1alpha1.App, envName, revision string, countsTopLevel bool) bool {
 	if app == nil {
-		return
+		return false
 	}
 
 	if es := ensureEnvStatus(app, envName); es != nil {
@@ -1142,7 +1150,7 @@ func (r *AppReconciler) markEnvBuildInProgress(app *mortisev1alpha1.App, envName
 		es.Message = fmt.Sprintf("building revision %s", revision)
 	}
 	if !countsTopLevel {
-		return
+		return false
 	}
 	app.Status.Phase = mortisev1alpha1.AppPhaseBuilding
 
@@ -1153,10 +1161,11 @@ func (r *AppReconciler) markEnvBuildInProgress(app *mortisev1alpha1.App, envName
 		Message:            fmt.Sprintf("building revision %s for %s", revision, envName),
 		LastTransitionTime: metav1.NewTime(r.clock().Now()),
 	})
+	return true
 }
 
 // applyEnvBuildSuccess records the successful build for a specific environment.
-func (r *AppReconciler) applyEnvBuildSuccess(_ context.Context, app *mortisev1alpha1.App, projectionEnvOrder []string, envName, revision, image, digest string, detectedPort int32, countsTopLevel bool) {
+func (r *AppReconciler) applyEnvBuildSuccess(_ context.Context, app *mortisev1alpha1.App, projectionEnvOrder []string, envName, revision, image, digest string, detectedPort int32, countsTopLevel bool) bool {
 	// Update per-env status.
 	found := false
 	for i := range app.Status.Environments {
@@ -1184,7 +1193,7 @@ func (r *AppReconciler) applyEnvBuildSuccess(_ context.Context, app *mortisev1al
 		// A preview's build outcome lives on its env status and its
 		// PreviewEnvironment; the parent's phase and conditions stay as the
 		// non-preview envs left them.
-		return
+		return false
 	}
 	app.Status.Phase = mortisev1alpha1.AppPhaseDeploying
 	meta.RemoveStatusCondition(&app.Status.Conditions, "BuildStarted")
@@ -1195,6 +1204,7 @@ func (r *AppReconciler) applyEnvBuildSuccess(_ context.Context, app *mortisev1al
 		Message:            fmt.Sprintf("built %s digest=%s for %s", image, digest, envName),
 		LastTransitionTime: metav1.NewTime(r.clock().Now()),
 	})
+	return true
 }
 
 // buildParams bundles the inputs the background build goroutine needs. Keeping

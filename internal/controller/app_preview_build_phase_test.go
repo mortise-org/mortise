@@ -21,7 +21,7 @@ func TestPreviewBuildDoesNotTouchTopLevelPhase(t *testing.T) {
 		Environments: []mortisev1alpha1.EnvironmentStatus{{Name: "production", Phase: mortisev1alpha1.AppPhaseReady}},
 	}}
 
-	r.markEnvBuildInProgress(app, "pr-1", "abc", false)
+	_ = r.markEnvBuildInProgress(app, "pr-1", "abc", false)
 	if app.Status.Phase != mortisev1alpha1.AppPhaseReady {
 		t.Fatalf("preview build start moved the parent phase to %q", app.Status.Phase)
 	}
@@ -32,7 +32,7 @@ func TestPreviewBuildDoesNotTouchTopLevelPhase(t *testing.T) {
 		t.Fatalf("preview env status must still record the build: %+v", es)
 	}
 
-	r.applyEnvBuildSuccess(context.Background(), app, []string{"production"}, "pr-1", "abc", "img:pr", "sha256:x", 0, false)
+	_ = r.applyEnvBuildSuccess(context.Background(), app, []string{"production"}, "pr-1", "abc", "img:pr", "sha256:x", 0, false)
 	if app.Status.Phase != mortisev1alpha1.AppPhaseReady {
 		t.Fatalf("preview build success moved the parent phase to %q", app.Status.Phase)
 	}
@@ -44,7 +44,7 @@ func TestPreviewBuildDoesNotTouchTopLevelPhase(t *testing.T) {
 	}
 
 	// A selected env still drives the parent.
-	r.markEnvBuildInProgress(app, "production", "def", true)
+	_ = r.markEnvBuildInProgress(app, "production", "def", true)
 	if app.Status.Phase != mortisev1alpha1.AppPhaseBuilding {
 		t.Fatalf("a production build must move the parent to Building, got %q", app.Status.Phase)
 	}

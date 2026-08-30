@@ -552,7 +552,7 @@ func TestReconcileEnvBuildProjectsCurrentTerminalRunBeforeRevisionShortCircuit(t
 		RegistryBackend: &fakeRegistryBackend{},
 	}
 
-	image, requeue, statusDirty, _, err := r.reconcileEnvBuild(context.Background(), app, []string{"production"}, nil, "production", "main", "same-sha")
+	image, requeue, statusDirty, _, err := r.reconcileEnvBuild(context.Background(), app, []string{"production"}, nil, "production", "main", "same-sha", nil)
 	if err != nil {
 		t.Fatalf("reconcileEnvBuild: %v", err)
 	}
@@ -645,7 +645,7 @@ func TestReconcileEnvBuildSkipsTerminalCurrentRunWhenManualRebuildRequested(t *t
 		RegistryBackend: &fakeRegistryBackend{},
 	}
 
-	image, requeue, statusDirty, shouldClearNoCache, err := r.reconcileEnvBuild(context.Background(), app, []string{"production"}, nil, "production", "main", "same-sha")
+	image, requeue, statusDirty, shouldClearNoCache, err := r.reconcileEnvBuild(context.Background(), app, []string{"production"}, nil, "production", "main", "same-sha", nil)
 	if err != nil {
 		t.Fatalf("reconcileEnvBuild: %v", err)
 	}
@@ -734,7 +734,7 @@ func TestReconcileEnvBuildRebuildRequestReachesEveryEnv(t *testing.T) {
 	}
 
 	for _, env := range envs {
-		image, requeue, _, shouldClearNoCache, err := r.reconcileEnvBuild(context.Background(), app, envs, nil, env, "main", "same-sha")
+		image, requeue, _, shouldClearNoCache, err := r.reconcileEnvBuild(context.Background(), app, envs, nil, env, "main", "same-sha", nil)
 		if err != nil {
 			t.Fatalf("reconcileEnvBuild %s: %v", env, err)
 		}
@@ -818,7 +818,7 @@ func TestReconcileEnvBuildProjectsFailedCurrentRunIntoStatus(t *testing.T) {
 		RegistryBackend: &fakeRegistryBackend{},
 	}
 
-	image, requeue, statusDirty, _, err := r.reconcileEnvBuild(context.Background(), app, []string{"pr-6"}, nil, "pr-6", "feature/preview-fail", "same-sha")
+	image, requeue, statusDirty, _, err := r.reconcileEnvBuild(context.Background(), app, []string{"pr-6"}, nil, "pr-6", "feature/preview-fail", "same-sha", nil)
 	if err != nil {
 		t.Fatalf("reconcileEnvBuild: %v", err)
 	}
@@ -895,7 +895,7 @@ func TestReconcileEnvBuildDoesNotReuseAnotherEnvsCurrentRun(t *testing.T) {
 		RegistryBackend: &fakeRegistryBackend{},
 	}
 
-	image, requeue, statusDirty, _, err := r.reconcileEnvBuild(context.Background(), app, []string{"production", "staging"}, nil, "staging", "main", "same-sha")
+	image, requeue, statusDirty, _, err := r.reconcileEnvBuild(context.Background(), app, []string{"production", "staging"}, nil, "staging", "main", "same-sha", nil)
 	if err != nil {
 		t.Fatalf("reconcileEnvBuild: %v", err)
 	}
@@ -977,7 +977,7 @@ func TestReconcileEnvBuildDoesNotShortCircuitLastBuiltSHAWhenInputHashChanges(t 
 		RegistryBackend: &fakeRegistryBackend{},
 	}
 
-	image, requeue, statusDirty, _, err := r.reconcileEnvBuild(context.Background(), app, []string{"production"}, nil, "production", "main", "same-sha")
+	image, requeue, statusDirty, _, err := r.reconcileEnvBuild(context.Background(), app, []string{"production"}, nil, "production", "main", "same-sha", nil)
 	if err != nil {
 		t.Fatalf("reconcileEnvBuild: %v", err)
 	}
@@ -1058,7 +1058,7 @@ func TestApplyEnvBuildSuccessDoesNotOverwriteProjectedMetadataWithLaterEnv(t *te
 	}
 
 	r := &AppReconciler{}
-	r.applyEnvBuildSuccess(context.Background(), app, []string{"production", "preview"}, "preview", "preview-sha", "registry.example.com/demo:preview", "sha256:preview", 3000, true)
+	_ = r.applyEnvBuildSuccess(context.Background(), app, []string{"production", "preview"}, "preview", "preview-sha", "registry.example.com/demo:preview", "sha256:preview", 3000, true)
 
 	if app.Status.LastBuiltSHA != "prod-sha" {
 		t.Fatalf("expected projected SHA to stay on production, got %q", app.Status.LastBuiltSHA)
@@ -1200,7 +1200,7 @@ func TestReconcileEnvBuildKeepsPreviewFailureOffTopLevelApp(t *testing.T) {
 	// production is the only env that may speak for the App; pr-6 is a preview.
 	aggregation := map[string]struct{}{"production": {}}
 
-	image, _, statusDirty, _, err := r.reconcileEnvBuild(context.Background(), app, []string{"production", "pr-6"}, aggregation, "pr-6", "feature/preview-fail", "same-sha")
+	image, _, statusDirty, _, err := r.reconcileEnvBuild(context.Background(), app, []string{"production", "pr-6"}, aggregation, "pr-6", "feature/preview-fail", "same-sha", nil)
 	if err != nil {
 		t.Fatalf("reconcileEnvBuild: %v", err)
 	}
