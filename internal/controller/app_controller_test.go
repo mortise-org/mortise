@@ -6946,6 +6946,39 @@ var _ = Describe("App Controller — git source", func() {
 			}
 		})
 
+		It("reports a user-declared PORT as reserved instead of silently ignoring it (CAI-220)", func() {
+			appName := "declares-port"
+			app := &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{Name: appName, Namespace: namespace},
+				Spec: mortisev1alpha1.AppSpec{
+					Source:  mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: testImageNginx},
+					Network: mortisev1alpha1.NetworkConfig{Public: true, Port: 3000},
+					Environments: []mortisev1alpha1.Environment{{
+						Name: "production",
+						Env:  []mortisev1alpha1.EnvVar{{Name: "PORT", Value: "8080"}},
+					}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			req := reconcile.Request{NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace}}
+			_, err := reconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			var dep appsv1.Deployment
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: appName, Namespace: envNsProduction}, &dep)).To(Succeed())
+			Expect(dep.Spec.Template.Spec.Containers[0].Env).To(ContainElement(corev1.EnvVar{Name: "PORT", Value: "3000"}), "platform value still wins")
+
+			var fresh mortisev1alpha1.App
+			Expect(k8sClient.Get(ctx, req.NamespacedName, &fresh)).To(Succeed())
+			cond := meta.FindStatusCondition(fresh.Status.Conditions, "EnvKeysReserved")
+			Expect(cond).NotTo(BeNil(), "the ignored declaration must be reported")
+			Expect(cond.Reason).To(Equal("PlatformValueWins"))
+			Expect(cond.Message).To(ContainSubstring("production: PORT"))
+		})
+
 		It("should not change behavior when sharedVars is empty", func() {
 			appName := "shared-vars-empty"
 			app := &mortisev1alpha1.App{

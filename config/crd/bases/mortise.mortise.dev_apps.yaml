@@ -199,6 +199,9 @@ spec:
                     env:
                       items:
                         description: |-
+                          PORT, MORTISE_IMAGE and MORTISE_REVISION are set by Mortise on the
+                          container itself and win over anything declared as an EnvVar; declaring
+                          them raises the EnvKeysReserved condition instead of taking effect.
                           EnvVar is one environment variable for an App environment. Set exactly one
                           of Value or ValueFrom.
                         properties:
@@ -611,6 +614,9 @@ spec:
                   flags that should not be repeated per environment.
                 items:
                   description: |-
+                    PORT, MORTISE_IMAGE and MORTISE_REVISION are set by Mortise on the
+                    container itself and win over anything declared as an EnvVar; declaring
+                    them raises the EnvKeysReserved condition instead of taking effect.
                     EnvVar is one environment variable for an App environment. Set exactly one
                     of Value or ValueFrom.
                   properties:
