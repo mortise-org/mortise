@@ -16,6 +16,13 @@ import (
 // RequireEventually polls fn every 200ms until it returns true or timeout is reached.
 func RequireEventually(t *testing.T, timeout time.Duration, fn func() bool) {
 	t.Helper()
+	requireEventually(t, timeout, fn, nil)
+}
+
+// requireEventually runs onTimeout (if set) before failing, so the state that
+// held the wait is in the test log rather than gone with the namespace.
+func requireEventually(t *testing.T, timeout time.Duration, fn func() bool, onTimeout func()) {
+	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		if fn() {
@@ -23,13 +30,16 @@ func RequireEventually(t *testing.T, timeout time.Duration, fn func() bool) {
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
+	if onTimeout != nil {
+		onTimeout()
+	}
 	t.Fatal("timed out waiting for condition")
 }
 
 // AssertPodsRunning asserts that a Deployment exists with the expected number of ready replicas.
 func AssertPodsRunning(t *testing.T, k8sClient client.Client, ns, name string, count int32) {
 	t.Helper()
-	RequireEventually(t, 8*time.Minute, func() bool {
+	requireEventually(t, 8*time.Minute, func() bool {
 		var dep appsv1.Deployment
 		err := k8sClient.Get(context.Background(), types.NamespacedName{
 			Name:      name,
@@ -39,7 +49,7 @@ func AssertPodsRunning(t *testing.T, k8sClient client.Client, ns, name string, c
 			return false
 		}
 		return dep.Status.ReadyReplicas == count
-	})
+	}, func() { DumpWorkloadState(t, k8sClient, ns, name) })
 }
 
 // AssertDeploymentExists asserts a Deployment with the given name exists in the namespace.
@@ -67,7 +77,7 @@ func AssertIngressExists(t *testing.T, k8sClient client.Client, ns, name string)
 // WaitForAppReady polls until App.status.phase == Ready or timeout is reached.
 func WaitForAppReady(t *testing.T, k8sClient client.Client, ns, name string, timeout time.Duration) {
 	t.Helper()
-	RequireEventually(t, timeout, func() bool {
+	requireEventually(t, timeout, func() bool {
 		var app mortisev1alpha1.App
 		if err := k8sClient.Get(context.Background(), types.NamespacedName{
 			Name: name, Namespace: ns,
@@ -75,5 +85,5 @@ func WaitForAppReady(t *testing.T, k8sClient client.Client, ns, name string, tim
 			return false
 		}
 		return app.Status.Phase == mortisev1alpha1.AppPhaseReady
-	})
+	}, func() { DumpAppState(t, k8sClient, ns, name) })
 }
