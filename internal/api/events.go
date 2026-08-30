@@ -266,26 +266,32 @@ func (s *Server) watchPodsInNamespace(ctx context.Context, projectName, ns strin
 func (s *Server) drainPodWatch(ctx context.Context, watcher watch.Interface, projectName, ns string, w *sseWriter) {
 	type podKey struct{ app, env string }
 	dirty := map[podKey]bool{}
-	var debounce *time.Timer
+	// The debounce fires through a channel read by this loop so that only
+	// this goroutine touches dirty; a time.AfterFunc callback would iterate
+	// the map while the loop writes it, which is a fatal runtime error that
+	// takes the whole operator down.
+	debounce := time.NewTimer(time.Hour)
+	debounce.Stop()
+	defer debounce.Stop()
+	pending := false
 
 	flush := func() {
 		for k := range dirty {
 			s.emitPodList(ctx, w, projectName, k.app, k.env, ns)
 		}
 		dirty = map[podKey]bool{}
+		pending = false
 	}
 
 	for {
 		select {
 		case <-ctx.Done():
-			if debounce != nil {
-				debounce.Stop()
-			}
 			return
+		case <-debounce.C:
+			flush()
 		case ev, ok := <-watcher.ResultChan():
 			if !ok {
-				if debounce != nil {
-					debounce.Stop()
+				if pending {
 					flush()
 				}
 				return
@@ -303,14 +309,16 @@ func (s *Server) drainPodWatch(ctx context.Context, watcher watch.Interface, pro
 				continue
 			}
 			dirty[podKey{appName, envName}] = true
-			if debounce == nil {
-				debounce = time.AfterFunc(500*time.Millisecond, func() {
-					flush()
-					debounce = nil
-				})
-			} else {
-				debounce.Reset(500 * time.Millisecond)
+			if pending {
+				if !debounce.Stop() {
+					select {
+					case <-debounce.C:
+					default:
+					}
+				}
 			}
+			debounce.Reset(500 * time.Millisecond)
+			pending = true
 		}
 	}
 }
