@@ -8,6 +8,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -159,7 +160,7 @@ func (s *Server) Redeploy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	pendingHash := envStatusPendingHash(app.Status.Environments, env)
-	if err := restartDeployment(r.Context(), s.client, envNs, appName, pendingHash, s.clock().Now()); err != nil {
+	if err := restartWorkload(r.Context(), s.client, app, envNs, pendingHash, s.clock().Now()); err != nil {
 		writeError(w, r, err)
 		return
 	}
@@ -227,7 +228,7 @@ func (s *Server) RedeployStale(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		envNs := constants.EnvNamespace(projectName, es.Name)
-		if err := restartDeployment(r.Context(), s.client, envNs, appName, es.PendingEnvHash, s.clock().Now()); err != nil {
+		if err := restartWorkload(r.Context(), s.client, &app, envNs, es.PendingEnvHash, s.clock().Now()); err != nil {
 			writeError(w, r, err)
 			return
 		}
@@ -266,6 +267,37 @@ func envStatusPendingHash(envStatuses []mortisev1alpha1.EnvironmentStatus, envNa
 // The app controller concurrently writes env-hash/rollout stamps to the same
 // Deployment, so the Get→mutate→Update runs inside RetryOnConflict — otherwise
 // a controller write between our Get and Update surfaces as a user-facing 409.
+// restartWorkload stamps the restart markers on the App's workload for one
+// environment. The reconciler branches on kind everywhere else; the redeploy
+// path fetched a Deployment unconditionally, so a cron App's redeploy failed
+// NotFound and scheduled jobs had no way to pick up a changed env short of
+// editing the CronJob (CAI-170). A CronJob's next scheduled run uses the
+// updated template, which is the natural redeploy semantics for it.
+func restartWorkload(ctx context.Context, c client.Client, app *mortisev1alpha1.App, namespace, pendingEnvHash string, now time.Time) error {
+	if app.Spec.Kind == mortisev1alpha1.AppKindCron {
+		return restartCronJob(ctx, c, namespace, constants.CronJobName(app.Name), pendingEnvHash, now)
+	}
+	return restartDeployment(ctx, c, namespace, app.Name, pendingEnvHash, now)
+}
+
+func restartCronJob(ctx context.Context, c client.Client, namespace, name, pendingEnvHash string, now time.Time) error {
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var cj batchv1.CronJob
+		if err := c.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, &cj); err != nil {
+			return err
+		}
+		tmpl := &cj.Spec.JobTemplate.Spec.Template
+		if tmpl.Annotations == nil {
+			tmpl.Annotations = make(map[string]string)
+		}
+		tmpl.Annotations["mortise.dev/restartedAt"] = fmt.Sprintf("%d", now.UnixMilli())
+		if pendingEnvHash != "" {
+			tmpl.Annotations["mortise.dev/env-hash"] = pendingEnvHash
+		}
+		return c.Update(ctx, &cj)
+	})
+}
+
 func restartDeployment(ctx context.Context, c client.Client, namespace, appName, pendingEnvHash string, now time.Time) error {
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		var dep appsv1.Deployment

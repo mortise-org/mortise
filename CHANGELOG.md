@@ -156,6 +156,12 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Redeploying a cron App works** (CAI-170): the redeploy endpoint fetched
+  a Deployment regardless of the App's kind, so a scheduled job's redeploy
+  failed NotFound and there was no supported way for it to pick up a
+  changed env. It now stamps the CronJob's job template; the next
+  scheduled run uses the current env.
+
 - **Picker-added variables now render immediately** (mo-baq): a variable
   added via the bindings/secret picker was written to the App spec but
   frequently did not appear in the variables table until the drawer was
