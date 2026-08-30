@@ -990,6 +990,53 @@ func TestUpdateStatusFallsBackToPreviewOnlyBuildFailure(t *testing.T) {
 	}
 }
 
+// The pass where a preview env first appears: its failed BuildRun ref is
+// known to this reconcile in memory but not yet on the server. The parent
+// must not flip to Deploying for that one pass (CAI-173 phase-flip class).
+func TestUpdateStatusUsesInMemoryBuildRefForNewPreviewEnv(t *testing.T) {
+	ctx := context.Background()
+	scheme := newAppStatusTestScheme(t)
+	serverApp := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "demo", Namespace: "pj-default-project"},
+		Spec: mortisev1alpha1.AppSpec{
+			Source:       mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeGit, Repo: "https://example/repo.git"},
+			Environments: []mortisev1alpha1.Environment{{Name: "production"}, {Name: "pr-6"}},
+		},
+		Status: mortisev1alpha1.AppStatus{
+			Conditions:   []metav1.Condition{{Type: "BuildSucceeded", Status: metav1.ConditionTrue, Reason: "BuildComplete", Message: "built registry.example/demo:prod digest=sha256:prod for production"}},
+			Environments: []mortisev1alpha1.EnvironmentStatus{{Name: "production", LastBuiltImage: "registry.example/demo:prod"}},
+		},
+	}
+	productionDep := newReadyDeploymentForStatusTest(t, serverApp, "production")
+	c := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(serverApp, productionDep).WithObjects(serverApp, productionDep).Build()
+	if err := c.Status().Update(ctx, productionDep); err != nil {
+		t.Fatalf("seed production deployment status: %v", err)
+	}
+	r := &AppReconciler{Client: c, Scheme: scheme}
+
+	// This reconcile's in-memory App already knows pr-6 and its failed build.
+	inMem := serverApp.DeepCopy()
+	inMem.Status.Environments = append(inMem.Status.Environments, mortisev1alpha1.EnvironmentStatus{
+		Name:               "pr-6",
+		CurrentBuildRunRef: &mortisev1alpha1.BuildRunReference{Name: "app-demo-pr-6-x", Phase: mortisev1alpha1.BuildRunPhaseFailed},
+	})
+	resolvedEnvs := []mortisev1alpha1.Environment{{Name: "production"}, {Name: "pr-6"}}
+	previewEnvNames := map[string]struct{}{"pr-6": {}}
+	if err := r.updateStatus(ctx, inMem, resolvedEnvs, previewEnvNames); err != nil {
+		t.Fatalf("update status: %v", err)
+	}
+	var fresh mortisev1alpha1.App
+	if err := c.Get(ctx, types.NamespacedName{Name: "demo", Namespace: "pj-default-project"}, &fresh); err != nil {
+		t.Fatalf("get app: %v", err)
+	}
+	if fresh.Status.Phase != mortisev1alpha1.AppPhaseReady {
+		t.Fatalf("a just-failed preview must not degrade the parent on its first pass: got %q", fresh.Status.Phase)
+	}
+	if es := envStatusFor(&fresh, "pr-6"); es == nil || es.CurrentBuildRunRef == nil {
+		t.Fatalf("the in-memory build ref must be carried onto the new env status: %+v", es)
+	}
+}
+
 func TestUpdateStatusStillCountsPreviewRolloutFailureInTopLevelPhase(t *testing.T) {
 	ctx := context.Background()
 	scheme := newAppStatusTestScheme(t)

@@ -210,6 +210,14 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **A just-failed preview build no longer flips the parent App to
+  Deploying for one reconcile** (CAI-173, CAI-229's sibling): on the pass
+  where a preview environment first appeared in status, its failed
+  BuildRun reference was known only in memory, the status writer read
+  build fields from the server copy alone, and the failed preview counted
+  as not-ready until the next pass. The parent reported Deploying for one
+  reconcile; one in ten integration runs read it in that window.
+
 - **A registry target failure is reported** (#444): when the registry
   backend could not produce a push or pull image reference, the
   environment was skipped with a log line and the App stayed `Ready` on
