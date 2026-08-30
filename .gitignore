@@ -38,8 +38,11 @@ cover.out
 .logs/
 __pycache__/
 
-# Vendored Helm dependency charts (downloaded by helm dep update)
-charts/mortise/charts/
+# Third-party subcharts under charts/mortise/charts/ are committed (CAI-217):
+# the integration suite must not fetch from traefik.github.io & co. during
+# setup. mortise-core is packaged from source on every build, so only that
+# tgz is ignored.
+charts/mortise/charts/mortise-core-*.tgz
 
 # UI
 ui/node_modules/

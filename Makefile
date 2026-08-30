@@ -251,7 +251,8 @@ INT_OBSERVER_IMG ?= mortise-observer:int
 # metrics-server — versions from the packaged subcharts; cert-manager is
 # disabled in the integration install). Pre-importing the chart deps keeps
 # cold-registry pulls out of the helm --wait budget.
-INT_DEP_IMAGES ?= nginx:1.27 postgres:16 redis:7 busybox:1.37 alpine:3.20 docker.io/traefik:v3.3.3 registry.k8s.io/metrics-server/metrics-server:v0.7.2
+INT_DEP_IMAGES ?= nginx:1.27 postgres:16 redis:7 busybox:1.37 alpine:3.20 docker.io/traefik:v3.3.3 registry.k8s.io/metrics-server/metrics-server:v0.7.2 \
+	gitea/gitea:1.24.3 distribution/distribution:2.8.3 moby/buildkit:v0.29.0
 
 .PHONY: test-integration
 test-integration: ## Create k3d cluster, install chart + test deps, run integration tests, tear down
@@ -271,7 +272,18 @@ test-integration: ## Create k3d cluster, install chart + test deps, run integrat
 	$(CONTAINER_TOOL) build --target operator -t $(INT_IMG) .
 	$(CONTAINER_TOOL) build --target observer -t $(INT_OBSERVER_IMG) .
 	@echo "==> Pre-pulling test images..."
-	for img in $(INT_DEP_IMAGES); do $(CONTAINER_TOOL) pull $$img || exit 1; done
+	# Every image the cluster will run is pulled here, on the host, before
+	# anything is installed — including the test-deps manifests' images
+	# (gitea, registry, buildkitd), which used to be pulled cold by the node
+	# and were the ErrImagePull on CAI-217. A registry hiccup fails this
+	# step with a retry and a named image, not a rollout timeout later.
+	for img in $(INT_DEP_IMAGES); do \
+		ok=; for attempt in 1 2 3; do \
+			$(CONTAINER_TOOL) pull $$img && { ok=1; break; }; \
+			echo "pull $$img failed (attempt $$attempt/3)"; sleep $$((attempt * 10)); \
+		done; \
+		[ -n "$$ok" ] || { echo "could not pull $$img" >&2; exit 1; }; \
+	done
 	@echo "==> Loading images into k3d..."
 	# With Docker's containerd image store (default on fresh Docker 28+
 	# installs), `docker save` of a pulled multi-arch image emits a tarball
@@ -300,12 +312,13 @@ test-integration: ## Create k3d cluster, install chart + test deps, run integrat
 	kubectl --context $(INT_KUBE_CONTEXT) -n mortise-test-deps rollout status deployment/registry  --timeout=120s
 	kubectl --context $(INT_KUBE_CONTEXT) -n mortise-test-deps rollout status deployment/gitea     --timeout=180s
 	kubectl --context $(INT_KUBE_CONTEXT) -n mortise-test-deps rollout status deployment/buildkitd --timeout=180s
-	@echo "==> Fetching Helm chart dependencies..."
-	helm repo add traefik https://traefik.github.io/charts
-	helm repo add jetstack https://charts.jetstack.io
-	helm repo add metrics-server https://kubernetes-sigs.github.io/metrics-server/
-	helm repo update
-	helm dependency build charts/mortise
+	@echo "==> Packaging mortise-core into the umbrella chart..."
+	# The third-party subcharts are committed under charts/mortise/charts/
+	# (CAI-217), so no repo is added and nothing is fetched: helm resolves
+	# dependencies from the tgz files already present. Only mortise-core is
+	# (re)packaged here, from source, so a stale tgz is never installed.
+	rm -f charts/mortise/charts/mortise-core-*.tgz
+	helm package charts/mortise-core -d charts/mortise/charts >/dev/null
 	@echo "==> Installing Mortise via Helm..."
 	helm --kube-context $(INT_KUBE_CONTEXT) upgrade --install mortise charts/mortise \
 		--namespace mortise-system --create-namespace \
