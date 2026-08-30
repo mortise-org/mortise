@@ -15,6 +15,8 @@ import (
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
@@ -323,5 +325,18 @@ func TestDeploymentRollingOut(t *testing.T) {
 				t.Fatalf("deploymentRollingOut() = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+// The desired probe must equal what the API server stores after defaulting,
+// or reconcileDeployment sees a difference on every pass and rewrites the
+// Deployment forever (CAI-71: HTTP probes, scheme defaulted to HTTP).
+func TestBuildProbe_HTTPMatchesServerDefaults(t *testing.T) {
+	desired := buildProbe(&mortisev1alpha1.ProbeConfig{Path: "/status", Port: 5000}, 8080)
+
+	stored := desired.DeepCopy()
+	stored.HTTPGet.Scheme = corev1.URISchemeHTTP // what the API server adds
+	if !equality.Semantic.DeepEqual(stored, desired) {
+		t.Fatalf("desired HTTP probe differs from its server-defaulted form: desired=%+v stored=%+v", desired.HTTPGet, stored.HTTPGet)
 	}
 }
