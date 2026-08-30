@@ -983,13 +983,18 @@ func TestDiff_EnvFlagNarrowsToOneEnvironment(t *testing.T) {
 
 func TestDiff_OptedOutEnvironmentIsFlagged(t *testing.T) {
 	no := false
-	app := testAppObj(nil, nil)
+	app := testAppObj([]mortisev1alpha1.EnvVar{{Name: "API_URL", Value: "https://x"}, {Name: "LOG_LEVEL", Value: "info"}}, nil)
 	app.Spec.Environments[0].Enabled = &no
 	c := newFakeClient(t, testProjectObj(false), app)
 
 	rep := runTestDiff(t, c, diffRequest{})
 	if rep.Environments[0].Enabled {
 		t.Error("expected the environment to be flagged as opted out")
+	}
+	// No Secret exists for an opted-out environment; that must not turn
+	// every declared variable into an alarm (CAI-226).
+	if n := len(rep.Environments[0].Findings); n != 0 {
+		t.Errorf("expected no findings for an opted-out environment, got %d: %+v", n, rep.Environments[0].Findings)
 	}
 }
 
