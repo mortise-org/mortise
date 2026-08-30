@@ -75,7 +75,7 @@ test.describe('staged changes deploy flow', () => {
 		await replicasInput.fill('3');
 
 		// Click the Scale "Update" button
-		const updateBtns = page.getByRole('button', { name: 'Update' });
+		const updateBtns = page.getByRole('button', { name: 'Update', exact: true });
 		await updateBtns.last().click();
 
 		// Verify the change persisted via API
@@ -102,7 +102,7 @@ test.describe('staged changes deploy flow', () => {
 		await expect(page.getByRole('button', { name: 'Add', exact: true })).toBeVisible({ timeout: 10_000 });
 
 		// When no staged changes exist, the bar and Discard button should not be visible
-		await expect(page.getByRole('button', { name: 'Discard' })).toHaveCount(0);
+		await expect(page.getByRole('button', { name: 'Discard', exact: true })).toHaveCount(0);
 		await expect(
 			page.getByText(/^\d+ changes? to apply$/i)
 		).toHaveCount(0);
@@ -128,7 +128,7 @@ test.describe('staged changes deploy flow', () => {
 		await imageInput.fill('nginx:1.28');
 
 		// Click Update in Source section (first Update button)
-		await page.getByRole('button', { name: 'Update' }).first().click();
+		await page.getByRole('button', { name: 'Update', exact: true }).first().click();
 
 		// Verify the change persisted via API
 		await expect(async () => {

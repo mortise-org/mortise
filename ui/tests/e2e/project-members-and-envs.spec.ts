@@ -58,7 +58,7 @@ test.describe('project settings: members tab', () => {
 	test('members tab shows empty state when no members have been added', async ({ page }) => {
 		await injectToken(page, adminToken);
 		await page.goto(`/projects/${projectName}/settings`);
-		await expect(page.getByRole('button', { name: 'General' })).toBeVisible({
+		await expect(page.getByRole('button', { name: 'General', exact: true })).toBeVisible({
 			timeout: 10_000
 		});
 
@@ -75,7 +75,7 @@ test.describe('project settings: members tab', () => {
 	test('add a member, verify they appear in the list, then remove them', async ({ page }) => {
 		await injectToken(page, adminToken);
 		await page.goto(`/projects/${projectName}/settings`);
-		await expect(page.getByRole('button', { name: 'General' })).toBeVisible({
+		await expect(page.getByRole('button', { name: 'General', exact: true })).toBeVisible({
 			timeout: 10_000
 		});
 
@@ -121,7 +121,7 @@ test.describe('project settings: members tab', () => {
 	test('adding a non-existent user shows an error', async ({ page }) => {
 		await injectToken(page, adminToken);
 		await page.goto(`/projects/${projectName}/settings`);
-		await expect(page.getByRole('button', { name: 'General' })).toBeVisible({
+		await expect(page.getByRole('button', { name: 'General', exact: true })).toBeVisible({
 			timeout: 10_000
 		});
 
@@ -158,7 +158,7 @@ test.describe('project settings: PR environments', () => {
 	test('PR environments toggle enables preview and persists', async ({ page, request }) => {
 		await injectToken(page, adminToken);
 		await page.goto(`/projects/${projectName}/settings`);
-		await expect(page.getByRole('button', { name: 'General' })).toBeVisible({
+		await expect(page.getByRole('button', { name: 'General', exact: true })).toBeVisible({
 			timeout: 10_000
 		});
 
@@ -205,7 +205,7 @@ test.describe('project settings: danger zone', () => {
 
 		await injectToken(page, adminToken);
 		await page.goto(`/projects/${projectName}/settings`);
-		await expect(page.getByRole('button', { name: 'General' })).toBeVisible({
+		await expect(page.getByRole('button', { name: 'General', exact: true })).toBeVisible({
 			timeout: 10_000
 		});
 
@@ -213,7 +213,7 @@ test.describe('project settings: danger zone', () => {
 		await page.getByRole('button', { name: 'Danger', exact: true }).click();
 
 		// The delete button starts disabled.
-		const deleteBtn = page.getByRole('button', { name: 'Delete project' });
+		const deleteBtn = page.getByRole('button', { name: 'Delete project', exact: true });
 		await expect(deleteBtn).toBeDisabled({ timeout: 5_000 });
 
 		// Type the project name into the confirmation input.
