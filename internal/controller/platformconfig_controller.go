@@ -77,6 +77,7 @@ func (r *PlatformConfigReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		}
 		return ctrl.Result{}, err
 	}
+	orig := pc.DeepCopy()
 
 	// Stamp the running operator's identity on every status write, so
 	// `kubectl get platformconfig` names the build production is on.
@@ -86,7 +87,7 @@ func (r *PlatformConfigReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	// Enforce singleton: only the instance named "platform" is valid.
 	if pc.Name != singletonName {
 		log.Info("rejecting non-singleton PlatformConfig", "name", pc.Name)
-		return ctrl.Result{}, r.markFailed(ctx, &pc, "InvalidName",
+		return ctrl.Result{}, r.markFailed(ctx, orig, &pc, "InvalidName",
 			fmt.Sprintf("PlatformConfig must be named %q; got %q", singletonName, pc.Name))
 	}
 
@@ -94,7 +95,7 @@ func (r *PlatformConfigReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	if pc.Spec.Registry.CredentialsSecretRef != nil {
 		if err := validateSecretRef(ctx, r.Client, *pc.Spec.Registry.CredentialsSecretRef, "spec.registry.credentialsSecretRef"); err != nil {
 			log.Info("registry credentials secret ref invalid", "error", err)
-			return ctrl.Result{}, r.markFailed(ctx, &pc, "SecretNotFound", err.Error())
+			return ctrl.Result{}, r.markFailed(ctx, orig, &pc, "SecretNotFound", err.Error())
 		}
 	}
 
@@ -102,7 +103,7 @@ func (r *PlatformConfigReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	if pc.Spec.Build.TLSSecretRef != nil {
 		if err := validateSecretRef(ctx, r.Client, *pc.Spec.Build.TLSSecretRef, "spec.build.tlsSecretRef"); err != nil {
 			log.Info("buildkit TLS secret ref invalid", "error", err)
-			return ctrl.Result{}, r.markFailed(ctx, &pc, "SecretNotFound", err.Error())
+			return ctrl.Result{}, r.markFailed(ctx, orig, &pc, "SecretNotFound", err.Error())
 		}
 	}
 
@@ -110,20 +111,20 @@ func (r *PlatformConfigReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	if pc.Spec.Observability.LogsAdapterTokenSecretRef != nil {
 		if err := validateSecretRef(ctx, r.Client, *pc.Spec.Observability.LogsAdapterTokenSecretRef, "spec.observability.logsAdapterTokenSecretRef"); err != nil {
 			log.Info("logs adapter token secret ref invalid", "error", err)
-			return ctrl.Result{}, r.markFailed(ctx, &pc, "SecretNotFound", err.Error())
+			return ctrl.Result{}, r.markFailed(ctx, orig, &pc, "SecretNotFound", err.Error())
 		}
 	}
 	if pc.Spec.Observability.MetricsAdapterTokenSecretRef != nil {
 		if err := validateSecretRef(ctx, r.Client, *pc.Spec.Observability.MetricsAdapterTokenSecretRef, "spec.observability.metricsAdapterTokenSecretRef"); err != nil {
 			log.Info("metrics adapter token secret ref invalid", "error", err)
-			return ctrl.Result{}, r.markFailed(ctx, &pc, "SecretNotFound", err.Error())
+			return ctrl.Result{}, r.markFailed(ctx, orig, &pc, "SecretNotFound", err.Error())
 		}
 	}
 
 	r.setRegistryPullCondition(&pc)
 	r.setConfigAppliedCondition(ctx, &pc)
 
-	return ctrl.Result{}, r.markReady(ctx, &pc)
+	return ctrl.Result{}, r.markReady(ctx, orig, &pc)
 }
 
 // setRegistryPullCondition mirrors (and sharpens) the boot-time warning: a
@@ -183,7 +184,7 @@ func (r *PlatformConfigReconciler) setConfigAppliedCondition(ctx context.Context
 	})
 }
 
-func (r *PlatformConfigReconciler) markReady(ctx context.Context, pc *mortisev1alpha1.PlatformConfig) error {
+func (r *PlatformConfigReconciler) markReady(ctx context.Context, orig, pc *mortisev1alpha1.PlatformConfig) error {
 	pc.Status.Phase = mortisev1alpha1.PlatformConfigPhaseReady
 	meta.SetStatusCondition(&pc.Status.Conditions, metav1.Condition{
 		Type:               "Available",
@@ -192,13 +193,16 @@ func (r *PlatformConfigReconciler) markReady(ctx context.Context, pc *mortisev1a
 		Message:            "PlatformConfig is ready",
 		ObservedGeneration: pc.Generation,
 	})
-	if err := r.Status().Update(ctx, pc); err != nil {
+	// Merge-patch rather than Update: the UI edits spec concurrently and the
+	// cached copy this reconcile read is often behind, so an
+	// optimistic-locked Update conflicts and requeues with backoff.
+	if err := r.Status().Patch(ctx, pc, client.MergeFrom(orig)); err != nil {
 		return fmt.Errorf("update status: %w", err)
 	}
 	return nil
 }
 
-func (r *PlatformConfigReconciler) markFailed(ctx context.Context, pc *mortisev1alpha1.PlatformConfig, reason, msg string) error {
+func (r *PlatformConfigReconciler) markFailed(ctx context.Context, orig, pc *mortisev1alpha1.PlatformConfig, reason, msg string) error {
 	pc.Status.Phase = mortisev1alpha1.PlatformConfigPhaseFailed
 	meta.SetStatusCondition(&pc.Status.Conditions, metav1.Condition{
 		Type:               "Available",
@@ -207,7 +211,10 @@ func (r *PlatformConfigReconciler) markFailed(ctx context.Context, pc *mortisev1
 		Message:            msg,
 		ObservedGeneration: pc.Generation,
 	})
-	if err := r.Status().Update(ctx, pc); err != nil {
+	// Merge-patch rather than Update: the UI edits spec concurrently and the
+	// cached copy this reconcile read is often behind, so an
+	// optimistic-locked Update conflicts and requeues with backoff.
+	if err := r.Status().Patch(ctx, pc, client.MergeFrom(orig)); err != nil {
 		return fmt.Errorf("update status: %w", err)
 	}
 	return nil

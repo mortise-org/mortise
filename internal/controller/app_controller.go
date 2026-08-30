@@ -667,7 +667,9 @@ func (r *AppReconciler) removeAppFinalizerWithRetry(ctx context.Context, key typ
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		var fresh mortisev1alpha1.App
 		if err := r.Get(ctx, key, &fresh); err != nil {
-			return err
+			// Gone already: the finalizer was removed by an earlier pass and
+			// the object was collected before this queued event ran.
+			return client.IgnoreNotFound(err)
 		}
 		if !controllerutil.ContainsFinalizer(&fresh, appFinalizer) {
 			return nil
