@@ -29,6 +29,15 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   revision is absent, not empty, when there is no built commit (image-source
   Apps). **Upgrading rolls every workload once**: the pod template gains the
   new variables. A user-set `MORTISE_REVISION` build arg is kept.
+- **A pending redeploy is now a condition** (CAI-153): with
+  `Project.spec.autoRedeploy` off (the default) an applied env change
+  updates the derived Secret but deliberately does not roll pods; only the
+  UI banner said so, and `kubectl apply` reported success while a rotated
+  credential's old value stayed live. The App now carries
+  `EnvRolledOut=False / RedeployPending`, naming the environments whose
+  running pods lag the spec and the two ways to close the gap (redeploy, or
+  `autoRedeploy: true`). Cleared automatically when pods carry the current
+  env.
 
 - **PlatformConfig misconfiguration conditions** (#449): the PlatformConfig
   status now surfaces two problems that previously lived only in operator
