@@ -92,6 +92,29 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Stateful Apps no longer get a default liveness probe** (CAI-159). An
+  App that declares `storage[]` and no explicit `livenessProbe` now runs
+  without one, matching what Kubernetes does unless asked. The injected
+  TCP probe (5s initial delay, 3 failures) could kill a database mid-
+  bootstrap: postgres serves only a Unix socket for its first 60-90s, the
+  probe restarted it, and every later boot found a non-empty `$PGDATA`
+  and skipped initialization, leaving a permanently unusable volume that
+  reported Ready. Readiness is unchanged and still defaults on. A stateful
+  App that relied on the injected probe to recover from a hang must now
+  declare `livenessProbe` explicitly; `ProbeConfig.failureThreshold` is
+  new so a slow starter can widen its budget without inflating
+  `initialDelaySeconds`.
+- **Downgrading to v1.0.4 after this release is unsafe** (CAI-168). The
+  derived `{app}-env` Secret's `mortise.dev/last-spec-env` annotation held
+  every resolved env value in plaintext, including values the user had
+  moved into a Secret via `valueFrom.secretRef`. It is replaced by
+  `mortise.dev/last-spec-env-digest` (SHA-256 per key); the first
+  reconcile after upgrade migrates each Secret and deletes the legacy
+  annotation. The migration is one-way: a v1.0.4 operator reads the digest
+  annotation as if it were plaintext, so every key looks user-overridden,
+  and spec changes stop propagating and removals stop pruning on every App
+  at once. Do not roll the operator back past this release without
+  restoring the Secrets from a pre-upgrade backup.
 - **Operator memory defaults raised** (#447): `requests.memory`
   128Mi → 512Mi and `limits.memory` 512Mi → 2Gi in both charts and the
   kustomize manifests — the old limit OOM-killed the operator under
