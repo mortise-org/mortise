@@ -188,6 +188,13 @@ spec:
                         environment. The App controller GCs any resources it previously
                         reconciled for that env. A nil pointer means "enabled" — Apps
                         auto-participate in every project environment by default.
+
+                        So DELETING an environment block that carried enabled: false
+                        re-enables the environment: the App resolves it again on the next
+                        reconcile and workloads are created there. Removing a block is the
+                        enabling direction, not the safe one. To stop participating, keep
+                        the block and set enabled: false. status.environments[].joinedAt and
+                        the EnvironmentJoined condition record when that happens.
                       type: boolean
                     env:
                       items:
@@ -938,6 +945,16 @@ spec:
                         Domain is the resolved hostname for this environment. Computed by the
                         controller from spec or auto-generated from the platform domain. The
                         UI reads this to show "Your app is at {domain}".
+                      type: string
+                    joinedAt:
+                      description: |-
+                        JoinedAt is when this App first resolved this environment -- the
+                        reconcile that started creating workloads there. It is set once and
+                        carried forward. An App joins an environment by being created, by the
+                        Project adding the environment, or by a spec.environments[] block
+                        with enabled: false being removed; the last one looks like deletion
+                        and is the case this field exists to make visible.
+                      format: date-time
                       type: string
                     lastBuiltImage:
                       description: |-

@@ -3698,12 +3698,18 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 
 			// Carry forward deploy history, restart tracking, and build info.
 			if prev, ok := existingByName[env.Name]; ok {
+				es.JoinedAt = prev.JoinedAt
 				es.DeployHistory = prev.DeployHistory
 				es.LastProcessedRestartedAt = prev.LastProcessedRestartedAt
 				es.LastBuiltSHA = prev.LastBuiltSHA
 				es.LastBuiltImage = prev.LastBuiltImage
 				es.CurrentBuildRunRef = prev.CurrentBuildRunRef
 				es.LastSuccessfulBuildRunRef = prev.LastSuccessfulBuildRunRef
+			}
+			if es.JoinedAt == nil {
+				joined := metav1.NewTime(r.clock().Now())
+				es.JoinedAt = &joined
+				logf.FromContext(ctx).Info("environment joined; workloads will be created", "env", env.Name, "namespace", envNs)
 			}
 			if needsDeployRecord(es.CurrentImage, es.DeployedEnvHash, es.DeployHistory) {
 				record := mortisev1alpha1.DeployRecord{
@@ -3823,6 +3829,7 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 			meta.RemoveStatusCondition(&fresh.Status.Conditions, "PodHealthy")
 		}
 		setEnvRolledOutCondition(&fresh.Status.Conditions, envStatuses, app.Generation)
+		setEnvironmentJoinedCondition(&fresh.Status.Conditions, envStatuses, r.clock().Now(), app.Generation)
 		if buildFailed {
 			if anyServing && !anyCrash {
 				reason := buildFailureCond.Reason
@@ -4966,4 +4973,34 @@ func webhookScheme(pc *mortisev1alpha1.PlatformConfig) string {
 		return "http"
 	}
 	return "https"
+}
+
+// environmentJoinedCondition is set while an App has recently started
+// participating in an environment, naming it.
+const environmentJoinedCondition = "EnvironmentJoined"
+
+// environmentJoinedWindow is how long a join stays on the condition. The
+// durable record is status.environments[].joinedAt; the condition exists so
+// that the transition is on the App where a human looks, for long enough to
+// be seen after "I only deleted a block" (CAI-196).
+const environmentJoinedWindow = 24 * time.Hour
+
+func setEnvironmentJoinedCondition(conds *[]metav1.Condition, envStatuses []mortisev1alpha1.EnvironmentStatus, now time.Time, generation int64) {
+	var recent []string
+	for _, es := range envStatuses {
+		if es.JoinedAt != nil && now.Sub(es.JoinedAt.Time) < environmentJoinedWindow {
+			recent = append(recent, es.Name)
+		}
+	}
+	if len(recent) == 0 {
+		meta.RemoveStatusCondition(conds, environmentJoinedCondition)
+		return
+	}
+	meta.SetStatusCondition(conds, metav1.Condition{
+		Type:               environmentJoinedCondition,
+		Status:             metav1.ConditionTrue,
+		Reason:             "Joined",
+		Message:            fmt.Sprintf("this App started participating in: %s; workloads are created in the environment's namespace. If this followed deleting a spec.environments[] block, that block held enabled: false -- restore it to opt out", strings.Join(recent, ", ")),
+		ObservedGeneration: generation,
+	})
 }
