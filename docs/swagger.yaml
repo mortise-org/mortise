@@ -606,6 +606,13 @@ definitions:
       trafficAdapterEndpoint:
         type: string
     type: object
+  api.platformOperatorResponse:
+    properties:
+      commit:
+        type: string
+      version:
+        type: string
+    type: object
   api.platformRegistryResponse:
     properties:
       namespace:
@@ -629,6 +636,8 @@ definitions:
         $ref: '#/definitions/api.platformGitHubResponse'
       observability:
         $ref: '#/definitions/api.platformObservabilityResponse'
+      operator:
+        $ref: '#/definitions/api.platformOperatorResponse'
       phase:
         $ref: '#/definitions/v1alpha1.PlatformConfigPhase'
       registry:

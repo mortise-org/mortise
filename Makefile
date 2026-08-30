@@ -90,6 +90,12 @@ lint-config: golangci-lint ## Verify golangci-lint linter configuration
 
 ##@ Build
 
+# Build identity stamped into every binary (internal/version). See
+# hack/version.sh for the VERSION rule; release.yml overrides both.
+COMMIT ?= $(shell git rev-parse HEAD 2>/dev/null || echo unknown)
+VERSION ?= $(shell hack/version.sh)
+LDFLAGS = -ldflags "-X github.com/mortise-org/mortise/internal/version.Version=$(VERSION) -X github.com/mortise-org/mortise/internal/version.Commit=$(COMMIT)"
+
 .PHONY: build-ui
 build-ui: ## Build the SvelteKit UI and copy into internal/ui/build for embedding.
 	cd ui && npm install && npm run build
@@ -101,7 +107,7 @@ build-ui: ## Build the SvelteKit UI and copy into internal/ui/build for embeddin
 
 .PHONY: build
 build: manifests generate fmt vet ## Build manager binary.
-	go build -o bin/manager cmd/main.go
+	go build $(LDFLAGS) -o bin/manager cmd/main.go
 
 .PHONY: build-observer
 build-observer: fmt vet ## Build observer binary.
@@ -109,7 +115,7 @@ build-observer: fmt vet ## Build observer binary.
 
 .PHONY: build-cli
 build-cli: fmt vet ## Build CLI binary.
-	go build -o bin/mortise ./cmd/cli
+	go build $(LDFLAGS) -o bin/mortise ./cmd/cli
 
 CLI_PLATFORMS ?= linux/amd64 linux/arm64 darwin/amd64 darwin/arm64
 
@@ -118,7 +124,7 @@ build-cli-all: fmt vet ## Cross-compile CLI binary for all release platforms.
 	@for platform in $(CLI_PLATFORMS); do \
 		os=$${platform%/*}; arch=$${platform#*/}; \
 		echo "Building mortise-$${os}-$${arch}..."; \
-		GOOS=$${os} GOARCH=$${arch} go build -o bin/mortise-$${os}-$${arch} ./cmd/cli; \
+		GOOS=$${os} GOARCH=$${arch} go build $(LDFLAGS) -o bin/mortise-$${os}-$${arch} ./cmd/cli; \
 	done
 
 .PHONY: run
@@ -551,7 +557,7 @@ dev-reload: build-ui ## Rebuild image, re-apply CRDs + chart, restart Mortise in
 # More info: https://docs.docker.com/develop/develop-images/build_enhancements/
 .PHONY: docker-build
 docker-build: ## Build docker image with the manager.
-	$(CONTAINER_TOOL) build --target operator -t ${IMG} .
+	$(CONTAINER_TOOL) build --target operator --build-arg VERSION=$(VERSION) --build-arg COMMIT=$(COMMIT) -t ${IMG} .
 
 .PHONY: docker-build-observer
 docker-build-observer: ## Build docker image with the observer.

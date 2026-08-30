@@ -14,6 +14,7 @@ import (
 
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
 	"github.com/mortise-org/mortise/internal/authz"
+	"github.com/mortise-org/mortise/internal/version"
 )
 
 // platformConfigName is the well-known singleton name.
@@ -103,8 +104,17 @@ type platformDefaultsResponse struct {
 	Memory string `json:"memory,omitempty"`
 }
 
+// platformOperatorResponse identifies the operator binary serving this
+// request. It comes from the binary itself, not from PlatformConfig status,
+// so it is present even before a PlatformConfig exists.
+type platformOperatorResponse struct {
+	Version string `json:"version"`
+	Commit  string `json:"commit"`
+}
+
 // platformResponse is the JSON shape returned from GET and PATCH.
 type platformResponse struct {
+	Operator       platformOperatorResponse            `json:"operator"`
 	Domain         string                              `json:"domain"`
 	ExternalDomain string                              `json:"externalDomain,omitempty"`
 	DomainTemplate string                              `json:"domainTemplate,omitempty"`
@@ -137,7 +147,7 @@ func (s *Server) GetPlatform(w http.ResponseWriter, r *http.Request) {
 	var pc mortisev1alpha1.PlatformConfig
 	err := s.client.Get(r.Context(), types.NamespacedName{Name: platformConfigName}, &pc)
 	if errors.IsNotFound(err) {
-		writeJSON(w, http.StatusOK, platformResponse{})
+		writeJSON(w, http.StatusOK, platformResponse{Operator: operatorIdentity()})
 		return
 	}
 	if err != nil {
@@ -319,6 +329,7 @@ func adapterTokenSecretRef(key string) *mortisev1alpha1.SecretRef {
 
 func newPlatformResponse(pc *mortisev1alpha1.PlatformConfig) platformResponse {
 	resp := platformResponse{
+		Operator:       operatorIdentity(),
 		Domain:         pc.Spec.Domain,
 		ExternalDomain: pc.Spec.ExternalDomain,
 		DomainTemplate: pc.Spec.DomainTemplate,
@@ -436,4 +447,8 @@ func buildPlatformSpec(base mortisev1alpha1.PlatformConfigSpec, req *patchPlatfo
 		base.GitHub.ClientID = req.GitHub.ClientID
 	}
 	return base
+}
+
+func operatorIdentity() platformOperatorResponse {
+	return platformOperatorResponse{Version: version.Version, Commit: version.Commit}
 }
