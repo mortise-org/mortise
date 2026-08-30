@@ -6888,6 +6888,64 @@ var _ = Describe("App Controller — git source", func() {
 			Expect(envData).To(HaveKeyWithValue("SV_DB_PORT", "8080"))
 		})
 
+		It("records when an App starts participating in an environment (CAI-196)", func() {
+			appName := "joins-env"
+			app := &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{Name: appName, Namespace: namespace},
+				Spec: mortisev1alpha1.AppSpec{
+					Source:  mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: testImageNginx},
+					Network: mortisev1alpha1.NetworkConfig{Public: true},
+					// The opt-out is the block itself.
+					Environments: []mortisev1alpha1.Environment{{Name: "production", Enabled: ptr.To(false)}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			req := reconcile.Request{NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace}}
+			_, err := reconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			var fresh mortisev1alpha1.App
+			Expect(k8sClient.Get(ctx, req.NamespacedName, &fresh)).To(Succeed())
+			for _, es := range fresh.Status.Environments {
+				Expect(es.Name).NotTo(Equal("production"), "opted out: must not resolve")
+			}
+			Expect(meta.FindStatusCondition(fresh.Status.Conditions, "EnvironmentJoined")).To(BeNil())
+
+			// "Delete the unused block": the enabling direction.
+			fresh.Spec.Environments = nil
+			Expect(k8sClient.Update(ctx, &fresh)).To(Succeed())
+			_, err = reconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Get(ctx, req.NamespacedName, &fresh)).To(Succeed())
+			var prod *mortisev1alpha1.EnvironmentStatus
+			for i := range fresh.Status.Environments {
+				if fresh.Status.Environments[i].Name == "production" {
+					prod = &fresh.Status.Environments[i]
+				}
+			}
+			Expect(prod).NotTo(BeNil(), "removing the block re-enables the environment")
+			Expect(prod.JoinedAt).NotTo(BeNil(), "the join must be recorded")
+			cond := meta.FindStatusCondition(fresh.Status.Conditions, "EnvironmentJoined")
+			Expect(cond).NotTo(BeNil(), "the transition must be visible on the App")
+			Expect(cond.Message).To(ContainSubstring("production"))
+			Expect(cond.Message).To(ContainSubstring("enabled: false"))
+
+			// The record survives later reconciles unchanged.
+			joined := prod.JoinedAt.Time
+			_, err = reconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(k8sClient.Get(ctx, req.NamespacedName, &fresh)).To(Succeed())
+			for _, es := range fresh.Status.Environments {
+				if es.Name == "production" {
+					Expect(es.JoinedAt.Time).To(BeTemporally("==", joined))
+				}
+			}
+		})
+
 		It("should not change behavior when sharedVars is empty", func() {
 			appName := "shared-vars-empty"
 			app := &mortisev1alpha1.App{

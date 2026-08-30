@@ -22,6 +22,14 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   cluster; a host that then redirects http→https breaks deliveries
   silently, since git hosts do not follow redirects. Set `https` there.
   Changing it re-registers every hook.
+- **Joining an environment is recorded** (CAI-196): an App auto-participates
+  in every project environment unless a `spec.environments[]` block says
+  `enabled: false`, so deleting that block is the enabling direction and
+  created production-shaped workloads in a namespace nobody meant to use.
+  `status.environments[].joinedAt` now records when the App first resolved
+  each environment, and `EnvironmentJoined=True` names recent joins on the
+  App for a day, with the way back. The `Enabled` doc comment says plainly
+  that removing the block re-enables the environment.
 
 - **The operator reports its own build** (CAI-185): every binary is stamped
   at link time with its release version (or `<branch>-<sha>` for an untagged

@@ -392,6 +392,13 @@ type Environment struct {
 	// environment. The App controller GCs any resources it previously
 	// reconciled for that env. A nil pointer means "enabled" — Apps
 	// auto-participate in every project environment by default.
+	//
+	// So DELETING an environment block that carried enabled: false
+	// re-enables the environment: the App resolves it again on the next
+	// reconcile and workloads are created there. Removing a block is the
+	// enabling direction, not the safe one. To stop participating, keep
+	// the block and set enabled: false. status.environments[].joinedAt and
+	// the EnvironmentJoined condition record when that happens.
 	// +optional
 	Enabled *bool `json:"enabled,omitempty"`
 
@@ -579,7 +586,17 @@ type DeployRecord struct {
 
 // EnvironmentStatus tracks the observed state of a single environment.
 type EnvironmentStatus struct {
-	Name          string         `json:"name"`
+	Name string `json:"name"`
+
+	// JoinedAt is when this App first resolved this environment -- the
+	// reconcile that started creating workloads there. It is set once and
+	// carried forward. An App joins an environment by being created, by the
+	// Project adding the environment, or by a spec.environments[] block
+	// with enabled: false being removed; the last one looks like deletion
+	// and is the case this field exists to make visible.
+	// +optional
+	JoinedAt *metav1.Time `json:"joinedAt,omitempty"`
+
 	Phase         AppPhase       `json:"phase,omitempty"`
 	Message       string         `json:"message,omitempty"`
 	ReadyReplicas int32          `json:"readyReplicas,omitempty"`
