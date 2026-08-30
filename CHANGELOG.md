@@ -217,6 +217,13 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   build fields from the server copy alone, and the failed preview counted
   as not-ready until the next pass. The parent reported Deploying for one
   reconcile; one in ten integration runs read it in that window.
+- **A hung git host no longer stalls every App** (CAI-173): the GitHub,
+  GitLab and Gitea clients had no HTTP timeout and the App controller ran
+  one worker, so a connection that hung during webhook registration held
+  the worker until the kernel gave up on the socket (about three minutes),
+  during which no App on the platform was reconciled. Every git-host
+  client now times out after 30s, webhook registration is bounded, and
+  the App controller runs four workers.
 
 - **A registry target failure is reported** (#444): when the registry
   backend could not produce a push or pull image reference, the

@@ -52,6 +52,7 @@ import (
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -3292,6 +3293,10 @@ func conflictIfUnmanaged(obj client.Object, kind string) error {
 // Non-fatal — if registration fails (e.g. no public URL, no permissions),
 // builds still work via manual redeploy.
 func (r *AppReconciler) ensureWebhook(ctx context.Context, app *mortisev1alpha1.App, gp *mortisev1alpha1.GitProvider, token string) error {
+	// Bounded: the git host is outside our control, and this runs on the
+	// reconcile worker. Two calls (list, register) plus slack (CAI-173).
+	ctx, cancel := context.WithTimeout(ctx, 3*git.HostTimeout)
+	defer cancel()
 	log := logf.FromContext(ctx)
 
 	// Resolve the webhook URL from PlatformConfig. Only externalDomain serves
@@ -4944,6 +4949,10 @@ func (r *AppReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	enqueueAppFromSecret := handler.EnqueueRequestsFromMapFunc(r.appRequestsForSecret)
 
 	return ctrl.NewControllerManagedBy(mgr).
+		// More than one worker so a reconcile blocked on something outside
+		// the cluster (a git host, a registry) stalls one App, not all of
+		// them. Every status write already retries on conflict.
+		WithOptions(controller.Options{MaxConcurrentReconciles: 4}).
 		For(&mortisev1alpha1.App{}).
 		Watches(&appsv1.Deployment{}, enqueueAppFromManagedResource).
 		Watches(&batchv1.CronJob{}, enqueueAppFromManagedResource).
