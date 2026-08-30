@@ -72,6 +72,8 @@ jobs:
         run: |
           kubectl -n mortise-system logs -l app.kubernetes.io/name=mortise --tail=-1 --all-containers --prefix > result/operator.log || true
           kubectl get events -A --sort-by=.lastTimestamp > result/events.txt || true
+          kubectl get apps.mortise.mortise.dev,projects.mortise.mortise.dev,previewenvironments.mortise.mortise.dev -A -o yaml > result/mortise-resources.yaml 2>/dev/null || true
+          kubectl get pods,deployments -A -o wide > result/workloads.txt 2>/dev/null || true
 
       - uses: actions/upload-artifact@v4
         if: always()

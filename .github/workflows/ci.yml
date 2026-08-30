@@ -98,6 +98,8 @@ jobs:
           mkdir -p diagnostics
           kubectl -n mortise-system logs -l app.kubernetes.io/name=mortise --tail=-1 --all-containers --prefix > diagnostics/operator.log || true
           kubectl -n mortise-system logs -l app.kubernetes.io/name=mortise --tail=-1 --all-containers --prefix --previous > diagnostics/operator-previous.log 2>/dev/null || true
+          kubectl get apps.mortise.mortise.dev,projects.mortise.mortise.dev,previewenvironments.mortise.mortise.dev -A -o yaml > diagnostics/mortise-resources.yaml 2>/dev/null || true
+          kubectl get pods,deployments -A -o wide > diagnostics/workloads.txt 2>/dev/null || true
           tail -300 diagnostics/operator.log || true
           kubectl get events -A --sort-by=.lastTimestamp > diagnostics/events.txt || true
           tail -80 diagnostics/events.txt || true
@@ -206,6 +208,8 @@ jobs:
           mkdir -p diagnostics
           kubectl --context k3d-mortise-dev -n mortise-system logs -l app.kubernetes.io/name=mortise --tail=-1 --all-containers --prefix > diagnostics/operator.log || true
           kubectl --context k3d-mortise-dev -n mortise-system logs -l app.kubernetes.io/name=mortise --tail=-1 --all-containers --prefix --previous > diagnostics/operator-previous.log 2>/dev/null || true
+          kubectl --context k3d-mortise-dev get apps.mortise.mortise.dev,projects.mortise.mortise.dev,previewenvironments.mortise.mortise.dev -A -o yaml > diagnostics/mortise-resources.yaml 2>/dev/null || true
+          kubectl --context k3d-mortise-dev get pods,deployments -A -o wide > diagnostics/workloads.txt 2>/dev/null || true
           tail -300 diagnostics/operator.log || true
           kubectl --context k3d-mortise-dev get events -A --sort-by=.lastTimestamp > diagnostics/events.txt || true
           tail -80 diagnostics/events.txt || true
