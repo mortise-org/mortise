@@ -6942,6 +6942,69 @@ var _ = Describe("App Controller — git source", func() {
 			Expect(envData).NotTo(BeNil())
 			Expect(envData).To(HaveKeyWithValue("PORT", "3000"))
 		})
+
+		It("reports a pending redeploy as a condition when autoRedeploy is off (CAI-153)", func() {
+			appName := "redeploy-pending"
+			app := &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{Name: appName, Namespace: namespace},
+				Spec: mortisev1alpha1.AppSpec{
+					Source:  mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: testImageNginx},
+					Network: mortisev1alpha1.NetworkConfig{Public: true},
+					Environments: []mortisev1alpha1.Environment{{
+						Name: "production",
+						Env:  []mortisev1alpha1.EnvVar{{Name: "API_KEY", Value: "old"}},
+					}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			req := reconcile.Request{NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace}}
+			_, err := reconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+			_, err = reconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			var fresh mortisev1alpha1.App
+			Expect(k8sClient.Get(ctx, req.NamespacedName, &fresh)).To(Succeed())
+			Expect(meta.FindStatusCondition(fresh.Status.Conditions, "EnvRolledOut")).To(BeNil(), "nothing has diverged yet")
+
+			// Rotate the value. No Project exists, so autoRedeploy is off and
+			// the pod template's env-hash is frozen: the Secret changes, the
+			// pods do not.
+			fresh.Spec.Environments[0].Env[0].Value = "new"
+			Expect(k8sClient.Update(ctx, &fresh)).To(Succeed())
+			_, err = reconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+			_, err = reconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Get(ctx, req.NamespacedName, &fresh)).To(Succeed())
+			cond := meta.FindStatusCondition(fresh.Status.Conditions, "EnvRolledOut")
+			Expect(cond).NotTo(BeNil(), "an applied env change that did not roll pods must be reported")
+			Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(cond.Reason).To(Equal("RedeployPending"))
+			Expect(cond.Message).To(ContainSubstring("production"))
+			es := fresh.Status.Environments[0]
+			Expect(es.PendingEnvHash).NotTo(Equal(es.DeployedEnvHash))
+
+			// An image change rolls the pods anyway, and the new pods read
+			// the current Secret. The frozen hash must not survive that roll,
+			// or status would report stale pods that are in fact current.
+			Expect(k8sClient.Get(ctx, req.NamespacedName, &fresh)).To(Succeed())
+			fresh.Spec.Source.Image = testImageNginx + "-rolled"
+			Expect(k8sClient.Update(ctx, &fresh)).To(Succeed())
+			_, err = reconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+			_, err = reconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Get(ctx, req.NamespacedName, &fresh)).To(Succeed())
+			es = fresh.Status.Environments[0]
+			Expect(es.DeployedEnvHash).To(Equal(es.PendingEnvHash), "an image roll adopts the current env")
+			Expect(meta.FindStatusCondition(fresh.Status.Conditions, "EnvRolledOut")).To(BeNil())
+		})
 	})
 
 	Context("cron app (kind=cron, §5.8a)", func() {
