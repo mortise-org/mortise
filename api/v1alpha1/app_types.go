@@ -163,6 +163,13 @@ type ConfigFile struct {
 	Content string `json:"content"`
 }
 
+// SecurityProfile names a workload hardening preset.
+// +kubebuilder:validation:Enum=restricted
+type SecurityProfile string
+
+// SecurityProfileRestricted matches the PodSecurity "restricted" profile.
+const SecurityProfileRestricted SecurityProfile = "restricted"
+
 // EnvVar is one environment variable for an App environment. Set exactly one
 // of Value or ValueFrom.
 type EnvVar struct {
@@ -538,6 +545,17 @@ type AppSpec struct {
 	Network NetworkConfig `json:"network,omitempty"`
 
 	Storage []VolumeSpec `json:"storage,omitempty"`
+
+	// SecurityProfile hardens the generated workload's pod and container
+	// securityContext. "restricted" sets what the PodSecurity "restricted"
+	// profile requires (runAsNonRoot, allowPrivilegeEscalation: false,
+	// drop all capabilities, seccompProfile RuntimeDefault), so the App
+	// admits in a namespace that enforces it. The image must then run as
+	// a non-root user, or the kubelet refuses to start it. Unset leaves the
+	// securityContext alone, which is what every existing App gets.
+	// +kubebuilder:validation:Enum=restricted
+	// +optional
+	SecurityProfile SecurityProfile `json:"securityProfile,omitempty"`
 
 	// ConfigFiles defines files to mount into containers via ConfigMaps.
 	// Each entry creates a ConfigMap and mounts it at the specified path.

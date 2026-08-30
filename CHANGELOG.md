@@ -9,6 +9,15 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **`spec.securityProfile: restricted`** (CAI-206): opt-in hardening that
+  sets what the PodSecurity `restricted` profile requires (`runAsNonRoot`,
+  `allowPrivilegeEscalation: false`, drop all capabilities, seccomp
+  `RuntimeDefault`) on the generated pod and container, so an App admits
+  in a namespace that enforces it. Unset leaves the securityContext alone,
+  as before; a default-on version was pulled in #296 because root-running
+  images cannot satisfy `runAsNonRoot`, and that constraint still holds:
+  opt in only for images that run as a non-root user.
+
 - **`mortise admin reset-password` and `mortise admin create-user`**
   (CAI-55): cluster-side user administration that needs no API login, for
   the case where nobody can log in. Tokens carry the user's password

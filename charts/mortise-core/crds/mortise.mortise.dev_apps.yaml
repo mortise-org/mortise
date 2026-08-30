@@ -595,6 +595,21 @@ spec:
                       on create when the field is missing entirely.
                     type: boolean
                 type: object
+              securityProfile:
+                allOf:
+                - enum:
+                  - restricted
+                - enum:
+                  - restricted
+                description: |-
+                  SecurityProfile hardens the generated workload's pod and container
+                  securityContext. "restricted" sets what the PodSecurity "restricted"
+                  profile requires (runAsNonRoot, allowPrivilegeEscalation: false,
+                  drop all capabilities, seccompProfile RuntimeDefault), so the App
+                  admits in a namespace that enforces it. The image must then run as
+                  a non-root user, or the kubelet refuses to start it. Unset leaves the
+                  securityContext alone, which is what every existing App gets.
+                type: string
               sharedVars:
                 description: |-
                   SharedVars are app-wide env vars visible to every environment of this

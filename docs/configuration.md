@@ -376,3 +376,22 @@ deleted. There is no TTL — previews exist until the PR is closed.
 
 To configure which environment previews clone from, set the source
 environment in Project Settings > Preview.
+
+## Security profile
+
+By default Mortise leaves the generated pod's `securityContext` unset, so
+images that run as root keep working. A cluster that enforces the
+PodSecurity `restricted` profile on a namespace rejects such pods.
+
+```yaml
+spec:
+  securityProfile: restricted
+```
+
+sets `runAsNonRoot: true`, `allowPrivilegeEscalation: false`, drops all
+capabilities, and uses the `RuntimeDefault` seccomp profile — the
+`restricted` minimum. The image must run as a non-root user (a `USER`
+instruction, or an unprivileged variant such as
+`nginxinc/nginx-unprivileged`); otherwise the kubelet refuses to start
+the container with `container has runAsNonRoot and image will run as
+root`. There is no cluster-wide default: opt in per App.
