@@ -3694,6 +3694,7 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 			// An unresolvable secretRef leaves the last resolved value in
 			// place, which is correct and invisible -- report it (CAI-162).
 			es.UnresolvedEnvKeys = r.unresolvedEnvKeysFor(ctx, &env, envNs)
+			es.OverriddenEnvKeys = r.overriddenEnvKeysFor(ctx, app, &env, envNs)
 
 			// Carry forward deploy history, restart tracking, and build info.
 			if prev, ok := existingByName[env.Name]; ok {
@@ -3829,6 +3830,7 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 		}
 		setReservedEnvKeysCondition(&fresh.Status.Conditions, app, resolvedEnvs, app.Generation)
 		setPlaintextCredentialsCondition(&fresh.Status.Conditions, app, resolvedEnvs, app.Generation)
+		setSpecEnvAppliedCondition(&fresh.Status.Conditions, envStatuses, app.Generation)
 		setEnvRolledOutCondition(&fresh.Status.Conditions, envStatuses, app.Generation)
 		setEnvironmentJoinedCondition(&fresh.Status.Conditions, envStatuses, r.clock().Now(), app.Generation)
 		if buildFailed {

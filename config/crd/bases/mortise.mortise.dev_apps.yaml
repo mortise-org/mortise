@@ -1002,6 +1002,19 @@ spec:
                       type: string
                     name:
                       type: string
+                    overriddenEnvKeys:
+                      description: |-
+                        OverriddenEnvKeys are spec env var names the derived Secret no longer
+                        tracks: the Secret's value was changed out of band (UI or API), so
+                        the controller preserves it and leaves the spec unapplied for that
+                        key. Without this field the CR and the running env drift apart
+                        silently, and a later spec edit is recorded as applied but never
+                        reaches the Secret.
+
+                        Names only, never values.
+                      items:
+                        type: string
+                      type: array
                     pendingEnvHash:
                       description: |-
                         PendingEnvHash is the hash of the current env Secret data for this

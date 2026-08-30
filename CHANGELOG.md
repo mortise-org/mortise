@@ -24,6 +24,15 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `sharedVars`) whose name matches KEY/SECRET/TOKEN/PASSWORD/WEBHOOK but
   whose value is a literal; PUBLIC/PUBLISHABLE names are exempt, values
   are never inspected. The way out is `valueFrom.secretRef`.
+- **Spec env keys the platform is ignoring are now reported** (CAI-272):
+  a derived-Secret value changed out of band (UI, API, kubectl) is
+  preserved and the spec is left unapplied for that key, by design. The
+  App now says so: `status.environments[].overriddenEnvKeys` lists the
+  names, and `SpecEnvApplied=False / KeysOverridden` names them per
+  environment with the way back (make the Secret's value equal the spec's).
+  Found on a production App whose CR held auto-domain defaults while the
+  Secret held the real domains; a CR edit was recorded as applied and never
+  reached the Secret.
 
 - **`mortise admin reset-password` and `mortise admin create-user`**
   (CAI-55): cluster-side user administration that needs no API login, for
