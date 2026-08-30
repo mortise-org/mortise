@@ -408,7 +408,7 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 			status.LastBuiltSHA = app.Status.LastBuiltSHA
 			status.LastBuiltImage = app.Status.LastBuiltImage
 			status.DetectedPort = app.Status.DetectedPort
-			status.Environments = app.Status.Environments
+			mergeEnvBuildFields(&status.Environments, app.Status.Environments)
 			status.CurrentBuildRunName, status.LastBuildRunName = aggregateAppBuildRunNames(status.Environments)
 		}); err != nil {
 			return ctrl.Result{}, fmt.Errorf("flush build status after env loop: %w", err)
@@ -5003,4 +5003,31 @@ func setEnvironmentJoinedCondition(conds *[]metav1.Condition, envStatuses []mort
 		Message:            fmt.Sprintf("this App started participating in: %s; workloads are created in the environment's namespace. If this followed deleting a spec.environments[] block, that block held enabled: false -- restore it to opt out", strings.Join(recent, ", ")),
 		ObservedGeneration: generation,
 	})
+}
+
+// mergeEnvBuildFields copies the per-environment fields the build path
+// mutates in memory onto a freshly read status. The flush used to assign
+// the whole in-memory Environments slice, which stomped anything a
+// concurrent status writer (a BuildRun projection, a redeploy) had changed
+// on the other fields between the read and the flush (#444). Environments
+// the fresh status does not know yet are appended.
+func mergeEnvBuildFields(dst *[]mortisev1alpha1.EnvironmentStatus, src []mortisev1alpha1.EnvironmentStatus) {
+	byName := make(map[string]int, len(*dst))
+	for i := range *dst {
+		byName[(*dst)[i].Name] = i
+	}
+	for _, se := range src {
+		i, ok := byName[se.Name]
+		if !ok {
+			*dst = append(*dst, se)
+			continue
+		}
+		de := &(*dst)[i]
+		de.Phase = se.Phase
+		de.Message = se.Message
+		de.LastBuiltSHA = se.LastBuiltSHA
+		de.LastBuiltImage = se.LastBuiltImage
+		de.CurrentBuildRunRef = se.CurrentBuildRunRef
+		de.LastSuccessfulBuildRunRef = se.LastSuccessfulBuildRunRef
+	}
 }
