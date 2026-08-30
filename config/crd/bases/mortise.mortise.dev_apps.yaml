@@ -1034,6 +1034,14 @@ spec:
                     readyReplicas:
                       format: int32
                       type: integer
+                    retainedEnvKeys:
+                      description: |-
+                        RetainedEnvKeys are variable names removed from the spec that the
+                        derived Secret still carries, because their value had been changed
+                        out of band before removal. Pods still receive them. Names only.
+                      items:
+                        type: string
+                      type: array
                     unresolvedEnvKeys:
                       description: |-
                         UnresolvedEnvKeys are variable names whose valueFrom.secretRef cannot

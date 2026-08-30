@@ -681,6 +681,12 @@ type EnvironmentStatus struct {
 	// +optional
 	OverriddenEnvKeys []string `json:"overriddenEnvKeys,omitempty"`
 
+	// RetainedEnvKeys are variable names removed from the spec that the
+	// derived Secret still carries, because their value had been changed
+	// out of band before removal. Pods still receive them. Names only.
+	// +optional
+	RetainedEnvKeys []string `json:"retainedEnvKeys,omitempty"`
+
 	// CertificateStatus is the readiness state of the TLS certificate for
 	// this environment. Empty when cert-manager is not in use. Possible
 	// values: "Ready", "Pending", "Failed".
