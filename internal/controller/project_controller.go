@@ -498,6 +498,7 @@ func (r *ProjectReconciler) gcStaleEnvNamespaces(ctx context.Context, project *m
 	}); err != nil {
 		return fmt.Errorf("list env namespaces: %w", err)
 	}
+	var live *mortisev1alpha1.Project // fetched uncached, once, only if a delete is pending
 	for i := range nsList.Items {
 		ns := &nsList.Items[i]
 		envName := ns.Labels[constants.EnvironmentLabel]
@@ -507,11 +508,38 @@ func (r *ProjectReconciler) gcStaleEnvNamespaces(ctx context.Context, project *m
 		if !ns.DeletionTimestamp.IsZero() {
 			continue
 		}
+		// Deleting is irreversible and `desired` came from the cache. An env
+		// added a moment ago (the clone API writes the Project spec, and the
+		// App controller creates the env namespace from the cloned App
+		// overrides before this controller's cache catches up) looked stale
+		// here and was deleted while the clone was still copying its Secrets
+		// (CAI-173, env-clone 500s). Confirm against the live Project first.
+		if r.APIReader != nil {
+			if live == nil {
+				live = &mortisev1alpha1.Project{}
+				if err := r.APIReader.Get(ctx, types.NamespacedName{Name: project.Name}, live); err != nil {
+					return fmt.Errorf("re-read project before env namespace gc: %w", err)
+				}
+			}
+			if projectDeclaresEnv(live, envName) {
+				logf.FromContext(ctx).Info("env namespace looked stale in the cache but the live Project declares it; keeping", "namespace", ns.Name, "env", envName)
+				continue
+			}
+		}
 		if err := r.Delete(ctx, ns); err != nil && !errors.IsNotFound(err) {
 			return fmt.Errorf("delete stale env ns %q: %w", ns.Name, err)
 		}
 	}
 	return nil
+}
+
+func projectDeclaresEnv(project *mortisev1alpha1.Project, envName string) bool {
+	for _, e := range project.Spec.Environments {
+		if e.Name == envName {
+			return true
+		}
+	}
+	return false
 }
 
 // deleteOwnedNamespaces requests deletion of every namespace this Project owns
