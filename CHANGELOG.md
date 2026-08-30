@@ -9,6 +9,17 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **The operator reports its own build** (CAI-185): every binary is stamped
+  at link time with its release version (or `<branch>-<sha>` for an untagged
+  build) and git commit. The operator writes them to
+  `PlatformConfig.status.operatorVersion` / `operatorCommit` on each
+  reconcile (`kubectl get platformconfig` shows an `Operator` column),
+  `GET /api/platform` returns an `operator` block from the running binary,
+  and `mortise version` prints the CLI and operator versions side by side
+  (`--client` skips the operator call). Production ran an untagged build
+  153 commits behind `main` for weeks and nothing said so; this is the
+  read that would have.
+
 - **PlatformConfig misconfiguration conditions** (#449): the PlatformConfig
   status now surfaces two problems that previously lived only in operator
   logs. `RegistryPullConfig=False/PullURLMissing` flags a cluster-internal

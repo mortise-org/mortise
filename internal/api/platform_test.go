@@ -12,6 +12,7 @@ import (
 
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
 	"github.com/mortise-org/mortise/internal/auth"
+	"github.com/mortise-org/mortise/internal/version"
 )
 
 func TestPatchPlatformCreates(t *testing.T) {
@@ -109,6 +110,12 @@ func TestGetPlatformEmpty(t *testing.T) {
 	_ = json.NewDecoder(w.Body).Decode(&resp)
 	if resp["domain"] != "" {
 		t.Errorf("domain: expected empty, got %v", resp["domain"])
+	}
+	// The operator identity comes from the binary, so it is reported even
+	// with no PlatformConfig to read it from.
+	op, _ := resp["operator"].(map[string]any)
+	if op["version"] != version.Version || op["commit"] != version.Commit {
+		t.Errorf("operator: expected %s/%s, got %v", version.Version, version.Commit, resp["operator"])
 	}
 }
 

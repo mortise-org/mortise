@@ -25,6 +25,7 @@ Quickstart:
 `,
 		SilenceUsage: true,
 	}
+	cmd.AddCommand(newVersionCmd())
 	cmd.AddCommand(newLoginCmd())
 	cmd.AddCommand(newProjectCmd())
 	cmd.AddCommand(newAppCmd())

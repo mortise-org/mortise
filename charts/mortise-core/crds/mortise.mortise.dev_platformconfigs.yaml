@@ -21,6 +21,9 @@ spec:
     - jsonPath: .status.phase
       name: Phase
       type: string
+    - jsonPath: .status.operatorVersion
+      name: Operator
+      type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
@@ -365,6 +368,17 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              operatorCommit:
+                description: OperatorCommit is the git SHA the running operator was
+                  built from.
+                type: string
+              operatorVersion:
+                description: |-
+                  OperatorVersion is the build identity of the operator that last
+                  reconciled this resource: the release tag without "v", or a
+                  "<branch>-<sha>" marker for an untagged build. It answers "which
+                  operator is production actually running" without a cluster spelunk.
+                type: string
               phase:
                 description: Phase is the current lifecycle phase.
                 enum:
