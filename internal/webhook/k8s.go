@@ -4,10 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
@@ -130,4 +133,34 @@ func (r *K8sReader) deletePreviewEnvironment(ctx context.Context, namespace, nam
 		return err
 	}
 	return nil
+}
+
+// WebhookSignatureCondition is the GitProvider condition that says whether
+// deliveries to this provider's endpoint are verifying.
+const WebhookSignatureCondition = "WebhookSignature"
+
+func (r *K8sReader) setWebhookSignatureCondition(ctx context.Context, providerName string, mismatch bool, now time.Time) error {
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var gp mortisev1alpha1.GitProvider
+		if err := r.client.Get(ctx, types.NamespacedName{Name: providerName}, &gp); err != nil {
+			return err
+		}
+		before := meta.FindStatusCondition(gp.Status.Conditions, WebhookSignatureCondition)
+		if !mismatch {
+			if before == nil {
+				return nil
+			}
+			meta.RemoveStatusCondition(&gp.Status.Conditions, WebhookSignatureCondition)
+			return r.client.Status().Update(ctx, &gp)
+		}
+		meta.SetStatusCondition(&gp.Status.Conditions, metav1.Condition{
+			Type:   WebhookSignatureCondition,
+			Status: metav1.ConditionFalse,
+			Reason: "SignatureMismatch",
+			Message: fmt.Sprintf("a delivery to /api/webhooks/%s at %s failed HMAC verification: the hook's secret on the git host does not match webhookSecretRef, so pushes are not deploying. Delete the hook on the git host (the operator re-registers it on the App's next reconcile), or restore the Secret the hook was registered with",
+				providerName, now.UTC().Format(time.RFC3339)),
+			ObservedGeneration: gp.Generation,
+		})
+		return r.client.Status().Update(ctx, &gp)
+	})
 }
