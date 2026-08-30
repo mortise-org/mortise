@@ -20,7 +20,7 @@ const reservedEnvKeysCondition = "EnvKeysReserved"
 // the container runs the platform's value anyway -- with nothing saying so
 // (CAI-220). Rejecting at admission is not available (CAI-161), so the
 // controller reports it on the App instead.
-var reservedEnvKeys = map[string]struct{}{"PORT": {}, imageEnvName: {}, revisionEnvName: {}}
+var reservedEnvKeys = map[string]struct{}{"PORT": {}, imageEnvName: {}, revisionEnvName: {}, replicasEnvName: {}}
 
 func setReservedEnvKeysCondition(conds *[]metav1.Condition, app *mortisev1alpha1.App, envs []mortisev1alpha1.Environment, generation int64) {
 	var parts []string

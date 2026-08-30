@@ -7069,12 +7069,13 @@ var _ = Describe("App Controller — git source", func() {
 			}, &dep)).To(Succeed())
 
 			// Deployment only carries the literals injected by the controller:
-			// PORT and MORTISE_IMAGE. An image-source App has no built
-			// revision, so MORTISE_REVISION is absent rather than empty.
+			// PORT, MORTISE_IMAGE and MORTISE_REPLICAS. An image-source App
+			// has no built revision, so MORTISE_REVISION is absent, not empty.
 			envVars := dep.Spec.Template.Spec.Containers[0].Env
-			Expect(envVars).To(HaveLen(2))
+			Expect(envVars).To(HaveLen(3))
 			Expect(envVars[0].Name).To(Equal("PORT"))
 			Expect(envVars[1]).To(Equal(corev1.EnvVar{Name: "MORTISE_IMAGE", Value: testImageNginx}))
+			Expect(envVars[2]).To(Equal(corev1.EnvVar{Name: "MORTISE_REPLICAS", Value: "1"}), "replicas default to 1 (CAI-258)")
 			for _, ev := range envVars {
 				Expect(ev.Name).NotTo(Equal("MORTISE_REVISION"))
 			}
