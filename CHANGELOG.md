@@ -193,6 +193,14 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **A registry target failure is reported** (#444): when the registry
+  backend could not produce a push or pull image reference, the
+  environment was skipped with a log line and the App stayed `Ready` on
+  its previous image indefinitely. The App now carries
+  `RegistryTargetValid=False / RegistryTargetInvalid` naming the env and
+  the error, and the reconcile requeues; the condition clears when a
+  target resolves again.
+
 - **A changed webhook Secret now re-registers every hook that used it**
   (CAI-262): the GitProvider's HMAC Secret was watched by nothing, so
   recreating it left every registered GitHub hook delivering with the old

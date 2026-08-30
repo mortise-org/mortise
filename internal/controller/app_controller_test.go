@@ -4611,6 +4611,7 @@ func TestIsTerminalBuildFailureCondition(t *testing.T) {
 
 // fakeRegistryBackend implements registry.RegistryBackend for tests.
 type fakeRegistryBackend struct {
+	targetErr      error // when set, PushTarget/PullTarget fail with it
 	imageRef       registry.ImageRef
 	pullSecretName string
 	resolveDigest  string
@@ -4619,6 +4620,9 @@ type fakeRegistryBackend struct {
 }
 
 func (f *fakeRegistryBackend) PushTarget(app, tag string) (registry.ImageRef, error) {
+	if f.targetErr != nil {
+		return registry.ImageRef{}, f.targetErr
+	}
 	if f.imageRef.Full != "" {
 		return f.imageRef, nil
 	}
@@ -8701,6 +8705,45 @@ var _ = Describe("App Controller — git source", func() {
 			envVars := dep.Spec.Template.Spec.Containers[0].Env
 			Expect(envVars).To(ContainElement(corev1.EnvVar{Name: "MORTISE_REVISION", Value: "abc123"}))
 			Expect(envVars).To(ContainElement(corev1.EnvVar{Name: "MORTISE_IMAGE", Value: dep.Spec.Template.Spec.Containers[0].Image}))
+		})
+
+		It("reports a registry target failure instead of silently skipping the env (#444)", func() {
+			ctx := context.Background()
+			gp := &mortisev1alpha1.GitProvider{
+				ObjectMeta: metav1.ObjectMeta{Name: "gh-regtarget"},
+				Spec:       mortisev1alpha1.GitProviderSpec{Type: mortisev1alpha1.GitProviderTypeGitHub, Host: "https://github.com", ClientID: "test-client-id"},
+			}
+			Expect(k8sClient.Create(ctx, gp)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, gp)).To(Succeed()) }()
+			tokenSecret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{Name: "user-gh-regtarget-token-74657374406578616d706c652e636f6d", Namespace: "mortise-system"},
+				Data:       map[string][]byte{"token": []byte("tok")},
+			}
+			Expect(k8sClient.Create(ctx, tokenSecret)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, tokenSecret)).To(Succeed()) }()
+
+			bc := &fakeBuildClient{digest: "sha256:never"}
+			r := gitSourceReconciler(bc, &fakeGitClient{}, &fakeRegistryBackend{targetErr: fmt.Errorf("registry URL not configured")})
+
+			app := makeGitSourceApp("regtarget-app", namespace, "gh-regtarget")
+			app.Annotations["mortise.dev/revision"] = "abc123"
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+
+			req := reconcile.Request{NamespacedName: client.ObjectKeyFromObject(app)}
+			_, err := r.Reconcile(ctx, req)
+			Expect(err).To(HaveOccurred(), "a registry misconfiguration must requeue, not vanish")
+			Expect(err.Error()).To(ContainSubstring("registry push target"))
+
+			var fresh mortisev1alpha1.App
+			Expect(k8sClient.Get(ctx, req.NamespacedName, &fresh)).To(Succeed())
+			cond := meta.FindStatusCondition(fresh.Status.Conditions, "RegistryTargetValid")
+			Expect(cond).NotTo(BeNil(), "the failure must be on the App, not only in the log")
+			Expect(cond.Reason).To(Equal("RegistryTargetInvalid"))
+			Expect(cond.Message).To(ContainSubstring("production"))
+			bc.mu.Lock()
+			Expect(bc.requests).To(BeEmpty(), "no build can be submitted without a target")
+			bc.mu.Unlock()
 		})
 
 		It("passes per-environment build args to the build client", func() {
