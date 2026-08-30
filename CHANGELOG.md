@@ -286,6 +286,11 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `status.environments[].retainedEnvKeys`, and named by
   `EnvKeysRetained=False / RemovedButKept` with the way out. Re-declaring
   the key in the spec clears it.
+- **`mortise diff` no longer alarms on opted-out environments** (CAI-226):
+  an environment with `enabled: false` has no Secret and no workload by
+  design, and the report turned every declared variable into a
+  `missing-from-secret` finding. It now states the opt-out once and
+  computes nothing for that environment.
 
 - **A changed webhook Secret now re-registers every hook that used it**
   (CAI-262): the GitProvider's HMAC Secret was watched by nothing, so
