@@ -732,7 +732,7 @@ func TestApplyEnvBuildSuccessClearsBuildStartedCondition(t *testing.T) {
 		},
 	}
 
-	r.applyEnvBuildSuccess(context.Background(), app, []string{"production"}, "production", "newsha", "registry.example/demo:new", "sha256:new", 8080)
+	r.applyEnvBuildSuccess(context.Background(), app, []string{"production"}, "production", "newsha", "registry.example/demo:new", "sha256:new", 8080, true)
 
 	if cond := meta.FindStatusCondition(app.Status.Conditions, "BuildStarted"); cond != nil {
 		t.Fatalf("expected BuildStarted to be cleared after build success, got %+v", cond)

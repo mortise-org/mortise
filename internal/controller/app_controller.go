@@ -1056,7 +1056,7 @@ func (r *AppReconciler) reconcileEnvBuild(ctx context.Context, app *mortisev1alp
 				projectAppBuildRunStatus(app, envName, &current)
 				switch current.Status.Phase {
 				case mortisev1alpha1.BuildRunPhaseSucceeded:
-					r.applyEnvBuildSuccess(ctx, app, projectionEnvOrder, envName, revision, current.Status.Image, current.Status.Digest, current.Status.DetectedPort)
+					r.applyEnvBuildSuccess(ctx, app, projectionEnvOrder, envName, revision, current.Status.Image, current.Status.Digest, current.Status.DetectedPort, envSelectedForBuildFailureAggregation(envName, buildAggregationEnvNames))
 					return current.Status.Image, false, true, false, nil
 				case mortisev1alpha1.BuildRunPhaseFailed:
 					if envCountsTowardAppBuildFailure(buildAggregationEnvNames, envName) {
@@ -1066,7 +1066,7 @@ func (r *AppReconciler) reconcileEnvBuild(ctx context.Context, app *mortisev1alp
 					}
 					return "", false, true, false, nil
 				default:
-					r.markEnvBuildInProgress(app, envName, revision)
+					r.markEnvBuildInProgress(app, envName, revision, envSelectedForBuildFailureAggregation(envName, buildAggregationEnvNames))
 					return "", true, true, false, nil
 				}
 			}
@@ -1098,7 +1098,7 @@ func (r *AppReconciler) reconcileEnvBuild(ctx context.Context, app *mortisev1alp
 	projectAppBuildRunStatus(app, envName, run)
 	switch run.Status.Phase {
 	case mortisev1alpha1.BuildRunPhaseSucceeded:
-		r.applyEnvBuildSuccess(ctx, app, projectionEnvOrder, envName, revision, run.Status.Image, run.Status.Digest, run.Status.DetectedPort)
+		r.applyEnvBuildSuccess(ctx, app, projectionEnvOrder, envName, revision, run.Status.Image, run.Status.Digest, run.Status.DetectedPort, envSelectedForBuildFailureAggregation(envName, buildAggregationEnvNames))
 		return run.Status.Image, false, true, consumedRebuild, nil
 	case mortisev1alpha1.BuildRunPhaseFailed:
 		if envCountsTowardAppBuildFailure(buildAggregationEnvNames, envName) {
@@ -1108,21 +1108,30 @@ func (r *AppReconciler) reconcileEnvBuild(ctx context.Context, app *mortisev1alp
 		}
 		return "", false, true, consumedRebuild, nil
 	default:
-		r.markEnvBuildInProgress(app, envName, revision)
+		r.markEnvBuildInProgress(app, envName, revision, envSelectedForBuildFailureAggregation(envName, buildAggregationEnvNames))
 		return "", true, true, consumedRebuild, nil
 	}
 }
 
-func (r *AppReconciler) markEnvBuildInProgress(app *mortisev1alpha1.App, envName, revision string) {
+// countsTopLevel says whether this env speaks for the App: a preview
+// environment's build must not move the App's own phase or BuildStarted /
+// BuildSucceeded. It used to, and the flush wrote it before updateStatus
+// corrected it, so the parent flickered Ready -> Building/Deploying -> Ready
+// on every preview build poll (CAI-173 phase-flip class; CAI-229 fixed only
+// the failure condition).
+func (r *AppReconciler) markEnvBuildInProgress(app *mortisev1alpha1.App, envName, revision string, countsTopLevel bool) {
 	if app == nil {
 		return
 	}
 
-	app.Status.Phase = mortisev1alpha1.AppPhaseBuilding
 	if es := ensureEnvStatus(app, envName); es != nil {
 		es.Phase = mortisev1alpha1.AppPhaseBuilding
 		es.Message = fmt.Sprintf("building revision %s", revision)
 	}
+	if !countsTopLevel {
+		return
+	}
+	app.Status.Phase = mortisev1alpha1.AppPhaseBuilding
 
 	meta.SetStatusCondition(&app.Status.Conditions, metav1.Condition{
 		Type:               "BuildStarted",
@@ -1134,7 +1143,7 @@ func (r *AppReconciler) markEnvBuildInProgress(app *mortisev1alpha1.App, envName
 }
 
 // applyEnvBuildSuccess records the successful build for a specific environment.
-func (r *AppReconciler) applyEnvBuildSuccess(_ context.Context, app *mortisev1alpha1.App, projectionEnvOrder []string, envName, revision, image, digest string, detectedPort int32) {
+func (r *AppReconciler) applyEnvBuildSuccess(_ context.Context, app *mortisev1alpha1.App, projectionEnvOrder []string, envName, revision, image, digest string, detectedPort int32, countsTopLevel bool) {
 	// Update per-env status.
 	found := false
 	for i := range app.Status.Environments {
@@ -1157,6 +1166,12 @@ func (r *AppReconciler) applyEnvBuildSuccess(_ context.Context, app *mortisev1al
 		app.Status.LastBuiltSHA = revision
 		app.Status.LastBuiltImage = image
 		app.Status.DetectedPort = detectedPort
+	}
+	if !countsTopLevel {
+		// A preview's build outcome lives on its env status and its
+		// PreviewEnvironment; the parent's phase and conditions stay as the
+		// non-preview envs left them.
+		return
 	}
 	app.Status.Phase = mortisev1alpha1.AppPhaseDeploying
 	meta.RemoveStatusCondition(&app.Status.Conditions, "BuildStarted")

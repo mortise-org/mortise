@@ -216,6 +216,14 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **A preview build no longer moves the parent App's phase** (CAI-173,
+  CAI-229's remaining half): starting or finishing a preview environment's
+  build set the App's own phase to Building/Deploying and its
+  BuildStarted/BuildSucceeded conditions, the flush wrote that, and the
+  status pass corrected it a moment later — so the parent flickered on
+  every preview build poll. Preview builds now touch only their own
+  environment status; the PreviewEnvironment carries the outcome.
+
 - **A just-failed preview build no longer flips the parent App to
   Deploying for one reconcile** (CAI-173, CAI-229's sibling): on the pass
   where a preview environment first appeared in status, its failed

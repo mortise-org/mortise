@@ -1058,7 +1058,7 @@ func TestApplyEnvBuildSuccessDoesNotOverwriteProjectedMetadataWithLaterEnv(t *te
 	}
 
 	r := &AppReconciler{}
-	r.applyEnvBuildSuccess(context.Background(), app, []string{"production", "preview"}, "preview", "preview-sha", "registry.example.com/demo:preview", "sha256:preview", 3000)
+	r.applyEnvBuildSuccess(context.Background(), app, []string{"production", "preview"}, "preview", "preview-sha", "registry.example.com/demo:preview", "sha256:preview", 3000, true)
 
 	if app.Status.LastBuiltSHA != "prod-sha" {
 		t.Fatalf("expected projected SHA to stay on production, got %q", app.Status.LastBuiltSHA)
