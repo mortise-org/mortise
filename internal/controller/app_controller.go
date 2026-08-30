@@ -131,6 +131,9 @@ const appResourceConflictCondition = "ResourceConflict"
 // AppReconciler reconciles a App object
 type AppReconciler struct {
 	client.Client
+	// APIReader bypasses the cache for reads that must see this reconcile's
+	// own writes (the env Secret hash stamped on the pod template).
+	APIReader       client.Reader
 	Scheme          *runtime.Scheme
 	Clock           clock.Clock
 	BuildClient     build.BuildClient
@@ -1706,6 +1709,16 @@ func carryRestartMarkers(desired, existing map[string]string) map[string]string 
 	return desired
 }
 
+// deploymentStrategy picks Recreate for Apps with volumes: a rolling update
+// starts the new pod while the old one still holds the ReadWriteOnce claim,
+// and a database on that claim never becomes ready under the old one.
+func deploymentStrategy(app *mortisev1alpha1.App) appsv1.DeploymentStrategy {
+	if len(app.Spec.Storage) > 0 {
+		return appsv1.DeploymentStrategy{Type: appsv1.RecreateDeploymentStrategyType}
+	}
+	return appsv1.DeploymentStrategy{}
+}
+
 func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1alpha1.App, env *mortisev1alpha1.Environment, envNs, image, credentialsHash string, autoRedeploy bool) error {
 	name := deploymentName(app.Name)
 	replicas := int32(1)
@@ -1818,6 +1831,7 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 		},
 		Spec: appsv1.DeploymentSpec{
 			Replicas: &replicas,
+			Strategy: deploymentStrategy(app),
 			Selector: &metav1.LabelSelector{
 				MatchLabels: appLabels(app, env.Name),
 			},
@@ -3320,6 +3334,14 @@ func hashEnvSecretData(ctx context.Context, reader client.Reader, appName, envNs
 }
 
 func (r *AppReconciler) hashEnvSecretData(ctx context.Context, appName, envNs string) string {
+	// The env Secret was written earlier in this same reconcile; the cache
+	// has usually not seen it yet on the create pass, so a cached read
+	// stamped no hash, and the next pass stamped one: two pod templates a
+	// second apart, two ReplicaSets, and for an App with an RWO volume two
+	// pods fighting over one PVC (CAI-173, 10x main run 33310674068).
+	if r.APIReader != nil {
+		return hashEnvSecretData(ctx, r.APIReader, appName, envNs)
+	}
 	return hashEnvSecretData(ctx, r.Client, appName, envNs)
 }
 
