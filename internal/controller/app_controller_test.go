@@ -6937,6 +6937,75 @@ var _ = Describe("App Controller — git source", func() {
 			Expect(envData).To(HaveKeyWithValue("PORT", "3000"))
 		})
 
+		It("reports spec keys the derived Secret no longer tracks (CAI-272)", func() {
+			appName := "override-report"
+			app := &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{Name: appName, Namespace: namespace},
+				Spec: mortisev1alpha1.AppSpec{
+					Source:  mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: testImageNginx},
+					Network: mortisev1alpha1.NetworkConfig{Public: true},
+					Environments: []mortisev1alpha1.Environment{{
+						Name: "production",
+						Env: []mortisev1alpha1.EnvVar{
+							{Name: "ALLOWED_ORIGINS", Value: "https://auto.example"},
+							{Name: "LOG_LEVEL", Value: "info"},
+						},
+					}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			req := reconcile.Request{NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace}}
+			for i := 0; i < 2; i++ {
+				_, err := reconciler.Reconcile(ctx, req)
+				Expect(err).NotTo(HaveOccurred())
+			}
+			var fresh mortisev1alpha1.App
+			Expect(k8sClient.Get(ctx, req.NamespacedName, &fresh)).To(Succeed())
+			Expect(fresh.Status.Environments[0].OverriddenEnvKeys).To(BeEmpty())
+			Expect(meta.FindStatusCondition(fresh.Status.Conditions, "SpecEnvApplied")).To(BeNil())
+
+			// An out-of-band edit (what the UI/API does): the Secret now holds
+			// a value that is neither the spec's nor the last-applied one.
+			var sec corev1.Secret
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: appName + "-env", Namespace: envNsProduction}, &sec)).To(Succeed())
+			sec.Data["ALLOWED_ORIGINS"] = []byte("https://real.example")
+			Expect(k8sClient.Update(ctx, &sec)).To(Succeed())
+
+			// A later spec edit to that key is recorded but not applied.
+			Expect(k8sClient.Get(ctx, req.NamespacedName, &fresh)).To(Succeed())
+			fresh.Spec.Environments[0].Env[0].Value = "https://real.example,https://www.real.example"
+			Expect(k8sClient.Update(ctx, &fresh)).To(Succeed())
+			for i := 0; i < 2; i++ {
+				_, err := reconciler.Reconcile(ctx, req)
+				Expect(err).NotTo(HaveOccurred())
+			}
+			envData := readAppEnvSecret(ctx, appName, envNsProduction)
+			Expect(envData).To(HaveKeyWithValue("ALLOWED_ORIGINS", "https://real.example"), "override preserved by design")
+
+			Expect(k8sClient.Get(ctx, req.NamespacedName, &fresh)).To(Succeed())
+			Expect(fresh.Status.Environments[0].OverriddenEnvKeys).To(Equal([]string{"ALLOWED_ORIGINS"}))
+			cond := meta.FindStatusCondition(fresh.Status.Conditions, "SpecEnvApplied")
+			Expect(cond).NotTo(BeNil(), "an ignored spec key must be reported")
+			Expect(cond.Reason).To(Equal("KeysOverridden"))
+			Expect(cond.Message).To(ContainSubstring("production: ALLOWED_ORIGINS"))
+			Expect(cond.Message).NotTo(ContainSubstring("real.example"), "names only, never values")
+
+			// Converge the Secret to the spec: the key tracks the spec again.
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: appName + "-env", Namespace: envNsProduction}, &sec)).To(Succeed())
+			sec.Data["ALLOWED_ORIGINS"] = []byte("https://real.example,https://www.real.example")
+			Expect(k8sClient.Update(ctx, &sec)).To(Succeed())
+			for i := 0; i < 2; i++ {
+				_, err := reconciler.Reconcile(ctx, req)
+				Expect(err).NotTo(HaveOccurred())
+			}
+			Expect(k8sClient.Get(ctx, req.NamespacedName, &fresh)).To(Succeed())
+			Expect(fresh.Status.Environments[0].OverriddenEnvKeys).To(BeEmpty())
+			Expect(meta.FindStatusCondition(fresh.Status.Conditions, "SpecEnvApplied")).To(BeNil())
+		})
+
 		It("reports a pending redeploy as a condition when autoRedeploy is off (CAI-153)", func() {
 			appName := "redeploy-pending"
 			app := &mortisev1alpha1.App{

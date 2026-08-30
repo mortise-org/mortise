@@ -3691,6 +3691,7 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 			// An unresolvable secretRef leaves the last resolved value in
 			// place, which is correct and invisible -- report it (CAI-162).
 			es.UnresolvedEnvKeys = r.unresolvedEnvKeysFor(ctx, &env, envNs)
+			es.OverriddenEnvKeys = r.overriddenEnvKeysFor(ctx, app, &env, envNs)
 
 			// Carry forward deploy history, restart tracking, and build info.
 			if prev, ok := existingByName[env.Name]; ok {
@@ -3819,6 +3820,7 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 			meta.RemoveStatusCondition(&fresh.Status.Conditions, "PodHealthy")
 		}
 		setEnvRolledOutCondition(&fresh.Status.Conditions, envStatuses, app.Generation)
+		setSpecEnvAppliedCondition(&fresh.Status.Conditions, envStatuses, app.Generation)
 		if buildFailed {
 			if anyServing && !anyCrash {
 				reason := buildFailureCond.Reason
@@ -4893,6 +4895,36 @@ func setEnvRolledOutCondition(conds *[]metav1.Condition, envStatuses []mortisev1
 		Status:             metav1.ConditionFalse,
 		Reason:             "RedeployPending",
 		Message:            fmt.Sprintf("pods may still be running the previous env in: %s (the env changed after the operator's last rollout; a pod restarted since then already has the current values). Redeploy the app (UI, or POST /api/projects/{project}/apps/{app}/redeploy) or set Project spec.autoRedeploy: true", strings.Join(pending, ", ")),
+		ObservedGeneration: generation,
+	})
+}
+
+// specEnvAppliedCondition is the App condition that says whether every spec
+// env key is what the derived Secret carries.
+const specEnvAppliedCondition = "SpecEnvApplied"
+
+// setSpecEnvAppliedCondition reports keys the CR no longer controls (see
+// overriddenEnvKeysFor). It names the way back: make the Secret's value equal
+// the spec's -- through the env API/UI, or directly -- and the key tracks
+// the spec again. pendingEnvHash is a hash of the Secret, not of the spec,
+// so it cannot move for an ignored key; that is why this is a condition and
+// not a hash comparison.
+func setSpecEnvAppliedCondition(conds *[]metav1.Condition, envStatuses []mortisev1alpha1.EnvironmentStatus, generation int64) {
+	var parts []string
+	for _, es := range envStatuses {
+		if len(es.OverriddenEnvKeys) > 0 {
+			parts = append(parts, es.Name+": "+strings.Join(es.OverriddenEnvKeys, ", "))
+		}
+	}
+	if len(parts) == 0 {
+		meta.RemoveStatusCondition(conds, specEnvAppliedCondition)
+		return
+	}
+	meta.SetStatusCondition(conds, metav1.Condition{
+		Type:               specEnvAppliedCondition,
+		Status:             metav1.ConditionFalse,
+		Reason:             "KeysOverridden",
+		Message:            fmt.Sprintf("the derived Secret holds out-of-band values for these spec keys, so spec edits to them are not applied (%s); set each to the spec's value via the env API/UI, or edit the Secret, to let the spec control it again", strings.Join(parts, "; ")),
 		ObservedGeneration: generation,
 	})
 }

@@ -9,6 +9,16 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Spec env keys the platform is ignoring are now reported** (CAI-272):
+  a derived-Secret value changed out of band (UI, API, kubectl) is
+  preserved and the spec is left unapplied for that key, by design. The
+  App now says so: `status.environments[].overriddenEnvKeys` lists the
+  names, and `SpecEnvApplied=False / KeysOverridden` names them per
+  environment with the way back (make the Secret's value equal the spec's).
+  Found on a production App whose CR held auto-domain defaults while the
+  Secret held the real domains; a CR edit was recorded as applied and never
+  reached the Secret.
+
 - **The operator reports its own build** (CAI-185): every binary is stamped
   at link time with its release version (or `<branch>-<sha>` for an untagged
   build) and git commit. The operator writes them to

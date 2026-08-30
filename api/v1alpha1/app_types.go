@@ -650,6 +650,17 @@ type EnvironmentStatus struct {
 	// +optional
 	UnresolvedEnvKeys []string `json:"unresolvedEnvKeys,omitempty"`
 
+	// OverriddenEnvKeys are spec env var names the derived Secret no longer
+	// tracks: the Secret's value was changed out of band (UI or API), so
+	// the controller preserves it and leaves the spec unapplied for that
+	// key. Without this field the CR and the running env drift apart
+	// silently, and a later spec edit is recorded as applied but never
+	// reaches the Secret.
+	//
+	// Names only, never values.
+	// +optional
+	OverriddenEnvKeys []string `json:"overriddenEnvKeys,omitempty"`
+
 	// CertificateStatus is the readiness state of the TLS certificate for
 	// this environment. Empty when cert-manager is not in use. Possible
 	// values: "Ready", "Pending", "Failed".
