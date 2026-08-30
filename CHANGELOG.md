@@ -19,6 +19,16 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (`--client` skips the operator call). Production ran an untagged build
   153 commits behind `main` for weeks and nothing said so; this is the
   read that would have.
+- **Every container knows what it is running** (CAI-180): git-source builds
+  receive `MORTISE_REVISION` (the commit being built) as a build arg, and
+  every container gets `MORTISE_IMAGE` (the resolved image reference, digest
+  included) plus, for git-source Apps, `MORTISE_REVISION` as environment
+  variables next to `PORT`. A `/version` endpoint can now report its commit
+  without the team wiring an `ARG` through their own CI, and the process
+  answers "what am I" independently of the operator's bookkeeping. The
+  revision is absent, not empty, when there is no built commit (image-source
+  Apps). **Upgrading rolls every workload once**: the pod template gains the
+  new variables. A user-set `MORTISE_REVISION` build arg is kept.
 
 - **PlatformConfig misconfiguration conditions** (#449): the PlatformConfig
   status now surfaces two problems that previously lived only in operator

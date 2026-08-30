@@ -117,3 +117,33 @@ func createBuildRunnerCommit(t *testing.T, wt *gogit.Worktree, repoDir, path, co
 	}
 	return hash.String()
 }
+
+func TestWithRevisionBuildArg(t *testing.T) {
+	t.Run("adds the revision beside user args", func(t *testing.T) {
+		got := withRevisionBuildArg(map[string]string{"FOO": "bar"}, "main", "abc123")
+		if got["MORTISE_REVISION"] != "abc123" || got["FOO"] != "bar" {
+			t.Fatalf("got %v", got)
+		}
+	})
+	t.Run("does not mutate the caller's map", func(t *testing.T) {
+		in := map[string]string{"FOO": "bar"}
+		_ = withRevisionBuildArg(in, "main", "abc123")
+		if _, ok := in["MORTISE_REVISION"]; ok {
+			t.Fatal("input map was mutated")
+		}
+	})
+	t.Run("user value wins", func(t *testing.T) {
+		got := withRevisionBuildArg(map[string]string{"MORTISE_REVISION": "mine"}, "main", "abc123")
+		if got["MORTISE_REVISION"] != "mine" {
+			t.Fatalf("got %v", got)
+		}
+	})
+	t.Run("absent when the revision is only the branch fallback", func(t *testing.T) {
+		if got := withRevisionBuildArg(nil, "main", "main"); got != nil {
+			t.Fatalf("got %v", got)
+		}
+		if got := withRevisionBuildArg(nil, "main", ""); got != nil {
+			t.Fatalf("got %v", got)
+		}
+	})
+}
