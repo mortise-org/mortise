@@ -3828,6 +3828,7 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 			meta.RemoveStatusCondition(&fresh.Status.Conditions, "PodHealthy")
 		}
 		setReservedEnvKeysCondition(&fresh.Status.Conditions, app, resolvedEnvs, app.Generation)
+		setPlaintextCredentialsCondition(&fresh.Status.Conditions, app, resolvedEnvs, app.Generation)
 		setEnvRolledOutCondition(&fresh.Status.Conditions, envStatuses, app.Generation)
 		setEnvironmentJoinedCondition(&fresh.Status.Conditions, envStatuses, r.clock().Now(), app.Generation)
 		if buildFailed {

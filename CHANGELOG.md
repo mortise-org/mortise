@@ -16,6 +16,14 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   The App now carries `EnvKeysReserved=False / PlatformValueWins` naming
   the declarations by environment or `sharedVars`. Behaviour is unchanged;
   the silence is gone.
+- **Credential-shaped literals are reported** (CAI-155): `value:` is the
+  obvious shape and every example used it, so credentials landed in the
+  CRD as plaintext by default and were copied into every annotation and
+  dump. An App now carries `PlaintextCredentials=False /
+  LiteralLooksLikeCredential` naming env vars (per environment and
+  `sharedVars`) whose name matches KEY/SECRET/TOKEN/PASSWORD/WEBHOOK but
+  whose value is a literal; PUBLIC/PUBLISHABLE names are exempt, values
+  are never inspected. The way out is `valueFrom.secretRef`.
 
 - **`mortise admin reset-password` and `mortise admin create-user`**
   (CAI-55): cluster-side user administration that needs no API login, for
