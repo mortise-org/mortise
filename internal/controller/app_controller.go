@@ -3837,9 +3837,13 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 			}
 			ready := es.ReadyReplicas >= expectedReplicas && !rollingOut
 
-			// Latch: a new restartedAt value means a user-triggered redeploy is
-			// in progress. Keep Phase=Deploying until the rollout actually
-			// completes, even if readyReplicas temporarily satisfies the check.
+			// A new restartedAt value means a user-triggered redeploy was
+			// requested since the last pass. It decides only whether
+			// LastProcessedRestartedAt is recorded below; it is NOT a phase
+			// latch. Whether the rollout is still in flight is answered by
+			// deploymentRollingOut (generation, updated and available
+			// replicas), folded into `ready` above, which is what keeps the
+			// phase at Deploying mid-rollout regardless of who triggered it.
 			newRestart := restartedAt != "" && restartedAt != es.LastProcessedRestartedAt
 
 			excludeFromTopLevelReadiness := envExcludedFromTopLevelReadinessAggregation(es, previewEnvNames, buildAggregationEnvNames, workloadPresent)
