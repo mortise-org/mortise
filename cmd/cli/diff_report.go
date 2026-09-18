@@ -345,7 +345,13 @@ func buildEnvDiff(
 
 	specEnv := findAppEnv(specApp, envName)
 	if specEnv != nil && specEnv.Enabled != nil && !*specEnv.Enabled {
+		// Opted out: the controller resolves nothing here, so there is no
+		// Secret, no workload, and nothing to compare. Computing findings
+		// anyway reported every declared variable as missing-from-secret --
+		// a wall of rank-2 alarms describing a state the user chose
+		// (CAI-226). Say it once and move on.
 		rep.Enabled = false
+		return rep, nil
 	}
 
 	bindingRefs := map[string]bool{}
