@@ -224,6 +224,11 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Redeploying a cron App works** (CAI-170): the redeploy endpoint fetched
+  a Deployment regardless of the App's kind, so a scheduled job's redeploy
+  failed NotFound and there was no supported way for it to pick up a
+  changed env. It now stamps the CronJob's job template; the next
+  scheduled run uses the current env.
 - **A preview build no longer moves the parent App's phase** (CAI-173,
   CAI-229's remaining half): starting or finishing a preview environment's
   build set the App's own phase to Building/Deploying and its
@@ -298,6 +303,13 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   **Upgrade consequence:** every App with a colliding key gets a new hash
   on its next reconcile: with `autoRedeploy: true` it rolls once; otherwise
   it shows a pending redeploy. Those pods were running the wrong value.
+- **No more reconcile loop on Apps with HTTP probes** (CAI-71): the
+  desired `httpGet` probe left `scheme` unset while the API server stores
+  `HTTP`, so the probe comparison never matched and the operator rewrote
+  the Deployment on every reconcile — a no-op Update every ~2.7s per App,
+  an admission warning per write, resourceVersion never moving, and real
+  CPU and log rotation (it destroyed the history needed for CAI-55). Every
+  App with a path-based probe looped; TCP-probed Apps were quiet.
 
 - **Picker-added variables now render immediately** (mo-baq): a variable
   added via the bindings/secret picker was written to the App spec but

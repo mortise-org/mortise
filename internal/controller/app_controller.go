@@ -3843,9 +3843,13 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 			}
 			ready := es.ReadyReplicas >= expectedReplicas && !rollingOut
 
-			// Latch: a new restartedAt value means a user-triggered redeploy is
-			// in progress. Keep Phase=Deploying until the rollout actually
-			// completes, even if readyReplicas temporarily satisfies the check.
+			// A new restartedAt value means a user-triggered redeploy was
+			// requested since the last pass. It decides only whether
+			// LastProcessedRestartedAt is recorded below; it is NOT a phase
+			// latch. Whether the rollout is still in flight is answered by
+			// deploymentRollingOut (generation, updated and available
+			// replicas), folded into `ready` above, which is what keeps the
+			// phase at Deploying mid-rollout regardless of who triggered it.
 			newRestart := restartedAt != "" && restartedAt != es.LastProcessedRestartedAt
 
 			excludeFromTopLevelReadiness := envExcludedFromTopLevelReadinessAggregation(es, previewEnvNames, buildAggregationEnvNames, workloadPresent)
@@ -4124,6 +4128,13 @@ func buildProbe(pc *mortisev1alpha1.ProbeConfig, defaultPort int32) *corev1.Prob
 			HTTPGet: &corev1.HTTPGetAction{
 				Path: pc.Path,
 				Port: intstr.FromInt32(port),
+				// The API server defaults this to HTTP. Leaving it unset made
+				// the desired probe never equal the stored one, so every
+				// reconcile of an App with an HTTP probe wrote a no-op Update
+				// -- admission warning per write, watch event per write, one
+				// reconcile every ~2.7s, forever, with resourceVersion never
+				// moving (CAI-71). Say what the server will say.
+				Scheme: corev1.URISchemeHTTP,
 			},
 		}
 	} else {
