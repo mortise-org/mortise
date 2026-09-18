@@ -295,6 +295,13 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   **Upgrade consequence:** every App with a colliding key gets a new hash
   on its next reconcile: with `autoRedeploy: true` it rolls once; otherwise
   it shows a pending redeploy. Those pods were running the wrong value.
+- **No more reconcile loop on Apps with HTTP probes** (CAI-71): the
+  desired `httpGet` probe left `scheme` unset while the API server stores
+  `HTTP`, so the probe comparison never matched and the operator rewrote
+  the Deployment on every reconcile — a no-op Update every ~2.7s per App,
+  an admission warning per write, resourceVersion never moving, and real
+  CPU and log rotation (it destroyed the history needed for CAI-55). Every
+  App with a path-based probe looped; TCP-probed Apps were quiet.
 
 - **Picker-added variables now render immediately** (mo-baq): a variable
   added via the bindings/secret picker was written to the App spec but
