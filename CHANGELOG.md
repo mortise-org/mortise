@@ -216,6 +216,11 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Redeploying a cron App works** (CAI-170): the redeploy endpoint fetched
+  a Deployment regardless of the App's kind, so a scheduled job's redeploy
+  failed NotFound and there was no supported way for it to pick up a
+  changed env. It now stamps the CronJob's job template; the next
+  scheduled run uses the current env.
 - **A preview build no longer moves the parent App's phase** (CAI-173,
   CAI-229's remaining half): starting or finishing a preview environment's
   build set the App's own phase to Building/Deploying and its
