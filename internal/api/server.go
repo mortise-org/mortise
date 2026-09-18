@@ -59,6 +59,20 @@ type Server struct {
 	// envtest doesn't enforce RBAC and the stamp is unnecessary.
 	operatorNamespace  string
 	serviceAccountName string
+
+	// uncached, when set, is the reader used inside Project-spec
+	// read-modify-write retry loops (typically the manager's APIReader).
+	// The cached client can lag a concurrent write — the Project
+	// controller's finalizer seed lands right after project create — for
+	// longer than RetryOnConflict's ~150ms budget, so a retry loop that
+	// re-reads the cache re-reads the same stale resourceVersion until it
+	// gives up and a user write is lost (CAI-295).
+	uncached client.Reader
+}
+
+// SetUncachedReader sets the reader used by Project-spec retry loops.
+func (s *Server) SetUncachedReader(r client.Reader) {
+	s.uncached = r
 }
 
 // SetOperatorIdentity records the operator's namespace and ServiceAccount so

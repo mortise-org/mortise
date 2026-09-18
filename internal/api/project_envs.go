@@ -206,6 +206,19 @@ func (s *Server) CreateProjectEnvironment(w http.ResponseWriter, r *http.Request
 	})
 }
 
+// getProjectFresh reads a Project for a read-modify-write retry loop,
+// bypassing the manager cache when an uncached reader is wired. The cache
+// can lag a concurrent writer (the controller's finalizer seed right after
+// project create) past RetryOnConflict's whole budget, so reading it here
+// means retrying the same stale resourceVersion until the loop gives up
+// (CAI-295).
+func (s *Server) getProjectFresh(ctx context.Context, name string, out *mortisev1alpha1.Project) error {
+	if s.uncached != nil {
+		return s.uncached.Get(ctx, types.NamespacedName{Name: name}, out)
+	}
+	return s.client.Get(ctx, types.NamespacedName{Name: name}, out)
+}
+
 func (s *Server) createProjectEnvironment(ctx context.Context, projectName string, req createProjectEnvRequest) (mortisev1alpha1.ProjectEnvironment, error) {
 	created := mortisev1alpha1.ProjectEnvironment{
 		Name:         req.Name,
@@ -213,7 +226,7 @@ func (s *Server) createProjectEnvironment(ctx context.Context, projectName strin
 	}
 	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		var current mortisev1alpha1.Project
-		if err := s.client.Get(ctx, types.NamespacedName{Name: projectName}, &current); err != nil {
+		if err := s.getProjectFresh(ctx, projectName, &current); err != nil {
 			return err
 		}
 		for _, existing := range current.Spec.Environments {
@@ -362,7 +375,7 @@ func (s *Server) updateProjectEnvironment(ctx context.Context, projectName, envN
 	var updated mortisev1alpha1.ProjectEnvironment
 	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		var current mortisev1alpha1.Project
-		if err := s.client.Get(ctx, types.NamespacedName{Name: projectName}, &current); err != nil {
+		if err := s.getProjectFresh(ctx, projectName, &current); err != nil {
 			return err
 		}
 
@@ -582,7 +595,7 @@ func (s *Server) CloneProjectEnvironment(w http.ResponseWriter, r *http.Request)
 func (s *Server) deleteProjectEnvironmentSpec(ctx context.Context, projectName, envName string) error {
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		var current mortisev1alpha1.Project
-		if err := s.client.Get(ctx, types.NamespacedName{Name: projectName}, &current); err != nil {
+		if err := s.getProjectFresh(ctx, projectName, &current); err != nil {
 			return err
 		}
 		idx := indexOfEnv(&current, envName)
@@ -597,7 +610,7 @@ func (s *Server) deleteProjectEnvironmentSpec(ctx context.Context, projectName, 
 func (s *Server) cloneProjectEnvironmentSpec(ctx context.Context, projectName string, req cloneProjectEnvRequest) error {
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		var current mortisev1alpha1.Project
-		if err := s.client.Get(ctx, types.NamespacedName{Name: projectName}, &current); err != nil {
+		if err := s.getProjectFresh(ctx, projectName, &current); err != nil {
 			return err
 		}
 		for _, existing := range current.Spec.Environments {
