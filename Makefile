@@ -310,7 +310,10 @@ test-integration: ## Create k3d cluster, install chart + test deps, run integrat
 	@echo "==> Installing CRDs..."
 	kubectl --context $(INT_KUBE_CONTEXT) apply -f charts/mortise-core/crds/
 	@echo "==> Waiting for CRDs to be established..."
-	kubectl --context $(INT_KUBE_CONTEXT) wait --for=condition=Established crd/platformconfigs.mortise.mortise.dev --timeout=30s
+	@for i in $$(seq 1 30); do \
+		kubectl --context $(INT_KUBE_CONTEXT) wait --for=condition=Established crd/platformconfigs.mortise.mortise.dev --timeout=30s 2>/dev/null && break; \
+		sleep 1; \
+	done
 	@echo "==> Installing test-only dependencies (registry, Gitea, BuildKit)..."
 	kubectl --context $(INT_KUBE_CONTEXT) create namespace mortise-system --dry-run=client -o yaml | kubectl --context $(INT_KUBE_CONTEXT) apply -f -
 	kubectl --context $(INT_KUBE_CONTEXT) apply -f test/integration/manifests/

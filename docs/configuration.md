@@ -159,7 +159,16 @@ PlatformConfig CRD:
 spec:
   domain: apps.example.com          # used for app subdomains
   externalDomain: mortise.example.com  # where Mortise API is reachable
+  externalScheme: https             # optional; see below
 ```
+
+**`externalScheme`:** the scheme in the registered webhook URL. Unset,
+Mortise uses `https` only when `spec.tls.certManagerClusterIssuer` is
+configured and `http` otherwise. If TLS terminates ahead of the cluster
+(an edge proxy or tunnel) that inference registers plain-`http` hooks;
+set `externalScheme: https` explicitly. Git hosts do not follow
+redirects, so an `http` hook against a host that redirects to `https`
+fails every delivery. Changing the value re-registers every hook.
 
 ### Webhook reachability
 

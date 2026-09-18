@@ -61,7 +61,13 @@ test.describe('cluster dashboard', () => {
 		// Row click-through lands on the project page. The project route may
 		// carry an env query param (added by the O4 dashboard work), so
 		// anchor on the path and tolerate a query string.
+		//
+		// Refresh above refetches and re-renders the table; clicking the row
+		// while it is being replaced lands on a detached element and no
+		// navigation happens (first failure seen the moment retries went to
+		// zero, #546). Re-assert the row after the refresh, then click.
+		await expect(row).toBeVisible();
 		await row.click();
-		await expect(page).toHaveURL(new RegExp(`/projects/${project}(\\?.*)?$`));
+		await expect(page).toHaveURL(new RegExp(`/projects/${project}(\\?.*)?$`), { timeout: 15_000 });
 	});
 });

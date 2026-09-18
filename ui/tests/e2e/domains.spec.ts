@@ -98,7 +98,7 @@ test.describe('domains', () => {
 
 		// Click "Remove" next to the domain.
 		const domainRow = page.locator('.rounded-md').filter({ hasText: existingDomain });
-		await domainRow.getByRole('button', { name: 'Remove' }).click();
+		await domainRow.getByRole('button', { name: 'Remove', exact: true }).click();
 
 		// Domain should disappear from the UI.
 		await expect(page.getByText(existingDomain)).not.toBeVisible({ timeout: 5_000 });

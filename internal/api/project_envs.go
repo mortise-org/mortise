@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"regexp"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -553,6 +554,13 @@ func (s *Server) CloneProjectEnvironment(w http.ResponseWriter, r *http.Request)
 
 	// Clone env overrides and Secret-backed env vars from source to target for every App.
 	if err := s.cloneAppOverrides(r.Context(), projectName, projectNs(project), sourceName, req.Name); err != nil {
+		// The target namespace can still be terminating from a previous
+		// environment of the same name; that is a retryable conflict, not
+		// an internal error (CAI-173).
+		if apierrors.IsForbidden(err) && strings.Contains(err.Error(), "being terminated") {
+			writeJSON(w, http.StatusConflict, errorResponse{fmt.Sprintf("environment %q's namespace is still terminating; retry shortly", req.Name)})
+			return
+		}
 		writeError(w, r, err)
 		return
 	}

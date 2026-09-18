@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"time"
 )
 
 // ErrAuthFailed indicates the git token was rejected (401/403). The user
@@ -97,4 +98,15 @@ type GitAPI interface {
 	ResolveBranchHead(ctx context.Context, repo, branch string) (string, error)
 	ListOpenPullRequests(ctx context.Context, repo string) ([]PullRequestSnapshot, error)
 	ListTree(ctx context.Context, owner, repo, branch, path string) ([]TreeEntry, error)
+}
+
+// HostTimeout bounds every HTTP call to a git host. The SDK clients ship
+// with no timeout, and a hung connection to a host held the App
+// controller's single worker for ~3 minutes -- every App on the platform
+// stopped reconciling until the kernel gave up on the socket (CAI-173).
+const HostTimeout = 30 * time.Second
+
+// NewHostHTTPClient returns the http.Client git-host SDKs are built on.
+func NewHostHTTPClient() *http.Client {
+	return &http.Client{Timeout: HostTimeout}
 }

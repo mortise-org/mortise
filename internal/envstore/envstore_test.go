@@ -10,6 +10,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
@@ -503,4 +504,70 @@ func TestEnvHash(t *testing.T) {
 			t.Errorf("EnvHash = %q, want %q", b, want)
 		}
 	})
+}
+
+// A key present in both Secrets must hash to the value envFrom delivers:
+// the later source wins in the container, so it must win in the hash, or a
+// change to the value the process actually runs never rolls it (CAI-178).
+func TestEnvHash_CollidingKeyTracksTheContainerValue(t *testing.T) {
+	ctx := context.Background()
+	shared := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: SharedEnvName, Namespace: "pj-demo-production"},
+		Data:       map[string][]byte{"LOG_LEVEL": []byte("info"), "ONLY_SHARED": []byte("s")},
+	}
+	app := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: AppEnvSecretName("web"), Namespace: "pj-demo-production"},
+		Data:       map[string][]byte{"LOG_LEVEL": []byte("debug"), "ONLY_APP": []byte("a")},
+	}
+	c := fake.NewClientBuilder().WithObjects(shared, app).Build()
+
+	got := EnvHash(ctx, c, "web", "pj-demo-production")
+	want := HashData(map[string][]byte{"LOG_LEVEL": []byte("debug"), "ONLY_SHARED": []byte("s"), "ONLY_APP": []byte("a")})
+	if got != want {
+		t.Fatalf("hash tracks the shared value for a colliding key; container runs the app value")
+	}
+
+	// And the two orderings are one ordering.
+	sources := EnvFromSources("web")
+	names := envSourceNames("web")
+	if len(sources) != len(names) {
+		t.Fatalf("EnvFromSources has %d entries, envSourceNames %d", len(sources), len(names))
+	}
+	for i := range names {
+		if sources[i].SecretRef.Name != names[i] {
+			t.Fatalf("source %d is %q, ordering says %q", i, sources[i].SecretRef.Name, names[i])
+		}
+	}
+}
+
+// The retained source must survive a write/read round trip through the
+// Secret's annotations like the other sources do (CAI-154).
+func TestRetainedSourceRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	c := fake.NewClientBuilder().Build()
+	store := &Store{Client: c}
+	ns := "pj-demo-production"
+	err := store.Apply(ctx, ns, "web", nil, func(_ []Env) ([]Env, error) {
+		return []Env{{Name: "A", Value: "1", Source: "user"}, {Name: "B", Value: "2", Source: "retained"}}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sec corev1.Secret
+	if err := c.Get(ctx, types.NamespacedName{Name: AppEnvSecretName("web"), Namespace: ns}, &sec); err != nil {
+		t.Fatal(err)
+	}
+	if sec.Annotations[AnnotationRetainedKeys] != "B" {
+		t.Fatalf("retained annotation: %q", sec.Annotations[AnnotationRetainedKeys])
+	}
+	got := map[string]string{}
+	for _, e := range secretToEnvs(&sec) {
+		got[e.Name] = e.Source
+	}
+	if got["A"] != "user" || got["B"] != "retained" {
+		t.Fatalf("sources after round trip: %v", got)
+	}
+	if keys := RetainedKeys(ctx, c, "web", ns); len(keys) != 1 || keys[0] != "B" {
+		t.Fatalf("RetainedKeys: %v", keys)
+	}
 }

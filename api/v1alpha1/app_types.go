@@ -163,6 +163,9 @@ type ConfigFile struct {
 	Content string `json:"content"`
 }
 
+// PORT, MORTISE_IMAGE, MORTISE_REVISION and MORTISE_REPLICAS are set by Mortise on the
+// container itself and win over anything declared as an EnvVar; declaring
+// them raises the EnvKeysReserved condition instead of taking effect.
 // EnvVar is one environment variable for an App environment. Set exactly one
 // of Value or ValueFrom.
 type EnvVar struct {
@@ -392,6 +395,13 @@ type Environment struct {
 	// environment. The App controller GCs any resources it previously
 	// reconciled for that env. A nil pointer means "enabled" — Apps
 	// auto-participate in every project environment by default.
+	//
+	// So DELETING an environment block that carried enabled: false
+	// re-enables the environment: the App resolves it again on the next
+	// reconcile and workloads are created there. Removing a block is the
+	// enabling direction, not the safe one. To stop participating, keep
+	// the block and set enabled: false. status.environments[].joinedAt and
+	// the EnvironmentJoined condition record when that happens.
 	// +optional
 	Enabled *bool `json:"enabled,omitempty"`
 
@@ -579,7 +589,17 @@ type DeployRecord struct {
 
 // EnvironmentStatus tracks the observed state of a single environment.
 type EnvironmentStatus struct {
-	Name          string         `json:"name"`
+	Name string `json:"name"`
+
+	// JoinedAt is when this App first resolved this environment -- the
+	// reconcile that started creating workloads there. It is set once and
+	// carried forward. An App joins an environment by being created, by the
+	// Project adding the environment, or by a spec.environments[] block
+	// with enabled: false being removed; the last one looks like deletion
+	// and is the case this field exists to make visible.
+	// +optional
+	JoinedAt *metav1.Time `json:"joinedAt,omitempty"`
+
 	Phase         AppPhase       `json:"phase,omitempty"`
 	Message       string         `json:"message,omitempty"`
 	ReadyReplicas int32          `json:"readyReplicas,omitempty"`
@@ -649,6 +669,23 @@ type EnvironmentStatus struct {
 	// Names only, never values.
 	// +optional
 	UnresolvedEnvKeys []string `json:"unresolvedEnvKeys,omitempty"`
+
+	// OverriddenEnvKeys are spec env var names the derived Secret no longer
+	// tracks: the Secret's value was changed out of band (UI or API), so
+	// the controller preserves it and leaves the spec unapplied for that
+	// key. Without this field the CR and the running env drift apart
+	// silently, and a later spec edit is recorded as applied but never
+	// reaches the Secret.
+	//
+	// Names only, never values.
+	// +optional
+	OverriddenEnvKeys []string `json:"overriddenEnvKeys,omitempty"`
+
+	// RetainedEnvKeys are variable names removed from the spec that the
+	// derived Secret still carries, because their value had been changed
+	// out of band before removal. Pods still receive them. Names only.
+	// +optional
+	RetainedEnvKeys []string `json:"retainedEnvKeys,omitempty"`
 
 	// CertificateStatus is the readiness state of the TLS certificate for
 	// this environment. Empty when cert-manager is not in use. Possible

@@ -116,3 +116,40 @@ describe('VariablesTab runtime ownership', () => {
 		expect(within(automaticRow).queryAllByRole('button')).toHaveLength(2);
 	});
 });
+
+describe('VariablesTab reveal state', () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+		currentEnv.mockReturnValue('production');
+		let rows: Row[] = [{ name: 'USER', value: 'before', source: 'user' }];
+		getEnv.mockImplementation(async () => rows.map(row => ({ ...row })));
+		setEnv.mockImplementation(async (_project: string, _app: string, _env: string, vars: Record<string, string>) => {
+			rows = Object.entries(vars).map(([name, value]) => ({ name, value, source: 'user' }));
+		});
+		updateApp.mockImplementation(async (_project: string, _name: string, spec: AppSpec) => ({ ...makeApp(), spec }));
+	});
+
+	// A revealed value must stay revealed across the refetch that follows a
+	// save; the E2E "manual saves preserve ... projections" lost its input to
+	// that refetch (CAI-165 E2E measurement, run 33313012705).
+	it('keeps a revealed row revealed after a save refetches the section', async () => {
+		render(VariablesTab, { props: { project: 'demo', app: makeApp() } });
+		const panel = runtimePanel();
+		await waitFor(() => expect(within(panel).getByText('USER')).toBeTruthy());
+		const userRow = within(panel).getByText('USER').closest('div.group') as HTMLElement;
+		await fireEvent.click(within(userRow).getByTitle('Reveal'));
+		expect(within(userRow).getByRole('textbox')).toBeTruthy();
+
+		const header = panel.querySelector('.flex.items-center.justify-between') as HTMLElement;
+		const iconButtons = Array.from(header.querySelectorAll('button')).filter(b => b.querySelector('svg'));
+		await fireEvent.click(iconButtons[iconButtons.length - 1]);
+		await fireEvent.input(within(panel).getByPlaceholderText('VARIABLE_NAME'), { target: { value: 'NEW' } });
+		await fireEvent.input(within(panel).getByPlaceholderText('value or binding ref'), { target: { value: 'one' } });
+		await fireEvent.click(within(panel).getByRole('button', { name: 'Add' }));
+		await waitFor(() => expect(setEnv).toHaveBeenCalled());
+		await waitFor(() => expect(getEnv.mock.calls.length).toBeGreaterThan(1));
+
+		const again = within(panel).getByText('USER').closest('div.group') as HTMLElement;
+		await waitFor(() => expect(within(again).getByRole('textbox')).toBeTruthy());
+	});
+});

@@ -9,12 +9,58 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **`MORTISE_REPLICAS` is injected into every container** (CAI-258): the
+  same value written to the Deployment's `replicas`, so an app that holds
+  process-local state (a rate limiter, a spend ledger) can refuse to run
+  scaled instead of silently running N budgets. Joins `PORT`,
+  `MORTISE_IMAGE` and `MORTISE_REVISION` as a reserved name.
+
+- **Declaring a reserved variable is reported** (CAI-220): `PORT`,
+  `MORTISE_IMAGE` and `MORTISE_REVISION` are set on the container itself
+  and beat every `envFrom` source, so a user-declared `PORT` landed in the
+  derived Secret, visibly, while the process ran the platform's value.
+  The App now carries `EnvKeysReserved=False / PlatformValueWins` naming
+  the declarations by environment or `sharedVars`. Behaviour is unchanged;
+  the silence is gone.
+- **Credential-shaped literals are reported** (CAI-155): `value:` is the
+  obvious shape and every example used it, so credentials landed in the
+  CRD as plaintext by default and were copied into every annotation and
+  dump. An App now carries `PlaintextCredentials=False /
+  LiteralLooksLikeCredential` naming env vars (per environment and
+  `sharedVars`) whose name matches KEY/SECRET/TOKEN/PASSWORD/WEBHOOK but
+  whose value is a literal; PUBLIC/PUBLISHABLE names are exempt, values
+  are never inspected. The way out is `valueFrom.secretRef`.
+- **Spec env keys the platform is ignoring are now reported** (CAI-272):
+  a derived-Secret value changed out of band (UI, API, kubectl) is
+  preserved and the spec is left unapplied for that key, by design. The
+  App now says so: `status.environments[].overriddenEnvKeys` lists the
+  names, and `SpecEnvApplied=False / KeysOverridden` names them per
+  environment with the way back (make the Secret's value equal the spec's).
+  Found on a production App whose CR held auto-domain defaults while the
+  Secret held the real domains; a CR edit was recorded as applied and never
+  reached the Secret.
+
 - **`mortise admin reset-password` and `mortise admin create-user`**
   (CAI-55): cluster-side user administration that needs no API login, for
   the case where nobody can log in. Tokens carry the user's password
   generation, so a hand-minted token is `invalid token` regardless of the
   signing key; the reset bumps the generation and invalidates every prior
   token for that user. Recipe: `docs/recipes/recover-admin-access.md`.
+- **`PlatformConfig.spec.externalScheme`** (CAI-264): the scheme git hosts
+  use to reach the API for webhook deliveries. Unset keeps the old
+  inference (https only when `spec.tls.certManagerClusterIssuer` is set),
+  which registers plain-http hooks wherever TLS terminates ahead of the
+  cluster; a host that then redirects http→https breaks deliveries
+  silently, since git hosts do not follow redirects. Set `https` there.
+  Changing it re-registers every hook.
+- **Joining an environment is recorded** (CAI-196): an App auto-participates
+  in every project environment unless a `spec.environments[]` block says
+  `enabled: false`, so deleting that block is the enabling direction and
+  created production-shaped workloads in a namespace nobody meant to use.
+  `status.environments[].joinedAt` now records when the App first resolved
+  each environment, and `EnvironmentJoined=True` names recent joins on the
+  App for a day, with the way back. The `Enabled` doc comment says plainly
+  that removing the block re-enables the environment.
 
 - **The operator reports its own build** (CAI-185): every binary is stamped
   at link time with its release version (or `<branch>-<sha>` for an untagged
@@ -118,6 +164,13 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **The operator's grant in its own namespace is narrowed to Secrets and
+  ConfigMaps** (#444, the narrowing half of #441): the release-namespace
+  RoleBinding bound the full workload ClusterRole (Deployments, Services,
+  PVCs, Ingresses, CronJobs, pods/exec) that the operator only needs in
+  `pj-*` namespaces. It now binds a namespaced Role with the two kinds it
+  actually writes there. No behaviour change; a smaller blast radius.
+
 - **Stateful Apps no longer get a default liveness probe** (CAI-159). An
   App that declares `storage[]` and no explicit `livenessProbe` now runs
   without one, matching what Kubernetes does unless asked. The injected
@@ -163,6 +216,64 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **A preview build no longer moves the parent App's phase** (CAI-173,
+  CAI-229's remaining half): starting or finishing a preview environment's
+  build set the App's own phase to Building/Deploying and its
+  BuildStarted/BuildSucceeded conditions, the flush wrote that, and the
+  status pass corrected it a moment later — so the parent flickered on
+  every preview build poll. Preview builds now touch only their own
+  environment status; the PreviewEnvironment carries the outcome.
+- **A just-added environment's namespace is no longer garbage-collected
+  by a lagging cache** (CAI-173): the Project controller deleted env
+  namespaces not in its cached view of `spec.environments`, so an
+  environment added by the clone API could have its namespace deleted
+  while the clone was still copying Secrets into it (the API answered
+  500). The GC now confirms against the live Project before deleting.
+- **Logging in right after a user is created no longer fails on a cache
+  miss**: authentication read user Secrets only through the manager's
+  cache, which can lag a just-created Secret by milliseconds, so the
+  first login after `POST /api/admin/users` (or `mortise admin
+  create-user`) could answer "invalid credentials". A cache miss now
+  falls back to an uncached read; unknown users still fail.
+
+- **A just-failed preview build no longer flips the parent App to
+  Deploying for one reconcile** (CAI-173, CAI-229's sibling): on the pass
+  where a preview environment first appeared in status, its failed
+  BuildRun reference was known only in memory, the status writer read
+  build fields from the server copy alone, and the failed preview counted
+  as not-ready until the next pass. The parent reported Deploying for one
+  reconcile; one in ten integration runs read it in that window.
+- **A hung git host no longer stalls every App** (CAI-173): the GitHub,
+  GitLab and Gitea clients had no HTTP timeout and the App controller ran
+  one worker, so a connection that hung during webhook registration held
+  the worker until the kernel gave up on the socket (about three minutes),
+  during which no App on the platform was reconciled. Every git-host
+  client now times out after 30s, webhook registration is bounded, and
+  the App controller runs four workers.
+
+- **A registry target failure is reported** (#444): when the registry
+  backend could not produce a push or pull image reference, the
+  environment was skipped with a log line and the App stayed `Ready` on
+  its previous image indefinitely. The App now carries
+  `RegistryTargetValid=False / RegistryTargetInvalid` naming the env and
+  the error, and the reconcile requeues; the condition clears when a
+  target resolves again.
+- **The build-status flush no longer overwrites concurrent status writes**
+  (#444): after the environment loop the controller assigned its whole
+  in-memory `status.environments` over a freshly read status, so hashes,
+  replica counts and anything a concurrent writer had just set could be
+  stomped. It now merges only the build fields per environment.
+- **An incomplete prune is reported** (CAI-154): a key removed from
+  `spec.env` is dropped from the derived Secret only while its value still
+  tracks the spec; one edited out of band is kept, by the rule that
+  protects UI edits, and after that pass nothing remembered it had been a
+  spec key — pods kept receiving it while every surface said it was gone.
+  Such keys are now marked `retained` in the Secret
+  (`mortise.dev/retained-keys`), listed in
+  `status.environments[].retainedEnvKeys`, and named by
+  `EnvKeysRetained=False / RemovedButKept` with the way out. Re-declaring
+  the key in the spec clears it.
+
 - **A changed webhook Secret now re-registers every hook that used it**
   (CAI-262): the GitProvider's HMAC Secret was watched by nothing, so
   recreating it left every registered GitHub hook delivering with the old
@@ -170,6 +281,15 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   someone read GitHub's delivery log (CAI-261: a month of dead
   push-to-deploy). Apps sourced from the provider now reconcile on that
   Secret's change, and the registration input hash does the rest.
+- **The env hash now tracks the value the container runs** (CAI-178): the
+  pod-template `mortise.dev/env-hash` merged `{app}-env` then `shared-env`,
+  while the container's `envFrom` lists them the other way round and
+  Kubernetes lets the later source win. For a key present in both, changing
+  the value the process actually used never moved the hash, so no rollout
+  fired even with `autoRedeploy: true`. Both now derive from one ordering.
+  **Upgrade consequence:** every App with a colliding key gets a new hash
+  on its next reconcile: with `autoRedeploy: true` it rolls once; otherwise
+  it shows a pending redeploy. Those pods were running the wrong value.
 
 - **Picker-added variables now render immediately** (mo-baq): a variable
   added via the bindings/secret picker was written to the App spec but

@@ -26,6 +26,7 @@ type GitHubAPI struct {
 func NewGitHubAPI(baseURL, token, webhookSecret string) (*GitHubAPI, error) {
 	ts := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: token})
 	tc := oauth2.NewClient(context.Background(), ts)
+	tc.Timeout = HostTimeout
 	var c *gogithub.Client
 	if baseURL == "" || baseURL == "https://github.com" {
 		c = gogithub.NewClient(tc)

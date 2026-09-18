@@ -413,6 +413,7 @@ func main() {
 
 	appReconciler := &controller.AppReconciler{
 		Client:          mgr.GetClient(),
+		APIReader:       mgr.GetAPIReader(),
 		Scheme:          mgr.GetScheme(),
 		BuildClient:     stk.build,
 		GitClient:       stk.git,
@@ -493,7 +494,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	authProvider := auth.NewNativeAuthProvider(mgr.GetClient())
+	authProvider := auth.NewNativeAuthProvider(mgr.GetClient()).WithUncachedReader(mgr.GetAPIReader())
 	jwtHelper := auth.NewJWTHelper(mgr.GetClient())
 
 	var uiSub fs.FS

@@ -95,6 +95,31 @@ After installing, follow the **[Quickstart](docs/quickstart.md)** to create an a
 
 ---
 
+## It tells you what is actually running
+
+Most deploy tooling reports what it *did*. Mortise reports what is
+*running*, from the workload, and says so on the App when the two differ:
+
+- `MORTISE_REVISION` and `MORTISE_IMAGE` are injected into every container,
+  so your `/version` can report the commit it was built from without any CI
+  wiring.
+- `mortise version` prints the CLI and the operator's own build; the
+  operator stamps it on `PlatformConfig.status` too.
+- `mortise diff` compares the spec, the derived Secret, and the running
+  pods, and classifies every difference — including values the UI changed
+  out of band that the spec no longer controls.
+- Conditions name the silent states: `EnvRolledOut` (an env change the
+  pods have not picked up), `SpecEnvApplied` (a spec key ignored in favour of
+  an out-of-band edit), `EnvKeysRetained` (a removed key still in the
+  Secret), `PlaintextCredentials` (a credential-shaped literal),
+  `EnvironmentJoined` (an App that started participating in an environment),
+  `WebhookSignature` on the GitProvider (deliveries failing verification).
+
+Each of these exists because a real production incident hid behind the
+platform reporting success. The point of the platform is that it cannot.
+
+---
+
 ## Features
 
 - **Git-source deploys** - connect GitHub, GitLab, or Gitea; auto-build via Railpack or Dockerfile
@@ -107,6 +132,8 @@ After installing, follow the **[Quickstart](docs/quickstart.md)** to create an a
 - **Per-environment namespaces** - production, staging, and preview environments each get an isolated k8s namespace
 - **Preview environments** - PR-driven ephemeral deploys for git-source apps
 - **CrashLoop detection** - surfaces pod crash reasons directly in the UI
+- **Convergence conditions** - the App says when pods, Secret, and spec disagree, and how to fix it
+- **Opt-in PodSecurity `restricted` profile** - `spec.securityProfile: restricted` for clusters that enforce it
 - **GitHub device flow** - one-click git provider connection from the settings page
 
 ---

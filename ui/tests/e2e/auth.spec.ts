@@ -54,7 +54,7 @@ test.describe('login page', () => {
 		await expect(page.getByText('Sign in to your platform')).toBeVisible();
 		await expect(page.getByLabel('Username')).toBeVisible();
 		await expect(page.getByLabel('Password')).toBeVisible();
-		await expect(page.getByRole('button', { name: 'Sign in' })).toBeVisible();
+		await expect(page.getByRole('button', { name: 'Sign in', exact: true })).toBeVisible();
 	});
 
 	test('successful login redirects to / and stores mortise_token', async ({ page }) => {
@@ -65,7 +65,7 @@ test.describe('login page', () => {
 
 		await Promise.all([
 			page.waitForURL((url) => url.pathname === '/'),
-			page.getByRole('button', { name: 'Sign in' }).click()
+			page.getByRole('button', { name: 'Sign in', exact: true }).click()
 		]);
 
 		const token = await page.evaluate(() => localStorage.getItem('mortise_token'));
@@ -80,7 +80,7 @@ test.describe('login page', () => {
 
 		await Promise.all([
 			page.waitForURL((url) => url.pathname === '/'),
-			page.getByRole('button', { name: 'Sign in' }).click()
+			page.getByRole('button', { name: 'Sign in', exact: true }).click()
 		]);
 
 		// After login, the Settings link should be visible for admin.
@@ -108,7 +108,7 @@ test.describe('login page', () => {
 
 		await page.getByLabel('Username').fill('wrong@example.com');
 		await page.getByLabel('Password').fill('wrongpassword');
-		await page.getByRole('button', { name: 'Sign in' }).click();
+		await page.getByRole('button', { name: 'Sign in', exact: true }).click();
 
 		// The server returns an error; the page renders it as a text-danger paragraph.
 		await expect(page.locator('p.text-danger')).toBeVisible({ timeout: 5_000 });
@@ -172,6 +172,6 @@ test.describe('getting started page', () => {
 		await expect(page.getByText('HTTPS, storage, registry')).toBeVisible();
 
 		await expect(page.getByRole('button', { name: /Go to Dashboard/, exact: false })).toBeVisible();
-		await expect(page.getByRole('link', { name: 'Settings' })).toBeVisible();
+		await expect(page.getByRole('link', { name: 'Settings', exact: true })).toBeVisible();
 	});
 });

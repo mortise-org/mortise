@@ -1,0 +1,47 @@
+name: Release lag
+
+# Surfaces unreleased work (CAI-177). main sat 163 commits past the last
+# tag for a month because nothing said so; this says so weekly, and on
+# demand, in the job summary. The cadence policy is separate; this only
+# makes the gap visible.
+on:
+  schedule:
+    - cron: "0 14 * * 1" # Mondays 14:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Report commits since the last tag
+        run: |
+          tag=$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || echo "")
+          if [ -z "$tag" ]; then
+            echo "## Release lag: no release tag found" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          count=$(git rev-list --count "$tag"..HEAD)
+          days=$(( ( $(date +%s) - $(git log -1 --format=%ct "$tag") ) / 86400 ))
+          {
+            echo "## Release lag: $count commits, $days days since $tag"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| last tag | \`$tag\` ($(git log -1 --format=%cs "$tag")) |"
+            echo "| commits on main since | $count |"
+            echo "| days since | $days |"
+            echo "| CHANGELOG [Unreleased] entries | $(awk '/^## \[Unreleased\]/{f=1;next} /^## \[/{f=0} f && /^- \*\*/' CHANGELOG.md | wc -l) |"
+            echo
+            echo "### Unreleased commits"
+            git log --format='- %h %s' "$tag"..HEAD | head -100
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          if [ "$count" -ge 25 ]; then
+            echo "::warning::$count unreleased commits since $tag ($days days). See CAI-177 for the cadence policy."
+          fi

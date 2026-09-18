@@ -61,7 +61,7 @@ test.describe('new app modal structure', () => {
 
 		// App name input and Create button.
 		await expect(page.getByText('App name')).toBeVisible();
-		await expect(page.getByRole('button', { name: 'Create app' })).toBeVisible();
+		await expect(page.getByRole('button', { name: 'Create app', exact: true })).toBeVisible();
 	});
 
 	test('selecting Database shows preset grid', async ({ page }) => {
@@ -86,7 +86,7 @@ test.describe('new app modal structure', () => {
 		await page.getByText('Docker Image', { exact: true }).click();
 
 		// Configure pane is shown.
-		await expect(page.getByRole('button', { name: 'Create app' })).toBeVisible();
+		await expect(page.getByRole('button', { name: 'Create app', exact: true })).toBeVisible();
 
 		// Click "← Back" to return to type picker.
 		await page.getByRole('button', { name: /Back/ }).click();
@@ -103,7 +103,7 @@ test.describe('new app modal structure', () => {
 		await expect(page.getByText('Docker Image', { exact: true })).toBeVisible({ timeout: 10_000 });
 		await page.getByText('Docker Image', { exact: true }).click();
 
-		await page.getByRole('button', { name: 'Cancel' }).click();
+		await page.getByRole('button', { name: 'Cancel', exact: true }).click();
 
 		await expect(page).toHaveURL(new RegExp(`/projects/${project}(\\?|$)`), { timeout: 10_000 });
 	});
@@ -135,7 +135,7 @@ test.describe('deploy docker image', () => {
 		await page.getByText('Docker Image', { exact: true }).click();
 
 		// Create button should be disabled when no app name is provided.
-		const createBtn = page.getByRole('button', { name: 'Create app' });
+		const createBtn = page.getByRole('button', { name: 'Create app', exact: true });
 		await expect(createBtn).toBeDisabled();
 	});
 
@@ -151,7 +151,7 @@ test.describe('deploy docker image', () => {
 		await page.getByPlaceholder('nginx:1.27 or ghcr.io/org/app:latest').fill('nginx:1.27');
 		await page.getByPlaceholder('my-app').fill(appName);
 
-		const createBtn = page.getByRole('button', { name: 'Create app' });
+		const createBtn = page.getByRole('button', { name: 'Create app', exact: true });
 		await expect(createBtn).toBeEnabled();
 		await createBtn.click();
 
@@ -193,7 +193,7 @@ test.describe('deploy database preset', () => {
 		await expect(appNameInput).toHaveValue('postgres');
 
 		// Create button should be enabled.
-		await expect(page.getByRole('button', { name: 'Create app' })).toBeEnabled();
+		await expect(page.getByRole('button', { name: 'Create app', exact: true })).toBeEnabled();
 	});
 
 	test('select Redis preset, prefills app name', async ({ page }) => {
@@ -309,11 +309,11 @@ test.describe('app drawer', () => {
 		await expect(page.getByRole('heading', { name: appName })).toBeVisible({ timeout: 10_000 });
 
 		// All five tab buttons.
-		await expect(page.getByRole('button', { name: 'Deployments' })).toBeVisible();
-		await expect(page.getByRole('button', { name: 'Variables' })).toBeVisible();
-		await expect(page.getByRole('button', { name: 'Deploy Logs' })).toBeVisible();
-		await expect(page.getByRole('button', { name: 'Metrics' })).toBeVisible();
-		await expect(page.getByRole('button', { name: 'Settings' })).toBeVisible();
+		await expect(page.getByRole('button', { name: 'Deployments', exact: true })).toBeVisible();
+		await expect(page.getByRole('button', { name: 'Variables', exact: true })).toBeVisible();
+		await expect(page.getByRole('button', { name: 'Deploy Logs', exact: true })).toBeVisible();
+		await expect(page.getByRole('button', { name: 'Metrics', exact: true })).toBeVisible();
+		await expect(page.getByRole('button', { name: 'Settings', exact: true })).toBeVisible();
 	});
 
 	test('close button navigates back to project canvas', async ({ page }) => {
@@ -323,7 +323,7 @@ test.describe('app drawer', () => {
 		await expect(page.getByRole('heading', { name: appName })).toBeVisible({ timeout: 10_000 });
 
 		// Close button (X icon, aria-label="Close drawer").
-		await page.getByRole('button', { name: 'Close drawer' }).click();
+		await page.getByRole('button', { name: 'Close drawer', exact: true }).click();
 
 		await expect(page).toHaveURL(new RegExp(`/projects/${project}(\\?|$)`), { timeout: 5_000 });
 	});
@@ -334,7 +334,7 @@ test.describe('app drawer', () => {
 
 		await expect(page.getByRole('heading', { name: appName })).toBeVisible({ timeout: 10_000 });
 
-		await page.getByRole('button', { name: 'Variables' }).click();
+		await page.getByRole('button', { name: 'Variables', exact: true }).click();
 
 		// Variables tab content should appear — "Runtime - <env>" section heading is visible.
 		await expect(page.getByText(/Runtime -/)).toBeVisible({ timeout: 5_000 });

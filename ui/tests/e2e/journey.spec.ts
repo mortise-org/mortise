@@ -52,14 +52,14 @@ test.describe('full user journey', () => {
 
 		// ── Step 2: Create a project via the UI ──────────────────────
 		// "New Project" link is admin-only in the dashboard header.
-		await page.getByRole('link', { name: 'New Project' }).click();
+		await page.getByRole('link', { name: 'New Project', exact: true }).click();
 		await expect(page).toHaveURL('/projects/new');
 		await expect(page.getByRole('heading', { name: 'New Project' })).toBeVisible();
 
 		await page.getByLabel('Project name').fill(projectName);
 		await page.getByLabel('Description').fill('Journey test project');
 
-		await page.getByRole('button', { name: 'Create project' }).click();
+		await page.getByRole('button', { name: 'Create project', exact: true }).click();
 
 		// Should redirect to the project canvas page.
 		await expect(page).toHaveURL(new RegExp(`/projects/${projectName}(\\?|$)`), { timeout: 10_000 });
@@ -90,7 +90,7 @@ test.describe('full user journey', () => {
 		await page.getByPlaceholder('nginx:1.27 or ghcr.io/org/app:latest').fill('nginx:1.27');
 		await page.getByPlaceholder('my-app').fill(appName);
 
-		await page.getByRole('button', { name: 'Create app' }).click();
+		await page.getByRole('button', { name: 'Create app', exact: true }).click();
 
 		// After creation, navigates to the app drawer URL.
 		await expect(page).toHaveURL(new RegExp(`/projects/${projectName}/apps/${appName}(\\?|$)`), { timeout: 15_000 });
@@ -105,7 +105,7 @@ test.describe('full user journey', () => {
 		await expect(phaseBadge.first()).toBeVisible({ timeout: 15_000 });
 
 		// ── Step 5: Check Variables tab ───────────────────────────────
-		await page.getByRole('button', { name: 'Variables' }).click();
+		await page.getByRole('button', { name: 'Variables', exact: true }).click();
 		// Actual empty state text in VariablesTab.
 		await expect(page.getByText(/No variables set/).first()).toBeVisible({ timeout: 5_000 });
 
@@ -142,7 +142,7 @@ test.describe('full user journey', () => {
 		await page.getByPlaceholder('Filter settings…').clear();
 
 		// ── Step 7: Close drawer, return to canvas ────────────────────
-		await page.getByRole('button', { name: 'Close drawer' }).click();
+		await page.getByRole('button', { name: 'Close drawer', exact: true }).click();
 
 		await expect(page).toHaveURL(new RegExp(`/projects/${projectName}(\\?|$)`), { timeout: 5_000 });
 
@@ -154,11 +154,11 @@ test.describe('full user journey', () => {
 		await expect(page).toHaveURL(new RegExp(`/projects/${projectName}/settings(\\?|$)`));
 
 		// Navigate to the Danger tab.
-		await page.getByRole('button', { name: 'Danger' }).click();
+		await page.getByRole('button', { name: 'Danger', exact: true }).click();
 
 		// Type project name into confirmation input and delete.
 		await page.getByPlaceholder(projectName).fill(projectName);
-		await page.getByRole('button', { name: 'Delete project' }).click();
+		await page.getByRole('button', { name: 'Delete project', exact: true }).click();
 
 		// Should redirect to dashboard.
 		await page.waitForURL((url) => url.pathname === '/', { timeout: 15_000 });
@@ -194,7 +194,7 @@ test.describe('sign out journey', () => {
 		await userMenuBtn.click();
 
 		// Click "Sign out" in the dropdown.
-		await page.getByRole('button', { name: 'Sign out' }).click();
+		await page.getByRole('button', { name: 'Sign out', exact: true }).click();
 
 		// Should redirect to login.
 		await expect(page).toHaveURL('/login', { timeout: 5_000 });
@@ -287,7 +287,7 @@ test.describe('app creation via modal journey', () => {
 		await page.getByPlaceholder('my-app').fill(appName);
 
 		// Create the app.
-		await page.getByRole('button', { name: 'Create app' }).click();
+		await page.getByRole('button', { name: 'Create app', exact: true }).click();
 
 		// Should navigate to the app drawer URL.
 		await expect(page).toHaveURL(new RegExp(`/projects/${projectName}/apps/${appName}(\\?|$)`), { timeout: 15_000 });
@@ -296,12 +296,12 @@ test.describe('app creation via modal journey', () => {
 		await expect(page.getByRole('heading', { name: appName })).toBeVisible({ timeout: 10_000 });
 
 		// Switch tabs to verify they work.
-		await page.getByRole('button', { name: 'Deployments' }).click();
-		await page.getByRole('button', { name: 'Variables' }).click();
+		await page.getByRole('button', { name: 'Deployments', exact: true }).click();
+		await page.getByRole('button', { name: 'Variables', exact: true }).click();
 		await expect(page.getByText(/No variables set/).first()).toBeVisible({ timeout: 5_000 });
 
 		// Close the drawer.
-		await page.getByRole('button', { name: 'Close drawer' }).click();
+		await page.getByRole('button', { name: 'Close drawer', exact: true }).click();
 		await expect(page).toHaveURL(new RegExp(`/projects/${projectName}(\\?|$)`), { timeout: 5_000 });
 
 		// Switch to list view and verify the app appears.

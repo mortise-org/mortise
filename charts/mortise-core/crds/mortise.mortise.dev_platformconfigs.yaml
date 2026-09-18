@@ -142,6 +142,20 @@ spec:
                   reachable. Used for git webhook callbacks. Falls back to Domain
                   when unset.
                 type: string
+              externalScheme:
+                description: |-
+                  ExternalScheme is the URL scheme git hosts use to reach the API at
+                  ExternalDomain, for webhook registration. When unset, https is used
+                  if spec.tls.certManagerClusterIssuer is configured and http otherwise
+                  -- which is wrong wherever TLS terminates ahead of the cluster (an
+                  edge proxy, a tunnel): the hook is then registered over plain http,
+                  and a host that redirects http to https breaks deliveries silently,
+                  since git hosts do not follow redirects. Set it explicitly in that
+                  case. Changing it re-registers every hook.
+                enum:
+                - http
+                - https
+                type: string
               github:
                 description: |-
                   GitHub holds optional overrides for the project-maintained GitHub App.

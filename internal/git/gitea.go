@@ -15,6 +15,7 @@ import (
 // GiteaAPI implements GitAPI for Gitea / Forgejo via OAuth token.
 type GiteaAPI struct {
 	client *gogitea.Client
+	hc     *http.Client
 	token  string // OAuth access token (also used for git clone)
 	secret string // webhook HMAC secret
 }
@@ -24,13 +25,15 @@ func NewGiteaAPI(baseURL, token, webhookSecret string) (*GiteaAPI, error) {
 	// SetGiteaVersion("") skips the server version query on construction,
 	// avoiding a network call at startup. Actual API calls will still use
 	// the correct server version at call time.
+	hc := NewHostHTTPClient()
 	c, err := gogitea.NewClient(strings.TrimRight(baseURL, "/"),
 		gogitea.SetToken(token),
+		gogitea.SetHTTPClient(hc),
 		gogitea.SetGiteaVersion(""))
 	if err != nil {
 		return nil, fmt.Errorf("new gitea client: %w", err)
 	}
-	return &GiteaAPI{client: c, token: token, secret: webhookSecret}, nil
+	return &GiteaAPI{client: c, hc: hc, token: token, secret: webhookSecret}, nil
 }
 
 func (g *GiteaAPI) RegisterWebhook(ctx context.Context, repo string, cfg WebhookConfig) error {

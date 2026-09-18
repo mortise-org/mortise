@@ -21,7 +21,7 @@ type GitLabAPI struct {
 
 // NewGitLabAPI constructs a GitLabAPI. baseURL is e.g. "https://gitlab.com" or a self-hosted URL.
 func NewGitLabAPI(baseURL, token, webhookSecret string) (*GitLabAPI, error) {
-	var opts []gogitlab.ClientOptionFunc
+	opts := []gogitlab.ClientOptionFunc{gogitlab.WithHTTPClient(NewHostHTTPClient())}
 	if baseURL != "" && baseURL != "https://gitlab.com" {
 		opts = append(opts, gogitlab.WithBaseURL(strings.TrimRight(baseURL, "/")+"/api/v4/"))
 	}

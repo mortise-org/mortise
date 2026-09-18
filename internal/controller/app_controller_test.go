@@ -732,7 +732,7 @@ func TestApplyEnvBuildSuccessClearsBuildStartedCondition(t *testing.T) {
 		},
 	}
 
-	r.applyEnvBuildSuccess(context.Background(), app, []string{"production"}, "production", "newsha", "registry.example/demo:new", "sha256:new", 8080)
+	_ = r.applyEnvBuildSuccess(context.Background(), app, []string{"production"}, "production", "newsha", "registry.example/demo:new", "sha256:new", 8080, true)
 
 	if cond := meta.FindStatusCondition(app.Status.Conditions, "BuildStarted"); cond != nil {
 		t.Fatalf("expected BuildStarted to be cleared after build success, got %+v", cond)
@@ -987,6 +987,53 @@ func TestUpdateStatusFallsBackToPreviewOnlyBuildFailure(t *testing.T) {
 	cond := meta.FindStatusCondition(fresh.Status.Conditions, "BuildSucceeded")
 	if cond == nil || cond.Status != metav1.ConditionFalse {
 		t.Fatalf("expected preview-only app to keep failed BuildSucceeded, got %+v", cond)
+	}
+}
+
+// The pass where a preview env first appears: its failed BuildRun ref is
+// known to this reconcile in memory but not yet on the server. The parent
+// must not flip to Deploying for that one pass (CAI-173 phase-flip class).
+func TestUpdateStatusUsesInMemoryBuildRefForNewPreviewEnv(t *testing.T) {
+	ctx := context.Background()
+	scheme := newAppStatusTestScheme(t)
+	serverApp := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "demo", Namespace: "pj-default-project"},
+		Spec: mortisev1alpha1.AppSpec{
+			Source:       mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeGit, Repo: "https://example/repo.git"},
+			Environments: []mortisev1alpha1.Environment{{Name: "production"}, {Name: "pr-6"}},
+		},
+		Status: mortisev1alpha1.AppStatus{
+			Conditions:   []metav1.Condition{{Type: "BuildSucceeded", Status: metav1.ConditionTrue, Reason: "BuildComplete", Message: "built registry.example/demo:prod digest=sha256:prod for production"}},
+			Environments: []mortisev1alpha1.EnvironmentStatus{{Name: "production", LastBuiltImage: "registry.example/demo:prod"}},
+		},
+	}
+	productionDep := newReadyDeploymentForStatusTest(t, serverApp, "production")
+	c := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(serverApp, productionDep).WithObjects(serverApp, productionDep).Build()
+	if err := c.Status().Update(ctx, productionDep); err != nil {
+		t.Fatalf("seed production deployment status: %v", err)
+	}
+	r := &AppReconciler{Client: c, Scheme: scheme}
+
+	// This reconcile's in-memory App already knows pr-6 and its failed build.
+	inMem := serverApp.DeepCopy()
+	inMem.Status.Environments = append(inMem.Status.Environments, mortisev1alpha1.EnvironmentStatus{
+		Name:               "pr-6",
+		CurrentBuildRunRef: &mortisev1alpha1.BuildRunReference{Name: "app-demo-pr-6-x", Phase: mortisev1alpha1.BuildRunPhaseFailed},
+	})
+	resolvedEnvs := []mortisev1alpha1.Environment{{Name: "production"}, {Name: "pr-6"}}
+	previewEnvNames := map[string]struct{}{"pr-6": {}}
+	if err := r.updateStatus(ctx, inMem, resolvedEnvs, previewEnvNames); err != nil {
+		t.Fatalf("update status: %v", err)
+	}
+	var fresh mortisev1alpha1.App
+	if err := c.Get(ctx, types.NamespacedName{Name: "demo", Namespace: "pj-default-project"}, &fresh); err != nil {
+		t.Fatalf("get app: %v", err)
+	}
+	if fresh.Status.Phase != mortisev1alpha1.AppPhaseReady {
+		t.Fatalf("a just-failed preview must not degrade the parent on its first pass: got %q", fresh.Status.Phase)
+	}
+	if es := envStatusFor(&fresh, "pr-6"); es == nil || es.CurrentBuildRunRef == nil {
+		t.Fatalf("the in-memory build ref must be carried onto the new env status: %+v", es)
 	}
 }
 
@@ -4611,6 +4658,7 @@ func TestIsTerminalBuildFailureCondition(t *testing.T) {
 
 // fakeRegistryBackend implements registry.RegistryBackend for tests.
 type fakeRegistryBackend struct {
+	targetErr      error // when set, PushTarget/PullTarget fail with it
 	imageRef       registry.ImageRef
 	pullSecretName string
 	resolveDigest  string
@@ -4619,6 +4667,9 @@ type fakeRegistryBackend struct {
 }
 
 func (f *fakeRegistryBackend) PushTarget(app, tag string) (registry.ImageRef, error) {
+	if f.targetErr != nil {
+		return registry.ImageRef{}, f.targetErr
+	}
 	if f.imageRef.Full != "" {
 		return f.imageRef, nil
 	}
@@ -6888,6 +6939,97 @@ var _ = Describe("App Controller — git source", func() {
 			Expect(envData).To(HaveKeyWithValue("SV_DB_PORT", "8080"))
 		})
 
+		It("records when an App starts participating in an environment (CAI-196)", func() {
+			appName := "joins-env"
+			app := &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{Name: appName, Namespace: namespace},
+				Spec: mortisev1alpha1.AppSpec{
+					Source:  mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: testImageNginx},
+					Network: mortisev1alpha1.NetworkConfig{Public: true},
+					// The opt-out is the block itself.
+					Environments: []mortisev1alpha1.Environment{{Name: "production", Enabled: ptr.To(false)}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			req := reconcile.Request{NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace}}
+			_, err := reconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			var fresh mortisev1alpha1.App
+			Expect(k8sClient.Get(ctx, req.NamespacedName, &fresh)).To(Succeed())
+			for _, es := range fresh.Status.Environments {
+				Expect(es.Name).NotTo(Equal("production"), "opted out: must not resolve")
+			}
+			Expect(meta.FindStatusCondition(fresh.Status.Conditions, "EnvironmentJoined")).To(BeNil())
+
+			// "Delete the unused block": the enabling direction.
+			fresh.Spec.Environments = nil
+			Expect(k8sClient.Update(ctx, &fresh)).To(Succeed())
+			_, err = reconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Get(ctx, req.NamespacedName, &fresh)).To(Succeed())
+			var prod *mortisev1alpha1.EnvironmentStatus
+			for i := range fresh.Status.Environments {
+				if fresh.Status.Environments[i].Name == "production" {
+					prod = &fresh.Status.Environments[i]
+				}
+			}
+			Expect(prod).NotTo(BeNil(), "removing the block re-enables the environment")
+			Expect(prod.JoinedAt).NotTo(BeNil(), "the join must be recorded")
+			cond := meta.FindStatusCondition(fresh.Status.Conditions, "EnvironmentJoined")
+			Expect(cond).NotTo(BeNil(), "the transition must be visible on the App")
+			Expect(cond.Message).To(ContainSubstring("production"))
+			Expect(cond.Message).To(ContainSubstring("enabled: false"))
+
+			// The record survives later reconciles unchanged.
+			joined := prod.JoinedAt.Time
+			_, err = reconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(k8sClient.Get(ctx, req.NamespacedName, &fresh)).To(Succeed())
+			for _, es := range fresh.Status.Environments {
+				if es.Name == "production" {
+					Expect(es.JoinedAt.Time).To(BeTemporally("==", joined))
+				}
+			}
+		})
+
+		It("reports a user-declared PORT as reserved instead of silently ignoring it (CAI-220)", func() {
+			appName := "declares-port"
+			app := &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{Name: appName, Namespace: namespace},
+				Spec: mortisev1alpha1.AppSpec{
+					Source:  mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: testImageNginx},
+					Network: mortisev1alpha1.NetworkConfig{Public: true, Port: 3000},
+					Environments: []mortisev1alpha1.Environment{{
+						Name: "production",
+						Env:  []mortisev1alpha1.EnvVar{{Name: "PORT", Value: "8080"}},
+					}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			req := reconcile.Request{NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace}}
+			_, err := reconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			var dep appsv1.Deployment
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: appName, Namespace: envNsProduction}, &dep)).To(Succeed())
+			Expect(dep.Spec.Template.Spec.Containers[0].Env).To(ContainElement(corev1.EnvVar{Name: "PORT", Value: "3000"}), "platform value still wins")
+
+			var fresh mortisev1alpha1.App
+			Expect(k8sClient.Get(ctx, req.NamespacedName, &fresh)).To(Succeed())
+			cond := meta.FindStatusCondition(fresh.Status.Conditions, "EnvKeysReserved")
+			Expect(cond).NotTo(BeNil(), "the ignored declaration must be reported")
+			Expect(cond.Reason).To(Equal("PlatformValueWins"))
+			Expect(cond.Message).To(ContainSubstring("production: PORT"))
+		})
+
 		It("should not change behavior when sharedVars is empty", func() {
 			appName := "shared-vars-empty"
 			app := &mortisev1alpha1.App{
@@ -6927,12 +7069,13 @@ var _ = Describe("App Controller — git source", func() {
 			}, &dep)).To(Succeed())
 
 			// Deployment only carries the literals injected by the controller:
-			// PORT and MORTISE_IMAGE. An image-source App has no built
-			// revision, so MORTISE_REVISION is absent rather than empty.
+			// PORT, MORTISE_IMAGE and MORTISE_REPLICAS. An image-source App
+			// has no built revision, so MORTISE_REVISION is absent, not empty.
 			envVars := dep.Spec.Template.Spec.Containers[0].Env
-			Expect(envVars).To(HaveLen(2))
+			Expect(envVars).To(HaveLen(3))
 			Expect(envVars[0].Name).To(Equal("PORT"))
 			Expect(envVars[1]).To(Equal(corev1.EnvVar{Name: "MORTISE_IMAGE", Value: testImageNginx}))
+			Expect(envVars[2]).To(Equal(corev1.EnvVar{Name: "MORTISE_REPLICAS", Value: "1"}), "replicas default to 1 (CAI-258)")
 			for _, ev := range envVars {
 				Expect(ev.Name).NotTo(Equal("MORTISE_REVISION"))
 			}
@@ -8610,6 +8753,45 @@ var _ = Describe("App Controller — git source", func() {
 			envVars := dep.Spec.Template.Spec.Containers[0].Env
 			Expect(envVars).To(ContainElement(corev1.EnvVar{Name: "MORTISE_REVISION", Value: "abc123"}))
 			Expect(envVars).To(ContainElement(corev1.EnvVar{Name: "MORTISE_IMAGE", Value: dep.Spec.Template.Spec.Containers[0].Image}))
+		})
+
+		It("reports a registry target failure instead of silently skipping the env (#444)", func() {
+			ctx := context.Background()
+			gp := &mortisev1alpha1.GitProvider{
+				ObjectMeta: metav1.ObjectMeta{Name: "gh-regtarget"},
+				Spec:       mortisev1alpha1.GitProviderSpec{Type: mortisev1alpha1.GitProviderTypeGitHub, Host: "https://github.com", ClientID: "test-client-id"},
+			}
+			Expect(k8sClient.Create(ctx, gp)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, gp)).To(Succeed()) }()
+			tokenSecret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{Name: "user-gh-regtarget-token-74657374406578616d706c652e636f6d", Namespace: "mortise-system"},
+				Data:       map[string][]byte{"token": []byte("tok")},
+			}
+			Expect(k8sClient.Create(ctx, tokenSecret)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, tokenSecret)).To(Succeed()) }()
+
+			bc := &fakeBuildClient{digest: "sha256:never"}
+			r := gitSourceReconciler(bc, &fakeGitClient{}, &fakeRegistryBackend{targetErr: fmt.Errorf("registry URL not configured")})
+
+			app := makeGitSourceApp("regtarget-app", namespace, "gh-regtarget")
+			app.Annotations["mortise.dev/revision"] = "abc123"
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+
+			req := reconcile.Request{NamespacedName: client.ObjectKeyFromObject(app)}
+			_, err := r.Reconcile(ctx, req)
+			Expect(err).To(HaveOccurred(), "a registry misconfiguration must requeue, not vanish")
+			Expect(err.Error()).To(ContainSubstring("registry push target"))
+
+			var fresh mortisev1alpha1.App
+			Expect(k8sClient.Get(ctx, req.NamespacedName, &fresh)).To(Succeed())
+			cond := meta.FindStatusCondition(fresh.Status.Conditions, "RegistryTargetValid")
+			Expect(cond).NotTo(BeNil(), "the failure must be on the App, not only in the log")
+			Expect(cond.Reason).To(Equal("RegistryTargetInvalid"))
+			Expect(cond.Message).To(ContainSubstring("production"))
+			bc.mu.Lock()
+			Expect(bc.requests).To(BeEmpty(), "no build can be submitted without a target")
+			bc.mu.Unlock()
 		})
 
 		It("passes per-environment build args to the build client", func() {

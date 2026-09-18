@@ -611,7 +611,9 @@ func (r *BuildRunReconciler) projectTerminalBuildRunStatus(ctx context.Context, 
 				}
 				return err
 			}
+			before := app.Status.Phase
 			projectAppBuildRunStatus(&app, br.Spec.Environment, br)
+			logf.FromContext(ctx).Info("app status written by buildrun projection", "app", app.Name, "phase", app.Status.Phase, "phaseBefore", before, "rv", app.ResourceVersion)
 			return r.Status().Update(ctx, &app)
 		})
 	default:

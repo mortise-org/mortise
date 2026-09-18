@@ -123,6 +123,18 @@ type PlatformConfigSpec struct {
 	// +optional
 	ExternalDomain string `json:"externalDomain,omitempty"`
 
+	// ExternalScheme is the URL scheme git hosts use to reach the API at
+	// ExternalDomain, for webhook registration. When unset, https is used
+	// if spec.tls.certManagerClusterIssuer is configured and http otherwise
+	// -- which is wrong wherever TLS terminates ahead of the cluster (an
+	// edge proxy, a tunnel): the hook is then registered over plain http,
+	// and a host that redirects http to https breaks deliveries silently,
+	// since git hosts do not follow redirects. Set it explicitly in that
+	// case. Changing it re-registers every hook.
+	// +kubebuilder:validation:Enum=http;https
+	// +optional
+	ExternalScheme string `json:"externalScheme,omitempty"`
+
 	// DomainTemplate is a Go text/template that controls how auto-generated
 	// hostnames are constructed. Available variables: {{.App}}, {{.Project}},
 	// {{.Env}}, {{.Domain}}. The {{.Env}} component is omitted for the

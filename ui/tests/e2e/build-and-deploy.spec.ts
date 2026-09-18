@@ -50,7 +50,7 @@ test.describe('build and deploy', () => {
 		await page.getByPlaceholder('my-app').fill(appName);
 
 		// Create the app
-		const createBtn = page.getByRole('button', { name: 'Create app' });
+		const createBtn = page.getByRole('button', { name: 'Create app', exact: true });
 		await expect(createBtn).toBeEnabled();
 		await createBtn.click();
 
@@ -92,7 +92,7 @@ test.describe('build and deploy', () => {
 		await page.getByPlaceholder('nginx:1.27 or ghcr.io/org/app:latest').fill('nginx:1.27');
 		await page.getByPlaceholder('my-app').fill(appName);
 
-		await page.getByRole('button', { name: 'Create app' }).click();
+		await page.getByRole('button', { name: 'Create app', exact: true }).click();
 
 		// Drawer opens showing the new app
 		await expect(page.getByRole('heading', { name: appName })).toBeVisible({

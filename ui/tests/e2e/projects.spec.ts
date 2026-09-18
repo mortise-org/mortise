@@ -38,7 +38,7 @@ test.describe('projects', () => {
 		await expect(page.getByRole('heading', { name: 'Projects' })).toBeVisible();
 
 		// The "+ New Project" button should be visible on the dashboard.
-		await expect(page.getByRole('link', { name: 'New Project' })).toBeVisible();
+		await expect(page.getByRole('link', { name: 'New Project', exact: true })).toBeVisible();
 	});
 
 	test('create project via UI', async ({ page, request }) => {
@@ -48,7 +48,7 @@ test.describe('projects', () => {
 		await loginViaUI(page);
 
 		// "+ New Project" button is in the top-right of the dashboard.
-		await page.getByRole('link', { name: 'New Project' }).click();
+		await page.getByRole('link', { name: 'New Project', exact: true }).click();
 		await expect(page).toHaveURL('/projects/new');
 
 		await expect(page.getByRole('heading', { name: 'New Project' })).toBeVisible();
@@ -56,7 +56,7 @@ test.describe('projects', () => {
 		await page.getByLabel('Project name').fill(name);
 		await page.getByLabel('Description').fill('E2E test project');
 
-		await page.getByRole('button', { name: 'Create project' }).click();
+		await page.getByRole('button', { name: 'Create project', exact: true }).click();
 
 		// Should redirect to the new project's canvas page.
 		await expect(page).toHaveURL(new RegExp(`/projects/${name}(\\?|$)`), { timeout: 10_000 });
@@ -67,7 +67,7 @@ test.describe('projects', () => {
 		await page.goto('/projects/new');
 
 		const nameInput = page.getByLabel('Project name');
-		const submitButton = page.getByRole('button', { name: 'Create project' });
+		const submitButton = page.getByRole('button', { name: 'Create project', exact: true });
 		const validationError = page.getByText(
 			'Project name must be 1-63 lowercase letters, digits, or hyphens, starting and ending with alphanumeric.'
 		);
@@ -128,7 +128,7 @@ test.describe('projects', () => {
 
 		await expect(page.getByText('No apps in this project')).toBeVisible({ timeout: 10_000 });
 		// "Deploy an app" is a button (not a link) that opens the new app modal.
-		await expect(page.getByRole('button', { name: 'Deploy an app' })).toBeVisible();
+		await expect(page.getByRole('button', { name: 'Deploy an app', exact: true })).toBeVisible();
 	});
 
 	test('project settings page renders with delete section', async ({ page, request }) => {
@@ -141,14 +141,14 @@ test.describe('projects', () => {
 
 		// Project settings page has a tabbed layout with no top-level heading.
 		// Verify the General tab button is visible to confirm the page loaded.
-		await expect(page.getByRole('button', { name: 'General' })).toBeVisible({
+		await expect(page.getByRole('button', { name: 'General', exact: true })).toBeVisible({
 			timeout: 10_000
 		});
 
 		// Navigate to the Danger tab to see the delete section.
-		await page.getByRole('button', { name: 'Danger' }).click();
+		await page.getByRole('button', { name: 'Danger', exact: true }).click();
 		await expect(page.getByText('Delete Project', { exact: true })).toBeVisible();
-		await expect(page.getByRole('button', { name: 'Delete project' })).toBeVisible();
+		await expect(page.getByRole('button', { name: 'Delete project', exact: true })).toBeVisible();
 	});
 
 	test('dashboard hides namespace while project settings general shows it', async ({ page, request }) => {
@@ -179,15 +179,15 @@ test.describe('projects', () => {
 
 		// Wait for the page to load. Project settings has no top-level heading;
 		// verify the General tab button is visible.
-		await expect(page.getByRole('button', { name: 'General' })).toBeVisible({
+		await expect(page.getByRole('button', { name: 'General', exact: true })).toBeVisible({
 			timeout: 10_000
 		});
 
 		// Navigate to the Danger tab.
-		await page.getByRole('button', { name: 'Danger' }).click();
+		await page.getByRole('button', { name: 'Danger', exact: true }).click();
 
 		// The delete button is disabled until the user types the project name.
-		const deleteBtn = page.getByRole('button', { name: 'Delete project' });
+		const deleteBtn = page.getByRole('button', { name: 'Delete project', exact: true });
 		await expect(deleteBtn).toBeDisabled();
 
 		// Type the project name into the confirmation input.
@@ -232,7 +232,7 @@ test.describe('projects', () => {
 		await expect(page.getByRole('heading', { name: 'New Project' })).toBeVisible();
 
 		// Click the "Cancel" link.
-		await page.getByRole('link', { name: 'Cancel' }).click();
+		await page.getByRole('link', { name: 'Cancel', exact: true }).click();
 
 		await expect(page).toHaveURL('/');
 		await expect(page.getByRole('heading', { name: 'Projects', exact: true })).toBeVisible();

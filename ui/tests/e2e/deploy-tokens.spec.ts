@@ -66,7 +66,7 @@ test.describe('deploy tokens', () => {
 		await expect(page.locator('text=/mrt_[0-9a-f]+/')).toBeVisible({ timeout: 3_000 });
 
 		// Copy button should be present.
-		await expect(page.getByRole('button', { name: 'Copy token' })).toBeVisible();
+		await expect(page.getByRole('button', { name: 'Copy token', exact: true })).toBeVisible();
 
 		// Verify the token was persisted via API.
 		const tokens = await listTokensViaAPI(request, adminToken, projectName, appName);
