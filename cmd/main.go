@@ -507,6 +507,7 @@ func main() {
 	apiServer := api.NewServer(mgr.GetClient(), clientset, dynamicClient, mgr.GetConfig(), authProvider, jwtHelper, uiSub, authz.NewNativePolicyEngine(mgr.GetClient()))
 	apiServer.SetOperatorIdentity(operatorNamespace(), operatorServiceAccount())
 	apiServer.SetBuildLogProvider(buildLogStore)
+	apiServer.SetUncachedReader(mgr.GetAPIReader())
 	if mc, err := metricsv.NewForConfig(mgr.GetConfig()); err == nil {
 		apiServer.SetMetricsClient(mc.MetricsV1beta1())
 	} else {
