@@ -1750,12 +1750,14 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 		portEnv = append(portEnv, corev1.EnvVar{Name: revisionEnvName, Value: es.LastBuiltSHA})
 	}
 
+	podSC, containerSC := workloadSecurityContexts(app)
 	containers := []corev1.Container{
 		{
-			Name:    app.Name,
-			Image:   image,
-			Env:     portEnv,
-			EnvFrom: envstore.EnvFromSources(app.Name),
+			Name:            app.Name,
+			Image:           image,
+			Env:             portEnv,
+			EnvFrom:         envstore.EnvFromSources(app.Name),
+			SecurityContext: containerSC,
 			Ports: []corev1.ContainerPort{
 				{
 					Name:          "http",
@@ -1844,6 +1846,7 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 					ServiceAccountName: app.Name,
 					Containers:         containers,
 					Volumes:            volumes,
+					SecurityContext:    podSC,
 				},
 			},
 		},
@@ -1997,8 +2000,8 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 		existing.Spec.Template.Spec.Containers[0].LivenessProbe = desiredContainer.LivenessProbe
 		existing.Spec.Template.Spec.Containers[0].ReadinessProbe = desiredContainer.ReadinessProbe
 		existing.Spec.Template.Spec.Containers[0].StartupProbe = desiredContainer.StartupProbe
-		existing.Spec.Template.Spec.Containers[0].SecurityContext = nil
-		existing.Spec.Template.Spec.SecurityContext = nil
+		existing.Spec.Template.Spec.Containers[0].SecurityContext = desiredContainer.SecurityContext
+		existing.Spec.Template.Spec.SecurityContext = desired.Spec.Template.Spec.SecurityContext
 		existing.Spec.Template.ObjectMeta.Annotations = desiredPodAnnotations
 		existing.Spec.Template.ObjectMeta.Labels = desired.Spec.Template.ObjectMeta.Labels
 		existing.Annotations = desiredAnnotations
@@ -2030,11 +2033,13 @@ func (r *AppReconciler) reconcileCronJob(ctx context.Context, app *mortisev1alph
 	// Env Secret written by the caller before the build — same as Deployment path.
 	envHash := r.hashEnvSecretData(ctx, app.Name, envNs)
 
+	podSC, containerSC := workloadSecurityContexts(app)
 	containers := []corev1.Container{
 		{
-			Name:    app.Name,
-			Image:   image,
-			EnvFrom: envstore.EnvFromSources(app.Name),
+			Name:            app.Name,
+			Image:           image,
+			EnvFrom:         envstore.EnvFromSources(app.Name),
+			SecurityContext: containerSC,
 		},
 	}
 
@@ -2105,6 +2110,7 @@ func (r *AppReconciler) reconcileCronJob(ctx context.Context, app *mortisev1alph
 							RestartPolicy:      corev1.RestartPolicyOnFailure,
 							Containers:         containers,
 							Volumes:            volumes,
+							SecurityContext:    podSC,
 						},
 					},
 				},
@@ -2216,8 +2222,8 @@ func (r *AppReconciler) reconcileCronJob(ctx context.Context, app *mortisev1alph
 		existing.Spec.JobTemplate.Spec.Template.Spec.Containers[0].VolumeMounts = desiredContainer.VolumeMounts
 		existing.Spec.JobTemplate.Spec.Template.Spec.Volumes = desiredPodSpec.Volumes
 		existing.Spec.JobTemplate.Spec.Template.Spec.Containers[0].Resources = desiredContainer.Resources
-		existing.Spec.JobTemplate.Spec.Template.Spec.Containers[0].SecurityContext = nil
-		existing.Spec.JobTemplate.Spec.Template.Spec.SecurityContext = nil
+		existing.Spec.JobTemplate.Spec.Template.Spec.Containers[0].SecurityContext = desiredContainer.SecurityContext
+		existing.Spec.JobTemplate.Spec.Template.Spec.SecurityContext = desired.Spec.JobTemplate.Spec.Template.Spec.SecurityContext
 		return true, nil
 	})
 }
@@ -5201,4 +5207,24 @@ func mergeBuildConditions(dst *[]metav1.Condition, src []metav1.Condition) {
 			meta.RemoveStatusCondition(dst, t)
 		}
 	}
+}
+
+// workloadSecurityContexts returns the pod and container securityContext
+// for an App. Unset profile: nil on both, which the update path also
+// writes, so anything injected out of band is cleared (the pre-existing
+// behaviour). "restricted" is the PodSecurity restricted profile's minimum
+// (CAI-206): a default-on version shipped in #252 and was pulled in #296
+// because images that run as root cannot satisfy runAsNonRoot, so this is
+// opt-in per App and visible in the CRD.
+func workloadSecurityContexts(app *mortisev1alpha1.App) (*corev1.PodSecurityContext, *corev1.SecurityContext) {
+	if app.Spec.SecurityProfile != mortisev1alpha1.SecurityProfileRestricted {
+		return nil, nil
+	}
+	return &corev1.PodSecurityContext{
+			RunAsNonRoot:   ptr.To(true),
+			SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
+		}, &corev1.SecurityContext{
+			AllowPrivilegeEscalation: ptr.To(false),
+			Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+		}
 }

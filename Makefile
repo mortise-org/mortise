@@ -258,7 +258,7 @@ INT_OBSERVER_IMG ?= mortise-observer:int
 # disabled in the integration install). Pre-importing the chart deps keeps
 # cold-registry pulls out of the helm --wait budget.
 INT_DEP_IMAGES ?= nginx:1.27 postgres:16 redis:7 busybox:1.37 alpine:3.20 docker.io/traefik:v3.3.3 registry.k8s.io/metrics-server/metrics-server:v0.7.2 \
-	gitea/gitea:1.24.3 distribution/distribution:2.8.3 moby/buildkit:v0.29.0
+	gitea/gitea:1.24.3 distribution/distribution:2.8.3 moby/buildkit:v0.29.0 nginxinc/nginx-unprivileged:1.27
 
 .PHONY: test-integration
 test-integration: ## Create k3d cluster, install chart + test deps, run integration tests, tear down
