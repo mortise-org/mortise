@@ -1,4 +1,5 @@
-{{- if .Values.systemNamespace.create }}
+{{- $sysns := .Values.systemNamespace | default dict }}
+{{- if dig "create" false $sysns }}
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -6,7 +7,7 @@ metadata:
   labels:
     app.kubernetes.io/name: mortise
     app.kubernetes.io/managed-by: {{ .Release.Service }}
-    {{- with .Values.systemNamespace.podSecurityLabels }}
+    {{- with dig "podSecurityLabels" (dict) $sysns }}
     {{- range $mode, $level := . }}
     pod-security.kubernetes.io/{{ $mode }}: {{ $level }}
     {{- end }}

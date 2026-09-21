@@ -457,6 +457,17 @@ test-charts: ## Lint and template-test both Helm charts (no cluster required)
 	! helm template test charts/mortise --namespace mortise-system \
 		--set buildInfra.createNamespace=false \
 		--show-only templates/namespace.yaml >/dev/null 2>&1
+	@echo "==> Template: values from a release predating obs-v2 (CAI-310)..."
+# `helm upgrade --reuse-values` replays the previous release's values, so
+# every block added since then is absent at render time. --set <block>=null
+# deletes the chart default, reproducing that shape; templates must render.
+	helm template test charts/mortise --namespace mortise-system \
+		--set observer.prometheus=null \
+		--set observer.retention=null \
+		--set mortise-core.metrics=null \
+		--set mortise-core.systemNamespace=null \
+		--set mortise-core.operator=null \
+		>/dev/null 2>&1
 	@echo "==> Verifying system namespace toggle (default off)..."
 	! helm template test charts/mortise --namespace mortise-system \
 		--show-only charts/mortise-core/templates/system-namespace.yaml >/dev/null 2>&1

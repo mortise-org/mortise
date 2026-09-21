@@ -1,3 +1,4 @@
+{{- $metrics := .Values.metrics | default dict }}
 apiVersion: v1
 kind: Service
 metadata:
@@ -5,10 +6,10 @@ metadata:
   namespace: {{ .Release.Namespace }}
   labels:
     app.kubernetes.io/name: mortise
-  {{- if .Values.metrics.enabled }}
+  {{- if dig "enabled" true $metrics }}
   annotations:
     prometheus.io/scrape: "true"
-    prometheus.io/port: {{ .Values.metrics.port | quote }}
+    prometheus.io/port: {{ dig "port" 8080 $metrics | quote }}
     prometheus.io/path: /metrics
   {{- end }}
 spec:
@@ -18,8 +19,8 @@ spec:
       targetPort: api
       protocol: TCP
       name: api
-    {{- if .Values.metrics.enabled }}
-    - port: {{ .Values.metrics.port }}
+    {{- if dig "enabled" true $metrics }}
+    - port: {{ dig "port" 8080 $metrics }}
       targetPort: metrics
       protocol: TCP
       name: metrics

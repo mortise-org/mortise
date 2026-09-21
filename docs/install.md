@@ -355,8 +355,15 @@ Save as `values.yaml` and run `helm install -f values.yaml`.
 
 ```bash
 helm repo update
-helm upgrade mortise mortise/mortise -n mortise-system
+helm upgrade mortise mortise/mortise -n mortise-system --reset-then-reuse-values
 ```
+
+Use `--reset-then-reuse-values` (Helm ≥3.14), not `--reuse-values`: it keeps
+your overrides while picking up the new chart's defaults, so values blocks
+added by the release exist at render time. Plain `--reuse-values` replays the
+previous release's values wholesale and skips new defaults — check
+`helm get values mortise -n mortise-system` afterwards for stale overrides
+(an old pinned `image.tag` will silently hold the upgrade back).
 
 **CRD note:** `helm upgrade` does not update CRD definitions by default
 (Helm's long-standing safety behavior). If a release adds or changes CRD

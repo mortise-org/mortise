@@ -1,4 +1,10 @@
-{{- if and .Values.observer.enabled .Values.observer.prometheus.serviceMonitor.enabled }}
+{{- /* dig, not direct field access: under `helm upgrade --reuse-values` the
+     values are the PREVIOUS release's, which may predate the serviceMonitor
+     block entirely, and a nil deref fails the whole upgrade (CAI-310). The
+     dig defaults mirror values.yaml. */}}
+{{- $obs := .Values.observer | default dict }}
+{{- $sm := dig "prometheus" "serviceMonitor" (dict) $obs }}
+{{- if and (dig "enabled" true $obs) (dig "enabled" false $sm) }}
 # For kube-prometheus-stack (prometheus-operator) users. Off by default:
 # the ServiceMonitor CRD does not exist on clusters without the operator
 # and templating it there would break install.
@@ -10,7 +16,7 @@ metadata:
   labels:
     app.kubernetes.io/name: mortise-observer
     {{- include "mortise.labels" . | nindent 4 }}
-    {{- with .Values.observer.prometheus.serviceMonitor.labels }}
+    {{- with (dig "labels" (dict) $sm) }}
     {{- toYaml . | nindent 4 }}
     {{- end }}
 spec:
@@ -20,7 +26,7 @@ spec:
   endpoints:
     - port: http
       path: /metrics
-      interval: {{ .Values.observer.prometheus.serviceMonitor.interval }}
+      interval: {{ dig "interval" "30s" $sm }}
       # The exposition's pod label identifies the APP pod; without
       # honorLabels Prometheus renames it exported_pod in favor of the
       # observer's own pod, breaking per-pod queries.
