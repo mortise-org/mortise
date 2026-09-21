@@ -136,6 +136,13 @@ registry:
   image: distribution/distribution:2.8.3
   storage: pvc
   storageSize: 10Gi
+  # Chown pre-existing PVC data to the registry's runAsUser at pod start
+  # (root initContainer, guarded by an ownership check so it is a no-op
+  # after the first run). Needed once when upgrading from a release whose
+  # registry ran as root: fsGroup does not reassign ownership on NFS or
+  # hostPath-backed volumes, so old data stays unwritable for the non-root
+  # registry and every push fails 500 (CAI-313). Ignored for emptyDir.
+  migrateOwnership: true
   # The Distribution registry runs fine as non-root; fsGroup makes the
   # storage volume (PVC or emptyDir) group-writable for it.
   podSecurityContext:

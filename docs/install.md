@@ -353,8 +353,14 @@ Save as `values.yaml` and run `helm install -f values.yaml`.
 
 ### Upgrading
 
+Apply CRDs first — `helm upgrade` does not update CRD definitions (Helm's
+long-standing safety behavior), and a new operator writing through old CRDs
+has its new fields silently pruned by the API server:
+
 ```bash
 helm repo update
+helm pull mortise/mortise --untar
+kubectl apply --server-side -f mortise/charts/mortise-core/crds/
 helm upgrade mortise mortise/mortise -n mortise-system --reset-then-reuse-values
 ```
 
@@ -365,14 +371,14 @@ previous release's values wholesale and skips new defaults — check
 `helm get values mortise -n mortise-system` afterwards for stale overrides
 (an old pinned `image.tag` will silently hold the upgrade back).
 
-**CRD note:** `helm upgrade` does not update CRD definitions by default
-(Helm's long-standing safety behavior). If a release adds or changes CRD
-fields, re-apply them explicitly:
-
-```bash
-helm pull mortise/mortise --untar
-kubectl apply -f mortise/charts/mortise-core/crds/
-```
+**Upgrading from a release whose registry ran as root** (≤1.1.0's
+predecessors): the hardened registry runs as uid 1000, and fsGroup cannot
+reassign ownership on NFS or hostPath-backed volumes, so pre-existing
+registry data would stay unwritable and every push would fail. The chart
+handles this: a guarded `migrate-ownership` initContainer (on by default,
+`registry.migrateOwnership: false` to opt out) chowns the data once and is
+a no-op afterwards. The first registry start after the upgrade can take a
+few extra minutes on a large registry while the chown runs.
 
 **Upgrading to 1.1.0 specifically:** 1.1.0 retargeted the release-namespace
 RoleBinding while keeping its name, and `roleRef` is immutable, so that one

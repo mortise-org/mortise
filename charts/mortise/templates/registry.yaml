@@ -23,6 +23,36 @@ spec:
       securityContext:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- if and (dig "migrateOwnership" true .Values.registry) (ne .Values.registry.storage "emptyDir") }}
+      # Data written by a release whose registry ran as root is unwritable
+      # for the non-root registry, and fsGroup cannot fix ownership on NFS
+      # or hostPath volumes (CAI-313). Runs as root, exits immediately when
+      # the top-level dir already has the right owner.
+      initContainers:
+        - name: migrate-ownership
+          image: {{ .Values.registry.image }}
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - |
+              uid={{ dig "podSecurityContext" "runAsUser" 1000 .Values.registry }}
+              gid={{ dig "podSecurityContext" "runAsGroup" 1000 .Values.registry }}
+              if [ -d /var/lib/registry/docker ] && [ "$(stat -c %u /var/lib/registry/docker)" != "$uid" ]; then
+                echo "migrating /var/lib/registry ownership to $uid:$gid"
+                chown -R "$uid:$gid" /var/lib/registry
+              fi
+          securityContext:
+            runAsUser: 0
+            runAsNonRoot: false
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+              add: ["CHOWN", "FOWNER", "DAC_OVERRIDE"]
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/registry
+      {{- end }}
       containers:
         - name: registry
           image: {{ .Values.registry.image }}

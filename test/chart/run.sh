@@ -108,6 +108,134 @@ helm repo update >/dev/null
 # "missing in charts/ directory" install failure that hides the real cause.
 helm dependency build "${REPO_ROOT}/charts/mortise" || fatal "helm dependency build failed; chart subcharts are missing"
 
+
+# registry_push <name> — push a tiny OCI blob+manifest to localhost:15000
+# under repository <name>, tag latest. Echoes nothing; returns nonzero on
+# any failed step. Callers own the port-forward.
+registry_push() {
+    local repo="$1" content digest size upload_url manifest
+    content="mortise-chart-test-$(date +%s)-$$"
+    digest="sha256:$(echo -n "$content" | sha256sum | awk '{print $1}')"
+    size=${#content}
+    upload_url=$(curl -sf -X POST "http://localhost:15000/v2/${repo}/blobs/uploads/" \
+        -D - -o /dev/null 2>/dev/null | grep -i "^location:" | tr -d '\r' | awk '{print $2}') || return 1
+    [ -n "$upload_url" ] || return 1
+    case "$upload_url" in /*) upload_url="http://localhost:15000${upload_url}";; esac
+    curl -sf -X PUT "${upload_url}&digest=${digest}" \
+        -H "Content-Type: application/octet-stream" \
+        -d "$content" >/dev/null 2>/dev/null || return 1
+    manifest="{\"schemaVersion\":2,\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\",\"config\":{\"mediaType\":\"application/vnd.oci.image.config.v1+json\",\"digest\":\"${digest}\",\"size\":${size}},\"layers\":[]}"
+    curl -sf -X PUT "http://localhost:15000/v2/${repo}/manifests/latest" \
+        -H "Content-Type: application/vnd.oci.image.manifest.v1+json" \
+        -d "$manifest" >/dev/null 2>/dev/null || return 1
+}
+
+# registry_get <name> — fetch repository <name>'s latest manifest.
+registry_get() {
+    curl -sf "http://localhost:15000/v2/${1}/manifests/latest" \
+        -H "Accept: application/vnd.oci.image.manifest.v1+json" >/dev/null 2>/dev/null
+}
+
+
+# ── Test 0: Upgrade from the previous published release (CAI-313) ───────
+# Four upgrade-path traps shipped in one release (CAI-310..313) because the
+# chart was only ever tested against fresh installs. This lane installs the
+# newest PUBLISHED release, seeds real registry data through its (rootful)
+# registry, then performs the documented upgrade to the LOCAL chart and
+# asserts the upgrade succeeds, the operator reports its version through the
+# new CRDs, old data survives, and — the CAI-313 trap — a NEW push still
+# works against data the old registry wrote. Skipped when no published
+# release is reachable (first release, offline dev box).
+
+MORTISE_CHART_REPO="${MORTISE_CHART_REPO:-https://mortise-org.github.io/mortise}"
+helm repo add mortise "$MORTISE_CHART_REPO" >/dev/null 2>&1 || true
+helm repo update mortise >/dev/null 2>&1 || true
+PREV_VERSION="${PREV_VERSION:-$(helm search repo mortise/mortise -o json 2>/dev/null \
+    | python3 -c 'import sys,json;l=json.load(sys.stdin);print(l[0]["version"] if l else "")' 2>/dev/null || true)}"
+
+if [ -z "$PREV_VERSION" ] || [ "$PREV_VERSION" = "skip" ]; then
+    info "Test 0: no published release reachable — skipping upgrade lane"
+else
+    info "Test 0: upgrade from published release ${PREV_VERSION} to local chart"
+
+    upgrade_ok=true
+    helm install mortise mortise/mortise --version "$PREV_VERSION" \
+        --namespace "$NAMESPACE" --create-namespace \
+        --set platformConfig.domain=test.mortise.local \
+        --wait --timeout "$HELM_WAIT_TIMEOUT" 2>&1 || upgrade_ok=false
+    if ! $upgrade_ok; then
+        fail "Upgrade lane — previous release ${PREV_VERSION} did not install"
+    else
+        wait_for_deployment "$DEPS_NAMESPACE" registry 180 || true
+
+        # Seed: real data written by the PREVIOUS release's registry, with
+        # whatever uid it ran as. This is the data an upgrade must not strand.
+        kubectl port-forward -n "$DEPS_NAMESPACE" svc/registry 15000:5000 >/dev/null 2>&1 &
+        PF_PID=$!
+        sleep 3
+        seed_ok=true
+        registry_push upgrade-seed || seed_ok=false
+        kill "$PF_PID" 2>/dev/null || true
+        PF_PID=""
+        $seed_ok || info "  (seed push to ${PREV_VERSION} registry failed; ownership assertion will be weaker)"
+
+        # The documented upgrade procedure (docs/install.md): CRDs first,
+        # then helm upgrade with --reset-then-reuse-values.
+        kubectl apply --server-side -f "${REPO_ROOT}/charts/mortise-core/crds/" >/dev/null || upgrade_ok=false
+        helm upgrade mortise "${REPO_ROOT}/charts/mortise" \
+            --namespace "$NAMESPACE" \
+            --reset-then-reuse-values \
+            --set mortise-core.image.repository=mortise \
+            --set mortise-core.image.tag=chart-test \
+            --set mortise-core.image.pullPolicy=Never \
+            --wait --timeout "$HELM_WAIT_TIMEOUT" 2>&1 || upgrade_ok=false
+
+        if ! $upgrade_ok; then
+            fail "Upgrade lane — documented upgrade from ${PREV_VERSION} failed"
+        else
+            pass "Upgrade lane — helm upgrade from ${PREV_VERSION} succeeds"
+
+            # New CRD fields must be live: the operator stamps its version on
+            # the PlatformConfig; stale CRDs silently prune it (CAI-312).
+            op_version=""
+            for _ in $(seq 1 20); do
+                op_version=$(kubectl get platformconfig platform \
+                    -o jsonpath='{.status.operatorVersion}' 2>/dev/null || true)
+                [ -n "$op_version" ] && break
+                sleep 3
+            done
+            if [ -n "$op_version" ] && [ "$op_version" != "$PREV_VERSION" ]; then
+                pass "Upgrade lane — operator reports its version through upgraded CRDs (${op_version})"
+            else
+                fail "Upgrade lane — operatorVersion empty or still ${PREV_VERSION} (got: '${op_version}'; CRDs stale?)"
+            fi
+
+            wait_for_deployment "$DEPS_NAMESPACE" registry 180 || true
+            kubectl port-forward -n "$DEPS_NAMESPACE" svc/registry 15000:5000 >/dev/null 2>&1 &
+            PF_PID=$!
+            sleep 3
+            if $seed_ok && registry_get upgrade-seed; then
+                pass "Upgrade lane — data from ${PREV_VERSION} survives the upgrade"
+            elif $seed_ok; then
+                fail "Upgrade lane — data from ${PREV_VERSION} lost after upgrade"
+            fi
+            # The CAI-313 assertion: the upgraded (non-root) registry can
+            # still WRITE alongside data the old registry created.
+            if registry_push upgrade-postwrite; then
+                pass "Upgrade lane — push works after upgrade (pre-existing data ownership migrated)"
+            else
+                fail "Upgrade lane — push fails after upgrade (CAI-313 ownership regression)"
+            fi
+            kill "$PF_PID" 2>/dev/null || true
+            PF_PID=""
+        fi
+
+        info "  Cleaning up upgrade-lane install..."
+        helm uninstall mortise -n "$NAMESPACE" --wait --timeout 180s >/dev/null 2>&1 || true
+        kubectl delete namespace "$NAMESPACE" "$DEPS_NAMESPACE" --ignore-not-found --wait=true --timeout=180s >/dev/null 2>&1 || true
+    fi
+fi
+
 # ── Test 1: Umbrella chart deploys all components ────────────────────────
 
 info "Test 1: Umbrella chart — full deployment"
@@ -193,33 +321,8 @@ PF_PID=$!
 sleep 2
 
 # Push a test blob via the OCI distribution API.
-# Create a small test layer.
-TEST_CONTENT="mortise-chart-test-$(date +%s)"
-TEST_DIGEST="sha256:$(echo -n "$TEST_CONTENT" | sha256sum | awk '{print $1}')"
-TEST_SIZE=${#TEST_CONTENT}
-
-# Initiate upload, push blob, create manifest.
 push_ok=true
-upload_url=$(curl -sf -X POST "http://localhost:15000/v2/chart-test/blobs/uploads/" \
-    -D - -o /dev/null 2>/dev/null | grep -i "^location:" | tr -d '\r' | awk '{print $2}') || push_ok=false
-
-if $push_ok && [ -n "$upload_url" ]; then
-    # Handle relative URLs.
-    if [[ "$upload_url" == /* ]]; then
-        upload_url="http://localhost:15000${upload_url}"
-    fi
-    curl -sf -X PUT "${upload_url}&digest=${TEST_DIGEST}" \
-        -H "Content-Type: application/octet-stream" \
-        -d "$TEST_CONTENT" >/dev/null 2>/dev/null || push_ok=false
-fi
-
-if $push_ok; then
-    # Create a minimal OCI manifest referencing our blob.
-    MANIFEST="{\"schemaVersion\":2,\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\",\"config\":{\"mediaType\":\"application/vnd.oci.image.config.v1+json\",\"digest\":\"${TEST_DIGEST}\",\"size\":${TEST_SIZE}},\"layers\":[]}"
-    curl -sf -X PUT "http://localhost:15000/v2/chart-test/manifests/latest" \
-        -H "Content-Type: application/vnd.oci.image.manifest.v1+json" \
-        -d "$MANIFEST" >/dev/null 2>/dev/null || push_ok=false
-fi
+registry_push chart-test || push_ok=false
 
 # Stop port-forward.
 kill "$PF_PID" 2>/dev/null || true
@@ -240,8 +343,7 @@ else
     PF_PID=$!
     sleep 3
 
-    if curl -sf "http://localhost:15000/v2/chart-test/manifests/latest" \
-        -H "Accept: application/vnd.oci.image.manifest.v1+json" >/dev/null 2>/dev/null; then
+    if registry_get chart-test; then
         pass "Registry PVC persistence — data survives pod restart"
     else
         fail "Registry PVC persistence — data lost after pod restart"
