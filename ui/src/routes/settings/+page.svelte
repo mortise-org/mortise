@@ -607,7 +607,7 @@
 		<!-- Provider list -->
 		{#if providers.length > 0}
 			<div class="space-y-2">
-				{#each providers as provider}
+				{#each providers as provider (provider.name)}
 					<div class="flex items-center justify-between rounded-md border border-surface-600 bg-surface-700 px-4 py-3">
 						<div class="flex items-center gap-3">
 							<GitBranch class="h-4 w-4 text-gray-400" />
@@ -980,7 +980,7 @@
 				</div>
 			{:else}
 				<div class="space-y-1.5">
-					{#each users as u}
+					{#each users as u (u.email)}
 						<div class="rounded-md border border-surface-600 bg-surface-800">
 							<div class="flex items-center justify-between px-4 py-3">
 								<div class="flex-1 min-w-0">

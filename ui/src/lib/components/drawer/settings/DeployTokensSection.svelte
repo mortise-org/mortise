@@ -121,7 +121,7 @@
 		<div class="h-8 animate-pulse rounded bg-surface-700"></div>
 	{:else if tokens.length > 0}
 		<div class="space-y-1.5">
-			{#each tokens as tok}
+			{#each tokens as tok (tok.id)}
 				<div class="flex items-center justify-between rounded-md bg-surface-700 px-3 py-2">
 					<div>
 						<p class="text-xs font-medium text-white">{tok.name}</p>

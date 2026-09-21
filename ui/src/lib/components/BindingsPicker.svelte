@@ -102,7 +102,7 @@
 			{#if bindingRows.length > 0}
 				<div>
 					<div class="px-3 py-1.5 text-xs font-medium text-gray-500 uppercase tracking-wide bg-surface-700/50">Bindings</div>
-					{#each bindingRows.slice(0, 8) as row}
+					{#each bindingRows.slice(0, 8) as row (`${row.appName}/${row.key}`)}
 						<button type="button" onclick={() => { onBindingSelect(row.appName, row.key); onClose(); }}
 							class="flex w-full items-center justify-between px-3 py-2 text-sm hover:bg-surface-700 transition-colors">
 							<span class="font-mono text-gray-200">{row.display}</span>
@@ -121,7 +121,7 @@
 			{#if secretRows.length > 0}
 				<div class="border-t border-surface-600">
 					<div class="px-3 py-1.5 text-xs font-medium text-gray-500 uppercase tracking-wide bg-surface-700/50">Secrets</div>
-					{#each secretRows.slice(0, 8) as row}
+					{#each secretRows.slice(0, 8) as row (`${row.name}/${row.key}`)}
 						<button type="button" onclick={() => { onSecretSelect(row.name); onClose(); }}
 							class="flex w-full items-center justify-between px-3 py-2 text-sm hover:bg-surface-700 transition-colors">
 							<span class="font-mono text-gray-200">{row.key}</span>

@@ -75,7 +75,7 @@
 		</div>
 	{:else}
 		<div class="grid gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
-			{#each projects as project}
+			{#each projects as project (project.name)}
 				{@const status = projectStatus(project.phase, project.health)}
 				<a
 					href="/projects/{encodeURIComponent(project.name)}"

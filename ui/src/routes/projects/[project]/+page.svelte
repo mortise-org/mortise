@@ -383,11 +383,11 @@
 					<div class="flex items-center gap-3 rounded-lg border border-warning/30 bg-surface-800/95 backdrop-blur px-4 py-2.5 shadow-lg">
 						<RotateCw class="h-4 w-4 shrink-0 text-warning" />
 						<div class="flex items-center gap-2 text-xs">
-							{#each staleApps as app}
+							{#each staleApps as app (app.metadata.name)}
 								{@const envs = staleEnvMap.get(app.metadata.name) ?? []}
 								<div class="flex items-center gap-1 rounded-md border border-surface-600 bg-surface-700 px-2 py-1">
 									<span class="font-medium text-white mr-1">{app.metadata.name}</span>
-									{#each envs as envName}
+									{#each envs as envName (envName)}
 										<button
 											type="button"
 											onclick={() => redeployOneEnv(app.metadata.name, envName)}
@@ -482,7 +482,7 @@
 							</tr>
 						</thead>
 						<tbody>
-							{#each apps as app}
+							{#each apps as app (app.metadata.name)}
 								{@const appEnv = resolveAppEnvironment(app, selectedEnv)}
 								{@const phase = phaseOverrides[phaseOverrideKey(app.metadata.name, appEnv)] ?? appPhaseForEnvironment(app, appEnv)}
 								{@const style = phase ? phaseStyles[phase] : undefined}
@@ -519,7 +519,7 @@
 											{:else}
 												<span class="text-gray-500">-</span>
 											{/if}
-											{#each (staleEnvMap.get(app.metadata.name) ?? []) as envName}
+											{#each (staleEnvMap.get(app.metadata.name) ?? []) as envName (envName)}
 												<button
 													type="button"
 													onclick={(e) => { e.stopPropagation(); redeployOneEnv(app.metadata.name, envName); }}

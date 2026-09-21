@@ -117,7 +117,7 @@
 			<p class="mb-4 text-xs text-gray-500">{categoryDescriptions[category]}</p>
 
 			<div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-				{#each forCategory(category) as ext}
+				{#each forCategory(category) as ext (ext.name)}
 					{@const Icon = actionIcons[ext.actionLabel]}
 					<div class="flex flex-col justify-between rounded-lg border border-surface-600 bg-surface-800 p-4 transition-colors hover:border-surface-500">
 						<div>

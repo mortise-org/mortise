@@ -582,7 +582,7 @@
 										class="mt-1 w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-white placeholder-gray-500 outline-none focus:border-accent"
 									/>
 									<div class="mt-1 max-h-48 overflow-y-auto rounded-md border border-surface-600">
-										{#each filteredRepos as repo}
+										{#each filteredRepos as repo (repo.fullName)}
 											<button
 												type="button"
 												onclick={() => selectRepo(repo)}
@@ -636,7 +636,7 @@
 							/>
 							{#if rootDirFocused && filteredDirs.length > 0}
 								<div class="absolute z-10 mt-1 max-h-48 w-full overflow-y-auto rounded-md border border-surface-600 bg-surface-800">
-									{#each filteredDirs as dir}
+									{#each filteredDirs as dir (dir)}
 										<button
 											type="button"
 											onmousedown={() => { gitPath = dir + '/'; rootDirFocused = false; void loadRepoTree(dir); }}

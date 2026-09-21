@@ -661,7 +661,7 @@
           </div>
         {:else}
           <div class="space-y-1.5">
-            {#each members as member}
+            {#each members as member (member.email)}
               <div class="flex items-center justify-between rounded-md border border-surface-600 bg-surface-800 px-4 py-3">
                 <div class="flex-1 min-w-0">
                   <p class="text-sm text-white truncate">{member.email}</p>
@@ -768,7 +768,7 @@
               <p class="text-xs text-gray-500">No apps in this project.</p>
             {:else}
               <div class="space-y-1.5">
-                {#each projectApps as app}
+                {#each projectApps as app (app.name)}
                   <div class="flex items-center justify-between rounded-md border border-surface-600 bg-surface-900 px-3 py-2">
                     <span class="text-sm text-white">{app.name}</span>
                     <button type="button"

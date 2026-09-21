@@ -203,7 +203,7 @@
 					No bindings. Connect to another app to inject its HOST, PORT, and URL.
 				</div>
 			{:else}
-				{#each currentBindings as binding}
+				{#each currentBindings as binding (binding.ref)}
 					{@const bound = allApps.find(a => a.metadata.name === binding.ref)}
 					<div class="group flex items-center justify-between border-b border-surface-600 px-3 py-2 hover:bg-surface-700/30">
 						<div class="flex items-center gap-2">

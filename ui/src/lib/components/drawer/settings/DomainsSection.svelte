@@ -269,7 +269,7 @@
 
 	{#if domains?.custom && domains.custom.length > 0}
 		<div class="space-y-1.5">
-			{#each domains.custom as d}
+			{#each domains.custom as d (d)}
 				<div class="flex items-center justify-between rounded-md bg-surface-700 px-3 py-2">
 					<span class="font-mono text-xs text-gray-200">{d}</span>
 					<button type="button" onclick={() => handleRemoveDomain(d)} class="text-xs text-gray-500 hover:text-danger">Remove</button>
