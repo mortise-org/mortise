@@ -3765,6 +3765,7 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 			restartedAt := ""
 			deployedHash := ""
 			workloadPresent := false
+			var templateAnnotations map[string]string
 			if isCron {
 				var cj batchv1.CronJob
 				if err := r.Get(ctx, types.NamespacedName{Name: cronJobName(app.Name), Namespace: envNs}, &cj); err == nil {
@@ -3783,6 +3784,7 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 					}
 					restartedAt = dep.Spec.Template.Annotations["mortise.dev/restartedAt"]
 					deployedHash = dep.Spec.Template.Annotations["mortise.dev/env-hash"]
+					templateAnnotations = dep.Spec.Template.Annotations
 				}
 			}
 
@@ -3790,6 +3792,14 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 			// DeployedEnvHash is what's on the running pod template.
 			es.PendingEnvHash = r.hashEnvSecretData(ctx, app.Name, envNs)
 			es.DeployedEnvHash = deployedHash
+			// The frozen hash is a claim about pods, and an explicit restart
+			// after the env's last write falsifies it: those pods resolved
+			// the current Secret. Adopt in status only — re-stamping the
+			// template would itself roll the pods (CAI-314).
+			if es.DeployedEnvHash != "" && es.DeployedEnvHash != es.PendingEnvHash &&
+				observedEnvAgreement(templateAnnotations, rollingOut, envSecretsLastWrite(ctx, r.Client, app.Name, envNs)) {
+				es.DeployedEnvHash = es.PendingEnvHash
+			}
 
 			// An unresolvable secretRef leaves the last resolved value in
 			// place, which is correct and invisible -- report it (CAI-162).
@@ -5122,6 +5132,60 @@ func setEnvRolledOutCondition(conds *[]metav1.Condition, envStatuses []mortisev1
 		Message:            fmt.Sprintf("pods may still be running the previous env in: %s (the env changed after the operator's last rollout; a pod restarted since then already has the current values). Redeploy the app (UI, or POST /api/projects/{project}/apps/{app}/redeploy) or set Project spec.autoRedeploy: true", strings.Join(pending, ", ")),
 		ObservedGeneration: generation,
 	})
+}
+
+// observedEnvAgreement reports whether the workload's pods demonstrably
+// carry the current env even though the frozen pod-template env-hash says
+// otherwise: the rollout has settled and the template's newest restart
+// marker (kubectl's or Mortise's) postdates the env Secrets' last write, so
+// every pod resolved its envFrom after that write. Without this, a
+// `kubectl rollout restart` — which reads the current Secret but never
+// re-stamps the frozen hash — left EnvRolledOut=False permanently
+// (CAI-314, postlab-api: values verified current by direct comparison).
+func observedEnvAgreement(templateAnnotations map[string]string, rollingOut bool, envLastWrite time.Time) bool {
+	if rollingOut || envLastWrite.IsZero() {
+		return false
+	}
+	var latest time.Time
+	for _, k := range []string{"kubectl.kubernetes.io/restartedAt", "mortise.dev/restartedAt"} {
+		v := templateAnnotations[k]
+		if v == "" {
+			continue
+		}
+		if t, err := time.Parse(time.RFC3339, v); err == nil && t.After(latest) {
+			latest = t
+		}
+	}
+	return !latest.IsZero() && latest.After(envLastWrite)
+}
+
+// envSecretsLastWrite returns the newest managedFields timestamp across the
+// two Secrets an environment's env resolves from. Any write moves it
+// forward, metadata-only writes included, so it is an upper bound on when
+// the env data last changed — which errs only toward keeping the
+// RedeployPending condition, never toward clearing it wrongly.
+func envSecretsLastWrite(ctx context.Context, reader client.Reader, appName, envNs string) time.Time {
+	var last time.Time
+	for _, name := range []string{envstore.SharedEnvName, envstore.AppEnvSecretName(appName)} {
+		var sec corev1.Secret
+		if err := reader.Get(ctx, types.NamespacedName{Name: name, Namespace: envNs}, &sec); err != nil {
+			continue
+		}
+		if t := newestManagedFieldsTime(sec.ManagedFields); t.After(last) {
+			last = t
+		}
+	}
+	return last
+}
+
+func newestManagedFieldsTime(entries []metav1.ManagedFieldsEntry) time.Time {
+	var last time.Time
+	for _, mf := range entries {
+		if mf.Time != nil && mf.Time.Time.After(last) {
+			last = mf.Time.Time
+		}
+	}
+	return last
 }
 
 // webhookScheme picks the scheme for the registered webhook URL. An explicit
