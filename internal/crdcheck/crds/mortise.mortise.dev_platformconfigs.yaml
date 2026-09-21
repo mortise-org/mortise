@@ -1,0 +1,410 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.20.1
+  name: platformconfigs.mortise.mortise.dev
+spec:
+  group: mortise.mortise.dev
+  names:
+    kind: PlatformConfig
+    listKind: PlatformConfigList
+    plural: platformconfigs
+    singular: platformconfig
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.domain
+      name: Domain
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.operatorVersion
+      name: Operator
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          PlatformConfig is the Schema for the platformconfigs API. It is cluster-scoped
+          and there must be exactly one instance named "platform" per cluster.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: spec defines the desired state of PlatformConfig
+            properties:
+              build:
+                description: Build configures the BuildKit daemon used to build App
+                  images from source.
+                properties:
+                  buildkitAddr:
+                    description: |-
+                      BuildkitAddr is the address of the BuildKit daemon
+                      (e.g. tcp://buildkitd:1234 or unix:///run/buildkit/buildkitd.sock).
+                    type: string
+                  defaultPlatform:
+                    default: linux/amd64
+                    description: |-
+                      DefaultPlatform is the OCI platform string used when building images
+                      (e.g. linux/amd64). Defaults to linux/amd64.
+                    type: string
+                  tlsSecretRef:
+                    description: |-
+                      TLSSecretRef references a secret containing mTLS credentials for BuildKit
+                      (keys: ca.crt, tls.crt, tls.key).
+                    properties:
+                      key:
+                        description: Key within the secret.
+                        type: string
+                      name:
+                        description: Name of the secret.
+                        type: string
+                      namespace:
+                        description: Namespace of the secret.
+                        type: string
+                    required:
+                    - key
+                    - name
+                    - namespace
+                    type: object
+                required:
+                - buildkitAddr
+                type: object
+              defaults:
+                description: Defaults holds platform-wide defaults for Apps.
+                properties:
+                  resources:
+                    description: Resources are the default CPU and memory limits for
+                      App containers.
+                    properties:
+                      cpu:
+                        description: |-
+                          CPU is the reserved CPU (e.g. "100m"). Also the limit unless CPULimit
+                          is set.
+                        type: string
+                      cpuLimit:
+                        description: |-
+                          CPULimit is the ceiling this workload may burst to, above the CPU
+                          reservation. Exceeding it throttles the container. Defaults to CPU.
+                        type: string
+                      memory:
+                        description: |-
+                          Memory is the reserved memory (e.g. "128Mi"). Also the limit unless
+                          MemoryLimit is set.
+                        type: string
+                      memoryLimit:
+                        description: |-
+                          MemoryLimit is the ceiling this workload may burst to, above the Memory
+                          reservation. Exceeding it is an OOM kill, not throttling, so leave
+                          headroom. Defaults to Memory.
+                        type: string
+                    type: object
+                type: object
+              domain:
+                description: |-
+                  Domain is the base domain for the platform. Apps receive subdomains under
+                  this domain automatically (e.g. yourdomain.com → app.yourdomain.com).
+                  When empty, apps are only reachable via port-forward or ClusterIP.
+                type: string
+              domainTemplate:
+                description: |-
+                  DomainTemplate is a Go text/template that controls how auto-generated
+                  hostnames are constructed. Available variables: {{.App}}, {{.Project}},
+                  {{.Env}}, {{.Domain}}. The {{.Env}} component is omitted for the
+                  production environment. When empty, defaults to
+                  "{{.App}}-{{.Project}}{{if ne .Env \"production\"}}-{{.Env}}{{end}}.{{.Domain}}"
+                  which produces collision-safe flat subdomains (single-level wildcard).
+                type: string
+              externalDomain:
+                description: |-
+                  ExternalDomain is the hostname where the Mortise API is publicly
+                  reachable. Used for git webhook callbacks. Falls back to Domain
+                  when unset.
+                type: string
+              externalScheme:
+                description: |-
+                  ExternalScheme is the URL scheme git hosts use to reach the API at
+                  ExternalDomain, for webhook registration. When unset, https is used
+                  if spec.tls.certManagerClusterIssuer is configured and http otherwise
+                  -- which is wrong wherever TLS terminates ahead of the cluster (an
+                  edge proxy, a tunnel): the hook is then registered over plain http,
+                  and a host that redirects http to https breaks deliveries silently,
+                  since git hosts do not follow redirects. Set it explicitly in that
+                  case. Changing it re-registers every hook.
+                enum:
+                - http
+                - https
+                type: string
+              github:
+                description: |-
+                  GitHub holds optional overrides for the project-maintained GitHub App.
+                  Admins who want to use their own GitHub OAuth App can specify the client
+                  ID here; otherwise the device flow uses the built-in default.
+                properties:
+                  clientID:
+                    description: |-
+                      ClientID is the OAuth client ID for a self-hosted GitHub App.
+                      When set, the device flow uses this instead of the project-maintained default.
+                    type: string
+                type: object
+              observability:
+                description: |-
+                  Observability configures external adapter endpoints for historical logs
+                  and metrics queries.
+                properties:
+                  logsAdapterEndpoint:
+                    description: |-
+                      LogsAdapterEndpoint is the base URL of a service implementing the
+                      Mortise log adapter contract (GET /v1/logs).
+                    type: string
+                  logsAdapterTokenSecretRef:
+                    description: |-
+                      LogsAdapterTokenSecretRef references a Secret containing a bearer token
+                      for authenticating with the logs adapter.
+                    properties:
+                      key:
+                        description: Key within the secret.
+                        type: string
+                      name:
+                        description: Name of the secret.
+                        type: string
+                      namespace:
+                        description: Namespace of the secret.
+                        type: string
+                    required:
+                    - key
+                    - name
+                    - namespace
+                    type: object
+                  metricsAdapterEndpoint:
+                    description: |-
+                      MetricsAdapterEndpoint is the base URL of a service implementing the
+                      Mortise metrics adapter contract (GET /v1/metrics).
+                    type: string
+                  metricsAdapterTokenSecretRef:
+                    description: |-
+                      MetricsAdapterTokenSecretRef references a Secret containing a bearer token
+                      for authenticating with the metrics adapter.
+                    properties:
+                      key:
+                        description: Key within the secret.
+                        type: string
+                      name:
+                        description: Name of the secret.
+                        type: string
+                      namespace:
+                        description: Namespace of the secret.
+                        type: string
+                    required:
+                    - key
+                    - name
+                    - namespace
+                    type: object
+                  trafficAdapterEndpoint:
+                    description: |-
+                      TrafficAdapterEndpoint is the base URL of a service implementing the
+                      Mortise traffic adapter contract (GET /v1/traffic).
+                    type: string
+                  trafficAdapterTokenSecretRef:
+                    description: |-
+                      TrafficAdapterTokenSecretRef references a Secret containing a bearer token
+                      for authenticating with the traffic adapter.
+                    properties:
+                      key:
+                        description: Key within the secret.
+                        type: string
+                      name:
+                        description: Name of the secret.
+                        type: string
+                      namespace:
+                        description: Namespace of the secret.
+                        type: string
+                    required:
+                    - key
+                    - name
+                    - namespace
+                    type: object
+                type: object
+              registry:
+                description: Registry configures the OCI registry used to store built
+                  App images.
+                properties:
+                  credentialsSecretRef:
+                    description: |-
+                      CredentialsSecretRef references a secret containing Basic or Bearer auth
+                      credentials for the registry (keys: username, password).
+                    properties:
+                      key:
+                        description: Key within the secret.
+                        type: string
+                      name:
+                        description: Name of the secret.
+                        type: string
+                      namespace:
+                        description: Namespace of the secret.
+                        type: string
+                    required:
+                    - key
+                    - name
+                    - namespace
+                    type: object
+                  insecureSkipTLSVerify:
+                    description: |-
+                      InsecureSkipTLSVerify disables TLS verification when talking to the registry.
+                      Intended for local k3d clusters only.
+                    type: boolean
+                  namespace:
+                    default: mortise
+                    description: |-
+                      Namespace is the registry namespace under which app images are stored.
+                      Defaults to "mortise".
+                    type: string
+                  pullSecretName:
+                    description: |-
+                      PullSecretName is the name of the k8s image-pull Secret that carries the
+                      registry credentials and is projected into App pods.
+                    type: string
+                  pullURL:
+                    description: |-
+                      PullURL is the registry URL that kubelet uses to pull images. When the
+                      bundled registry runs behind a node-local DaemonSet proxy, this differs
+                      from URL (which is used for BuildKit pushes via cluster DNS). If empty,
+                      URL is used for both push and pull.
+                    type: string
+                  url:
+                    description: URL is the OCI registry endpoint (e.g. registry.example.com).
+                    type: string
+                required:
+                - url
+                type: object
+              storage:
+                description: Storage configures platform-level storage defaults.
+                properties:
+                  defaultStorageClass:
+                    description: |-
+                      DefaultStorageClass is the StorageClass to use for App volumes that do not
+                      specify their own. If empty, the cluster default StorageClass is used.
+                    type: string
+                type: object
+              tls:
+                description: TLS configures TLS certificate issuance for App Ingresses.
+                properties:
+                  certManagerClusterIssuer:
+                    description: |-
+                      CertManagerClusterIssuer is the name of the cert-manager ClusterIssuer to
+                      use when provisioning TLS certificates for App Ingresses
+                      (e.g. letsencrypt-prod).
+                    type: string
+                type: object
+            type: object
+          status:
+            description: status defines the observed state of PlatformConfig
+            properties:
+              conditions:
+                description: Conditions represent the current state of the PlatformConfig
+                  resource.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              operatorCommit:
+                description: OperatorCommit is the git SHA the running operator was
+                  built from.
+                type: string
+              operatorVersion:
+                description: |-
+                  OperatorVersion is the build identity of the operator that last
+                  reconciled this resource: the release tag without "v", or a
+                  "<branch>-<sha>" marker for an untagged build. It answers "which
+                  operator is production actually running" without a cluster spelunk.
+                type: string
+              phase:
+                description: Phase is the current lifecycle phase.
+                enum:
+                - Pending
+                - Ready
+                - Failed
+                type: string
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

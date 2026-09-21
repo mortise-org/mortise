@@ -20,16 +20,20 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
+	"github.com/mortise-org/mortise/internal/crdcheck"
 	"github.com/mortise-org/mortise/internal/platformconfig"
 	"github.com/mortise-org/mortise/internal/version"
 )
@@ -50,6 +54,12 @@ const (
 	// from a different config than the current spec (or from the env
 	// fallback before this CR existed): a restart is required to apply.
 	pcConfigAppliedCondition = "ConfigApplied"
+	// pcCRDsCurrentCondition is False when a served CRD schema lacks
+	// fields this operator was built against: helm upgrade does not touch
+	// crds/, and the API server prunes writes to unknown fields silently
+	// (CAI-312 — v1.1.0's version report was invisible for this reason,
+	// with only an INFO log line saying so).
+	pcCRDsCurrentCondition = "CRDsCurrent"
 )
 
 // PlatformConfigReconciler reconciles a PlatformConfig object
@@ -60,12 +70,17 @@ type PlatformConfigReconciler struct {
 	// startup; nil means the operator booted on the env fallback (no
 	// PlatformConfig existed yet).
 	BootConfig *platformconfig.Config
+	// CRDReader reads served CustomResourceDefinitions for the staleness
+	// check (the manager's APIReader — uncached, so no informer is opened
+	// on every CRD in the cluster). Nil skips the check.
+	CRDReader client.Reader
 }
 
 // +kubebuilder:rbac:groups=mortise.mortise.dev,resources=platformconfigs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=mortise.mortise.dev,resources=platformconfigs/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=mortise.mortise.dev,resources=platformconfigs/finalizers,verbs=update
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
+// +kubebuilder:rbac:groups=apiextensions.k8s.io,resources=customresourcedefinitions,verbs=get
 
 func (r *PlatformConfigReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
@@ -123,8 +138,55 @@ func (r *PlatformConfigReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 
 	r.setRegistryPullCondition(&pc)
 	r.setConfigAppliedCondition(ctx, &pc)
+	crdsOutdated := r.setCRDsCurrentCondition(ctx, &pc)
 
-	return ctrl.Result{}, r.markReady(ctx, orig, &pc)
+	if err := r.markReady(ctx, orig, &pc); err != nil {
+		return ctrl.Result{}, err
+	}
+	if crdsOutdated {
+		// Re-check on a short leash so `kubectl apply -f .../crds/` clears
+		// the condition promptly instead of at the next resync.
+		return ctrl.Result{RequeueAfter: time.Minute}, nil
+	}
+	return ctrl.Result{}, nil
+}
+
+// setCRDsCurrentCondition compares the served CRD schemas against the ones
+// this binary was built with (embedded by make manifests) and reports any
+// gap. Returns true when outdated, so the caller can requeue.
+func (r *PlatformConfigReconciler) setCRDsCurrentCondition(ctx context.Context, pc *mortisev1alpha1.PlatformConfig) bool {
+	if r.CRDReader == nil {
+		return false
+	}
+	expected, err := crdcheck.Load()
+	if err != nil {
+		// A build problem, not cluster state; say so rather than guessing.
+		logf.FromContext(ctx).Error(err, "embedded CRD schemas unreadable; skipping staleness check")
+		return false
+	}
+	var stale []string
+	for _, name := range expected.Names() {
+		var served apiextensionsv1.CustomResourceDefinition
+		if err := r.CRDReader.Get(ctx, types.NamespacedName{Name: name}, &served); err != nil {
+			stale = append(stale, name+" (not served)")
+			continue
+		}
+		if missing := expected.MissingIn(&served); len(missing) > 0 {
+			stale = append(stale, fmt.Sprintf("%s (missing %d fields, e.g. %s)", name, len(missing), missing[0]))
+		}
+	}
+	if len(stale) == 0 {
+		meta.RemoveStatusCondition(&pc.Status.Conditions, pcCRDsCurrentCondition)
+		return false
+	}
+	meta.SetStatusCondition(&pc.Status.Conditions, metav1.Condition{
+		Type:               pcCRDsCurrentCondition,
+		Status:             metav1.ConditionFalse,
+		Reason:             "CRDsOutdated",
+		Message:            "served CRDs lack fields this operator writes; the API server prunes them silently. Re-apply the release's CRDs: helm pull mortise/mortise --untar && kubectl apply --server-side -f mortise/charts/mortise-core/crds/. Outdated: " + strings.Join(stale, "; "),
+		ObservedGeneration: pc.Generation,
+	})
+	return true
 }
 
 // setRegistryPullCondition mirrors (and sharpens) the boot-time warning: a

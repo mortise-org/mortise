@@ -1,0 +1,243 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.20.1
+  name: projects.mortise.mortise.dev
+spec:
+  group: mortise.mortise.dev
+  names:
+    kind: Project
+    listKind: ProjectList
+    plural: projects
+    singular: project
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.namespace
+      name: Namespace
+      type: string
+    - jsonPath: .status.appCount
+      name: Apps
+      type: integer
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          Project is the Schema for the projects API. It is cluster-scoped; deleting a
+          Project cascades to its namespace and every App inside.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              ProjectSpec defines the desired state of a Project — the top-level grouping
+              above Apps. Each Project owns a control namespace (by default
+              `pj-{metadata.name}`) which holds its App CRDs plus one env namespace per
+              declared environment (`pj-{metadata.name}-{env}`) which holds the running
+              workloads.
+            properties:
+              autoRedeploy:
+                description: |-
+                  AutoRedeploy controls whether env var changes automatically trigger
+                  pod rollouts. When false (default), users must manually redeploy
+                  after changing variables. When true, the controller stamps a hash
+                  of the env Secret onto the pod template, triggering an automatic
+                  rolling update on any change.
+                type: boolean
+              description:
+                description: Description is a short, human-readable note about the
+                  project.
+                type: string
+              environments:
+                description: |-
+                  Environments declares the project-level deployment environments. Every
+                  App in the project reconciles into every entry here by default. If
+                  empty, the controller seeds a single `production` entry.
+                items:
+                  description: |-
+                    ProjectEnvironment declares a named deployment environment that belongs to
+                    the Project. Every App in the Project auto-exists in every ProjectEnvironment;
+                    `App.Spec.Environments[]` carries only per-env overrides (resources, env vars,
+                    domain, etc.) and an optional `enabled` opt-out for that App × env pair.
+                  properties:
+                    displayOrder:
+                      description: |-
+                        DisplayOrder controls the UI sort order in the navbar env selector and
+                        project settings list. Lower values appear first; ties fall back to
+                        creation order.
+                      type: integer
+                    name:
+                      description: |-
+                        Name is the environment's DNS-label identifier (e.g. "production",
+                        "staging"). Referenced from App overrides, navbar selector, preview envs,
+                        and resource labels (`mortise.dev/environment`).
+                      maxLength: 63
+                      pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                      type: string
+                    preview:
+                      description: |-
+                        Preview marks this environment as a preview (PR) environment. Set by the
+                        preview environment controller; filtered from the normal env list in the UI.
+                      type: boolean
+                    restricted:
+                      description: |-
+                        Restricted, when true, limits Developers to read-only in this
+                        environment. Owners are unaffected. Typical use: protect production.
+                      type: boolean
+                  required:
+                  - name
+                  type: object
+                type: array
+              preview:
+                description: |-
+                  Preview controls PR-driven preview environments. When Enabled=true,
+                  opening a PR clones the source environment with git-source apps
+                  pointed at the PR branch. The cloned environment behaves like any
+                  other project environment.
+                properties:
+                  botPR:
+                    description: |-
+                      BotPR controls whether PRs opened by bot accounts spawn previews.
+                      Defaults to true — all PRs get previews regardless of author.
+                    type: boolean
+                  enabled:
+                    description: Enabled turns PR environments on for this Project.
+                    type: boolean
+                  sourceEnvironment:
+                    description: |-
+                      SourceEnvironment is the project environment name to clone previews from.
+                      If empty, auto-resolves: prefers "staging", falls back to first non-production env.
+                      Must not reference a restricted environment.
+                    type: string
+                type: object
+            type: object
+          status:
+            description: ProjectStatus defines the observed state of a Project.
+            properties:
+              appCount:
+                description: AppCount is the number of Apps currently inside this
+                  Project's namespace.
+                format: int32
+                type: integer
+              conditions:
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              envNamespaces:
+                additionalProperties:
+                  type: string
+                description: |-
+                  EnvNamespaces maps environment name → namespace name for each env the
+                  controller has provisioned. Kept in sync with spec.environments; env
+                  add/remove drives ns create/delete.
+                type: object
+              environments:
+                description: |-
+                  Environments is the reconciled set of project environment names. Mirrors
+                  `spec.environments[].name` after the controller has applied defaulting
+                  (e.g. auto-seed `production`) and validation. UI clients should read
+                  from `spec.environments` for ordering and from here to confirm the
+                  controller has observed a spec change.
+                items:
+                  type: string
+                type: array
+              namespace:
+                description: |-
+                  Namespace is the name of the Project's control namespace (`pj-{name}`).
+                  Per-env workload namespaces (`pj-{name}-{env}`) are tracked in
+                  EnvNamespaces below.
+                type: string
+              phase:
+                description: Phase is the overall lifecycle phase.
+                enum:
+                - Pending
+                - Ready
+                - Terminating
+                - Failed
+                type: string
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

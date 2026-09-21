@@ -1,0 +1,1112 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.20.1
+  name: apps.mortise.mortise.dev
+spec:
+  group: mortise.mortise.dev
+  names:
+    kind: App
+    listKind: AppList
+    plural: apps
+    singular: app
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.source.type
+      name: Source
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: App is the Schema for the apps API
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: AppSpec defines the desired state of App
+            properties:
+              configFiles:
+                description: |-
+                  ConfigFiles defines files to mount into containers via ConfigMaps.
+                  Each entry creates a ConfigMap and mounts it at the specified path.
+                items:
+                  description: ConfigFile defines a file to mount into the container
+                    via a ConfigMap.
+                  properties:
+                    content:
+                      description: Content is the file content.
+                      type: string
+                    path:
+                      description: |-
+                        Path is the absolute mount path inside the container.
+                        Must start with "/", contain no null bytes, and be <= PATH_MAX (4096).
+                      maxLength: 4096
+                      minLength: 2
+                      pattern: ^/[^\x00]+$
+                      type: string
+                  required:
+                  - content
+                  - path
+                  type: object
+                type: array
+              credentials:
+                description: |-
+                  Credentials declares the keys this App exposes to binders. The App
+                  controller materialises the `{app}-credentials` Secret from these
+                  entries; the bindings resolver projects them into binder Pods (spec §5.5a).
+                items:
+                  description: |-
+                    Credential declares a single named credential exposed by this App to any
+                    binder. Flavor A (spec §5.5a): the Mortise-owned `{app}-credentials` Secret
+                    is materialised from these entries. At most one of Value / ValueFrom may
+                    be set; a credential with neither is treated as a well-known key whose
+                    value the bindings resolver fills in (e.g. `host`, `port`).
+                  properties:
+                    name:
+                      description: |-
+                        Name is the key written into the {app}-credentials Secret and the env
+                        var name projected into binders.
+                      maxLength: 253
+                      pattern: ^[a-zA-Z_][a-zA-Z0-9_]*$
+                      type: string
+                    value:
+                      description: Value is the inline credential value. Mutually
+                        exclusive with ValueFrom.
+                      type: string
+                    valueFrom:
+                      description: |-
+                        ValueFrom references a key in a user-managed Secret in the App's own
+                        namespace. Mutually exclusive with Value.
+                      properties:
+                        secretRef:
+                          description: SecretRef references a key in a Secret in the
+                            App's own namespace.
+                          properties:
+                            key:
+                              description: Key within the Secret.
+                              type: string
+                            name:
+                              description: Name of the Secret in the environment's
+                                workload namespace.
+                              type: string
+                          required:
+                          - key
+                          - name
+                          type: object
+                      type: object
+                  required:
+                  - name
+                  type: object
+                type: array
+              environments:
+                description: |-
+                  Environments carries per-environment overrides (resources, env vars,
+                  domain, replicas, etc.) for the project-level environments declared on
+                  the parent `Project.Spec.Environments`. Any App auto-exists in every
+                  project env; entries here only tune behavior for a specific env or opt
+                  out via `Enabled: false`. Names must match a `ProjectEnvironment.Name`
+                  on the parent Project; an entry naming anything else is silently
+                  ignored rather than rejected (see Environment.Name).
+                items:
+                  properties:
+                    annotations:
+                      additionalProperties:
+                        type: string
+                      description: |-
+                        Annotations are passed through to every k8s resource Mortise creates for
+                        this environment (Deployment, pod template, Service, Ingress, PVCs).
+                        User-supplied keys win on conflict with Mortise-owned annotations (spec §5.2a).
+                      type: object
+                    bindings:
+                      items:
+                        properties:
+                          ref:
+                            description: Ref is the name of the bound App within the
+                              same project.
+                            type: string
+                        required:
+                        - ref
+                        type: object
+                      type: array
+                    branch:
+                      description: |-
+                        Branch overrides the app-level source branch for this environment.
+                        When set, builds for this environment use this branch instead of
+                        spec.source.branch. Used by preview environments to build from
+                        the PR branch.
+                      type: string
+                    buildArgs:
+                      additionalProperties:
+                        type: string
+                      description: BuildArgs are per-environment build arguments passed
+                        to docker build.
+                      type: object
+                    concurrencyPolicy:
+                      default: Allow
+                      description: |-
+                        ConcurrencyPolicy controls whether concurrent executions of the CronJob
+                        are allowed. Valid values: Allow, Forbid, Replace. Default: Allow.
+                        Only used when spec.kind is "cron".
+                      enum:
+                      - Allow
+                      - Forbid
+                      - Replace
+                      type: string
+                    customDomains:
+                      items:
+                        type: string
+                      type: array
+                    domain:
+                      type: string
+                    enabled:
+                      description: |-
+                        Enabled, when set to false, opts this App out of the named project
+                        environment. The App controller GCs any resources it previously
+                        reconciled for that env. A nil pointer means "enabled" — Apps
+                        auto-participate in every project environment by default.
+
+                        So DELETING an environment block that carried enabled: false
+                        re-enables the environment: the App resolves it again on the next
+                        reconcile and workloads are created there. Removing a block is the
+                        enabling direction, not the safe one. To stop participating, keep
+                        the block and set enabled: false. status.environments[].joinedAt and
+                        the EnvironmentJoined condition record when that happens.
+                      type: boolean
+                    env:
+                      items:
+                        description: |-
+                          PORT, MORTISE_IMAGE, MORTISE_REVISION and MORTISE_REPLICAS are set by Mortise on the
+                          container itself and win over anything declared as an EnvVar; declaring
+                          them raises the EnvKeysReserved condition instead of taking effect.
+                          EnvVar is one environment variable for an App environment. Set exactly one
+                          of Value or ValueFrom.
+                        properties:
+                          name:
+                            description: Name is the environment variable name.
+                            maxLength: 253
+                            pattern: ^[a-zA-Z_][a-zA-Z0-9_]*$
+                            type: string
+                          value:
+                            description: |-
+                              Value is a literal, stored in plaintext in this resource.
+
+                              Do not use it for credentials. Anyone who can read this App can read the
+                              value, which is a wider audience than those who can read Secrets.
+
+                              Client-side `kubectl apply` also copies it into the
+                              kubectl.kubernetes.io/last-applied-configuration annotation. The
+                              controller redacts that annotation on reconcile, so the duplicate is
+                              short-lived rather than permanent -- but it exists between the apply and
+                              the next reconcile, and only `kubectl apply --server-side` avoids
+                              writing it at all.
+
+                              For anything secret use ValueFrom.SecretRef instead.
+
+                              Setting both Value and ValueFrom is rejected when the variable is
+                              resolved, and the effect is that the variable is DROPPED from the
+                              container with only a controller log line -- the apply itself succeeds.
+                              Set exactly one.
+                            type: string
+                          valueFrom:
+                            description: |-
+                              ValueFrom resolves the value from somewhere other than this resource.
+                              Mutually exclusive with Value. Use this for credentials.
+                            properties:
+                              fromBinding:
+                                description: |-
+                                  FromBinding projects a single credential key from another App in the
+                                  same project, which must be declared in this environment's bindings[].
+                                properties:
+                                  key:
+                                    description: Key is the credential key to project
+                                      from the bound App.
+                                    type: string
+                                  ref:
+                                    description: Ref is the name of the bound App
+                                      within the same project.
+                                    type: string
+                                required:
+                                - key
+                                - ref
+                                type: object
+                              secretRef:
+                                description: "SecretRef is the NAME of a Secret in
+                                  this environment's workload\nnamespace (`pj-{project}-{environment}`).\n\nNote
+                                  the shape, which differs from core-v1 on purpose
+                                  and trips up\nevery Kubernetes intuition: this is
+                                  a bare string, not an object, and\nthere is no `key`
+                                  field. The key read from the Secret is always the
+                                  env\nvar's own Name. To project a Secret key called
+                                  `pw` into `DB_PASSWORD`,\nthe Secret must contain
+                                  a key literally called `DB_PASSWORD`.\n\n\t - name:
+                                  DB_PASSWORD                 # core-v1 would be:\n\t
+                                  \  valueFrom:                        #   valueFrom:\n\t
+                                  \    secretRef: my-app-credentials   #     secretKeyRef:\n\t
+                                  \                                    #       name:
+                                  my-app-credentials\n\t                                     #
+                                  \      key: pw\n\nMortise reads the referenced Secret;
+                                  resolving this reference never\ncreates it. The
+                                  Secret may have been created by anything -- an external\ntool,
+                                  Helm, kubectl, or Mortise's own secrets API, which
+                                  does create\nSecrets in this namespace. Either way
+                                  it is not owned by the App: it is\nnot garbage-collected
+                                  when the App is deleted.\n\nA Secret that exists
+                                  but has no key matching the env var name is an\nerror,
+                                  not an empty value."
+                                type: string
+                            type: object
+                        required:
+                        - name
+                        type: object
+                      type: array
+                    image:
+                      description: |-
+                        Image overrides the spec-level source image for this environment.
+                        Set by the deploy handler when a deploy targets a specific environment.
+                      type: string
+                    livenessProbe:
+                      description: |-
+                        ProbeConfig configures one health probe. When Path is set the probe is an
+                        HTTP GET, otherwise it is a TCP dial against Port.
+
+                        Omitting livenessProbe and readinessProbe does not mean "no probes": Mortise
+                        injects TCP defaults against the app's port. Set Enabled to false to opt out.
+                      properties:
+                        enabled:
+                          description: |-
+                            Enabled, when set to false, suppresses this probe entirely. A nil
+                            pointer means enabled. Use it for a container that legitimately does
+                            not listen on a port, or one whose health the platform cannot judge.
+                          type: boolean
+                        failureThreshold:
+                          description: |-
+                            FailureThreshold is how many consecutive failures count as failed.
+                            Defaults to 3. Raise this for a container that is slow to start rather
+                            than inflating InitialDelaySeconds, which pays the cost on every
+                            restart forever rather than just the first.
+                          format: int32
+                          type: integer
+                        initialDelaySeconds:
+                          description: InitialDelaySeconds delays the first probe
+                            after container start.
+                          format: int32
+                          type: integer
+                        path:
+                          description: Path makes this an HTTP GET probe. Omit for
+                            a TCP dial.
+                          type: string
+                        periodSeconds:
+                          description: PeriodSeconds is the interval between probes.
+                            Defaults to 10.
+                          format: int32
+                          type: integer
+                        port:
+                          description: Port to probe. Defaults to the app's network
+                            port.
+                          format: int32
+                          type: integer
+                        timeoutSeconds:
+                          description: TimeoutSeconds is how long a single probe may
+                            take. Defaults to 3.
+                          format: int32
+                          type: integer
+                      type: object
+                    name:
+                      description: |-
+                        Name references a `ProjectEnvironment.Name` on the parent Project.
+
+                        A name not declared on the parent Project is SILENTLY IGNORED, not
+                        rejected: resolveEnvs walks the Project's environments and only picks up
+                        an override whose name matches one, so an override for an unknown
+                        environment is never read and the apply still succeeds. Check the name
+                        against the Project if an override appears to have no effect.
+                      type: string
+                    readinessProbe:
+                      description: |-
+                        ProbeConfig configures one health probe. When Path is set the probe is an
+                        HTTP GET, otherwise it is a TCP dial against Port.
+
+                        Omitting livenessProbe and readinessProbe does not mean "no probes": Mortise
+                        injects TCP defaults against the app's port. Set Enabled to false to opt out.
+                      properties:
+                        enabled:
+                          description: |-
+                            Enabled, when set to false, suppresses this probe entirely. A nil
+                            pointer means enabled. Use it for a container that legitimately does
+                            not listen on a port, or one whose health the platform cannot judge.
+                          type: boolean
+                        failureThreshold:
+                          description: |-
+                            FailureThreshold is how many consecutive failures count as failed.
+                            Defaults to 3. Raise this for a container that is slow to start rather
+                            than inflating InitialDelaySeconds, which pays the cost on every
+                            restart forever rather than just the first.
+                          format: int32
+                          type: integer
+                        initialDelaySeconds:
+                          description: InitialDelaySeconds delays the first probe
+                            after container start.
+                          format: int32
+                          type: integer
+                        path:
+                          description: Path makes this an HTTP GET probe. Omit for
+                            a TCP dial.
+                          type: string
+                        periodSeconds:
+                          description: PeriodSeconds is the interval between probes.
+                            Defaults to 10.
+                          format: int32
+                          type: integer
+                        port:
+                          description: Port to probe. Defaults to the app's network
+                            port.
+                          format: int32
+                          type: integer
+                        timeoutSeconds:
+                          description: TimeoutSeconds is how long a single probe may
+                            take. Defaults to 3.
+                          format: int32
+                          type: integer
+                      type: object
+                    replicas:
+                      format: int32
+                      type: integer
+                    resources:
+                      description: |-
+                        ResourceRequirements sets the compute resources for a workload.
+
+                        CPU and Memory are Kubernetes *requests* -- what the scheduler reserves on a
+                        node, not a ceiling. Setting `memory: 2Gi` demands 2Gi of reservable memory
+                        and the pod will not schedule without it.
+
+                        By default the limit equals the request, which is Guaranteed QoS: predictable
+                        and a good default, but it means a workload that idles low and peaks briefly
+                        must reserve its peak permanently. Set CPULimit or MemoryLimit to allow
+                        bursting above the reservation (Burstable QoS).
+                      properties:
+                        cpu:
+                          description: |-
+                            CPU is the reserved CPU (e.g. "100m"). Also the limit unless CPULimit
+                            is set.
+                          type: string
+                        cpuLimit:
+                          description: |-
+                            CPULimit is the ceiling this workload may burst to, above the CPU
+                            reservation. Exceeding it throttles the container. Defaults to CPU.
+                          type: string
+                        memory:
+                          description: |-
+                            Memory is the reserved memory (e.g. "128Mi"). Also the limit unless
+                            MemoryLimit is set.
+                          type: string
+                        memoryLimit:
+                          description: |-
+                            MemoryLimit is the ceiling this workload may burst to, above the Memory
+                            reservation. Exceeding it is an OOM kill, not throttling, so leave
+                            headroom. Defaults to Memory.
+                          type: string
+                      type: object
+                    schedule:
+                      description: |-
+                        Schedule is a cron expression (e.g. "*/5 * * * *") that controls when
+                        the CronJob fires. Required when spec.kind is "cron"; ignored otherwise.
+                      type: string
+                    secretMounts:
+                      description: |-
+                        SecretMounts mounts existing k8s Secrets in the App's namespace as
+                        files on the container filesystem. See spec §5.5b. Each entry becomes
+                        a `Volume` + `VolumeMount` on the Deployment's Pod template. Names
+                        must not collide with `spec.storage[].name` — the operator does not
+                        reconcile such collisions; the apiserver will reject the Deployment.
+                      items:
+                        description: |-
+                          SecretMount mounts an existing k8s Secret in the App's namespace as a
+                          file-system volume on the container. Secret existence is not validated at
+                          reconcile time — if the named Secret is missing the Pod stays in
+                          ContainerCreating until it appears (spec §5.5b: "must exist in the App's
+                          namespace at Pod-start time").
+                        properties:
+                          items:
+                            description: |-
+                              Items projects specific Secret keys to specific filenames (and
+                              optional file modes) under Path. When empty, every key in the Secret
+                              is surfaced as a file whose name matches the key.
+                            items:
+                              description: |-
+                                KeyToPath projects one Secret key to a specific filename (and optional
+                                mode bits) under the mount path.
+                              properties:
+                                key:
+                                  description: Key is the Secret key to project.
+                                  type: string
+                                mode:
+                                  description: Mode is the file mode bits for the
+                                    projected file (e.g. 0400).
+                                  format: int32
+                                  type: integer
+                                path:
+                                  description: |-
+                                    Path is the filename (relative to the mount path) to write the key's
+                                    value to.
+                                  type: string
+                              required:
+                              - key
+                              - path
+                              type: object
+                            type: array
+                          name:
+                            description: Name is the Pod volume name. Must be a DNS-1123
+                              label.
+                            maxLength: 63
+                            pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                            type: string
+                          path:
+                            description: |-
+                              Path is the absolute mount path inside the container. Must begin with
+                              a slash.
+                            pattern: ^/.*
+                            type: string
+                          readOnly:
+                            description: |-
+                              ReadOnly defaults to true when unset. Pointer so that an explicit
+                              `false` is distinguishable from the omitted default.
+                            type: boolean
+                          secret:
+                            description: |-
+                              Secret names an existing k8s Secret in the App's namespace. Mortise
+                              does not create or manage this Secret.
+                            type: string
+                        required:
+                        - name
+                        - path
+                        - secret
+                        type: object
+                      type: array
+                    startupProbe:
+                      description: |-
+                        ProbeConfig configures one health probe. When Path is set the probe is an
+                        HTTP GET, otherwise it is a TCP dial against Port.
+
+                        Omitting livenessProbe and readinessProbe does not mean "no probes": Mortise
+                        injects TCP defaults against the app's port. Set Enabled to false to opt out.
+                      properties:
+                        enabled:
+                          description: |-
+                            Enabled, when set to false, suppresses this probe entirely. A nil
+                            pointer means enabled. Use it for a container that legitimately does
+                            not listen on a port, or one whose health the platform cannot judge.
+                          type: boolean
+                        failureThreshold:
+                          description: |-
+                            FailureThreshold is how many consecutive failures count as failed.
+                            Defaults to 3. Raise this for a container that is slow to start rather
+                            than inflating InitialDelaySeconds, which pays the cost on every
+                            restart forever rather than just the first.
+                          format: int32
+                          type: integer
+                        initialDelaySeconds:
+                          description: InitialDelaySeconds delays the first probe
+                            after container start.
+                          format: int32
+                          type: integer
+                        path:
+                          description: Path makes this an HTTP GET probe. Omit for
+                            a TCP dial.
+                          type: string
+                        periodSeconds:
+                          description: PeriodSeconds is the interval between probes.
+                            Defaults to 10.
+                          format: int32
+                          type: integer
+                        port:
+                          description: Port to probe. Defaults to the app's network
+                            port.
+                          format: int32
+                          type: integer
+                        timeoutSeconds:
+                          description: TimeoutSeconds is how long a single probe may
+                            take. Defaults to 3.
+                          format: int32
+                          type: integer
+                      type: object
+                    tls:
+                      description: |-
+                        TLS overrides the default cert-manager-driven TLS path for this
+                        environment's Ingress (spec §5.6). If nil the operator writes the
+                        PlatformConfig default cluster-issuer annotation and auto-generates the
+                        Secret name.
+                      properties:
+                        clusterIssuer:
+                          description: |-
+                            ClusterIssuer overrides the PlatformConfig default cert-manager
+                            ClusterIssuer for this environment. Ignored if SecretName is also set
+                            (BYO Secret takes precedence).
+                          type: string
+                        secretName:
+                          description: |-
+                            SecretName points at a pre-existing k8s Secret in the App's namespace
+                            containing tls.crt / tls.key. When set, Mortise skips the cert-manager
+                            annotation entirely and wires the Ingress TLS block to this Secret.
+                          type: string
+                      type: object
+                  required:
+                  - name
+                  type: object
+                type: array
+              kind:
+                default: service
+                description: |-
+                  Kind selects the workload type: "service" (default) reconciles to a
+                  Deployment; "cron" reconciles to a CronJob.
+                enum:
+                - service
+                - cron
+                type: string
+              network:
+                properties:
+                  port:
+                    default: 8080
+                    description: |-
+                      Port is the container port the app listens on. Defaults to 8080.
+                      The Service always exposes port 80 for HTTP; this controls the
+                      targetPort on the Service and containerPort on the Deployment.
+                    format: int32
+                    type: integer
+                  public:
+                    default: true
+                    description: |-
+                      Public toggles whether an Ingress is created for this App.
+                      Note: no `omitempty` on purpose — `false` must survive JSON
+                      marshalling (see commit c7c58a2). The API server applies the default
+                      on create when the field is missing entirely.
+                    type: boolean
+                type: object
+              securityProfile:
+                allOf:
+                - enum:
+                  - restricted
+                - enum:
+                  - restricted
+                description: |-
+                  SecurityProfile hardens the generated workload's pod and container
+                  securityContext. "restricted" sets what the PodSecurity "restricted"
+                  profile requires (runAsNonRoot, allowPrivilegeEscalation: false,
+                  drop all capabilities, seccompProfile RuntimeDefault), so the App
+                  admits in a namespace that enforces it. The image must then run as
+                  a non-root user, or the kubelet refuses to start it. Unset leaves the
+                  securityContext alone, which is what every existing App gets.
+                type: string
+              sharedVars:
+                description: |-
+                  SharedVars are app-wide env vars visible to every environment of this
+                  App. They sit at priority level 3 in the variable resolution order
+                  (spec §5.8b): platform defaults < bound credentials < sharedVars <
+                  env-level vars. Use for values like LOG_LEVEL, SENTRY_DSN, or feature
+                  flags that should not be repeated per environment.
+                items:
+                  description: |-
+                    PORT, MORTISE_IMAGE, MORTISE_REVISION and MORTISE_REPLICAS are set by Mortise on the
+                    container itself and win over anything declared as an EnvVar; declaring
+                    them raises the EnvKeysReserved condition instead of taking effect.
+                    EnvVar is one environment variable for an App environment. Set exactly one
+                    of Value or ValueFrom.
+                  properties:
+                    name:
+                      description: Name is the environment variable name.
+                      maxLength: 253
+                      pattern: ^[a-zA-Z_][a-zA-Z0-9_]*$
+                      type: string
+                    value:
+                      description: |-
+                        Value is a literal, stored in plaintext in this resource.
+
+                        Do not use it for credentials. Anyone who can read this App can read the
+                        value, which is a wider audience than those who can read Secrets.
+
+                        Client-side `kubectl apply` also copies it into the
+                        kubectl.kubernetes.io/last-applied-configuration annotation. The
+                        controller redacts that annotation on reconcile, so the duplicate is
+                        short-lived rather than permanent -- but it exists between the apply and
+                        the next reconcile, and only `kubectl apply --server-side` avoids
+                        writing it at all.
+
+                        For anything secret use ValueFrom.SecretRef instead.
+
+                        Setting both Value and ValueFrom is rejected when the variable is
+                        resolved, and the effect is that the variable is DROPPED from the
+                        container with only a controller log line -- the apply itself succeeds.
+                        Set exactly one.
+                      type: string
+                    valueFrom:
+                      description: |-
+                        ValueFrom resolves the value from somewhere other than this resource.
+                        Mutually exclusive with Value. Use this for credentials.
+                      properties:
+                        fromBinding:
+                          description: |-
+                            FromBinding projects a single credential key from another App in the
+                            same project, which must be declared in this environment's bindings[].
+                          properties:
+                            key:
+                              description: Key is the credential key to project from
+                                the bound App.
+                              type: string
+                            ref:
+                              description: Ref is the name of the bound App within
+                                the same project.
+                              type: string
+                          required:
+                          - key
+                          - ref
+                          type: object
+                        secretRef:
+                          description: "SecretRef is the NAME of a Secret in this
+                            environment's workload\nnamespace (`pj-{project}-{environment}`).\n\nNote
+                            the shape, which differs from core-v1 on purpose and trips
+                            up\nevery Kubernetes intuition: this is a bare string,
+                            not an object, and\nthere is no `key` field. The key read
+                            from the Secret is always the env\nvar's own Name. To
+                            project a Secret key called `pw` into `DB_PASSWORD`,\nthe
+                            Secret must contain a key literally called `DB_PASSWORD`.\n\n\t
+                            - name: DB_PASSWORD                 # core-v1 would be:\n\t
+                            \  valueFrom:                        #   valueFrom:\n\t
+                            \    secretRef: my-app-credentials   #     secretKeyRef:\n\t
+                            \                                    #       name: my-app-credentials\n\t
+                            \                                    #       key: pw\n\nMortise
+                            reads the referenced Secret; resolving this reference
+                            never\ncreates it. The Secret may have been created by
+                            anything -- an external\ntool, Helm, kubectl, or Mortise's
+                            own secrets API, which does create\nSecrets in this namespace.
+                            Either way it is not owned by the App: it is\nnot garbage-collected
+                            when the App is deleted.\n\nA Secret that exists but has
+                            no key matching the env var name is an\nerror, not an
+                            empty value."
+                          type: string
+                      type: object
+                  required:
+                  - name
+                  type: object
+                type: array
+              source:
+                properties:
+                  branch:
+                    type: string
+                  build:
+                    properties:
+                      args:
+                        additionalProperties:
+                          type: string
+                        type: object
+                      cache:
+                        type: boolean
+                      context:
+                        description: |-
+                          BuildContext selects the BuildKit build-context root when source.path is set.
+                          "root" forces the repo root (monorepo Dockerfile referencing sibling dirs).
+                          "subdir" forces the subdirectory (self-contained, Railway-style).
+                          Unset = auto: pick subdir if a Dockerfile lives there, unless that Dockerfile
+                          references the subdir prefix in COPY/ADD sources, in which case fall back to
+                          repo root.
+                        enum:
+                        - root
+                        - subdir
+                        type: string
+                      dockerfilePath:
+                        type: string
+                      mode:
+                        description: BuildMode determines how source is built.
+                        enum:
+                        - auto
+                        - dockerfile
+                        - railpack
+                        type: string
+                    type: object
+                  external:
+                    description: |-
+                      External source fields (used when type=external). Wraps an
+                      already-running service that Mortise did not deploy. Mortise creates
+                      no pods; the App exists primarily as a binding target.
+                    properties:
+                      host:
+                        description: Host is the DNS name or IP of the external service.
+                        type: string
+                      port:
+                        description: |-
+                          Port is the port the external service listens on. Optional; used by
+                          the bindings resolver for the well-known "port" credential and by
+                          Ingress backends when network.public is true.
+                        format: int32
+                        type: integer
+                    required:
+                    - host
+                    type: object
+                  image:
+                    description: Image source fields (used when type=image)
+                    type: string
+                  path:
+                    type: string
+                  providerRef:
+                    description: |-
+                      ProviderRef is the name of the GitProvider CRD that holds credentials for
+                      this repo's forge. Required when type=git.
+                    type: string
+                  pullSecretRef:
+                    type: string
+                  repo:
+                    description: Git source fields (used when type=git)
+                    type: string
+                  type:
+                    description: SourceType determines how an App is deployed.
+                    enum:
+                    - git
+                    - image
+                    - external
+                    type: string
+                  watchPaths:
+                    items:
+                      type: string
+                    type: array
+                required:
+                - type
+                type: object
+              storage:
+                items:
+                  properties:
+                    accessMode:
+                      type: string
+                    mountPath:
+                      type: string
+                    name:
+                      type: string
+                    size:
+                      anyOf:
+                      - type: integer
+                      - type: string
+                      pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                      x-kubernetes-int-or-string: true
+                    storageClass:
+                      type: string
+                  required:
+                  - mountPath
+                  - name
+                  type: object
+                type: array
+            required:
+            - source
+            type: object
+          status:
+            description: AppStatus defines the observed state of App.
+            properties:
+              conditions:
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              currentBuildRunName:
+                description: CurrentBuildRunName is the active durable build execution
+                  for the app.
+                type: string
+              detectedPort:
+                description: |-
+                  DetectedPort is the container port auto-detected from EXPOSE directives
+                  (Dockerfile) or Railpack image config during the most recent build.
+                  Zero means no port was detected.
+                format: int32
+                type: integer
+              environments:
+                items:
+                  description: EnvironmentStatus tracks the observed state of a single
+                    environment.
+                  properties:
+                    autoDomain:
+                      description: |-
+                        AutoDomain is the platform-generated domain for this environment,
+                        always computed regardless of whether a custom primary domain is set.
+                      type: string
+                    certificateMessage:
+                      description: |-
+                        CertificateMessage is a human-readable explanation of the certificate
+                        state (e.g. challenge failure reason, DNS guidance).
+                      type: string
+                    certificateStatus:
+                      description: |-
+                        CertificateStatus is the readiness state of the TLS certificate for
+                        this environment. Empty when cert-manager is not in use. Possible
+                        values: "Ready", "Pending", "Failed".
+                      type: string
+                    currentBuildRunRef:
+                      description: |-
+                        CurrentBuildRunRef points at the currently selected BuildRun for this
+                        environment, whether it is pending, running, failed, or succeeded.
+                      properties:
+                        name:
+                          type: string
+                        phase:
+                          description: BuildRunPhase is the durable lifecycle state
+                            of a git build execution.
+                          enum:
+                          - Pending
+                          - Running
+                          - Succeeded
+                          - Failed
+                          type: string
+                      required:
+                      - name
+                      type: object
+                    currentDigest:
+                      type: string
+                    currentImage:
+                      type: string
+                    deployHistory:
+                      items:
+                        description: DeployRecord tracks a single deployment for rollback.
+                        properties:
+                          digest:
+                            type: string
+                          envHash:
+                            type: string
+                          gitSHA:
+                            type: string
+                          image:
+                            type: string
+                          timestamp:
+                            format: date-time
+                            type: string
+                        required:
+                        - image
+                        - timestamp
+                        type: object
+                      type: array
+                    deployedEnvHash:
+                      description: |-
+                        DeployedEnvHash is the env hash currently on the running pod template
+                        for this environment. When it differs from PendingEnvHash, the env has
+                        unapplied env-var changes.
+                      type: string
+                    domain:
+                      description: |-
+                        Domain is the resolved hostname for this environment. Computed by the
+                        controller from spec or auto-generated from the platform domain. The
+                        UI reads this to show "Your app is at {domain}".
+                      type: string
+                    joinedAt:
+                      description: |-
+                        JoinedAt is when this App first resolved this environment -- the
+                        reconcile that started creating workloads there. It is set once and
+                        carried forward. An App joins an environment by being created, by the
+                        Project adding the environment, or by a spec.environments[] block
+                        with enabled: false being removed; the last one looks like deletion
+                        and is the case this field exists to make visible.
+                      format: date-time
+                      type: string
+                    lastBuiltImage:
+                      description: |-
+                        LastBuiltImage is the OCI image produced by the last successful build
+                        for this environment.
+                      type: string
+                    lastBuiltSHA:
+                      description: |-
+                        LastBuiltSHA is the git revision that was last successfully built for
+                        this environment.
+                      type: string
+                    lastProcessedRestartedAt:
+                      description: |-
+                        LastProcessedRestartedAt stores the mortise.dev/restartedAt annotation
+                        value from the Deployment once the rollout completes. Prevents the
+                        controller from snapping the phase back to Ready before a user-triggered
+                        redeploy has actually rolled out.
+                      type: string
+                    lastSuccessfulBuildRunRef:
+                      description: |-
+                        LastSuccessfulBuildRunRef points at the most recent successful BuildRun
+                        for this environment.
+                      properties:
+                        name:
+                          type: string
+                        phase:
+                          description: BuildRunPhase is the durable lifecycle state
+                            of a git build execution.
+                          enum:
+                          - Pending
+                          - Running
+                          - Succeeded
+                          - Failed
+                          type: string
+                      required:
+                      - name
+                      type: object
+                    message:
+                      type: string
+                    name:
+                      type: string
+                    overriddenEnvKeys:
+                      description: |-
+                        OverriddenEnvKeys are spec env var names the derived Secret no longer
+                        tracks: the Secret's value was changed out of band (UI or API), so
+                        the controller preserves it and leaves the spec unapplied for that
+                        key. Without this field the CR and the running env drift apart
+                        silently, and a later spec edit is recorded as applied but never
+                        reaches the Secret.
+
+                        Names only, never values.
+                      items:
+                        type: string
+                      type: array
+                    pendingEnvHash:
+                      description: |-
+                        PendingEnvHash is the hash of the current env Secret data for this
+                        environment. Computed from the live Secret each reconcile.
+                      type: string
+                    phase:
+                      description: AppPhase represents the overall lifecycle phase.
+                      enum:
+                      - Pending
+                      - Building
+                      - Deploying
+                      - Ready
+                      - Degraded
+                      - CrashLooping
+                      - Failed
+                      type: string
+                    readyReplicas:
+                      format: int32
+                      type: integer
+                    retainedEnvKeys:
+                      description: |-
+                        RetainedEnvKeys are variable names removed from the spec that the
+                        derived Secret still carries, because their value had been changed
+                        out of band before removal. Pods still receive them. Names only.
+                      items:
+                        type: string
+                      type: array
+                    unresolvedEnvKeys:
+                      description: |-
+                        UnresolvedEnvKeys are variable names whose valueFrom.secretRef cannot
+                        currently be resolved -- the referenced Secret is missing, or it has no
+                        key matching the variable name.
+
+                        These do not clear the variable. A value that resolved before and then
+                        broke keeps serving its last resolved value, which is the safe
+                        behaviour and an invisible one: without this field, a renamed key looks
+                        identical to a working reference while the workload runs a stale
+                        credential.
+
+                        Names only, never values.
+                      items:
+                        type: string
+                      type: array
+                  required:
+                  - name
+                  type: object
+                type: array
+              lastBuildRunName:
+                description: LastBuildRunName is the most recent terminal durable
+                  build execution.
+                type: string
+              lastBuiltImage:
+                description: |-
+                  LastBuiltImage is the full image reference (including digest) produced by the
+                  most recently completed build. The Deployment spec is set to this value.
+                type: string
+              lastBuiltSHA:
+                description: |-
+                  LastBuiltSHA is the git commit SHA of the most recently completed build.
+                  The reconciler uses this to short-circuit rebuilds when the revision hasn't changed.
+                type: string
+              phase:
+                description: AppPhase represents the overall lifecycle phase.
+                enum:
+                - Pending
+                - Building
+                - Deploying
+                - Ready
+                - Degraded
+                - CrashLooping
+                - Failed
+                type: string
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
