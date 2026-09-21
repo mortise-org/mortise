@@ -92,6 +92,10 @@
 		detail: string;
 		result: 'success' | 'failure' | 'running';
 		buildName?: string;
+		// Unique render key. Deploy records can share a timestamp and image
+		// (CAI-320: a duplicate key hard-crashes the whole drawer), so
+		// collisions get a deterministic counter suffix.
+		key: string;
 	};
 
 	const timeline = $derived.by(() => {
@@ -99,6 +103,7 @@
 		for (const rec of envStatus?.deployHistory ?? []) {
 			out.push({
 				kind: 'deploy',
+				key: '',
 				ts: new Date(rec.timestamp).getTime(),
 				title: shortDigest(rec.image),
 				detail: rec.gitSHA ? `git ${rec.gitSHA.slice(0, 7)}` : 'image deploy',
@@ -117,6 +122,7 @@
 			if (run.status?.digest) bits.push(run.status.digest.replace('sha256:', '').slice(0, 7));
 			out.push({
 				kind: 'build',
+				key: '',
 				ts: finished || started || new Date(run.metadata.creationTimestamp ?? 0).getTime(),
 				title: phase === 'Succeeded' ? 'Build succeeded' : phase === 'Failed' ? 'Build failed' : `Build ${phase.toLowerCase()}`,
 				detail: bits.join(' · '),
@@ -124,7 +130,26 @@
 				buildName: run.metadata.name
 			});
 		}
-		return out.sort((a, b) => b.ts - a.ts).slice(0, 30);
+		const sorted = out.sort((a, b) => b.ts - a.ts).slice(0, 30);
+		const seen = new Map<string, number>();
+		for (const e of sorted) {
+			const base = `${e.kind}-${e.ts}-${e.buildName ?? e.title}`;
+			const n = seen.get(base) ?? 0;
+			seen.set(base, n + 1);
+			e.key = n === 0 ? base : `${base}#${n}`;
+		}
+		return sorted;
+	});
+
+	// History rows keyed the same way: timestamp+image collide in practice.
+	const historyEntries = $derived.by(() => {
+		const seen = new Map<string, number>();
+		return (envStatus?.deployHistory ?? []).slice(1).map((record) => {
+			const base = `${record.timestamp}-${record.image}`;
+			const n = seen.get(base) ?? 0;
+			seen.set(base, n + 1);
+			return { record, key: n === 0 ? base : `${base}#${n}` };
+		});
 	});
 
 	const phaseChip: Record<string, string> = {
@@ -250,7 +275,7 @@
 		<div>
 			<h3 class="mb-2 text-xs font-medium uppercase tracking-wide text-gray-500">Timeline</h3>
 			<div class="space-y-1.5" data-testid="deploy-timeline">
-				{#each timeline as entry (`${entry.kind}-${entry.ts}-${entry.buildName ?? entry.title}`)}
+				{#each timeline as entry (entry.key)}
 					<div class="rounded-md bg-surface-900">
 						<div class="flex items-center gap-3 px-3 py-2">
 							{#if entry.kind === 'build'}
@@ -305,7 +330,7 @@
 		<div>
 			<h3 class="mb-2 text-xs font-medium uppercase tracking-wide text-gray-500">History</h3>
 			<div class="space-y-1.5">
-				{#each envStatus.deployHistory.slice(1) as record, i (`${record.timestamp}-${record.image}`)}
+				{#each historyEntries as { record, key }, i (key)}
 					<div class="flex items-center justify-between rounded-md bg-surface-900 px-3 py-2">
 						<div class="min-w-0 flex-1">
 							<p class="truncate font-mono text-xs text-gray-300">{shortDigest(record.image)}</p>
