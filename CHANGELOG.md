@@ -9,6 +9,16 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Stale CRDs are now a condition, not a pruned write** (CAI-312): helm
+  upgrade does not touch crds/, and an operator writing through older CRDs
+  has its new fields silently dropped by the API server — v1.1.0's version
+  report was invisible for exactly this, flagged only by an INFO log. The
+  operator now embeds the CRD schemas it was built against (written by
+  `make manifests`, same source as the chart's crds/) and compares them to
+  the served schemas on each PlatformConfig reconcile:
+  `CRDsCurrent=False / CRDsOutdated` names each stale CRD, an example
+  missing field, and the kubectl apply that fixes it, re-checking every
+  minute until it clears. No per-release sentinel list to maintain.
 - **`MORTISE_REPLICAS` is injected into every container** (CAI-258): the
   same value written to the Deployment's `replicas`, so an app that holds
   process-local state (a rate limiter, a spend ledger) can refuse to run

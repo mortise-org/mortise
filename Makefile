@@ -47,6 +47,8 @@ manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and Cust
 	"$(CONTROLLER_GEN)" rbac:roleName=manager-role crd webhook paths="./..." output:crd:artifacts:config=config/crd/bases output:webhook:dir=config/webhook
 	# Sync generated CRDs into the Helm chart so `helm install` ships the real schema.
 	cp config/crd/bases/*.yaml charts/mortise-core/crds/
+	# Embedded copies for the operator's served-CRD staleness check (CAI-312).
+	cp config/crd/bases/*.yaml internal/crdcheck/crds/
 .PHONY: generate
 generate: controller-gen generate-api ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
 	"$(CONTROLLER_GEN)" object:headerFile="hack/boilerplate.go.txt" paths="./..."
