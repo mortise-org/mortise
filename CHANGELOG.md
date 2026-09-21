@@ -239,6 +239,16 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   upgrade lane would now catch a regression. Upgrades from 1.0.4 skip the
   trap entirely; upgrades already on 1.1.0 rename cleanly. install.md
   documents the one manual delete that 1.0.4→1.1.0 itself needs.
+- **`EnvRolledOut=False` clears after an out-of-band restart** (CAI-314):
+  with `autoRedeploy` off the pod-template env-hash is deliberately frozen,
+  and only Mortise's own redeploy re-stamped it — a `kubectl rollout
+  restart`, whose new pods read the current Secret, left the condition
+  permanently False on demonstrably-current pods (production postlab-api,
+  values verified by direct comparison). The status pass now adopts the
+  pending hash on observed agreement: the roll has settled and the
+  template's newest restart marker (kubectl's or Mortise's) postdates the
+  env Secrets' last write. Status-only — the frozen template is never
+  re-stamped, which would itself roll the pods.
 - **Chart templates survive `--reuse-values` upgrades** (CAI-310): templates
   dereferenced values blocks added after 1.0.4 (`observer.prometheus`,
   `observer.retention`, `mortise-core.metrics`, `systemNamespace`,
