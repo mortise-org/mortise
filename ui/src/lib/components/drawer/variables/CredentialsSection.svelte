@@ -142,7 +142,7 @@
 					No credentials. Declare what this app exposes so other apps can bind to it.
 				</div>
 			{:else}
-				{#each currentCredentials as cred}
+				{#each currentCredentials as cred (cred.name)}
 					<div class="group flex items-center justify-between border-b border-surface-600 px-3 py-2 hover:bg-surface-700/30">
 						<div class="flex items-center gap-2">
 							<span class="font-mono text-sm text-gray-200">{cred.name}</span>

@@ -261,7 +261,7 @@
 						{#if switcherOpen}
 							<div class="absolute left-0 top-full z-50 mt-1 w-56 overflow-hidden rounded-md border border-surface-600 bg-surface-800 shadow-xl">
 								<div class="max-h-64 overflow-y-auto py-1">
-									{#each store.projects as p}
+									{#each store.projects as p (p.name)}
 										<button
 											type="button"
 											onclick={() => selectProject(p.name)}
@@ -307,7 +307,7 @@
 								<div
 									class="absolute left-0 top-full z-50 mt-1 w-56 rounded-md border border-surface-600 bg-surface-800 shadow-xl"
 								>
-									{#each projectEnvs as env}
+									{#each projectEnvs as env (env.name)}
 										<button
 											type="button"
 											onclick={() => selectEnv(env.name)}
@@ -324,7 +324,7 @@
 									{#if activePreviews.length > 0}
 										<div class="border-t border-surface-600 my-1"></div>
 										<div class="px-3 py-1 text-[10px] font-semibold uppercase tracking-wider text-gray-500">PR Environments</div>
-										{#each activePreviews as preview}
+										{#each activePreviews as preview (preview.environmentName || preview.name)}
 											{@const previewEnvName = preview.environmentName || preview.name}
 											<button
 												type="button"

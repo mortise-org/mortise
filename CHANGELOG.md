@@ -241,6 +241,16 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Every refetched list with links or actions is keyed** (CAI-320,
+  completing PR #567): 21 more unkeyed `{#each}` blocks rendered
+  navigation or mutation targets from server-refetched collections — the
+  project switcher, home project grid, canvas app nodes, members, users,
+  git providers, repo/dir pickers, bindings/secrets pickers, deploy
+  timeline and history, custom domains, deploy tokens, bindings and
+  credentials rows. Same mechanism as the dashboard fix: an unkeyed block
+  reuses DOM nodes positionally on re-render, so a click begun on one row
+  can act on another's target. Remaining unkeyed blocks are static
+  literals or index-bound form editors, where reuse is intended.
 - **Dashboard rows are keyed** (CAI-320): the apps table and project
   health cards rendered from unkeyed `{#each}` blocks, so a refetch
   re-rendering while a click was in flight could reuse the DOM node for a

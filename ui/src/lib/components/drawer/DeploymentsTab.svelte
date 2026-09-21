@@ -250,7 +250,7 @@
 		<div>
 			<h3 class="mb-2 text-xs font-medium uppercase tracking-wide text-gray-500">Timeline</h3>
 			<div class="space-y-1.5" data-testid="deploy-timeline">
-				{#each timeline as entry}
+				{#each timeline as entry (`${entry.kind}-${entry.ts}-${entry.buildName ?? entry.title}`)}
 					<div class="rounded-md bg-surface-900">
 						<div class="flex items-center gap-3 px-3 py-2">
 							{#if entry.kind === 'build'}
@@ -305,7 +305,7 @@
 		<div>
 			<h3 class="mb-2 text-xs font-medium uppercase tracking-wide text-gray-500">History</h3>
 			<div class="space-y-1.5">
-				{#each envStatus.deployHistory.slice(1) as record, i}
+				{#each envStatus.deployHistory.slice(1) as record, i (`${record.timestamp}-${record.image}`)}
 					<div class="flex items-center justify-between rounded-md bg-surface-900 px-3 py-2">
 						<div class="min-w-0 flex-1">
 							<p class="truncate font-mono text-xs text-gray-300">{shortDigest(record.image)}</p>
