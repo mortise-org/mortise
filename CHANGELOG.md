@@ -257,6 +257,21 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   template's newest restart marker (kubectl's or Mortise's) postdates the
   env Secrets' last write. Status-only — the frozen template is never
   re-stamped, which would itself roll the pods.
+- **Upgrades from a rootful-registry release no longer break pushes**
+  (CAI-313): the registry hardening runs the bundled registry as uid 1000,
+  but fsGroup cannot reassign ownership on NFS or hostPath volumes, so
+  data written by an older release's root registry stayed root-owned —
+  reads worked, every blob upload failed 500, and every build on the
+  platform failed at push while apps kept serving previous images (a
+  production deploy outage on the v1.0.4→v1.1.0 upgrade). A guarded
+  `migrate-ownership` initContainer (`registry.migrateOwnership`, default
+  on, no-op once ownership matches) chowns the data at pod start. The
+  chart-integration suite gains an upgrade lane: install the newest
+  published release, seed data through its registry, run the documented
+  upgrade to the local chart, and assert the upgrade succeeds, the
+  operator's version is visible through the fresh CRDs, seeded data
+  survives, and a post-upgrade push works. install.md's upgrade section
+  now leads with the server-side CRD apply.
 - **Chart templates survive `--reuse-values` upgrades** (CAI-310): templates
   dereferenced values blocks added after 1.0.4 (`observer.prometheus`,
   `observer.retention`, `mortise-core.metrics`, `systemNamespace`,
