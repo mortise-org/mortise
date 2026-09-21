@@ -241,6 +241,14 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **The drawer tab strip no longer misroutes a click during app load**
+  (CAI-320, final piece): the tab list guessed `buildLogs` in before the
+  app loaded (unknown type counted as "not image") and removed it once an
+  image app resolved, shifting every later tab under an in-flight click —
+  a click that resolved on Logs landed on Metrics, caught by the
+  dashboard-v2 E2E trace. `buildLogs` now waits for the loaded app, and
+  the strip is keyed so membership changes replace nodes instead of
+  repurposing them.
 - **Every refetched list with links or actions is keyed** (CAI-320,
   completing PR #567): 21 more unkeyed `{#each}` blocks rendered
   navigation or mutation targets from server-refetched collections — the
