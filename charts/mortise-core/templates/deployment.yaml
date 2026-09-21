@@ -1,3 +1,9 @@
+{{- /* dig, not direct field access, for blocks newer than the oldest
+     supported release: `helm upgrade --reuse-values` replays the previous
+     release's values, and a missing block nil-derefs and fails the whole
+     upgrade (CAI-310). The dig defaults mirror values.yaml. */}}
+{{- $metrics := .Values.metrics | default dict }}
+{{- $op := .Values.operator | default dict }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -29,15 +35,15 @@ spec:
             - name: api
               containerPort: {{ .Values.api.port }}
               protocol: TCP
-            {{- if .Values.metrics.enabled }}
+            {{- if dig "enabled" true $metrics }}
             - name: metrics
-              containerPort: {{ .Values.metrics.port }}
+              containerPort: {{ dig "port" 8080 $metrics }}
               protocol: TCP
             {{- end }}
           args:
             - --api-bind-address=:{{ .Values.api.port }}
-            {{- if .Values.metrics.enabled }}
-            - --metrics-bind-address=:{{ .Values.metrics.port }}
+            {{- if dig "enabled" true $metrics }}
+            - --metrics-bind-address=:{{ dig "port" 8080 $metrics }}
             # Plain HTTP like the observer: cluster-internal, read-only
             # telemetry; secure serving would force every scraper through
             # kube-rbac authn.
@@ -52,9 +58,9 @@ spec:
               value: {{ .Values.serviceAccount.name }}
             - name: MORTISE_GITHUB_CLIENT_ID
               value: {{ .Values.github.clientID | quote }}
-            {{- if .Values.operator.ingressClassName }}
+            {{- if dig "ingressClassName" "" $op }}
             - name: MORTISE_INGRESS_CLASS
-              value: {{ .Values.operator.ingressClassName | quote }}
+              value: {{ dig "ingressClassName" "" $op | quote }}
             {{- end }}
             # Redirect temp writes to the writable emptyDir volume
             - name: TMPDIR
@@ -93,7 +99,7 @@ spec:
       volumes:
         - name: tmp
           emptyDir:
-            {{- with .Values.operator.tmpSizeLimit }}
+            {{- with dig "tmpSizeLimit" nil $op }}
             sizeLimit: {{ . }}
             {{- end }}
 ---

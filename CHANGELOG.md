@@ -231,6 +231,15 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Chart templates survive `--reuse-values` upgrades** (CAI-310): templates
+  dereferenced values blocks added after 1.0.4 (`observer.prometheus`,
+  `observer.retention`, `mortise-core.metrics`, `systemNamespace`,
+  `operator`) without guards, so `helm upgrade --reuse-values` from an older
+  release — which replays the previous release's values and skips new chart
+  defaults — failed at render with a nil deref. Broke the v1.0.4→v1.1.0
+  production upgrade. Templates now `dig` with defaults mirroring
+  values.yaml, a template test renders with every post-1.0.4 block nulled,
+  and docs/install.md now prescribes `--reset-then-reuse-values`.
 - **Redeploying a cron App works** (CAI-170): the redeploy endpoint fetched
   a Deployment regardless of the App's kind, so a scheduled job's redeploy
   failed NotFound and there was no supported way for it to pick up a

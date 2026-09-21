@@ -1,4 +1,8 @@
-{{- if .Values.observer.enabled }}
+{{- /* dig throughout: --reuse-values can hand this template values from a
+     release that predates the retention/prometheus blocks; a nil deref there
+     fails the upgrade (CAI-310). The dig defaults mirror values.yaml. */}}
+{{- $obs := .Values.observer | default dict }}
+{{- if dig "enabled" true $obs }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -38,9 +42,9 @@ spec:
               drop: [ALL]
           args:
             - --metrics-poll-interval={{ .Values.observer.metricsPollInterval | default "60s" }}
-            - --metrics-retention={{ .Values.observer.retention.metrics | default "72h" }}
-            - --log-retention={{ .Values.observer.retention.logs | default "48h" }}
-            - --traffic-retention={{ .Values.observer.retention.traffic | default "48h" }}
+            - --metrics-retention={{ dig "retention" "metrics" "72h" $obs }}
+            - --log-retention={{ dig "retention" "logs" "48h" $obs }}
+            - --traffic-retention={{ dig "retention" "traffic" "48h" $obs }}
             - --max-log-pods={{ .Values.observer.maxLogPods | default "100" }}
             - --storage-path=/data
             - --ingress-namespace={{ .Values.observer.ingressNamespace | default (include "mortise.depsNamespace" .) }}
@@ -81,7 +85,7 @@ metadata:
   labels:
     app.kubernetes.io/name: mortise-observer
     {{- include "mortise.labels" . | nindent 4 }}
-  {{- if .Values.observer.prometheus.scrapeAnnotations }}
+  {{- if dig "prometheus" "scrapeAnnotations" true $obs }}
   annotations:
     prometheus.io/scrape: "true"
     prometheus.io/port: "9091"

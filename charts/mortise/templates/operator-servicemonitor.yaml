@@ -1,4 +1,10 @@
-{{- if and (index .Values "mortise-core" "metrics" "enabled") .Values.observer.prometheus.serviceMonitor.enabled }}
+{{- /* dig, not direct access: --reuse-values replays the previous release's
+     values, which may predate the metrics/serviceMonitor blocks, and both a
+     nil field deref and `index` on a missing intermediate key fail the
+     upgrade (CAI-310). The dig defaults mirror each chart's values.yaml. */}}
+{{- $core := index .Values "mortise-core" | default dict }}
+{{- $sm := dig "prometheus" "serviceMonitor" (dict) (.Values.observer | default dict) }}
+{{- if and (dig "metrics" "enabled" true $core) (dig "enabled" false $sm) }}
 # Operator metrics (build outcomes, App phases) for kube-prometheus-stack
 # users; same toggle as the observer's ServiceMonitor.
 apiVersion: monitoring.coreos.com/v1
@@ -9,7 +15,7 @@ metadata:
   labels:
     app.kubernetes.io/name: mortise
     {{- include "mortise.labels" . | nindent 4 }}
-    {{- with .Values.observer.prometheus.serviceMonitor.labels }}
+    {{- with (dig "labels" (dict) $sm) }}
     {{- toYaml . | nindent 4 }}
     {{- end }}
 spec:
@@ -19,6 +25,6 @@ spec:
   endpoints:
     - port: metrics
       path: /metrics
-      interval: {{ .Values.observer.prometheus.serviceMonitor.interval }}
+      interval: {{ dig "interval" "30s" $sm }}
       honorLabels: true
 {{- end }}
