@@ -231,6 +231,14 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **RoleBinding names now embed their roleRef target** (CAI-311): 1.1.0
+  retargeted the release-namespace binding under a stable name, and roleRef
+  is immutable, so `helm upgrade` from 1.0.4 died mid-apply on the patch.
+  The binding is renamed to match its Role (`mortise-operator-ns`), turning
+  any future retarget into a create-plus-delete Helm handles natively; the
+  upgrade lane would now catch a regression. Upgrades from 1.0.4 skip the
+  trap entirely; upgrades already on 1.1.0 rename cleanly. install.md
+  documents the one manual delete that 1.0.4→1.1.0 itself needs.
 - **Chart templates survive `--reuse-values` upgrades** (CAI-310): templates
   dereferenced values blocks added after 1.0.4 (`observer.prometheus`,
   `observer.retention`, `mortise-core.metrics`, `systemNamespace`,

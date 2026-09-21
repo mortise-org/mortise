@@ -214,10 +214,15 @@ rules:
     resources: ["secrets", "configmaps"]
     verbs: ["create", "update", "patch", "delete"]
 ---
+# The binding's name embeds its roleRef target: roleRef is immutable, so a
+# retargeted binding under a stable name makes `helm upgrade` die on the
+# patch (CAI-311, the 1.0.4->1.1.0 upgrade — the old mortise-controller-ns
+# binding pointed at the ClusterRole). Renaming per target turns a roleRef
+# change into create-new-delete-old, which Helm handles natively.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: mortise-controller-ns
+  name: mortise-operator-ns
   namespace: {{ .Release.Namespace }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io

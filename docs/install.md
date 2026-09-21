@@ -374,6 +374,19 @@ helm pull mortise/mortise --untar
 kubectl apply -f mortise/charts/mortise-core/crds/
 ```
 
+**Upgrading to 1.1.0 specifically:** 1.1.0 retargeted the release-namespace
+RoleBinding while keeping its name, and `roleRef` is immutable, so that one
+upgrade fails with `cannot change roleRef`. Delete the old binding first and
+re-run the upgrade:
+
+```bash
+kubectl delete rolebinding mortise-controller-ns -n mortise-system
+```
+
+Releases after 1.1.0 name each RoleBinding after its roleRef target, so a
+retarget is a create-plus-delete Helm handles on its own; this manual step
+never applies again.
+
 Release cadence and versioning are documented in
 [RELEASING.md](../RELEASING.md). Every `v*` git tag publishes an image +
 both charts + a GitHub Release simultaneously, so the chart version always
