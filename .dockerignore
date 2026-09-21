@@ -18,6 +18,9 @@
 # Re-include embedded OpenAPI spec
 !internal/api/openapi.yaml
 
+# Re-include embedded CRD schemas (served-CRD staleness check, CAI-312)
+!internal/crdcheck/crds/*.yaml
+
 # Re-include UI source for the build stage
 !ui/package.json
 !ui/package-lock.json
