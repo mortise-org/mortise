@@ -172,7 +172,7 @@
               {#if apps.length === 0}
                 <tr><td colspan="6" class="px-4 py-8 text-center text-gray-500">No apps yet</td></tr>
               {/if}
-              {#each apps as app}
+              {#each apps as app (`${app.project}/${app.name}`)}
                 <tr class="hover:bg-surface-700/40">
                   <td class="px-4 py-2">
                     <a href={`/projects/${app.project}`} class="text-white hover:text-accent">
@@ -208,7 +208,7 @@
         <!-- Project health -->
         <h2 class="mt-6 mb-2 text-sm font-semibold text-white">Project environments</h2>
         <div class="grid gap-3 sm:grid-cols-2">
-          {#each data.projects ?? [] as project}
+          {#each data.projects ?? [] as project (project.name)}
             <a
               href={`/projects/${project.name}`}
               class="rounded-lg border border-surface-600 bg-surface-800 p-3 hover:border-surface-500"

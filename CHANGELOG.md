@@ -231,6 +231,14 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Dashboard rows are keyed** (CAI-320): the apps table and project
+  health cards rendered from unkeyed `{#each}` blocks, so a refetch
+  re-rendering while a click was in flight could reuse the DOM node for a
+  different row — the click then navigated to the wrong project. Seen as a
+  CI flake (the E2E row-click landing on another test's project), but a
+  human clicking during the periodic refresh could be misrouted the same
+  way. Keys make a shifted row a new node, which detaches the old one and
+  turns the race into a clean retry.
 - **RoleBinding names now embed their roleRef target** (CAI-311): 1.1.0
   retargeted the release-namespace binding under a stable name, and roleRef
   is immutable, so `helm upgrade` from 1.0.4 died mid-apply on the patch.
