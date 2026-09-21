@@ -164,7 +164,12 @@
 	const tabs = $derived.by(() => {
 		const base: Array<'deployments' | 'variables' | 'deployLogs' | 'buildLogs' | 'logs' | 'metrics' | 'settings'> =
 			['deployments', 'variables', 'deployLogs', 'logs', 'metrics', 'settings'];
-		if (liveApp?.spec.source.type !== 'image') {
+		// Only add buildLogs once the app has actually loaded: before that
+		// the type is unknown, and guessing "not image" inserted the tab and
+		// then removed it on load, shifting every later tab under an
+		// in-flight click (CAI-320: a click resolved on Logs landed on
+		// Metrics).
+		if (liveApp && liveApp.spec.source.type !== 'image') {
 			base.splice(3, 0, 'buildLogs');
 		}
 		return base;
@@ -272,7 +277,7 @@
 
 	<!-- Tabs -->
 	<div class="flex shrink-0 gap-1 border-b border-surface-600 px-4">
-		{#each tabs as tab}
+		{#each tabs as tab (tab)}
 			<button
 				type="button"
 				onclick={() => store.setDrawerTab(tab)}
