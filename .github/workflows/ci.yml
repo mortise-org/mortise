@@ -60,6 +60,30 @@ jobs:
             exit 1
           fi
 
+      - name: Guard documented cluster-create commands against addon drift
+        # k3s bundles Traefik and metrics-server; the umbrella chart ships
+        # both, and a bundled metrics-server fails helm install on APIService
+        # ownership (CAI-342). Every k3s-family cluster-create we publish
+        # (docs and installers) must disable the bundled copies, exactly like
+        # the test cluster configs in test/dev and test/chart already do.
+        run: |
+          fail=0
+          for f in docs/cluster-setup.md scripts/install.sh scripts/install.ps1; do
+            while IFS= read -r line; do
+              n=$(echo "$line" | cut -d: -f1)
+              # The disable flag must appear within 5 lines of the create.
+              if ! sed -n "${n},$((n+5))p" "$f" | grep -q -- "--disable=traefik,metrics-server"; then
+                echo "::error file=$f,line=$n::k3d/k3s create without --disable=traefik,metrics-server (CAI-342)"
+                fail=1
+              fi
+            done < <(grep -n "k3d cluster create" "$f" || true)
+          done
+          if ! grep -q 'INSTALL_K3S_EXEC="--disable=traefik,metrics-server"' docs/cluster-setup.md; then
+            echo "::error file=docs/cluster-setup.md::k3s install command missing INSTALL_K3S_EXEC disables (CAI-342)"
+            fail=1
+          fi
+          exit $fail
+
   integration:
     name: Integration tests
     runs-on: ubuntu-latest

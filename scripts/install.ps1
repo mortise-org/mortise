@@ -94,7 +94,9 @@ function Install-K3d {
         Info "k3d cluster 'mortise' already exists, skipping creation"
     } else {
         Info "Creating k3d cluster 'mortise'..."
-        k3d cluster create mortise --port "80:80@loadbalancer" --port "443:443@loadbalancer" --wait
+        # k3s bundles Traefik and metrics-server; the chart ships both. Disable
+        # the bundled copies so the chart's are the only ones.
+        k3d cluster create mortise --k3s-arg "--disable=traefik,metrics-server@server:0" --port "80:80@loadbalancer" --port "443:443@loadbalancer" --wait
         if ($LASTEXITCODE -ne 0) { Fatal "Failed to create k3d cluster" }
     }
 
