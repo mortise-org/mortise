@@ -285,10 +285,12 @@ test.describe('variables tab - env vars (production)', () => {
 
     await expect(page.getByText('DELETE_ME')).toBeVisible({ timeout: 8_000 });
 
-    // Hover the row and click the trash button (last button in the row).
+    // Hover the row; delete is two-step (CAI-350): the trash icon arms a
+    // confirm state, the second click fires.
     const row = page.locator('div.group').filter({ hasText: 'DELETE_ME' });
     await row.hover();
-    await row.getByRole('button').last().click();
+    await row.getByTitle('Delete variable', { exact: true }).click();
+    await row.getByTitle('Confirm delete', { exact: true }).click();
 
     // Verify via API.
     await expect(async () => {
@@ -573,10 +575,11 @@ test.describe('variables tab - project variables', () => {
 
     await expect(page.getByText('SHARED_KEY')).toBeVisible({ timeout: 8_000 });
 
-    // Hover the shared var row and click the trash button (last button in the row).
+    // Hover the shared var row; delete is two-step (CAI-350).
     const row = page.locator('div.group').filter({ hasText: 'SHARED_KEY' });
     await row.hover();
-    await row.getByRole('button').last().click();
+    await row.getByTitle('Delete variable', { exact: true }).click();
+    await row.getByTitle('Confirm delete', { exact: true }).click();
 
     // Verify via project shared vars API.
     await expect(async () => {
@@ -809,7 +812,9 @@ test.describe('variables tab - fromBinding projection', () => {
 
     for (const name of ['BOUND_PASSWORD', 'SECRET_TOKEN']) {
       const row = runtimeSection.locator('div.group').filter({ hasText: name });
-      await row.locator('button').last().click();
+      // Delete is two-step (CAI-350).
+      await row.getByTitle('Delete variable', { exact: true }).click();
+      await row.getByTitle('Confirm delete', { exact: true }).click();
       await expect(async () => {
         const updatedApp = await getAppViaAPI(request, token, project, webApp);
         const env = updatedApp.spec.environments?.find((candidate: { name: string }) => candidate.name === 'production');
@@ -882,10 +887,11 @@ test.describe('variables tab - fromBinding projection', () => {
     // The fromBinding var should show
     await expect(page.getByText('MY_DB_HOST')).toBeVisible({ timeout: 10_000 });
 
-    // Click the trash button on the fromBinding row
+    // Delete the fromBinding row; delete is two-step (CAI-350).
     const row = page.locator('div.group').filter({ hasText: 'MY_DB_HOST' });
     await row.hover();
-    await row.locator('button').last().click();
+    await row.getByTitle('Delete variable', { exact: true }).click();
+    await row.getByTitle('Confirm delete', { exact: true }).click();
 
     // Verify via API that the env var was removed from CRD spec
     await expect(async () => {
