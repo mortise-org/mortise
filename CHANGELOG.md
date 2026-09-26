@@ -19,8 +19,40 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `CRDsCurrent=False / CRDsOutdated` names each stale CRD, an example
   missing field, and the kubectl apply that fixes it, re-checking every
   minute until it clears. No per-release sentinel list to maintain.
+- **Container port field on the Docker Image form** (CAI-347, first half):
+  image-source apps created via the UI sent no `network.port`, so every
+  one got the 8080 default plus a TCP probe on it — the quickstart's own
+  example (`nginx:1.27`, listens on 80) CrashLooped out of the box, with
+  a message blaming the container. The form now takes the port (default
+  8080), the quickstart sets 80 for nginx, and the journey E2E asserts
+  the app reaches Ready instead of accepting any phase badge. Detection
+  of the port from the image's own ExposedPorts is the open second half.
 
 ### Fixed
+
+- **`WebhookConfigured=True` is re-earned, never assumed** (CAI-343): the
+  condition latched forever on its input hash, so a hook deleted on the
+  git host left True standing while pushes silently stopped deploying.
+  The latch now expires hourly: the operator re-lists the host's hooks,
+  refreshes a verified hook, and re-registers a vanished one. The
+  condition's message carries `verifiedAt` next to `inputHash`.
+- **Deleting an env variable is a two-step confirm, and the activity log
+  names changed keys** (CAI-350): the trash icon saved immediately on one
+  unconfirmed click, and "Updated env vars" recorded no key names, so a
+  misclick destroyed a variable untraceably. The icon now arms a `Delete?`
+  confirm, and env-update activity entries carry the added/removed key
+  names — names only, never values.
+- **Documented k3s-family cluster paths no longer collide with the
+  umbrella chart** (CAI-342): k3s bundles Traefik and metrics-server; the
+  chart ships both, and on the documented vanilla-cluster path the
+  bundled metrics-server failed `helm install` outright on APIService
+  ownership. cluster-setup.md and both installers now create clusters
+  with the bundled copies disabled (the shape every internal test cluster
+  already used), install.md documents the flags for existing clusters,
+  and a CI guard fails any published create command that loses them.
+  Relatedly, mortise.me/install had served a months-stale checked-in copy
+  of the installer; it now serves a stub that fetches the current script
+  (CAI-351).
 
 - **The drawer tab strip no longer misroutes a click during app load**
   (CAI-320, final piece): the tab list guessed `buildLogs` in before the
