@@ -13,6 +13,31 @@ Connect a git repo or pick a pre-built image - Mortise handles builds, deploys, 
 
 ---
 
+## It tells you what is actually running
+
+Most deploy tooling reports what it *did*. Mortise reports what is
+*running*, from the workload, and says so on the App when the two differ:
+
+- `MORTISE_REVISION` and `MORTISE_IMAGE` are injected into every container,
+  so your `/version` can report the commit it was built from without any CI
+  wiring.
+- `mortise version` prints the CLI and the operator's own build; the
+  operator stamps it on `PlatformConfig.status` too.
+- `mortise diff` compares the spec, the derived Secret, and the running
+  pods, and classifies every difference — including values the UI changed
+  out of band that the spec no longer controls.
+- Conditions name the silent states: `EnvRolledOut` (an env change the
+  pods have not picked up), `SpecEnvApplied` (a spec key ignored in favour of
+  an out-of-band edit), `EnvKeysRetained` (a removed key still in the
+  Secret), `PlaintextCredentials` (a credential-shaped literal),
+  `EnvironmentJoined` (an App that started participating in an environment),
+  `WebhookSignature` on the GitProvider (deliveries failing verification).
+
+Each of these exists because a real production incident hid behind the
+platform reporting success. The point of the platform is that it cannot.
+
+---
+
 ## Install
 
 <details>
@@ -92,31 +117,6 @@ After installing, follow the **[Quickstart](docs/quickstart.md)** to create an a
 | **SvelteKit UI** | Canvas-based dashboard, app drawer, env var editor, project settings - embedded in the operator binary |
 | **CLI** | `mortise login`, `mortise app create`, `mortise deploy`, `mortise env` |
 | **Helm Charts** | `mortise` (batteries-included) and `mortise-core` (operator-only) |
-
----
-
-## It tells you what is actually running
-
-Most deploy tooling reports what it *did*. Mortise reports what is
-*running*, from the workload, and says so on the App when the two differ:
-
-- `MORTISE_REVISION` and `MORTISE_IMAGE` are injected into every container,
-  so your `/version` can report the commit it was built from without any CI
-  wiring.
-- `mortise version` prints the CLI and the operator's own build; the
-  operator stamps it on `PlatformConfig.status` too.
-- `mortise diff` compares the spec, the derived Secret, and the running
-  pods, and classifies every difference — including values the UI changed
-  out of band that the spec no longer controls.
-- Conditions name the silent states: `EnvRolledOut` (an env change the
-  pods have not picked up), `SpecEnvApplied` (a spec key ignored in favour of
-  an out-of-band edit), `EnvKeysRetained` (a removed key still in the
-  Secret), `PlaintextCredentials` (a credential-shaped literal),
-  `EnvironmentJoined` (an App that started participating in an environment),
-  `WebhookSignature` on the GitProvider (deliveries failing verification).
-
-Each of these exists because a real production incident hid behind the
-platform reporting success. The point of the platform is that it cannot.
 
 ---
 
