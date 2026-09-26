@@ -13,8 +13,12 @@ Mortise on your laptop.
 # Install k3d (requires Docker)
 curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | bash
 
-# Create a cluster
-k3d cluster create mortise
+# Create a cluster. k3s bundles its own Traefik and metrics-server;
+# disable them — the Mortise chart ships both, and the bundled
+# metrics-server makes `helm install` fail on an APIService ownership
+# conflict.
+k3d cluster create mortise \
+  --k3s-arg "--disable=traefik,metrics-server@server:0"
 
 # Verify
 kubectl get nodes
@@ -28,8 +32,10 @@ Takes about 30 seconds. Your `kubectl` context is automatically set.
 Raspberry Pi to a cloud VPS.
 
 ```bash
-# Install k3s
-curl -sfL https://get.k3s.io | sh -
+# Install k3s. Disable its bundled Traefik and metrics-server — the
+# Mortise chart ships both, and the bundled metrics-server makes
+# `helm install` fail on an APIService ownership conflict.
+curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="--disable=traefik,metrics-server" sh -
 
 # k3s includes kubectl: copy the kubeconfig to the standard location
 mkdir -p ~/.kube
@@ -40,8 +46,11 @@ sudo chown $(id -u):$(id -g) ~/.kube/config
 kubectl get nodes
 ```
 
-Takes about 60 seconds. k3s includes Traefik as its default ingress
-controller, which Mortise can use out of the box.
+Takes about 60 seconds. The Mortise chart's Traefik becomes the ingress
+controller. If you'd rather keep k3s's bundled Traefik (drop the
+`--disable` flags above, or you have an existing cluster), install with
+`--set traefik.enabled=false --set metrics-server.enabled=false` instead —
+see [Installing Mortise](./install.md).
 
 **Registry config for git-source builds:** k3s needs a one-time registry
 mirror entry so kubelet can pull images built by Mortise. Add to

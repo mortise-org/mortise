@@ -19,6 +19,82 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `CRDsCurrent=False / CRDsOutdated` names each stale CRD, an example
   missing field, and the kubectl apply that fixes it, re-checking every
   minute until it clears. No per-release sentinel list to maintain.
+
+### Fixed
+
+- **The drawer tab strip no longer misroutes a click during app load**
+  (CAI-320, final piece): the tab list guessed `buildLogs` in before the
+  app loaded (unknown type counted as "not image") and removed it once an
+  image app resolved, shifting every later tab under an in-flight click —
+  a click that resolved on Logs landed on Metrics, caught by the
+  dashboard-v2 E2E trace. `buildLogs` now waits for the loaded app, and
+  the strip is keyed so membership changes replace nodes instead of
+  repurposing them.
+- **Every refetched list with links or actions is keyed** (CAI-320,
+  completing PR #567): 21 more unkeyed `{#each}` blocks rendered
+  navigation or mutation targets from server-refetched collections — the
+  project switcher, home project grid, canvas app nodes, members, users,
+  git providers, repo/dir pickers, bindings/secrets pickers, deploy
+  timeline and history, custom domains, deploy tokens, bindings and
+  credentials rows. Same mechanism as the dashboard fix: an unkeyed block
+  reuses DOM nodes positionally on re-render, so a click begun on one row
+  can act on another's target. Remaining unkeyed blocks are static
+  literals or index-bound form editors, where reuse is intended.
+- **Dashboard rows are keyed** (CAI-320): the apps table and project
+  health cards rendered from unkeyed `{#each}` blocks, so a refetch
+  re-rendering while a click was in flight could reuse the DOM node for a
+  different row — the click then navigated to the wrong project. Seen as a
+  CI flake (the E2E row-click landing on another test's project), but a
+  human clicking during the periodic refresh could be misrouted the same
+  way. Keys make a shifted row a new node, which detaches the old one and
+  turns the race into a clean retry.
+- **RoleBinding names now embed their roleRef target** (CAI-311): 1.1.0
+  retargeted the release-namespace binding under a stable name, and roleRef
+  is immutable, so `helm upgrade` from 1.0.4 died mid-apply on the patch.
+  The binding is renamed to match its Role (`mortise-operator-ns`), turning
+  any future retarget into a create-plus-delete Helm handles natively; the
+  upgrade lane would now catch a regression. Upgrades from 1.0.4 skip the
+  trap entirely; upgrades already on 1.1.0 rename cleanly. install.md
+  documents the one manual delete that 1.0.4→1.1.0 itself needs.
+- **`EnvRolledOut=False` clears after an out-of-band restart** (CAI-314):
+  with `autoRedeploy` off the pod-template env-hash is deliberately frozen,
+  and only Mortise's own redeploy re-stamped it — a `kubectl rollout
+  restart`, whose new pods read the current Secret, left the condition
+  permanently False on demonstrably-current pods (production postlab-api,
+  values verified by direct comparison). The status pass now adopts the
+  pending hash on observed agreement: the roll has settled and the
+  template's newest restart marker (kubectl's or Mortise's) postdates the
+  env Secrets' last write. Status-only — the frozen template is never
+  re-stamped, which would itself roll the pods.
+- **Upgrades from a rootful-registry release no longer break pushes**
+  (CAI-313): the registry hardening runs the bundled registry as uid 1000,
+  but fsGroup cannot reassign ownership on NFS or hostPath volumes, so
+  data written by an older release's root registry stayed root-owned —
+  reads worked, every blob upload failed 500, and every build on the
+  platform failed at push while apps kept serving previous images (a
+  production deploy outage on the v1.0.4→v1.1.0 upgrade). A guarded
+  `migrate-ownership` initContainer (`registry.migrateOwnership`, default
+  on, no-op once ownership matches) chowns the data at pod start. The
+  chart-integration suite gains an upgrade lane: install the newest
+  published release, seed data through its registry, run the documented
+  upgrade to the local chart, and assert the upgrade succeeds, the
+  operator's version is visible through the fresh CRDs, seeded data
+  survives, and a post-upgrade push works. install.md's upgrade section
+  now leads with the server-side CRD apply.
+- **Chart templates survive `--reuse-values` upgrades** (CAI-310): templates
+  dereferenced values blocks added after 1.0.4 (`observer.prometheus`,
+  `observer.retention`, `mortise-core.metrics`, `systemNamespace`,
+  `operator`) without guards, so `helm upgrade --reuse-values` from an older
+  release — which replays the previous release's values and skips new chart
+  defaults — failed at render with a nil deref. Broke the v1.0.4→v1.1.0
+  production upgrade. Templates now `dig` with defaults mirroring
+  values.yaml, a template test renders with every post-1.0.4 block nulled,
+  and docs/install.md now prescribes `--reset-then-reuse-values`.
+
+## [1.1.0] - 2026-09-21
+
+### Added
+
 - **`MORTISE_REPLICAS` is injected into every container** (CAI-258): the
   same value written to the Deployment's `replicas`, so an app that holds
   process-local state (a rate limiter, a spend ledger) can refuse to run
@@ -241,74 +317,6 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
-- **The drawer tab strip no longer misroutes a click during app load**
-  (CAI-320, final piece): the tab list guessed `buildLogs` in before the
-  app loaded (unknown type counted as "not image") and removed it once an
-  image app resolved, shifting every later tab under an in-flight click —
-  a click that resolved on Logs landed on Metrics, caught by the
-  dashboard-v2 E2E trace. `buildLogs` now waits for the loaded app, and
-  the strip is keyed so membership changes replace nodes instead of
-  repurposing them.
-- **Every refetched list with links or actions is keyed** (CAI-320,
-  completing PR #567): 21 more unkeyed `{#each}` blocks rendered
-  navigation or mutation targets from server-refetched collections — the
-  project switcher, home project grid, canvas app nodes, members, users,
-  git providers, repo/dir pickers, bindings/secrets pickers, deploy
-  timeline and history, custom domains, deploy tokens, bindings and
-  credentials rows. Same mechanism as the dashboard fix: an unkeyed block
-  reuses DOM nodes positionally on re-render, so a click begun on one row
-  can act on another's target. Remaining unkeyed blocks are static
-  literals or index-bound form editors, where reuse is intended.
-- **Dashboard rows are keyed** (CAI-320): the apps table and project
-  health cards rendered from unkeyed `{#each}` blocks, so a refetch
-  re-rendering while a click was in flight could reuse the DOM node for a
-  different row — the click then navigated to the wrong project. Seen as a
-  CI flake (the E2E row-click landing on another test's project), but a
-  human clicking during the periodic refresh could be misrouted the same
-  way. Keys make a shifted row a new node, which detaches the old one and
-  turns the race into a clean retry.
-- **RoleBinding names now embed their roleRef target** (CAI-311): 1.1.0
-  retargeted the release-namespace binding under a stable name, and roleRef
-  is immutable, so `helm upgrade` from 1.0.4 died mid-apply on the patch.
-  The binding is renamed to match its Role (`mortise-operator-ns`), turning
-  any future retarget into a create-plus-delete Helm handles natively; the
-  upgrade lane would now catch a regression. Upgrades from 1.0.4 skip the
-  trap entirely; upgrades already on 1.1.0 rename cleanly. install.md
-  documents the one manual delete that 1.0.4→1.1.0 itself needs.
-- **`EnvRolledOut=False` clears after an out-of-band restart** (CAI-314):
-  with `autoRedeploy` off the pod-template env-hash is deliberately frozen,
-  and only Mortise's own redeploy re-stamped it — a `kubectl rollout
-  restart`, whose new pods read the current Secret, left the condition
-  permanently False on demonstrably-current pods (production postlab-api,
-  values verified by direct comparison). The status pass now adopts the
-  pending hash on observed agreement: the roll has settled and the
-  template's newest restart marker (kubectl's or Mortise's) postdates the
-  env Secrets' last write. Status-only — the frozen template is never
-  re-stamped, which would itself roll the pods.
-- **Upgrades from a rootful-registry release no longer break pushes**
-  (CAI-313): the registry hardening runs the bundled registry as uid 1000,
-  but fsGroup cannot reassign ownership on NFS or hostPath volumes, so
-  data written by an older release's root registry stayed root-owned —
-  reads worked, every blob upload failed 500, and every build on the
-  platform failed at push while apps kept serving previous images (a
-  production deploy outage on the v1.0.4→v1.1.0 upgrade). A guarded
-  `migrate-ownership` initContainer (`registry.migrateOwnership`, default
-  on, no-op once ownership matches) chowns the data at pod start. The
-  chart-integration suite gains an upgrade lane: install the newest
-  published release, seed data through its registry, run the documented
-  upgrade to the local chart, and assert the upgrade succeeds, the
-  operator's version is visible through the fresh CRDs, seeded data
-  survives, and a post-upgrade push works. install.md's upgrade section
-  now leads with the server-side CRD apply.
-- **Chart templates survive `--reuse-values` upgrades** (CAI-310): templates
-  dereferenced values blocks added after 1.0.4 (`observer.prometheus`,
-  `observer.retention`, `mortise-core.metrics`, `systemNamespace`,
-  `operator`) without guards, so `helm upgrade --reuse-values` from an older
-  release — which replays the previous release's values and skips new chart
-  defaults — failed at render with a nil deref. Broke the v1.0.4→v1.1.0
-  production upgrade. Templates now `dig` with defaults mirroring
-  values.yaml, a template test renders with every post-1.0.4 block nulled,
-  and docs/install.md now prescribes `--reset-then-reuse-values`.
 - **Redeploying a cron App works** (CAI-170): the redeploy endpoint fetched
   a Deployment regardless of the App's kind, so a scheduled job's redeploy
   failed NotFound and there was no supported way for it to pick up a

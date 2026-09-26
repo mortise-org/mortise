@@ -18,6 +18,13 @@ chart or from user-facing docs.
 
 ## Cutting a release
 
+Before tagging, stamp the changelog: rename `## [Unreleased]` in
+`CHANGELOG.md` to `## [<version>] - <date>` and open a fresh empty
+`## [Unreleased]` above it, in a PR merged ahead of the tag. v1.1.0
+shipped with its section still headed "Unreleased" and post-tag work then
+accumulated into the same section; the split had to be reconstructed from
+the tag afterwards.
+
 ```bash
 # On main, from a clean working tree
 git pull
