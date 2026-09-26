@@ -56,6 +56,7 @@
 
 	// Image source
 	let imageRef = $state('');
+	let imagePort = $state(8080);
 
 	// External source
 	let externalHost = $state('');
@@ -419,7 +420,11 @@
 				},
 				network: {
 					public: selectedType === 'image',
-					...(isDb ? { port: selectedDbTemplate!.port } : {})
+					...(isDb
+						? { port: selectedDbTemplate!.port }
+						: selectedType === 'image' && imagePort
+							? { port: imagePort }
+							: {})
 				},
 				...(envs ? { environments: envs } : {}),
 				...(credentials ? { credentials } : {}),
@@ -782,6 +787,18 @@
 								placeholder="nginx:1.27 or ghcr.io/org/app:latest"
 								class="mt-1 w-full rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-white placeholder-gray-500 outline-none focus:border-accent"
 							/>
+						</div>
+						<div>
+							<label class="text-sm text-gray-400" for="new-app-image-port">Container port</label>
+							<input
+								id="new-app-image-port"
+								type="number"
+								bind:value={imagePort}
+								min="1"
+								max="65535"
+								class="mt-1 w-24 rounded-md border border-surface-600 bg-surface-800 px-3 py-2 text-sm text-white outline-none focus:border-accent"
+							/>
+							<p class="mt-0.5 text-xs text-gray-500">The port the image listens on (nginx: 80). Health checks and routing target it.</p>
 						</div>
 						<div>
 							<label class="text-sm text-gray-400" for="new-app-pull-secret">Pull secret name <span class="text-gray-600">(optional)</span></label>
