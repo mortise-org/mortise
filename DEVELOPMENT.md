@@ -35,6 +35,14 @@ The Makefile wraps the whole local loop. From the repo root:
 make dev-up       # create k3d cluster, build image, install Mortise via Helm
 ```
 
+All make targets keep their clusters in a repo-local kubeconfig
+(`.kubeconfig`, gitignored) and never touch `~/.kube/config`. To talk to
+the dev cluster with your own kubectl:
+
+```bash
+KUBECONFIG=.kubeconfig kubectl --context k3d-mortise-dev get pods -A
+```
+
 This takes ~1-2 minutes cold. After it finishes you'll see:
 
 ```
