@@ -208,9 +208,32 @@ func (s *Server) PutEnv(w http.ResponseWriter, r *http.Request) {
 	}
 	declarativeSource := declarativeEnvSources(app, envName)
 
+	// Key-level delta for the activity log (names only, never values):
+	// a full-replace PUT can silently drop keys, and "Updated env vars"
+	// left no trace of WHICH (CAI-350). Computed inside the retry
+	// callback and reset per attempt so the final attempt's view wins.
+	var addedKeys, removedKeys []string
+
 	// Compute the replacement set inside the conflict-retry callback so a
 	// concurrent writer's vars are re-read fresh instead of being clobbered.
 	err = store.Apply(r.Context(), envNs, app.Name, labels, func(existing []envstore.Env) ([]envstore.Env, error) {
+		addedKeys, removedKeys = nil, nil
+		incoming := make(map[string]bool, len(vars))
+		for _, v := range vars {
+			incoming[v.Name] = true
+		}
+		existingNames := make(map[string]bool, len(existing))
+		for _, e := range existing {
+			existingNames[e.Name] = true
+			if (e.Source == "user" || e.Source == "") && declarativeSource[e.Name] == "" && !incoming[e.Name] {
+				removedKeys = append(removedKeys, e.Name)
+			}
+		}
+		for _, v := range vars {
+			if !existingNames[v.Name] {
+				addedKeys = append(addedKeys, v.Name)
+			}
+		}
 		existingSource := make(map[string]string, len(existing))
 		for _, e := range existing {
 			existingSource[e.Name] = e.Source
@@ -251,7 +274,8 @@ func (s *Server) PutEnv(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.recordActivity(r, projectName, "update", "app", app.Name, "Updated env vars for "+app.Name+" in "+envName, "")
+	s.recordActivity(r, projectName, "update", "app", app.Name,
+		"Updated env vars for "+app.Name+" in "+envName+envKeyDelta(addedKeys, removedKeys), "")
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "updated"})
 }

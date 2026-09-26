@@ -105,6 +105,24 @@
 		return runtimeOwnership && !isUserLiteral(entry);
 	}
 
+	// Deleting a variable saves immediately and there is no undo, so the
+	// trash icon arms a confirm state instead of firing on one click — a
+	// misclick (CAI-320's whole class) must not destroy production env
+	// (CAI-350). The armed state disarms after 4s or on any other delete.
+	let confirmDeleteIdx = $state<number | null>(null);
+	let confirmDeleteTimer: ReturnType<typeof setTimeout> | undefined;
+	function requestDelete(idx: number) {
+		if (confirmDeleteIdx === idx) {
+			clearTimeout(confirmDeleteTimer);
+			confirmDeleteIdx = null;
+			onDelete(idx);
+			return;
+		}
+		confirmDeleteIdx = idx;
+		clearTimeout(confirmDeleteTimer);
+		confirmDeleteTimer = setTimeout(() => (confirmDeleteIdx = null), 4000);
+	}
+
 	function canDelete(entry: EnvEntry): boolean {
 		return !runtimeOwnership || isUserLiteral(entry) || isFromBinding(entry) || isSecretRef(entry);
 	}
@@ -275,10 +293,19 @@
 							{/if}
 						</div>
 						{#if canDelete(entry)}
-							<button type="button" onclick={() => onDelete(idx)}
-								class="shrink-0 rounded p-1 text-gray-500 hover:text-danger transition-colors">
-								<Trash2 class="h-3.5 w-3.5" />
-							</button>
+							{#if confirmDeleteIdx === idx}
+								<button type="button" onclick={() => requestDelete(idx)}
+									title="Confirm delete"
+									class="shrink-0 rounded px-1.5 py-0.5 text-xs font-medium text-danger bg-danger/10 hover:bg-danger/20 transition-colors">
+									Delete?
+								</button>
+							{:else}
+								<button type="button" onclick={() => requestDelete(idx)}
+									title="Delete variable"
+									class="shrink-0 rounded p-1 text-gray-500 hover:text-danger transition-colors">
+									<Trash2 class="h-3.5 w-3.5" />
+								</button>
+							{/if}
 						{:else}
 							<div class="w-[26px]"></div>
 						{/if}
