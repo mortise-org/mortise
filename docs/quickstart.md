@@ -27,7 +27,9 @@ to deploy an app.
 Click **New Project**, enter a name, open that project, then click **Add**.
 
 **Image deploy (simplest path):** Pick "Docker Image", enter `nginx:1.27`,
-name it `web`, click Create. Your app is running in ~10 seconds.
+set **Container port** to `80` (the port the image listens on — health
+checks and routing target it), name it `web`, click Create. Your app is
+running in ~10 seconds.
 
 **Database:** Pick "Database", choose Postgres 16. One click, running
 database with auto-generated credentials and a service URL ready to bind
