@@ -22,6 +22,10 @@ HELM_WAIT_TIMEOUT="${HELM_WAIT_TIMEOUT:-600s}"
 MORTISE_CHART_REPO="${MORTISE_CHART_REPO:-https://mortise-org.github.io/mortise}"
 MORTISE_CHART_VERSION="${MORTISE_CHART_VERSION:-}"
 MORTISE_NAMESPACE="mortise-system"
+# Set when this script creates the k3d cluster itself (with k3s's bundled
+# Traefik and metrics-server disabled); the chart's copies are then safe
+# to enable.
+CREATED_CLUSTER_WITHOUT_BUNDLED_ADDONS=false
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -154,7 +158,12 @@ install_k3d() {
         info "k3d cluster 'mortise' already exists, skipping creation"
     else
         info "Creating k3d cluster 'mortise'..."
+        CREATED_CLUSTER_WITHOUT_BUNDLED_ADDONS=true
+        # k3s bundles Traefik and metrics-server; the chart ships both.
+        # Disable the bundled copies so the chart's are the only ones —
+        # same shape as the chart-gate test cluster.
         k3d cluster create mortise \
+            --k3s-arg "--disable=traefik,metrics-server@server:0" \
             --port "80:80@loadbalancer" \
             --port "443:443@loadbalancer" \
             --wait
@@ -196,6 +205,15 @@ install_mortise() {
     if command_exists k3s && ! command_exists k3d; then
         traefik_flag="--set traefik.enabled=false"
         info "k3s detected — using built-in Traefik, skipping chart Traefik"
+    fi
+
+    # metrics-server: a pre-existing one (k3s bundles it, many clusters run
+    # one) makes helm install fail on APIService ownership, so default the
+    # chart's copy off. When this script created the cluster with the
+    # bundled addons disabled, the chart's copy is the only one and stays on.
+    local metrics_flag="--set metrics-server.enabled=false"
+    if [ "$CREATED_CLUSTER_WITHOUT_BUNDLED_ADDONS" = "true" ]; then
+        metrics_flag="--set metrics-server.enabled=true"
     fi
 
     # Check for a default StorageClass. The chart defaults to PVC for registry
@@ -254,7 +272,7 @@ install_mortise() {
     helm upgrade --install mortise "$chart_ref" \
         --namespace "$MORTISE_NAMESPACE" --create-namespace \
         --set platformConfig.buildPlatform="${BUILD_PLATFORM}" \
-        --set "metrics-server.enabled=false" \
+        $metrics_flag \
         $traefik_flag \
         $storage_flags \
         $dev_image_flags \
