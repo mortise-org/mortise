@@ -117,6 +117,14 @@ If you disable components, you'll configure Mortise to point at your
 external ones via `PlatformConfig`. See
 [Configuring your platform](./configuration.md).
 
+> **k3s-family clusters (k3s, k3d, RKE2):** k3s bundles its own Traefik and
+> metrics-server. If your cluster was created without disabling them (see
+> [Creating a cluster](./cluster-setup.md)), install with
+> `--set traefik.enabled=false --set metrics-server.enabled=false` —
+> otherwise `helm install` fails on an APIService ownership conflict with
+> the bundled metrics-server (`APIService "v1beta1.metrics.k8s.io" ...
+> exists and cannot be imported`), and two Traefiks fight over ports 80/443.
+
 > **BYO Traefik + observer traffic metrics:** If you bring your own Traefik
 > and enable the observer (`observer.enableTraffic: true`), Traefik must have
 > **JSON-formatted access logs** enabled. The observer parses JSON fields
