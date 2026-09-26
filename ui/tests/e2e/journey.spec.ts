@@ -86,8 +86,11 @@ test.describe('full user journey', () => {
 		await expect(page.getByText('Docker Image', { exact: true })).toBeVisible({ timeout: 10_000 });
 		await page.getByText('Docker Image', { exact: true }).click();
 
-		// Fill image and app name.
+		// Fill image, port, and app name. nginx listens on 80: without the
+		// container port the spec defaults to 8080 and the TCP probe kills a
+		// healthy container every 30s (CAI-347) — the quickstart's own flow.
 		await page.getByPlaceholder('nginx:1.27 or ghcr.io/org/app:latest').fill('nginx:1.27');
+		await page.getByLabel('Container port').fill('80');
 		await page.getByPlaceholder('my-app').fill(appName);
 
 		await page.getByRole('button', { name: 'Create app', exact: true }).click();
@@ -98,11 +101,10 @@ test.describe('full user journey', () => {
 		// ── Step 4: App drawer is open with app name ─────────────────
 		await expect(page.getByRole('heading', { name: appName })).toBeVisible({ timeout: 10_000 });
 
-		// Phase badge is visible.
-		const phaseBadge = page.locator('span', {
-			hasText: /Ready|Pending|Deploying|Building|Degraded|Failed|CrashLooping/
-		});
-		await expect(phaseBadge.first()).toBeVisible({ timeout: 15_000 });
+		// The app must actually reach Ready — any phase badge would also
+		// match CrashLooping, which is how CAI-347 shipped unnoticed.
+		const phaseBadge = page.locator('span', { hasText: /^Ready$/ });
+		await expect(phaseBadge.first()).toBeVisible({ timeout: 90_000 });
 
 		// ── Step 5: Check Variables tab ───────────────────────────────
 		await page.getByRole('button', { name: 'Variables', exact: true }).click();
