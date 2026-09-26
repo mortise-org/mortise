@@ -18,6 +18,10 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="${SCRIPT_DIR}/../.."
+# Repo-local kubeconfig unless the caller set one: this script must never
+# merge its throwaway cluster into ~/.kube/config (CAI-349). Matches the
+# Makefile's export for runs invoked via make.
+export KUBECONFIG="${KUBECONFIG:-${REPO_ROOT}/.kubeconfig}"
 CLUSTER_NAME="mortise-chart"
 NAMESPACE="mortise-system"
 DEPS_NAMESPACE="mortise-deps"
