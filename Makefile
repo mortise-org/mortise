@@ -17,6 +17,14 @@ CONTAINER_TOOL ?= docker
 # Setting SHELL to bash allows bash commands to be executed by recipes.
 # Options are set to exit when a recipe line exits non-zero or a piped command fails.
 SHELL = /usr/bin/env bash -o pipefail
+
+# Every cluster this Makefile creates or talks to lives in a repo-local
+# kubeconfig, never ~/.kube/config. k3d honours $KUBECONFIG when merging
+# a new cluster's context, and kubectl, helm, and the Go test suites all
+# read it, so no make target can rewrite or re-point the user's real
+# config — `make dev-up` on a shared box once left every other user's
+# bare kubectl silently talking to a phantom dev cluster (CAI-349).
+export KUBECONFIG := $(CURDIR)/.kubeconfig
 .SHELLFLAGS = -ec
 
 .PHONY: all
@@ -157,6 +165,8 @@ dev-up: build-ui ## Create k3d dev cluster with build infra, install Mortise, po
 	sed 's/name: mortise-dev/name: $(DEV_CLUSTER)/' test/dev/k3d-config.yaml > "$$tmp_config"; \
 	k3d cluster list | grep -q "^$(DEV_CLUSTER)\\b" || k3d cluster create \
 		--config "$$tmp_config" --runtime-ulimit $(K3D_RUNTIME_ULIMIT) --wait
+	@# Idempotent: covers a cluster created before KUBECONFIG went repo-local.
+	@k3d kubeconfig merge $(DEV_CLUSTER) --kubeconfig-merge-default --kubeconfig-switch-context=false >/dev/null
 	@echo "==> Building Docker images..."
 	$(CONTAINER_TOOL) build --target operator -t $(DEV_IMG) .
 	$(CONTAINER_TOOL) build --target observer -t $(DEV_OBSERVER_IMG) .
