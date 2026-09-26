@@ -160,11 +160,17 @@ type AppReconciler struct {
 }
 
 const (
-	webhookConditionType       = "WebhookConfigured"
-	webhookRegisteredReason    = "Registered"
-	webhookMissingURLReason    = "WebhookURLUnavailable"
-	webhookMissingSecretReason = "WebhookSecretUnavailable"
-	webhookInputHashMessageKey = "inputHash="
+	webhookConditionType        = "WebhookConfigured"
+	webhookRegisteredReason     = "Registered"
+	webhookMissingURLReason     = "WebhookURLUnavailable"
+	webhookMissingSecretReason  = "WebhookSecretUnavailable"
+	webhookInputHashMessageKey  = "inputHash="
+	webhookVerifiedAtMessageKey = "verifiedAt="
+	// How long WebhookConfigured=True is trusted before the hook's existence
+	// is re-verified against the git host. Before CAI-343 the condition
+	// latched forever, so a hook deleted on the host left True standing
+	// indefinitely while pushes silently stopped deploying.
+	webhookVerifyInterval = time.Hour
 )
 
 // +kubebuilder:rbac:groups=mortise.mortise.dev,resources=apps,verbs=get;list;watch;create;update;patch;delete
@@ -3384,9 +3390,12 @@ func conflictIfUnmanaged(obj client.Object, kind string) error {
 }
 
 // ensureWebhook registers a webhook on the git repo if not already done.
-// Registration is latched by an input hash stored on App.status.conditions.
-// Non-fatal — if registration fails (e.g. no public URL, no permissions),
-// builds still work via manual redeploy.
+// Registration is latched by an input hash stored on App.status.conditions,
+// but the latch expires: at least every webhookVerifyInterval the hook's
+// existence is re-verified against the git host, and a hook that vanished
+// there is re-registered, so WebhookConfigured=True is re-earned rather than
+// asserted forever (CAI-343). Non-fatal — if registration fails (e.g. no
+// public URL, no permissions), builds still work via manual redeploy.
 func (r *AppReconciler) ensureWebhook(ctx context.Context, app *mortisev1alpha1.App, gp *mortisev1alpha1.GitProvider, token string) error {
 	// Bounded: the git host is outside our control, and this runs on the
 	// reconcile worker. Two calls (list, register) plus slack (CAI-173).
@@ -3430,7 +3439,7 @@ func (r *AppReconciler) ensureWebhook(ctx context.Context, app *mortisev1alpha1.
 		return nil
 	}
 	inputHash := webhookRegistrationInputHash(app, gp, webhookURL, webhookSecret)
-	if webhookConditionInputHash(app) == inputHash {
+	if webhookConditionInputHash(app) == inputHash && !webhookVerificationDue(app, r.clock().Now()) {
 		return nil
 	}
 	if webhookConditionPermanentFailureInputHash(app) == inputHash {
@@ -3454,7 +3463,7 @@ func (r *AppReconciler) ensureWebhook(ctx context.Context, app *mortisev1alpha1.
 				continue
 			}
 			if hook.URL == webhookURL {
-				if err := r.setWebhookCondition(ctx, app, metav1.ConditionTrue, webhookRegisteredReason, webhookInputHashMessage(inputHash)); err != nil {
+				if err := r.setWebhookCondition(ctx, app, metav1.ConditionTrue, webhookRegisteredReason, webhookInputHashMessage(inputHash, r.clock().Now())); err != nil {
 					log.Error(err, "failed to persist webhook condition")
 				}
 				return nil
@@ -3477,7 +3486,7 @@ func (r *AppReconciler) ensureWebhook(ctx context.Context, app *mortisev1alpha1.
 		return fmt.Errorf("register webhook: %w", err)
 	}
 
-	if err := r.setWebhookCondition(ctx, app, metav1.ConditionTrue, webhookRegisteredReason, webhookInputHashMessage(inputHash)); err != nil {
+	if err := r.setWebhookCondition(ctx, app, metav1.ConditionTrue, webhookRegisteredReason, webhookInputHashMessage(inputHash, r.clock().Now())); err != nil {
 		log.Error(err, "failed to persist webhook condition")
 	}
 
@@ -3503,8 +3512,30 @@ func webhookRegistrationInputHash(app *mortisev1alpha1.App, gp *mortisev1alpha1.
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-func webhookInputHashMessage(hash string) string {
-	return webhookInputHashMessageKey + hash
+func webhookInputHashMessage(hash string, verifiedAt time.Time) string {
+	return webhookInputHashMessageKey + hash + "\n" +
+		webhookVerifiedAtMessageKey + verifiedAt.UTC().Format(time.RFC3339)
+}
+
+// webhookVerificationDue reports whether the True condition's last verified
+// time is older than webhookVerifyInterval. A True condition without a
+// verifiedAt line (written before CAI-343) is due immediately, which
+// upgrades its message on the next pass.
+func webhookVerificationDue(app *mortisev1alpha1.App, now time.Time) bool {
+	cond := meta.FindStatusCondition(app.Status.Conditions, webhookConditionType)
+	if cond == nil || cond.Status != metav1.ConditionTrue {
+		return true
+	}
+	for _, line := range strings.Split(cond.Message, "\n") {
+		if strings.HasPrefix(line, webhookVerifiedAtMessageKey) {
+			t, err := time.Parse(time.RFC3339, strings.TrimPrefix(line, webhookVerifiedAtMessageKey))
+			if err != nil {
+				return true
+			}
+			return now.Sub(t) >= webhookVerifyInterval
+		}
+	}
+	return true
 }
 
 func webhookConditionInputHash(app *mortisev1alpha1.App) string {
@@ -3603,7 +3634,7 @@ func (r *AppReconciler) setWebhookFailureCondition(ctx context.Context, app *mor
 	reason := webhookConditionReason(err)
 	message := err.Error()
 	if isWebhookPermanentReason(reason) {
-		message = webhookInputHashMessage(inputHash) + "\n" + message
+		message = webhookInputHashMessageKey + inputHash + "\n" + message
 	}
 	return r.setWebhookCondition(ctx, app, metav1.ConditionFalse, reason, message)
 }
