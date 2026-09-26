@@ -5133,6 +5133,128 @@ var _ = Describe("App Controller — git source", func() {
 			Expect(api.registerCount).To(Equal(1))
 		})
 
+		// backdateWebhookVerification rewrites the True condition's verifiedAt
+		// past webhookVerifyInterval, keeping its inputHash, so the next
+		// ensureWebhook must re-verify against the git host (CAI-343).
+		backdateWebhookVerification := func(ctx context.Context, app *mortisev1alpha1.App) {
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: app.Namespace}, app)).To(Succeed())
+			cond := meta.FindStatusCondition(app.Status.Conditions, webhookConditionType)
+			Expect(cond).NotTo(BeNil())
+			hash := webhookConditionInputHashValue(cond.Message)
+			Expect(hash).NotTo(BeEmpty())
+			cond.Message = webhookInputHashMessage(hash, time.Now().Add(-2*webhookVerifyInterval))
+			meta.SetStatusCondition(&app.Status.Conditions, *cond)
+			Expect(k8sClient.Status().Update(ctx, app)).To(Succeed())
+		}
+
+		It("re-registers a hook that vanished on the git host once the latch expires (CAI-343)", func() {
+			ctx := context.Background()
+
+			pc := &mortisev1alpha1.PlatformConfig{
+				ObjectMeta: metav1.ObjectMeta{Name: "platform"},
+				Spec:       mortisev1alpha1.PlatformConfigSpec{Domain: "example.com", ExternalDomain: "mortise.example.com"},
+			}
+			Expect(k8sClient.Create(ctx, pc)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, pc)).To(Succeed()) }()
+
+			whSecret, whRef := makeWebhookSecret(ctx, "gh-webhook-expiry")
+			defer func() { Expect(k8sClient.Delete(ctx, whSecret)).To(Succeed()) }()
+
+			gp := &mortisev1alpha1.GitProvider{
+				ObjectMeta: metav1.ObjectMeta{Name: "gh-webhook-expiry"},
+				Spec: mortisev1alpha1.GitProviderSpec{
+					Type:             mortisev1alpha1.GitProviderTypeGitHub,
+					Host:             "https://github.com",
+					WebhookSecretRef: whRef,
+				},
+			}
+			Expect(k8sClient.Create(ctx, gp)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, gp)).To(Succeed()) }()
+
+			app := makeGitSourceApp("git-webhook-expiry", namespace, gp.Name)
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: namespace}, app)).To(Succeed())
+
+			api := &fakeWebhookAPI{}
+			r := gitSourceReconciler(&fakeBuildClient{digest: "sha256:expiry"}, &fakeGitClient{}, &fakeRegistryBackend{})
+			r.GitAPIFactory = func(_ *mortisev1alpha1.GitProvider, _, _ string) (git.GitAPI, error) {
+				return api, nil
+			}
+
+			Expect(r.ensureWebhook(ctx, app, gp, "tok")).To(Succeed())
+			Expect(api.registerCount).To(Equal(1))
+
+			// Fresh latch: no git-host calls.
+			Expect(r.ensureWebhook(ctx, app, gp, "tok")).To(Succeed())
+			Expect(api.listCount).To(Equal(1))
+			Expect(api.registerCount).To(Equal(1))
+
+			// The hook was deleted on the git host (the CAI-55 shape: pushes
+			// silently stop deploying). Expire the latch: the operator lists,
+			// finds nothing, and re-earns True by re-registering.
+			backdateWebhookVerification(ctx, app)
+			Expect(r.ensureWebhook(ctx, app, gp, "tok")).To(Succeed())
+			Expect(api.listCount).To(Equal(2))
+			Expect(api.registerCount).To(Equal(2))
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: namespace}, app)).To(Succeed())
+			cond := meta.FindStatusCondition(app.Status.Conditions, webhookConditionType)
+			Expect(cond).NotTo(BeNil())
+			Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+			Expect(webhookVerificationDue(app, time.Now())).To(BeFalse(), "re-registration must refresh verifiedAt")
+		})
+
+		It("re-verifies a still-present hook without re-registering once the latch expires (CAI-343)", func() {
+			ctx := context.Background()
+
+			pc := &mortisev1alpha1.PlatformConfig{
+				ObjectMeta: metav1.ObjectMeta{Name: "platform"},
+				Spec:       mortisev1alpha1.PlatformConfigSpec{Domain: "example.com", ExternalDomain: "mortise.example.com"},
+			}
+			Expect(k8sClient.Create(ctx, pc)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, pc)).To(Succeed()) }()
+
+			whSecret, whRef := makeWebhookSecret(ctx, "gh-webhook-reverify")
+			defer func() { Expect(k8sClient.Delete(ctx, whSecret)).To(Succeed()) }()
+
+			gp := &mortisev1alpha1.GitProvider{
+				ObjectMeta: metav1.ObjectMeta{Name: "gh-webhook-reverify"},
+				Spec: mortisev1alpha1.GitProviderSpec{
+					Type:             mortisev1alpha1.GitProviderTypeGitHub,
+					Host:             "https://github.com",
+					WebhookSecretRef: whRef,
+				},
+			}
+			Expect(k8sClient.Create(ctx, gp)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, gp)).To(Succeed()) }()
+
+			app := makeGitSourceApp("git-webhook-reverify", namespace, gp.Name)
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: namespace}, app)).To(Succeed())
+
+			api := &fakeWebhookAPI{}
+			r := gitSourceReconciler(&fakeBuildClient{digest: "sha256:reverify"}, &fakeGitClient{}, &fakeRegistryBackend{})
+			r.GitAPIFactory = func(_ *mortisev1alpha1.GitProvider, _, _ string) (git.GitAPI, error) {
+				return api, nil
+			}
+
+			Expect(r.ensureWebhook(ctx, app, gp, "tok")).To(Succeed())
+			Expect(api.registerCount).To(Equal(1))
+
+			// The hook is still on the git host when the latch expires: the
+			// list is the verification, no re-register.
+			api.webhooks = []git.WebhookInfo{{ID: 1, URL: "http://mortise.example.com/api/webhooks/" + gp.Name}}
+			backdateWebhookVerification(ctx, app)
+			Expect(r.ensureWebhook(ctx, app, gp, "tok")).To(Succeed())
+			Expect(api.listCount).To(Equal(2))
+			Expect(api.registerCount).To(Equal(1))
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: namespace}, app)).To(Succeed())
+			Expect(webhookVerificationDue(app, time.Now())).To(BeFalse(), "list-match must refresh verifiedAt")
+		})
+
 		It("keeps webhook registration non-fatal and records the failure condition", func() {
 			ctx := context.Background()
 
