@@ -5375,6 +5375,17 @@ var _ = Describe("App Controller — git source", func() {
 			Expect(r.ensureWebhook(ctx, app, gp, "tok")).To(Succeed())
 			Expect(api.listCount).To(Equal(1))
 			Expect(api.registerCount).To(Equal(1))
+
+			// Rotating the token re-arms the latch (CAI-361): the permanent
+			// failure was the token's fault, so the fix must be retried with
+			// the new credential instead of keeping the old verdict.
+			api.registerErr = nil
+			Expect(r.ensureWebhook(ctx, app, gp, "tok-rotated")).To(Succeed())
+			Expect(api.registerCount).To(Equal(2))
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: namespace}, app)).To(Succeed())
+			cond = meta.FindStatusCondition(app.Status.Conditions, webhookConditionType)
+			Expect(cond).NotTo(BeNil())
+			Expect(cond.Status).To(Equal(metav1.ConditionTrue))
 		})
 
 		It("retries transient webhook failures even when inputs are unchanged", func() {

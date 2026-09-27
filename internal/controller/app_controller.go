@@ -3438,7 +3438,7 @@ func (r *AppReconciler) ensureWebhook(ctx context.Context, app *mortisev1alpha1.
 			fmt.Sprintf("GitProvider %q has no usable webhookSecretRef; webhook registration skipped", gp.Name))
 		return nil
 	}
-	inputHash := webhookRegistrationInputHash(app, gp, webhookURL, webhookSecret)
+	inputHash := webhookRegistrationInputHash(app, gp, webhookURL, webhookSecret, token)
 	if webhookConditionInputHash(app) == inputHash && !webhookVerificationDue(app, r.clock().Now()) {
 		return nil
 	}
@@ -3494,9 +3494,12 @@ func (r *AppReconciler) ensureWebhook(ctx context.Context, app *mortisev1alpha1.
 	return nil
 }
 
-func webhookRegistrationInputHash(app *mortisev1alpha1.App, gp *mortisev1alpha1.GitProvider, webhookURL, webhookSecret string) string {
+func webhookRegistrationInputHash(app *mortisev1alpha1.App, gp *mortisev1alpha1.GitProvider, webhookURL, webhookSecret, token string) string {
 	h := sha256.New()
-	fmt.Fprintf(h, "repo=%s\nproviderRef=%s\nproviderName=%s\nproviderType=%s\nproviderHost=%s\nurl=%s\nsecret=%s\n",
+	// The token is an input: a permanent failure latched under a bad token
+	// must retry once the token is rotated (CAI-361). Digested, like every
+	// other input here — the hash lands in a status message.
+	fmt.Fprintf(h, "repo=%s\nproviderRef=%s\nproviderName=%s\nproviderType=%s\nproviderHost=%s\nurl=%s\nsecret=%s\ntoken=%x\n",
 		app.Spec.Source.Repo,
 		app.Spec.Source.ProviderRef,
 		gp.Name,
@@ -3504,6 +3507,7 @@ func webhookRegistrationInputHash(app *mortisev1alpha1.App, gp *mortisev1alpha1.
 		gp.Spec.Host,
 		webhookURL,
 		webhookSecret,
+		sha256.Sum256([]byte(token)),
 	)
 	fmt.Fprintf(h, "events=")
 	if err := json.NewEncoder(h).Encode([]string{"push", "pull_request"}); err != nil {
