@@ -1496,10 +1496,18 @@ definitions:
       detectedPort:
         description: |-
           DetectedPort is the container port auto-detected from EXPOSE directives
-          (Dockerfile) or Railpack image config during the most recent build.
+          (Dockerfile) or Railpack image config during the most recent build,
+          or — for image-source Apps — from the image's registry config (CAI-347).
           Zero means no port was detected.
           +optional
         type: integer
+      detectedPortImage:
+        description: |-
+          DetectedPortImage records the image reference DetectedPort was read
+          for on an image-source App, so detection runs once per image rather
+          than per reconcile. Empty for git-source Apps.
+          +optional
+        type: string
       environments:
         items:
           $ref: '#/definitions/v1alpha1.EnvironmentStatus'

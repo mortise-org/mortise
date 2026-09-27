@@ -42,11 +42,11 @@ import (
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
 	"github.com/go-logr/logr"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
-	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	metricsv "k8s.io/metrics/pkg/client/clientset/versioned"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -421,6 +421,7 @@ func main() {
 		BuildClient:     stk.build,
 		GitClient:       stk.git,
 		RegistryBackend: stk.registry,
+		ImageInspector:  &registry.HTTPImageInspector{},
 		IngressProvider: ingressProvider,
 		Builds:          buildLogStore,
 	}

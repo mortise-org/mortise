@@ -6866,6 +6866,89 @@ var _ = Describe("App Controller — git source", func() {
 		})
 	})
 
+	Context("image port detection (CAI-347)", func() {
+		ctx := context.Background()
+
+		var app *mortisev1alpha1.App
+
+		AfterEach(func() {
+			if app != nil {
+				_ = k8sClient.Delete(ctx, app)
+				app = nil
+			}
+		})
+
+		makeImageApp := func(name string, port int32) *mortisev1alpha1.App {
+			return &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+				Spec: mortisev1alpha1.AppSpec{
+					Source:       mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: testImageNginx},
+					Network:      mortisev1alpha1.NetworkConfig{Public: true, Port: port},
+					Environments: []mortisev1alpha1.Environment{{Name: "production"}},
+				},
+			}
+		}
+
+		reconcileOnce := func(name string, inspector registry.ImageInspector) {
+			r := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), ImageInspector: inspector}
+			_, err := r.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: name, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+		}
+
+		deploymentPort := func(name string) int32 {
+			var dep appsv1.Deployment
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: envNsProduction}, &dep)).To(Succeed())
+			return dep.Spec.Template.Spec.Containers[0].Ports[0].ContainerPort
+		}
+
+		It("detects the image's exposed port when the spec keeps the default (the CAI-347 repro)", func() {
+			app = makeImageApp("detect-port-app", 8080)
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+
+			insp := &fakeImageInspector{port: 80}
+			reconcileOnce(app.Name, insp)
+
+			Expect(deploymentPort(app.Name)).To(Equal(int32(80)), "probe/port must follow the image's EXPOSE, not the 8080 default")
+			Expect(insp.calls).To(Equal(1))
+
+			var fresh mortisev1alpha1.App
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: namespace}, &fresh)).To(Succeed())
+			Expect(fresh.Status.DetectedPort).To(Equal(int32(80)))
+			Expect(fresh.Status.DetectedPortImage).To(Equal(testImageNginx))
+
+			// Latched: a second reconcile consults the registry zero times.
+			reconcileOnce(app.Name, insp)
+			Expect(insp.calls).To(Equal(1))
+		})
+
+		It("never overrides an explicit non-default port and never consults the registry for it", func() {
+			app = makeImageApp("explicit-port-app", 3000)
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+
+			insp := &fakeImageInspector{port: 80}
+			reconcileOnce(app.Name, insp)
+
+			Expect(deploymentPort(app.Name)).To(Equal(int32(3000)))
+			Expect(insp.calls).To(Equal(0))
+		})
+
+		It("keeps the default port and deploys when detection fails, latching the attempt", func() {
+			app = makeImageApp("detect-fail-app", 8080)
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+
+			insp := &fakeImageInspector{err: fmt.Errorf("registry unreachable")}
+			reconcileOnce(app.Name, insp)
+
+			Expect(deploymentPort(app.Name)).To(Equal(int32(8080)), "detection is best-effort and must never block a deploy")
+			Expect(insp.calls).To(Equal(1))
+
+			reconcileOnce(app.Name, insp)
+			Expect(insp.calls).To(Equal(1), "a failed attempt is latched, not retried every reconcile")
+		})
+	})
+
 	Context("sharedVars (spec §5.8b)", func() {
 		ctx := context.Background()
 
@@ -10235,3 +10318,14 @@ var _ = Describe("effectiveResources with limits (CAI-163 follow-up)", func() {
 		Expect(got.MemoryLimit).To(Equal("1Gi"))
 	})
 })
+
+type fakeImageInspector struct {
+	port  int32
+	err   error
+	calls int
+}
+
+func (f *fakeImageInspector) DetectExposedPort(_ context.Context, _ string, _ []byte) (int32, error) {
+	f.calls++
+	return f.port, f.err
+}

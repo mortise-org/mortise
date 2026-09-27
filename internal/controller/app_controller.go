@@ -140,6 +140,11 @@ type AppReconciler struct {
 	GitClient       git.GitClient
 	RegistryBackend registry.RegistryBackend
 
+	// ImageInspector reads an image-source App's registry config to detect
+	// its EXPOSEd port (CAI-347). Nil-safe: when nil, no detection runs and
+	// image apps keep the spec/default port.
+	ImageInspector registry.ImageInspector
+
 	// IngressProvider supplies the base annotations (ExternalDNS, cert-manager)
 	// and the optional ingressClassName for every Ingress this controller
 	// creates. Nil-safe: when nil (e.g. in envtest code that doesn't care about
@@ -294,7 +299,10 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 			}
 		}
 	case mortisev1alpha1.SourceTypeImage:
-		// image path: nothing extra needed before reconciling workloads
+		// Best-effort port detection from the image's registry config
+		// (CAI-347). Never blocks: on any failure the app deploys with the
+		// spec/default port exactly as before.
+		r.ensureImagePortDetected(ctx, &app, resolvedEnvs)
 	case mortisev1alpha1.SourceTypeExternal:
 		return r.reconcileExternalSource(ctx, &app)
 	default:
@@ -1412,7 +1420,13 @@ func projectedBuildRunName(es mortisev1alpha1.EnvironmentStatus) string {
 func (r *AppReconciler) projectAppBuildMetadata(ctx context.Context, app *mortisev1alpha1.App, projectionEnvOrder []string) error {
 	app.Status.LastBuiltSHA = ""
 	app.Status.LastBuiltImage = ""
-	app.Status.DetectedPort = 0
+	// An image-source App's DetectedPort comes from the registry config
+	// (CAI-347), not build metadata: the latch (DetectedPortImage) marks it
+	// and this projection must not zero it. Git-source Apps never set the
+	// latch, so their build-derived reset behaves exactly as before.
+	if app.Status.DetectedPortImage == "" {
+		app.Status.DetectedPort = 0
+	}
 
 	envName := projectedEnvName(app.Status.Environments, projectionEnvOrder)
 	if envName == "" {
@@ -4192,6 +4206,62 @@ func buildProbe(pc *mortisev1alpha1.ProbeConfig, defaultPort int32) *corev1.Prob
 // appPort returns the container port for the app. When the user has set an
 // explicit port (anything other than the kubebuilder default of 8080), that
 // wins. Otherwise, a build-detected port takes precedence over the default.
+// ensureImagePortDetected populates Status.DetectedPort for an image-source
+// App from the image's registry config, once per image reference (CAI-347).
+// An explicit non-default spec port disables detection (appPort gives it
+// precedence regardless). Errors are logged and latched: a broken registry
+// read costs one bounded attempt, never 15s of every reconcile; changing
+// the image re-arms detection.
+func (r *AppReconciler) ensureImagePortDetected(ctx context.Context, app *mortisev1alpha1.App, resolvedEnvs []mortisev1alpha1.Environment) {
+	if r.ImageInspector == nil {
+		return
+	}
+	if app.Spec.Network.Port > 0 && app.Spec.Network.Port != 8080 {
+		return
+	}
+	ref := app.Spec.Source.Image
+	if ref == "" || app.Status.DetectedPortImage == ref {
+		return
+	}
+	log := logf.FromContext(ctx)
+
+	// A private image's pull secret lives in the env namespaces (the
+	// ServiceAccount references it by name); read the first one that exists.
+	var dockerConfigJSON []byte
+	if name := app.Spec.Source.PullSecretRef; name != "" {
+		for i := range resolvedEnvs {
+			envNs, err := appEnvNs(app, resolvedEnvs[i].Name)
+			if err != nil {
+				continue
+			}
+			var sec corev1.Secret
+			if err := r.Get(ctx, types.NamespacedName{Namespace: envNs, Name: name}, &sec); err == nil {
+				dockerConfigJSON = sec.Data[corev1.DockerConfigJsonKey]
+				break
+			}
+		}
+	}
+
+	detectCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	port, err := r.ImageInspector.DetectExposedPort(detectCtx, ref, dockerConfigJSON)
+	if err != nil {
+		log.Info("image port detection failed; keeping spec/default port", "image", ref, "error", err.Error())
+		port = 0
+	} else if port > 0 {
+		log.Info("detected image port from registry config", "image", ref, "port", port)
+	}
+	if statusErr := r.updateAppStatus(ctx, app, func(status *mortisev1alpha1.AppStatus) {
+		status.DetectedPort = port
+		status.DetectedPortImage = ref
+	}); statusErr != nil {
+		log.Error(statusErr, "failed to persist detected port")
+	} else {
+		app.Status.DetectedPort = port
+		app.Status.DetectedPortImage = ref
+	}
+}
+
 func appPort(app *mortisev1alpha1.App) int32 {
 	const defaultPort int32 = 8080
 	if app.Spec.Network.Port > 0 && app.Spec.Network.Port != defaultPort {
