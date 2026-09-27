@@ -25,8 +25,16 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   example (`nginx:1.27`, listens on 80) CrashLooped out of the box, with
   a message blaming the container. The form now takes the port (default
   8080), the quickstart sets 80 for nginx, and the journey E2E asserts
-  the app reaches Ready instead of accepting any phase badge. Detection
-  of the port from the image's own ExposedPorts is the open second half.
+  the app reaches Ready instead of accepting any phase badge.
+- **Image-source apps detect their port from the registry** (CAI-347,
+  second half): when `network.port` is unset or left at the default, the
+  operator reads the image's OCI config (token challenges honoured,
+  manifest lists resolved per platform, pull secrets used for private
+  registries) and uses the lowest EXPOSEd TCP port for the container
+  port, Service, and probes — `nginx:1.27` now deploys Ready with zero
+  configuration. Detection is best-effort and latched per image
+  reference: a failure costs one bounded attempt, never a blocked
+  deploy, and an explicit non-default port disables it entirely.
 
 ### Fixed
 
