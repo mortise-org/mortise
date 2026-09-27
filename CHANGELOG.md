@@ -38,6 +38,11 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **A rotated git token re-arms the webhook registration latch**
+  (CAI-361): the registration input hash ignored the token, so a
+  permanent failure (a token without the hook scope) latched forever and
+  rotating in a working token was never retried. The hash now digests
+  the token; rotation retries a failure and re-verifies a success.
 - **`WebhookConfigured=True` is re-earned, never assumed** (CAI-343): the
   condition latched forever on its input hash, so a hook deleted on the
   git host left True standing while pushes silently stopped deploying.
