@@ -839,12 +839,21 @@ test.describe('variables tab - fromBinding projection', () => {
     const pgApp = `pg-auto-${randomSuffix()}`;
     await createBoundApps(request, webApp, pgApp);
 
+    // Auto-injected binding vars are projected into the derived Secret by a
+    // reconcile; the Variables tab loads env once on mount and does not
+    // refetch, so navigating before projection completes races (CAI-369).
+    // Wait for projection via API first.
+    const prefix = pgApp.toUpperCase().replace(/[^A-Z0-9_]/g, '_');
+    await expect(async () => {
+      const rows = await getEnvViaAPI(request, token, project, webApp);
+      expect(rows.some(r => r.name === `${prefix}_HOST`)).toBe(true);
+    }).toPass({ timeout: 15_000, intervals: [500, 1_000] });
+
     await injectToken(page, token);
     await goToVariablesTab(page, project, webApp);
     await expect(page.getByText('Runtime - production')).toBeVisible({ timeout: 8_000 });
 
     // Auto-injected binding vars should show up (e.g. PGAPP_HOST, PGAPP_PORT)
-    const prefix = pgApp.toUpperCase().replace(/[^A-Z0-9_]/g, '_');
     await expect(page.getByText(`${prefix}_HOST`)).toBeVisible({ timeout: 10_000 });
     await expect(page.getByText(`${prefix}_PORT`)).toBeVisible();
 
@@ -880,6 +889,16 @@ test.describe('variables tab - fromBinding projection', () => {
       headers: { Authorization: `Bearer ${token}` },
       data: spec
     });
+
+    // The PUT updates the spec; a reconcile then projects the fromBinding
+    // var into the derived Secret. The Variables tab loads env once on mount
+    // and does not refetch, so navigating before projection completes races
+    // (CAI-369). Wait for the projection via API — a fresh page load then
+    // deterministically shows it, exactly as a real reload would.
+    await expect(async () => {
+      const rows = await getEnvViaAPI(request, token, project, webApp);
+      expect(rows.some(r => r.name === 'MY_DB_HOST')).toBe(true);
+    }).toPass({ timeout: 15_000, intervals: [500, 1_000] });
 
     await injectToken(page, token);
     await goToVariablesTab(page, project, webApp);
