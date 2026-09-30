@@ -4792,36 +4792,37 @@ type fakeRegistryBackend struct {
 	resolveErr     error
 }
 
-func (f *fakeRegistryBackend) PushTarget(app, tag string) (registry.ImageRef, error) {
+func (f *fakeRegistryBackend) PushTarget(project, app, tag string) (registry.ImageRef, error) {
 	if f.targetErr != nil {
 		return registry.ImageRef{}, f.targetErr
 	}
 	if f.imageRef.Full != "" {
 		return f.imageRef, nil
 	}
+	path := "mortise/" + project + "/" + app
 	return registry.ImageRef{
 		Registry: "registry.example.com",
-		Path:     "mortise/" + app,
+		Path:     path,
 		Tag:      tag,
-		Full:     "registry.example.com/mortise/" + app + ":" + tag,
+		Full:     "registry.example.com/" + path + ":" + tag,
 	}, nil
 }
 
-func (f *fakeRegistryBackend) PullTarget(app, tag string) (registry.ImageRef, error) {
-	return f.PushTarget(app, tag)
+func (f *fakeRegistryBackend) PullTarget(project, app, tag string) (registry.ImageRef, error) {
+	return f.PushTarget(project, app, tag)
 }
 
 func (f *fakeRegistryBackend) PullSecretRef() string { return f.pullSecretName }
 
-func (f *fakeRegistryBackend) Tags(_ context.Context, _ string) ([]string, error) {
+func (f *fakeRegistryBackend) Tags(_ context.Context, _, _ string) ([]string, error) {
 	return nil, nil
 }
 
-func (f *fakeRegistryBackend) ResolveTag(_ context.Context, _, _ string) (string, bool, error) {
+func (f *fakeRegistryBackend) ResolveTag(_ context.Context, _, _, _ string) (string, bool, error) {
 	return f.resolveDigest, f.resolveFound, f.resolveErr
 }
 
-func (f *fakeRegistryBackend) DeleteTag(_ context.Context, _, _ string) error {
+func (f *fakeRegistryBackend) DeleteTag(_ context.Context, _, _, _ string) error {
 	return nil
 }
 
@@ -5120,7 +5121,7 @@ var _ = Describe("App Controller — git source", func() {
 			Expect(k8sClient.Create(ctx, app)).To(Succeed())
 			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
 
-			const oldImage = "registry.example.com/mortise/git-build-degraded:old"
+			const oldImage = "registry.example.com/mortise/default-project/git-build-degraded:old"
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: namespace}, app)).To(Succeed())
 			app.Status.Phase = mortisev1alpha1.AppPhaseReady
 			app.Status.Environments = []mortisev1alpha1.EnvironmentStatus{{
@@ -5898,8 +5899,8 @@ var _ = Describe("App Controller — git source", func() {
 					"production",
 					"main",
 					"same-sha",
-					"registry.example.com/mortise/git-shortcircuit:same-sh-production",
-					"registry.example.com/mortise/git-shortcircuit:same-sh-production",
+					"registry.example.com/mortise/default-project/git-shortcircuit:same-sh-production",
+					"registry.example.com/mortise/default-project/git-shortcircuit:same-sh-production",
 				),
 			}
 			Expect(k8sClient.Create(ctx, lastRun)).To(Succeed())
@@ -5908,12 +5909,12 @@ var _ = Describe("App Controller — git source", func() {
 			// Simulate a prior successful build by presetting per-env status and
 			// the durable BuildRun ref that now backs same-SHA reuse.
 			app.Status.LastBuiltSHA = "same-sha"
-			app.Status.LastBuiltImage = "registry.example.com/mortise/git-shortcircuit:same-sha"
+			app.Status.LastBuiltImage = "registry.example.com/mortise/default-project/git-shortcircuit:same-sha"
 			app.Status.Environments = []mortisev1alpha1.EnvironmentStatus{
 				{
 					Name:           "production",
 					LastBuiltSHA:   "same-sha",
-					LastBuiltImage: "registry.example.com/mortise/git-shortcircuit:same-sha",
+					LastBuiltImage: "registry.example.com/mortise/default-project/git-shortcircuit:same-sha",
 					LastSuccessfulBuildRunRef: &mortisev1alpha1.BuildRunReference{
 						Name:  lastRun.Name,
 						Phase: mortisev1alpha1.BuildRunPhaseSucceeded,
@@ -5941,7 +5942,7 @@ var _ = Describe("App Controller — git source", func() {
 				Name:      "git-shortcircuit",
 				Namespace: envNsProduction,
 			}, &dep)).To(Succeed())
-			Expect(dep.Spec.Template.Spec.Containers[0].Image).To(Equal("registry.example.com/mortise/git-shortcircuit:same-sha"))
+			Expect(dep.Spec.Template.Spec.Containers[0].Image).To(Equal("registry.example.com/mortise/default-project/git-shortcircuit:same-sha"))
 		})
 	})
 

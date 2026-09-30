@@ -79,16 +79,20 @@ func NewOCIBackend(cfg Config) *OCIBackend {
 	}
 }
 
-// imagePath returns the registry path for the given app name.
-// e.g. "mortise/my-app"
-func (b *OCIBackend) imagePath(app string) string {
-	return b.cfg.Namespace + "/" + app
+// imagePath returns the project-scoped registry path for an app.
+// e.g. "mortise/my-project/my-app" — the project qualifier keeps two projects'
+// same-named apps in separate repositories (CAI-454).
+func (b *OCIBackend) imagePath(project, app string) string {
+	return b.cfg.Namespace + "/" + project + "/" + app
 }
 
 // PushTarget returns the ImageRef the build system should push to.
 // This is a pure computation — no network call. The operator passes the
 // returned ImageRef.Full to the BuildClient as the push destination.
-func (b *OCIBackend) PushTarget(app, tag string) (ImageRef, error) {
+func (b *OCIBackend) PushTarget(project, app, tag string) (ImageRef, error) {
+	if project == "" {
+		return ImageRef{}, fmt.Errorf("project must not be empty")
+	}
 	if app == "" {
 		return ImageRef{}, fmt.Errorf("app name must not be empty")
 	}
@@ -101,7 +105,7 @@ func (b *OCIBackend) PushTarget(app, tag string) (ImageRef, error) {
 		return ImageRef{}, fmt.Errorf("invalid registry URL %q: %w", b.cfg.URL, err)
 	}
 
-	path := b.imagePath(app)
+	path := b.imagePath(project, app)
 	return ImageRef{
 		Registry: base,
 		Path:     path,
@@ -114,11 +118,14 @@ func (b *OCIBackend) PushTarget(app, tag string) (ImageRef, error) {
 // is configured (e.g. a node-local DaemonSet proxy at localhost:30500), the
 // returned ref uses that host instead of the push registry. Falls back to
 // PushTarget when PullURL is empty.
-func (b *OCIBackend) PullTarget(app, tag string) (ImageRef, error) {
+func (b *OCIBackend) PullTarget(project, app, tag string) (ImageRef, error) {
 	if b.cfg.PullURL == "" {
-		return b.PushTarget(app, tag)
+		return b.PushTarget(project, app, tag)
 	}
 
+	if project == "" {
+		return ImageRef{}, fmt.Errorf("project must not be empty")
+	}
 	if app == "" {
 		return ImageRef{}, fmt.Errorf("app name must not be empty")
 	}
@@ -131,7 +138,7 @@ func (b *OCIBackend) PullTarget(app, tag string) (ImageRef, error) {
 		return ImageRef{}, fmt.Errorf("invalid pull URL %q: %w", b.cfg.PullURL, err)
 	}
 
-	path := b.imagePath(app)
+	path := b.imagePath(project, app)
 	return ImageRef{
 		Registry: base,
 		Path:     path,
@@ -149,8 +156,8 @@ func (b *OCIBackend) PullSecretRef() string {
 
 // Tags lists all tags for the given app's image repository.
 // Calls GET /v2/<namespace>/<app>/tags/list per OCI Distribution Spec §10.3.
-func (b *OCIBackend) Tags(ctx context.Context, app string) ([]string, error) {
-	path := b.imagePath(app)
+func (b *OCIBackend) Tags(ctx context.Context, project, app string) ([]string, error) {
+	path := b.imagePath(project, app)
 	endpoint := b.cfg.URL + "/v2/" + path + "/tags/list"
 
 	resp, err := b.do(ctx, http.MethodGet, endpoint, nil)
@@ -182,8 +189,8 @@ func (b *OCIBackend) Tags(ctx context.Context, app string) ([]string, error) {
 // ResolveTag reports whether app:tag exists in the registry and, if so, its
 // manifest digest. Calls HEAD /v2/<namespace>/<app>/manifests/<tag> per OCI
 // Distribution Spec §9.2.
-func (b *OCIBackend) ResolveTag(ctx context.Context, app, tag string) (string, bool, error) {
-	path := b.imagePath(app)
+func (b *OCIBackend) ResolveTag(ctx context.Context, project, app, tag string) (string, bool, error) {
+	path := b.imagePath(project, app)
 	headURL := b.cfg.URL + "/v2/" + path + "/manifests/" + tag
 
 	resp, err := b.do(ctx, http.MethodHead, headURL, nil)
@@ -210,8 +217,8 @@ func (b *OCIBackend) ResolveTag(ctx context.Context, app, tag string) (string, b
 // OCI Distribution Spec §10.4 requires deleting by digest, so DeleteTag first
 // resolves the digest via a HEAD on the manifests endpoint, then issues
 // DELETE /v2/<namespace>/<app>/manifests/<digest>.
-func (b *OCIBackend) DeleteTag(ctx context.Context, app, tag string) error {
-	path := b.imagePath(app)
+func (b *OCIBackend) DeleteTag(ctx context.Context, project, app, tag string) error {
+	path := b.imagePath(project, app)
 
 	// Step 1: resolve digest.
 	headURL := b.cfg.URL + "/v2/" + path + "/manifests/" + tag
