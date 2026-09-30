@@ -98,8 +98,11 @@
 			}));
 			historyLines = fresh ? mapped : [...historyLines, ...mapped];
 			historyHasMore = resp.hasMore ?? false;
-			if (mapped.length > 0) {
-				historyCursor = mapped[mapped.length - 1].ts;
+			const lastLine = resp.lines?.[resp.lines.length - 1];
+			if (lastLine) {
+				// Page on the opaque cursor so lines sharing a timestamp across
+				// the boundary aren't dropped (CAI-448); fall back to ts.
+				historyCursor = lastLine.cursor ?? lastLine.ts;
 			}
 		} catch {
 			/* ignore */

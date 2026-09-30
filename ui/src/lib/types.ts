@@ -520,6 +520,8 @@ export interface LogHistoryLine {
 	pod: string;
 	text: string;
 	stream?: string;
+	// Opaque "{ts}|{rowid}" pagination cursor; page on this, not ts (CAI-448).
+	cursor?: string;
 }
 
 // --- cluster dashboard (obs-v2 O5) ---

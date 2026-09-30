@@ -126,6 +126,44 @@ func TestQueryLogs_Filter(t *testing.T) {
 	}
 }
 
+// Two log lines sharing an exact timestamp, paginated across the boundary: the
+// held-back line must appear on the next page, not be dropped by a ts-only
+// cursor (CAI-448).
+func TestQueryLogs_EqualTimestampPaginationDoesNotDropLines(t *testing.T) {
+	s := testStore(t)
+
+	ts := time.Now().UTC().Format(time.RFC3339Nano)
+	for _, line := range []string{"first", "second"} {
+		if err := s.InsertLog(LogEntry{
+			Ts: ts, Pod: "pod-1", Namespace: "pj-demo-prod", App: "web", Env: "production", Line: line,
+		}); err != nil {
+			t.Fatalf("InsertLog: %v", err)
+		}
+	}
+
+	start := time.Now().Add(-1 * time.Minute).Unix()
+	end := time.Now().Add(time.Minute).Unix()
+
+	page1, hasMore, err := s.QueryLogs("pj-demo-prod", "web", "production", start, end, 1, "", "")
+	if err != nil {
+		t.Fatalf("page1: %v", err)
+	}
+	if len(page1) != 1 || !hasMore {
+		t.Fatalf("page1: want 1 line + hasMore, got %d lines hasMore=%v", len(page1), hasMore)
+	}
+
+	page2, _, err := s.QueryLogs("pj-demo-prod", "web", "production", start, end, 1, "", page1[0].Cursor)
+	if err != nil {
+		t.Fatalf("page2: %v", err)
+	}
+	if len(page2) != 1 {
+		t.Fatalf("page2: the same-timestamp line was dropped across the page boundary; got %d lines", len(page2))
+	}
+	if page2[0].Text == page1[0].Text {
+		t.Errorf("page2 repeated page1's line (%q) instead of advancing", page2[0].Text)
+	}
+}
+
 func TestQueryLogs_Limit(t *testing.T) {
 	s := testStore(t)
 
