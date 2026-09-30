@@ -129,8 +129,23 @@ func (s *Server) currentMetricsFromAdapter(r *http.Request, projectName, appName
 		return nil, true, err
 	}
 
+	// A pod whose last point predates the cutoff has stopped reporting — it is a
+	// ghost (deleted/crashed), not a live pod. Drop it, matching the
+	// direct-PodMetrics fallback and /v1/summary's 5-min cutoff, so the drawer
+	// doesn't show a dead pod running its last CPU/mem (CAI-447).
+	staleCutoff := float64(time.Now().Add(-5 * time.Minute).Unix())
 	out := make([]podMetricsCurrent, 0, len(resp.Pods))
 	for _, pod := range resp.Pods {
+		lastTS := 0.0
+		if n := len(pod.CPU); n > 0 {
+			lastTS = pod.CPU[n-1][0]
+		}
+		if n := len(pod.Memory); n > 0 && pod.Memory[n-1][0] > lastTS {
+			lastTS = pod.Memory[n-1][0]
+		}
+		if lastTS < staleCutoff {
+			continue
+		}
 		curr := podMetricsCurrent{Name: pod.Name}
 		if len(pod.CPU) > 0 {
 			curr.CPU = pod.CPU[len(pod.CPU)-1][1]

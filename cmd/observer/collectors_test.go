@@ -729,6 +729,40 @@ func TestTrafficTailerCleansUpOnExit(t *testing.T) {
 	}
 }
 
+// A request Traefik answered itself (unreachable/crashlooping backend) carries
+// OriginStatus 0 and the real code in DownstreamStatus. It must be counted, or
+// the traffic panel shows zero requests and zero 5xx during an outage (CAI-446).
+func TestTrafficCountsTraefikGeneratedErrors(t *testing.T) {
+	tc := NewTrafficCollector(fake.NewClientset(), nil, nil, nil, nil, time.Minute, 5*time.Second, "traefik", discardLogger())
+
+	tc.svcMu.Lock()
+	tc.svcCache["pj-demo-app@kubernetes"] = appEnvKey{namespace: "pj-demo", app: "web", env: "prod"}
+	tc.svcMu.Unlock()
+
+	line, _ := json.Marshal(trafikAccessLog{
+		ServiceName:      "pj-demo-app-80@kubernetes",
+		OriginStatus:     0,
+		DownstreamStatus: 503,
+		Duration:         1e6,
+	})
+	tc.processLine(line)
+
+	tc.accMu.Lock()
+	var bucket *trafficBucket
+	for _, b := range tc.accumulator {
+		bucket = b
+		break
+	}
+	tc.accMu.Unlock()
+
+	if bucket == nil {
+		t.Fatal("Traefik-generated 503 was dropped; the outage would be invisible")
+	}
+	if bucket.requests != 1 || bucket.status5xx != 1 {
+		t.Errorf("want requests=1 status5xx=1, got requests=%d status5xx=%d", bucket.requests, bucket.status5xx)
+	}
+}
+
 // --- Reservoir sampling (P2-5) ---
 
 func TestReservoirSamplingCapsLatencies(t *testing.T) {
