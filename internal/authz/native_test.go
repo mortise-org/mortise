@@ -99,6 +99,22 @@ func TestViewerReadOnly(t *testing.T) {
 	}
 }
 
+// The user list is admin-only (authorizePlatform denies it even to members), so
+// a viewer — the lowest role — must not be able to read it either (CAI-445).
+func TestViewerCannotListUsers(t *testing.T) {
+	engine := NewNativePolicyEngine(nil)
+	ctx := context.Background()
+	viewer := auth.Principal{ID: "viewer@example.com", Email: "viewer@example.com", Role: auth.RoleViewer}
+
+	ok, err := engine.Authorize(ctx, viewer, Resource{Kind: "user"}, ActionRead)
+	if err != nil {
+		t.Fatalf("Authorize(user, read): %v", err)
+	}
+	if ok {
+		t.Error("viewer must not be allowed to read the user list (admin-only)")
+	}
+}
+
 func TestMemberPlatformScoped(t *testing.T) {
 	engine := NewNativePolicyEngine(nil)
 	ctx := context.Background()
