@@ -83,4 +83,31 @@ describe('AppDrawer phase navigation', () => {
 		expect(await view.findByText(/rollout stalled in: production/i)).toBeTruthy();
 		view.unmount();
 	});
+	it('surfaces a not-ready TLS certificate while the app is Ready (CAI-440)', async () => {
+		const certPending: App = {
+			metadata: { name: 'web', generation: 3 },
+			spec: {
+				source: { type: 'git', repo: 'https://example.test/repo.git' },
+				network: { public: true },
+				environments: [{ name: 'production', domain: 'web.example.com' }]
+			},
+			status: {
+				phase: 'Ready',
+				environments: [{ name: 'production', phase: 'Ready' }],
+				conditions: [
+					{
+						type: 'CertificateNotReady',
+						status: 'True',
+						reason: 'CertificateNotReady',
+						message: 'TLS certificate not ready in: production (Pending: waiting for DNS-01)'
+					}
+				]
+			}
+		};
+		const view = render(AppDrawer, {
+			props: { project: 'demo', appName: 'web', liveApp: certPending, onClose: vi.fn() }
+		});
+		expect(await view.findByText(/TLS certificate not ready in: production/i)).toBeTruthy();
+		view.unmount();
+	});
 });

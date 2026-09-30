@@ -59,6 +59,13 @@
 		app.status?.conditions?.find((c) => c.type === 'RolloutStalled' && c.status === 'True')?.message ?? null
 	);
 
+	// Pods can be Ready while the TLS cert is still issuing or has failed, so the
+	// phase does not speak for it — surface it or the node reads "Ready" while
+	// HTTPS is broken (CAI-440).
+	const certMsg = $derived(
+		app.status?.conditions?.find((c) => c.type === 'CertificateNotReady' && c.status === 'True')?.message ?? null
+	);
+
 	// Build timer - synced to the BuildStarted condition timestamp from k8s.
 	let buildElapsed = $state('');
 	let timerHandle: ReturnType<typeof setInterval> | null = null;
@@ -150,12 +157,20 @@
 						<path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a.75.75 0 000 1.5h.253a.25.25 0 01.244.304l-.459 2.066A1.75 1.75 0 0010.747 15H11a.75.75 0 000-1.5h-.253a.25.25 0 01-.244-.304l.459-2.066A1.75 1.75 0 009.253 9H9z" clip-rule="evenodd" />
 					</svg>
 				</span>
+			{:else if certMsg}
+				<span class="h-3 w-3 shrink-0 text-warning" title={certMsg}>
+					<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="h-3 w-3">
+						<path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a.75.75 0 000 1.5h.253a.25.25 0 01.244.304l-.459 2.066A1.75 1.75 0 0010.747 15H11a.75.75 0 000-1.5h-.253a.25.25 0 01-.244-.304l.459-2.066A1.75 1.75 0 009.253 9H9z" clip-rule="evenodd" />
+					</svg>
+				</span>
 			{/if}
 		</div>
 	{#if (phase === 'Degraded' || phase === 'Failed' || phase === 'CrashLooping') && errorMsg}
 		<span class="line-clamp-2 text-xs {phase === 'Degraded' ? 'text-warning/80' : 'text-danger/80'}">{errorMsg}</span>
 	{:else if stalledMsg}
 		<span class="line-clamp-2 text-xs text-warning/80">{stalledMsg}</span>
+	{:else if certMsg}
+		<span class="line-clamp-2 text-xs text-warning/80">{certMsg}</span>
 	{/if}
 
 	{#if needsRedeploy && enabled}

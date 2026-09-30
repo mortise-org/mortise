@@ -640,6 +640,48 @@ func TestUpdateStatusReadsWorkloadThroughAPIReader(t *testing.T) {
 	}
 }
 
+// A non-public App with an explicit env.Domain must not report that domain in
+// status: the Ingress path is gated on Network.Public, so no route exists and
+// the UI would otherwise offer an Open button to a dead host (CAI-441).
+func TestUpdateStatusDoesNotReportDomainForPrivateApp(t *testing.T) {
+	ctx := context.Background()
+	scheme := runtime.NewScheme()
+	if err := mortisev1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add mortise scheme: %v", err)
+	}
+	if err := appsv1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add apps scheme: %v", err)
+	}
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add core scheme: %v", err)
+	}
+
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "demo", Namespace: "pj-default-project"},
+		Spec: mortisev1alpha1.AppSpec{
+			Source:       mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage},
+			Network:      mortisev1alpha1.NetworkConfig{Public: false},
+			Environments: []mortisev1alpha1.Environment{{Name: "production", Domain: "priv.example.com"}},
+		},
+	}
+	c := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(app).WithObjects(app).Build()
+	r := &AppReconciler{Client: c, Scheme: scheme}
+	if err := r.updateStatus(ctx, app, []mortisev1alpha1.Environment{{Name: "production", Domain: "priv.example.com"}}, nil); err != nil {
+		t.Fatalf("update status: %v", err)
+	}
+
+	var got mortisev1alpha1.App
+	if err := c.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: app.Namespace}, &got); err != nil {
+		t.Fatalf("get app: %v", err)
+	}
+	if len(got.Status.Environments) != 1 {
+		t.Fatalf("expected one env status, got %+v", got.Status.Environments)
+	}
+	if d := got.Status.Environments[0].Domain; d != "" {
+		t.Errorf("private App must not report a domain, got %q", d)
+	}
+}
+
 func TestUpdateStatusKeepsFailedWhenLatestBuildFailsAndNothingServes(t *testing.T) {
 	ctx := context.Background()
 	scheme := runtime.NewScheme()
@@ -10522,5 +10564,21 @@ func TestSetRolloutStalledConditionSetAndClear(t *testing.T) {
 	setRolloutStalledCondition(&conds, nil, 6)
 	if meta.FindStatusCondition(conds, rolloutStalledCondition) != nil {
 		t.Errorf("RolloutStalled should be cleared when no envs stalled")
+	}
+}
+
+func TestSetCertificateNotReadyConditionSetAndClear(t *testing.T) {
+	var conds []metav1.Condition
+	setCertificateNotReadyCondition(&conds, map[string]string{"production": "Pending: waiting for DNS-01"}, 5)
+	cond := meta.FindStatusCondition(conds, certificateNotReadyCondition)
+	if cond == nil || cond.Status != metav1.ConditionTrue {
+		t.Fatalf("expected CertificateNotReady=True, got %+v", cond)
+	}
+	if !strings.Contains(cond.Message, "production") || !strings.Contains(cond.Message, "DNS-01") {
+		t.Errorf("message should name the env and cert status, got %q", cond.Message)
+	}
+	setCertificateNotReadyCondition(&conds, nil, 6)
+	if meta.FindStatusCondition(conds, certificateNotReadyCondition) != nil {
+		t.Errorf("CertificateNotReady should be cleared when every cert is ready")
 	}
 }
