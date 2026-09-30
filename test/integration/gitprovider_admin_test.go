@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -128,15 +129,17 @@ func TestGitProviderAdminAPICRUD(t *testing.T) {
 		t.Fatalf("delete: expected 204, got %d: %s", resp.StatusCode, resp.Body)
 	}
 
-	if err := k8sClient.Get(ctx, types.NamespacedName{Name: providerName}, &gp); !errors.IsNotFound(err) {
-		t.Errorf("GitProvider still present after delete: err=%v", err)
-	}
-	if err := k8sClient.Get(ctx, types.NamespacedName{
-		Namespace: "mortise-system",
-		Name:      "gitprovider-webhook-" + providerName,
-	}, &secret); !errors.IsNotFound(err) {
-		t.Errorf("webhook secret still present after delete: err=%v", err)
-	}
+	// The CRD and its webhook secret are cleaned up asynchronously after the
+	// DELETE returns 204, so poll until both are gone rather than checking once.
+	helpers.RequireEventually(t, 30*time.Second, func() bool {
+		return errors.IsNotFound(k8sClient.Get(ctx, types.NamespacedName{Name: providerName}, &gp))
+	})
+	helpers.RequireEventually(t, 30*time.Second, func() bool {
+		return errors.IsNotFound(k8sClient.Get(ctx, types.NamespacedName{
+			Namespace: "mortise-system",
+			Name:      "gitprovider-webhook-" + providerName,
+		}, &secret))
+	})
 }
 
 // TestGiteaOAuthFlow validates the current per-user Git auth flow used by the
