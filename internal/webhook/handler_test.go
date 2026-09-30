@@ -1142,6 +1142,66 @@ func TestPREvent_ProjectPreviewDisabled_NoPECreated(t *testing.T) {
 	}
 }
 
+// githubPRPayloadWithUser is githubPRPayloadJSON plus a pull_request.user, so a
+// test can exercise bot-author gating.
+func githubPRPayloadWithUser(action string, number int, branch, sha, fullName, userLogin, userType string) []byte {
+	p := map[string]interface{}{
+		"action": action,
+		"number": number,
+		"pull_request": map[string]interface{}{
+			"number": number,
+			"head":   map[string]string{"ref": branch, "sha": sha},
+			"user":   map[string]string{"login": userLogin, "type": userType},
+		},
+		"repository": map[string]string{"full_name": fullName},
+	}
+	b, _ := json.Marshal(p)
+	return b
+}
+
+// preview.botPR: false must stop a bot-authored PR from spawning a preview on
+// the webhook path — otherwise a bot PR gets the source env's secrets cloned
+// into its namespace (CAI-450). A human-authored PR is unaffected.
+func TestGitHubPREvent_BotPRFalse_SkipsBotAuthoredPreview(t *testing.T) {
+	const secret = "prsecret"
+	const providerName = "github-main"
+	gp := makeGitProvider(mortisev1alpha1.GitProviderTypeGitHub, "mortise-system", "wh-secret", "value")
+	botFalse := false
+	proj := makeProject("default", &mortisev1alpha1.PreviewConfig{
+		Enabled: true, SourceEnvironment: "staging", BotPR: &botFalse,
+	})
+
+	serve := func(body []byte) *fakeK8sReader {
+		kr := &fakeK8sReader{
+			provider: gp,
+			secrets:  map[string]string{"mortise-system/wh-secret/value": secret},
+			apps:     []mortisev1alpha1.App{makeGitApp("botpr", "pj-default", "https://github.com/org/repo", "main")},
+			projects: map[string]*mortisev1alpha1.Project{"default": proj},
+		}
+		h := newTestHandler(kr)
+		req := httptest.NewRequest(http.MethodPost, "/"+providerName, bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-GitHub-Event", "pull_request")
+		req.Header.Set("X-Hub-Signature-256", githubSignature(body, secret))
+		rr := httptest.NewRecorder()
+		h.Routes().ServeHTTP(rr, req)
+		if rr.Code != http.StatusAccepted {
+			t.Fatalf("expected 202, got %d: %s", rr.Code, rr.Body.String())
+		}
+		return kr
+	}
+
+	bot := serve(githubPRPayloadWithUser("opened", 30, "dependabot/x", "sha30", "org/repo", "dependabot[bot]", "Bot"))
+	if len(bot.createdPreviews) != 0 {
+		t.Errorf("bot-authored PR with botPR=false must not create a preview, got %d", len(bot.createdPreviews))
+	}
+
+	human := serve(githubPRPayloadWithUser("opened", 31, "feature/x", "sha31", "org/repo", "alice", "User"))
+	if len(human.createdPreviews) != 1 {
+		t.Errorf("human-authored PR must still create a preview, got %d", len(human.createdPreviews))
+	}
+}
+
 func TestPREvent_OpenedHonorsProviderRef(t *testing.T) {
 	const secret = "prsecret"
 	body := githubPRPayloadJSON("opened", 42, "feature/x", "shaopened", "org/repo")
