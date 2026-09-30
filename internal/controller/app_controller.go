@@ -3803,6 +3803,33 @@ func (r *AppReconciler) blockingPodReason(ctx context.Context, app *mortisev1alp
 
 // setRolloutStalledCondition sets RolloutStalled=True naming the stalled
 // environments and why, or clears it when none are stalled (CAI-396).
+// setCertificateNotReadyCondition surfaces a public env whose TLS certificate
+// is still issuing or has failed, so the App does not silently read Ready while
+// HTTPS is broken (CAI-440). True = a cert is not ready; cleared when every
+// public env's cert is Ready (or none use TLS). Mirrors RolloutStalled.
+func setCertificateNotReadyCondition(conds *[]metav1.Condition, notReady map[string]string, generation int64) {
+	if len(notReady) == 0 {
+		meta.RemoveStatusCondition(conds, certificateNotReadyCondition)
+		return
+	}
+	names := make([]string, 0, len(notReady))
+	for name := range notReady {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	parts := make([]string, 0, len(names))
+	for _, name := range names {
+		parts = append(parts, fmt.Sprintf("%s (%s)", name, notReady[name]))
+	}
+	meta.SetStatusCondition(conds, metav1.Condition{
+		Type:               certificateNotReadyCondition,
+		Status:             metav1.ConditionTrue,
+		Reason:             "CertificateNotReady",
+		Message:            "TLS certificate not ready in: " + strings.Join(parts, "; "),
+		ObservedGeneration: generation,
+	})
+}
+
 func setRolloutStalledCondition(conds *[]metav1.Condition, stalled map[string]string, generation int64) {
 	if len(stalled) == 0 {
 		meta.RemoveStatusCondition(conds, rolloutStalledCondition)
@@ -3903,18 +3930,23 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 
 		anyNotReady := false
 		anyCrash := false
+		certNotReady := map[string]string{}
 		firstCrashMsg := ""
 		stalledEnvs := map[string]string{}
 
 		for _, env := range resolvedEnvs {
 			projectionEnvOrder = append(projectionEnvOrder, env.Name)
+			// A domain only exists for a public App — the Ingress path is gated
+			// on Network.Public, so reporting env.Domain for a private App would
+			// advertise a host with no route (CAI-441).
+			domain := ""
 			autoDomain := ""
 			if app.Spec.Network.Public {
 				autoDomain = r.autoDefaultDomain(ctx, app, env.Name)
-			}
-			domain := env.Domain
-			if domain == "" {
-				domain = autoDomain
+				domain = env.Domain
+				if domain == "" {
+					domain = autoDomain
+				}
 			}
 			es := mortisev1alpha1.EnvironmentStatus{
 				Name:         env.Name,
@@ -4092,6 +4124,18 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 				} else {
 					es.CertificateStatus, es.CertificateMessage = r.checkCertificateStatus(ctx, tlsSecretName(app.Name), envNs)
 				}
+				// Surface a not-yet-ready or failed TLS cert. Pods can be Ready
+				// while the ACME challenge is still issuing or has failed, and
+				// without this the App reports Ready and the UI offers Open over
+				// a broken HTTPS URL (CAI-440).
+				switch es.CertificateStatus {
+				case "Pending", "Failed":
+					msg := es.CertificateStatus
+					if es.CertificateMessage != "" {
+						msg = es.CertificateStatus + ": " + es.CertificateMessage
+					}
+					certNotReady[env.Name] = msg
+				}
 			}
 
 			envStatuses = append(envStatuses, es)
@@ -4134,6 +4178,7 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 		setEnvKeysRetainedCondition(&fresh.Status.Conditions, envStatuses, app.Generation)
 		setEnvRolledOutCondition(&fresh.Status.Conditions, envStatuses, app.Generation)
 		setRolloutStalledCondition(&fresh.Status.Conditions, stalledEnvs, app.Generation)
+		setCertificateNotReadyCondition(&fresh.Status.Conditions, certNotReady, app.Generation)
 		setEnvironmentJoinedCondition(&fresh.Status.Conditions, envStatuses, r.clock().Now(), app.Generation)
 		if buildFailed {
 			if anyServing && !anyCrash {
@@ -5336,6 +5381,8 @@ func (r *AppReconciler) SetupWithManager(mgr ctrl.Manager) error {
 const envRolledOutCondition = "EnvRolledOut"
 
 const rolloutStalledCondition = "RolloutStalled"
+
+const certificateNotReadyCondition = "CertificateNotReady"
 
 // setEnvRolledOutCondition reports a pending redeploy as a condition. With
 // Project.spec.autoRedeploy off (the default) the controller freezes the
