@@ -344,8 +344,14 @@ func (h *Handler) dispatchPREvent(ctx context.Context, pr PREvent) {
 			continue
 		}
 
-		// BotPR gating is not enforced here — the webhook payload doesn't
-		// carry author info. The PE controller can enforce this if needed.
+		// Honour preview.botPR: false. botPR defaults to true (nil), matching
+		// the convergence path; only an explicit false blocks bot-authored PRs
+		// from spawning a preview (and cloning source-env secrets) (CAI-450).
+		botPR := preview.BotPR == nil || *preview.BotPR
+		if !botPR && pr.AuthorIsBot {
+			log.Info("bot-authored PR with preview.botPR=false, skipping preview", "project", projectName, "pr", pr.Number)
+			continue
+		}
 
 		sourceEnv := resolveSourceEnv(project)
 		if sourceEnv == "" {
@@ -439,6 +445,11 @@ func resolveSourceEnv(project *mortisev1alpha1.Project) string {
 	}
 	var firstNonProd string
 	for _, env := range project.Spec.Environments {
+		// Never clone from another PR's preview env — match the convergence
+		// twin resolveSourceEnvFromProject (CAI-452).
+		if env.Preview {
+			continue
+		}
 		if env.Name == "staging" {
 			return "staging"
 		}
@@ -499,6 +510,19 @@ type PREvent struct {
 	Action   string // opened, synchronize, closed
 	Branch   string // source branch
 	SHA      string // head commit SHA
+	// AuthorIsBot is best-effort (GitHub/Gitea expose it; GitLab webhooks do
+	// not), used to honour Project preview.botPR: false.
+	AuthorIsBot bool
+}
+
+// payloadAuthorIsBot reports whether the PR author is a bot, matching the
+// GitProvider API heuristic (github.go: user.type == "Bot") plus the "[bot]"
+// login convention. GitLab payloads carry no reliable bot marker.
+func payloadAuthorIsBot(p prPayload) bool {
+	if strings.EqualFold(p.PullRequest.User.Type, "Bot") {
+		return true
+	}
+	return strings.HasSuffix(strings.ToLower(p.PullRequest.User.Login), "[bot]")
 }
 
 // pushPayload is the minimal common shape we extract from all three forges.
@@ -526,6 +550,10 @@ type prPayload struct {
 			Ref string `json:"ref"`
 			SHA string `json:"sha"`
 		} `json:"head"`
+		User struct {
+			Login string `json:"login"`
+			Type  string `json:"type"`
+		} `json:"user"`
 	} `json:"pull_request"`
 	ObjectAttributes struct {
 		Action       string `json:"action"`
@@ -650,11 +678,12 @@ func parseGitHubPREvent(body []byte, header http.Header) (PREvent, bool) {
 	}
 
 	return PREvent{
-		Repo:   repo,
-		Number: number,
-		Action: action,
-		Branch: p.PullRequest.Head.Ref,
-		SHA:    p.PullRequest.Head.SHA,
+		Repo:        repo,
+		Number:      number,
+		Action:      action,
+		Branch:      p.PullRequest.Head.Ref,
+		SHA:         p.PullRequest.Head.SHA,
+		AuthorIsBot: payloadAuthorIsBot(p),
 	}, true
 }
 
@@ -688,11 +717,12 @@ func parseGiteaPREvent(body []byte, header http.Header) (PREvent, bool) {
 	}
 
 	return PREvent{
-		Repo:   repo,
-		Number: number,
-		Action: action,
-		Branch: p.PullRequest.Head.Ref,
-		SHA:    p.PullRequest.Head.SHA,
+		Repo:        repo,
+		Number:      number,
+		Action:      action,
+		Branch:      p.PullRequest.Head.Ref,
+		SHA:         p.PullRequest.Head.SHA,
+		AuthorIsBot: payloadAuthorIsBot(p),
 	}, true
 }
 
