@@ -272,6 +272,33 @@ test.describe('variables tab - env vars (production)', () => {
   });
 
   // -------------------------------------------------------------------------
+  // Test: a var added out of band appears without a manual reload (CAI-369)
+  // -------------------------------------------------------------------------
+  test('out-of-band env change refreshes the open tab', async ({ page, request }) => {
+    await putEnvVars(request, token, project, appName, 'production', [
+      { name: 'INBAND_VAR', value: 'here' }
+    ]);
+    await injectToken(page, token);
+    await goToVariablesTab(page, project, appName);
+    const runtimeSection = variableSection(page, 'Runtime - production');
+    await expect(runtimeSection.getByText('INBAND_VAR')).toBeVisible({ timeout: 10_000 });
+
+    // Simulate another session/API/kubectl changing env while this tab is open
+    // and untouched. Before CAI-369 the tab loaded env once and never refetched,
+    // so this never appeared without a manual reload.
+    await putEnvVars(request, token, project, appName, 'production', [
+      { name: 'INBAND_VAR', value: 'here' },
+      { name: 'OUT_OF_BAND_VAR', value: 'appeared' }
+    ]);
+
+    // No navigation, no reload — the tab must pick it up on its own once the
+    // operator recomputes the env hash and the poll observes it.
+    await expect(runtimeSection.getByText('OUT_OF_BAND_VAR')).toBeVisible({ timeout: 45_000 });
+
+    await putEnvVars(request, token, project, appName, 'production', []);
+  });
+
+  // -------------------------------------------------------------------------
   // Test 4: Delete a variable, verify via API
   // -------------------------------------------------------------------------
   test('delete a variable removes it from backend', async ({ page, request }) => {

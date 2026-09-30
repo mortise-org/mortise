@@ -116,7 +116,6 @@
 	let buildSection = $state<SectionState>(makeSection());
 	let lastLoadedEnv = $state('');
 	let lastLoadedApp = $state('');
-
 	$effect(() => {
 		const env = activeEnv;
 		const appName = app.metadata.name;
@@ -131,6 +130,31 @@
 		void loadEnv(env);
 		void loadShared();
 		void loadBuildArgs();
+	});
+
+	// Keep the runtime rows fresh against out-of-band env changes — a var
+	// added/removed by another session, the API, or kubectl — so the tab does
+	// not sit stale until the user reloads it (CAI-369). A light interval
+	// refetch is used rather than reacting to a status field: it does not
+	// depend on the App-status env hash propagating through the live-app SSE
+	// stream, so it is robust to how that update is delivered. The refetch is
+	// skipped while the user has anything in flight in the runtime section (an
+	// edit, a draft row, raw mode, an in-progress save/load) — clobbering their
+	// work would be worse than a briefly stale view, so we wait until they save
+	// or discard. `loadEnv` preserves revealed rows, so a plain viewer sees no
+	// disruption.
+	$effect(() => {
+		if (!activeEnv) return;
+		const id = setInterval(() => {
+			const busy =
+				envSection.editedKeys.size > 0 ||
+				envSection.showNewRow ||
+				envSection.rawMode ||
+				envSection.saving ||
+				envSection.loading;
+			if (!busy) void loadEnv(activeEnv);
+		}, 12_000);
+		return () => clearInterval(id);
 	});
 
 	// --- Load functions ---
