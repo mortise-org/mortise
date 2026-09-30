@@ -57,4 +57,30 @@ describe('AppDrawer phase navigation', () => {
 		expect(drawerStore.drawerTab).toBe('variables');
 		view.unmount();
 	});
+	it('surfaces a stalled rollout while the app is Deploying (CAI-399)', async () => {
+		const stalled: App = {
+			metadata: { name: 'web', generation: 3 },
+			spec: {
+				source: { type: 'git', repo: 'https://example.test/repo.git' },
+				environments: [{ name: 'production' }]
+			},
+			status: {
+				phase: 'Deploying',
+				environments: [{ name: 'production', phase: 'Deploying' }],
+				conditions: [
+					{
+						type: 'RolloutStalled',
+						status: 'True',
+						reason: 'ProgressDeadlineExceeded',
+						message: 'rollout stalled in: production (pod unschedulable: insufficient memory)'
+					}
+				]
+			}
+		};
+		const view = render(AppDrawer, {
+			props: { project: 'demo', appName: 'web', liveApp: stalled, onClose: vi.fn() }
+		});
+		expect(await view.findByText(/rollout stalled in: production/i)).toBeTruthy();
+		view.unmount();
+	});
 });

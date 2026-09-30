@@ -69,6 +69,11 @@
 			? liveApp?.status?.conditions?.find(c => c.status === 'False')?.message ?? ''
 			: ''
 	);
+	// A stalled rollout stays in phase=Deploying (not Degraded), so phaseMessage
+	// does not speak for it — surface RolloutStalled explicitly (CAI-399).
+	const rolloutStalledMessage = $derived(
+		liveApp?.status?.conditions?.find(c => c.type === 'RolloutStalled' && c.status === 'True')?.message ?? ''
+	);
 
 	// Clear optimistic override once the real polled phase catches up.
 	$effect(() => {
@@ -297,6 +302,9 @@
 		{/if}
 		{#if phaseMessage}
 			<div class="rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-sm text-warning mb-2">{phaseMessage}</div>
+		{/if}
+		{#if rolloutStalledMessage}
+			<div class="rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-sm text-warning mb-2">{rolloutStalledMessage}</div>
 		{/if}
 		{#if !liveApp}
 			<div class="space-y-3 animate-pulse">
