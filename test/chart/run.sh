@@ -184,8 +184,10 @@ else
         $seed_ok || info "  (seed push to ${PREV_VERSION} registry failed; ownership assertion will be weaker)"
 
         # The documented upgrade procedure (docs/install.md): CRDs first,
-        # then helm upgrade with --reset-then-reuse-values.
-        kubectl apply --server-side -f "${REPO_ROOT}/charts/mortise-core/crds/" >/dev/null || upgrade_ok=false
+        # then helm upgrade with --reset-then-reuse-values. --force-conflicts
+        # takes CRD ownership from the previous release's helm field manager,
+        # which SSA otherwise refuses on .spec.versions.
+        kubectl apply --server-side --force-conflicts -f "${REPO_ROOT}/charts/mortise-core/crds/" >/dev/null || upgrade_ok=false
         helm upgrade mortise "${REPO_ROOT}/charts/mortise" \
             --namespace "$NAMESPACE" \
             --reset-then-reuse-values \
