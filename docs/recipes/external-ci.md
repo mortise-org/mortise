@@ -14,7 +14,7 @@ tell Mortise to deploy them.
 
 - A **deploy token** created via the Mortise API or CLI:
   ```bash
-  mortise deploy-token create my-ci-token --project my-saas --app web
+  mortise token create web production --project my-saas --name my-ci-token
   ```
 - The token is returned once. Store it as a CI secret.
 

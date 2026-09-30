@@ -81,13 +81,14 @@ kubectl apply -f cloudflared.yaml
 Since cloudflared is just a container, you can deploy it as a Mortise App:
 
 ```bash
-mortise app create cloudflared \
+mortise app create --name cloudflared \
   --project infra \
-  --image cloudflare/cloudflared:2024.12.2 \
-  --no-public
+  --image cloudflare/cloudflared:2024.12.2
 ```
 
-Then configure the tunnel token via environment variables in the UI.
+cloudflared only makes outbound connections, so it needs no ingress or
+domain. Open the app, and under **Settings → Networking** turn off **Public**.
+Then set the tunnel token in the **Variables** tab.
 
 ## DNS setup
 
