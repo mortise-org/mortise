@@ -964,3 +964,131 @@ func TestAvailableKeysNoURL(t *testing.T) {
 		}
 	}
 }
+
+// pgDB returns a postgres App named `name` with username/password creds.
+func pgDB(name, controlNs string) *mortisev1alpha1.App {
+	return &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: controlNs},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: "postgres:16"},
+			Credentials: []mortisev1alpha1.Credential{
+				{Name: "host"}, {Name: "port"},
+				{Name: "username", Value: "postgres"},
+				{Name: "password", Value: "pw"},
+			},
+			Environments: []mortisev1alpha1.Environment{{Name: "production"}},
+		},
+	}
+}
+
+// TestSingleDatabaseBindingEmitsDatabaseAliases: with exactly one database
+// binding, the conventional DATABASE_* family is emitted alongside the
+// app-name-prefixed vars, so the documented "click Postgres → DATABASE_URL"
+// works (CAI-382).
+func TestSingleDatabaseBindingEmitsDatabaseAliases(t *testing.T) {
+	db := pgDB("pg", "pj-web")
+	creds := credentialsSecret("pg", "pj-web-production", map[string]string{"username": "postgres", "password": "pw"})
+	r := &bindings.Resolver{Client: newFakeClient(t, db, creds)}
+
+	vars, err := r.Resolve(context.Background(), "web", "production", []mortisev1alpha1.Binding{{Ref: "pg"}})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	// prefixed vars still present
+	if findVar(vars, "PG_URL") == nil {
+		t.Error("expected PG_URL to remain")
+	}
+	// DATABASE_* aliases present
+	for _, name := range []string{"DATABASE_HOST", "DATABASE_PORT", "DATABASE_URL", "DATABASE_USERNAME", "DATABASE_PASSWORD"} {
+		v := findVar(vars, name)
+		if v == nil {
+			t.Errorf("expected %s alias", name)
+		}
+	}
+	if u := findVar(vars, "DATABASE_URL"); u != nil && !strings.HasPrefix(u.Value, "postgres://") {
+		t.Errorf("DATABASE_URL = %q, want postgres:// URL", u.Value)
+	}
+	if p := findVar(vars, "DATABASE_PASSWORD"); p != nil && p.Value != "pw" {
+		t.Errorf("DATABASE_PASSWORD = %q, want pw", p.Value)
+	}
+}
+
+// TestTwoDatabaseBindingsSuppressDatabaseAliases: with two database bindings a
+// single DATABASE_URL would collide, so the alias family is suppressed and only
+// the prefixed names are emitted (CAI-382).
+func TestTwoDatabaseBindingsSuppressDatabaseAliases(t *testing.T) {
+	pg1 := pgDB("main", "pj-web")
+	pg2 := pgDB("reporting", "pj-web")
+	c1 := credentialsSecret("main", "pj-web-production", map[string]string{"username": "postgres", "password": "pw"})
+	c2 := credentialsSecret("reporting", "pj-web-production", map[string]string{"username": "postgres", "password": "pw"})
+	r := &bindings.Resolver{Client: newFakeClient(t, pg1, pg2, c1, c2)}
+
+	vars, err := r.Resolve(context.Background(), "web", "production", []mortisev1alpha1.Binding{{Ref: "main"}, {Ref: "reporting"}})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if findVar(vars, "MAIN_URL") == nil || findVar(vars, "REPORTING_URL") == nil {
+		t.Error("expected both prefixed URLs")
+	}
+	for _, name := range []string{"DATABASE_HOST", "DATABASE_PORT", "DATABASE_URL"} {
+		if findVar(vars, name) != nil {
+			t.Errorf("did not expect %s with two database bindings", name)
+		}
+	}
+}
+
+// TestDatabaseAliasDisappearsWhenSecondAdded: the alias present with one
+// database binding is gone once a second is added (CAI-382).
+func TestDatabaseAliasDisappearsWhenSecondAdded(t *testing.T) {
+	pg1 := pgDB("main", "pj-web")
+	pg2 := pgDB("reporting", "pj-web")
+	c1 := credentialsSecret("main", "pj-web-production", map[string]string{"username": "postgres", "password": "pw"})
+	c2 := credentialsSecret("reporting", "pj-web-production", map[string]string{"username": "postgres", "password": "pw"})
+	r := &bindings.Resolver{Client: newFakeClient(t, pg1, pg2, c1, c2)}
+
+	one, err := r.Resolve(context.Background(), "web", "production", []mortisev1alpha1.Binding{{Ref: "main"}})
+	if err != nil {
+		t.Fatalf("resolve one: %v", err)
+	}
+	if findVar(one, "DATABASE_URL") == nil {
+		t.Fatal("expected DATABASE_URL with a single database binding")
+	}
+	two, err := r.Resolve(context.Background(), "web", "production", []mortisev1alpha1.Binding{{Ref: "main"}, {Ref: "reporting"}})
+	if err != nil {
+		t.Fatalf("resolve two: %v", err)
+	}
+	if findVar(two, "DATABASE_URL") != nil {
+		t.Error("DATABASE_URL must disappear once a second database binding is added")
+	}
+}
+
+// TestDatabaseAliasIgnoresRedisCache: a Redis cache is not a database, so
+// binding one Postgres + one Redis still yields the DATABASE_* alias for the
+// Postgres — the common app+db+cache stack (CAI-382).
+func TestDatabaseAliasIgnoresRedisCache(t *testing.T) {
+	pg := pgDB("pg", "pj-web")
+	pgc := credentialsSecret("pg", "pj-web-production", map[string]string{"username": "postgres", "password": "pw"})
+	cache := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "cache", Namespace: "pj-web"},
+		Spec: mortisev1alpha1.AppSpec{
+			Source:       mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: "redis:7"},
+			Network:      mortisev1alpha1.NetworkConfig{Port: 6379},
+			Environments: []mortisev1alpha1.Environment{{Name: "production"}},
+		},
+	}
+	r := &bindings.Resolver{Client: newFakeClient(t, pg, pgc, cache)}
+
+	vars, err := r.Resolve(context.Background(), "web", "production", []mortisev1alpha1.Binding{{Ref: "pg"}, {Ref: "cache"}})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if findVar(vars, "DATABASE_URL") == nil {
+		t.Error("expected DATABASE_URL (one database + one cache)")
+	}
+	if u := findVar(vars, "DATABASE_URL"); u != nil && !strings.HasPrefix(u.Value, "postgres://") {
+		t.Errorf("DATABASE_URL = %q, want the postgres binding", u.Value)
+	}
+	if findVar(vars, "CACHE_HOST") == nil {
+		t.Error("expected CACHE_HOST to remain")
+	}
+}

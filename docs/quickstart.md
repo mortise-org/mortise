@@ -52,9 +52,12 @@ Want real URLs like `web.apps.example.com`? Set a platform domain in
 ## 5. Bind services together
 
 Open an app → drawer → **Bindings** tab → Add. Pick the service you want
-(e.g. the Postgres app you created). Mortise injects `DATABASE_URL`,
-`DATABASE_HOST`, `DATABASE_PORT`, `DATABASE_USERNAME`, and
-`DATABASE_PASSWORD` env vars on your app: no secret wiring.
+(e.g. the Postgres app you created). With a single database binding Mortise
+injects the conventional `DATABASE_URL`, `DATABASE_HOST`, `DATABASE_PORT`,
+`DATABASE_USERNAME`, and `DATABASE_PASSWORD` env vars: no secret wiring.
+Every binding also gets collision-safe `{APP}_*` names (e.g. a binding to
+`pg` gives `PG_URL`), so an app bound to two databases reads each one by
+its own name.
 
 ## Data persistence
 

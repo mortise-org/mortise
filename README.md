@@ -127,7 +127,7 @@ After installing, follow the **[Quickstart](docs/quickstart.md)** to create an a
 - **Docker Compose templates** - one-click Supabase stack (6 services) or bring your own Compose file
 - **Environment variables** - Secret-backed storage, masked values, source badges, multi-line paste, raw editor
 - **Project variables** - project-level vars shared across all apps in a project
-- **Service bindings** - bind apps to backing services, auto-inject `DATABASE_HOST`, `DATABASE_PORT`, `DATABASE_URL`
+- **Service bindings** - bind apps to backing services; a single database binding auto-injects the conventional `DATABASE_URL` / `DATABASE_HOST` / `DATABASE_PORT`, and every binding also gets collision-safe `{APP}_URL` names (so multiple databases each keep their own)
 - **Auto-domain routing** - public apps get `{app}-{project}.{platformDomain}` automatically with TLS (customizable via `domainTemplate`)
 - **Per-environment namespaces** - production, staging, and preview environments each get an isolated k8s namespace
 - **Preview environments** - PR-driven ephemeral deploys for git-source apps
