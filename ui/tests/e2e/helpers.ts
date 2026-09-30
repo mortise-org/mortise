@@ -142,6 +142,22 @@ export async function createAppViaAPI(
 		const body = await res.text().catch(() => '');
 		throw new Error(`create app failed: HTTP ${res.status()} ${body}`);
 	}
+	// The POST returns as soon as the App is written, but the API's read path
+	// can briefly 404 while its cached client catches up. Wait for the app to
+	// be readable so a caller's immediate getAppViaAPI can't race the create
+	// (CAI-425).
+	const deadline = Date.now() + 10_000;
+	for (;;) {
+		const check = await request.get(
+			`/api/projects/${encodeURIComponent(project)}/apps/${encodeURIComponent(appName)}`,
+			{ headers: { Authorization: `Bearer ${token}` } }
+		);
+		if (check.ok()) return;
+		if (Date.now() >= deadline) {
+			throw new Error(`create app ${appName}: not readable 10s after create (HTTP ${check.status()})`);
+		}
+		await new Promise((r) => setTimeout(r, 250));
+	}
 }
 
 /** Delete a project via the API (best-effort, swallows errors). */
