@@ -90,6 +90,8 @@ func envSecret(data map[string]string, sources map[string]string) *corev1.Secret
 			annotations[envstore.AnnotationGeneratedKeys] = append(annotations[envstore.AnnotationGeneratedKeys], v.Name)
 		case "shared":
 			annotations[envstore.AnnotationSharedKeys] = append(annotations[envstore.AnnotationSharedKeys], v.Name)
+		case "retained":
+			annotations[envstore.AnnotationRetainedKeys] = append(annotations[envstore.AnnotationRetainedKeys], v.Name)
 		}
 	}
 	if len(annotations) > 0 {
@@ -453,6 +455,29 @@ func TestDiff_MatchingSharedVarStaysDerived(t *testing.T) {
 	}
 }
 
+// A key the controller retained (removed from spec.env but kept in the Secret
+// after an out-of-band edit) is real drift, not a normal API/UI var. diff must
+// classify it as catRetained, agreeing with the EnvKeysRetained condition.
+func TestDiff_RetainedKeyIsNotClassifiedNormal(t *testing.T) {
+	c := newFakeClient(t,
+		testProjectObj(false),
+		testAppObj(nil, nil),
+		envSecret(map[string]string{"OLD_FLAG": "1"}, map[string]string{"OLD_FLAG": "retained"}),
+	)
+
+	rep := runTestDiff(t, c, diffRequest{})
+	f := findingFor(t, rep, "OLD_FLAG")
+	if f.Category != catRetained {
+		t.Errorf("category: got %q, want %q", f.Category, catRetained)
+	}
+	if f.Category == catNotDeclaredInCRD {
+		t.Error("a retained key must not be reported as a normal API/UI var")
+	}
+	if categoryRank(catRetained) >= categoryRank(catNotDeclaredInCRD) {
+		t.Errorf("retained must rank as real drift, above the normal categories")
+	}
+}
+
 // The API writes user vars straight into the derived Secret and never touches
 // the CRD, so a Secret-only var is normal, not an error.
 func TestDiff_SecretOnlyUserVarIsNotDeclaredInCRD(t *testing.T) {
@@ -661,6 +686,33 @@ func TestDiff_RolloutOmitsAutoRedeployNoteWhenEnabled(t *testing.T) {
 	if strings.Contains(rep.Environments[0].Rollout.Detail, "autoRedeploy") {
 		t.Errorf("autoRedeploy=true should not carry the 'expected, not broken' note: %q",
 			rep.Environments[0].Rollout.Detail)
+	}
+}
+
+func TestDiff_RolloutInSyncAfterOutOfBandRestart(t *testing.T) {
+	// autoRedeploy off: the pod-template env-hash is frozen and disagrees with
+	// the current Secret, but the controller observed a restart postdating the
+	// env write and adopted DeployedEnvHash == the live hash (CAI-314). diff
+	// must mirror that and not report a false drift.
+	secret := envSecret(map[string]string{"LOG_LEVEL": "info"}, nil)
+	live := envstore.HashData(secret.Data)
+
+	app := testAppObj([]mortisev1alpha1.EnvVar{{Name: "LOG_LEVEL", Value: "info"}}, nil)
+	app.Status.Environments = []mortisev1alpha1.EnvironmentStatus{{
+		Name:            testEnv,
+		PendingEnvHash:  live,
+		DeployedEnvHash: live,
+	}}
+	c := newFakeClient(t, testProjectObj(false), app, secret,
+		deploymentWithEnvHash("0000000000000000"))
+
+	rep := runTestDiff(t, c, diffRequest{})
+	r := rep.Environments[0].Rollout
+	if !r.InSync {
+		t.Errorf("expected rollout in sync after controller adopted a restart, got %+v", r)
+	}
+	if strings.Contains(r.Detail, "older environment") {
+		t.Errorf("must not report a false drift, got detail %q", r.Detail)
 	}
 }
 
