@@ -158,7 +158,7 @@ flowchart LR
     Operator --> Registry["OCI Registry\n(image storage)"]
 ```
 
-External capabilities (OIDC, monitoring, backups, external secrets) plug in through standard Kubernetes primitives - Mortise coexists with Argo CD, Flux, ESO, and other operators.
+External capabilities (monitoring, backups, external secrets, and SSO via a front-door auth proxy) plug in through standard Kubernetes primitives - Mortise coexists with Argo CD, Flux, ESO, and other operators.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for full system diagrams.
 
@@ -184,7 +184,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for full system diagrams.
 | Recipe | |
 |--------|-|
 | [External CI](docs/recipes/external-ci.md) | GitHub Actions / GitLab CI deploy via webhook |
-| [OIDC / SSO](docs/recipes/oidc.md) | Authentik, Keycloak, Okta, Google |
+| [Authentication](docs/recipes/oidc.md) | Native users/roles today; SSO via a front-door auth proxy (no OIDC login flow yet) |
 | [Monitoring](docs/recipes/monitoring.md) | Prometheus + Grafana |
 | [External Secrets](docs/recipes/external-secrets.md) | Vault, AWS SM, GCP SM via ESO |
 | [Backup](docs/recipes/backup.md) | Velero backup and restore |

@@ -218,7 +218,7 @@ flowchart TB
     Ctrl["Mortise controllers and reconcilers"]
 
     AU["AuthProvider iface"]
-    AUImpl["native DB plus generic OIDC - 2 impls"]
+    AUImpl["native DB - 1 impl (OIDC is a designed seam, not yet built)"]
     PE["PolicyEngine iface"]
     PEImpl["admin member - 1 impl"]
     GA["GitAPI plus GitClient ifaces"]
