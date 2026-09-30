@@ -9,6 +9,18 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **A stalled rollout is now a condition** (CAI-396): when a new revision's
+  pods cannot start — unschedulable, image pull failure, or stuck creating —
+  the Deployment blows its 120s progress deadline but the App only sat in
+  `Deploying` with nothing saying why. It now carries
+  `RolloutStalled=True / ProgressDeadlineExceeded`, naming the stalled
+  environment and the blocking reason (e.g. `pod unschedulable: insufficient
+  memory`, `ImagePullBackOff`, stuck `ContainerCreating`). Distinct from
+  `CrashLoopBackOff` (a container that starts then dies); this is "never
+  started". Motivated by a real incident where a node's container runtime
+  wedged and the stall was invisible from the platform — found via an
+  external watchdog rather than from Mortise itself.
+
 - **A single database binding injects the conventional `DATABASE_*` vars**
   (CAI-382): binding auto-vars are named `{APP}_HOST` / `{APP}_PORT` /
   `{APP}_URL` (the bound app's name) to stay collision-safe across multiple
