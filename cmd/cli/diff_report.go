@@ -78,6 +78,11 @@ const (
 	// owns (binding / shared / generated). Expected to be absent from
 	// spec.env.
 	catDerived = "derived"
+	// catRetained: was declared in spec.env, overridden out of band, then
+	// removed from spec — the controller kept it in the Secret and flags it as
+	// EnvKeysRetained. Pods still receive it, so this is real drift, not a
+	// normal API/UI var.
+	catRetained = "retained"
 	// catUnresolved: declared in the CRD but its effective value could not be
 	// determined, so it cannot be compared.
 	catUnresolved = "unresolved"
@@ -430,6 +435,9 @@ func buildEnvDiff(
 		case e.Source == "binding", e.Source == "shared", e.Source == "generated":
 			f.Category = catDerived
 			f.Detail = "written by the controller from " + derivedOrigin(e.Source) + "; not expected in spec.env"
+		case e.Source == "retained":
+			f.Category = catRetained
+			f.Detail = "removed from spec.env but kept in the Secret because an out-of-band edit changed it; pods still receive it (the controller flags this as EnvKeysRetained). Redeploy to prune it"
 		default:
 			f.Category = catNotDeclaredInCRD
 			f.Detail = "set through the API/UI, which writes the Secret directly and never the CRD"
@@ -585,18 +593,20 @@ func categoryRank(cat string) int {
 		return 4
 	case catSpecDiffersUntracked:
 		return 5
-	case catNotDeclaredInCRD:
+	case catRetained:
 		return 6
-	case catUserOverride:
+	case catNotDeclaredInCRD:
 		return 7
-	case catFromSharedEnv:
+	case catUserOverride:
 		return 8
-	case catDerived:
+	case catFromSharedEnv:
 		return 9
-	case catInSync:
+	case catDerived:
 		return 10
+	case catInSync:
+		return 11
 	}
-	return 11
+	return 12
 }
 
 // buildRollout is layer 3. It compares the pod template's mortise.dev/env-hash
@@ -651,6 +661,14 @@ func buildRollout(
 	case r.WorkloadEnvHash == r.SecretEnvHash:
 		r.InSync = true
 		r.Detail = "pods were started with the environment that currently exists"
+	case r.StatusDeployedEnvHash != "" && r.StatusDeployedEnvHash == r.SecretEnvHash:
+		// The pod-template env-hash is frozen (autoRedeploy off), but the
+		// controller observed the pods restarted after the env's last write and
+		// so carry the current env — it adopted DeployedEnvHash = PendingEnvHash
+		// and cleared EnvRolledOut (observedEnvAgreement, CAI-314). Mirror that
+		// here rather than reporting a false drift against the stale annotation.
+		r.InSync = true
+		r.Detail = "pods restarted after the last env change and carry the current environment (the pod-template env-hash is frozen because autoRedeploy is off, so it still shows the previous value)"
 	default:
 		r.Detail = "pods are running an older environment; redeploy to apply the current one"
 		if !autoRedeploy {
