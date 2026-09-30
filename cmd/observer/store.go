@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -40,6 +41,10 @@ type LogLine struct {
 	Pod    string `json:"pod"`
 	Text   string `json:"text"`
 	Stream string `json:"stream,omitempty"`
+	// Cursor is an opaque "{ts}|{rowid}" pagination token. Paging on ts alone
+	// drops lines that share a timestamp across a page boundary, so the client
+	// pages on this instead (CAI-448).
+	Cursor string `json:"cursor,omitempty"`
 }
 
 type TrafficEntry struct {
@@ -272,10 +277,24 @@ func (s *Store) LastLogTimestamp(namespace, pod string) (string, error) {
 	return ts.String, nil
 }
 
+// splitLogCursor parses an opaque "{ts}|{rowid}" pagination cursor. ok is false
+// for a legacy bare-ts cursor (no "|") or a malformed rowid.
+func splitLogCursor(cursor string) (ts string, rowid int64, ok bool) {
+	i := strings.LastIndexByte(cursor, '|')
+	if i < 0 {
+		return "", 0, false
+	}
+	rid, err := strconv.ParseInt(cursor[i+1:], 10, 64)
+	if err != nil {
+		return "", 0, false
+	}
+	return cursor[:i], rid, true
+}
+
 func (s *Store) QueryLogs(namespace, app, env string, start, end int64, limit int, filter, before string) ([]LogLine, bool, error) {
 	var args []any
 	q := strings.Builder{}
-	q.WriteString("SELECT ts, pod, line, stream FROM logs WHERE namespace = ? AND app = ? AND env = ?")
+	q.WriteString("SELECT ts, pod, line, stream, rowid FROM logs WHERE namespace = ? AND app = ? AND env = ?")
 	args = append(args, namespace, app, env)
 
 	startTS := time.Unix(start, 0).UTC().Format(time.RFC3339Nano)
@@ -284,15 +303,23 @@ func (s *Store) QueryLogs(namespace, app, env string, start, end int64, limit in
 	args = append(args, startTS, endTS)
 
 	if before != "" {
-		q.WriteString(" AND ts < ?")
-		args = append(args, before)
+		// Cursor is "{ts}|{rowid}". Page strictly before it in (ts, rowid)
+		// order so lines sharing a timestamp across the boundary aren't dropped.
+		// A legacy cursor (bare ts, no "|") falls back to ts-only paging.
+		if beforeTS, beforeRowid, ok := splitLogCursor(before); ok {
+			q.WriteString(" AND (ts < ? OR (ts = ? AND rowid < ?))")
+			args = append(args, beforeTS, beforeTS, beforeRowid)
+		} else {
+			q.WriteString(" AND ts < ?")
+			args = append(args, before)
+		}
 	}
 	if filter != "" {
 		q.WriteString(" AND line LIKE '%' || ? || '%'")
 		args = append(args, filter)
 	}
 
-	q.WriteString(" ORDER BY ts DESC LIMIT ?")
+	q.WriteString(" ORDER BY ts DESC, rowid DESC LIMIT ?")
 	args = append(args, limit+1)
 
 	rows, err := s.db.Query(q.String(), args...)
@@ -304,9 +331,11 @@ func (s *Store) QueryLogs(namespace, app, env string, start, end int64, limit in
 	var lines []LogLine
 	for rows.Next() {
 		var l LogLine
-		if err := rows.Scan(&l.Ts, &l.Pod, &l.Text, &l.Stream); err != nil {
+		var rowid int64
+		if err := rows.Scan(&l.Ts, &l.Pod, &l.Text, &l.Stream, &rowid); err != nil {
 			return nil, false, err
 		}
+		l.Cursor = l.Ts + "|" + strconv.FormatInt(rowid, 10)
 		lines = append(lines, l)
 	}
 	if lines == nil {
