@@ -19,11 +19,26 @@ import (
 )
 
 type trafikAccessLog struct {
-	ServiceName           string `json:"ServiceName"`
-	OriginStatus          int    `json:"OriginStatus"`
-	Duration              int64  `json:"Duration"` // nanoseconds
-	RequestContentSize    int64  `json:"RequestContentSize"`
-	DownstreamContentSize int64  `json:"DownstreamContentSize"`
+	ServiceName  string `json:"ServiceName"`
+	OriginStatus int    `json:"OriginStatus"`
+	// DownstreamStatus is the status Traefik actually returned to the client.
+	// It equals OriginStatus on a normal proxied request, but when Traefik
+	// answers itself (502/503/504 for an unreachable/crashlooping backend, 404
+	// no-route, 401 from middleware) OriginStatus is 0 and the real code lives
+	// here — so an outage must be read from this, not dropped (CAI-446).
+	DownstreamStatus      int   `json:"DownstreamStatus"`
+	Duration              int64 `json:"Duration"` // nanoseconds
+	RequestContentSize    int64 `json:"RequestContentSize"`
+	DownstreamContentSize int64 `json:"DownstreamContentSize"`
+}
+
+// effectiveStatus is the status the client saw: the origin's when the request
+// reached a backend, else Traefik's own response.
+func (e trafikAccessLog) effectiveStatus() int {
+	if e.OriginStatus != 0 {
+		return e.OriginStatus
+	}
+	return e.DownstreamStatus
 }
 
 type appEnvKey struct {
@@ -246,7 +261,8 @@ func (c *TrafficCollector) processLine(line []byte) {
 	if err := json.Unmarshal(line, &entry); err != nil {
 		return
 	}
-	if entry.ServiceName == "" || entry.OriginStatus == 0 {
+	status := entry.effectiveStatus()
+	if entry.ServiceName == "" || status == 0 {
 		return
 	}
 
@@ -277,13 +293,13 @@ func (c *TrafficCollector) processLine(line []byte) {
 	}
 	b.requests++
 	switch {
-	case entry.OriginStatus >= 500:
+	case status >= 500:
 		b.status5xx++
-	case entry.OriginStatus >= 400:
+	case status >= 400:
 		b.status4xx++
-	case entry.OriginStatus >= 300:
+	case status >= 300:
 		b.status3xx++
-	case entry.OriginStatus >= 200:
+	case status >= 200:
 		b.status2xx++
 	}
 	b.latencyCount++

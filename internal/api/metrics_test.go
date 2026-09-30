@@ -3,9 +3,11 @@ package api_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -169,8 +171,12 @@ func TestMetricsCurrentReturnsPodsWithMetrics(t *testing.T) {
 
 func TestMetricsCurrentPrefersAdapterWhenConfigured(t *testing.T) {
 	adapter := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// pod-a has fresh timestamps (a live pod); pod-ghost's last point is
+		// ancient, so it is past the staleness cutoff and must be excluded, not
+		// reported as a running pod with its stale usage (CAI-447).
+		now := time.Now().Unix()
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"pods":[{"name":"pod-a","cpu":[[1700000000,0.2],[1700000015,0.35]],"memory":[[1700000000,12345],[1700000015,45678]]}]}`))
+		fmt.Fprintf(w, `{"pods":[{"name":"pod-a","cpu":[[%d,0.2],[%d,0.35]],"memory":[[%d,12345],[%d,45678]]},{"name":"pod-ghost","cpu":[[1700000000,9.9]],"memory":[[1700000000,99999]]}]}`, now-15, now, now-15, now)
 	}))
 	defer adapter.Close()
 
