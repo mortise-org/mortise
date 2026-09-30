@@ -9,6 +9,16 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **A single database binding injects the conventional `DATABASE_*` vars**
+  (CAI-382): binding auto-vars are named `{APP}_HOST` / `{APP}_PORT` /
+  `{APP}_URL` (the bound app's name) to stay collision-safe across multiple
+  backing services, but the documented "click Postgres → `DATABASE_URL`"
+  moment only worked if you named the app `database`. Now, when an App binds
+  exactly one relational database (Postgres/MySQL/MariaDB), Mortise also emits
+  `DATABASE_URL`/`DATABASE_HOST`/`DATABASE_PORT` and the credential aliases.
+  Suppressed with two or more databases, where a single `DATABASE_URL` would
+  collide; a Redis cache alongside one database does not suppress it.
+
 - **Stale CRDs are now a condition, not a pruned write** (CAI-312): helm
   upgrade does not touch crds/, and an operator writing through older CRDs
   has its new fields silently dropped by the API server — v1.1.0's version

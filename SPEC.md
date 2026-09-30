@@ -649,7 +649,13 @@ container, no runtime agent: the Deployment spec is the single source of truth
 and the kubelet injects env the normal way.
 
 The v1 "click Postgres, get DATABASE_URL in my API" Railway moment works via
-an image-source App:
+an image-source App. Auto-injected binding vars are named `{APP}_HOST` /
+`{APP}_PORT` / `{APP}_URL` (the bound app's name, upper-cased) so two backing
+services never collide; when an App binds **exactly one** relational database
+(Postgres/MySQL/MariaDB) Mortise additionally emits the conventional
+`DATABASE_URL` / `DATABASE_HOST` / `DATABASE_PORT` (+ credential) aliases, which
+is the literal Railway moment. With two or more databases the alias is
+suppressed and each is read by its `{APP}_*` names (CAI-382).
 
 ```yaml
 kind: App

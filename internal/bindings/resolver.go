@@ -97,15 +97,23 @@ func (r *Resolver) lookupBinding(ctx context.Context, project, env, ref string) 
 	return rb, nil
 }
 
-// expandBinding returns all auto-generated vars for a resolved binding.
+// expandBinding returns all auto-generated vars for a resolved binding,
+// prefixed with the bound app name.
 func expandBinding(rb *resolvedBinding) []ResolvedVar {
+	return expandBindingWithPrefix(rb, rb.prefix)
+}
+
+// expandBindingWithPrefix is expandBinding with an explicit env-var prefix, so
+// the same binding can also be emitted under the conventional DATABASE_ prefix
+// (see the single-database alias in Resolve).
+func expandBindingWithPrefix(rb *resolvedBinding, prefix string) []ResolvedVar {
 	var result []ResolvedVar
 	result = append(result,
-		ResolvedVar{Name: rb.prefix + "_HOST", Value: rb.host},
-		ResolvedVar{Name: rb.prefix + "_PORT", Value: rb.port},
+		ResolvedVar{Name: prefix + "_HOST", Value: rb.host},
+		ResolvedVar{Name: prefix + "_PORT", Value: rb.port},
 	)
 	if url := autoURL(rb.app.Spec.Source.Image, rb.host, rb.port); url != "" {
-		result = append(result, ResolvedVar{Name: rb.prefix + "_URL", Value: url})
+		result = append(result, ResolvedVar{Name: prefix + "_URL", Value: url})
 	}
 	for _, cred := range rb.extraCreds {
 		val := ""
@@ -113,11 +121,24 @@ func expandBinding(rb *resolvedBinding) []ResolvedVar {
 			val = string(rb.credSecret.Data[cred.Name])
 		}
 		result = append(result, ResolvedVar{
-			Name:  rb.prefix + "_" + strings.ToUpper(cred.Name),
+			Name:  prefix + "_" + strings.ToUpper(cred.Name),
 			Value: val,
 		})
 	}
 	return result
+}
+
+// isRelationalDatabase reports whether a bound app is a SQL relational
+// database, i.e. one for which DATABASE_URL is the conventional env var
+// (Railway/Heroku set it for Postgres and MySQL). Redis (a cache) and other
+// stores keep only their app-name-prefixed vars.
+func isRelationalDatabase(image string) bool {
+	switch imageBaseName(image) {
+	case "postgres", "mysql", "mariadb":
+		return true
+	default:
+		return false
+	}
 }
 
 // Resolve looks up each bound App and returns fully-resolved env vars for
@@ -140,6 +161,7 @@ func (r *Resolver) Resolve(
 ) ([]ResolvedVar, error) {
 	log := logf.FromContext(ctx)
 	var result []ResolvedVar
+	var dbBindings []*resolvedBinding
 
 	for _, b := range bindings {
 		rb, err := r.lookupBinding(ctx, project, env, b.Ref)
@@ -151,6 +173,20 @@ func (r *Resolver) Resolve(
 			continue
 		}
 		result = append(result, expandBinding(rb)...)
+		if isRelationalDatabase(rb.app.Spec.Source.Image) {
+			dbBindings = append(dbBindings, rb)
+		}
+	}
+
+	// Conventional DATABASE_* aliases (DATABASE_URL/HOST/PORT + credentials)
+	// when there is exactly one database binding, so "click Postgres →
+	// DATABASE_URL" works as documented (CAI-382). Suppressed with two or more
+	// database bindings, where a single DATABASE_URL would collide — those
+	// users read the app-name-prefixed names instead. Skipped when the sole
+	// database's own prefix is already DATABASE (app named "database"), so the
+	// vars are not emitted twice.
+	if len(dbBindings) == 1 && dbBindings[0].prefix != "DATABASE" {
+		result = append(result, expandBindingWithPrefix(dbBindings[0], "DATABASE")...)
 	}
 
 	return result, nil
