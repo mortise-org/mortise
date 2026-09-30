@@ -74,6 +74,12 @@
 	const rolloutStalledMessage = $derived(
 		liveApp?.status?.conditions?.find(c => c.type === 'RolloutStalled' && c.status === 'True')?.message ?? ''
 	);
+	// Pods can be Ready while the TLS cert is still issuing or has failed, so the
+	// phase does not speak for it — surface it or the drawer reads Ready while
+	// HTTPS is broken (CAI-440).
+	const certificateNotReadyMessage = $derived(
+		liveApp?.status?.conditions?.find(c => c.type === 'CertificateNotReady' && c.status === 'True')?.message ?? ''
+	);
 
 	// Clear optimistic override once the real polled phase catches up.
 	$effect(() => {
@@ -305,6 +311,9 @@
 		{/if}
 		{#if rolloutStalledMessage}
 			<div class="rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-sm text-warning mb-2">{rolloutStalledMessage}</div>
+		{/if}
+		{#if certificateNotReadyMessage}
+			<div class="rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-sm text-warning mb-2">{certificateNotReadyMessage}</div>
 		{/if}
 		{#if !liveApp}
 			<div class="space-y-3 animate-pulse">
