@@ -10340,3 +10340,103 @@ func (f *fakeImageInspector) DetectExposedPort(_ context.Context, _ string, _ []
 	f.calls++
 	return f.port, f.err
 }
+
+// --- CAI-396: RolloutStalled condition ---
+
+func stalledEnvPod(app *mortisev1alpha1.App, envName, name string, phase corev1.PodPhase, conds []corev1.PodCondition, cs []corev1.ContainerStatus) *corev1.Pod {
+	envNs, _ := appEnvNs(app, envName)
+	return &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: envNs,
+			Labels: map[string]string{
+				constants.AppNameLabel:         app.Name,
+				"app.kubernetes.io/managed-by": "mortise",
+				"mortise.dev/environment":      envName,
+			},
+		},
+		Status: corev1.PodStatus{Phase: phase, Conditions: conds, ContainerStatuses: cs},
+	}
+}
+
+func stalledDeployment(app *mortisev1alpha1.App, envName string, progressing corev1.ConditionStatus, reason string) *appsv1.Deployment {
+	envNs, _ := appEnvNs(app, envName)
+	return &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: deploymentName(app.Name), Namespace: envNs},
+		Status: appsv1.DeploymentStatus{Conditions: []appsv1.DeploymentCondition{
+			{Type: appsv1.DeploymentProgressing, Status: progressing, Reason: reason},
+		}},
+	}
+}
+
+func TestCheckRolloutStalledReportsUnschedulable(t *testing.T) {
+	ctx := context.Background()
+	scheme := newAppStatusTestScheme(t)
+	app := &mortisev1alpha1.App{ObjectMeta: metav1.ObjectMeta{Name: "demo", Namespace: "pj-default-project"}}
+	envNs, _ := appEnvNs(app, "production")
+	dep := stalledDeployment(app, "production", corev1.ConditionFalse, "ProgressDeadlineExceeded")
+	pod := stalledEnvPod(app, "production", "demo-pod", corev1.PodPending, []corev1.PodCondition{
+		{Type: corev1.PodScheduled, Status: corev1.ConditionFalse, Message: "0/3 nodes are available: insufficient memory"},
+	}, nil)
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(dep, pod).Build()
+	r := &AppReconciler{Client: c, Scheme: scheme}
+	got := r.checkRolloutStalledInEnv(ctx, app, "production", envNs)
+	if !strings.Contains(got, "Rollout stalled") || !strings.Contains(got, "unschedulable") || !strings.Contains(got, "insufficient memory") {
+		t.Fatalf("expected stalled/unschedulable message, got %q", got)
+	}
+}
+
+func TestCheckRolloutStalledEmptyWhenProgressing(t *testing.T) {
+	ctx := context.Background()
+	scheme := newAppStatusTestScheme(t)
+	app := &mortisev1alpha1.App{ObjectMeta: metav1.ObjectMeta{Name: "demo", Namespace: "pj-default-project"}}
+	envNs, _ := appEnvNs(app, "production")
+	dep := stalledDeployment(app, "production", corev1.ConditionTrue, "NewReplicaSetAvailable")
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(dep).Build()
+	r := &AppReconciler{Client: c, Scheme: scheme}
+	if got := r.checkRolloutStalledInEnv(ctx, app, "production", envNs); got != "" {
+		t.Fatalf("progressing deployment should not be stalled, got %q", got)
+	}
+}
+
+func TestBlockingPodReasonImagePullAndCrashLoopExclusion(t *testing.T) {
+	ctx := context.Background()
+	scheme := newAppStatusTestScheme(t)
+	app := &mortisev1alpha1.App{ObjectMeta: metav1.ObjectMeta{Name: "demo", Namespace: "pj-default-project"}}
+	envNs, _ := appEnvNs(app, "production")
+
+	imgPull := stalledEnvPod(app, "production", "p1", corev1.PodPending, nil, []corev1.ContainerStatus{{
+		Name: "app", State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "ImagePullBackOff", Message: "back-off pulling image \"nope:1\""}}},
+	})
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(imgPull).Build()
+	r := &AppReconciler{Client: c, Scheme: scheme}
+	if got := r.blockingPodReason(ctx, app, "production", envNs); !strings.Contains(got, "ImagePullBackOff") {
+		t.Fatalf("expected ImagePullBackOff reason, got %q", got)
+	}
+
+	// A crash loop is NOT a blocking-start reason (it's its own condition).
+	crash := stalledEnvPod(app, "production", "p2", corev1.PodRunning, nil, []corev1.ContainerStatus{{
+		Name: "app", State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "CrashLoopBackOff"}}},
+	})
+	c2 := fake.NewClientBuilder().WithScheme(scheme).WithObjects(crash).Build()
+	r2 := &AppReconciler{Client: c2, Scheme: scheme}
+	if got := r2.blockingPodReason(ctx, app, "production", envNs); got != "" {
+		t.Fatalf("crash loop must not count as a blocking-start reason, got %q", got)
+	}
+}
+
+func TestSetRolloutStalledConditionSetAndClear(t *testing.T) {
+	var conds []metav1.Condition
+	setRolloutStalledCondition(&conds, map[string]string{"production": "pod unschedulable: insufficient memory"}, 5)
+	cond := meta.FindStatusCondition(conds, rolloutStalledCondition)
+	if cond == nil || cond.Status != metav1.ConditionTrue {
+		t.Fatalf("expected RolloutStalled=True, got %+v", cond)
+	}
+	if !strings.Contains(cond.Message, "production") || !strings.Contains(cond.Message, "insufficient memory") {
+		t.Errorf("message should name the env and reason, got %q", cond.Message)
+	}
+	setRolloutStalledCondition(&conds, nil, 6)
+	if meta.FindStatusCondition(conds, rolloutStalledCondition) != nil {
+		t.Errorf("RolloutStalled should be cleared when no envs stalled")
+	}
+}
