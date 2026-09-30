@@ -31,6 +31,8 @@ Most deploy tooling reports what it *did*. Mortise reports what is
   an out-of-band edit), `EnvKeysRetained` (a removed key still in the
   Secret), `PlaintextCredentials` (a credential-shaped literal),
   `EnvironmentJoined` (an App that started participating in an environment),
+  `RolloutStalled` (a new revision whose pods can't start — unschedulable,
+  image pull failure, stuck creating — past the progress deadline),
   `WebhookSignature` on the GitProvider (deliveries failing verification).
 
 Each of these exists because a real production incident hid behind the
