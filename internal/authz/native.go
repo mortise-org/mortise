@@ -26,7 +26,10 @@ func (e *NativePolicyEngine) Authorize(ctx context.Context, p auth.Principal, re
 
 	if p.Role == auth.RoleViewer {
 		if resource.Project == "" {
-			return action == ActionRead, nil
+			// Platform-scoped: read-only, but never the user list — that is
+			// admin-only (authorizePlatform denies it even to members), so a
+			// viewer must not out-rank a member (CAI-445).
+			return action == ActionRead && resource.Kind != "user", nil
 		}
 		if action != ActionRead {
 			return false, nil
