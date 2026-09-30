@@ -3359,6 +3359,19 @@ func hashEnvSecretData(ctx context.Context, reader client.Reader, appName, envNs
 	return envstore.EnvHash(ctx, reader, appName, envNs)
 }
 
+// statusReader returns the uncached reader when one is wired, so status
+// reflects this reconcile's own workload writes. reconcileDeployment Updates
+// the Deployment via the API server earlier in the same pass; a cached read in
+// updateStatus lags that write and briefly reports Ready on the new image while
+// the pods still run the old one (the CAI-173/CAI-150 stale-cache class, same
+// reason hashEnvSecretData reads through APIReader).
+func (r *AppReconciler) statusReader() client.Reader {
+	if r.APIReader != nil {
+		return r.APIReader
+	}
+	return r.Client
+}
+
 func (r *AppReconciler) hashEnvSecretData(ctx context.Context, appName, envNs string) string {
 	// The env Secret was written earlier in this same reconcile; the cache
 	// has usually not seen it yet on the create pass, so a cached read
@@ -3920,7 +3933,7 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 			var templateAnnotations map[string]string
 			if isCron {
 				var cj batchv1.CronJob
-				if err := r.Get(ctx, types.NamespacedName{Name: cronJobName(app.Name), Namespace: envNs}, &cj); err == nil {
+				if err := r.statusReader().Get(ctx, types.NamespacedName{Name: cronJobName(app.Name), Namespace: envNs}, &cj); err == nil {
 					workloadPresent = true
 					es.ReadyReplicas = 1
 					deployedHash = cj.Spec.JobTemplate.Spec.Template.Annotations["mortise.dev/env-hash"]
@@ -3928,7 +3941,7 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 			} else {
 				name := deploymentName(app.Name)
 				var dep appsv1.Deployment
-				if err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: envNs}, &dep); err == nil {
+				if err := r.statusReader().Get(ctx, types.NamespacedName{Name: name, Namespace: envNs}, &dep); err == nil {
 					workloadPresent = true
 					es.ReadyReplicas = dep.Status.ReadyReplicas
 					if deploymentRollingOut(&dep) {

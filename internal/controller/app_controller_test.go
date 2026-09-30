@@ -556,6 +556,90 @@ func TestUpdateStatusMarksDegradedWhenLatestBuildFailsButPreviousImageStillServe
 	}
 }
 
+// A push updates an already-running App's Deployment via the API server earlier
+// in the reconcile; the informer cache lags that write. updateStatus must read
+// the Deployment through APIReader — a cached read holds the pre-update object
+// (fully rolled out) and reports Ready on the new image while the pods still run
+// the old one (CAI-438). Cached client holds the stale, rolled-out Deployment;
+// APIReader holds the fresh one whose new generation is not yet observed.
+func TestUpdateStatusReadsWorkloadThroughAPIReader(t *testing.T) {
+	ctx := context.Background()
+	scheme := runtime.NewScheme()
+	if err := mortisev1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add mortise scheme: %v", err)
+	}
+	if err := appsv1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add apps scheme: %v", err)
+	}
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add core scheme: %v", err)
+	}
+
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "demo", Namespace: "pj-default-project"},
+		Spec: mortisev1alpha1.AppSpec{
+			Source:       mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage},
+			Environments: []mortisev1alpha1.Environment{{Name: "production"}},
+		},
+		Status: mortisev1alpha1.AppStatus{
+			Environments: []mortisev1alpha1.EnvironmentStatus{{
+				Name:           "production",
+				LastBuiltImage: "registry.example/demo:new",
+			}},
+		},
+	}
+	envNs, err := appEnvNs(app, "production")
+	if err != nil {
+		t.Fatalf("app env namespace: %v", err)
+	}
+	depName := deploymentName(app.Name)
+
+	// Stale (what the cache holds): fully rolled out, looks Ready.
+	stale := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: depName, Namespace: envNs, Generation: 1},
+		Spec:       appsv1.DeploymentSpec{Replicas: ptr.To[int32](1), Template: corev1.PodTemplateSpec{}},
+		Status: appsv1.DeploymentStatus{
+			ObservedGeneration: 1, Replicas: 1, ReadyReplicas: 1, UpdatedReplicas: 1, AvailableReplicas: 1,
+		},
+	}
+	// Fresh (what the API server holds after this reconcile's Update): the new
+	// generation is not yet observed, so the rollout has not started.
+	fresh := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: depName, Namespace: envNs, Generation: 2},
+		Spec:       appsv1.DeploymentSpec{Replicas: ptr.To[int32](1), Template: corev1.PodTemplateSpec{}},
+		Status: appsv1.DeploymentStatus{
+			ObservedGeneration: 1, Replicas: 1, ReadyReplicas: 1, UpdatedReplicas: 0, AvailableReplicas: 1,
+		},
+	}
+
+	cached := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(app, stale).WithObjects(app, stale).Build()
+	if err := cached.Status().Update(ctx, stale); err != nil {
+		t.Fatalf("seed stale deployment status: %v", err)
+	}
+	apiReader := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(fresh).WithObjects(fresh).Build()
+	if err := apiReader.Status().Update(ctx, fresh); err != nil {
+		t.Fatalf("seed fresh deployment status: %v", err)
+	}
+
+	r := &AppReconciler{Client: cached, APIReader: apiReader, Scheme: scheme}
+	if err := r.updateStatus(ctx, app, []mortisev1alpha1.Environment{{Name: "production"}}, nil); err != nil {
+		t.Fatalf("update status: %v", err)
+	}
+
+	var got mortisev1alpha1.App
+	if err := cached.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: app.Namespace}, &got); err != nil {
+		t.Fatalf("get app: %v", err)
+	}
+	if len(got.Status.Environments) != 1 {
+		t.Fatalf("expected one env status, got %+v", got.Status.Environments)
+	}
+	if phase := got.Status.Environments[0].Phase; phase == mortisev1alpha1.AppPhaseReady {
+		t.Fatalf("env must not report Ready off the stale cached Deployment; a cached read lied about the rollout (CAI-438)")
+	} else if phase != mortisev1alpha1.AppPhaseDeploying {
+		t.Fatalf("expected env phase Deploying from the fresh Deployment, got %q", phase)
+	}
+}
+
 func TestUpdateStatusKeepsFailedWhenLatestBuildFailsAndNothingServes(t *testing.T) {
 	ctx := context.Background()
 	scheme := runtime.NewScheme()
