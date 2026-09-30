@@ -108,5 +108,5 @@ No Mortise-specific tooling required.
 
 ## Further reading
 
-- [API endpoints](../api-endpoints.md)
+- [API endpoints](../api-quickstart.md)
 - [App source types](../../SPEC.md) -- `source.type: image`
