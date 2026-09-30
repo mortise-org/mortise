@@ -96,8 +96,15 @@ describe('VariablesTab runtime ownership', () => {
 		render(VariablesTab, { props: { project: 'demo', app: makeApp() } });
 		await screen.findByText('DECL');
 		const panel = runtimePanel();
+		// Deleting arms a confirm on the first click and fires on the second, so
+		// a misclick can't destroy a production env var (CAI-350).
+		const clickDelete = async (row: HTMLElement) => {
+			await fireEvent.click(within(row).getAllByRole('button').at(-1) as HTMLButtonElement);
+			await fireEvent.click(within(row).getAllByRole('button').at(-1) as HTMLButtonElement);
+		};
+
 		const declarativeRow = within(panel).getByText('DECL').closest('.group') as HTMLElement;
-		await fireEvent.click(within(declarativeRow).getAllByRole('button').at(-1) as HTMLButtonElement);
+		await clickDelete(declarativeRow);
 
 		await waitFor(() => expect(updateApp).toHaveBeenCalledOnce());
 		const payload = updateApp.mock.calls[0][2] as AppSpec;
@@ -107,7 +114,7 @@ describe('VariablesTab runtime ownership', () => {
 		expect(setEnv).not.toHaveBeenCalled();
 
 		const secretRow = within(panel).getByText('SECRET').closest('.group') as HTMLElement;
-		await fireEvent.click(within(secretRow).getAllByRole('button').at(-1) as HTMLButtonElement);
+		await clickDelete(secretRow);
 		await waitFor(() => expect(updateApp).toHaveBeenCalledTimes(2));
 		const secondPayload = updateApp.mock.calls[1][2] as AppSpec;
 		expect(secondPayload.environments?.[0].env).toEqual([]);
