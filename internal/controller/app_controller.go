@@ -3711,6 +3711,108 @@ func (r *AppReconciler) checkPodCrashLoopInEnv(ctx context.Context, app *mortise
 	return ""
 }
 
+// checkRolloutStalledInEnv reports a user-facing reason when the env's
+// Deployment has stalled — the new revision has not become ready within the
+// Deployment's progress deadline (ProgressDeadlineSeconds, 120s) because pods
+// cannot schedule or start (unschedulable, image pull failure, stuck creating).
+// Returns "" when the rollout is progressing or already complete. Distinct from
+// CrashLoopBackOff (a container that starts then dies); this is "never started"
+// (CAI-396). The user found out about exactly this via an external watchdog
+// during the node1 containerd-wedge incident; Mortise should say it itself.
+func (r *AppReconciler) checkRolloutStalledInEnv(ctx context.Context, app *mortisev1alpha1.App, envName, envNs string) string {
+	var dep appsv1.Deployment
+	if err := r.Get(ctx, types.NamespacedName{Name: deploymentName(app.Name), Namespace: envNs}, &dep); err != nil {
+		return ""
+	}
+	stalled := false
+	for _, c := range dep.Status.Conditions {
+		if c.Type == appsv1.DeploymentProgressing &&
+			c.Status == corev1.ConditionFalse &&
+			c.Reason == "ProgressDeadlineExceeded" {
+			stalled = true
+			break
+		}
+	}
+	if !stalled {
+		return ""
+	}
+	msg := "Rollout stalled: the new revision has not become ready within the progress deadline"
+	if reason := r.blockingPodReason(ctx, app, envName, envNs); reason != "" {
+		msg += " — " + reason
+	}
+	return msg
+}
+
+// blockingPodReason returns why the first not-ready, non-crashing pod for an
+// app/env cannot start: unschedulable (with the scheduler's message), an image
+// pull failure, a container-create error, or stuck creating. "" when no such
+// pod is found. Crash loops are excluded — they are their own condition.
+func (r *AppReconciler) blockingPodReason(ctx context.Context, app *mortisev1alpha1.App, envName, envNs string) string {
+	var podList corev1.PodList
+	if err := r.List(ctx, &podList,
+		client.InNamespace(envNs),
+		client.MatchingLabels{
+			constants.AppNameLabel:         app.Name,
+			"app.kubernetes.io/managed-by": "mortise",
+			"mortise.dev/environment":      envName,
+		}); err != nil {
+		return ""
+	}
+	for _, pod := range podList.Items {
+		if pod.Status.Phase == corev1.PodPending {
+			for _, c := range pod.Status.Conditions {
+				if c.Type == corev1.PodScheduled && c.Status == corev1.ConditionFalse {
+					if c.Message != "" {
+						return fmt.Sprintf("pod unschedulable: %s", c.Message)
+					}
+					return "pod unschedulable"
+				}
+			}
+		}
+		for _, cs := range pod.Status.ContainerStatuses {
+			w := cs.State.Waiting
+			if w == nil || w.Reason == "CrashLoopBackOff" {
+				continue
+			}
+			switch w.Reason {
+			case "ImagePullBackOff", "ErrImagePull", "CreateContainerError", "CreateContainerConfigError", "InvalidImageName":
+				if w.Message != "" {
+					return fmt.Sprintf("%s: %s", w.Reason, w.Message)
+				}
+				return w.Reason
+			case "ContainerCreating":
+				return "pod stuck creating (ContainerCreating) — often a node-level container-runtime or volume issue"
+			}
+		}
+	}
+	return ""
+}
+
+// setRolloutStalledCondition sets RolloutStalled=True naming the stalled
+// environments and why, or clears it when none are stalled (CAI-396).
+func setRolloutStalledCondition(conds *[]metav1.Condition, stalled map[string]string, generation int64) {
+	if len(stalled) == 0 {
+		meta.RemoveStatusCondition(conds, rolloutStalledCondition)
+		return
+	}
+	names := make([]string, 0, len(stalled))
+	for name := range stalled {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	parts := make([]string, 0, len(names))
+	for _, name := range names {
+		parts = append(parts, fmt.Sprintf("%s (%s)", name, stalled[name]))
+	}
+	meta.SetStatusCondition(conds, metav1.Condition{
+		Type:               rolloutStalledCondition,
+		Status:             metav1.ConditionTrue,
+		Reason:             "ProgressDeadlineExceeded",
+		Message:            "rollout stalled in: " + strings.Join(parts, "; "),
+		ObservedGeneration: generation,
+	})
+}
+
 func isCrashLoopWaitingState(waiting *corev1.ContainerStateWaiting) bool {
 	return waiting != nil && waiting.Reason == "CrashLoopBackOff"
 }
@@ -3789,6 +3891,7 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 		anyNotReady := false
 		anyCrash := false
 		firstCrashMsg := ""
+		stalledEnvs := map[string]string{}
 
 		for _, env := range resolvedEnvs {
 			projectionEnvOrder = append(projectionEnvOrder, env.Name)
@@ -3920,6 +4023,13 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 				}
 				crashMsg := r.checkPodCrashLoopInEnv(ctx, app, env.Name, envNs)
 				if crashMsg == "" {
+					// Not crashing — is the rollout stalled because pods can't
+					// start at all (unschedulable, image pull, stuck creating)?
+					// That is invisible today and is its own condition (CAI-396).
+					if stallMsg := r.checkRolloutStalledInEnv(ctx, app, env.Name, envNs); stallMsg != "" {
+						stalledEnvs[env.Name] = stallMsg
+						es.Message = stallMsg
+					}
 					return false
 				}
 				es.Phase = mortisev1alpha1.AppPhaseCrashLooping
@@ -4010,6 +4120,7 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 		setSpecEnvAppliedCondition(&fresh.Status.Conditions, envStatuses, app.Generation)
 		setEnvKeysRetainedCondition(&fresh.Status.Conditions, envStatuses, app.Generation)
 		setEnvRolledOutCondition(&fresh.Status.Conditions, envStatuses, app.Generation)
+		setRolloutStalledCondition(&fresh.Status.Conditions, stalledEnvs, app.Generation)
 		setEnvironmentJoinedCondition(&fresh.Status.Conditions, envStatuses, r.clock().Now(), app.Generation)
 		if buildFailed {
 			if anyServing && !anyCrash {
@@ -5210,6 +5321,8 @@ func (r *AppReconciler) SetupWithManager(mgr ctrl.Manager) error {
 // envRolledOutCondition is the App condition that says whether every
 // environment's running pods carry the env the spec currently resolves to.
 const envRolledOutCondition = "EnvRolledOut"
+
+const rolloutStalledCondition = "RolloutStalled"
 
 // setEnvRolledOutCondition reports a pending redeploy as a condition. With
 // Project.spec.autoRedeploy off (the default) the controller freezes the
