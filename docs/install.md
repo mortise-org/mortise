@@ -368,9 +368,14 @@ has its new fields silently pruned by the API server:
 ```bash
 helm repo update
 helm pull mortise/mortise --untar
-kubectl apply --server-side -f mortise/charts/mortise-core/crds/
+kubectl apply --server-side --force-conflicts -f mortise/charts/mortise-core/crds/
 helm upgrade mortise mortise/mortise -n mortise-system --reset-then-reuse-values
 ```
+
+`--force-conflicts` is required: a release installed with `helm install` leaves
+the CRDs owned by Helm's field manager, so a server-side apply from `kubectl`
+conflicts on `.spec.versions`. Forcing the takeover is intended here — the new
+CRD schema must win.
 
 Use `--reset-then-reuse-values` (Helm ≥3.14), not `--reuse-values`: it keeps
 your overrides while picking up the new chart's defaults, so values blocks
