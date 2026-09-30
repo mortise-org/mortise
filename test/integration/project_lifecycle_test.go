@@ -112,14 +112,17 @@ func TestProjectDeleteCascades(t *testing.T) {
 	// Wait for namespace to be gone (cascade).
 	waitForNamespaceGone(t, nsName)
 
-	// Verify app resources are gone.
-	var dep appsv1.Deployment
-	err := k8sClient.Get(context.Background(), types.NamespacedName{
-		Name: resourceName, Namespace: envNs,
-	}, &dep)
-	if err == nil {
-		t.Error("expected deployment to be gone after project deletion")
-	}
+	// Verify app resources are gone. The env namespace is deleted independently
+	// of the control namespace, so poll until the Deployment is actually gone
+	// rather than checking once (the two namespaces' cascade GC can finish in
+	// either order).
+	helpers.RequireEventually(t, 90*time.Second, func() bool {
+		var dep appsv1.Deployment
+		err := k8sClient.Get(context.Background(), types.NamespacedName{
+			Name: resourceName, Namespace: envNs,
+		}, &dep)
+		return err != nil
+	})
 }
 
 func TestDeleteProjectEnvironmentStripsOverridesViaAPI(t *testing.T) {
