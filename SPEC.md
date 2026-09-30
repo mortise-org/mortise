@@ -2093,7 +2093,7 @@ community- or user-built.
   webhook. Mortise's built-in BuildKit is an opt-in convenience; teams with
   existing CI or cluster-CPU constraints use this path and skip BuildKit
   entirely. Canonical workflow example alongside the Railpack/Dockerfile path.
-- **OIDC setup** against Authentik / Keycloak / Okta / Google Workspace
+- **Authentication**: native users/roles today; SSO via a front-door auth proxy (OIDC login flow not yet built)
 - **Prometheus + Grafana** via kube-prometheus-stack, using Mortise's
   standard `ServiceMonitor` output
 - **Log aggregation via Loki**: Mortise pods emit stdout logs; Loki
