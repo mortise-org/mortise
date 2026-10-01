@@ -1154,23 +1154,6 @@ func TestRollback(t *testing.T) {
 		t.Fatalf("create app: %v", err)
 	}
 
-	// Create the Deployment the handler will patch. Workload resources live
-	// in the per-env namespace.
-	envNs := constants.EnvNamespace("default", "production")
-	dep := &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{Name: "rollback-app", Namespace: envNs},
-		Spec: appsv1.DeploymentSpec{
-			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "rollback-app"}},
-			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "rollback-app"}},
-				Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "app", Image: "nginx:1.27"}}},
-			},
-		},
-	}
-	if err := k8sClient.Create(ctx, dep); err != nil {
-		t.Fatalf("create deployment: %v", err)
-	}
-
 	// Seed deploy history on app status.
 	app.Status.Environments = []mortisev1alpha1.EnvironmentStatus{
 		{
@@ -1201,12 +1184,56 @@ func TestRollback(t *testing.T) {
 		t.Errorf("expected rollback to nginx:1.26, got %s", record.Image)
 	}
 
-	// Verify Deployment was patched.
-	if err := k8sClient.Get(ctx, types.NamespacedName{Name: "rollback-app", Namespace: envNs}, dep); err != nil {
-		t.Fatalf("get deployment: %v", err)
+	// Verify the App SPEC was patched, not the Deployment: the controller
+	// derives the Deployment image from the spec, so a direct Deployment patch
+	// would be reverted on the next reconcile (CAI-498).
+	var updated mortisev1alpha1.App
+	if err := k8sClient.Get(ctx, types.NamespacedName{Name: "rollback-app", Namespace: ns}, &updated); err != nil {
+		t.Fatalf("get app: %v", err)
 	}
-	if dep.Spec.Template.Spec.Containers[0].Image != "nginx:1.26" {
-		t.Errorf("expected deployment image nginx:1.26, got %s", dep.Spec.Template.Spec.Containers[0].Image)
+	var prodImage string
+	for _, e := range updated.Spec.Environments {
+		if e.Name == "production" {
+			prodImage = e.Image
+		}
+	}
+	if prodImage != "nginx:1.26" {
+		t.Errorf("expected spec production image nginx:1.26, got %q", prodImage)
+	}
+}
+
+func TestRollbackRejectedForGitSourceApp(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+	ns := seedProject(t, k8sClient, "default")
+
+	ctx := context.Background()
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "git-rollback", Namespace: ns},
+		Spec: mortisev1alpha1.AppSpec{
+			Source:       mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeGit, Repo: "https://example.test/r.git"},
+			Environments: []mortisev1alpha1.Environment{{Name: "production"}},
+		},
+	}
+	if err := k8sClient.Create(ctx, app); err != nil {
+		t.Fatalf("create app: %v", err)
+	}
+	app.Status.Environments = []mortisev1alpha1.EnvironmentStatus{
+		{Name: "production", DeployHistory: []mortisev1alpha1.DeployRecord{{Image: "reg/app:old", Timestamp: metav1.Now()}}},
+	}
+	if err := k8sClient.Status().Update(ctx, app); err != nil {
+		t.Fatalf("update status: %v", err)
+	}
+
+	// A git-source rollback must return a clear 400, not a silent no-op that
+	// reports success and is reverted on the next reconcile (CAI-498/CAI-499).
+	w := doRequest(h, http.MethodPost, "/api/projects/default/apps/git-rollback/rollback", map[string]any{
+		"environment": "production",
+		"index":       0,
+	})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for git-source rollback, got %d: %s", w.Code, w.Body.String())
 	}
 }
 
@@ -1858,24 +1885,6 @@ func TestPromote(t *testing.T) {
 		t.Fatalf("create app: %v", err)
 	}
 
-	// Create Deployments for both envs in their per-env workload namespaces.
-	for _, envName := range []string{"staging", "production"} {
-		depNs := constants.EnvNamespace("default", envName)
-		dep := &appsv1.Deployment{
-			ObjectMeta: metav1.ObjectMeta{Name: "promote-app", Namespace: depNs},
-			Spec: appsv1.DeploymentSpec{
-				Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "promote-app", "env": envName}},
-				Template: corev1.PodTemplateSpec{
-					ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "promote-app", "env": envName}},
-					Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "app", Image: "nginx:1.25"}}},
-				},
-			},
-		}
-		if err := k8sClient.Create(ctx, dep); err != nil {
-			t.Fatalf("create deployment %s: %v", envName, err)
-		}
-	}
-
 	// Seed staging with a current image.
 	app.Status.Environments = []mortisev1alpha1.EnvironmentStatus{
 		{Name: "staging", CurrentImage: "nginx:1.27", CurrentDigest: "sha256:abc123"},
@@ -1893,14 +1902,21 @@ func TestPromote(t *testing.T) {
 		t.Fatalf("promote: expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 
-	// Verify production Deployment has the staging image.
-	prodNs := constants.EnvNamespace("default", "production")
-	var dep appsv1.Deployment
-	if err := k8sClient.Get(ctx, types.NamespacedName{Name: "promote-app", Namespace: prodNs}, &dep); err != nil {
-		t.Fatalf("get production deployment: %v", err)
+	// Verify the production env's SPEC image was set to the promoted digest, so
+	// the controller rolls to it and keeps it (not a direct Deployment patch that
+	// would be reverted — CAI-498).
+	var updated mortisev1alpha1.App
+	if err := k8sClient.Get(ctx, types.NamespacedName{Name: "promote-app", Namespace: ns}, &updated); err != nil {
+		t.Fatalf("get app: %v", err)
 	}
-	if dep.Spec.Template.Spec.Containers[0].Image != "sha256:abc123" {
-		t.Errorf("expected production image sha256:abc123, got %s", dep.Spec.Template.Spec.Containers[0].Image)
+	var prodImage string
+	for _, e := range updated.Spec.Environments {
+		if e.Name == "production" {
+			prodImage = e.Image
+		}
+	}
+	if prodImage != "sha256:abc123" {
+		t.Errorf("expected spec production image sha256:abc123, got %q", prodImage)
 	}
 }
 

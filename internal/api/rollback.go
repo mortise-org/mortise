@@ -7,7 +7,6 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
-	appsv1 "k8s.io/api/apps/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/retry"
@@ -65,6 +64,10 @@ func (s *Server) Rollback(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
+	if app.Spec.Source.Type == mortisev1alpha1.SourceTypeGit {
+		writeJSON(w, http.StatusBadRequest, errorResponse{"rollback is not supported for git-source apps: the controller always deploys the freshly built image, so an image rollback would be silently reverted. Redeploy the target revision instead."})
+		return
+	}
 	// Find the environment status.
 	var envStatus *mortisev1alpha1.EnvironmentStatus
 	for i := range app.Status.Environments {
@@ -88,7 +91,7 @@ func (s *Server) Rollback(w http.ResponseWriter, r *http.Request) {
 		rollbackImage = target.Digest
 	}
 
-	if err := s.rollbackDeployment(r.Context(), projectName, appName, req.Environment, rollbackImage); err != nil {
+	if err := s.setEnvSpecImage(r.Context(), projectName, appName, req.Environment, rollbackImage); err != nil {
 		writeError(w, r, err)
 		return
 	}
@@ -156,6 +159,10 @@ func (s *Server) Promote(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
+	if app.Spec.Source.Type == mortisev1alpha1.SourceTypeGit {
+		writeJSON(w, http.StatusBadRequest, errorResponse{"promote is not supported for git-source apps: the controller always deploys the target env's freshly built image, so a promoted image would be silently reverted."})
+		return
+	}
 
 	// Find source environment status.
 	var fromStatus *mortisev1alpha1.EnvironmentStatus
@@ -193,7 +200,7 @@ func (s *Server) Promote(w http.ResponseWriter, r *http.Request) {
 		promoteImage = fromStatus.CurrentDigest
 	}
 
-	if err := s.promoteDeployment(r.Context(), projectName, appName, req.To, promoteImage); err != nil {
+	if err := s.setEnvSpecImage(r.Context(), projectName, appName, req.To, promoteImage); err != nil {
 		writeError(w, r, err)
 		return
 	}
@@ -238,35 +245,26 @@ func (s *Server) Promote(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) rollbackDeployment(ctx context.Context, projectName, appName, envName, image string) error {
-	depName := constants.DeploymentName(appName)
-	envNs := constants.EnvNamespace(projectName, envName)
+// setEnvSpecImage pins an env's image on the App spec so the controller rolls the
+// Deployment to it and keeps it. Rollback and promote must NOT patch the
+// Deployment directly: it is controller-owned, and reconcileDeployment reverts
+// its image back to the spec/built image on the next reconcile, so a direct patch
+// silently vanishes within seconds (CAI-498). This mirrors the deploy handler,
+// which writes the spec. Only valid for image-source apps; git-source apps
+// always use the freshly built image (see the git-source guard in the handlers).
+func (s *Server) setEnvSpecImage(ctx context.Context, projectName, appName, envName, image string) error {
+	appNs := constants.ControlNamespace(projectName)
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		var dep appsv1.Deployment
-		if err := s.client.Get(ctx, types.NamespacedName{Name: depName, Namespace: envNs}, &dep); err != nil {
+		var app mortisev1alpha1.App
+		if err := s.client.Get(ctx, types.NamespacedName{Name: appName, Namespace: appNs}, &app); err != nil {
 			return err
 		}
-		if len(dep.Spec.Template.Spec.Containers) == 0 {
-			return fmt.Errorf("deployment %s has no containers", depName)
+		if envName != "" {
+			ensureEnvironment(&app, envName).Image = image
+		} else {
+			app.Spec.Source.Image = image
 		}
-		dep.Spec.Template.Spec.Containers[0].Image = image
-		return s.client.Update(ctx, &dep)
-	})
-}
-
-func (s *Server) promoteDeployment(ctx context.Context, projectName, appName, envName, image string) error {
-	depName := constants.DeploymentName(appName)
-	envNs := constants.EnvNamespace(projectName, envName)
-	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		var dep appsv1.Deployment
-		if err := s.client.Get(ctx, types.NamespacedName{Name: depName, Namespace: envNs}, &dep); err != nil {
-			return err
-		}
-		if len(dep.Spec.Template.Spec.Containers) == 0 {
-			return fmt.Errorf("deployment %s has no containers", depName)
-		}
-		dep.Spec.Template.Spec.Containers[0].Image = image
-		return s.client.Update(ctx, &dep)
+		return s.client.Update(ctx, &app)
 	})
 }
 
