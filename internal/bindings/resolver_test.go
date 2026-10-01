@@ -170,6 +170,34 @@ func TestResolveMissingBindingPreservesOtherBindings(t *testing.T) {
 	}
 }
 
+func TestResolveBindingPrefixCollisionErrors(t *testing.T) {
+	mkApp := func(name string) *mortisev1alpha1.App {
+		return &mortisev1alpha1.App{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "pj-web"},
+			Spec: mortisev1alpha1.AppSpec{
+				Source:       mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: "redis:7"},
+				Network:      mortisev1alpha1.NetworkConfig{Port: 6379},
+				Environments: []mortisev1alpha1.Environment{{Name: "production"}},
+			},
+		}
+	}
+	// "cache" and "1cache" both sanitize to the CACHE env-var prefix; without
+	// detection one would silently clobber the other's HOST/PORT/URL (CAI-507).
+	c := newFakeClient(t, mkApp("cache"), mkApp("1cache"))
+	r := &bindings.Resolver{Client: c}
+
+	_, err := r.Resolve(context.Background(), "web", "production", []mortisev1alpha1.Binding{
+		{Ref: "cache"},
+		{Ref: "1cache"},
+	})
+	if err == nil {
+		t.Fatal("expected a prefix-collision error, got nil")
+	}
+	if !strings.Contains(err.Error(), "prefix") {
+		t.Errorf("expected a prefix-collision error, got %v", err)
+	}
+}
+
 func TestResolveExternalSourceBinding(t *testing.T) {
 	redis := &mortisev1alpha1.App{
 		ObjectMeta: metav1.ObjectMeta{Name: "redis", Namespace: "pj-web"},
