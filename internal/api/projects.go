@@ -46,6 +46,10 @@ func projectNamespace(projectName string) string {
 type createProjectRequest struct {
 	Name        string `json:"name"`
 	Description string `json:"description,omitempty"`
+	// CreateStaging seeds a "staging" environment alongside production in the
+	// same atomic create, so the UI's "Also create staging" option doesn't
+	// depend on a follow-up POST that races owner-membership readiness (CAI-485).
+	CreateStaging bool `json:"createStaging,omitempty"`
 }
 
 // projectResponse is the JSON shape returned for Project GETs. It is a flat,
@@ -176,21 +180,27 @@ func (s *Server) CreateProject(w http.ResponseWriter, r *http.Request) {
 		annotations["mortise.dev/created-by"] = principal.Email
 	}
 
+	// Seed the default env at create instead of leaving it to the controller: a
+	// client adding an env (e.g. the UI POSTing staging) between create and first
+	// reconcile would otherwise suppress the controller's seed and leave the
+	// project without a production env. Staging, when requested, is seeded in the
+	// same atomic create so it can't be lost to an owner-membership race on a
+	// follow-up POST (CAI-485).
+	envs := []mortisev1alpha1.ProjectEnvironment{
+		{Name: constants.DefaultProjectEnvironment},
+	}
+	if req.CreateStaging {
+		envs = append(envs, mortisev1alpha1.ProjectEnvironment{Name: "staging"})
+	}
+
 	project := &mortisev1alpha1.Project{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        req.Name,
 			Annotations: annotations,
 		},
 		Spec: mortisev1alpha1.ProjectSpec{
-			Description: req.Description,
-			// Seed the default env at create instead of leaving it to the
-			// controller: a client adding an env (e.g. the UI POSTing
-			// staging) between create and first reconcile would otherwise
-			// suppress the controller's seed and leave the project without
-			// a production env.
-			Environments: []mortisev1alpha1.ProjectEnvironment{
-				{Name: constants.DefaultProjectEnvironment},
-			},
+			Description:  req.Description,
+			Environments: envs,
 		},
 	}
 
