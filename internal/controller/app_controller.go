@@ -190,6 +190,7 @@ const (
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=cert-manager.io,resources=certificates,verbs=get;list;watch
+// +kubebuilder:rbac:groups=cert-manager.io,resources=certificaterequests,verbs=get;list;watch
 
 func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
@@ -2477,6 +2478,71 @@ func (r *AppReconciler) reconcileIngress(ctx context.Context, app *mortisev1alph
 }
 
 var certGVK = schema.GroupVersionKind{Group: "cert-manager.io", Version: "v1", Kind: "Certificate"}
+var certRequestListGVK = schema.GroupVersionKind{Group: "cert-manager.io", Version: "v1", Kind: "CertificateRequestList"}
+
+// latestCertRequestFailure inspects the most recent child CertificateRequest of
+// a Certificate and returns a terminal failure message, or "" if none. A
+// Certificate can sit in a transient "Issuing" state for up to an hour while
+// cert-manager backs off between failed ACME attempts, so the parent's Ready
+// condition alone reports a perpetual "Pending"; the actionable reason (a failed
+// DNS-01/HTTP-01 challenge, an invalid domain, a rate limit) lives on the
+// CertificateRequest. Surfacing it turns "Pending" forever into a real failure
+// the user can act on (CAI-444).
+func (r *AppReconciler) latestCertRequestFailure(ctx context.Context, certName, namespace string) string {
+	list := &unstructured.UnstructuredList{}
+	list.SetGroupVersionKind(certRequestListGVK)
+	if err := r.List(ctx, list, client.InNamespace(namespace),
+		client.MatchingLabels{"cert-manager.io/certificate-name": certName}); err != nil {
+		return ""
+	}
+
+	// cert-manager creates a new CertificateRequest per issuance attempt; the
+	// one with the highest revision is the current attempt.
+	var latest *unstructured.Unstructured
+	latestRev := -1
+	for i := range list.Items {
+		item := &list.Items[i]
+		rev := 0
+		if s, ok := item.GetAnnotations()["cert-manager.io/certificate-revision"]; ok {
+			if n, err := strconv.Atoi(s); err == nil {
+				rev = n
+			}
+		}
+		if rev >= latestRev {
+			latestRev = rev
+			latest = item
+		}
+	}
+	if latest == nil {
+		return ""
+	}
+
+	conditions, found, err := unstructured.NestedSlice(latest.Object, "status", "conditions")
+	if err != nil || !found {
+		return ""
+	}
+	for _, c := range conditions {
+		cond, ok := c.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		condType, _, _ := unstructured.NestedString(cond, "type")
+		status, _, _ := unstructured.NestedString(cond, "status")
+		reason, _, _ := unstructured.NestedString(cond, "reason")
+		message, _, _ := unstructured.NestedString(cond, "message")
+		// A CertificateRequest reports a terminal failure as Ready=False with
+		// reason "Failed", or as Denied/InvalidRequest=True.
+		failed := condType == "Ready" && status == "False" && reason == "Failed"
+		denied := (condType == "Denied" || condType == "InvalidRequest") && status == "True"
+		if failed || denied {
+			if message != "" {
+				return fmt.Sprintf("%s: %s", reason, message)
+			}
+			return reason
+		}
+	}
+	return ""
+}
 
 // checkCertificateStatus reads the cert-manager Certificate resource for an
 // environment's TLS secret and returns (status, message). Returns ("", "")
@@ -2513,6 +2579,9 @@ func (r *AppReconciler) checkCertificateStatus(ctx context.Context, secretName, 
 		// being issued or validated — not a terminal failure.
 		switch reason {
 		case "Issuing", "Pending", "InProgress", "":
+			if failMsg := r.latestCertRequestFailure(ctx, secretName, namespace); failMsg != "" {
+				return "Failed", failMsg
+			}
 			if message != "" {
 				return "Pending", message
 			}
@@ -2525,6 +2594,9 @@ func (r *AppReconciler) checkCertificateStatus(ctx context.Context, secretName, 
 		}
 	}
 
+	if failMsg := r.latestCertRequestFailure(ctx, secretName, namespace); failMsg != "" {
+		return "Failed", failMsg
+	}
 	return "Pending", "Certificate is being issued"
 }
 
