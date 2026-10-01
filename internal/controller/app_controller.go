@@ -4162,6 +4162,17 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 			}
 			ready := es.ReadyReplicas >= expectedReplicas && !rollingOut
 
+			// Confirm the most recent deploy record once this image+hash is
+			// actually live — pods Ready for a service, or the CronJob applied for
+			// a cron — so the history distinguishes an image that ran from one that
+			// was only attempted (bad tag, CrashLoopBackOff never confirm) (CAI-501).
+			if (isCron || ready) && len(es.DeployHistory) > 0 {
+				head := &es.DeployHistory[0]
+				if !head.Confirmed && head.Image == es.CurrentImage && head.EnvHash == es.DeployedEnvHash {
+					head.Confirmed = true
+				}
+			}
+
 			// A new restartedAt value means a user-triggered redeploy was
 			// requested since the last pass. It decides only whether
 			// LastProcessedRestartedAt is recorded below; it is NOT a phase
