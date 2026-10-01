@@ -2967,6 +2967,59 @@ var _ = Describe("App Controller", func() {
 		})
 	})
 
+	Context("immutable PVC fields (CAI-504)", func() {
+		const appName = "pvc-immutable"
+		ctx := context.Background()
+
+		var app *mortisev1alpha1.App
+
+		AfterEach(func() {
+			if app != nil {
+				_ = k8sClient.Delete(ctx, app)
+				app = nil
+			}
+		})
+
+		It("surfaces an error when accessMode changes on an existing PVC instead of silently ignoring it", func() {
+			app = &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{Name: appName, Namespace: namespace},
+				Spec: mortisev1alpha1.AppSpec{
+					Source:  mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: testImageNginx},
+					Network: mortisev1alpha1.NetworkConfig{Public: false},
+					Storage: []mortisev1alpha1.VolumeSpec{{
+						Name: "data", MountPath: "/data", Size: resource.MustParse("1Gi"),
+						AccessMode: "ReadWriteOnce",
+					}},
+					Environments: []mortisev1alpha1.Environment{{Name: "production", Replicas: ptr.To[int32](1)}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			req := reconcile.Request{NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace}}
+			_, err := reconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			pvcKey := types.NamespacedName{Name: appName + "-data", Namespace: envNsProduction}
+			var pvc corev1.PersistentVolumeClaim
+			Expect(k8sClient.Get(ctx, pvcKey, &pvc)).To(Succeed())
+
+			// Request an immutable accessMode change.
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: appName, Namespace: namespace}, app)).To(Succeed())
+			app.Spec.Storage[0].AccessMode = "ReadWriteMany"
+			Expect(k8sClient.Update(ctx, app)).To(Succeed())
+
+			_, err = reconciler.Reconcile(ctx, req)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("accessMode is immutable"))
+
+			// The PVC is unchanged (still RWO), not silently rewritten while the
+			// change is reported applied.
+			Expect(k8sClient.Get(ctx, pvcKey, &pvc)).To(Succeed())
+			Expect(pvc.Spec.AccessModes[0]).To(Equal(corev1.ReadWriteOnce))
+		})
+	})
+
 	Context("image source with no domain (private service)", func() {
 		const appName = "test-db"
 		ctx := context.Background()
