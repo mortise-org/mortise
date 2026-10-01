@@ -33,6 +33,9 @@ Most deploy tooling reports what it *did*. Mortise reports what is
   `EnvironmentJoined` (an App that started participating in an environment),
   `RolloutStalled` (a new revision whose pods can't start — unschedulable,
   image pull failure, stuck creating — past the progress deadline),
+  `CertificateNotReady` (a public env whose pods are Ready but whose TLS
+  certificate is still issuing or has terminally failed — the real ACME
+  error is named, so HTTPS being down doesn't hide behind a Ready app),
   `WebhookSignature` on the GitProvider (deliveries failing verification).
 
 Each of these exists because a real production incident hid behind the
