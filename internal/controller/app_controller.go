@@ -385,13 +385,28 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		}
 
 		if app.Spec.Kind == mortisev1alpha1.AppKindCron {
+			// Switched to cron: remove any service-type workload left behind so
+			// it doesn't keep running and serving (CAI-484).
+			if err := r.ensureNoServiceWorkload(ctx, &app, envNs); err != nil {
+				return r.envResourceError(ctx, &app, envNs, env.Name, "prune service workload", err)
+			}
 			if env.Schedule == "" {
+				// No schedule for this env: ensure no stale CronJob keeps firing.
+				if err := r.ensureNoCronJob(ctx, &app, envNs); err != nil {
+					return r.envResourceError(ctx, &app, envNs, env.Name, "prune cronjob", err)
+				}
 				continue
 			}
 			if err := r.reconcileCronJob(ctx, &app, env, envNs, image, credentialsHash, autoRedeploy); err != nil {
 				return r.envResourceError(ctx, &app, envNs, env.Name, "reconcile cronjob", err)
 			}
 			continue
+		}
+
+		// Service kind: remove any CronJob left from a previous cron config so it
+		// doesn't keep firing scheduled runs (CAI-484).
+		if err := r.ensureNoCronJob(ctx, &app, envNs); err != nil {
+			return r.envResourceError(ctx, &app, envNs, env.Name, "prune cronjob", err)
 		}
 
 		if err := r.reconcileDeployment(ctx, &app, env, envNs, image, credentialsHash, autoRedeploy); err != nil {

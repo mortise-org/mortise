@@ -7610,6 +7610,79 @@ var _ = Describe("App Controller — git source", func() {
 			Expect(cj.Labels["mortise.dev/environment"]).To(Equal("production"))
 		})
 
+		It("switching kind service->cron prunes the Deployment, Service, and Ingress (CAI-484)", func() {
+			const name = "cron-switch-to-cron"
+			app = &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+				Spec: mortisev1alpha1.AppSpec{
+					Source:  mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: testImageNginx},
+					Network: mortisev1alpha1.NetworkConfig{Public: true},
+					Environments: []mortisev1alpha1.Environment{{
+						Name: "production", Replicas: ptr.To[int32](1), Domain: "cron-switch.example.com",
+					}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			req := reconcile.Request{NamespacedName: types.NamespacedName{Name: name, Namespace: namespace}}
+			_, err := reconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			depKey := types.NamespacedName{Name: deploymentName(name), Namespace: envNsProduction}
+			svcKey := types.NamespacedName{Name: serviceName(name), Namespace: envNsProduction}
+			ingKey := types.NamespacedName{Name: ingressName(name), Namespace: envNsProduction}
+			cjKey := types.NamespacedName{Name: cronJobName(name), Namespace: envNsProduction}
+			Expect(k8sClient.Get(ctx, depKey, &appsv1.Deployment{})).To(Succeed())
+			Expect(k8sClient.Get(ctx, svcKey, &corev1.Service{})).To(Succeed())
+			Expect(k8sClient.Get(ctx, ingKey, &networkingv1.Ingress{})).To(Succeed())
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, app)).To(Succeed())
+			app.Spec.Kind = mortisev1alpha1.AppKindCron
+			app.Spec.Environments[0].Schedule = "*/5 * * * *"
+			Expect(k8sClient.Update(ctx, app)).To(Succeed())
+			_, err = reconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(kerrors.IsNotFound(k8sClient.Get(ctx, depKey, &appsv1.Deployment{}))).To(BeTrue())
+			Expect(kerrors.IsNotFound(k8sClient.Get(ctx, svcKey, &corev1.Service{}))).To(BeTrue())
+			Expect(kerrors.IsNotFound(k8sClient.Get(ctx, ingKey, &networkingv1.Ingress{}))).To(BeTrue())
+			Expect(k8sClient.Get(ctx, cjKey, &batchv1.CronJob{})).To(Succeed())
+		})
+
+		It("switching kind cron->service prunes the CronJob (CAI-484)", func() {
+			const name = "cron-switch-to-service"
+			app = &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+				Spec: mortisev1alpha1.AppSpec{
+					Kind:   mortisev1alpha1.AppKindCron,
+					Source: mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: testImageNginx},
+					Environments: []mortisev1alpha1.Environment{{
+						Name: "production", Schedule: "*/5 * * * *", Replicas: ptr.To[int32](1),
+					}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			req := reconcile.Request{NamespacedName: types.NamespacedName{Name: name, Namespace: namespace}}
+			_, err := reconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			cjKey := types.NamespacedName{Name: cronJobName(name), Namespace: envNsProduction}
+			depKey := types.NamespacedName{Name: deploymentName(name), Namespace: envNsProduction}
+			Expect(k8sClient.Get(ctx, cjKey, &batchv1.CronJob{})).To(Succeed())
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, app)).To(Succeed())
+			app.Spec.Kind = mortisev1alpha1.AppKindService
+			Expect(k8sClient.Update(ctx, app)).To(Succeed())
+			_, err = reconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(kerrors.IsNotFound(k8sClient.Get(ctx, cjKey, &batchv1.CronJob{}))).To(BeTrue())
+			Expect(k8sClient.Get(ctx, depKey, &appsv1.Deployment{})).To(Succeed())
+		})
+
 		It("should not create a Deployment, Service, or Ingress for cron apps", func() {
 			app = &mortisev1alpha1.App{
 				ObjectMeta: metav1.ObjectMeta{
