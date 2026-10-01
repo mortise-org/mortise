@@ -690,14 +690,23 @@ func (r *PreviewEnvironmentReconciler) clock() clock.Clock {
 func (r *PreviewEnvironmentReconciler) ConvergeProjectPreviews(ctx context.Context, project *mortisev1alpha1.Project) error {
 	log := logf.FromContext(ctx)
 
+	controlNs := constants.ControlNamespace(project.Name)
+
+	// Previews disabled (or the block removed entirely): tear down every PE the
+	// project still owns instead of leaving them running and orphaned (CAI-451).
+	// Deleting each PE CR triggers its finalizer, which removes the preview
+	// namespace and its workloads.
 	if project.Spec.Preview == nil || !project.Spec.Preview.Enabled {
-		return nil
+		existingByPR, err := r.listProjectPreviews(ctx, controlNs)
+		if err != nil {
+			return err
+		}
+		return r.deleteStalePreviews(ctx, project.Name, existingByPR, nil, nil)
 	}
+
 	if r.GitAPIFactory == nil {
 		return nil
 	}
-
-	controlNs := constants.ControlNamespace(project.Name)
 
 	var apps mortisev1alpha1.AppList
 	if err := r.List(ctx, &apps, client.InNamespace(controlNs)); err != nil {
@@ -726,20 +735,9 @@ func (r *PreviewEnvironmentReconciler) ConvergeProjectPreviews(ctx context.Conte
 		return nil
 	}
 
-	// List existing PE CRs in the project control namespace.
-	var peList mortisev1alpha1.PreviewEnvironmentList
-	if err := r.List(ctx, &peList, client.InNamespace(controlNs)); err != nil {
-		return fmt.Errorf("list preview environments: %w", err)
-	}
-
-	// Index existing PEs by name. Using PE name as the key avoids PR number
-	// collisions across different repos (multi-repo projects disambiguate
-	// with a repo slug in the PE name).
-	existingByPR := make(map[string]*mortisev1alpha1.PreviewEnvironment, len(peList.Items))
-	for i := range peList.Items {
-		pe := &peList.Items[i]
-		// Use the PE name as a unique handle; map all repo variants to it.
-		existingByPR[pe.Name] = pe
+	existingByPR, err := r.listProjectPreviews(ctx, controlNs)
+	if err != nil {
+		return err
 	}
 
 	// Track which PE names are still open.
@@ -827,34 +825,57 @@ func (r *PreviewEnvironmentReconciler) ConvergeProjectPreviews(ctx context.Conte
 		}
 	}
 
-	// Delete PE CRs for PRs that are no longer open. Skip recently-created
-	// PEs to avoid racing with webhooks or in-flight reconciles.
+	return r.deleteStalePreviews(ctx, project.Name, existingByPR, openPEs, protectedPEs)
+}
+
+// listProjectPreviews indexes the project's PreviewEnvironment CRs by name. PE
+// name is a unique handle that avoids PR-number collisions across repos
+// (multi-repo projects disambiguate with a repo slug in the name).
+func (r *PreviewEnvironmentReconciler) listProjectPreviews(ctx context.Context, controlNs string) (map[string]*mortisev1alpha1.PreviewEnvironment, error) {
+	var peList mortisev1alpha1.PreviewEnvironmentList
+	if err := r.List(ctx, &peList, client.InNamespace(controlNs)); err != nil {
+		return nil, fmt.Errorf("list preview environments: %w", err)
+	}
+	existingByPR := make(map[string]*mortisev1alpha1.PreviewEnvironment, len(peList.Items))
+	for i := range peList.Items {
+		pe := &peList.Items[i]
+		existingByPR[pe.Name] = pe
+	}
+	return existingByPR, nil
+}
+
+// deleteStalePreviews deletes PE CRs that are no longer backed by an open PR.
+// openPEs names the PEs to keep; protectedPEs names PEs to preserve despite no
+// open-PR match (their repo's PR listing failed this pass). Both may be nil,
+// which deletes every PE in existingByPR — the path taken when previews are
+// disabled. Recently-created PEs are skipped to avoid racing webhooks.
+func (r *PreviewEnvironmentReconciler) deleteStalePreviews(ctx context.Context, projectName string, existingByPR map[string]*mortisev1alpha1.PreviewEnvironment, openPEs, protectedPEs map[string]bool) error {
+	log := logf.FromContext(ctx)
 	var deleteErr error
 	for peName, pe := range existingByPR {
 		if openPEs[peName] {
 			continue
 		}
 		if protectedPEs[peName] {
-			log.Info("convergence: preserving PE for repo with failed PR listing", "project", project.Name, "pe", peName)
+			log.Info("convergence: preserving PE for repo with failed PR listing", "project", projectName, "pe", peName)
 			continue
 		}
 		if r.clock().Since(pe.CreationTimestamp.Time) < convergenceGracePeriod {
-			log.Info("convergence: skipping recent PE", "project", project.Name, "pe", peName, "age", r.clock().Since(pe.CreationTimestamp.Time))
+			log.Info("convergence: skipping recent PE", "project", projectName, "pe", peName, "age", r.clock().Since(pe.CreationTimestamp.Time))
 			continue
 		}
 		if err := r.Delete(ctx, pe); err != nil {
 			if errors.IsNotFound(err) {
 				continue
 			}
-			log.Error(err, "convergence: failed to delete stale PE, skipping", "project", project.Name, "pe", peName)
+			log.Error(err, "convergence: failed to delete stale PE, skipping", "project", projectName, "pe", peName)
 			if deleteErr == nil {
 				deleteErr = fmt.Errorf("delete stale PE %q: %w", peName, err)
 			}
 			continue
 		}
-		log.Info("convergence: deleted PE for closed PR", "project", project.Name, "pe", peName)
+		log.Info("convergence: deleted stale PE", "project", projectName, "pe", peName)
 	}
-
 	return deleteErr
 }
 
