@@ -9,6 +9,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/retry"
 
 	"github.com/mortise-org/mortise/internal/auth"
 	"github.com/mortise-org/mortise/internal/authz"
@@ -170,37 +171,45 @@ func (s *Server) UpdateUserRole(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Read the user secret, update the role field, and save.
+	// Read the user secret, update the role field, and save — under conflict
+	// retry with a fresh re-Get so a concurrent admin edit doesn't 409. The
+	// last-admin guard runs inside against the fresh read and signals via the
+	// sentinel so it still maps to a 400 after the loop (CAI-513).
 	secretName := "user-" + hex.EncodeToString([]byte(email))
-	var secret corev1.Secret
-	if err := s.client.Get(r.Context(), types.NamespacedName{
-		Name:      secretName,
-		Namespace: "mortise-system",
-	}, &secret); err != nil {
+	demotingLastAdmin := false
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		demotingLastAdmin = false
+		var secret corev1.Secret
+		if err := s.client.Get(r.Context(), types.NamespacedName{
+			Name:      secretName,
+			Namespace: "mortise-system",
+		}, &secret); err != nil {
+			return err
+		}
+		if auth.Role(secret.Data["role"]) == auth.RoleAdmin && auth.Role(req.Role) != auth.RoleAdmin {
+			users, err := s.auth.ListUsers(r.Context())
+			if err != nil {
+				return err
+			}
+			adminCount := 0
+			for _, user := range users {
+				if user.Role == auth.RoleAdmin {
+					adminCount++
+				}
+			}
+			if adminCount <= 1 {
+				demotingLastAdmin = true
+				return nil
+			}
+		}
+		secret.Data["role"] = []byte(req.Role)
+		return s.client.Update(r.Context(), &secret)
+	}); err != nil {
 		writeError(w, r, err)
 		return
 	}
-	if auth.Role(secret.Data["role"]) == auth.RoleAdmin && auth.Role(req.Role) != auth.RoleAdmin {
-		users, err := s.auth.ListUsers(r.Context())
-		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, errorResponse{err.Error()})
-			return
-		}
-		adminCount := 0
-		for _, user := range users {
-			if user.Role == auth.RoleAdmin {
-				adminCount++
-			}
-		}
-		if adminCount <= 1 {
-			writeJSON(w, http.StatusBadRequest, errorResponse{"cannot demote the last platform admin"})
-			return
-		}
-	}
-
-	secret.Data["role"] = []byte(req.Role)
-	if err := s.client.Update(r.Context(), &secret); err != nil {
-		writeError(w, r, err)
+	if demotingLastAdmin {
+		writeJSON(w, http.StatusBadRequest, errorResponse{"cannot demote the last platform admin"})
 		return
 	}
 
