@@ -252,65 +252,69 @@ func (s *Server) upsertAdapterTokens(ctx context.Context, obs *patchPlatformObse
 	}
 
 	key := types.NamespacedName{Namespace: adapterTokensNamespace, Name: adapterTokensSecretName}
-	var secret corev1.Secret
-	err := s.client.Get(ctx, key, &secret)
+	return retry.OnError(retry.DefaultRetry, func(err error) bool {
+		return errors.IsConflict(err) || errors.IsAlreadyExists(err)
+	}, func() error {
+		var secret corev1.Secret
+		err := s.client.Get(ctx, key, &secret)
 
-	if errors.IsNotFound(err) {
-		if shouldDeleteAllAdapterTokens(obs) {
-			return nil
+		if errors.IsNotFound(err) {
+			if shouldDeleteAllAdapterTokens(obs) {
+				return nil
+			}
+			secret = corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      adapterTokensSecretName,
+					Namespace: adapterTokensNamespace,
+					Labels:    map[string]string{"app.kubernetes.io/managed-by": "mortise"},
+				},
+				Data: map[string][]byte{},
+			}
+			if obs.LogsAdapterToken != nil && *obs.LogsAdapterToken != "" {
+				secret.Data["logs"] = []byte(*obs.LogsAdapterToken)
+			}
+			if obs.MetricsAdapterToken != nil && *obs.MetricsAdapterToken != "" {
+				secret.Data["metrics"] = []byte(*obs.MetricsAdapterToken)
+			}
+			if obs.TrafficAdapterToken != nil && *obs.TrafficAdapterToken != "" {
+				secret.Data["traffic"] = []byte(*obs.TrafficAdapterToken)
+			}
+			return s.client.Create(ctx, &secret)
 		}
-		secret = corev1.Secret{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      adapterTokensSecretName,
-				Namespace: adapterTokensNamespace,
-				Labels:    map[string]string{"app.kubernetes.io/managed-by": "mortise"},
-			},
-			Data: map[string][]byte{},
+		if err != nil {
+			return err
 		}
-		if obs.LogsAdapterToken != nil && *obs.LogsAdapterToken != "" {
-			secret.Data["logs"] = []byte(*obs.LogsAdapterToken)
-		}
-		if obs.MetricsAdapterToken != nil && *obs.MetricsAdapterToken != "" {
-			secret.Data["metrics"] = []byte(*obs.MetricsAdapterToken)
-		}
-		if obs.TrafficAdapterToken != nil && *obs.TrafficAdapterToken != "" {
-			secret.Data["traffic"] = []byte(*obs.TrafficAdapterToken)
-		}
-		return s.client.Create(ctx, &secret)
-	}
-	if err != nil {
-		return err
-	}
 
-	if secret.Data == nil {
-		secret.Data = map[string][]byte{}
-	}
-	if obs.LogsAdapterToken != nil {
-		if *obs.LogsAdapterToken != "" {
-			secret.Data["logs"] = []byte(*obs.LogsAdapterToken)
-		} else {
-			delete(secret.Data, "logs")
+		if secret.Data == nil {
+			secret.Data = map[string][]byte{}
 		}
-	}
-	if obs.MetricsAdapterToken != nil {
-		if *obs.MetricsAdapterToken != "" {
-			secret.Data["metrics"] = []byte(*obs.MetricsAdapterToken)
-		} else {
-			delete(secret.Data, "metrics")
+		if obs.LogsAdapterToken != nil {
+			if *obs.LogsAdapterToken != "" {
+				secret.Data["logs"] = []byte(*obs.LogsAdapterToken)
+			} else {
+				delete(secret.Data, "logs")
+			}
 		}
-	}
-	if obs.TrafficAdapterToken != nil {
-		if *obs.TrafficAdapterToken != "" {
-			secret.Data["traffic"] = []byte(*obs.TrafficAdapterToken)
-		} else {
-			delete(secret.Data, "traffic")
+		if obs.MetricsAdapterToken != nil {
+			if *obs.MetricsAdapterToken != "" {
+				secret.Data["metrics"] = []byte(*obs.MetricsAdapterToken)
+			} else {
+				delete(secret.Data, "metrics")
+			}
 		}
-	}
-	// If all token keys have been removed, delete the orphan Secret entirely.
-	if len(secret.Data) == 0 {
-		return s.client.Delete(ctx, &secret)
-	}
-	return s.client.Update(ctx, &secret)
+		if obs.TrafficAdapterToken != nil {
+			if *obs.TrafficAdapterToken != "" {
+				secret.Data["traffic"] = []byte(*obs.TrafficAdapterToken)
+			} else {
+				delete(secret.Data, "traffic")
+			}
+		}
+		// If all token keys have been removed, delete the orphan Secret entirely.
+		if len(secret.Data) == 0 {
+			return s.client.Delete(ctx, &secret)
+		}
+		return s.client.Update(ctx, &secret)
+	})
 }
 
 func shouldDeleteAllAdapterTokens(obs *patchPlatformObservability) bool {
