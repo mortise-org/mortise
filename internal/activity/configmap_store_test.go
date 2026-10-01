@@ -9,9 +9,11 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	"github.com/mortise-org/mortise/internal/activity"
 )
@@ -72,6 +74,46 @@ func TestAppend_CreatesConfigMapOnFirstCall(t *testing.T) {
 	}
 	if got[0].ResourceName != "app-1" {
 		t.Errorf("want app-1, got %q", got[0].ResourceName)
+	}
+}
+
+func TestAppend_RetriesWhenCreateRacesAlreadyExists(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add corev1: %v", err)
+	}
+	getNotFoundOnce := false
+	c := fake.NewClientBuilder().WithScheme(scheme).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(ctx context.Context, cl client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				if getNotFoundOnce {
+					getNotFoundOnce = false
+					return errors.NewNotFound(schema.GroupResource{Resource: "configmaps"}, key.Name)
+				}
+				return cl.Get(ctx, key, obj, opts...)
+			},
+		}).Build()
+	s := activity.NewConfigMapStore(c)
+
+	// Seed: first append creates the ConfigMap.
+	if err := s.Append(context.Background(), baseEvent("alpha", 0)); err != nil {
+		t.Fatalf("seed append: %v", err)
+	}
+
+	// Force the create-path TOCTOU: the next Get returns NotFound once, so
+	// appendOnce takes the Create path, which hits AlreadyExists (the ConfigMap
+	// really exists). The fix must retry past that rather than drop the event.
+	getNotFoundOnce = true
+	if err := s.Append(context.Background(), baseEvent("alpha", 1)); err != nil {
+		t.Fatalf("append should retry past a create-race AlreadyExists, got %v", err)
+	}
+
+	got, err := s.List(context.Background(), "alpha", 10)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("want 2 events (the raced event not dropped), got %d", len(got))
 	}
 }
 
