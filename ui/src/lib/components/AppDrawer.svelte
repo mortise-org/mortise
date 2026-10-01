@@ -51,8 +51,13 @@
 
 	const appDomain = $derived(envSpecEntry?.domain || envStatusEntry?.domain || envSpecEntry?.customDomains?.[0] || null);
 
+	// A public env can be phase=Ready with pods up but a terminally-failed TLS
+	// cert, so opening its https:// URL just yields a certificate error. Guard the
+	// Open button on it (CAI-490).
+	const tlsFailed = $derived(envStatusEntry?.certificateStatus === 'Failed');
+
 	function openApp() {
-		if (appDomain) {
+		if (appDomain && !tlsFailed) {
 			window.open('//' + appDomain, '_blank');
 		}
 	}
@@ -269,7 +274,9 @@
 				<button
 					type="button"
 					onclick={openApp}
-					class="flex items-center gap-1 rounded-md px-2 py-1 text-xs text-gray-400 hover:bg-surface-700 hover:text-white transition-colors"
+					disabled={tlsFailed}
+					title={tlsFailed ? 'TLS certificate failed — HTTPS is not available for this domain' : undefined}
+					class="flex items-center gap-1 rounded-md px-2 py-1 text-xs text-gray-400 transition-colors {tlsFailed ? 'cursor-not-allowed opacity-50' : 'hover:bg-surface-700 hover:text-white'}"
 				>
 					<ExternalLink class="h-3 w-3" />
 					Open
