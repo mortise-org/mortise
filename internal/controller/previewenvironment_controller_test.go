@@ -2222,6 +2222,75 @@ func TestConvergeProjectPreviews_PreviewsDisabled(t *testing.T) {
 	}
 }
 
+// TestConvergeProjectPreviews_DisableDeletesOrphans guards CAI-451: disabling
+// previews on a project must tear down the preview environments created while
+// previews were enabled, not leave them running. A PE still inside the grace
+// period is preserved to avoid racing an in-flight create.
+func TestConvergeProjectPreviews_DisableDeletesOrphans(t *testing.T) {
+	ctx := context.Background()
+	s := newTestScheme(t)
+	projectName := "disable-orphans"
+	nsName := constants.ControlNamespace(projectName)
+
+	project := &mortisev1alpha1.Project{
+		ObjectMeta: metav1.ObjectMeta{Name: projectName},
+		Spec: mortisev1alpha1.ProjectSpec{
+			Preview: &mortisev1alpha1.PreviewConfig{Enabled: false},
+		},
+	}
+
+	oldEnough := metav1.NewTime(time.Now().Add(-convergenceGracePeriod - time.Minute))
+	orphanPE := &mortisev1alpha1.PreviewEnvironment{
+		ObjectMeta: metav1.ObjectMeta{Name: "preview-pr-5", Namespace: nsName, CreationTimestamp: oldEnough},
+		Spec: mortisev1alpha1.PreviewEnvironmentSpec{
+			ProjectRef:  projectName,
+			SourceEnv:   "staging",
+			PullRequest: mortisev1alpha1.PullRequestRef{Number: 5},
+		},
+	}
+	recentPE := &mortisev1alpha1.PreviewEnvironment{
+		ObjectMeta: metav1.ObjectMeta{Name: "preview-pr-9", Namespace: nsName, CreationTimestamp: metav1.NewTime(time.Now())},
+		Spec: mortisev1alpha1.PreviewEnvironmentSpec{
+			ProjectRef:  projectName,
+			SourceEnv:   "staging",
+			PullRequest: mortisev1alpha1.PullRequestRef{Number: 9},
+		},
+	}
+
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(project, orphanPE, recentPE).Build()
+
+	reconciler := &PreviewEnvironmentReconciler{
+		Client: c,
+		Scheme: s,
+		Clock:  clocktesting.NewFakeClock(time.Now()),
+		GitAPIFactory: func(gp *mortisev1alpha1.GitProvider, token, secret string) (git.GitAPI, error) {
+			t.Fatal("GitAPIFactory should not be called when previews are disabled")
+			return nil, nil
+		},
+	}
+
+	if err := reconciler.ConvergeProjectPreviews(ctx, project); err != nil {
+		t.Fatalf("converge: %v", err)
+	}
+
+	var peList mortisev1alpha1.PreviewEnvironmentList
+	if err := c.List(ctx, &peList, client.InNamespace(nsName)); err != nil {
+		t.Fatalf("list PEs: %v", err)
+	}
+	live := map[int]bool{}
+	for _, pe := range peList.Items {
+		if pe.DeletionTimestamp.IsZero() {
+			live[pe.Spec.PullRequest.Number] = true
+		}
+	}
+	if live[5] {
+		t.Errorf("orphaned PE for PR #5 should be deleted when previews are disabled")
+	}
+	if !live[9] {
+		t.Errorf("recently-created PE for PR #9 should be preserved by the grace period")
+	}
+}
+
 func TestConvergeProjectPreviews_NoGitSourceApps(t *testing.T) {
 	ctx := context.Background()
 	s := newTestScheme(t)
