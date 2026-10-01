@@ -147,6 +147,25 @@ func (r *AppReconciler) gcOptedOutEnvs(ctx context.Context, app *mortisev1alpha1
 	return nil
 }
 
+// ensureNoIngress deletes any Ingress this App owns in the given env namespace.
+// Called when the App should not be publicly routed in that env (not public, or
+// no domain) so an App flipped from public to private does not stay reachable
+// at its old domain with a live Ingress and TLS cert (CAI-483). The managed-by
+// label selector scopes the delete to Mortise's own object; a Service is left
+// alone because workload Apps keep their ClusterIP Service when private.
+func (r *AppReconciler) ensureNoIngress(ctx context.Context, app *mortisev1alpha1.App, envNs string) error {
+	projectName, err := appProjectName(app)
+	if err != nil {
+		return nil
+	}
+	selector := client.MatchingLabels{
+		constants.AppNameLabel:   app.Name,
+		constants.ProjectLabel:   projectName,
+		constants.ManagedByLabel: constants.ManagedByValue,
+	}
+	return r.deleteMatching(ctx, &networkingv1.IngressList{}, selector, client.InNamespace(envNs))
+}
+
 // deleteMatching lists objects of the concrete type in `list` that match the
 // given selector (+ any additional ListOptions) and deletes each one.
 // Silently skips objects already gone.
