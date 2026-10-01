@@ -3757,6 +3757,37 @@ var _ = Describe("App Controller", func() {
 			Expect(history[1].Image).To(Equal("nginx:1.26"))
 		})
 
+		It("confirms the deploy record only once the env is actually running the image (CAI-501)", func() {
+			req := reconcile.Request{NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace}}
+			_, err := reconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Pods aren't Ready in envtest (no kubelet), so the record is written
+			// at deploy time but not yet confirmed.
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: appName, Namespace: namespace}, app)).To(Succeed())
+			Expect(app.Status.Environments[0].DeployHistory).To(HaveLen(1))
+			Expect(app.Status.Environments[0].DeployHistory[0].Confirmed).To(BeFalse())
+
+			// Simulate the Deployment finishing its rollout and becoming Ready.
+			var dep appsv1.Deployment
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: deploymentName(appName), Namespace: envNsProduction}, &dep)).To(Succeed())
+			dep.Status.ObservedGeneration = dep.Generation
+			dep.Status.Replicas = 1
+			dep.Status.ReadyReplicas = 1
+			dep.Status.UpdatedReplicas = 1
+			dep.Status.AvailableReplicas = 1
+			Expect(k8sClient.Status().Update(ctx, &dep)).To(Succeed())
+
+			fakeClock.Step(time.Minute)
+			_, err = reconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: appName, Namespace: namespace}, app)).To(Succeed())
+			history := app.Status.Environments[0].DeployHistory
+			Expect(history).To(HaveLen(1))
+			Expect(history[0].Confirmed).To(BeTrue())
+		})
+
 		It("should cap deploy history at 20 entries", func() {
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},

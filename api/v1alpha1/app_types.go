@@ -603,6 +603,14 @@ type DeployRecord struct {
 	GitSHA    string      `json:"gitSHA,omitempty"`
 	EnvHash   string      `json:"envHash,omitempty"`
 	Timestamp metav1.Time `json:"timestamp"`
+	// Confirmed is set once the environment has been observed actually running
+	// this image and env hash (pods Ready, not mid-rollout). A record is written
+	// at deploy time from the desired spec, so without this flag the history
+	// claims an image deployed even when its pods never started (bad tag,
+	// CrashLoopBackOff); Confirmed distinguishes "ran" from "was attempted"
+	// (CAI-501).
+	// +optional
+	Confirmed bool `json:"confirmed,omitempty"`
 }
 
 // EnvironmentStatus tracks the observed state of a single environment.
