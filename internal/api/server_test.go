@@ -1918,6 +1918,16 @@ func TestPromote(t *testing.T) {
 	if prodImage != "sha256:abc123" {
 		t.Errorf("expected spec production image sha256:abc123, got %q", prodImage)
 	}
+
+	// Promote must not write a deploy record itself — the App controller owns
+	// deploy history (Confirmed once running). Writing one here produced a
+	// duplicate, never-Confirmed entry (concurrency audit). The target env's
+	// seeded status had no history, and there is no controller in this test.
+	for _, e := range updated.Status.Environments {
+		if e.Name == "production" && len(e.DeployHistory) != 0 {
+			t.Errorf("promote should not write deploy history (controller owns it), got %d records", len(e.DeployHistory))
+		}
+	}
 }
 
 func TestPromoteInvalidEnv(t *testing.T) {

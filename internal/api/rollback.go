@@ -7,7 +7,6 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/retry"
 
@@ -205,35 +204,11 @@ func (s *Server) Promote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Append a deploy record to the target environment's status.
-	record := mortisev1alpha1.DeployRecord{
-		Image:     fromStatus.CurrentImage,
-		Digest:    fromStatus.CurrentDigest,
-		Timestamp: metav1.Now(),
-	}
-
-	var toStatus *mortisev1alpha1.EnvironmentStatus
-	for i := range app.Status.Environments {
-		if app.Status.Environments[i].Name == req.To {
-			toStatus = &app.Status.Environments[i]
-			break
-		}
-	}
-	if toStatus == nil {
-		// Target env has no status yet; add one.
-		app.Status.Environments = append(app.Status.Environments, mortisev1alpha1.EnvironmentStatus{
-			Name: req.To,
-		})
-		toStatus = &app.Status.Environments[len(app.Status.Environments)-1]
-	}
-	toStatus.CurrentImage = fromStatus.CurrentImage
-	toStatus.CurrentDigest = fromStatus.CurrentDigest
-	toStatus.DeployHistory = append(toStatus.DeployHistory, record)
-
-	if err := s.recordPromotedDeploy(r.Context(), ns, appName, req.From, req.To); err != nil {
-		writeError(w, r, err)
-		return
-	}
+	// Deploy history is owned by the App controller: setEnvSpecImage wrote the
+	// target env's spec image, and the controller records the deploy — Confirmed
+	// once it is actually running (CAI-501) — on reconcile, exactly as the deploy
+	// handler relies on. Writing a record here too produced a duplicate,
+	// mis-ordered, never-Confirmed entry (concurrency audit).
 
 	s.recordActivity(r, projectName, "promote", "app", appName, fmt.Sprintf("Promoted %s from %s to %s", appName, req.From, req.To), "")
 
@@ -268,47 +243,3 @@ func (s *Server) setEnvSpecImage(ctx context.Context, projectName, appName, envN
 	})
 }
 
-func (s *Server) recordPromotedDeploy(ctx context.Context, ns, appName, fromEnv, toEnv string) error {
-	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		var app mortisev1alpha1.App
-		if err := s.client.Get(ctx, types.NamespacedName{Name: appName, Namespace: ns}, &app); err != nil {
-			return err
-		}
-
-		var fromStatus *mortisev1alpha1.EnvironmentStatus
-		for i := range app.Status.Environments {
-			if app.Status.Environments[i].Name == fromEnv {
-				fromStatus = &app.Status.Environments[i]
-				break
-			}
-		}
-		if fromStatus == nil {
-			return fmt.Errorf("source environment %q not found in app status", fromEnv)
-		}
-
-		record := mortisev1alpha1.DeployRecord{
-			Image:     fromStatus.CurrentImage,
-			Digest:    fromStatus.CurrentDigest,
-			Timestamp: metav1.Now(),
-		}
-
-		var toStatus *mortisev1alpha1.EnvironmentStatus
-		for i := range app.Status.Environments {
-			if app.Status.Environments[i].Name == toEnv {
-				toStatus = &app.Status.Environments[i]
-				break
-			}
-		}
-		if toStatus == nil {
-			app.Status.Environments = append(app.Status.Environments, mortisev1alpha1.EnvironmentStatus{
-				Name: toEnv,
-			})
-			toStatus = &app.Status.Environments[len(app.Status.Environments)-1]
-		}
-		toStatus.CurrentImage = fromStatus.CurrentImage
-		toStatus.CurrentDigest = fromStatus.CurrentDigest
-		toStatus.DeployHistory = append(toStatus.DeployHistory, record)
-
-		return s.client.Status().Update(ctx, &app)
-	})
-}
