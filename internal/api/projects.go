@@ -416,8 +416,8 @@ func (s *Server) UpdateProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	project, ok := s.lookupProject(w, r, projectName)
-	if !ok {
+	// 404 pre-check so a missing project returns 404, not a 500 from the retry.
+	if _, ok := s.lookupProject(w, r, projectName); !ok {
 		return
 	}
 
@@ -454,7 +454,7 @@ func (s *Server) UpdateProject(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Re-read for the response so it reflects the committed state.
-	project, ok = s.lookupProject(w, r, projectName)
+	project, ok := s.lookupProject(w, r, projectName)
 	if !ok {
 		return
 	}
