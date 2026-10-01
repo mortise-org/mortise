@@ -110,4 +110,26 @@ describe('AppDrawer phase navigation', () => {
 		expect(await view.findByText(/TLS certificate not ready in: production/i)).toBeTruthy();
 		view.unmount();
 	});
+	it('disables the Open button when the TLS certificate terminally failed (CAI-490)', async () => {
+		const certFailed: App = {
+			metadata: { name: 'web', generation: 3 },
+			spec: {
+				source: { type: 'git', repo: 'https://example.test/repo.git' },
+				network: { public: true },
+				environments: [{ name: 'production', domain: 'web.example.com' }]
+			},
+			status: {
+				phase: 'Ready',
+				environments: [
+					{ name: 'production', phase: 'Ready', domain: 'web.example.com', certificateStatus: 'Failed' }
+				]
+			}
+		};
+		const view = render(AppDrawer, {
+			props: { project: 'demo', appName: 'web', liveApp: certFailed, onClose: vi.fn() }
+		});
+		const openBtn = (await view.findByRole('button', { name: 'Open' })) as HTMLButtonElement;
+		expect(openBtn.disabled).toBe(true);
+		view.unmount();
+	});
 });
