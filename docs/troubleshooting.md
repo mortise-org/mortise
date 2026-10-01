@@ -119,7 +119,7 @@ kubelet can already reach those registries over HTTPS with standard DNS.
 ## Observer traffic empty with BYO Traefik
 
 **Symptom:** The observer is enabled (`observer.enableTraffic: true`) and
-tailing Traefik pods, but `/v1/traffic` returns all null series. No errors
+tailing Traefik pods, but the app's traffic view returns all null series. No errors
 in the observer logs.
 
 **Cause:** The observer's traffic collector expects Traefik access logs in
@@ -151,7 +151,9 @@ helm upgrade traefik traefik/traefik \
 ```
 
 After the Traefik pods restart, the observer will begin parsing traffic data
-within seconds. Verify with `curl http://localhost:8090/v1/traffic`.
+within seconds. Verify with
+`curl -H "Authorization: Bearer $TOKEN" "http://localhost:8090/api/projects/$PROJECT/apps/$APP/traffic"`
+(or just open the app's traffic view in the UI).
 
 **Why the bundled Traefik doesn't hit this:** The Mortise chart's Traefik
 subchart pre-configures JSON access logs in `charts/mortise/values.yaml`.
