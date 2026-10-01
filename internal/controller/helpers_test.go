@@ -76,6 +76,15 @@ func TestValidateCredential(t *testing.T) {
 			},
 			wantErr: "requires name and key",
 		},
+		{
+			name:    "neither value nor valueFrom on a non-binder key — rejected (CAI-502)",
+			cred:    mortisev1alpha1.Credential{Name: "token"},
+			wantErr: "must set either value or valueFrom",
+		},
+		{
+			name: "port is also a valid value-less binder key",
+			cred: mortisev1alpha1.Credential{Name: "port"},
+		},
 	}
 
 	for _, tc := range tests {

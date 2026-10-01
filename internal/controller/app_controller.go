@@ -3434,7 +3434,23 @@ func validateCredential(c *mortisev1alpha1.Credential) error {
 			return fmt.Errorf("credential %q: valueFrom.secretRef requires name and key", c.Name)
 		}
 	}
+	// A credential with neither value nor valueFrom is skipped from the derived
+	// Secret and then injected into consumers as an empty string, which they use
+	// and fail auth against at runtime while the App reports Ready (CAI-502) —
+	// the same silent-empty hazard CAI-162 made a hard error for valueFrom. Only
+	// the binder-filled keys (host, port) are legitimately value-less: a backing
+	// service declares them so bindings fill them from its Service at bind time.
+	if !hasValue && !hasFrom && !isBinderFilledCredential(c.Name) {
+		return fmt.Errorf("credential %q: must set either value or valueFrom (only the binding-filled keys %q/%q may be left empty)", c.Name, "host", "port")
+	}
 	return nil
+}
+
+// isBinderFilledCredential reports whether a value-less credential of this name
+// is legitimate because the bindings resolver fills it from the backing app's
+// Service (keep in sync with the host/port handling in internal/bindings).
+func isBinderFilledCredential(name string) bool {
+	return name == "host" || name == "port"
 }
 
 // resolveCredential returns the byte value for one credential. The bool is
