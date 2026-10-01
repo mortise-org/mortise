@@ -9,6 +9,20 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **A PVC stranded by a volume removal is now a condition** (CAI-506):
+  removing a volume from an App's spec leaves its PVC in place (data is
+  never deleted implicitly), but nothing said so — the volume simply
+  vanished from status while the PVC and its storage quietly persisted.
+  The App now carries `VolumeRetained=True` naming each retained PVC, so
+  the retained storage is visible rather than silent. Reclaiming it stays
+  a deliberate, separate action.
+- **A certificate that is issuing or failed is now a condition** (CAI-440):
+  TLS cert status was computed but never surfaced, so an App showed `Ready`
+  and "open over HTTPS" while cert-manager was still issuing the
+  certificate or had failed — the link was dead but the platform claimed
+  success. The App now carries `CertificateNotReady` while the ACME cert
+  is not yet served, with the issuing/failure reason in the message.
+
 - **A stalled rollout is now a condition** (CAI-396): when a new revision's
   pods cannot start — unschedulable, image pull failure, or stuck creating —
   the Deployment blows its 120s progress deadline but the App only sat in
@@ -60,6 +74,83 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Rollback and promote now change the running image** (CAI-498, CAI-511):
+  both patched the controller-owned Deployment directly, which the next
+  reconcile reverted to the App's spec/built image — the API returned `200`
+  and the workload silently snapped back. They now write the App *spec*
+  (the same path `deploy` takes), so the change survives reconciliation.
+  Git-source rollback is rejected with a clear error rather than appearing
+  to work, because a git App's running image is always the one built from
+  source. Deploy history also stopped double-writing the promoted record;
+  the controller owns it.
+- **Status no longer claims success the workload disagrees with**
+  (CAI-434, CAI-435, CAI-438, CAI-441, CAI-446, CAI-447, CAI-448): a
+  pre-launch audit of the "what is actually running" surfaces fixed a run
+  of cases where the platform reported one thing and the cluster showed
+  another — `mortise diff` calling an env "older" after an out-of-band
+  restart, a retained key shown as a normal variable, `Ready` read off a
+  stale cached Deployment, a private App reporting a public domain, the
+  traffic panel zeroing during an outage, ghost pods with no staleness
+  cutoff, and log pagination dropping equal-timestamp lines.
+- **Disabling a feature now removes what enabling it created** (CAI-451,
+  CAI-482, CAI-483, CAI-484, CAI-486): several toggles and removals created
+  a resource but never deleted it on disable — a removed custom domain left
+  its Ingress, a disabled cron left its CronJob, a backing service turned
+  private left its external routing, and preview environments were not torn
+  down on some disable paths. Each now reconciles the resource away when
+  the feature is turned off, scoped to Mortise-owned objects.
+- **Concurrent API updates no longer drop a write or return a spurious
+  409** (CAI-512, CAI-513): several read-modify-write handlers (project,
+  member, user-role, pull secret, git- and adapter-token secrets, the
+  activity log's first event) did an unguarded get-then-update and lost the
+  race under concurrent callers — one update silently clobbered or failed
+  with a conflict the user saw as an error. They now retry on conflict and
+  already-exists, re-reading inside the loop, with invariant guards (e.g.
+  last-owner, last-admin) enforced on the fresh read.
+- **Backing-service and build correctness** (CAI-500, CAI-501, CAI-504,
+  CAI-505): rotated backing-service credentials now reach the Apps that
+  bind them (a missing watch left consumers on stale values while still
+  `Ready`); deploy history records the image that actually ran, not the
+  intended one; an immutable PVC `accessMode`/`storageClass` change is
+  rejected instead of silently ignored; and a build reporting `Succeeded`
+  on an empty digest no longer prevents a same-tag rebuild from rolling out
+  on digest-less registries.
+- **Preview-environment isolation** (CAI-450, CAI-452): bot PRs bypassed
+  the `botPR: false` setting on the webhook path and received source-env
+  secrets, and source-env resolution could clone from another PR's preview.
+  Both are now enforced at the webhook boundary.
+- **A platform viewer could read the admin-only user list** (CAI-445): a
+  role check was inverted, letting a non-admin enumerate users. The user
+  list is admin-only again.
+- **Docs pointed at a route that does not exist** (CAI-516): the
+  troubleshooting and install guides told users to verify traffic by
+  curling `:8090/v1/traffic`, which is the observer adapter's internal
+  endpoint, not an API route — it returned the UI HTML. The guides now use
+  the real route `GET /api/projects/{project}/apps/{app}/traffic`, and the
+  operator image default in the install reference is corrected to
+  `ghcr.io/mortise-org/mortise` at the chart `appVersion`.
+- **Image repositories are scoped per project** (CAI-454): the image path
+  was `{namespace}/{app}`, but app names are unique only within a project,
+  so two projects' same-named apps shared one repository — and the
+  interrupted-build adoption probe could adopt another project's image and
+  ship the wrong code. The path is now `{namespace}/{project}/{app}`.
+  Upgrade note: on an existing install each app's recorded image no longer
+  matches the new push target, so it rebuilds once — safe (old images are
+  not GC'd and running pods keep their pinned refs), but a one-time churn.
+- **The UI surfaces stalled rollouts and failed TLS on the primary
+  surfaces** (CAI-399, CAI-490): a `RolloutStalled` rollout stayed in
+  `Deploying` and rendered as a silent spinner even though the reason was
+  in `status.conditions`; the canvas node and drawer now show a warning and
+  the blocking reason. Separately, a public env can be `Ready` with pods up
+  but a terminally-failed TLS certificate, so opening its `https://` URL
+  only yields a cert error; the drawer's Open button is now disabled with
+  an explanation when the certificate has failed.
+- **Documentation corrected to match the shipping product** (CAI-403,
+  CAI-410, CAI-411, CAI-412): higher-visibility docs advertised OIDC/SSO
+  login that is not built (native auth only today; SSO via a front-door
+  proxy); recipes used CLI commands and flags that do not exist and a
+  broken API-reference link; and the documented server-side CRD upgrade
+  needed `--force-conflicts` to take over Helm-owned CRDs. All corrected.
 - **A rotated git token re-arms the webhook registration latch**
   (CAI-361): the registration input hash ignored the token, so a
   permanent failure (a token without the hook scope) latched forever and
