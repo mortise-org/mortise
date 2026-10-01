@@ -11,6 +11,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
@@ -420,26 +421,41 @@ func (s *Server) UpdateProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.Description != nil {
-		project.Spec.Description = *req.Description
-	}
-	if req.AutoRedeploy != nil {
-		project.Spec.AutoRedeploy = *req.AutoRedeploy
-	}
-	if req.Preview != nil {
-		if project.Spec.Preview == nil {
-			project.Spec.Preview = &mortisev1alpha1.PreviewConfig{}
+	// Re-read inside the retry so a concurrent writer — most often the project
+	// controller rewriting the same spec to seed the finalizer + default env —
+	// doesn't surface as a 409 to the caller (CAI-513). The mutations depend only
+	// on the decoded request, so they re-apply cleanly against a fresh object.
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var fresh mortisev1alpha1.Project
+		if err := s.client.Get(r.Context(), types.NamespacedName{Name: projectName}, &fresh); err != nil {
+			return err
 		}
-		if req.Preview.Enabled != nil {
-			project.Spec.Preview.Enabled = *req.Preview.Enabled
+		if req.Description != nil {
+			fresh.Spec.Description = *req.Description
 		}
-		if req.Preview.SourceEnvironment != "" {
-			project.Spec.Preview.SourceEnvironment = req.Preview.SourceEnvironment
+		if req.AutoRedeploy != nil {
+			fresh.Spec.AutoRedeploy = *req.AutoRedeploy
 		}
+		if req.Preview != nil {
+			if fresh.Spec.Preview == nil {
+				fresh.Spec.Preview = &mortisev1alpha1.PreviewConfig{}
+			}
+			if req.Preview.Enabled != nil {
+				fresh.Spec.Preview.Enabled = *req.Preview.Enabled
+			}
+			if req.Preview.SourceEnvironment != "" {
+				fresh.Spec.Preview.SourceEnvironment = req.Preview.SourceEnvironment
+			}
+		}
+		return s.client.Update(r.Context(), &fresh)
+	}); err != nil {
+		writeError(w, r, err)
+		return
 	}
 
-	if err := s.client.Update(r.Context(), project); err != nil {
-		writeError(w, r, err)
+	// Re-read for the response so it reflects the committed state.
+	project, ok = s.lookupProject(w, r, projectName)
+	if !ok {
 		return
 	}
 
