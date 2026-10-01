@@ -428,10 +428,13 @@ test.describe('app settings - bindings', () => {
 		const bindingSelect = bindingsSection.locator('#binding-ref');
 		await expect(bindingSelect).toBeVisible({ timeout: 5_000 });
 
-		// The postgres app should appear in the dropdown
-		const options = bindingSelect.locator('option');
-		const texts = await options.allTextContents();
-		expect(texts).toContain(pgAppName);
+		// The postgres app should appear in the dropdown. Options populate
+		// asynchronously once the app list loads, so poll instead of reading the
+		// option texts once (CAI-487).
+		await expect(async () => {
+			const texts = await bindingSelect.locator('option').allTextContents();
+			expect(texts).toContain(pgAppName);
+		}).toPass({ timeout: 10_000, intervals: [500, 1000, 2000] });
 
 		// Select the postgres app
 		await bindingSelect.selectOption(pgAppName);
