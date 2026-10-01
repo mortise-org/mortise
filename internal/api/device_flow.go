@@ -19,6 +19,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -579,18 +580,22 @@ func (d *DeviceFlowHandler) storeUserToken(ctx context.Context, providerName, em
 		},
 	}
 
-	var existing corev1.Secret
-	err := d.client.Get(ctx, types.NamespacedName{
-		Namespace: git.TokenSecretNamespace,
-		Name:      secretName,
-	}, &existing)
-	if k8serrors.IsNotFound(err) {
-		return d.client.Create(ctx, desired)
-	}
-	if err != nil {
-		return fmt.Errorf("get user token secret: %w", err)
-	}
-	existing.Data = desired.Data
-	existing.Labels = desired.Labels
-	return d.client.Update(ctx, &existing)
+	return retry.OnError(retry.DefaultRetry, func(err error) bool {
+		return k8serrors.IsConflict(err) || k8serrors.IsAlreadyExists(err)
+	}, func() error {
+		var existing corev1.Secret
+		err := d.client.Get(ctx, types.NamespacedName{
+			Namespace: git.TokenSecretNamespace,
+			Name:      secretName,
+		}, &existing)
+		if k8serrors.IsNotFound(err) {
+			return d.client.Create(ctx, desired)
+		}
+		if err != nil {
+			return fmt.Errorf("get user token secret: %w", err)
+		}
+		existing.Data = desired.Data
+		existing.Labels = desired.Labels
+		return d.client.Update(ctx, &existing)
+	})
 }
