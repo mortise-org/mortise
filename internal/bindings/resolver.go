@@ -162,6 +162,7 @@ func (r *Resolver) Resolve(
 	log := logf.FromContext(ctx)
 	var result []ResolvedVar
 	var dbBindings []*resolvedBinding
+	seenPrefix := make(map[string]string, len(bindings))
 
 	for _, b := range bindings {
 		rb, err := r.lookupBinding(ctx, project, env, b.Ref)
@@ -172,6 +173,14 @@ func (r *Resolver) Resolve(
 			log.Info("bound app not found or disabled, skipping binding", "binding", b.Ref, "project", project, "env", env)
 			continue
 		}
+		// toEnvPrefix is not injective (it strips leading digits, and maps
+		// all-digit names to BINDING), so two distinct backing apps can map to
+		// the same env-var prefix. Surface that instead of silently clobbering
+		// one binding's HOST/PORT/URL with the other's (CAI-507).
+		if other, dup := seenPrefix[rb.prefix]; dup {
+			return nil, fmt.Errorf("bindings %q and %q both map to env-var prefix %q; rename one so their injected variables don't collide", other, b.Ref, rb.prefix)
+		}
+		seenPrefix[rb.prefix] = b.Ref
 		result = append(result, expandBinding(rb)...)
 		if isRelationalDatabase(rb.app.Spec.Source.Image) {
 			dbBindings = append(dbBindings, rb)
