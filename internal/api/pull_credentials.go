@@ -357,22 +357,29 @@ func (s *Server) upsertPullSecret(r *http.Request, namespace, name, projectName,
 		},
 	}
 
-	var existing corev1.Secret
-	err := s.client.Get(r.Context(), types.NamespacedName{Name: name, Namespace: namespace}, &existing)
-	if apierrors.IsNotFound(err) {
-		return s.client.Create(r.Context(), desired)
-	}
-	if err != nil {
-		return err
-	}
-	if existing.Labels["app.kubernetes.io/managed-by"] != "mortise" {
-		return errPullSecretOwnedByUser
-	}
-
-	existing.Data = desired.Data
-	existing.Type = desired.Type
-	existing.Labels = desired.Labels
-	return s.client.Update(r.Context(), &existing)
+	// Create-or-update under conflict + AlreadyExists retry: concurrent deploys to
+	// the same project race to create this pull Secret, and a plain Create then
+	// returns AlreadyExists (or a plain Update a 409) to one of them. Retry so the
+	// loser re-Gets and updates instead of failing the deploy (CAI-513).
+	return retry.OnError(retry.DefaultRetry, func(err error) bool {
+		return apierrors.IsConflict(err) || apierrors.IsAlreadyExists(err)
+	}, func() error {
+		var existing corev1.Secret
+		err := s.client.Get(r.Context(), types.NamespacedName{Name: name, Namespace: namespace}, &existing)
+		if apierrors.IsNotFound(err) {
+			return s.client.Create(r.Context(), desired)
+		}
+		if err != nil {
+			return err
+		}
+		if existing.Labels["app.kubernetes.io/managed-by"] != "mortise" {
+			return errPullSecretOwnedByUser
+		}
+		existing.Data = desired.Data
+		existing.Type = desired.Type
+		existing.Labels = desired.Labels
+		return s.client.Update(r.Context(), &existing)
+	})
 }
 
 // parsePullCredentials extracts registry and username from a dockerconfigjson
