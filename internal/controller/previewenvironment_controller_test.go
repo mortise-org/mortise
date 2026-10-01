@@ -2492,6 +2492,131 @@ func TestConvergeProjectPreviews_GitAPIErrorSkipsRepo(t *testing.T) {
 	}
 }
 
+// TestConvergeProjectPreviews_EnabledNoGitAppsDeletesOrphans guards CAI-482:
+// previews enabled but no git-source app (the only git app was removed or
+// switched to an image source) must tear down PEs created earlier, not leave
+// them orphaned behind the old repos==0 early return.
+func TestConvergeProjectPreviews_EnabledNoGitAppsDeletesOrphans(t *testing.T) {
+	ctx := context.Background()
+	s := newTestScheme(t)
+	projectName := "converge-noapp-orphan"
+	nsName := constants.ControlNamespace(projectName)
+
+	project := &mortisev1alpha1.Project{
+		ObjectMeta: metav1.ObjectMeta{Name: projectName},
+		Spec: mortisev1alpha1.ProjectSpec{
+			Preview:      &mortisev1alpha1.PreviewConfig{Enabled: true},
+			Environments: []mortisev1alpha1.ProjectEnvironment{{Name: "staging"}},
+		},
+	}
+	// Image-source app only: no repo contributes an open-PR set.
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "imgapp", Namespace: nsName},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: "nginx:1.25.0"},
+		},
+	}
+	oldEnough := metav1.NewTime(time.Now().Add(-convergenceGracePeriod - time.Minute))
+	orphanPE := &mortisev1alpha1.PreviewEnvironment{
+		ObjectMeta: metav1.ObjectMeta{Name: "preview-pr-5", Namespace: nsName, CreationTimestamp: oldEnough},
+		Spec: mortisev1alpha1.PreviewEnvironmentSpec{
+			ProjectRef:  projectName,
+			SourceEnv:   "staging",
+			PullRequest: mortisev1alpha1.PullRequestRef{Number: 5},
+		},
+	}
+
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(project, app, orphanPE).Build()
+
+	reconciler := &PreviewEnvironmentReconciler{
+		Client: c,
+		Scheme: s,
+		Clock:  clocktesting.NewFakeClock(time.Now()),
+		GitAPIFactory: func(gp *mortisev1alpha1.GitProvider, token, secret string) (git.GitAPI, error) {
+			t.Fatal("GitAPIFactory should not be called with no git-source apps")
+			return nil, nil
+		},
+	}
+
+	if err := reconciler.ConvergeProjectPreviews(ctx, project); err != nil {
+		t.Fatalf("converge: %v", err)
+	}
+
+	var peList mortisev1alpha1.PreviewEnvironmentList
+	if err := c.List(ctx, &peList, client.InNamespace(nsName)); err != nil {
+		t.Fatalf("list PEs: %v", err)
+	}
+	for _, pe := range peList.Items {
+		if pe.DeletionTimestamp.IsZero() {
+			t.Errorf("orphaned PE %q should be deleted when the project has no git-source apps", pe.Name)
+		}
+	}
+}
+
+// TestConvergeProjectPreviews_UnverifiableRepoPreservesPEs guards CAI-482: when
+// a repo's open-PR set can't be fetched (here: its GitProvider is missing), the
+// pass must preserve that repo's PEs rather than delete them as stale.
+func TestConvergeProjectPreviews_UnverifiableRepoPreservesPEs(t *testing.T) {
+	ctx := context.Background()
+	s := newTestScheme(t)
+	projectName := "converge-unverifiable"
+	nsName := constants.ControlNamespace(projectName)
+
+	project := &mortisev1alpha1.Project{
+		ObjectMeta: metav1.ObjectMeta{Name: projectName},
+		Spec: mortisev1alpha1.ProjectSpec{
+			Preview:      &mortisev1alpha1.PreviewConfig{Enabled: true},
+			Environments: []mortisev1alpha1.ProjectEnvironment{{Name: "staging"}},
+		},
+	}
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: nsName},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{
+				Type:        mortisev1alpha1.SourceTypeGit,
+				Repo:        "https://github.com/org/repo",
+				Branch:      "main",
+				ProviderRef: "github-missing",
+			},
+		},
+	}
+	// GitProvider CR intentionally absent -> r.Get returns NotFound -> the repo
+	// is unverifiable this pass.
+	oldEnough := metav1.NewTime(time.Now().Add(-convergenceGracePeriod - time.Minute))
+	pe := &mortisev1alpha1.PreviewEnvironment{
+		ObjectMeta: metav1.ObjectMeta{Name: "preview-pr-7", Namespace: nsName, CreationTimestamp: oldEnough},
+		Spec: mortisev1alpha1.PreviewEnvironmentSpec{
+			ProjectRef:  projectName,
+			SourceEnv:   "staging",
+			PullRequest: mortisev1alpha1.PullRequestRef{Number: 7},
+		},
+	}
+
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(project, app, pe).Build()
+
+	reconciler := &PreviewEnvironmentReconciler{
+		Client: c,
+		Scheme: s,
+		Clock:  clocktesting.NewFakeClock(time.Now()),
+		GitAPIFactory: func(gp *mortisev1alpha1.GitProvider, token, secret string) (git.GitAPI, error) {
+			t.Fatal("GitAPIFactory should not be called when the provider is missing")
+			return nil, nil
+		},
+	}
+
+	if err := reconciler.ConvergeProjectPreviews(ctx, project); err != nil {
+		t.Fatalf("converge: %v", err)
+	}
+
+	var got mortisev1alpha1.PreviewEnvironment
+	if err := c.Get(ctx, types.NamespacedName{Name: "preview-pr-7", Namespace: nsName}, &got); err != nil {
+		t.Fatalf("PE for an unverifiable repo must be preserved, but Get failed: %v", err)
+	}
+	if !got.DeletionTimestamp.IsZero() {
+		t.Errorf("PE for an unverifiable repo must not be deleted")
+	}
+}
+
 func TestConvergencePEName_MultiRepoSanitizesSlug(t *testing.T) {
 	tests := []struct {
 		name       string

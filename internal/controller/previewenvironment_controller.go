@@ -731,14 +731,14 @@ func (r *PreviewEnvironmentReconciler) ConvergeProjectPreviews(ctx context.Conte
 			repos = append(repos, repoKey{repo: src.Repo, providerRef: src.ProviderRef})
 		}
 	}
-	if len(repos) == 0 {
-		return nil
-	}
-
 	existingByPR, err := r.listProjectPreviews(ctx, controlNs)
 	if err != nil {
 		return err
 	}
+
+	// No git-source apps means no repo can have open PRs, so every existing PE
+	// is orphaned — fall through to the deletion pass with an empty open set
+	// rather than returning early and leaving them running (CAI-482).
 
 	// Track which PE names are still open.
 	openPEs := make(map[string]bool)
@@ -750,7 +750,11 @@ func (r *PreviewEnvironmentReconciler) ConvergeProjectPreviews(ctx context.Conte
 	multiRepo := len(repos) > 1
 
 	for _, rk := range repos {
+		// A repo we cannot authoritatively list open PRs for (missing provider,
+		// no token, client build failure) must preserve its existing PEs, not
+		// have them deleted as stale by the pass below (CAI-482).
 		if rk.providerRef == "" {
+			r.protectRepoPreviewEnvironments(protectedPEs, existingByPR, rk.repo, multiRepo)
 			continue
 		}
 
@@ -758,6 +762,7 @@ func (r *PreviewEnvironmentReconciler) ConvergeProjectPreviews(ctx context.Conte
 		if err := r.Get(ctx, types.NamespacedName{Name: rk.providerRef}, &gp); err != nil {
 			if errors.IsNotFound(err) {
 				log.Info("GitProvider not found, skipping repo", "provider", rk.providerRef, "repo", rk.repo)
+				r.protectRepoPreviewEnvironments(protectedPEs, existingByPR, rk.repo, multiRepo)
 				continue
 			}
 			return fmt.Errorf("get GitProvider %q: %w", rk.providerRef, err)
@@ -766,12 +771,14 @@ func (r *PreviewEnvironmentReconciler) ConvergeProjectPreviews(ctx context.Conte
 		tokenResult, err := git.ResolveGitTokenForApp(ctx, r.Client, rk.providerRef, controlNs, "", "")
 		if err != nil {
 			log.Info("no git token available for convergence, skipping repo", "provider", rk.providerRef, "repo", rk.repo, "error", err)
+			r.protectRepoPreviewEnvironments(protectedPEs, existingByPR, rk.repo, multiRepo)
 			continue
 		}
 
 		gitAPI, err := r.GitAPIFactory(&gp, tokenResult.Token, "")
 		if err != nil {
 			log.Error(err, "build GitAPI for convergence", "provider", rk.providerRef)
+			r.protectRepoPreviewEnvironments(protectedPEs, existingByPR, rk.repo, multiRepo)
 			continue
 		}
 
