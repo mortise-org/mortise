@@ -141,7 +141,7 @@ external ones via `PlatformConfig`. See
 >         defaultMode: drop
 > ```
 >
-> Without this, `/v1/traffic` returns empty data. See
+> Without this, the app's traffic view returns empty data. See
 > [Troubleshooting > Observer traffic empty with BYO Traefik](./troubleshooting.md#observer-traffic-empty-with-byo-traefik)
 > for details.
 
@@ -453,8 +453,8 @@ Operator values are nested under `mortise-core.`:
 
 | Value | Default | Description |
 |-------|---------|-------------|
-| `mortise-core.image.repository` | `mortise` | Operator image |
-| `mortise-core.image.tag` | `dev` | Image tag |
+| `mortise-core.image.repository` | `ghcr.io/mortise-org/mortise` | Operator image |
+| `mortise-core.image.tag` | chart `appVersion` | Image tag (matches the chart/appVersion, e.g. `0.1.1`) |
 | `mortise-core.replicaCount` | `1` | Operator replicas |
 | `mortise-core.api.port` | `8090` | API server port |
 | `mortise-core.service.type` | `ClusterIP` | Service type |
@@ -467,8 +467,8 @@ Operator values are nested under `mortise-core.`:
 
 | Value | Default | Description |
 |-------|---------|-------------|
-| `image.repository` | `mortise` | Operator image |
-| `image.tag` | `dev` | Image tag |
+| `image.repository` | `ghcr.io/mortise-org/mortise` | Operator image |
+| `image.tag` | chart `appVersion` | Image tag (matches the chart/appVersion, e.g. `0.1.1`) |
 | `replicaCount` | `1` | Operator replicas |
 | `api.port` | `8090` | API server port |
 | `service.type` | `ClusterIP` | Service type |
