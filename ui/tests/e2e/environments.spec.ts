@@ -670,31 +670,16 @@ test.describe('new project page — also create staging checkbox', () => {
     await page.waitForURL((u) => u.pathname === `/projects/${project}`, { timeout: 30_000 });
     await waitForCanvasReady(page);
 
-    // Verify via API that staging was created. There is a known race between
-    // the controller adding the default "production" env and the UI's
-    // immediate POST of "staging" after project creation. If the race clobbers
-    // production, re-add it so subsequent assertions pass.
+    // Both envs are seeded atomically by the project create (CAI-485), so the
+    // API returns production and staging with no follow-up POST and no race.
     await expect(async () => {
       const res = await request.get(`/api/projects/${project}/environments`, {
         headers: { Authorization: `Bearer ${token}` }
       });
       expect(res.ok()).toBeTruthy();
-      const envs = (await res.json()) as Array<{ name: string }>;
-      const names = envs.map(e => e.name);
-      expect(names).toContain('staging');
-    }).toPass({ timeout: 30_000, intervals: [2_000, 3_000, 5_000] });
-
-    // Ensure production also exists (may have been clobbered by the race).
-    const envCheck = await request.get(`/api/projects/${project}/environments`, {
-      headers: { Authorization: `Bearer ${token}` }
-    });
-    const envList = (await envCheck.json()) as Array<{ name: string }>;
-    if (!envList.some(e => e.name === 'production')) {
-      await request.post(`/api/projects/${project}/environments`, {
-        headers: { Authorization: `Bearer ${token}` },
-        data: { name: 'production', displayOrder: 0 }
-      });
-    }
+      const names = ((await res.json()) as Array<{ name: string }>).map((e) => e.name).sort();
+      expect(names).toEqual(['production', 'staging']);
+    }).toPass({ timeout: 30_000, intervals: [1_000, 2_000, 3_000] });
 
     // Verify the navbar dropdown shows both envs after reload.
     await page.reload();

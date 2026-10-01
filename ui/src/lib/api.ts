@@ -255,10 +255,10 @@ function enc(s: string): string {
 export const api = {
 	// --- projects ---
 	listProjects: () => request<Project[]>('/projects'),
-	createProject: (name: string, description?: string) =>
+	createProject: (name: string, description?: string, createStaging?: boolean) =>
 		request<Project>('/projects', {
 			method: 'POST',
-			body: JSON.stringify({ name, description })
+			body: JSON.stringify({ name, description, createStaging })
 		}),
 	getProject: (name: string) => request<Project>(`/projects/${enc(name)}`),
 	checkProjectNameAvailable: (name: string) =>

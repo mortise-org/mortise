@@ -175,6 +175,12 @@ definitions:
     type: object
   api.createProjectRequest:
     properties:
+      createStaging:
+        description: |-
+          CreateStaging seeds a "staging" environment alongside production in the
+          same atomic create, so the UI's "Also create staging" option doesn't
+          depend on a follow-up POST that races owner-membership readiness (CAI-485).
+        type: boolean
       description:
         type: string
       name:
