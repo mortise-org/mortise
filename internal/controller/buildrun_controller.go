@@ -133,6 +133,22 @@ func (r *BuildRunReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			}
 
 			now := metav1.NewTime(r.clock().Now())
+
+			// BuildKit sometimes reports no digest (registries that omit the
+			// content-digest header on push). The pulled image is then a mutable
+			// tag, so a later same-tag rebuild yields an identical image string and
+			// the Deployment never rolls even though the content changed — a build
+			// that reports Succeeded while the pods keep the old image (CAI-505).
+			// Probe the registry for the manifest digest and pin it when we can;
+			// best effort, falling back to the tag ref on any registry trouble.
+			if phase == buildPhaseSucceeded && digest == "" {
+				if d := r.resolveBuiltDigest(ctx, &br); d != "" {
+					pullRef := parseImageRef(firstNonEmpty(br.Spec.PullTarget, br.Spec.PushTarget))
+					image = pullRef.Registry + "/" + pullRef.Path + "@" + d
+					digest = d
+				}
+			}
+
 			if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 				var latest mortisev1alpha1.BuildRun
 				if err := r.Get(ctx, req.NamespacedName, &latest); err != nil {
@@ -258,6 +274,27 @@ func (r *BuildRunReconciler) handleLostBuildRunTracker(ctx context.Context, key 
 		return ctrl.Result{}, err
 	}
 	return r.startBuildRunAttempt(ctx, br, key, attempt+1, marker)
+}
+
+// resolveBuiltDigest probes the registry for the manifest digest of a build's
+// push tag, so a build whose tooling reported no digest can still pin an
+// immutable image reference (CAI-505). Best effort: returns "" on any trouble,
+// leaving the caller on the tag reference it already had.
+func (r *BuildRunReconciler) resolveBuiltDigest(ctx context.Context, br *mortisev1alpha1.BuildRun) string {
+	if r.RegistryBackend == nil {
+		return ""
+	}
+	appName := firstNonEmpty(br.Spec.AppName, br.Spec.TargetRef.Name)
+	pushRef := parseImageRef(br.Spec.PushTarget)
+	if appName == "" || pushRef.Tag == "" {
+		return ""
+	}
+	project, _ := constants.ProjectFromControlNs(br.Namespace)
+	digest, found, err := r.RegistryBackend.ResolveTag(ctx, project, appName, pushRef.Tag)
+	if err != nil || !found {
+		return ""
+	}
+	return digest
 }
 
 // adoptPushedBuildResult probes the registry for the interrupted build's push
