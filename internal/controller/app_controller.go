@@ -421,6 +421,18 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 				}
 			}
 		}
+
+		// Prune a stale Ingress when the App is made private. Without this a
+		// previously-public App stays reachable at its old domain with a live
+		// Ingress and TLS cert (CAI-483). Scoped to the explicit public->private
+		// flip: a still-public App that merely lost an env's domain (e.g. the
+		// env override was removed) is governed by the non-destructive
+		// env-removal contract and keeps its existing Ingress.
+		if !app.Spec.Network.Public {
+			if err := r.ensureNoIngress(ctx, &app, envNs); err != nil {
+				return r.envResourceError(ctx, &app, envNs, env.Name, "prune ingress", err)
+			}
+		}
 	}
 
 	// Flush build status accumulated during the env loop in a single write.

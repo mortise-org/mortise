@@ -2392,6 +2392,63 @@ var _ = Describe("App Controller", func() {
 		})
 	})
 
+	Context("prunes Ingress when an App is made private (CAI-483)", func() {
+		const appName = "to-private"
+		ctx := context.Background()
+
+		var app *mortisev1alpha1.App
+
+		AfterEach(func() {
+			if app != nil {
+				_ = k8sClient.Delete(ctx, app)
+				app = nil
+			}
+		})
+
+		It("deletes the Ingress when Network.Public flips to false, keeping the Service", func() {
+			app = &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{Name: appName, Namespace: namespace},
+				Spec: mortisev1alpha1.AppSpec{
+					Source:  mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: testImageNginx},
+					Network: mortisev1alpha1.NetworkConfig{Public: true},
+					Environments: []mortisev1alpha1.Environment{{
+						Name:     "production",
+						Replicas: ptr.To[int32](1),
+						Domain:   "to-private.example.com",
+					}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			key := types.NamespacedName{Name: appName, Namespace: envNsProduction}
+			var ing networkingv1.Ingress
+			Expect(k8sClient.Get(ctx, key, &ing)).To(Succeed())
+			var svc corev1.Service
+			Expect(k8sClient.Get(ctx, key, &svc)).To(Succeed())
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: appName, Namespace: namespace}, app)).To(Succeed())
+			app.Spec.Network.Public = false
+			Expect(k8sClient.Update(ctx, app)).To(Succeed())
+
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Made private: the Ingress is gone, but the ClusterIP Service stays
+			// so the App remains reachable in-cluster (e.g. as a backing service).
+			err = k8sClient.Get(ctx, key, &ing)
+			Expect(kerrors.IsNotFound(err)).To(BeTrue())
+			Expect(k8sClient.Get(ctx, key, &svc)).To(Succeed())
+		})
+	})
+
 	Context("app deletion with previews", func() {
 		It("should remove the app finalizer and delete the app even when previews exist", func() {
 			ctx := context.Background()
