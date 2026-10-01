@@ -134,7 +134,7 @@ func TestGitSourceAppBuildsAndDeploys(t *testing.T) {
 	helpers.WaitForAppReady(t, k8sClient, ns, app.Name, 5*time.Minute)
 
 	// --- Assert the registry has a tag under mortise/<appName>.
-	tags := helpers.AssertRegistryHasTags(t, registryLocalURL, "mortise", app.Name, 30*time.Second)
+	tags := helpers.AssertRegistryHasTags(t, registryLocalURL, "mortise/"+projectName, app.Name, 30*time.Second)
 	if len(tags) == 0 {
 		t.Fatalf("no tags found in registry for %s", app.Name)
 	}
