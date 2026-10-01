@@ -129,6 +129,28 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the real route `GET /api/projects/{project}/apps/{app}/traffic`, and the
   operator image default in the install reference is corrected to
   `ghcr.io/mortise-org/mortise` at the chart `appVersion`.
+- **Image repositories are scoped per project** (CAI-454): the image path
+  was `{namespace}/{app}`, but app names are unique only within a project,
+  so two projects' same-named apps shared one repository — and the
+  interrupted-build adoption probe could adopt another project's image and
+  ship the wrong code. The path is now `{namespace}/{project}/{app}`.
+  Upgrade note: on an existing install each app's recorded image no longer
+  matches the new push target, so it rebuilds once — safe (old images are
+  not GC'd and running pods keep their pinned refs), but a one-time churn.
+- **The UI surfaces stalled rollouts and failed TLS on the primary
+  surfaces** (CAI-399, CAI-490): a `RolloutStalled` rollout stayed in
+  `Deploying` and rendered as a silent spinner even though the reason was
+  in `status.conditions`; the canvas node and drawer now show a warning and
+  the blocking reason. Separately, a public env can be `Ready` with pods up
+  but a terminally-failed TLS certificate, so opening its `https://` URL
+  only yields a cert error; the drawer's Open button is now disabled with
+  an explanation when the certificate has failed.
+- **Documentation corrected to match the shipping product** (CAI-403,
+  CAI-410, CAI-411, CAI-412): higher-visibility docs advertised OIDC/SSO
+  login that is not built (native auth only today; SSO via a front-door
+  proxy); recipes used CLI commands and flags that do not exist and a
+  broken API-reference link; and the documented server-side CRD upgrade
+  needed `--force-conflicts` to take over Helm-owned CRDs. All corrected.
 - **A rotated git token re-arms the webhook registration latch**
   (CAI-361): the registration input hash ignored the token, so a
   permanent failure (a token without the hook scope) latched forever and
