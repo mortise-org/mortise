@@ -105,7 +105,11 @@ func (s *ConfigMapStore) Append(ctx context.Context, e Event) error {
 			)
 			return nil
 		}
-		if !k8serrors.IsConflict(err) {
+		// AlreadyExists means a concurrent writer created the ConfigMap between
+		// our Get(NotFound) and Create — the create-path TOCTOU. Retry like a
+		// conflict so the next attempt Gets the now-existing ConfigMap and
+		// appends to it, instead of dropping this event (CAI-512).
+		if !k8serrors.IsConflict(err) && !k8serrors.IsAlreadyExists(err) {
 			return err
 		}
 		select {
