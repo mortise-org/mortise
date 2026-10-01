@@ -171,8 +171,8 @@ func TestBuildRunSecondTrackerLossBacksOffThenRetries(t *testing.T) {
 			Branch:         "main",
 			Revision:       "abc123",
 			DockerfilePath: "Dockerfile",
-			PushTarget:     "registry.example.com/mortise/demo:abc123",
-			PullTarget:     "registry.example.com/mortise/demo:abc123",
+			PushTarget:     "registry.example.com/mortise/default-project/demo:abc123",
+			PullTarget:     "registry.example.com/mortise/default-project/demo:abc123",
 			TokenSecretRef: &mortisev1alpha1.SecretRef{Name: "git-token", Namespace: "mortise-system", Key: "token"},
 		},
 		Status: mortisev1alpha1.BuildRunStatus{
@@ -344,8 +344,8 @@ func TestBuildRunInterruptedAdoptsPushedImage(t *testing.T) {
 			Environment: "production",
 			Repo:        "https://example.com/repo.git",
 			Revision:    "abc123",
-			PushTarget:  "registry.example.com/mortise/demo:abc123",
-			PullTarget:  "pull.example.com/mortise/demo:abc123",
+			PushTarget:  "registry.example.com/mortise/default-project/demo:abc123",
+			PullTarget:  "pull.example.com/mortise/default-project/demo:abc123",
 		},
 		Status: mortisev1alpha1.BuildRunStatus{
 			Phase:     mortisev1alpha1.BuildRunPhaseRunning,
@@ -378,7 +378,7 @@ func TestBuildRunInterruptedAdoptsPushedImage(t *testing.T) {
 	if updated.Status.Phase != mortisev1alpha1.BuildRunPhaseSucceeded {
 		t.Fatalf("expected adopted buildrun to succeed, got %q (reason %q)", updated.Status.Phase, updated.Status.FailureReason)
 	}
-	if updated.Status.Image != "pull.example.com/mortise/demo@sha256:cafe" {
+	if updated.Status.Image != "pull.example.com/mortise/default-project/demo@sha256:cafe" {
 		t.Fatalf("expected adopted digest-pinned pull image, got %q", updated.Status.Image)
 	}
 	if updated.Status.Digest != "sha256:cafe" {
@@ -426,8 +426,8 @@ func TestBuildRunRequestedRebuildDoesNotAdoptPushedImage(t *testing.T) {
 			RequestID:      "2026-08-09T00:00:00Z",
 			NoCache:        true,
 			DockerfilePath: "Dockerfile",
-			PushTarget:     "registry.example.com/mortise/demo:abc123",
-			PullTarget:     "registry.example.com/mortise/demo:abc123",
+			PushTarget:     "registry.example.com/mortise/default-project/demo:abc123",
+			PullTarget:     "registry.example.com/mortise/default-project/demo:abc123",
 			TokenSecretRef: &mortisev1alpha1.SecretRef{Name: "git-token", Namespace: "mortise-system", Key: "token"},
 		},
 		Status: mortisev1alpha1.BuildRunStatus{
@@ -682,7 +682,7 @@ func TestHandleLostTrackerReadsThroughAPIReader(t *testing.T) {
 	}
 	fresh := stale.DeepCopy()
 	fresh.Status.Phase = mortisev1alpha1.BuildRunPhaseSucceeded
-	fresh.Status.Image = "registry.example.com/mortise/demo:abc123"
+	fresh.Status.Image = "registry.example.com/mortise/default-project/demo:abc123"
 
 	cached := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(stale).WithObjects(stale).Build()
 	apiReader := fake.NewClientBuilder().WithScheme(scheme).WithObjects(fresh).Build()

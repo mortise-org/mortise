@@ -173,7 +173,7 @@ func TestPreviewEnvironmentLifecycle(t *testing.T) {
 	}
 
 	// Registry should have a tag for the preview build.
-	helpers.AssertRegistryHasTags(t, registryLocalURL, "mortise", app.Name, 60*time.Second)
+	helpers.AssertRegistryHasTags(t, registryLocalURL, "mortise/"+projectName, app.Name, 60*time.Second)
 
 	// --- Step 5: Simulate PR update (push new commit, update SHA).
 	pushNewCommit(t, giteaLocalURL, boot.Token, boot.Owner, boot.Name)

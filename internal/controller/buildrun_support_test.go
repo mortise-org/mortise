@@ -530,7 +530,7 @@ func TestReconcileEnvBuildProjectsCurrentTerminalRunBeforeRevisionShortCircuit(t
 	manualApp := app.DeepCopy()
 	manualApp.Annotations[rebuildRequestedAtAnnotation] = "req-1"
 	manualApp.Annotations[rebuildNoCacheRequestedAtAnnotation] = "req-1"
-	manualSpec := appBuildRunSpec(manualApp, "production", "main", "same-sha", "registry.example.com/mortise/demo:same-sh-production", "registry.example.com/mortise/demo:same-sh-production")
+	manualSpec := appBuildRunSpec(manualApp, "production", "main", "same-sha", "registry.example.com/mortise/default-project/demo:same-sh-production", "registry.example.com/mortise/default-project/demo:same-sh-production")
 	run := &mortisev1alpha1.BuildRun{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "manual-run",
@@ -631,7 +631,7 @@ func TestReconcileEnvBuildSkipsTerminalCurrentRunWhenManualRebuildRequested(t *t
 				Annotations: map[string]string{"mortise.dev/revision": "same-sha", "mortise.dev/git-token-owner": "owner@example.com"},
 			},
 			Spec: app.Spec,
-		}, "production", "main", "same-sha", "registry.example.com/mortise/demo:same-sh-production", "registry.example.com/mortise/demo:same-sh-production"),
+		}, "production", "main", "same-sha", "registry.example.com/mortise/default-project/demo:same-sh-production", "registry.example.com/mortise/default-project/demo:same-sh-production"),
 		Status: mortisev1alpha1.BuildRunStatus{
 			Phase: mortisev1alpha1.BuildRunPhaseSucceeded,
 			Image: "registry.example.com/demo:old",
@@ -698,7 +698,7 @@ func TestReconcileEnvBuildRebuildRequestReachesEveryEnv(t *testing.T) {
 	envs := []string{"production", "staging"}
 	objs := []client.Object{}
 	for _, env := range envs {
-		target := "registry.example.com/mortise/demo:same-sh-" + env
+		target := "registry.example.com/mortise/default-project/demo:same-sh-" + env
 		lastRun := &mortisev1alpha1.BuildRun{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      env + "-last-run",
@@ -803,7 +803,7 @@ func TestReconcileEnvBuildProjectsFailedCurrentRunIntoStatus(t *testing.T) {
 			Name:      "manual-run",
 			Namespace: app.Namespace,
 		},
-		Spec: appBuildRunSpec(app, "pr-6", "feature/preview-fail", "same-sha", "registry.example.com/mortise/demo:same-sh-pr-6", "registry.example.com/mortise/demo:same-sh-pr-6"),
+		Spec: appBuildRunSpec(app, "pr-6", "feature/preview-fail", "same-sha", "registry.example.com/mortise/default-project/demo:same-sh-pr-6", "registry.example.com/mortise/default-project/demo:same-sh-pr-6"),
 		Status: mortisev1alpha1.BuildRunStatus{
 			Phase:          mortisev1alpha1.BuildRunPhaseFailed,
 			FailureReason:  "BuildFailed",
@@ -882,7 +882,7 @@ func TestReconcileEnvBuildDoesNotReuseAnotherEnvsCurrentRun(t *testing.T) {
 			Name:      "production-run",
 			Namespace: app.Namespace,
 		},
-		Spec: appBuildRunSpec(app, "production", "main", "same-sha", "registry.example.com/mortise/demo:same-sh-production", "registry.example.com/mortise/demo:same-sh-production"),
+		Spec: appBuildRunSpec(app, "production", "main", "same-sha", "registry.example.com/mortise/default-project/demo:same-sh-production", "registry.example.com/mortise/default-project/demo:same-sh-production"),
 		Status: mortisev1alpha1.BuildRunStatus{
 			Phase: mortisev1alpha1.BuildRunPhaseRunning,
 		},
@@ -963,7 +963,7 @@ func TestReconcileEnvBuildDoesNotShortCircuitLastBuiltSHAWhenInputHashChanges(t 
 			Name:      "last-run",
 			Namespace: app.Namespace,
 		},
-		Spec: appBuildRunSpec(lastApp, "production", "main", "same-sha", "registry.example.com/mortise/demo:same-sh-production", "registry.example.com/mortise/demo:same-sh-production"),
+		Spec: appBuildRunSpec(lastApp, "production", "main", "same-sha", "registry.example.com/mortise/default-project/demo:same-sh-production", "registry.example.com/mortise/default-project/demo:same-sh-production"),
 		Status: mortisev1alpha1.BuildRunStatus{
 			Phase: mortisev1alpha1.BuildRunPhaseSucceeded,
 			Image: "registry.example.com/demo:old",
@@ -1182,7 +1182,7 @@ func TestReconcileEnvBuildKeepsPreviewFailureOffTopLevelApp(t *testing.T) {
 			Name:      "preview-run",
 			Namespace: app.Namespace,
 		},
-		Spec: appBuildRunSpec(app, "pr-6", "feature/preview-fail", "same-sha", "registry.example.com/mortise/demo:same-sh-pr-6", "registry.example.com/mortise/demo:same-sh-pr-6"),
+		Spec: appBuildRunSpec(app, "pr-6", "feature/preview-fail", "same-sha", "registry.example.com/mortise/default-project/demo:same-sh-pr-6", "registry.example.com/mortise/default-project/demo:same-sh-pr-6"),
 		Status: mortisev1alpha1.BuildRunStatus{
 			Phase:          mortisev1alpha1.BuildRunPhaseFailed,
 			FailureReason:  "BuildFailed",

@@ -38,6 +38,7 @@ import (
 
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
 	"github.com/mortise-org/mortise/internal/build"
+	"github.com/mortise-org/mortise/internal/constants"
 	"github.com/mortise-org/mortise/internal/git"
 	"github.com/mortise-org/mortise/internal/registry"
 )
@@ -274,7 +275,8 @@ func (r *BuildRunReconciler) adoptPushedBuildResult(ctx context.Context, br *mor
 		return false, nil
 	}
 
-	digest, found, err := r.RegistryBackend.ResolveTag(ctx, appName, pushRef.Tag)
+	project, _ := constants.ProjectFromControlNs(br.Namespace)
+	digest, found, err := r.RegistryBackend.ResolveTag(ctx, project, appName, pushRef.Tag)
 	if err != nil {
 		// The probe is an optimization; registry trouble must not block recovery.
 		logf.FromContext(ctx).Error(err, "registry probe for interrupted build failed; falling back to rebuild",

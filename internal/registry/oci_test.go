@@ -21,20 +21,20 @@ func newTestBackend(t *testing.T, srv *httptest.Server, cfg Config) *OCIBackend 
 
 func TestPushTargetBasic(t *testing.T) {
 	b := NewOCIBackend(Config{URL: "https://registry.example.com"})
-	ref, err := b.PushTarget("my-app", "abc123")
+	ref, err := b.PushTarget("acme", "my-app", "abc123")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if ref.Registry != "registry.example.com" {
 		t.Errorf("Registry = %q, want %q", ref.Registry, "registry.example.com")
 	}
-	if ref.Path != "mortise/my-app" {
-		t.Errorf("Path = %q, want %q", ref.Path, "mortise/my-app")
+	if ref.Path != "mortise/acme/my-app" {
+		t.Errorf("Path = %q, want %q", ref.Path, "mortise/acme/my-app")
 	}
 	if ref.Tag != "abc123" {
 		t.Errorf("Tag = %q, want %q", ref.Tag, "abc123")
 	}
-	want := "registry.example.com/mortise/my-app:abc123"
+	want := "registry.example.com/mortise/acme/my-app:abc123"
 	if ref.Full != want {
 		t.Errorf("Full = %q, want %q", ref.Full, want)
 	}
@@ -42,18 +42,18 @@ func TestPushTargetBasic(t *testing.T) {
 
 func TestPushTargetCustomNamespace(t *testing.T) {
 	b := NewOCIBackend(Config{URL: "https://reg.example.com", Namespace: "builds"})
-	ref, err := b.PushTarget("svc", "v1")
+	ref, err := b.PushTarget("acme", "svc", "v1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if ref.Path != "builds/svc" {
-		t.Errorf("Path = %q, want %q", ref.Path, "builds/svc")
+	if ref.Path != "builds/acme/svc" {
+		t.Errorf("Path = %q, want %q", ref.Path, "builds/acme/svc")
 	}
 }
 
 func TestPushTargetEmptyApp(t *testing.T) {
 	b := NewOCIBackend(Config{URL: "https://reg.example.com"})
-	_, err := b.PushTarget("", "v1")
+	_, err := b.PushTarget("acme", "", "v1")
 	if err == nil {
 		t.Fatal("expected error for empty app name")
 	}
@@ -61,15 +61,42 @@ func TestPushTargetEmptyApp(t *testing.T) {
 
 func TestPushTargetEmptyTag(t *testing.T) {
 	b := NewOCIBackend(Config{URL: "https://reg.example.com"})
-	_, err := b.PushTarget("app", "")
+	_, err := b.PushTarget("acme", "app", "")
 	if err == nil {
 		t.Fatal("expected error for empty tag")
 	}
 }
 
+func TestPushTargetEmptyProject(t *testing.T) {
+	b := NewOCIBackend(Config{URL: "https://reg.example.com"})
+	if _, err := b.PushTarget("", "app", "v1"); err == nil {
+		t.Fatal("expected error for empty project")
+	}
+}
+
+// Two projects with a same-named app must land in separate repositories, or one
+// could adopt the other's image (CAI-454).
+func TestPushTargetProjectScopesRepository(t *testing.T) {
+	b := NewOCIBackend(Config{URL: "https://registry.example.com"})
+	x, err := b.PushTarget("proj-x", "api", "sha")
+	if err != nil {
+		t.Fatalf("proj-x: %v", err)
+	}
+	y, err := b.PushTarget("proj-y", "api", "sha")
+	if err != nil {
+		t.Fatalf("proj-y: %v", err)
+	}
+	if x.Path == y.Path {
+		t.Fatalf("two projects' same-named app must not share a repo path; both = %q", x.Path)
+	}
+	if x.Path != "mortise/proj-x/api" || y.Path != "mortise/proj-y/api" {
+		t.Errorf("paths not project-scoped: x=%q y=%q", x.Path, y.Path)
+	}
+}
+
 func TestPushTargetInvalidURL(t *testing.T) {
 	b := NewOCIBackend(Config{URL: "://bad"})
-	_, err := b.PushTarget("app", "v1")
+	_, err := b.PushTarget("acme", "app", "v1")
 	if err == nil {
 		t.Fatal("expected error for invalid URL")
 	}
@@ -95,19 +122,19 @@ func TestPullSecretRefEmpty(t *testing.T) {
 
 func TestTagsList(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v2/mortise/my-app/tags/list" {
+		if r.URL.Path != "/v2/mortise/acme/my-app/tags/list" {
 			t.Errorf("unexpected path: %s", r.URL.Path)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"name": "mortise/my-app",
+			"name": "mortise/acme/my-app",
 			"tags": []string{"v1", "v2", "latest"},
 		})
 	}))
 	defer srv.Close()
 
 	b := newTestBackend(t, srv, Config{})
-	tags, err := b.Tags(context.Background(), "my-app")
+	tags, err := b.Tags(context.Background(), "acme", "my-app")
 	if err != nil {
 		t.Fatalf("Tags: %v", err)
 	}
@@ -124,7 +151,7 @@ func TestTagsNotFound(t *testing.T) {
 	defer srv.Close()
 
 	b := newTestBackend(t, srv, Config{})
-	tags, err := b.Tags(context.Background(), "new-app")
+	tags, err := b.Tags(context.Background(), "acme", "new-app")
 	if err != nil {
 		t.Fatalf("expected nil error for 404, got: %v", err)
 	}
@@ -140,7 +167,7 @@ func TestTagsServerError(t *testing.T) {
 	defer srv.Close()
 
 	b := newTestBackend(t, srv, Config{})
-	_, err := b.Tags(context.Background(), "app")
+	_, err := b.Tags(context.Background(), "acme", "app")
 	if err == nil {
 		t.Fatal("expected error for 500")
 	}
@@ -150,14 +177,14 @@ func TestTagsEmptyList(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"name": "mortise/app",
+			"name": "mortise/acme/app",
 			"tags": nil,
 		})
 	}))
 	defer srv.Close()
 
 	b := newTestBackend(t, srv, Config{})
-	tags, err := b.Tags(context.Background(), "app")
+	tags, err := b.Tags(context.Background(), "acme", "app")
 	if err != nil {
 		t.Fatalf("Tags: %v", err)
 	}
@@ -171,7 +198,7 @@ func TestTagsEmptyList(t *testing.T) {
 func TestResolveTagFound(t *testing.T) {
 	const digest = "sha256:abc123def456"
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodHead || r.URL.Path != "/v2/mortise/my-app/manifests/v1" {
+		if r.Method != http.MethodHead || r.URL.Path != "/v2/mortise/acme/my-app/manifests/v1" {
 			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)
 			return
@@ -182,7 +209,7 @@ func TestResolveTagFound(t *testing.T) {
 	defer srv.Close()
 
 	b := newTestBackend(t, srv, Config{})
-	got, found, err := b.ResolveTag(context.Background(), "my-app", "v1")
+	got, found, err := b.ResolveTag(context.Background(), "acme", "my-app", "v1")
 	if err != nil {
 		t.Fatalf("ResolveTag: %v", err)
 	}
@@ -201,7 +228,7 @@ func TestResolveTagNotFound(t *testing.T) {
 	defer srv.Close()
 
 	b := newTestBackend(t, srv, Config{})
-	_, found, err := b.ResolveTag(context.Background(), "app", "missing")
+	_, found, err := b.ResolveTag(context.Background(), "acme", "app", "missing")
 	if err != nil {
 		t.Fatalf("expected nil error for 404, got: %v", err)
 	}
@@ -217,7 +244,7 @@ func TestResolveTagServerError(t *testing.T) {
 	defer srv.Close()
 
 	b := newTestBackend(t, srv, Config{})
-	if _, _, err := b.ResolveTag(context.Background(), "app", "v1"); err == nil {
+	if _, _, err := b.ResolveTag(context.Background(), "acme", "app", "v1"); err == nil {
 		t.Fatal("expected error for 500")
 	}
 }
@@ -231,7 +258,7 @@ func TestResolveTagNoDigestHeader(t *testing.T) {
 	defer srv.Close()
 
 	b := newTestBackend(t, srv, Config{})
-	digest, found, err := b.ResolveTag(context.Background(), "app", "v1")
+	digest, found, err := b.ResolveTag(context.Background(), "acme", "app", "v1")
 	if err != nil {
 		t.Fatalf("ResolveTag: %v", err)
 	}
@@ -259,7 +286,7 @@ func TestDeleteTagHappyPath(t *testing.T) {
 	defer srv.Close()
 
 	b := newTestBackend(t, srv, Config{})
-	if err := b.DeleteTag(context.Background(), "my-app", "v1"); err != nil {
+	if err := b.DeleteTag(context.Background(), "acme", "my-app", "v1"); err != nil {
 		t.Fatalf("DeleteTag: %v", err)
 	}
 }
@@ -271,7 +298,7 @@ func TestDeleteTagNotFound(t *testing.T) {
 	defer srv.Close()
 
 	b := newTestBackend(t, srv, Config{})
-	err := b.DeleteTag(context.Background(), "app", "missing")
+	err := b.DeleteTag(context.Background(), "acme", "app", "missing")
 	if err == nil {
 		t.Fatal("expected error for non-existent tag")
 	}
@@ -285,7 +312,7 @@ func TestDeleteTagNoDigestHeader(t *testing.T) {
 	defer srv.Close()
 
 	b := newTestBackend(t, srv, Config{})
-	err := b.DeleteTag(context.Background(), "app", "v1")
+	err := b.DeleteTag(context.Background(), "acme", "app", "v1")
 	if err == nil {
 		t.Fatal("expected error when digest header is absent")
 	}
@@ -306,7 +333,7 @@ func TestDeleteTagContentDigestFallback(t *testing.T) {
 	defer srv.Close()
 
 	b := newTestBackend(t, srv, Config{})
-	if err := b.DeleteTag(context.Background(), "app", "v1"); err != nil {
+	if err := b.DeleteTag(context.Background(), "acme", "app", "v1"); err != nil {
 		t.Fatalf("DeleteTag: %v", err)
 	}
 }
@@ -326,7 +353,7 @@ func TestBasicAuthForwardedOnRequest(t *testing.T) {
 	defer srv.Close()
 
 	b := newTestBackend(t, srv, Config{Username: "admin", Password: "secret"})
-	tags, err := b.Tags(context.Background(), "app")
+	tags, err := b.Tags(context.Background(), "acme", "app")
 	if err != nil {
 		t.Fatalf("Tags with basic auth: %v", err)
 	}
@@ -354,7 +381,7 @@ func TestBearerTokenChallenge(t *testing.T) {
 			// First call: return 401 with Bearer challenge pointing at our token server.
 			challenged = true
 			challenge := fmt.Sprintf(
-				`Bearer realm="%s/token",service="registry.example.com",scope="repository:mortise/app:pull,push"`,
+				`Bearer realm="%s/token",service="registry.example.com",scope="repository:mortise/acme/app:pull,push"`,
 				tokenSrv.URL,
 			)
 			w.Header().Set("Www-Authenticate", challenge)
@@ -373,7 +400,7 @@ func TestBearerTokenChallenge(t *testing.T) {
 	defer tokenSrv.Close()
 
 	b := newTestBackend(t, tokenSrv, Config{})
-	tags, err := b.Tags(context.Background(), "app")
+	tags, err := b.Tags(context.Background(), "acme", "app")
 	if err != nil {
 		t.Fatalf("Tags with bearer challenge: %v", err)
 	}
@@ -416,7 +443,7 @@ func TestBearerTokenChallengeWithCredentials(t *testing.T) {
 	defer tokenSrv.Close()
 
 	b := newTestBackend(t, tokenSrv, Config{Username: "alice", Password: "pw"})
-	tags, err := b.Tags(context.Background(), "app")
+	tags, err := b.Tags(context.Background(), "acme", "app")
 	if err != nil {
 		t.Fatalf("Tags: %v", err)
 	}
@@ -453,7 +480,7 @@ func TestAccessTokenFieldFallback(t *testing.T) {
 	defer tokenSrv.Close()
 
 	b := newTestBackend(t, tokenSrv, Config{})
-	tags, err := b.Tags(context.Background(), "app")
+	tags, err := b.Tags(context.Background(), "acme", "app")
 	if err != nil {
 		t.Fatalf("Tags: %v", err)
 	}

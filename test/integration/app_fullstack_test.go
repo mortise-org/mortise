@@ -162,7 +162,7 @@ func TestFullStackDeploy(t *testing.T) {
 
 	// --- Verify the registry has the built backend image. ---
 
-	tags := helpers.AssertRegistryHasTags(t, registryLocalURL, "mortise", backendApp.Name, 30*time.Second)
+	tags := helpers.AssertRegistryHasTags(t, registryLocalURL, "mortise/"+projectName, backendApp.Name, 30*time.Second)
 	if len(tags) == 0 {
 		t.Fatalf("no tags found in registry for %s", backendApp.Name)
 	}

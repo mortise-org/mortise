@@ -1065,11 +1065,12 @@ func (r *AppReconciler) reconcileEnvBuild(ctx context.Context, app *mortisev1alp
 		revision = "main"
 	}
 
-	imageRef, err := r.RegistryBackend.PushTarget(app.Name, envImageTag(revision, envName))
+	project, _ := constants.ProjectFromControlNs(app.Namespace)
+	imageRef, err := r.RegistryBackend.PushTarget(project, app.Name, envImageTag(revision, envName))
 	if err != nil {
 		return "", false, false, false, r.setRegistryTargetCondition(ctx, app, envName, "push", err)
 	}
-	pullRef, err := r.RegistryBackend.PullTarget(app.Name, envImageTag(revision, envName))
+	pullRef, err := r.RegistryBackend.PullTarget(project, app.Name, envImageTag(revision, envName))
 	if err != nil {
 		return "", false, false, false, r.setRegistryTargetCondition(ctx, app, envName, "pull", err)
 	}
