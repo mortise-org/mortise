@@ -2762,6 +2762,18 @@ func (r *AppReconciler) reconcilePVCs(ctx context.Context, app *mortisev1alpha1.
 			if err := conflictIfUnmanaged(existing, "PersistentVolumeClaim"); err != nil {
 				return false, err
 			}
+			// AccessMode and StorageClass are immutable on an existing PVC. If the
+			// spec asks to change them, surface it as an error instead of silently
+			// ignoring the change and reporting the env Ready with the old storage
+			// config (CAI-504). StorageClass is only compared when the spec sets it
+			// explicitly: an empty spec class means "use the cluster default", which
+			// the provisioner then stamps onto the PVC, and that is not a change.
+			if len(existing.Spec.AccessModes) > 0 && existing.Spec.AccessModes[0] != accessMode {
+				return false, fmt.Errorf("volume %q: accessMode is immutable on an existing PVC (has %s, spec requests %s); delete the volume to recreate it", vol.Name, existing.Spec.AccessModes[0], accessMode)
+			}
+			if vol.StorageClass != "" && existing.Spec.StorageClassName != nil && *existing.Spec.StorageClassName != vol.StorageClass {
+				return false, fmt.Errorf("volume %q: storageClass is immutable on an existing PVC (has %s, spec requests %s); delete the volume to recreate it", vol.Name, *existing.Spec.StorageClassName, vol.StorageClass)
+			}
 			// PVC spec is largely immutable; only storage size can be expanded (requires bound claim + expandable SC)
 			changed := false
 			currentSize := existing.Spec.Resources.Requests[corev1.ResourceStorage]
