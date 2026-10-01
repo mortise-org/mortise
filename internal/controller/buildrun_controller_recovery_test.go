@@ -394,6 +394,70 @@ func TestBuildRunInterruptedAdoptsPushedImage(t *testing.T) {
 	}
 }
 
+// CAI-505: when the build tooling reports no digest (registries that omit the
+// content-digest header), the controller must probe the registry and pin the
+// manifest digest, so a later same-tag rebuild changes the image string and the
+// Deployment actually rolls instead of silently keeping the old image.
+func TestBuildRunSucceededResolvesMissingDigest(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := mortisev1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add mortise scheme: %v", err)
+	}
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add core scheme: %v", err)
+	}
+
+	started := metav1.NewTime(time.Unix(1_700_000_000, 0))
+	run := &mortisev1alpha1.BuildRun{
+		ObjectMeta: metav1.ObjectMeta{Name: "buildrun-nodigest", Namespace: "pj-default"},
+		Spec: mortisev1alpha1.BuildRunSpec{
+			AppName:     "demo",
+			TargetRef:   mortisev1alpha1.BuildRunTargetRef{Kind: mortisev1alpha1.BuildRunTargetAppEnvironment, Name: "demo", Namespace: "pj-default"},
+			Environment: "production",
+			PushTarget:  "registry.example.com/mortise/default-project/demo:abc123",
+			PullTarget:  "pull.example.com/mortise/default-project/demo:abc123",
+		},
+		Status: mortisev1alpha1.BuildRunStatus{Phase: mortisev1alpha1.BuildRunPhaseRunning, Attempt: 1, StartedAt: &started},
+	}
+
+	c := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(run).WithObjects(run).Build()
+	key := types.NamespacedName{Name: run.Name, Namespace: run.Namespace}
+	store := &BuildTrackerStore{}
+	store.set(key, &buildTracker{
+		phase:  buildPhaseSucceeded,
+		image:  "pull.example.com/mortise/default-project/demo:abc123", // tag ref, no digest
+		digest: "",
+		logs:   []string{"built"},
+	})
+	clock := clocktesting.NewFakeClock(started.Add(time.Minute))
+	r := &BuildRunReconciler{
+		Client:          c,
+		Scheme:          scheme,
+		Clock:           clock,
+		RegistryBackend: &fakeRegistryBackend{resolveFound: true, resolveDigest: "sha256:cafe"},
+		Builds:          store,
+	}
+
+	req := ctrl.Request{NamespacedName: key}
+	if _, err := r.Reconcile(context.Background(), req); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	var updated mortisev1alpha1.BuildRun
+	if err := c.Get(context.Background(), key, &updated); err != nil {
+		t.Fatalf("get buildrun: %v", err)
+	}
+	if updated.Status.Phase != mortisev1alpha1.BuildRunPhaseSucceeded {
+		t.Fatalf("expected succeeded, got %q", updated.Status.Phase)
+	}
+	if updated.Status.Digest != "sha256:cafe" {
+		t.Errorf("expected resolved digest sha256:cafe, got %q", updated.Status.Digest)
+	}
+	if updated.Status.Image != "pull.example.com/mortise/default-project/demo@sha256:cafe" {
+		t.Errorf("expected digest-pinned image, got %q", updated.Status.Image)
+	}
+}
+
 // A requested rebuild's push tag can pre-exist from the previous build, so
 // adoption would silently skip the rebuild the user asked for. Recovery must
 // rebuild instead.
