@@ -205,6 +205,23 @@ func (r *AppReconciler) ensureNoServiceWorkload(ctx context.Context, app *mortis
 	return r.ensureNoIngress(ctx, app, envNs)
 }
 
+// ensureNoExternalRouting deletes the Ingress and the ExternalName Service this
+// external App owns in the env namespace. Called when an external App is made
+// private, so it stops being publicly routed (CAI-486). An external App's only
+// Service is the ExternalName one that backs the Ingress, so the managed-by
+// selector safely removes it; workload Apps keep their ClusterIP Service and use
+// ensureNoIngress instead.
+func (r *AppReconciler) ensureNoExternalRouting(ctx context.Context, app *mortisev1alpha1.App, envNs string) error {
+	selector, err := appManagedSelector(app)
+	if err != nil {
+		return nil
+	}
+	if err := r.deleteMatching(ctx, &corev1.ServiceList{}, selector, client.InNamespace(envNs)); err != nil {
+		return err
+	}
+	return r.ensureNoIngress(ctx, app, envNs)
+}
+
 // deleteMatching lists objects of the concrete type in `list` that match the
 // given selector (+ any additional ListOptions) and deletes each one.
 // Silently skips objects already gone.

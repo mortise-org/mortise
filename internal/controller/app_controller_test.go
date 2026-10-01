@@ -8060,6 +8060,46 @@ var _ = Describe("App Controller — git source", func() {
 			}, app)).To(Succeed())
 			Expect(app.Status.Phase).To(Equal(mortisev1alpha1.AppPhaseReady))
 		})
+
+		It("prunes the Ingress and ExternalName Service when the external App is made private (CAI-486)", func() {
+			const name = "ext-to-private"
+			app = &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+				Spec: mortisev1alpha1.AppSpec{
+					Source: mortisev1alpha1.AppSource{
+						Type: mortisev1alpha1.SourceTypeExternal,
+						External: &mortisev1alpha1.ExternalSource{
+							Host: "admin.managed-db.example.com",
+							Port: 443,
+						},
+					},
+					Network: mortisev1alpha1.NetworkConfig{Public: true},
+					Environments: []mortisev1alpha1.Environment{
+						{Name: "production", Domain: "ext-private.example.com"},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			req := reconcile.Request{NamespacedName: types.NamespacedName{Name: name, Namespace: namespace}}
+			_, err := reconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			svcKey := types.NamespacedName{Name: serviceName(name), Namespace: envNsProduction}
+			ingKey := types.NamespacedName{Name: ingressName(name), Namespace: envNsProduction}
+			Expect(k8sClient.Get(ctx, svcKey, &corev1.Service{})).To(Succeed())
+			Expect(k8sClient.Get(ctx, ingKey, &networkingv1.Ingress{})).To(Succeed())
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, app)).To(Succeed())
+			app.Spec.Network.Public = false
+			Expect(k8sClient.Update(ctx, app)).To(Succeed())
+			_, err = reconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(kerrors.IsNotFound(k8sClient.Get(ctx, ingKey, &networkingv1.Ingress{}))).To(BeTrue())
+			Expect(kerrors.IsNotFound(k8sClient.Get(ctx, svcKey, &corev1.Service{}))).To(BeTrue())
+		})
 	})
 
 	Context("external source credentials are resolvable by bindings", func() {
