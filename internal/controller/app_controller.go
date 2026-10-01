@@ -3942,6 +3942,57 @@ func setCertificateNotReadyCondition(conds *[]metav1.Condition, notReady map[str
 	})
 }
 
+// strandedVolumeNames returns the PVCs this App still owns in the env namespace
+// that no longer correspond to a volume in spec.Storage — a volume that was
+// removed or renamed. The PVCs are deliberately retained (data safety, like
+// gcOptedOutEnvs), but nothing otherwise tells the user they are still there
+// consuming quota, so this feeds a VolumeRetained condition (CAI-506).
+func (r *AppReconciler) strandedVolumeNames(ctx context.Context, app *mortisev1alpha1.App, envNs string) []string {
+	selector, err := appManagedSelector(app)
+	if err != nil {
+		return nil
+	}
+	var pvcs corev1.PersistentVolumeClaimList
+	if err := r.statusReader().List(ctx, &pvcs, selector, client.InNamespace(envNs)); err != nil {
+		return nil
+	}
+	wanted := make(map[string]struct{}, len(app.Spec.Storage))
+	for _, vol := range app.Spec.Storage {
+		wanted[pvcName(app.Name, vol.Name)] = struct{}{}
+	}
+	var stranded []string
+	for i := range pvcs.Items {
+		if _, ok := wanted[pvcs.Items[i].Name]; !ok {
+			stranded = append(stranded, pvcs.Items[i].Name)
+		}
+	}
+	sort.Strings(stranded)
+	return stranded
+}
+
+func setVolumeRetainedCondition(conds *[]metav1.Condition, retained map[string]string, generation int64) {
+	if len(retained) == 0 {
+		meta.RemoveStatusCondition(conds, volumeRetainedCondition)
+		return
+	}
+	names := make([]string, 0, len(retained))
+	for name := range retained {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	parts := make([]string, 0, len(names))
+	for _, name := range names {
+		parts = append(parts, fmt.Sprintf("%s (%s)", name, retained[name]))
+	}
+	meta.SetStatusCondition(conds, metav1.Condition{
+		Type:               volumeRetainedCondition,
+		Status:             metav1.ConditionTrue,
+		Reason:             "VolumeRetained",
+		Message:            "PVC retained after volume removal from spec (delete manually to reclaim) in: " + strings.Join(parts, "; "),
+		ObservedGeneration: generation,
+	})
+}
+
 func setRolloutStalledCondition(conds *[]metav1.Condition, stalled map[string]string, generation int64) {
 	if len(stalled) == 0 {
 		meta.RemoveStatusCondition(conds, rolloutStalledCondition)
@@ -4043,6 +4094,7 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 		anyNotReady := false
 		anyCrash := false
 		certNotReady := map[string]string{}
+		volumeRetained := map[string]string{}
 		firstCrashMsg := ""
 		stalledEnvs := map[string]string{}
 
@@ -4261,6 +4313,10 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 				}
 			}
 
+			if names := r.strandedVolumeNames(ctx, app, envNs); len(names) > 0 {
+				volumeRetained[env.Name] = strings.Join(names, ", ")
+			}
+
 			envStatuses = append(envStatuses, es)
 		}
 
@@ -4302,6 +4358,7 @@ func (r *AppReconciler) updateStatus(ctx context.Context, app *mortisev1alpha1.A
 		setEnvRolledOutCondition(&fresh.Status.Conditions, envStatuses, app.Generation)
 		setRolloutStalledCondition(&fresh.Status.Conditions, stalledEnvs, app.Generation)
 		setCertificateNotReadyCondition(&fresh.Status.Conditions, certNotReady, app.Generation)
+		setVolumeRetainedCondition(&fresh.Status.Conditions, volumeRetained, app.Generation)
 		setEnvironmentJoinedCondition(&fresh.Status.Conditions, envStatuses, r.clock().Now(), app.Generation)
 		if buildFailed {
 			if anyServing && !anyCrash {
@@ -5579,6 +5636,7 @@ const envRolledOutCondition = "EnvRolledOut"
 const rolloutStalledCondition = "RolloutStalled"
 
 const certificateNotReadyCondition = "CertificateNotReady"
+const volumeRetainedCondition = "VolumeRetained"
 
 // setEnvRolledOutCondition reports a pending redeploy as a condition. With
 // Project.spec.autoRedeploy off (the default) the controller freezes the
