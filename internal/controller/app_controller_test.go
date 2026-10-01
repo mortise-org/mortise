@@ -35,7 +35,9 @@ import (
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	clocktesting "k8s.io/utils/clock/testing"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -10736,6 +10738,59 @@ func TestSetRolloutStalledConditionSetAndClear(t *testing.T) {
 	if meta.FindStatusCondition(conds, rolloutStalledCondition) != nil {
 		t.Errorf("RolloutStalled should be cleared when no envs stalled")
 	}
+}
+
+// TestLatestCertRequestFailure verifies CAI-444: a terminal failure on the
+// current child CertificateRequest is surfaced even while the parent Certificate
+// still reports a transient "Issuing" state (perpetual "Pending").
+func TestLatestCertRequestFailure(t *testing.T) {
+	ctx := context.Background()
+	s := newTestScheme(t)
+	crGVK := schema.GroupVersionKind{Group: "cert-manager.io", Version: "v1", Kind: "CertificateRequest"}
+	s.AddKnownTypeWithName(crGVK, &unstructured.Unstructured{})
+	s.AddKnownTypeWithName(certRequestListGVK, &unstructured.UnstructuredList{})
+
+	newCR := func(name, rev, condType, status, reason, message string) *unstructured.Unstructured {
+		u := &unstructured.Unstructured{}
+		u.SetGroupVersionKind(crGVK)
+		u.SetName(name)
+		u.SetNamespace("pj-p-production")
+		u.SetLabels(map[string]string{"cert-manager.io/certificate-name": "web-tls"})
+		u.SetAnnotations(map[string]string{"cert-manager.io/certificate-revision": rev})
+		_ = unstructured.SetNestedSlice(u.Object, []interface{}{
+			map[string]interface{}{"type": condType, "status": status, "reason": reason, "message": message},
+		}, "status", "conditions")
+		return u
+	}
+
+	t.Run("terminal failure on the latest revision is surfaced", func(t *testing.T) {
+		old := newCR("web-tls-1", "1", "Ready", "True", "Issued", "")
+		latest := newCR("web-tls-2", "2", "Ready", "False", "Failed", "DNS-01 self check failed")
+		c := fake.NewClientBuilder().WithScheme(s).WithObjects(old, latest).Build()
+		r := &AppReconciler{Client: c}
+		msg := r.latestCertRequestFailure(ctx, "web-tls", "pj-p-production")
+		if !strings.Contains(msg, "Failed") || !strings.Contains(msg, "DNS-01") {
+			t.Errorf("expected the latest request's terminal failure, got %q", msg)
+		}
+	})
+
+	t.Run("a still-pending request is not a failure", func(t *testing.T) {
+		cr := newCR("web-tls-1", "1", "Ready", "False", "Pending", "waiting for challenge")
+		c := fake.NewClientBuilder().WithScheme(s).WithObjects(cr).Build()
+		r := &AppReconciler{Client: c}
+		if msg := r.latestCertRequestFailure(ctx, "web-tls", "pj-p-production"); msg != "" {
+			t.Errorf("expected no failure for a pending request, got %q", msg)
+		}
+	})
+
+	t.Run("a denied request is surfaced", func(t *testing.T) {
+		cr := newCR("web-tls-1", "1", "Denied", "True", "Denied", "not approved by policy")
+		c := fake.NewClientBuilder().WithScheme(s).WithObjects(cr).Build()
+		r := &AppReconciler{Client: c}
+		if msg := r.latestCertRequestFailure(ctx, "web-tls", "pj-p-production"); !strings.Contains(msg, "Denied") {
+			t.Errorf("expected denied request surfaced, got %q", msg)
+		}
+	})
 }
 
 func TestSetCertificateNotReadyConditionSetAndClear(t *testing.T) {
