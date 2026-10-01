@@ -147,6 +147,21 @@ func (r *AppReconciler) gcOptedOutEnvs(ctx context.Context, app *mortisev1alpha1
 	return nil
 }
 
+// appManagedSelector matches the resources Mortise manages for this App in a
+// project. Returns an error only when the App isn't in a valid control
+// namespace; prune callers treat that as a no-op.
+func appManagedSelector(app *mortisev1alpha1.App) (client.MatchingLabels, error) {
+	projectName, err := appProjectName(app)
+	if err != nil {
+		return nil, err
+	}
+	return client.MatchingLabels{
+		constants.AppNameLabel:   app.Name,
+		constants.ProjectLabel:   projectName,
+		constants.ManagedByLabel: constants.ManagedByValue,
+	}, nil
+}
+
 // ensureNoIngress deletes any Ingress this App owns in the given env namespace.
 // Called when the App should not be publicly routed in that env (not public, or
 // no domain) so an App flipped from public to private does not stay reachable
@@ -154,16 +169,40 @@ func (r *AppReconciler) gcOptedOutEnvs(ctx context.Context, app *mortisev1alpha1
 // label selector scopes the delete to Mortise's own object; a Service is left
 // alone because workload Apps keep their ClusterIP Service when private.
 func (r *AppReconciler) ensureNoIngress(ctx context.Context, app *mortisev1alpha1.App, envNs string) error {
-	projectName, err := appProjectName(app)
+	selector, err := appManagedSelector(app)
 	if err != nil {
 		return nil
 	}
-	selector := client.MatchingLabels{
-		constants.AppNameLabel:   app.Name,
-		constants.ProjectLabel:   projectName,
-		constants.ManagedByLabel: constants.ManagedByValue,
-	}
 	return r.deleteMatching(ctx, &networkingv1.IngressList{}, selector, client.InNamespace(envNs))
+}
+
+// ensureNoCronJob deletes any CronJob this App owns in the env namespace. Called
+// when the App is not (or no longer) a cron workload for that env, so a stale
+// CronJob doesn't keep firing after a cron->service switch or a cleared
+// schedule (CAI-484).
+func (r *AppReconciler) ensureNoCronJob(ctx context.Context, app *mortisev1alpha1.App, envNs string) error {
+	selector, err := appManagedSelector(app)
+	if err != nil {
+		return nil
+	}
+	return r.deleteMatching(ctx, &batchv1.CronJobList{}, selector, client.InNamespace(envNs))
+}
+
+// ensureNoServiceWorkload deletes the Deployment, Service, and Ingress this App
+// owns in the env namespace. Called when the App switched to a cron workload so
+// the previous service-type objects don't keep running and serving (CAI-484).
+func (r *AppReconciler) ensureNoServiceWorkload(ctx context.Context, app *mortisev1alpha1.App, envNs string) error {
+	selector, err := appManagedSelector(app)
+	if err != nil {
+		return nil
+	}
+	if err := r.deleteMatching(ctx, &appsv1.DeploymentList{}, selector, client.InNamespace(envNs)); err != nil {
+		return err
+	}
+	if err := r.deleteMatching(ctx, &corev1.ServiceList{}, selector, client.InNamespace(envNs)); err != nil {
+		return err
+	}
+	return r.ensureNoIngress(ctx, app, envNs)
 }
 
 // deleteMatching lists objects of the concrete type in `list` that match the
