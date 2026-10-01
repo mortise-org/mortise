@@ -5273,6 +5273,28 @@ func indexAppCredentialSecrets(obj client.Object) []string {
 	return names
 }
 
+// bindingRefIndex indexes Apps by every backing-App name they bind
+// (spec.environments[].bindings[].ref), so a change to a backing service's
+// {backing}-credentials Secret can enqueue the consumer Apps that inject those
+// credentials (CAI-500).
+const bindingRefIndex = "spec.environments.bindings.ref"
+
+func indexAppBindingRefs(obj client.Object) []string {
+	app, ok := obj.(*mortisev1alpha1.App)
+	if !ok {
+		return nil
+	}
+	var refs []string
+	for _, env := range app.Spec.Environments {
+		for _, b := range env.Bindings {
+			if b.Ref != "" {
+				refs = append(refs, b.Ref)
+			}
+		}
+	}
+	return refs
+}
+
 // appEnvNamespacePrefix is the prefix every one of an App's environment
 // namespaces shares: `pj-{project}-`. Derived from the App's own control
 // namespace, so it needs no Project lookup and is unambiguous even when the
@@ -5338,7 +5360,45 @@ func (r *AppReconciler) appRequestsForReferencedSecret(ctx context.Context, obj 
 func (r *AppReconciler) appRequestsForSecret(ctx context.Context, obj client.Object) []reconcile.Request {
 	reqs := appRequestsForManagedResource(ctx, obj)
 	reqs = append(reqs, r.appRequestsForReferencedSecret(ctx, obj)...)
-	return append(reqs, r.appRequestsForWebhookSecret(ctx, obj)...)
+	reqs = append(reqs, r.appRequestsForWebhookSecret(ctx, obj)...)
+	return append(reqs, r.appRequestsForBindingCredentialSecret(ctx, obj)...)
+}
+
+// appRequestsForBindingCredentialSecret maps a backing service's
+// {backing}-credentials Secret to every consumer App that binds that backing App,
+// so rotating the backing credentials re-reconciles the consumers and re-injects
+// the new values. Without it a consumer kept the old injected DATABASE_URL /
+// *_PASSWORD while reporting Ready, failing auth at runtime until an unrelated
+// reconcile (CAI-500). Mirrors the credential-ref path: the index is name-only,
+// so the Secret's namespace is checked against each consumer's env-namespace
+// prefix to keep the match within the same project.
+func (r *AppReconciler) appRequestsForBindingCredentialSecret(ctx context.Context, obj client.Object) []reconcile.Request {
+	const suffix = "-credentials"
+	if !strings.HasSuffix(obj.GetName(), suffix) {
+		return nil
+	}
+	backingApp := strings.TrimSuffix(obj.GetName(), suffix)
+	if backingApp == "" {
+		return nil
+	}
+	var apps mortisev1alpha1.AppList
+	if err := r.List(ctx, &apps, client.MatchingFields{bindingRefIndex: backingApp}); err != nil {
+		logf.FromContext(ctx).Error(err, "listing Apps binding a backing credentials Secret",
+			"secret", obj.GetNamespace()+"/"+obj.GetName())
+		return nil
+	}
+	var reqs []reconcile.Request
+	for i := range apps.Items {
+		prefix, ok := appEnvNamespacePrefix(apps.Items[i].Namespace)
+		if !ok || !strings.HasPrefix(obj.GetNamespace(), prefix) {
+			continue
+		}
+		reqs = append(reqs, reconcile.Request{NamespacedName: types.NamespacedName{
+			Name:      apps.Items[i].Name,
+			Namespace: apps.Items[i].Namespace,
+		}})
+	}
+	return reqs
 }
 
 // appRequestsForWebhookSecret maps a GitProvider's webhook HMAC Secret to
@@ -5461,6 +5521,11 @@ func (r *AppReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		context.Background(), &mortisev1alpha1.App{}, providerRefIndex, indexAppProviderRef,
 	); err != nil {
 		return fmt.Errorf("index apps by git provider: %w", err)
+	}
+	if err := mgr.GetFieldIndexer().IndexField(
+		context.Background(), &mortisev1alpha1.App{}, bindingRefIndex, indexAppBindingRefs,
+	); err != nil {
+		return fmt.Errorf("index apps by binding ref: %w", err)
 	}
 
 	enqueueAppFromSecret := handler.EnqueueRequestsFromMapFunc(r.appRequestsForSecret)
