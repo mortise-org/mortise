@@ -11,6 +11,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
@@ -242,34 +243,43 @@ func (s *Server) UpdateMember(w http.ResponseWriter, r *http.Request) {
 	ns := constants.ControlNamespace(projectName)
 	name := memberCRDName(email)
 	var member mortisev1alpha1.ProjectMember
-	if err := s.client.Get(r.Context(), types.NamespacedName{Name: name, Namespace: ns}, &member); err != nil {
+	demotingLastOwner := false
+	// Re-read inside the retry so a concurrent writer (another admin, or the
+	// project controller seeding the owner member) doesn't surface as a 409. The
+	// last-owner guard runs inside against the fresh read and signals via the
+	// sentinel so it still maps to a 400 after the loop (CAI-513).
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		demotingLastOwner = false
+		if err := s.client.Get(r.Context(), types.NamespacedName{Name: name, Namespace: ns}, &member); err != nil {
+			return err
+		}
+		if member.Spec.Role == mortisev1alpha1.ProjectRoleOwner && mortisev1alpha1.ProjectRole(req.Role) != mortisev1alpha1.ProjectRoleOwner {
+			var allMembers mortisev1alpha1.ProjectMemberList
+			if err := s.client.List(r.Context(), &allMembers,
+				client.InNamespace(ns),
+				client.MatchingLabels{"mortise.dev/member": "true"},
+			); err != nil {
+				return err
+			}
+			ownerCount := 0
+			for _, m := range allMembers.Items {
+				if m.Spec.Role == mortisev1alpha1.ProjectRoleOwner {
+					ownerCount++
+				}
+			}
+			if ownerCount <= 1 {
+				demotingLastOwner = true
+				return nil
+			}
+		}
+		member.Spec.Role = mortisev1alpha1.ProjectRole(req.Role)
+		return s.client.Update(r.Context(), &member)
+	}); err != nil {
 		writeError(w, r, err)
 		return
 	}
-	if member.Spec.Role == mortisev1alpha1.ProjectRoleOwner && mortisev1alpha1.ProjectRole(req.Role) != mortisev1alpha1.ProjectRoleOwner {
-		var allMembers mortisev1alpha1.ProjectMemberList
-		if err := s.client.List(r.Context(), &allMembers,
-			client.InNamespace(ns),
-			client.MatchingLabels{"mortise.dev/member": "true"},
-		); err != nil {
-			writeError(w, r, err)
-			return
-		}
-		ownerCount := 0
-		for _, m := range allMembers.Items {
-			if m.Spec.Role == mortisev1alpha1.ProjectRoleOwner {
-				ownerCount++
-			}
-		}
-		if ownerCount <= 1 {
-			writeJSON(w, http.StatusBadRequest, errorResponse{"cannot demote the last owner of a project"})
-			return
-		}
-	}
-
-	member.Spec.Role = mortisev1alpha1.ProjectRole(req.Role)
-	if err := s.client.Update(r.Context(), &member); err != nil {
-		writeError(w, r, err)
+	if demotingLastOwner {
+		writeJSON(w, http.StatusBadRequest, errorResponse{"cannot demote the last owner of a project"})
 		return
 	}
 
