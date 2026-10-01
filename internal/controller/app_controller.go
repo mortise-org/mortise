@@ -5018,6 +5018,14 @@ func (r *AppReconciler) reconcileExternalSource(ctx context.Context, app *mortis
 				}
 			}
 		}
+
+		// Prune routing when an external App is made private, so its Ingress and
+		// backing ExternalName Service don't keep it publicly reachable (CAI-486).
+		if !app.Spec.Network.Public {
+			if err := r.ensureNoExternalRouting(ctx, app, envNs); err != nil {
+				return r.envResourceError(ctx, app, envNs, env.Name, "prune external routing", err)
+			}
+		}
 	}
 
 	if len(domainCollisionErrs) > 0 {
