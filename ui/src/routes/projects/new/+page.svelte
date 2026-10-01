@@ -54,14 +54,11 @@
 		}
 		loading = true;
 		try {
-			const project = await api.createProject(trimmed, description.trim() || undefined);
-			if (alsoStaging) {
-				try {
-					await api.createProjectEnvironment(project.name, 'staging');
-				} catch {
-					// non-fatal: project is created; user can retry from settings
-				}
-			}
+			const project = await api.createProject(
+				trimmed,
+				description.trim() || undefined,
+				alsoStaging
+			);
 			await goto(`/projects/${encodeURIComponent(project.name)}`);
 		} catch(e) {
 			error = e instanceof Error ? e.message : 'Failed to create project';

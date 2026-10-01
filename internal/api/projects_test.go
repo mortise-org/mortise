@@ -57,6 +57,35 @@ func TestCreateProjectAsAdmin(t *testing.T) {
 	}
 }
 
+// TestCreateProjectWithStaging verifies createStaging seeds both production and
+// staging in the single atomic create, so "Also create staging" can't be lost
+// to an owner-membership race on a follow-up POST (CAI-485).
+func TestCreateProjectWithStaging(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+
+	w := doRequest(h, http.MethodPost, "/api/projects", map[string]any{
+		"name":          "staged-saas",
+		"createStaging": true,
+	})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var project mortisev1alpha1.Project
+	if err := k8sClient.Get(context.Background(), types.NamespacedName{Name: "staged-saas"}, &project); err != nil {
+		t.Fatalf("project CRD not found after create: %v", err)
+	}
+	names := make([]string, 0, len(project.Spec.Environments))
+	for _, e := range project.Spec.Environments {
+		names = append(names, e.Name)
+	}
+	if len(names) != 2 || names[0] != "production" || names[1] != "staging" {
+		t.Errorf("expected create to seed [production staging], got %v", names)
+	}
+}
+
 // TestCreateProjectInvalidName verifies the API rejects names that cannot be
 // used as a DNS-1123 label or that would exceed namespace-name limits. The
 // caller should see a 400 with a descriptive error, not a CRD-layer 422 or
