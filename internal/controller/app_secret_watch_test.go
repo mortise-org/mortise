@@ -347,6 +347,58 @@ func TestAppRequestsForSecret_CredentialRefs(t *testing.T) {
 	})
 }
 
+// A backing service's {backing}-credentials Secret is injected into consumer
+// Apps that bind the backing App. Without a binding.ref index + watch, rotating
+// the backing credentials never re-reconciled the consumers, which kept the stale
+// injected values while reporting Ready (CAI-500).
+func TestAppRequestsForSecret_BindingCredentials(t *testing.T) {
+	scheme := gcTestScheme(t)
+
+	consumer := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: constants.ControlNamespace("demo")},
+		Spec: mortisev1alpha1.AppSpec{
+			Environments: []mortisev1alpha1.Environment{
+				{Name: "production", Bindings: []mortisev1alpha1.Binding{{Ref: "pgdb"}}},
+			},
+		},
+	}
+
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithIndex(&mortisev1alpha1.App{}, bindingRefIndex, indexAppBindingRefs).
+		WithObjects(consumer).
+		Build()
+	r := &AppReconciler{Client: c, Scheme: scheme}
+
+	secret := func(name, ns string) *corev1.Secret {
+		return &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns}}
+	}
+
+	t.Run("rotating the backing credentials enqueues the consumer that binds it", func(t *testing.T) {
+		got := r.appRequestsForSecret(context.Background(), secret("pgdb-credentials", "pj-demo-production"))
+		if len(got) != 1 {
+			t.Fatalf("expected the consumer to be enqueued, got %d requests", len(got))
+		}
+		if got[0].Name != "web" {
+			t.Errorf("expected web, got %q", got[0].Name)
+		}
+	})
+
+	t.Run("a same-named credentials Secret in another project does not match", func(t *testing.T) {
+		got := r.appRequestsForSecret(context.Background(), secret("pgdb-credentials", "pj-other-production"))
+		if len(got) != 0 {
+			t.Fatalf("expected no cross-project match, got %d", len(got))
+		}
+	})
+
+	t.Run("an unrelated backing app's credentials Secret enqueues nothing", func(t *testing.T) {
+		got := r.appRequestsForSecret(context.Background(), secret("redis-credentials", "pj-demo-production"))
+		if len(got) != 0 {
+			t.Fatalf("expected no requests for an unbound backing app, got %d", len(got))
+		}
+	})
+}
+
 // A GitProvider's webhook HMAC Secret is referenced by nothing an App owns
 // or reads, so neither of the other mappings finds the Apps whose hooks were
 // registered with it. Every App on that provider must reconcile so the hook
