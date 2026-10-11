@@ -18,7 +18,10 @@ homelabs and NAT'd networks.
 3. Add a public hostname rule:
    - Subdomain: `*` (wildcard) or specific subdomains
    - Domain: `yourdomain.com`
-   - Service: `http://traefik.mortise-system:80` (or your ingress service)
+   - Service: `http://mortise-traefik.mortise-deps:80` (or your ingress
+     service). The umbrella chart installs its Traefik into `mortise-deps`
+     with the release-prefixed name `mortise-traefik`, not into
+     `mortise-system`.
 
 ## Deploy cloudflared
 

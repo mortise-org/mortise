@@ -68,7 +68,7 @@ instead. See [External domain](#external-domain) below.
 
    **Cloudflare Tunnel users:** You don't need a wildcard DNS record at all.
    The tunnel config routes traffic directly. Set a wildcard hostname in your
-   tunnel's public hostname rules (`*.apps.example.com → http://traefik.mortise-system:80`)
+   tunnel's public hostname rules (`*.apps.example.com → http://mortise-traefik.mortise-deps:80`)
    and Cloudflare handles the rest. See [Cloudflare Tunnel](./recipes/cloudflare-tunnel.md).
 
    **Optional: ExternalDNS.** If you prefer Mortise to create per-app DNS
