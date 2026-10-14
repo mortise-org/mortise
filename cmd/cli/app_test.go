@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"k8s.io/apimachinery/pkg/api/resource"
+
 	mortisev1alpha1 "github.com/mortise-org/mortise/api/v1alpha1"
 )
 
@@ -322,5 +324,81 @@ func TestAPIError(t *testing.T) {
 	err := c.doJSON("GET", srv.URL+"/api/projects", nil, nil)
 	if err == nil {
 		t.Fatal("expected error for 401")
+	}
+}
+
+func TestParseStorageFlag(t *testing.T) {
+	cases := []struct {
+		in      string
+		want    mortisev1alpha1.VolumeSpec
+		wantErr bool
+	}{
+		{in: "data:/var/lib/data", want: mortisev1alpha1.VolumeSpec{Name: "data", MountPath: "/var/lib/data"}},
+		{in: "data:/var/lib/data:10Gi", want: mortisev1alpha1.VolumeSpec{Name: "data", MountPath: "/var/lib/data", Size: resource.MustParse("10Gi")}},
+		{in: "backups:/backups:5Gi:fast", want: mortisev1alpha1.VolumeSpec{Name: "backups", MountPath: "/backups", Size: resource.MustParse("5Gi"), StorageClass: "fast"}},
+		{in: "data", wantErr: true},
+		{in: ":/data", wantErr: true},
+		{in: "data:", wantErr: true},
+		{in: "data:relative/path", wantErr: true},
+		{in: "data:/data:notasize", wantErr: true},
+		{in: "data:/data:10Gi:fast:extra", wantErr: true},
+	}
+	for _, tc := range cases {
+		got, err := parseStorageFlag(tc.in)
+		if tc.wantErr {
+			if err == nil {
+				t.Errorf("parseStorageFlag(%q): expected error", tc.in)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("parseStorageFlag(%q): unexpected error: %v", tc.in, err)
+			continue
+		}
+		if got.Name != tc.want.Name || got.MountPath != tc.want.MountPath ||
+			got.StorageClass != tc.want.StorageClass || got.Size.Cmp(tc.want.Size) != 0 {
+			t.Errorf("parseStorageFlag(%q) = %+v, want %+v", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestAppCreate_HasStorageFlag(t *testing.T) {
+	for _, c := range newAppCmd().Commands() {
+		if c.Name() == "create" && c.Flags().Lookup("storage") == nil {
+			t.Error("app create missing --storage flag")
+		}
+	}
+}
+
+func TestAppCreate_SendsStorageInRequest(t *testing.T) {
+	var got CreateAppRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		_ = json.NewEncoder(w).Encode(mortisev1alpha1.App{Spec: got.Spec})
+	}))
+	defer srv.Close()
+
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	if err := os.MkdirAll(filepath.Join(tmp, ".config", "mortise"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveConfig(&Config{ServerURL: srv.URL, Token: "t", CurrentProject: "myproject"}); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := newAppCreateCmd()
+	cmd.SetArgs([]string{"--name", "db", "--image", "postgres:15",
+		"--storage", "data:/var/lib/data:10Gi", "--storage", "backups:/backups:5Gi:fast"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(got.Spec.Storage) != 2 {
+		t.Fatalf("expected 2 storage volumes in request, got %d", len(got.Spec.Storage))
+	}
+	if v := got.Spec.Storage[1]; v.Name != "backups" || v.StorageClass != "fast" || v.Size.Cmp(resource.MustParse("5Gi")) != 0 {
+		t.Errorf("unexpected second volume: %+v", v)
 	}
 }
