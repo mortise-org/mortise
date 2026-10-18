@@ -21,6 +21,9 @@ type WebhookInfo struct {
 	ID     int64
 	URL    string
 	Active bool
+	// Events the hook subscribes to, when the forge reports them. Empty
+	// means unknown, not none — callers must not treat it as deficient.
+	Events []string
 }
 
 type CommitStatusState string

@@ -78,6 +78,7 @@ func (g *GiteaAPI) ListWebhooks(ctx context.Context, repo string) ([]WebhookInfo
 			ID:     h.ID,
 			URL:    h.Config["url"],
 			Active: h.Active,
+			Events: h.Events,
 		})
 	}
 	return result, nil

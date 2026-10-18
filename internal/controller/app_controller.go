@@ -169,6 +169,7 @@ const (
 	webhookRegisteredReason     = "Registered"
 	webhookMissingURLReason     = "WebhookURLUnavailable"
 	webhookMissingSecretReason  = "WebhookSecretUnavailable"
+	webhookMissingTokenReason   = "WebhookTokenUnavailable"
 	webhookInputHashMessageKey  = "inputHash="
 	webhookVerifiedAtMessageKey = "verifiedAt="
 	// How long WebhookConfigured=True is trusted before the hook's existence
@@ -298,6 +299,14 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 			if !proceed {
 				return result, nil
 			}
+		} else if r.BuildClient != nil && webhookVerificationDue(&app, r.clock().Now()) {
+			// Builds all current means prepareGitSource — the usual home of
+			// ensureWebhook — is skipped, which left WebhookConfigured latched
+			// stale: a webhook Secret created after the last build never
+			// flipped a False condition, and the CAI-343 re-verify never ran
+			// for an idle app, exactly the one whose lost hook nobody notices
+			// (CAI-793).
+			r.ensureWebhookSteady(ctx, &app)
 		}
 	case mortisev1alpha1.SourceTypeImage:
 		// Best-effort port detection from the image's registry config
@@ -573,7 +582,38 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		return ctrl.Result{RequeueAfter: healthRequeueAfter(&app, r.clock())}, nil
 	}
 
+	// Git-source apps revisit on the webhook verify cadence: nothing else
+	// requeues a Ready app, so without this the CAI-343 re-verify only ever
+	// fired while builds were pending (CAI-793).
+	if app.Spec.Source.Type == mortisev1alpha1.SourceTypeGit && r.BuildClient != nil {
+		return ctrl.Result{RequeueAfter: webhookRequeueAfter(&app, r.clock().Now())}, nil
+	}
+
 	return ctrl.Result{}, nil
+}
+
+// webhookRequeueAfter returns the time until the webhook condition next needs
+// attention: the remainder of the verify interval for a fresh True condition,
+// the full interval otherwise (a False condition retries on that cadence; its
+// permanent-failure latch makes the retry a no-op until an input changes).
+func webhookRequeueAfter(app *mortisev1alpha1.App, now time.Time) time.Duration {
+	cond := meta.FindStatusCondition(app.Status.Conditions, webhookConditionType)
+	if cond == nil || cond.Status != metav1.ConditionTrue {
+		return webhookVerifyInterval
+	}
+	for _, line := range strings.Split(cond.Message, "\n") {
+		if strings.HasPrefix(line, webhookVerifiedAtMessageKey) {
+			t, err := time.Parse(time.RFC3339, strings.TrimPrefix(line, webhookVerifiedAtMessageKey))
+			if err != nil {
+				break
+			}
+			if d := t.Add(webhookVerifyInterval).Sub(now); d > time.Minute {
+				return d
+			}
+			return time.Minute
+		}
+	}
+	return webhookVerifyInterval
 }
 
 // envResourceError converts a failure from a per-env resource reconcile into
@@ -3527,6 +3567,35 @@ func conflictIfUnmanaged(obj client.Object, kind string) error {
 	return &resourceConflictError{kind: kind, name: obj.GetName(), namespace: obj.GetNamespace()}
 }
 
+// ensureWebhookSteady runs the webhook ensure/verify pass for a git-source App
+// whose builds are all current, since the gate above prepareGitSource skips it
+// then. Failures degrade to the WebhookConfigured condition, never the App
+// phase: the workloads are serving, and flipping a Ready app to Failed over a
+// webhook check would be the status-vs-reality defect in the other direction.
+func (r *AppReconciler) ensureWebhookSteady(ctx context.Context, app *mortisev1alpha1.App) {
+	log := logf.FromContext(ctx)
+	if app.Spec.Source.ProviderRef == "" {
+		return
+	}
+	var gp mortisev1alpha1.GitProvider
+	if err := r.Get(ctx, types.NamespacedName{Name: app.Spec.Source.ProviderRef}, &gp); err != nil {
+		log.Error(err, "webhook verify: get GitProvider", "provider", app.Spec.Source.ProviderRef)
+		return
+	}
+	tokenResult, err := git.ResolveGitTokenForApp(ctx, r.Client, gp.Name, app.Namespace,
+		app.Annotations["mortise.dev/created-by"], app.Annotations["mortise.dev/git-token-owner"])
+	if err != nil {
+		if condErr := r.setWebhookCondition(ctx, app, metav1.ConditionFalse, webhookMissingTokenReason,
+			fmt.Sprintf("no valid git token found for any project member: %v", err)); condErr != nil {
+			log.Error(condErr, "failed to persist webhook condition")
+		}
+		return
+	}
+	if err := r.ensureWebhook(ctx, app, &gp, tokenResult.Token); err != nil {
+		log.Error(err, "webhook verification failed (non-fatal)")
+	}
+}
+
 // ensureWebhook registers a webhook on the git repo if not already done.
 // Registration is latched by an input hash stored on App.status.conditions,
 // but the latch expires: at least every webhookVerifyInterval the hook's
@@ -3600,13 +3669,16 @@ func (r *AppReconciler) ensureWebhook(ctx context.Context, app *mortisev1alpha1.
 			if !strings.Contains(hook.URL, "/api/webhooks/") {
 				continue
 			}
-			if hook.URL == webhookURL {
+			if hook.URL == webhookURL && webhookEventsSufficient(hook.Events) {
 				if err := r.setWebhookCondition(ctx, app, metav1.ConditionTrue, webhookRegisteredReason, webhookInputHashMessage(inputHash, r.clock().Now())); err != nil {
 					log.Error(err, "failed to persist webhook condition")
 				}
 				return nil
 			}
-			// Stale Mortise webhook pointing at a different domain — remove it.
+			// Stale Mortise webhook pointing at a different domain, or one at
+			// the right URL with a deficient event set (a hand-registered
+			// push-only hook passes the URL match while PR previews silently
+			// never hear anything, CAI-793) — remove it and re-register.
 			if delErr := api.DeleteWebhook(ctx, app.Spec.Source.Repo, hook.ID); delErr != nil {
 				log.Error(delErr, "failed to delete stale webhook", "hookID", hook.ID, "url", hook.URL)
 			} else {
@@ -3652,6 +3724,21 @@ func webhookRegistrationInputHash(app *mortisev1alpha1.App, gp *mortisev1alpha1.
 		fmt.Fprintf(h, "json-error=%v\n", err)
 	}
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+// webhookEventsSufficient reports whether an existing hook subscribes to every
+// event Mortise registers. An empty list means the forge did not report events
+// — treat that as sufficient rather than churning delete/re-register on every
+// verify.
+func webhookEventsSufficient(events []string) bool {
+	if len(events) == 0 {
+		return true
+	}
+	have := make(map[string]bool, len(events))
+	for _, e := range events {
+		have[e] = true
+	}
+	return have["push"] && have["pull_request"]
 }
 
 func webhookInputHashMessage(hash string, verifiedAt time.Time) string {

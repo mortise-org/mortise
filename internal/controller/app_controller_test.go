@@ -3037,9 +3037,9 @@ var _ = Describe("App Controller", func() {
 			app = &mortisev1alpha1.App{
 				ObjectMeta: metav1.ObjectMeta{Name: appName, Namespace: namespace},
 				Spec: mortisev1alpha1.AppSpec{
-					Source:  mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: testImageNginx},
-					Network: mortisev1alpha1.NetworkConfig{Public: false},
-					Storage: []mortisev1alpha1.VolumeSpec{{Name: "data", MountPath: "/data", Size: resource.MustParse("1Gi")}},
+					Source:       mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: testImageNginx},
+					Network:      mortisev1alpha1.NetworkConfig{Public: false},
+					Storage:      []mortisev1alpha1.VolumeSpec{{Name: "data", MountPath: "/data", Size: resource.MustParse("1Gi")}},
 					Environments: []mortisev1alpha1.Environment{{Name: "production", Replicas: ptr.To[int32](1)}},
 				},
 			}
@@ -5574,6 +5574,194 @@ var _ = Describe("App Controller — git source", func() {
 
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: namespace}, app)).To(Succeed())
 			Expect(webhookVerificationDue(app, time.Now())).To(BeFalse(), "list-match must refresh verifiedAt")
+		})
+
+		// The two tests below drive full Reconcile passes rather than calling
+		// ensureWebhook directly: the defect they pin down lives in the gate
+		// above prepareGitSource, which skipped the webhook pass entirely once
+		// every env's build was current — so a late-arriving secret never
+		// flipped a stale False, and the CAI-343 re-verify never ran for an
+		// idle app (CAI-793).
+
+		It("flips a stale WebhookSecretUnavailable once the secret appears, with builds current (CAI-793)", func() {
+			ctx := context.Background()
+
+			pc := &mortisev1alpha1.PlatformConfig{
+				ObjectMeta: metav1.ObjectMeta{Name: "platform"},
+				Spec:       mortisev1alpha1.PlatformConfigSpec{Domain: "example.com", ExternalDomain: "mortise.example.com"},
+			}
+			Expect(k8sClient.Create(ctx, pc)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, pc)).To(Succeed()) }()
+
+			// The ref points at a Secret that does not exist yet — the live
+			// incident's ordering: the app's last build completed seconds
+			// before the webhook Secret was created.
+			whRef := &mortisev1alpha1.SecretRef{Namespace: "mortise-system", Name: git.WebhookSecretName("gh-webhook-late"), Key: git.WebhookSecretKey}
+			gp := &mortisev1alpha1.GitProvider{
+				ObjectMeta: metav1.ObjectMeta{Name: "gh-webhook-late"},
+				Spec: mortisev1alpha1.GitProviderSpec{
+					Type:             mortisev1alpha1.GitProviderTypeGitHub,
+					Host:             "https://github.com",
+					WebhookSecretRef: whRef,
+				},
+			}
+			Expect(k8sClient.Create(ctx, gp)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, gp)).To(Succeed()) }()
+
+			tokenSecret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{Name: "user-gh-webhook-late-token-74657374406578616d706c652e636f6d", Namespace: "mortise-system"},
+				Data:       map[string][]byte{"token": []byte("tok")},
+			}
+			_ = k8sClient.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "mortise-system"}})
+			Expect(k8sClient.Create(ctx, tokenSecret)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, tokenSecret)).To(Succeed()) }()
+
+			app := makeGitSourceApp("git-webhook-late", namespace, gp.Name)
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+
+			api := &fakeWebhookAPI{}
+			r := gitSourceReconciler(&fakeBuildClient{digest: "sha256:late"}, &fakeGitClient{}, &fakeRegistryBackend{})
+			r.GitAPIFactory = func(_ *mortisev1alpha1.GitProvider, _, _ string) (git.GitAPI, error) {
+				return api, nil
+			}
+
+			req := reconcile.Request{NamespacedName: types.NamespacedName{Name: app.Name, Namespace: namespace}}
+			_, err := reconcileUntilBuildDone(r, ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: namespace}, app)).To(Succeed())
+			cond := meta.FindStatusCondition(app.Status.Conditions, webhookConditionType)
+			Expect(cond).NotTo(BeNil())
+			Expect(cond.Reason).To(Equal(webhookMissingSecretReason))
+			Expect(api.registerCount).To(Equal(0))
+
+			whSecret, _ := makeWebhookSecret(ctx, "gh-webhook-late")
+			defer func() { Expect(k8sClient.Delete(ctx, whSecret)).To(Succeed()) }()
+
+			// Builds are current, so only the steady-state webhook pass can
+			// pick the new secret up.
+			_, err = r.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: namespace}, app)).To(Succeed())
+			cond = meta.FindStatusCondition(app.Status.Conditions, webhookConditionType)
+			Expect(cond).NotTo(BeNil())
+			Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+			Expect(api.registerCount).To(Equal(1))
+		})
+
+		It("re-registers a hook that vanished while builds are current (CAI-343 in steady state)", func() {
+			ctx := context.Background()
+
+			pc := &mortisev1alpha1.PlatformConfig{
+				ObjectMeta: metav1.ObjectMeta{Name: "platform"},
+				Spec:       mortisev1alpha1.PlatformConfigSpec{Domain: "example.com", ExternalDomain: "mortise.example.com"},
+			}
+			Expect(k8sClient.Create(ctx, pc)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, pc)).To(Succeed()) }()
+
+			whSecret, whRef := makeWebhookSecret(ctx, "gh-webhook-steady")
+			defer func() { Expect(k8sClient.Delete(ctx, whSecret)).To(Succeed()) }()
+
+			gp := &mortisev1alpha1.GitProvider{
+				ObjectMeta: metav1.ObjectMeta{Name: "gh-webhook-steady"},
+				Spec: mortisev1alpha1.GitProviderSpec{
+					Type:             mortisev1alpha1.GitProviderTypeGitHub,
+					Host:             "https://github.com",
+					WebhookSecretRef: whRef,
+				},
+			}
+			Expect(k8sClient.Create(ctx, gp)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, gp)).To(Succeed()) }()
+
+			tokenSecret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{Name: "user-gh-webhook-steady-token-74657374406578616d706c652e636f6d", Namespace: "mortise-system"},
+				Data:       map[string][]byte{"token": []byte("tok")},
+			}
+			Expect(k8sClient.Create(ctx, tokenSecret)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, tokenSecret)).To(Succeed()) }()
+
+			app := makeGitSourceApp("git-webhook-steady", namespace, gp.Name)
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+
+			api := &fakeWebhookAPI{}
+			r := gitSourceReconciler(&fakeBuildClient{digest: "sha256:steady"}, &fakeGitClient{}, &fakeRegistryBackend{})
+			r.GitAPIFactory = func(_ *mortisev1alpha1.GitProvider, _, _ string) (git.GitAPI, error) {
+				return api, nil
+			}
+
+			req := reconcile.Request{NamespacedName: types.NamespacedName{Name: app.Name, Namespace: namespace}}
+			_, err := reconcileUntilBuildDone(r, ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(api.registerCount).To(Equal(1))
+
+			// The hook vanished on the git host (the fake's list is empty)
+			// and the verify latch expires. Builds stay current, so only the
+			// steady-state pass can notice.
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: namespace}, app)).To(Succeed())
+			backdateWebhookVerification(ctx, app)
+
+			res, err := r.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(api.registerCount).To(Equal(2))
+			Expect(res.RequeueAfter).To(BeNumerically(">", 0), "steady state must requeue for the next verify window")
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: namespace}, app)).To(Succeed())
+			cond := meta.FindStatusCondition(app.Status.Conditions, webhookConditionType)
+			Expect(cond).NotTo(BeNil())
+			Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+		})
+
+		It("replaces a URL-matching hook whose event set is short of pull_request (CAI-793)", func() {
+			ctx := context.Background()
+
+			pc := &mortisev1alpha1.PlatformConfig{
+				ObjectMeta: metav1.ObjectMeta{Name: "platform"},
+				Spec:       mortisev1alpha1.PlatformConfigSpec{Domain: "example.com", ExternalDomain: "mortise.example.com"},
+			}
+			Expect(k8sClient.Create(ctx, pc)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, pc)).To(Succeed()) }()
+
+			whSecret, whRef := makeWebhookSecret(ctx, "gh-webhook-events")
+			defer func() { Expect(k8sClient.Delete(ctx, whSecret)).To(Succeed()) }()
+
+			gp := &mortisev1alpha1.GitProvider{
+				ObjectMeta: metav1.ObjectMeta{Name: "gh-webhook-events"},
+				Spec: mortisev1alpha1.GitProviderSpec{
+					Type:             mortisev1alpha1.GitProviderTypeGitHub,
+					Host:             "https://github.com",
+					WebhookSecretRef: whRef,
+				},
+			}
+			Expect(k8sClient.Create(ctx, gp)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, gp)).To(Succeed()) }()
+
+			app := makeGitSourceApp("git-webhook-events", namespace, gp.Name)
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: namespace}, app)).To(Succeed())
+
+			// A hand-registered hook at the right URL but subscribed to push
+			// only: deliveries work for pushes while PR previews silently
+			// never hear anything. The URL match must not count as verified.
+			api := &fakeWebhookAPI{webhooks: []git.WebhookInfo{
+				{ID: 7, URL: "http://mortise.example.com/api/webhooks/gh-webhook-events", Active: true, Events: []string{"push"}},
+			}}
+			r := gitSourceReconciler(&fakeBuildClient{digest: "sha256:events"}, &fakeGitClient{}, &fakeRegistryBackend{})
+			r.GitAPIFactory = func(_ *mortisev1alpha1.GitProvider, _, _ string) (git.GitAPI, error) {
+				return api, nil
+			}
+
+			Expect(r.ensureWebhook(ctx, app, gp, "tok")).To(Succeed())
+			Expect(api.deleteCount).To(Equal(1), "the deficient hook must be removed")
+			Expect(api.registerCount).To(Equal(1), "and replaced with the full event set")
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: namespace}, app)).To(Succeed())
+			cond := meta.FindStatusCondition(app.Status.Conditions, webhookConditionType)
+			Expect(cond).NotTo(BeNil())
+			Expect(cond.Status).To(Equal(metav1.ConditionTrue))
 		})
 
 		It("keeps webhook registration non-fatal and records the failure condition", func() {

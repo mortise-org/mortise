@@ -87,6 +87,7 @@ func (g *GitHubAPI) ListWebhooks(ctx context.Context, repo string) ([]WebhookInf
 			ID:     h.GetID(),
 			URL:    url,
 			Active: h.GetActive(),
+			Events: h.Events,
 		})
 	}
 	return result, nil

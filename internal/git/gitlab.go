@@ -63,10 +63,20 @@ func (g *GitLabAPI) ListWebhooks(ctx context.Context, repo string) ([]WebhookInf
 	result := make([]WebhookInfo, 0, len(hooks))
 	for _, h := range hooks {
 		active := h.DisabledUntil == nil || h.DisabledUntil.Before(time.Now())
+		// GitLab reports event subscriptions as booleans; synthesize the
+		// normalized names the controller compares against.
+		var events []string
+		if h.PushEvents {
+			events = append(events, "push")
+		}
+		if h.MergeRequestsEvents {
+			events = append(events, "pull_request")
+		}
 		result = append(result, WebhookInfo{
 			ID:     h.ID,
 			URL:    h.URL,
 			Active: active,
+			Events: events,
 		})
 	}
 	return result, nil
