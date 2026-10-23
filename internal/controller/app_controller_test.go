@@ -8878,6 +8878,70 @@ var _ = Describe("App Controller — git source", func() {
 			Expect(readAppEnvSecret(ctx, appName, envNsProduction)).NotTo(HaveKey("API_TOKEN"))
 		})
 
+		It("fails the App when a secretRef Secret exists but lacks the key (CAI-943)", func() {
+			appName := "secretref-missing-key-test"
+			sourceSecret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{Name: "secretref-missing-key-source", Namespace: envNsProduction},
+				Data:       map[string][]byte{"WRONG_KEY": []byte("value")},
+			}
+			Expect(k8sClient.Create(ctx, sourceSecret)).To(Succeed())
+			defer func() { Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, sourceSecret))).To(Succeed()) }()
+
+			app := &mortisev1alpha1.App{
+				ObjectMeta: metav1.ObjectMeta{Name: appName, Namespace: namespace},
+				Spec: mortisev1alpha1.AppSpec{
+					Source:  mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: testImageNginx},
+					Network: mortisev1alpha1.NetworkConfig{Public: true},
+					Environments: []mortisev1alpha1.Environment{{
+						Name:   "production",
+						Domain: "secretref-missing-key.example.com",
+						Env: []mortisev1alpha1.EnvVar{{
+							Name:      "API_TOKEN",
+							ValueFrom: &mortisev1alpha1.EnvVarSource{SecretRef: sourceSecret.Name},
+						}},
+					}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, app))).To(Succeed()) }()
+
+			reconciler := &AppReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).To(HaveOccurred(), "a secretRef to a Secret without the key is an error, not a skip")
+
+			var fetched mortisev1alpha1.App
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: appName, Namespace: namespace}, &fetched)).To(Succeed())
+			Expect(fetched.Status.Phase).To(Equal(mortisev1alpha1.AppPhaseFailed))
+			cond := meta.FindStatusCondition(fetched.Status.Conditions, appEnvVarInvalidCondition)
+			Expect(cond).NotTo(BeNil(), "resolution failure must be visible on the App, not only in logs")
+			Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+			Expect(cond.Message).To(ContainSubstring("API_TOKEN"))
+
+			var derived corev1.Secret
+			getErr := k8sClient.Get(ctx, types.NamespacedName{
+				Name: envstore.AppEnvSecretName(appName), Namespace: envNsProduction,
+			}, &derived)
+			if getErr == nil {
+				Expect(derived.Data).NotTo(HaveKey("API_TOKEN"))
+			}
+
+			// Adding the key recovers the App on the next reconcile.
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: sourceSecret.Name, Namespace: envNsProduction}, sourceSecret)).To(Succeed())
+			sourceSecret.Data["API_TOKEN"] = []byte("now-present")
+			Expect(k8sClient.Update(ctx, sourceSecret)).To(Succeed())
+
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: appName, Namespace: namespace},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(readAppEnvSecret(ctx, appName, envNsProduction)).To(HaveKeyWithValue("API_TOKEN", "now-present"))
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: appName, Namespace: namespace}, &fetched)).To(Succeed())
+			Expect(meta.FindStatusCondition(fetched.Status.Conditions, appEnvVarInvalidCondition)).To(BeNil())
+			Expect(fetched.Status.Phase).NotTo(Equal(mortisev1alpha1.AppPhaseFailed))
+		})
+
 		It("preserves removed CRD spec env var keys when the user has overridden them", func() {
 			appName := "key-removal-override-test"
 			app := &mortisev1alpha1.App{

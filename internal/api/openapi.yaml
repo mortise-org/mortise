@@ -1875,8 +1875,9 @@ definitions:
           For anything secret use ValueFrom.SecretRef instead.
 
           Setting both Value and ValueFrom is rejected when the variable is
-          resolved, and the effect is that the variable is DROPPED from the
-          container with only a controller log line -- the apply itself succeeds.
+          resolved: the apply itself succeeds, then — unless a previously
+          resolved value is already serving — the App goes phase Failed with an
+          EnvVarInvalid condition naming the variable (CAI-943).
           Set exactly one.
           +optional
         type: string
@@ -1913,7 +1914,10 @@ definitions:
           kubectl, or Mortise's own secrets API, which does create\nSecrets in this
           namespace. Either way it is not owned by the App: it is\nnot garbage-collected
           when the App is deleted.\n\nA Secret that exists but has no key matching
-          the env var name is an\nerror, not an empty value.\n+optional"
+          the env var name is an\nerror, not an empty value. A variable that has never
+          resolved fails\nthe App (phase Failed, EnvVarInvalid condition) until the
+          key appears;\none that resolved before keeps serving its last value and
+          the break is\nreported in status.environments[].unresolvedEnvKeys.\n+optional"
         type: string
     type: object
   v1alpha1.Environment:

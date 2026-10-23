@@ -15,12 +15,14 @@ import (
 // resolved right now: the referenced Secret is missing, or has no key matching
 // the variable name.
 //
-// This exists because an unresolvable reference is silent. The reconciler logs
-// and skips it, which leaves any previously resolved value in place -- correct,
-// since clearing a credential because a Secret was briefly unreadable would be
-// worse, but indistinguishable from a working reference. A key renamed during a
-// rotation therefore leaves the old credential serving while the App reports
-// Deploying with no message. Confirmed by test, not inferred.
+// This exists because a reference that breaks AFTER resolving is silent. The
+// reconciler logs and skips it, which leaves the previously resolved value in
+// place -- correct, since clearing a credential because a Secret was briefly
+// unreadable would be worse, but indistinguishable from a working reference.
+// A key renamed during a rotation therefore leaves the old credential serving
+// while the App reports Deploying with no message. Confirmed by test, not
+// inferred. (A var that NEVER resolved is different: that fails the App with
+// an EnvVarInvalid condition, CAI-943.)
 //
 // Names only, never values.
 func (r *AppReconciler) unresolvedEnvKeysFor(ctx context.Context, env *mortisev1alpha1.Environment, envNs string) []string {

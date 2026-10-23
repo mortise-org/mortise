@@ -128,6 +128,16 @@ const namespaceCreationBudget = 2 * time.Minute
 // logs.
 const appResourceConflictCondition = "ResourceConflict"
 
+// appEnvVarInvalidCondition is set when a spec env var cannot be resolved —
+// a secretRef Secret that is missing or lacks the key, a fromBinding ref not
+// in the bindings list, or more than one source set — and has no previously
+// resolved value to keep serving. The CRD contract (api/v1alpha1
+// EnvVarSource) says these are errors; silently skipping the var shipped a
+// pod without it while the App reported Ready (CAI-943). A reference that
+// resolved before and then broke is the other case: it keeps serving and is
+// reported in status.environments[].unresolvedEnvKeys instead.
+const appEnvVarInvalidCondition = "EnvVarInvalid"
+
 // AppReconciler reconciles a App object
 type AppReconciler struct {
 	client.Client
@@ -559,11 +569,23 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		}
 		resourceConflictCleared = true
 	}
+	// Same for a stale EnvVarInvalid condition: every spec env var resolved
+	// this pass.
+	envVarInvalidCleared := false
+	if meta.FindStatusCondition(app.Status.Conditions, appEnvVarInvalidCondition) != nil {
+		if err := r.updateAppStatus(ctx, &app, func(status *mortisev1alpha1.AppStatus) {
+			meta.RemoveStatusCondition(&status.Conditions, appEnvVarInvalidCondition)
+		}); err != nil {
+			return ctrl.Result{}, fmt.Errorf("clear env var invalid condition: %w", err)
+		}
+		envVarInvalidCleared = true
+	}
 
 	if !needsRequeue && (app.Status.Phase != mortisev1alpha1.AppPhaseFailed ||
 		domainCollisionCleared ||
 		rbacForbiddenCleared ||
 		resourceConflictCleared ||
+		envVarInvalidCleared ||
 		shouldRefreshFailedAppStatus(&app, resolvedEnvs, previewEnvNames)) {
 		if err := r.updateStatus(ctx, &app, resolvedEnvs, previewEnvNames); err != nil {
 			return ctrl.Result{}, fmt.Errorf("update status: %w", err)
@@ -642,6 +664,22 @@ func (r *AppReconciler) envResourceError(ctx context.Context, app *mortisev1alph
 			})
 		}); updateErr != nil {
 			logf.FromContext(ctx).Error(updateErr, "update status after resource conflict", "namespace", envNs)
+		}
+		return ctrl.Result{}, wrapped
+	}
+	var envVarErr *envVarResolutionError
+	if stderrors.As(err, &envVarErr) {
+		if updateErr := r.updateAppStatus(ctx, app, func(status *mortisev1alpha1.AppStatus) {
+			status.Phase = mortisev1alpha1.AppPhaseFailed
+			meta.SetStatusCondition(&status.Conditions, metav1.Condition{
+				Type:               appEnvVarInvalidCondition,
+				Status:             metav1.ConditionTrue,
+				Reason:             "InvalidValueFrom",
+				Message:            wrapped.Error(),
+				ObservedGeneration: app.Generation,
+			})
+		}); updateErr != nil {
+			logf.FromContext(ctx).Error(updateErr, "update status after env var resolution failure", "namespace", envNs)
 		}
 		return ctrl.Result{}, wrapped
 	}
@@ -2999,6 +3037,21 @@ func (r *AppReconciler) reconcileEnvSecret(ctx context.Context, app *mortisev1al
 		bindingRefs[b.Ref] = true
 	}
 
+	// A reference that resolved before and then broke keeps serving its last
+	// value (CAI-162 follow-up; unresolvedEnvKeysFor reports the break), so
+	// resolution failure is only an error for a var with no served value.
+	derivedKeys := map[string]struct{}{}
+	var derivedSecret corev1.Secret
+	if err := r.Get(ctx, types.NamespacedName{
+		Name: envstore.AppEnvSecretName(app.Name), Namespace: envNs,
+	}, &derivedSecret); err == nil {
+		for k := range derivedSecret.Data {
+			derivedKeys[k] = struct{}{}
+		}
+	} else if !errors.IsNotFound(err) {
+		return fmt.Errorf("read derived env secret: %w", err)
+	}
+
 	// Resolve spec env values outside the retry callback — they read other
 	// Secrets, not the app-env Secret being mutated.
 	type resolvedVar struct {
@@ -3010,8 +3063,14 @@ func (r *AppReconciler) reconcileEnvSecret(ctx context.Context, app *mortisev1al
 	for _, ev := range env.Env {
 		resolved, source, err := r.resolveEnvVarValue(ctx, ev, envNs, projectName, env.Name, bindingRefs)
 		if err != nil {
-			log.Error(err, "skipping env var with invalid valueFrom", "var", ev.Name)
-			continue
+			if _, served := derivedKeys[ev.Name]; served {
+				log.Error(err, "env var reference broke after resolving; keeping last value", "var", ev.Name)
+				continue
+			}
+			// Not a skip: the CRD contract (EnvVarSource doc) says an
+			// unresolvable var is an error. Dropping it shipped a pod without
+			// the variable while the App reported Ready (CAI-943).
+			return &envVarResolutionError{err: err}
 		}
 		resolvedSpecEnv[ev.Name] = resolved
 
@@ -3555,6 +3614,18 @@ type resourceConflictError struct {
 func (e *resourceConflictError) Error() string {
 	return fmt.Sprintf("%s %q already exists in namespace %q and is not managed by Mortise; rename or delete it to let Mortise deploy this app", e.kind, e.name, e.namespace)
 }
+
+// envVarResolutionError reports a spec env var that cannot be resolved and
+// has never resolved before (no served value in the derived Secret to keep).
+// Terminal until the user fixes the Secret or the spec; envResourceError
+// translates it into a Failed EnvVarInvalid condition (CAI-943).
+type envVarResolutionError struct {
+	err error
+}
+
+func (e *envVarResolutionError) Error() string { return e.err.Error() }
+
+func (e *envVarResolutionError) Unwrap() error { return e.err }
 
 // conflictIfUnmanaged is the ownership guard for workload reconcile paths:
 // it returns a *resourceConflictError when obj is not Mortise-managed. Call

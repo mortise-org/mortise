@@ -197,8 +197,9 @@ type EnvVar struct {
 	// For anything secret use ValueFrom.SecretRef instead.
 	//
 	// Setting both Value and ValueFrom is rejected when the variable is
-	// resolved, and the effect is that the variable is DROPPED from the
-	// container with only a controller log line -- the apply itself succeeds.
+	// resolved: the apply itself succeeds, then — unless a previously
+	// resolved value is already serving — the App goes phase Failed with an
+	// EnvVarInvalid condition naming the variable (CAI-943).
 	// Set exactly one.
 	// +optional
 	Value string `json:"value,omitempty"`
@@ -234,7 +235,10 @@ type EnvVarSource struct {
 	// not garbage-collected when the App is deleted.
 	//
 	// A Secret that exists but has no key matching the env var name is an
-	// error, not an empty value.
+	// error, not an empty value. A variable that has never resolved fails
+	// the App (phase Failed, EnvVarInvalid condition) until the key appears;
+	// one that resolved before keeps serving its last value and the break is
+	// reported in status.environments[].unresolvedEnvKeys.
 	// +optional
 	SecretRef string `json:"secretRef,omitempty"`
 
