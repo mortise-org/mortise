@@ -581,6 +581,67 @@ var _ = Describe("Project Controller", func() {
 
 })
 
+var _ = Describe("Project with no members (CAI-944)", func() {
+	ctx := context.Background()
+
+	It("surfaces MembersReady=False until a ProjectMember exists", func() {
+		projectName := "no-members-cond"
+		nsName := ProjectNamespace(projectName)
+		DeferCleanup(func() {
+			proj := &mortisev1alpha1.Project{}
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: projectName}, proj); err == nil {
+				proj.Finalizers = nil
+				_ = k8sClient.Update(ctx, proj)
+				_ = k8sClient.Delete(ctx, proj)
+			}
+			_ = k8sClient.Delete(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: nsName}})
+		})
+
+		// No created-by annotation, the kubectl-created shape: ensureOwnerMember
+		// has no address to seed a member from.
+		project := &mortisev1alpha1.Project{
+			ObjectMeta: metav1.ObjectMeta{Name: projectName},
+		}
+		Expect(k8sClient.Create(ctx, project)).To(Succeed())
+
+		r := &ProjectReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), OperatorNamespace: "mortise-system", ServiceAccountName: "mortise-controller"}
+		for i := 0; i < 2; i++ {
+			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: projectName}})
+			Expect(err).NotTo(HaveOccurred())
+		}
+
+		var updated mortisev1alpha1.Project
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: projectName}, &updated)).To(Succeed())
+		Expect(updated.Status.Phase).To(Equal(mortisev1alpha1.ProjectPhaseReady),
+			"a member-less project still works for image-source apps; the condition, not the phase, carries the warning")
+		cond := findCondition(updated.Status.Conditions, ProjectConditionMembersReady)
+		Expect(cond).NotTo(BeNil(), "GitAuthFailed on first build is invisible without a Project-level signal")
+		Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+		Expect(cond.Reason).To(Equal(ReasonNoMembers))
+		Expect(cond.Message).To(ContainSubstring("git"))
+
+		// Adding a member flips the condition on the next reconcile.
+		member := &mortisev1alpha1.ProjectMember{
+			ObjectMeta: metav1.ObjectMeta{Name: "member-manual", Namespace: nsName},
+			Spec: mortisev1alpha1.ProjectMemberSpec{
+				Email:   "someone@example.com",
+				Project: projectName,
+				Role:    mortisev1alpha1.ProjectRoleOwner,
+			},
+		}
+		Expect(k8sClient.Create(ctx, member)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, member) })
+
+		_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: projectName}})
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: projectName}, &updated)).To(Succeed())
+		cond = findCondition(updated.Status.Conditions, ProjectConditionMembersReady)
+		Expect(cond).NotTo(BeNil())
+		Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	})
+})
+
 // findCondition returns a pointer to the first condition with the given type
 // or nil. Lets tests assert on condition reason/message without pulling in the
 // full k8s meta package locally.

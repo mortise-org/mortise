@@ -58,7 +58,16 @@ const (
 	// failed.
 	ProjectConditionNamespaceReady = "NamespaceReady"
 
+	// ProjectConditionMembersReady is False while the project has no
+	// ProjectMember. Git auth resolves tokens through members
+	// (git.ResolveGitTokenForApp), so a member-less project fails every
+	// git-source build with GitAuthFailed and nothing at the project level
+	// said why (CAI-944). The phase stays Ready: image-source apps work
+	// fine without members.
+	ProjectConditionMembersReady = "MembersReady"
+
 	ReasonReconciled             = "Reconciled"
+	ReasonNoMembers              = "NoMembers"
 	ReasonNamespaceAlreadyExists = "NamespaceAlreadyExists"
 	ReasonNamespaceOwnedByOther  = "NamespaceOwnedByAnotherProject"
 	ReasonNamespaceConflict      = "NamespaceConflict"
@@ -275,6 +284,11 @@ func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, fmt.Errorf("count apps: %w", err)
 	}
 
+	memberCount, err := r.countMembers(ctx, controlNs)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("count members: %w", err)
+	}
+
 	// Cascade env changes to every App in the control namespace so their
 	// reconcilers pick up the new env list on the next loop.
 	if envsChanged(project.Spec.Environments, project.Status.Environments) {
@@ -286,7 +300,7 @@ func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, fmt.Errorf("cascade preview change: %w", err)
 	}
 
-	if err := r.markReady(ctx, &project, controlNs, appCount, envNsMap); err != nil {
+	if err := r.markReady(ctx, &project, controlNs, appCount, memberCount, envNsMap); err != nil {
 		return ctrl.Result{}, fmt.Errorf("update status: %w", err)
 	}
 
@@ -574,6 +588,14 @@ func (r *ProjectReconciler) countApps(ctx context.Context, controlNs string) (in
 	return int32(len(list.Items)), nil
 }
 
+func (r *ProjectReconciler) countMembers(ctx context.Context, controlNs string) (int, error) {
+	var list mortisev1alpha1.ProjectMemberList
+	if err := r.List(ctx, &list, client.InNamespace(controlNs)); err != nil {
+		return 0, err
+	}
+	return len(list.Items), nil
+}
+
 func (r *ProjectReconciler) markTerminating(ctx context.Context, project *mortisev1alpha1.Project, controlNs string) error {
 	if project.Status.Phase == mortisev1alpha1.ProjectPhaseTerminating {
 		return nil
@@ -584,7 +606,18 @@ func (r *ProjectReconciler) markTerminating(ctx context.Context, project *mortis
 	})
 }
 
-func (r *ProjectReconciler) markReady(ctx context.Context, project *mortisev1alpha1.Project, controlNs string, appCount int32, envNsMap map[string]string) error {
+func (r *ProjectReconciler) markReady(ctx context.Context, project *mortisev1alpha1.Project, controlNs string, appCount int32, memberCount int, envNsMap map[string]string) error {
+	membersCond := metav1.Condition{
+		Type:    ProjectConditionMembersReady,
+		Status:  metav1.ConditionTrue,
+		Reason:  ReasonReconciled,
+		Message: fmt.Sprintf("%d member(s)", memberCount),
+	}
+	if memberCount == 0 {
+		membersCond.Status = metav1.ConditionFalse
+		membersCond.Reason = ReasonNoMembers
+		membersCond.Message = "no ProjectMember exists: git-source builds will fail with GitAuthFailed until a member with a git token is added"
+	}
 	return r.updateProjectStatus(ctx, project.Name, func(p *mortisev1alpha1.Project) {
 		meta.SetStatusCondition(&p.Status.Conditions, metav1.Condition{
 			Type:               ProjectConditionNamespaceReady,
@@ -593,6 +626,8 @@ func (r *ProjectReconciler) markReady(ctx context.Context, project *mortisev1alp
 			Message:            fmt.Sprintf("control %q + %d env namespaces ready", controlNs, len(envNsMap)),
 			ObservedGeneration: p.Generation,
 		})
+		membersCond.ObservedGeneration = p.Generation
+		meta.SetStatusCondition(&p.Status.Conditions, membersCond)
 		p.Status.Phase = mortisev1alpha1.ProjectPhaseReady
 		p.Status.Namespace = controlNs
 		p.Status.AppCount = appCount
@@ -889,10 +924,21 @@ func (r *ProjectReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		return []reconcile.Request{{NamespacedName: types.NamespacedName{Name: projectName}}}
 	})
 
+	// MembersReady (CAI-944) must track member creation and deletion, and a
+	// ProjectMember names its project directly in spec.
+	enqueueProjectForMember := handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []reconcile.Request {
+		member, ok := obj.(*mortisev1alpha1.ProjectMember)
+		if !ok || member == nil || member.Spec.Project == "" {
+			return nil
+		}
+		return []reconcile.Request{{NamespacedName: types.NamespacedName{Name: member.Spec.Project}}}
+	})
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&mortisev1alpha1.Project{}).
 		Owns(&corev1.Namespace{}).
 		Watches(&mortisev1alpha1.App{}, enqueueProjectForApp).
+		Watches(&mortisev1alpha1.ProjectMember{}, enqueueProjectForMember).
 		Named("project").
 		Complete(r)
 }
