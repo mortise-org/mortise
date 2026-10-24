@@ -116,6 +116,14 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   verify cadence, degrading failures to the condition (not the App phase).
   The URL-match scan also checks the hook's event set, so a hand-registered
   push-only hook no longer passes while PR previews silently hear nothing.
+- **An env var that never resolves now fails the App instead of vanishing**
+  (CAI-943): a spec env entry whose `valueFrom.secretRef` named a Secret
+  missing the key (or any other unresolvable source) was logged and skipped —
+  the variable was silently absent from the pod while the App reported
+  `Ready`. It now sets phase `Failed` with an `EnvVarInvalid` condition
+  naming the variable. A ref that resolved before and then broke keeps
+  serving its last value and stays reported via
+  `status.environments[].unresolvedEnvKeys`, unchanged.
 - **Rollback and promote now change the running image** (CAI-498, CAI-511):
   both patched the controller-owned Deployment directly, which the next
   reconcile reverted to the App's spec/built image — the API returned `200`
