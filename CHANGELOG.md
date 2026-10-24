@@ -155,6 +155,10 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   added afterwards went unread until an unrelated touch or the cache resync.
   A ProjectMember event now re-reconciles the project's git-source Apps, so
   the App recovers on its own the moment the member exists.
+- **The app drawer's tab strip scrolls at narrow viewports** (CAI-570): at
+  ~540px the tab row overflowed with no horizontal scroll, leaving the later
+  tabs unreachable. The strip now scrolls without clipping the active tab's
+  border, and tabs no longer shrink or wrap.
 - **Rollback and promote now change the running image** (CAI-498, CAI-511):
   both patched the controller-owned Deployment directly, which the next
   reconcile reverted to the App's spec/built image — the API returned `200`
