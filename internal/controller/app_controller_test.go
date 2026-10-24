@@ -9136,7 +9136,7 @@ var _ = Describe("App Controller — git source", func() {
 			Expect(envData).To(HaveKeyWithValue("USER_VAR", "stays"))
 		})
 
-		It("does not create {app}-env Secret when there are no vars and no bindings", func() {
+		It("creates an empty {app}-env Secret and required envFrom when there are no vars and no bindings", func() {
 			appName := "no-vars-app"
 			app := &mortisev1alpha1.App{
 				ObjectMeta: metav1.ObjectMeta{Name: appName, Namespace: namespace},
@@ -9161,14 +9161,27 @@ var _ = Describe("App Controller — git source", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			// The app-env envFrom source is optional, so there is no need to
-			// materialize an empty Secret when nothing contributes env vars.
+			// The envFrom references are required (CAI-1003), so the Secret
+			// must exist even when nothing contributes env vars — otherwise
+			// the pod cannot start.
 			var sec corev1.Secret
-			err = k8sClient.Get(ctx, types.NamespacedName{
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
 				Name:      envstore.AppEnvSecretName(appName),
 				Namespace: envNsProduction,
-			}, &sec)
-			Expect(kerrors.IsNotFound(err)).To(BeTrue(), "app-env Secret should be skipped when empty")
+			}, &sec)).To(Succeed(), "app-env Secret must exist even when empty")
+			Expect(sec.Data).To(BeEmpty())
+
+			var deploy appsv1.Deployment
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      appName,
+				Namespace: envNsProduction,
+			}, &deploy)).To(Succeed())
+			sources := deploy.Spec.Template.Spec.Containers[0].EnvFrom
+			Expect(sources).NotTo(BeEmpty())
+			for _, s := range sources {
+				Expect(s.SecretRef.Optional).To(BeNil(),
+					"generated envFrom %q must be required: a pod silently starting without the Secret it names is the CAI-1003 failure", s.SecretRef.Name)
+			}
 		})
 
 		It("treats removing an environment from spec as non-destructive for existing workloads", func() {
@@ -9352,7 +9365,14 @@ var _ = Describe("App Controller — git source", func() {
 			})
 			Expect(err).NotTo(HaveOccurred(), "reconcile should succeed after bound app deleted")
 			envData = readAppEnvSecret(ctx, apiName, envNsProduction)
-			Expect(envData).To(BeNil(), "empty app-env Secret should be removed after last binding disappears")
+			Expect(envData).To(BeEmpty(), "binding vars should be cleared after last binding disappears")
+			// The Secret itself stays: the Deployment's envFrom names it as
+			// required (CAI-1003), so deleting it would block the pod.
+			var sec corev1.Secret
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      envstore.AppEnvSecretName(apiName),
+				Namespace: envNsProduction,
+			}, &sec)).To(Succeed(), "app-env Secret must survive binding removal")
 		})
 
 		It("preserves valid bindings when one of multiple bound apps is deleted", func() {

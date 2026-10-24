@@ -3101,11 +3101,6 @@ func (r *AppReconciler) reconcileEnvSecret(ctx context.Context, app *mortisev1al
 	// Append fromBinding vars last so explicit user projections win over
 	// auto-generated binding vars when names collide.
 	bindingEnvs = append(bindingEnvs, fromBindingEnvs...)
-	if len(bindingEnvs) == 0 {
-		if _, err := r.deleteBindingOnlyEnvSecret(ctx, envNs, app.Name); err != nil {
-			return fmt.Errorf("delete empty binding-only env secret: %w", err)
-		}
-	}
 
 	// Stale-spec removal, spec seeding, and binding-source replacement all
 	// recompute from the fresh read inside the conflict-retry callback, so
@@ -3183,10 +3178,10 @@ func (r *AppReconciler) reconcileEnvSecret(ctx context.Context, app *mortisev1al
 		}
 		result = append(result, bindingEnvs...)
 
-		if len(current) == 0 && len(result) == 0 {
-			// Nothing to write — don't create an empty Secret.
-			return nil, envstore.ErrSkip
-		}
+		// An empty result still writes: the Deployment's envFrom names this
+		// Secret as REQUIRED (CAI-1003), so it must exist even when the app
+		// declares no vars. Skipping the empty create is what used to leave
+		// Ready pods naming an absent Secret with optional: true.
 		return result, nil
 	})
 	if err != nil {
@@ -3262,52 +3257,6 @@ func (r *AppReconciler) resolveEnvVarValue(
 	}
 
 	return ev.Value, "user", nil
-}
-
-func (r *AppReconciler) deleteBindingOnlyEnvSecret(ctx context.Context, envNs, appName string) (bool, error) {
-	secretKey := types.NamespacedName{
-		Name:      envstore.AppEnvSecretName(appName),
-		Namespace: envNs,
-	}
-
-	deleted := false
-	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		var secret corev1.Secret
-		if err := r.Client.Get(ctx, secretKey, &secret); err != nil {
-			if errors.IsNotFound(err) {
-				return nil
-			}
-			return err
-		}
-
-		existing := envstore.SecretToEnvs(&secret)
-		if len(existing) == 0 {
-			return nil
-		}
-		for _, env := range existing {
-			if env.Source != "binding" {
-				return nil
-			}
-		}
-
-		uid := secret.UID
-		resourceVersion := secret.ResourceVersion
-		if err := r.Client.Delete(ctx, &secret, client.Preconditions{
-			UID:             &uid,
-			ResourceVersion: &resourceVersion,
-		}); err != nil {
-			if errors.IsNotFound(err) {
-				return nil
-			}
-			return err
-		}
-		deleted = true
-		return nil
-	})
-	if err != nil {
-		return false, err
-	}
-	return deleted, nil
 }
 
 func (r *AppReconciler) readLastSpecEnv(ctx context.Context, ns, appName string) map[string]string {

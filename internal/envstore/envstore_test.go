@@ -52,12 +52,13 @@ func TestEnvFromSources(t *testing.T) {
 	if sources[1].SecretRef.Name != "backend-env" {
 		t.Errorf("second source should be backend-env, got %q", sources[1].SecretRef.Name)
 	}
-	// Both should be optional
-	if sources[0].SecretRef.Optional == nil || !*sources[0].SecretRef.Optional {
-		t.Error("shared-env should be optional")
+	// Both are required: the controller always creates them, so an absence is
+	// breakage and must stop the container (CAI-1003).
+	if sources[0].SecretRef.Optional != nil {
+		t.Error("shared-env must be required (Optional unset)")
 	}
-	if sources[1].SecretRef.Optional == nil || !*sources[1].SecretRef.Optional {
-		t.Error("app-env should be optional")
+	if sources[1].SecretRef.Optional != nil {
+		t.Error("app-env must be required (Optional unset)")
 	}
 }
 

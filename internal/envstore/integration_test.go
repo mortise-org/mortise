@@ -224,11 +224,11 @@ func TestDeleteVar(t *testing.T) {
 	}
 }
 
-func TestEnvFromSourcesOptional(t *testing.T) {
+func TestEnvFromSourcesRequired(t *testing.T) {
 	sources := EnvFromSources("myapp")
 	for _, s := range sources {
-		if s.SecretRef.Optional == nil || !*s.SecretRef.Optional {
-			t.Errorf("envFrom source %q should be optional", s.SecretRef.Name)
+		if s.SecretRef.Optional != nil {
+			t.Errorf("envFrom source %q must be required (Optional unset), got %v", s.SecretRef.Name, *s.SecretRef.Optional)
 		}
 	}
 }

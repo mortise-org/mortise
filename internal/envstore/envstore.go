@@ -87,13 +87,19 @@ func AppEnvSecretName(appName string) string {
 
 // EnvFromSources returns the envFrom entries for a Deployment container.
 // Order: shared-env (lowest priority) then {app}-env (wins on conflict).
+//
+// The references are REQUIRED (no Optional). Both Secrets are created by the
+// controller on every reconcile, empty or not, so an absence is breakage —
+// and a required ref makes it loud (CreateContainerConfigError) instead of a
+// pod that silently starts without the keys it asked for (CAI-1003). They
+// used to be optional while the empty {app}-env Secret was skipped, which let
+// five production pods run Ready while naming a Secret that did not exist.
 func EnvFromSources(appName string) []corev1.EnvFromSource {
 	names := envSourceNames(appName)
 	sources := make([]corev1.EnvFromSource, 0, len(names))
 	for _, name := range names {
 		sources = append(sources, corev1.EnvFromSource{SecretRef: &corev1.SecretEnvSource{
 			LocalObjectReference: corev1.LocalObjectReference{Name: name},
-			Optional:             boolPtr(true),
 		}})
 	}
 	return sources
@@ -194,8 +200,7 @@ func (s *Store) SetShared(ctx context.Context, namespace string, vars []Env, lab
 }
 
 // ErrSkip can be returned by an Apply mutate callback to abort the apply
-// without writing anything (and without surfacing an error). Used to avoid
-// creating a Secret that would be empty.
+// without writing anything (and without surfacing an error).
 var ErrSkip = errors.New("envstore: skip apply")
 
 // Apply atomically mutates an app's env Secret. mutate receives the current
@@ -612,8 +617,6 @@ func secretDataEqual(existing, desired map[string][]byte) bool {
 	}
 	return true
 }
-
-func boolPtr(b bool) *bool { return &b }
 
 // HashData produces a sha256 over the sorted key=value pairs.
 // Key sorting is load-bearing: Go maps randomise iteration order, and an
