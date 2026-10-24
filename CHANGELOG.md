@@ -9,6 +9,13 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **A Project with no members says so** (CAI-944): git-source builds use
+  membership-based git auth, so a freshly created Project builds nothing
+  until a ProjectMember exists — but the only symptom was a per-App
+  `GitAuthFailed`. The Project now carries a `MembersReady` condition:
+  `False/NoMembers` (naming the consequence) while the control namespace has
+  no ProjectMember, `True` once one exists, updated immediately on member
+  add/remove.
 - **A PVC stranded by a volume removal is now a condition** (CAI-506):
   removing a volume from an App's spec leaves its PVC in place (data is
   never deleted implicitly), but nothing said so — the volume simply
