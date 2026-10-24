@@ -124,6 +124,15 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   naming the variable. A ref that resolved before and then broke keeps
   serving its last value and stays reported via
   `status.environments[].unresolvedEnvKeys`, unchanged.
+- **A pod can no longer start silently unconfigured** (CAI-1003): the
+  generated `envFrom` named the derived `{app}-env` Secret with
+  `optional: true` while the controller skipped creating it when no vars
+  resolved — so an app whose configuration failed to materialize started
+  anyway, reported Ready, and nothing said the keys it asked for were
+  absent (five production pods ran this way). The derived Secrets are now
+  always created, empty included, and the `envFrom` references are
+  required: an absent Secret blocks the container loudly and the
+  controller recreates it on the next reconcile.
 - **Rollback and promote now change the running image** (CAI-498, CAI-511):
   both patched the controller-owned Deployment directly, which the next
   reconcile reverted to the App's spec/built image — the API returned `200`
