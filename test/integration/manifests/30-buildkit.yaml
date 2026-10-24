@@ -15,6 +15,13 @@ data:
     debug = false
     [grpc]
       address = ["tcp://0.0.0.0:1234"]
+    # docker.io base images resolve via the in-cluster registry first, which
+    # the integration setup seeds from the host's pre-pulled copies (Makefile,
+    # INT_BUILD_BASE_IMAGES) — so test builds never cold-pull from docker.io
+    # (CAI-461). A mirror miss falls back to docker.io, so an unseeded base
+    # image (e.g. under dev-up, which does not seed) still builds.
+    [registry."docker.io"]
+      mirrors = ["registry.mortise-test-deps.svc:5000"]
     [registry."registry.mortise-test-deps.svc:5000"]
       http = true
       insecure = true

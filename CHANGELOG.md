@@ -84,6 +84,13 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   bookkeeping entry), leaves foreign keys alone, and skips the write entirely
   when nothing it manages changed — a bound PVC is never written again.
   Thanks to IIRoan for the report, diagnosis, and measurement.
+- **Integration builds no longer cold-pull base images from docker.io**
+  (CAI-461): the suite's BuildKit now resolves `docker.io` through the
+  in-cluster test registry, which the setup seeds with the fixtures' base
+  images (`alpine:3.20`, `node:22-alpine`) from the host's pre-pulled,
+  retry-guarded copies — removing the cold pull that intermittently blew the
+  build-heavy tests' ready budget on slow CI runners. A mirror miss falls
+  back to docker.io.
 - **Rollback and promote now change the running image** (CAI-498, CAI-511):
   both patched the controller-owned Deployment directly, which the next
   reconcile reverted to the App's spec/built image — the API returned `200`

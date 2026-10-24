@@ -269,8 +269,14 @@ INT_OBSERVER_IMG ?= mortise-observer:int
 # metrics-server — versions from the packaged subcharts; cert-manager is
 # disabled in the integration install). Pre-importing the chart deps keeps
 # cold-registry pulls out of the helm --wait budget.
-INT_DEP_IMAGES ?= nginx:1.27 postgres:16 redis:7 busybox:1.37 alpine:3.20 docker.io/traefik:v3.3.3 registry.k8s.io/metrics-server/metrics-server:v0.7.2 \
-	gitea/gitea:1.24.3 distribution/distribution:2.8.3 moby/buildkit:v0.29.0 nginxinc/nginx-unprivileged:1.27
+# Base images the integration tests' Dockerfiles build FROM. Pre-pulled with
+# the other deps and seeded into the in-cluster registry so BuildKit's
+# docker.io mirror (test/integration/manifests/30-buildkit.yaml) serves them
+# without a cold docker.io pull inside the build budget (CAI-461). All are
+# docker.io official images, i.e. live under library/ in the mirror.
+INT_BUILD_BASE_IMAGES ?= alpine:3.20 node:22-alpine
+INT_DEP_IMAGES ?= nginx:1.27 postgres:16 redis:7 busybox:1.37 docker.io/traefik:v3.3.3 registry.k8s.io/metrics-server/metrics-server:v0.7.2 \
+	gitea/gitea:1.24.3 distribution/distribution:2.8.3 moby/buildkit:v0.29.0 nginxinc/nginx-unprivileged:1.27 $(INT_BUILD_BASE_IMAGES)
 
 .PHONY: test-integration
 test-integration: ## Create k3d cluster, install chart + test deps, run integration tests, tear down
@@ -333,6 +339,19 @@ test-integration: ## Create k3d cluster, install chart + test deps, run integrat
 	kubectl --context $(INT_KUBE_CONTEXT) -n mortise-test-deps rollout status deployment/registry  --timeout=120s
 	kubectl --context $(INT_KUBE_CONTEXT) -n mortise-test-deps rollout status deployment/gitea     --timeout=180s
 	kubectl --context $(INT_KUBE_CONTEXT) -n mortise-test-deps rollout status deployment/buildkitd --timeout=180s
+	@echo "==> Seeding build base images into the in-cluster registry..."
+	# BuildKit resolves docker.io through the in-cluster registry (mirror rule
+	# in 30-buildkit.yaml); seeding it from the already-imported node images is
+	# what makes the first in-cluster build warm (CAI-461). The push runs from
+	# inside the node because the registry's 30500 hostPort is node-local (no
+	# host mapping — a fixed host port would collide across concurrent gates),
+	# and the node's containerd already holds every INT_DEP_IMAGES image.
+	for img in $(INT_BUILD_BASE_IMAGES); do \
+		docker exec k3d-$(INT_CLUSTER)-server-0 ctr -n k8s.io images tag --force \
+			docker.io/library/$$img 127.0.0.1:30500/library/$$img && \
+		docker exec k3d-$(INT_CLUSTER)-server-0 ctr -n k8s.io images push --plain-http \
+			127.0.0.1:30500/library/$$img || exit 1; \
+	done
 	@echo "==> Packaging mortise-core into the umbrella chart..."
 	# The third-party subcharts are committed under charts/mortise/charts/
 	# (CAI-217), so no repo is added and nothing is fetched: helm resolves
