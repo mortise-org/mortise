@@ -98,6 +98,15 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   ... managed by binding", even when only a new user var was being added.
   An incoming managed var whose value matches the current one is now a no-op;
   an actual value change still conflicts.
+- **Webhooks are verified while an app is idle, and a deficient hook is
+  rejected** (CAI-793): webhook verification only ran while a build was
+  pending, so `WebhookConfigured` latched stale on idle apps — a webhook
+  secret arriving after the last build left `False` standing for days, and
+  a lost hook on an idle app went unnoticed until the push it never
+  delivered. Builds-current reconciles now run the webhook pass on the
+  verify cadence, degrading failures to the condition (not the App phase).
+  The URL-match scan also checks the hook's event set, so a hand-registered
+  push-only hook no longer passes while PR previews silently hear nothing.
 - **Rollback and promote now change the running image** (CAI-498, CAI-511):
   both patched the controller-owned Deployment directly, which the next
   reconcile reverted to the App's spec/built image — the API returned `200`
