@@ -54,12 +54,14 @@ spec:
       containers:
         - name: cloudflared
           image: cloudflare/cloudflared:2024.12.2
+          # Do not pass the token as `--token $(TUNNEL_TOKEN)`: the kubelet
+          # expands it into the container's argv, where any process on the
+          # node can read it via `ps`. cloudflared picks up the TUNNEL_TOKEN
+          # environment variable on its own.
           args:
             - tunnel
             - --no-autoupdate
             - run
-            - --token
-            - $(TUNNEL_TOKEN)
           env:
             - name: TUNNEL_TOKEN
               valueFrom:
