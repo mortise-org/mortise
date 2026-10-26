@@ -5783,6 +5783,68 @@ var _ = Describe("App Controller — git source", func() {
 				"a missed push webhook must not strand the revision annotation")
 		})
 
+		It("leaves a branch-name revision annotation alone (CAI-1134)", func() {
+			ctx := context.Background()
+
+			pc := &mortisev1alpha1.PlatformConfig{
+				ObjectMeta: metav1.ObjectMeta{Name: "platform"},
+				Spec:       mortisev1alpha1.PlatformConfigSpec{Domain: "example.com", ExternalDomain: "mortise.example.com"},
+			}
+			Expect(k8sClient.Create(ctx, pc)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, pc)).To(Succeed()) }()
+
+			whSecret, whRef := makeWebhookSecret(ctx, "gh-head-branchname")
+			defer func() { Expect(k8sClient.Delete(ctx, whSecret)).To(Succeed()) }()
+
+			gp := &mortisev1alpha1.GitProvider{
+				ObjectMeta: metav1.ObjectMeta{Name: "gh-head-branchname"},
+				Spec: mortisev1alpha1.GitProviderSpec{
+					Type:             mortisev1alpha1.GitProviderTypeGitHub,
+					Host:             "https://github.com",
+					WebhookSecretRef: whRef,
+				},
+			}
+			Expect(k8sClient.Create(ctx, gp)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, gp)).To(Succeed()) }()
+
+			tokenSecret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{Name: "user-gh-head-branchname-token-74657374406578616d706c652e636f6d", Namespace: "mortise-system"},
+				Data:       map[string][]byte{"token": []byte("tok")},
+			}
+			Expect(k8sClient.Create(ctx, tokenSecret)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, tokenSecret)).To(Succeed()) }()
+
+			// A branch-name annotation means "track the branch" (the
+			// integration fixtures and the webhook-less flow both use it).
+			// Re-stamping it to a SHA pins the app and changes its build
+			// identity, which churned a rebuild on every reconcile while the
+			// webhook condition was not True.
+			app := makeGitSourceApp("git-head-branchname", namespace, gp.Name)
+			app.Annotations["mortise.dev/revision"] = "main"
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+
+			api := &fakeWebhookAPI{branchHead: "a9777469ae0e5d6c62b4484769cdc6afb4e23558"}
+			r := gitSourceReconciler(&fakeBuildClient{digest: "sha256:branchname"}, &fakeGitClient{}, &fakeRegistryBackend{})
+			r.GitAPIFactory = func(_ *mortisev1alpha1.GitProvider, _, _ string) (git.GitAPI, error) {
+				return api, nil
+			}
+
+			req := reconcile.Request{NamespacedName: types.NamespacedName{Name: app.Name, Namespace: namespace}}
+			_, err := reconcileUntilBuildDone(r, ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: namespace}, app)).To(Succeed())
+			backdateWebhookVerification(ctx, app)
+
+			_, err = r.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: namespace}, app)).To(Succeed())
+			Expect(app.Annotations["mortise.dev/revision"]).To(Equal("main"),
+				"a branch-name annotation must never be converted to a pinned SHA")
+		})
+
 		It("leaves an app the webhook never stamped alone (CAI-1134)", func() {
 			ctx := context.Background()
 

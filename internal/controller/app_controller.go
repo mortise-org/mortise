@@ -3632,7 +3632,14 @@ func (r *AppReconciler) ensureWebhookSteady(ctx context.Context, app *mortisev1a
 func (r *AppReconciler) reconcileRevisionSteady(ctx context.Context, app *mortisev1alpha1.App, gp *mortisev1alpha1.GitProvider, token string) {
 	log := logf.FromContext(ctx)
 	current := app.Annotations["mortise.dev/revision"]
-	if current == "" {
+	// Only a commit-SHA annotation is a webhook stamp that can go stale. A
+	// branch-name annotation means "track the branch": the build resolves it
+	// at clone time, so there is no drift to repair, and re-stamping it to a
+	// SHA would convert a tracking app into a pinned one and change its build
+	// identity. That churned every such app on each reconcile once the
+	// webhook condition was not True (webhookVerificationDue is true then),
+	// which the integration suite caught on the first PR after this shipped.
+	if !looksLikeCommitSHA(current) {
 		return
 	}
 	ctx, cancel := context.WithTimeout(ctx, git.HostTimeout)
@@ -3657,6 +3664,20 @@ func (r *AppReconciler) reconcileRevisionSteady(ctx context.Context, app *mortis
 	if err := r.Patch(ctx, app, client.RawPatch(types.MergePatchType, patch)); err != nil {
 		log.Error(err, "revision reconcile: patch revision annotation")
 	}
+}
+
+// looksLikeCommitSHA reports whether s is a full 40-hex git commit id, the
+// only form the webhook handler stamps.
+func looksLikeCommitSHA(s string) bool {
+	if len(s) != 40 {
+		return false
+	}
+	for _, c := range s {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // ensureWebhook registers a webhook on the git repo if not already done.
