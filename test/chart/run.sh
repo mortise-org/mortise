@@ -183,6 +183,48 @@ else
         PF_PID=""
         $seed_ok || info "  (seed push to ${PREV_VERSION} registry failed; ownership assertion will be weaker)"
 
+        # Workload continuity: a RUNNING app deployed by the previous release
+        # must keep serving through the upgrade, untouched. The 2026-10-26
+        # incident (CAI-1141) found the lane's gap — nothing here had a
+        # workload older than the new operator. NOTE the limit: this app is
+        # image-source, which never touches the build/registry path, so it
+        # covers "an upgrade must not roll or re-point workloads" but NOT the
+        # incident's own git-source rebuild class — that case needs a git
+        # host this harness does not run, and stays open on CAI-1141.
+        app_ok=true
+        kubectl apply -f - <<'UPGAPP' >/dev/null || app_ok=false
+apiVersion: mortise.mortise.dev/v1alpha1
+kind: Project
+metadata:
+  name: upg
+UPGAPP
+        sleep 5
+        kubectl apply -f - <<'UPGAPP' >/dev/null || app_ok=false
+apiVersion: mortise.mortise.dev/v1alpha1
+kind: App
+metadata:
+  name: upg-app
+  namespace: pj-upg
+spec:
+  source:
+    type: image
+    image: nginx:1.27-alpine
+  network:
+    public: false
+    port: 80
+  environments:
+    - name: production
+      replicas: 1
+UPGAPP
+        pre_pod_uid=""
+        if $app_ok; then
+            wait_for_deployment pj-upg-production upg-app 180 || app_ok=false
+            pre_pod_uid=$(kubectl get pods -n pj-upg-production -o jsonpath='{.items[0].metadata.uid}' 2>/dev/null || true)
+        fi
+        $app_ok && [ -n "$pre_pod_uid" ] \
+            && pass "Upgrade lane — app deployed by ${PREV_VERSION} is running pre-upgrade" \
+            || info "  (pre-upgrade app did not come up; continuity assertion will be skipped)"
+
         # The documented upgrade procedure (docs/install.md): CRDs first,
         # then helm upgrade with --reset-then-reuse-values. --force-conflicts
         # takes CRD ownership from the previous release's helm field manager,
@@ -234,6 +276,22 @@ else
             fi
             kill "$PF_PID" 2>/dev/null || true
             PF_PID=""
+
+            # The continuity assertion proper: the pre-upgrade pod must still
+            # be the one serving — an operator upgrade must not roll, rebuild,
+            # or re-point a workload it already deployed. Give the new
+            # operator two reconcile minutes to do damage before asserting.
+            if $app_ok && [ -n "$pre_pod_uid" ]; then
+                sleep 120
+                post_pod_uid=$(kubectl get pods -n pj-upg-production -o jsonpath='{.items[0].metadata.uid}' 2>/dev/null || true)
+                post_phase=$(kubectl get pods -n pj-upg-production -o jsonpath='{.items[0].status.phase}' 2>/dev/null || true)
+                app_phase=$(kubectl get app upg-app -n pj-upg -o jsonpath='{.status.phase}' 2>/dev/null || true)
+                if [ "$post_pod_uid" = "$pre_pod_uid" ] && [ "$post_phase" = "Running" ] && [ "$app_phase" = "Ready" ]; then
+                    pass "Upgrade lane — the ${PREV_VERSION}-deployed app kept serving through the upgrade (same pod, App Ready)"
+                else
+                    fail "Upgrade lane — workload continuity broken: pod ${pre_pod_uid} -> ${post_pod_uid:-gone}, pod phase ${post_phase:-none}, app phase ${app_phase:-none} (CAI-1141 class)"
+                fi
+            fi
         fi
 
         info "  Cleaning up upgrade-lane install..."
