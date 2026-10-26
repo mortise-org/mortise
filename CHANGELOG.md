@@ -114,6 +114,15 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   ... managed by binding", even when only a new user var was being added.
   An incoming managed var whose value matches the current one is now a no-op;
   an actual value change still conflicts.
+- **A missed push webhook no longer strands a git app on a stale revision**
+  (CAI-1134): the push webhook was the only writer of the revision an app
+  builds, so one dropped delivery (observed in production: GitHub generated
+  no push event for a squash merge) left the app serving the old commit
+  indefinitely while reporting Ready — and a manual rebuild faithfully
+  rebuilt the stale revision. On the hourly verify cadence the operator now
+  re-resolves the branch head and, when the annotation is behind, re-stamps
+  it exactly as the webhook would have, so a missed push repairs within the
+  hour.
 - **Webhooks are verified while an app is idle, and a deficient hook is
   rejected** (CAI-793): webhook verification only ran while a build was
   pending, so `WebhookConfigured` latched stale on idle apps — a webhook
