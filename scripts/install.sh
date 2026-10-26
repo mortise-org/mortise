@@ -247,9 +247,17 @@ install_mortise() {
             # observer binary; untargeted builds tag the wrong binary.
             docker build --target operator -t mortise:dev "${script_dir}/.." -q
             if command -v k3d >/dev/null 2>&1; then
-                local k3d_cluster
-                k3d_cluster=$(k3d cluster list -o json 2>/dev/null | grep -o '"name":"[^"]*"' | head -1 | cut -d'"' -f4 || true)
-                if [ -n "$k3d_cluster" ]; then
+                # Import into the cluster the install will actually target —
+                # the current kubeconfig context, which k3d names k3d-<cluster>.
+                # Picking the first cluster from `k3d cluster list` imported
+                # into an arbitrary cluster on any machine running more than
+                # one, and the install then timed out waiting for an image
+                # its own cluster never received. A non-k3d context gets no
+                # import: the image can't reach a remote cluster this way.
+                local k3d_cluster current_ctx
+                current_ctx=$(kubectl config current-context 2>/dev/null || true)
+                k3d_cluster=${current_ctx#k3d-}
+                if [ -n "$k3d_cluster" ] && [ "$k3d_cluster" != "$current_ctx" ]; then
                     k3d image import mortise:dev -c "$k3d_cluster" 2>/dev/null || true
                 fi
             fi

@@ -197,8 +197,18 @@ apiVersion: mortise.mortise.dev/v1alpha1
 kind: Project
 metadata:
   name: upg
+spec:
+  description: upgrade-lane continuity app
 UPGAPP
-        sleep 5
+        # The App can only land once the project's control namespace exists.
+        if $app_ok; then
+            ns_ok=false
+            for _ in $(seq 1 30); do
+                kubectl get namespace pj-upg >/dev/null 2>&1 && { ns_ok=true; break; }
+                sleep 2
+            done
+            $ns_ok || app_ok=false
+        fi
         kubectl apply -f - <<'UPGAPP' >/dev/null || app_ok=false
 apiVersion: mortise.mortise.dev/v1alpha1
 kind: App
