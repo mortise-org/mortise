@@ -140,6 +140,12 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   always created, empty included, and the `envFrom` references are
   required: an absent Secret blocks the container loudly and the
   controller recreates it on the next reconcile.
+- **A member arriving after the App now unlatches `GitAuthFailed`** (CAI-960):
+  the App controller had no ProjectMember watch, so an App that reconciled
+  before the project's first member latched `GitAuthFailed` and a valid token
+  added afterwards went unread until an unrelated touch or the cache resync.
+  A ProjectMember event now re-reconciles the project's git-source Apps, so
+  the App recovers on its own the moment the member exists.
 - **Rollback and promote now change the running image** (CAI-498, CAI-511):
   both patched the controller-owned Deployment directly, which the next
   reconcile reverted to the App's spec/built image — the API returned `200`
