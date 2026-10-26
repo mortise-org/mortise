@@ -91,6 +91,13 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   retry-guarded copies — removing the cold pull that intermittently blew the
   build-heavy tests' ready budget on slow CI runners. A mirror miss falls
   back to docker.io.
+- **Saving env vars no longer fails over an unchanged binding var** (#560):
+  a client that round-trips the full variable set — the pre-1.1.0 UI did on
+  every save, and any GET-then-PUT script still does — echoed binding-managed
+  vars back unchanged and the whole save was rejected with "cannot overwrite
+  ... managed by binding", even when only a new user var was being added.
+  An incoming managed var whose value matches the current one is now a no-op;
+  an actual value change still conflicts.
 - **Rollback and promote now change the running image** (CAI-498, CAI-511):
   both patched the controller-owned Deployment directly, which the next
   reconcile reverted to the App's spec/built image — the API returned `200`
