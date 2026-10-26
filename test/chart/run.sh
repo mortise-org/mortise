@@ -241,11 +241,105 @@ UPGAPP
                 kubectl logs -n "$NAMESPACE" deploy/mortise --tail=25 2>&1 || true
                 app_ok=false
             fi
-            pre_pod_uid=$(kubectl get pods -n pj-upg-production -o jsonpath='{.items[0].metadata.uid}' 2>/dev/null || true)
+            pre_pod_uid=$(kubectl get pods -n pj-upg-production -l app.kubernetes.io/name=upg-app -o jsonpath='{.items[0].metadata.uid}' 2>/dev/null || true)
         fi
         $app_ok && [ -n "$pre_pod_uid" ] \
             && pass "Upgrade lane — app deployed by ${PREV_VERSION} is running pre-upgrade" \
             || info "  (pre-upgrade app did not come up; continuity assertion will be skipped)"
+
+        # Git-source across the upgrade (CAI-1141): the 2026-10-26 incident
+        # was a git app whose post-upgrade image refs were unpullable, a class
+        # the image app above never touches. Deploy the integration suite's
+        # Gitea, seed a tiny repo, and build a git app under the previous
+        # release; after the upgrade, a rebuild must produce an image the
+        # kubelet can actually pull.
+        git_ok=true
+        kubectl apply -f "${REPO_ROOT}/test/integration/manifests/00-namespace.yaml" \
+                      -f "${REPO_ROOT}/test/integration/manifests/20-gitea.yaml" >/dev/null || git_ok=false
+        $git_ok && kubectl -n mortise-test-deps rollout status deployment/gitea --timeout=240s >/dev/null || git_ok=false
+        gitea_token=""
+        if $git_ok; then
+            kubectl port-forward -n mortise-test-deps svc/gitea 13000:3000 >/dev/null 2>&1 &
+            GITEA_PF=$!
+            api_up=false
+            for _ in $(seq 1 45); do
+                curl -fsS -o /dev/null http://127.0.0.1:13000/api/v1/version 2>/dev/null && { api_up=true; break; }
+                sleep 2
+            done
+            if $api_up; then
+                gitea_token=$(curl -fsS -X POST -u mortise-test:mortise-test-pw \
+                    -H 'Content-Type: application/json' \
+                    -d '{"name":"upgrade-lane","scopes":["write:repository","write:user","write:admin"]}' \
+                    http://127.0.0.1:13000/api/v1/users/mortise-test/tokens 2>/dev/null \
+                    | python3 -c 'import json,sys;print(json.load(sys.stdin).get("sha1",""))' 2>/dev/null || true)
+            fi
+            if [ -n "$gitea_token" ]; then
+                curl -fsS -o /dev/null -X POST -H "Authorization: token $gitea_token" \
+                    -H 'Content-Type: application/json' \
+                    -d '{"name":"upg-git","default_branch":"main","auto_init":true}' \
+                    http://127.0.0.1:13000/api/v1/user/repos 2>/dev/null || true
+                dockerfile_b64=$(printf '%s' 'FROM alpine:3.20
+RUN apk add --no-cache busybox-extras \
+ && mkdir -p /var/www \
+ && echo "mortise upgrade lane" > /var/www/index.html
+CMD ["httpd", "-f", "-p", "8080", "-h", "/var/www"]
+' | base64 | tr -d '\n')
+                curl -fsS -o /dev/null -X POST -H "Authorization: token $gitea_token" \
+                    -H 'Content-Type: application/json' \
+                    -d "{\"content\":\"${dockerfile_b64}\",\"message\":\"add Dockerfile\"}" \
+                    "http://127.0.0.1:13000/api/v1/repos/mortise-test/upg-git/contents/Dockerfile" 2>/dev/null || git_ok=false
+            else
+                git_ok=false
+            fi
+            kill "$GITEA_PF" 2>/dev/null || true
+            GITEA_PF=""
+        fi
+        if $git_ok; then
+            email_hex=$(printf 'test@example.com' | od -An -tx1 | tr -d ' \n')
+            kubectl -n "$NAMESPACE" create secret generic "user-gitea-upg-token-${email_hex}" \
+                --from-literal=token="$gitea_token" --dry-run=client -o yaml | kubectl apply -f - >/dev/null || git_ok=false
+            kubectl apply -f - <<'UPGGIT' >/dev/null || git_ok=false
+apiVersion: mortise.mortise.dev/v1alpha1
+kind: GitProvider
+metadata:
+  name: gitea-upg
+spec:
+  type: gitea
+  host: http://gitea.mortise-test-deps.svc:3000
+UPGGIT
+            kubectl apply -f - <<'UPGGIT' >/dev/null || git_ok=false
+apiVersion: mortise.mortise.dev/v1alpha1
+kind: App
+metadata:
+  name: upg-git
+  namespace: pj-upg
+  annotations:
+    mortise.dev/created-by: test@example.com
+spec:
+  source:
+    type: git
+    repo: http://gitea.mortise-test-deps.svc:3000/mortise-test/upg-git.git
+    branch: main
+    providerRef: gitea-upg
+  network:
+    public: false
+    port: 8080
+  environments:
+    - name: production
+      replicas: 1
+UPGGIT
+        fi
+        if $git_ok; then
+            # Cold alpine pull + BuildKit build on a shared box: generous.
+            if wait_for_deployment pj-upg-production upg-git 420; then
+                pass "Upgrade lane — git app built and deployed by ${PREV_VERSION} pre-upgrade"
+            else
+                info "  (git app did not build under ${PREV_VERSION}; app phase: $(kubectl get app upg-git -n pj-upg -o jsonpath='{.status.phase}' 2>/dev/null || echo unreadable); post-upgrade rebuild assertion will be skipped)"
+                git_ok=false
+            fi
+        else
+            info "  (gitea bootstrap failed; git-source upgrade assertion will be skipped)"
+        fi
 
         # The documented upgrade procedure (docs/install.md): CRDs first,
         # then helm upgrade with --reset-then-reuse-values. --force-conflicts
@@ -305,13 +399,42 @@ UPGAPP
             # operator two reconcile minutes to do damage before asserting.
             if $app_ok && [ -n "$pre_pod_uid" ]; then
                 sleep 120
-                post_pod_uid=$(kubectl get pods -n pj-upg-production -o jsonpath='{.items[0].metadata.uid}' 2>/dev/null || true)
-                post_phase=$(kubectl get pods -n pj-upg-production -o jsonpath='{.items[0].status.phase}' 2>/dev/null || true)
+                # The namespace now holds the git app's pods too; select by label.
+                post_pod_uid=$(kubectl get pods -n pj-upg-production -l app.kubernetes.io/name=upg-app -o jsonpath='{.items[0].metadata.uid}' 2>/dev/null || true)
+                post_phase=$(kubectl get pods -n pj-upg-production -l app.kubernetes.io/name=upg-app -o jsonpath='{.items[0].status.phase}' 2>/dev/null || true)
                 app_phase=$(kubectl get app upg-app -n pj-upg -o jsonpath='{.status.phase}' 2>/dev/null || true)
                 if [ "$post_pod_uid" = "$pre_pod_uid" ] && [ "$post_phase" = "Running" ] && [ "$app_phase" = "Ready" ]; then
                     pass "Upgrade lane — the ${PREV_VERSION}-deployed app kept serving through the upgrade (same pod, App Ready)"
                 else
                     fail "Upgrade lane — workload continuity broken: pod ${pre_pod_uid} -> ${post_pod_uid:-gone}, pod phase ${post_phase:-none}, app phase ${app_phase:-none} (CAI-1141 class)"
+                fi
+            fi
+
+            # The incident's kill shot: a rebuild on the upgraded operator
+            # must produce an image the kubelet can pull. On the broken code
+            # the rebuild reported success and every pod went
+            # ImagePullBackOff on a digest the registry never stored.
+            if $git_ok; then
+                kubectl annotate app upg-git -n pj-upg \
+                    mortise.dev/rebuild-requested-at="$(date -u +%Y-%m-%dT%H:%M:%SZ)" --overwrite >/dev/null || true
+                rebuild_ok=false
+                for _ in $(seq 1 60); do
+                    pull_errors=$(kubectl get pods -n pj-upg-production -o jsonpath='{range .items[*]}{.status.containerStatuses[0].state.waiting.reason}{"\n"}{end}' 2>/dev/null | grep -cE "ImagePullBackOff|ErrImagePull" || true)
+                    if [ "${pull_errors:-0}" -gt 0 ]; then
+                        break
+                    fi
+                    gphase=$(kubectl get app upg-git -n pj-upg -o jsonpath='{.status.phase}' 2>/dev/null || true)
+                    gready=$(kubectl get deploy upg-git -n pj-upg-production -o jsonpath='{.status.readyReplicas}' 2>/dev/null || true)
+                    if [ "$gphase" = "Ready" ] && [ "${gready:-0}" = "1" ]; then
+                        rebuild_ok=true
+                        break
+                    fi
+                    sleep 7
+                done
+                if $rebuild_ok; then
+                    pass "Upgrade lane — post-upgrade rebuild of the git app produced a pullable image (CAI-1141)"
+                else
+                    fail "Upgrade lane — post-upgrade git rebuild broken: phase $(kubectl get app upg-git -n pj-upg -o jsonpath='{.status.phase}' 2>/dev/null || echo none), pods: $(kubectl get pods -n pj-upg-production --no-headers 2>/dev/null | tr '\n' ';' || true) (CAI-1141 class)"
                 fi
             fi
         fi
