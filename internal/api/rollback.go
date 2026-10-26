@@ -242,4 +242,3 @@ func (s *Server) setEnvSpecImage(ctx context.Context, projectName, appName, envN
 		return s.client.Update(ctx, &app)
 	})
 }
-
