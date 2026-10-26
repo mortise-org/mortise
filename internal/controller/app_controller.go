@@ -1878,7 +1878,7 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 			Name:        name,
 			Namespace:   envNs,
 			Labels:      appLabels(app, env.Name),
-			Annotations: userAnno,
+			Annotations: stampManagedAnnotations(userAnno),
 		},
 		Spec: appsv1.DeploymentSpec{
 			Replicas: &replicas,
@@ -1941,12 +1941,10 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 		if err := conflictIfUnmanaged(existing, "Deployment"); err != nil {
 			return false, err
 		}
-		desiredAnnotations := mergeAnnotations(nil, desired.Annotations)
-		for k, v := range existing.Annotations {
-			if strings.HasPrefix(k, "deployment.kubernetes.io/") {
-				desiredAnnotations = mergeAnnotations(desiredAnnotations, map[string]string{k: v})
-			}
-		}
+		// Only our own annotation keys: mergeManagedAnnotations keeps every
+		// foreign key (deployment.kubernetes.io/revision among them) without
+		// the per-prefix carve-out this block used to hand-maintain.
+		desiredAnnotations, annotationsChanged := mergeManagedAnnotations(existing.Annotations, desired.Annotations)
 
 		// Re-derive desired annotations from the (possibly re-fetched) existing
 		// Deployment so stale values from a prior iteration don't persist.
@@ -2017,7 +2015,7 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 		if existing.Spec.ProgressDeadlineSeconds == nil || *existing.Spec.ProgressDeadlineSeconds != *desired.Spec.ProgressDeadlineSeconds {
 			needsUpdate = true
 		}
-		if !annotationsEqual(existing.Annotations, desiredAnnotations) {
+		if annotationsChanged {
 			needsUpdate = true
 		}
 		if !equality.Semantic.DeepEqual(existing.Spec.Template.ObjectMeta.Labels, desired.Spec.Template.ObjectMeta.Labels) {
@@ -2138,7 +2136,7 @@ func (r *AppReconciler) reconcileCronJob(ctx context.Context, app *mortisev1alph
 			Name:        name,
 			Namespace:   envNs,
 			Labels:      appLabels(app, env.Name),
-			Annotations: userAnno,
+			Annotations: stampManagedAnnotations(userAnno),
 		},
 		Spec: batchv1.CronJobSpec{
 			Schedule:          env.Schedule,
@@ -2241,7 +2239,8 @@ func (r *AppReconciler) reconcileCronJob(ctx context.Context, app *mortisev1alph
 		if !annotationsEqual(existing.Spec.JobTemplate.Spec.Template.ObjectMeta.Annotations, desiredPodAnnotations) {
 			needsUpdate = true
 		}
-		if !annotationsEqual(existing.Annotations, desired.Annotations) {
+		mergedAnnotations, annotationsChanged := mergeManagedAnnotations(existing.Annotations, desired.Annotations)
+		if annotationsChanged {
 			needsUpdate = true
 		}
 		if !equality.Semantic.DeepEqual(existing.Spec.JobTemplate.Spec.Template.ObjectMeta.Labels, desired.Spec.JobTemplate.Spec.Template.ObjectMeta.Labels) {
@@ -2260,7 +2259,7 @@ func (r *AppReconciler) reconcileCronJob(ctx context.Context, app *mortisev1alph
 			return false, nil
 		}
 
-		existing.Annotations = desired.Annotations
+		existing.Annotations = mergedAnnotations
 		existing.Spec.Schedule = desired.Spec.Schedule
 		existing.Spec.ConcurrencyPolicy = desired.Spec.ConcurrencyPolicy
 		existing.Spec.JobTemplate.Spec.Template.ObjectMeta.Annotations = desiredPodAnnotations
@@ -2285,7 +2284,7 @@ func (r *AppReconciler) reconcileService(ctx context.Context, app *mortisev1alph
 			Name:        name,
 			Namespace:   envNs,
 			Labels:      appLabels(app, env.Name),
-			Annotations: mergeAnnotations(nil, env.Annotations),
+			Annotations: stampManagedAnnotations(mergeAnnotations(nil, env.Annotations)),
 		},
 		Spec: corev1.ServiceSpec{
 			Selector: appLabels(app, env.Name),
@@ -2331,8 +2330,8 @@ update:
 			return false, err
 		}
 		changed := false
-		if !equality.Semantic.DeepEqual(existing.Annotations, desired.Annotations) {
-			existing.Annotations = desired.Annotations
+		if merged, ch := mergeManagedAnnotations(existing.Annotations, desired.Annotations); ch {
+			existing.Annotations = merged
 			changed = true
 		}
 		if !equality.Semantic.DeepEqual(existing.Labels, desired.Labels) {
@@ -2420,7 +2419,7 @@ func (r *AppReconciler) reconcileIngress(ctx context.Context, app *mortisev1alph
 			Name:        name,
 			Namespace:   envNs,
 			Labels:      appLabels(app, env.Name),
-			Annotations: mergeAnnotations(owned, env.Annotations),
+			Annotations: stampManagedAnnotations(mergeAnnotations(owned, env.Annotations)),
 		},
 		Spec: networkingv1.IngressSpec{
 			Rules: rules,
@@ -2465,8 +2464,8 @@ func (r *AppReconciler) reconcileIngress(ctx context.Context, app *mortisev1alph
 			existing.Spec = desired.Spec
 			changed = true
 		}
-		if !equality.Semantic.DeepEqual(existing.Annotations, desired.Annotations) {
-			existing.Annotations = desired.Annotations
+		if merged, ch := mergeManagedAnnotations(existing.Annotations, desired.Annotations); ch {
+			existing.Annotations = merged
 			changed = true
 		}
 		if !equality.Semantic.DeepEqual(existing.Labels, desired.Labels) {
@@ -2716,7 +2715,7 @@ func (r *AppReconciler) reconcilePVCs(ctx context.Context, app *mortisev1alpha1.
 				Name:        name,
 				Namespace:   envNs,
 				Labels:      appLabels(app, envName),
-				Annotations: envAnno,
+				Annotations: stampManagedAnnotations(envAnno),
 			},
 			Spec: corev1.PersistentVolumeClaimSpec{
 				AccessModes: []corev1.PersistentVolumeAccessMode{accessMode},
@@ -2785,8 +2784,8 @@ func (r *AppReconciler) reconcilePVCs(ctx context.Context, app *mortisev1alpha1.
 				existing.Labels = desired.Labels
 				changed = true
 			}
-			if !annotationsEqual(existing.Annotations, desired.Annotations) {
-				existing.Annotations = desired.Annotations
+			if merged, ch := mergeManagedAnnotations(existing.Annotations, desired.Annotations); ch {
+				existing.Annotations = merged
 				changed = true
 			}
 			return changed, nil
@@ -4854,6 +4853,91 @@ func appProjectName(app *mortisev1alpha1.App) (string, error) {
 // wins on key conflict — that's how a team overrides Mortise's default
 // cluster-issuer without dropping to raw Kubernetes. Returns nil if both
 // inputs are empty so callers don't write an empty annotation map.
+// managedAnnotationsKey records, on the resource itself, which annotation keys
+// Mortise applied on its last pass, so a later pass can tell "no longer
+// desired, remove it" apart from "someone else's, leave it alone".
+const managedAnnotationsKey = "mortise.dev/managed-annotations"
+
+// mergeManagedAnnotations returns the annotations a managed resource should
+// carry after Mortise applies desired, touching only the keys Mortise manages.
+// Assigning desired over the whole map wiped every foreign annotation — on a
+// PVC that removed pv.kubernetes.io/bind-completed, which the PV controller
+// immediately restored, and the two controllers fought at ~40 writes/s forever
+// (mortise issue 631). Keys listed in the resource's bookkeeping annotation but
+// no longer desired are removed; every other existing key survives. The
+// returned bool reports whether anything would change, so callers can skip the
+// write entirely — a bound PVC with no desired annotations is never written
+// again.
+func mergeManagedAnnotations(existing, desired map[string]string) (map[string]string, bool) {
+	result := make(map[string]string, len(existing)+len(desired)+1)
+	for k, v := range existing {
+		result[k] = v
+	}
+	changed := false
+	for _, k := range strings.Split(existing[managedAnnotationsKey], ",") {
+		if k == "" || k == managedAnnotationsKey {
+			continue
+		}
+		if _, want := desired[k]; !want {
+			if _, present := result[k]; present {
+				delete(result, k)
+				changed = true
+			}
+		}
+	}
+	keys := make([]string, 0, len(desired))
+	for k, v := range desired {
+		if k == managedAnnotationsKey {
+			// The create path stamps the bookkeeping onto desired itself
+			// (stampManagedAnnotations); here it is recomputed, not copied.
+			continue
+		}
+		keys = append(keys, k)
+		if cur, ok := result[k]; !ok || cur != v {
+			result[k] = v
+			changed = true
+		}
+	}
+	sort.Strings(keys)
+	if book := strings.Join(keys, ","); book == "" {
+		if _, ok := result[managedAnnotationsKey]; ok {
+			delete(result, managedAnnotationsKey)
+			changed = true
+		}
+	} else if result[managedAnnotationsKey] != book {
+		result[managedAnnotationsKey] = book
+		changed = true
+	}
+	if len(result) == 0 {
+		return nil, changed
+	}
+	return result, changed
+}
+
+// stampManagedAnnotations adds the bookkeeping entry to a desired object's
+// annotations for the create path: updates go through
+// mergeManagedAnnotations, which stamps it itself, but a resource created
+// without the stamp would make its own keys read as foreign — and therefore
+// unremovable — on every later pass.
+func stampManagedAnnotations(annotations map[string]string) map[string]string {
+	if len(annotations) == 0 {
+		return annotations
+	}
+	keys := make([]string, 0, len(annotations))
+	for k := range annotations {
+		if k != managedAnnotationsKey {
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+	out := make(map[string]string, len(annotations)+1)
+	for k, v := range annotations {
+		out[k] = v
+	}
+	out[managedAnnotationsKey] = strings.Join(keys, ",")
+	return out
+}
+
 func mergeAnnotations(owned, user map[string]string) map[string]string {
 	if len(owned) == 0 && len(user) == 0 {
 		return nil
@@ -5234,7 +5318,7 @@ func (r *AppReconciler) reconcileExternalNameService(ctx context.Context, app *m
 			Name:        name,
 			Namespace:   envNs,
 			Labels:      appLabels(app, env.Name),
-			Annotations: mergeAnnotations(nil, env.Annotations),
+			Annotations: stampManagedAnnotations(mergeAnnotations(nil, env.Annotations)),
 		},
 		Spec: corev1.ServiceSpec{
 			Type:         corev1.ServiceTypeExternalName,
@@ -5270,7 +5354,7 @@ func (r *AppReconciler) reconcileExternalNameService(ctx context.Context, app *m
 		return r.Create(ctx, desired)
 	}
 
-	existing.Annotations = desired.Annotations
+	existing.Annotations, _ = mergeManagedAnnotations(existing.Annotations, desired.Annotations)
 	existing.Spec.ExternalName = desired.Spec.ExternalName
 	return r.Update(ctx, &existing)
 }

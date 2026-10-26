@@ -74,6 +74,16 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **The controller no longer wipes annotations it didn't set** (#631): every
+  reconciled resource (Deployment, CronJob, Service, Ingress, PVC,
+  ExternalName Service) had its annotation map replaced wholesale, removing
+  keys owned by other controllers. On a PVC this deleted
+  `pv.kubernetes.io/bind-completed`, which the PV controller immediately
+  restored, so the two fought at ~40 writes/s forever. Mortise now manages
+  only its own annotation keys (tracked via a `mortise.dev/managed-annotations`
+  bookkeeping entry), leaves foreign keys alone, and skips the write entirely
+  when nothing it manages changed — a bound PVC is never written again.
+  Thanks to IIRoan for the report, diagnosis, and measurement.
 - **Rollback and promote now change the running image** (CAI-498, CAI-511):
   both patched the controller-owned Deployment directly, which the next
   reconcile reverted to the App's spec/built image — the API returned `200`
