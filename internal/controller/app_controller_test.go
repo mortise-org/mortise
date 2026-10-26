@@ -5026,6 +5026,7 @@ type fakeWebhookAPI struct {
 	registerCount int
 	deleteCount   int
 	webhooks      []git.WebhookInfo
+	branchHead    string
 	listErr       error
 	registerErr   error
 	deleteErr     error
@@ -5073,7 +5074,9 @@ func (f *fakeWebhookAPI) ListBranches(_ context.Context, _ string) ([]git.Branch
 }
 
 func (f *fakeWebhookAPI) ResolveBranchHead(_ context.Context, _, _ string) (string, error) {
-	return "", nil
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.branchHead, nil
 }
 
 func (f *fakeWebhookAPI) ListOpenPullRequests(_ context.Context, _ string) ([]git.PullRequestSnapshot, error) {
@@ -5712,6 +5715,129 @@ var _ = Describe("App Controller — git source", func() {
 			cond := meta.FindStatusCondition(app.Status.Conditions, webhookConditionType)
 			Expect(cond).NotTo(BeNil())
 			Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+		})
+
+		It("re-stamps a revision annotation the branch head has left behind (CAI-1134)", func() {
+			ctx := context.Background()
+
+			pc := &mortisev1alpha1.PlatformConfig{
+				ObjectMeta: metav1.ObjectMeta{Name: "platform"},
+				Spec:       mortisev1alpha1.PlatformConfigSpec{Domain: "example.com", ExternalDomain: "mortise.example.com"},
+			}
+			Expect(k8sClient.Create(ctx, pc)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, pc)).To(Succeed()) }()
+
+			whSecret, whRef := makeWebhookSecret(ctx, "gh-head-drift")
+			defer func() { Expect(k8sClient.Delete(ctx, whSecret)).To(Succeed()) }()
+
+			gp := &mortisev1alpha1.GitProvider{
+				ObjectMeta: metav1.ObjectMeta{Name: "gh-head-drift"},
+				Spec: mortisev1alpha1.GitProviderSpec{
+					Type:             mortisev1alpha1.GitProviderTypeGitHub,
+					Host:             "https://github.com",
+					WebhookSecretRef: whRef,
+				},
+			}
+			Expect(k8sClient.Create(ctx, gp)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, gp)).To(Succeed()) }()
+
+			tokenSecret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{Name: "user-gh-head-drift-token-74657374406578616d706c652e636f6d", Namespace: "mortise-system"},
+				Data:       map[string][]byte{"token": []byte("tok")},
+			}
+			Expect(k8sClient.Create(ctx, tokenSecret)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, tokenSecret)).To(Succeed()) }()
+
+			app := makeGitSourceApp("git-head-drift", namespace, gp.Name)
+			// The last webhook the app ever heard stamped this revision; the
+			// push that moved the branch past it was never delivered (the live
+			// incident: GitHub generated no push event for a squash merge).
+			app.Annotations["mortise.dev/revision"] = "997afcd75974ebe85a993ba812f9235b9d58d486"
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+
+			api := &fakeWebhookAPI{branchHead: "997afcd75974ebe85a993ba812f9235b9d58d486"}
+			r := gitSourceReconciler(&fakeBuildClient{digest: "sha256:drift"}, &fakeGitClient{}, &fakeRegistryBackend{})
+			r.GitAPIFactory = func(_ *mortisev1alpha1.GitProvider, _, _ string) (git.GitAPI, error) {
+				return api, nil
+			}
+
+			req := reconcile.Request{NamespacedName: types.NamespacedName{Name: app.Name, Namespace: namespace}}
+			_, err := reconcileUntilBuildDone(r, ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			// The branch moves on the git host, no webhook arrives, and the
+			// verify latch expires. Builds stay current, so only the
+			// steady-state pass can notice the drift.
+			api.mu.Lock()
+			api.branchHead = "a9777469ae0e5d6c62b4484769cdc6afb4e23558"
+			api.mu.Unlock()
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: namespace}, app)).To(Succeed())
+			backdateWebhookVerification(ctx, app)
+
+			_, err = r.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: namespace}, app)).To(Succeed())
+			Expect(app.Annotations["mortise.dev/revision"]).To(Equal("a9777469ae0e5d6c62b4484769cdc6afb4e23558"),
+				"a missed push webhook must not strand the revision annotation")
+		})
+
+		It("leaves an app the webhook never stamped alone (CAI-1134)", func() {
+			ctx := context.Background()
+
+			pc := &mortisev1alpha1.PlatformConfig{
+				ObjectMeta: metav1.ObjectMeta{Name: "platform"},
+				Spec:       mortisev1alpha1.PlatformConfigSpec{Domain: "example.com", ExternalDomain: "mortise.example.com"},
+			}
+			Expect(k8sClient.Create(ctx, pc)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, pc)).To(Succeed()) }()
+
+			whSecret, whRef := makeWebhookSecret(ctx, "gh-head-virgin")
+			defer func() { Expect(k8sClient.Delete(ctx, whSecret)).To(Succeed()) }()
+
+			gp := &mortisev1alpha1.GitProvider{
+				ObjectMeta: metav1.ObjectMeta{Name: "gh-head-virgin"},
+				Spec: mortisev1alpha1.GitProviderSpec{
+					Type:             mortisev1alpha1.GitProviderTypeGitHub,
+					Host:             "https://github.com",
+					WebhookSecretRef: whRef,
+				},
+			}
+			Expect(k8sClient.Create(ctx, gp)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, gp)).To(Succeed()) }()
+
+			tokenSecret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{Name: "user-gh-head-virgin-token-74657374406578616d706c652e636f6d", Namespace: "mortise-system"},
+				Data:       map[string][]byte{"token": []byte("tok")},
+			}
+			Expect(k8sClient.Create(ctx, tokenSecret)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, tokenSecret)).To(Succeed()) }()
+
+			// No mortise.dev/revision annotation: this app's build identity is
+			// the branch name, and stamping a SHA would change the identity.
+			app := makeGitSourceApp("git-head-virgin", namespace, gp.Name)
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, app)).To(Succeed()) }()
+
+			api := &fakeWebhookAPI{branchHead: "a9777469ae0e5d6c62b4484769cdc6afb4e23558"}
+			r := gitSourceReconciler(&fakeBuildClient{digest: "sha256:virgin"}, &fakeGitClient{}, &fakeRegistryBackend{})
+			r.GitAPIFactory = func(_ *mortisev1alpha1.GitProvider, _, _ string) (git.GitAPI, error) {
+				return api, nil
+			}
+
+			req := reconcile.Request{NamespacedName: types.NamespacedName{Name: app.Name, Namespace: namespace}}
+			_, err := reconcileUntilBuildDone(r, ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: namespace}, app)).To(Succeed())
+			backdateWebhookVerification(ctx, app)
+
+			_, err = r.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: namespace}, app)).To(Succeed())
+			Expect(app.Annotations).NotTo(HaveKey("mortise.dev/revision"))
 		})
 
 		It("replaces a URL-matching hook whose event set is short of pull_request (CAI-793)", func() {

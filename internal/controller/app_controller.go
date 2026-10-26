@@ -3614,6 +3614,49 @@ func (r *AppReconciler) ensureWebhookSteady(ctx context.Context, app *mortisev1a
 	if err := r.ensureWebhook(ctx, app, &gp, tokenResult.Token); err != nil {
 		log.Error(err, "webhook verification failed (non-fatal)")
 	}
+	r.reconcileRevisionSteady(ctx, app, &gp, tokenResult.Token)
+}
+
+// reconcileRevisionSteady re-resolves the branch HEAD for a builds-current git
+// app and re-stamps mortise.dev/revision when it is behind — exactly the write
+// the push webhook would have made. GitHub's push delivery is at-least-once in
+// practice, not in guarantee: one dropped event (never generated, per the
+// hook's own delivery log and the repo's public event stream) left an App
+// serving a stale revision indefinitely while reporting Ready, and the
+// rebuild-requested-at lever rebuilt the stale annotation rather than
+// recovering (CAI-1134). Runs on the webhook verify cadence, so a missed push
+// repairs within the hour. An App never stamped by a webhook is left alone:
+// its build identity is the branch name, and stamping a SHA would change the
+// identity rather than repair drift. Failures only log — the webhook stays
+// the trigger, this is its backstop, and the next cadence tick retries.
+func (r *AppReconciler) reconcileRevisionSteady(ctx context.Context, app *mortisev1alpha1.App, gp *mortisev1alpha1.GitProvider, token string) {
+	log := logf.FromContext(ctx)
+	current := app.Annotations["mortise.dev/revision"]
+	if current == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, git.HostTimeout)
+	defer cancel()
+	api, err := r.newGitAPI(gp, token, "")
+	if err != nil {
+		log.Error(err, "revision reconcile: create git API")
+		return
+	}
+	branch := firstNonEmpty(app.Spec.Source.Branch, "main")
+	head, err := api.ResolveBranchHead(ctx, app.Spec.Source.Repo, branch)
+	if err != nil {
+		log.Error(err, "revision reconcile: resolve branch head (non-fatal)", "branch", branch)
+		return
+	}
+	if head == "" || head == current {
+		return
+	}
+	log.Info("revision annotation is behind the branch head, re-stamping (missed push webhook)",
+		"branch", branch, "annotated", current, "head", head)
+	patch := []byte(fmt.Sprintf(`{"metadata":{"annotations":{"mortise.dev/revision":%q}}}`, head))
+	if err := r.Patch(ctx, app, client.RawPatch(types.MergePatchType, patch)); err != nil {
+		log.Error(err, "revision reconcile: patch revision annotation")
+	}
 }
 
 // ensureWebhook registers a webhook on the git repo if not already done.
