@@ -207,7 +207,10 @@ UPGAPP
                 kubectl get namespace pj-upg >/dev/null 2>&1 && { ns_ok=true; break; }
                 sleep 2
             done
-            $ns_ok || app_ok=false
+            if ! $ns_ok; then
+                info "  (control namespace pj-upg never appeared; Project status: $(kubectl get project upg -o jsonpath='{.status.phase}' 2>/dev/null || echo unreadable))"
+                app_ok=false
+            fi
         fi
         kubectl apply -f - <<'UPGAPP' >/dev/null || app_ok=false
 apiVersion: mortise.mortise.dev/v1alpha1
@@ -228,7 +231,12 @@ spec:
 UPGAPP
         pre_pod_uid=""
         if $app_ok; then
-            wait_for_deployment pj-upg-production upg-app 180 || app_ok=false
+            # 300s: the chart cluster has no image mirror, so this is a cold
+            # docker.io pull that shares the host with whatever else runs.
+            if ! wait_for_deployment pj-upg-production upg-app 300; then
+                info "  (upg-app deployment not ready; app phase: $(kubectl get app upg-app -n pj-upg -o jsonpath='{.status.phase}' 2>/dev/null || echo unreadable); pods: $(kubectl get pods -n pj-upg-production --no-headers 2>/dev/null | tr '\n' ';' || true))"
+                app_ok=false
+            fi
             pre_pod_uid=$(kubectl get pods -n pj-upg-production -o jsonpath='{.items[0].metadata.uid}' 2>/dev/null || true)
         fi
         $app_ok && [ -n "$pre_pod_uid" ] \
