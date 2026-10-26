@@ -74,6 +74,15 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Tag resolution can no longer mint unpullable image digests** (CAI-1141):
+  the registry backend's manifests HEAD sent no Accept header, so a registry
+  holding an OCI index could answer with a legacy conversion whose
+  `Docker-Content-Digest` names content that exists only as that response — a
+  pull or delete by that digest then fails with manifest-unknown while the tag
+  keeps resolving. The interrupted-build adoption probe pinned production
+  Deployments to exactly such refs during an upgrade (fleet-wide
+  ImagePullBackOff). Every manifests HEAD now declares the full set of
+  pullable manifest media types, so a resolved digest is always a stored one.
 - **The controller no longer wipes annotations it didn't set** (#631): every
   reconciled resource (Deployment, CronJob, Service, Ingress, PVC,
   ExternalName Service) had its annotation map replaced wholesale, removing

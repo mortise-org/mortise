@@ -193,7 +193,7 @@ func (b *OCIBackend) ResolveTag(ctx context.Context, project, app, tag string) (
 	path := b.imagePath(project, app)
 	headURL := b.cfg.URL + "/v2/" + path + "/manifests/" + tag
 
-	resp, err := b.do(ctx, http.MethodHead, headURL, nil)
+	resp, err := b.doWithAccept(ctx, http.MethodHead, headURL, nil, manifestAccept)
 	if err != nil {
 		return "", false, fmt.Errorf("resolving manifest for %s:%s: %w", app, tag, err)
 	}
@@ -222,7 +222,7 @@ func (b *OCIBackend) DeleteTag(ctx context.Context, project, app, tag string) er
 
 	// Step 1: resolve digest.
 	headURL := b.cfg.URL + "/v2/" + path + "/manifests/" + tag
-	resp, err := b.do(ctx, http.MethodHead, headURL, nil)
+	resp, err := b.doWithAccept(ctx, http.MethodHead, headURL, nil, manifestAccept)
 	if err != nil {
 		return fmt.Errorf("resolving digest for %s:%s: %w", app, tag, err)
 	}
@@ -261,10 +261,30 @@ func (b *OCIBackend) DeleteTag(ctx context.Context, project, app, tag string) er
 // do executes an HTTP request, applying auth. On a 401 with a Www-Authenticate
 // challenge it negotiates a bearer token and retries once — this is the standard
 // OCI Distribution Spec auth flow (§10.2 / Docker Token Auth spec).
+// manifestAccept lists every manifest media type a client can later fetch by
+// digest. A manifests request WITHOUT an Accept header lets the registry
+// answer with an on-the-fly conversion for legacy clients, and the
+// Docker-Content-Digest of a conversion names content that exists only as
+// that response: a pull or delete by that digest then fails with
+// manifest-unknown while the tag itself keeps resolving. The interrupted-build
+// adoption probe pinned production Deployments to exactly such refs
+// (CAI-1141), so every manifests HEAD must send this.
+const manifestAccept = "application/vnd.oci.image.index.v1+json, " +
+	"application/vnd.oci.image.manifest.v1+json, " +
+	"application/vnd.docker.distribution.manifest.list.v2+json, " +
+	"application/vnd.docker.distribution.manifest.v2+json"
+
 func (b *OCIBackend) do(ctx context.Context, method, rawURL string, body io.Reader) (*http.Response, error) {
+	return b.doWithAccept(ctx, method, rawURL, body, "")
+}
+
+func (b *OCIBackend) doWithAccept(ctx context.Context, method, rawURL string, body io.Reader, accept string) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, method, rawURL, body)
 	if err != nil {
 		return nil, err
+	}
+	if accept != "" {
+		req.Header.Set("Accept", accept)
 	}
 	b.applyStaticAuth(req)
 
@@ -290,6 +310,9 @@ func (b *OCIBackend) do(ctx context.Context, method, rawURL string, body io.Read
 	req2, err := http.NewRequestWithContext(ctx, method, rawURL, body)
 	if err != nil {
 		return nil, err
+	}
+	if accept != "" {
+		req2.Header.Set("Accept", accept)
 	}
 	req2.Header.Set("Authorization", "Bearer "+token)
 	return b.client.Do(req2)

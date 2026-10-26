@@ -596,3 +596,72 @@ func TestRegistryHost(t *testing.T) {
 
 // Compile-time check: OCIBackend must implement RegistryBackend.
 var _ RegistryBackend = (*OCIBackend)(nil)
+
+// The CAI-1141 regression: a manifests HEAD without an Accept header lets the
+// registry answer for a stored OCI index with an on-the-fly conversion, whose
+// Docker-Content-Digest names content that exists ONLY as that response. A
+// pull or delete by that digest then fails with manifest-unknown while the
+// tag keeps resolving — which is how the interrupted-build adoption probe
+// pinned production Deployments to unpullable image refs. The fake mirrors
+// Distribution's negotiation: the stored digest comes back only when the
+// client declares it can accept the stored media type.
+func TestResolveTagSendsManifestAccept(t *testing.T) {
+	const storedDigest = "sha256:stored-index-digest"
+	const convertedDigest = "sha256:converted-only-digest"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodHead || r.URL.Path != "/v2/mortise/acme/my-app/manifests/v1" {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if strings.Contains(r.Header.Get("Accept"), "application/vnd.oci.image.index.v1+json") {
+			w.Header().Set("Docker-Content-Digest", storedDigest)
+		} else {
+			w.Header().Set("Docker-Content-Digest", convertedDigest)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	b := newTestBackend(t, srv, Config{})
+	got, found, err := b.ResolveTag(context.Background(), "acme", "my-app", "v1")
+	if err != nil || !found {
+		t.Fatalf("ResolveTag: found=%v err=%v", found, err)
+	}
+	if got != storedDigest {
+		t.Errorf("ResolveTag returned %q — a conversion digest that cannot be pulled; want the stored %q", got, storedDigest)
+	}
+}
+
+// DeleteTag resolves the digest the same way, and deleting a conversion
+// digest 404s while the real manifest lives on — an orphaned tag that looks
+// deleted.
+func TestDeleteTagSendsManifestAccept(t *testing.T) {
+	const storedDigest = "sha256:stored-index-digest"
+	var deleted string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodHead:
+			if strings.Contains(r.Header.Get("Accept"), "application/vnd.oci.image.index.v1+json") {
+				w.Header().Set("Docker-Content-Digest", storedDigest)
+			} else {
+				w.Header().Set("Docker-Content-Digest", "sha256:converted-only-digest")
+			}
+			w.WriteHeader(http.StatusOK)
+		case http.MethodDelete:
+			deleted = r.URL.Path
+			w.WriteHeader(http.StatusAccepted)
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	}))
+	defer srv.Close()
+
+	b := newTestBackend(t, srv, Config{})
+	if err := b.DeleteTag(context.Background(), "acme", "my-app", "v1"); err != nil {
+		t.Fatalf("DeleteTag: %v", err)
+	}
+	if want := "/v2/mortise/acme/my-app/manifests/" + storedDigest; deleted != want {
+		t.Errorf("deleted %q, want the stored digest path %q", deleted, want)
+	}
+}
