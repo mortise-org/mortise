@@ -748,3 +748,141 @@ func TestGetSharedVarsMissingProject(t *testing.T) {
 		t.Fatalf("expected 404 for missing project, got %d: %s", w.Code, w.Body.String())
 	}
 }
+
+// The issue 560 regression: GET returns managed vars alongside user ones, so a
+// client that round-trips the full set — the pre-1.1.0 UI did on every save,
+// and any GET→PUT script still does — echoed the binding var back unchanged
+// and was rejected with "cannot overwrite ... managed by binding". Saving a
+// NEW user var then failed although nothing managed was being modified. An
+// unchanged managed var must be a no-op; only an actual value change conflicts.
+func TestPutEnvToleratesUnchangedManagedVar(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+	ns := seedProject(t, k8sClient, "default")
+
+	ctx := context.Background()
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "put-echo-app", Namespace: ns},
+		Spec: mortisev1alpha1.AppSpec{
+			Source:       mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: "nginx:1.25.0"},
+			Environments: []mortisev1alpha1.Environment{{Name: "production"}},
+		},
+	}
+	if err := k8sClient.Create(ctx, app); err != nil {
+		t.Fatalf("create app: %v", err)
+	}
+
+	envNs := constants.EnvNamespace("default", "production")
+	_ = k8sClient.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: envNs}})
+
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      envstore.AppEnvSecretName("put-echo-app"),
+			Namespace: envNs,
+			Annotations: map[string]string{
+				"mortise.dev/binding-keys": "DB_URL",
+			},
+		},
+		Data: map[string][]byte{
+			"DB_URL": []byte("postgres://localhost/db"),
+		},
+	}
+	if err := k8sClient.Create(ctx, secret); err != nil {
+		t.Fatalf("seed env secret: %v", err)
+	}
+
+	// The reporter's flow: add one new user var, echoing the binding var back
+	// with its current value.
+	w := doRequest(h, http.MethodPut, "/api/projects/default/apps/put-echo-app/env?environment=production", []map[string]string{
+		{"name": "DB_URL", "value": "postgres://localhost/db"},
+		{"name": "MY_VAR", "value": "hello"},
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 for an unchanged managed var plus a new user var, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// The binding var must keep its real source, not become a user copy.
+	var got corev1.Secret
+	if err := k8sClient.Get(ctx, client.ObjectKey{Name: envstore.AppEnvSecretName("put-echo-app"), Namespace: envNs}, &got); err != nil {
+		t.Fatalf("read env secret: %v", err)
+	}
+	if string(got.Data["DB_URL"]) != "postgres://localhost/db" {
+		t.Errorf("binding var value changed: %q", got.Data["DB_URL"])
+	}
+	if string(got.Data["MY_VAR"]) != "hello" {
+		t.Errorf("new user var missing: %q", got.Data["MY_VAR"])
+	}
+	if keys := got.Annotations["mortise.dev/binding-keys"]; keys != "DB_URL" {
+		t.Errorf("binding ownership lost: binding-keys = %q", keys)
+	}
+
+	// A changed value is still an overwrite and still conflicts.
+	w = doRequest(h, http.MethodPut, "/api/projects/default/apps/put-echo-app/env?environment=production", []map[string]string{
+		{"name": "DB_URL", "value": "postgres://evil/db"},
+	})
+	if w.Code != http.StatusConflict {
+		t.Fatalf("expected 409 for a changed managed var, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// The PATCH analog of TestPutEnvToleratesUnchangedManagedVar.
+func TestPatchEnvToleratesUnchangedManagedVar(t *testing.T) {
+	k8sClient := setupEnvtest(t)
+	srv := newAdminServer(t, k8sClient)
+	h := srv.Handler()
+	ns := seedProject(t, k8sClient, "default")
+
+	ctx := context.Background()
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "patch-echo-app", Namespace: ns},
+		Spec: mortisev1alpha1.AppSpec{
+			Source:       mortisev1alpha1.AppSource{Type: mortisev1alpha1.SourceTypeImage, Image: "nginx:1.25.0"},
+			Environments: []mortisev1alpha1.Environment{{Name: "production"}},
+		},
+	}
+	if err := k8sClient.Create(ctx, app); err != nil {
+		t.Fatalf("create app: %v", err)
+	}
+
+	envNs := constants.EnvNamespace("default", "production")
+	_ = k8sClient.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: envNs}})
+
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      envstore.AppEnvSecretName("patch-echo-app"),
+			Namespace: envNs,
+			Annotations: map[string]string{
+				"mortise.dev/binding-keys": "DB_URL",
+			},
+		},
+		Data: map[string][]byte{
+			"DB_URL": []byte("postgres://localhost/db"),
+		},
+	}
+	if err := k8sClient.Create(ctx, secret); err != nil {
+		t.Fatalf("seed env secret: %v", err)
+	}
+
+	w := doRequest(h, http.MethodPatch, "/api/projects/default/apps/patch-echo-app/env?environment=production", map[string]any{
+		"set": map[string]string{"DB_URL": "postgres://localhost/db", "MY_VAR": "hello"},
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 for an unchanged managed var plus a new user var, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var got corev1.Secret
+	if err := k8sClient.Get(ctx, client.ObjectKey{Name: envstore.AppEnvSecretName("patch-echo-app"), Namespace: envNs}, &got); err != nil {
+		t.Fatalf("read env secret: %v", err)
+	}
+	if string(got.Data["MY_VAR"]) != "hello" {
+		t.Errorf("new user var missing: %q", got.Data["MY_VAR"])
+	}
+
+	w = doRequest(h, http.MethodPatch, "/api/projects/default/apps/patch-echo-app/env?environment=production", map[string]any{
+		"set": map[string]string{"DB_URL": "postgres://evil/db"},
+	})
+	if w.Code != http.StatusConflict {
+		t.Fatalf("expected 409 for a changed managed var, got %d: %s", w.Code, w.Body.String())
+	}
+}

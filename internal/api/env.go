@@ -235,15 +235,31 @@ func (s *Server) PutEnv(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		existingSource := make(map[string]string, len(existing))
+		existingValue := make(map[string]string, len(existing))
 		for _, e := range existing {
 			existingSource[e.Name] = e.Source
+			existingValue[e.Name] = e.Value
 		}
+		// A managed var sent back with its current value is a no-op, not an
+		// overwrite: GET returns managed vars alongside user ones, so a client
+		// that round-trips the full set (the pre-1.1.0 UI did; any GET→PUT
+		// script still does) must not be rejected over a var it never changed
+		// (issue 560). Only an actual value change is a conflict.
+		tolerated := make(map[string]bool)
 		for _, v := range vars {
 			if source, ok := declarativeSource[v.Name]; ok {
+				if cur, ok := existingValue[v.Name]; ok && cur == v.Value {
+					tolerated[v.Name] = true
+					continue
+				}
 				return nil, &envConflictError{fmt.Sprintf(
 					"cannot overwrite %q: managed by %s (only user-set vars can be modified)", v.Name, source)}
 			}
 			if src, ok := existingSource[v.Name]; ok && src != "" && src != "user" {
+				if existingValue[v.Name] == v.Value {
+					tolerated[v.Name] = true
+					continue
+				}
 				return nil, &envConflictError{fmt.Sprintf(
 					"cannot overwrite %q: managed by %s (only user-set vars can be modified)", v.Name, src)}
 			}
@@ -258,8 +274,12 @@ func (s *Server) PutEnv(w http.ResponseWriter, r *http.Request) {
 				merged = append(merged, e)
 			}
 		}
-		// Append the new user vars.
+		// Append the new user vars; a tolerated managed var is already in
+		// merged with its real source and must not become a user copy.
 		for _, v := range vars {
+			if tolerated[v.Name] {
+				continue
+			}
 			merged = append(merged, envstore.Env{Name: v.Name, Value: v.Value, Source: "user"})
 		}
 		return merged, nil
@@ -357,22 +377,38 @@ func (s *Server) PatchEnv(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		// Apply sets — reject overwrites of non-user sources.
+		// Apply sets — reject overwrites of non-user sources, except a set that
+		// restates the current value, which is a no-op rather than an overwrite
+		// (issue 560: a client echoing back what GET returned must not 409).
 		existingSource := make(map[string]string, len(result))
+		existingValue := make(map[string]string, len(result))
 		for _, e := range result {
 			existingSource[e.Name] = e.Source
+			existingValue[e.Name] = e.Value
 		}
-		for k := range req.Set {
+		tolerated := make(map[string]bool)
+		for k, v := range req.Set {
 			if source, ok := declarativeSource[k]; ok {
+				if cur, ok := existingValue[k]; ok && cur == v {
+					tolerated[k] = true
+					continue
+				}
 				return nil, &envConflictError{fmt.Sprintf(
 					"cannot overwrite %q: managed by %s (only user-set vars can be modified)", k, source)}
 			}
 			if src, ok := existingSource[k]; ok && src != "" && src != "user" {
+				if existingValue[k] == v {
+					tolerated[k] = true
+					continue
+				}
 				return nil, &envConflictError{fmt.Sprintf(
 					"cannot overwrite %q: managed by %s (only user-set vars can be modified)", k, src)}
 			}
 		}
 		for k, v := range req.Set {
+			if tolerated[k] {
+				continue
+			}
 			found := false
 			for i := range result {
 				if result[i].Name == k {
