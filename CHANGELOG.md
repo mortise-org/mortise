@@ -9,6 +9,13 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **A Project with no members says so** (CAI-944): git-source builds use
+  membership-based git auth, so a freshly created Project builds nothing
+  until a ProjectMember exists — but the only symptom was a per-App
+  `GitAuthFailed`. The Project now carries a `MembersReady` condition:
+  `False/NoMembers` (naming the consequence) while the control namespace has
+  no ProjectMember, `True` once one exists, updated immediately on member
+  add/remove.
 - **A PVC stranded by a volume removal is now a condition** (CAI-506):
   removing a volume from an App's spec leaves its PVC in place (data is
   never deleted implicitly), but nothing said so — the volume simply
@@ -107,6 +114,15 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   ... managed by binding", even when only a new user var was being added.
   An incoming managed var whose value matches the current one is now a no-op;
   an actual value change still conflicts.
+- **A missed push webhook no longer strands a git app on a stale revision**
+  (CAI-1134): the push webhook was the only writer of the revision an app
+  builds, so one dropped delivery (observed in production: GitHub generated
+  no push event for a squash merge) left the app serving the old commit
+  indefinitely while reporting Ready — and a manual rebuild faithfully
+  rebuilt the stale revision. On the hourly verify cadence the operator now
+  re-resolves the branch head and, when the annotation is behind, re-stamps
+  it exactly as the webhook would have, so a missed push repairs within the
+  hour.
 - **Webhooks are verified while an app is idle, and a deficient hook is
   rejected** (CAI-793): webhook verification only ran while a build was
   pending, so `WebhookConfigured` latched stale on idle apps — a webhook
@@ -133,6 +149,16 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   always created, empty included, and the `envFrom` references are
   required: an absent Secret blocks the container loudly and the
   controller recreates it on the next reconcile.
+- **A member arriving after the App now unlatches `GitAuthFailed`** (CAI-960):
+  the App controller had no ProjectMember watch, so an App that reconciled
+  before the project's first member latched `GitAuthFailed` and a valid token
+  added afterwards went unread until an unrelated touch or the cache resync.
+  A ProjectMember event now re-reconciles the project's git-source Apps, so
+  the App recovers on its own the moment the member exists.
+- **The app drawer's tab strip scrolls at narrow viewports** (CAI-570): at
+  ~540px the tab row overflowed with no horizontal scroll, leaving the later
+  tabs unreachable. The strip now scrolls without clipping the active tab's
+  border, and tabs no longer shrink or wrap.
 - **Rollback and promote now change the running image** (CAI-498, CAI-511):
   both patched the controller-owned Deployment directly, which the next
   reconcile reverted to the App's spec/built image — the API returned `200`

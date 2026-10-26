@@ -294,18 +294,23 @@
 	</div>
 
 	<!-- Tabs -->
-	<div class="flex shrink-0 gap-1 border-b border-surface-600 px-4">
-		{#each tabs as tab (tab)}
-			<button
-				type="button"
-				onclick={() => store.setDrawerTab(tab)}
-				class="-mb-px border-b-2 px-3 py-1.5 text-xs font-medium transition-colors {store.drawerTab === tab
-					? 'border-accent text-white'
-					: 'border-transparent text-gray-500 hover:text-white'}"
-			>
-				{tabLabel(tab)}
-			</button>
-		{/each}
+	<div class="shrink-0 border-b border-surface-600 px-4">
+		<!-- The -mb-px overlap lives on the scroll wrapper, not the buttons: a
+		     negative margin on a child of an overflow-x container would clip the
+		     active tab's border. -->
+		<div class="-mb-px flex gap-1 overflow-x-auto">
+			{#each tabs as tab (tab)}
+				<button
+					type="button"
+					onclick={() => store.setDrawerTab(tab)}
+					class="shrink-0 whitespace-nowrap border-b-2 px-3 py-1.5 text-xs font-medium transition-colors {store.drawerTab === tab
+						? 'border-accent text-white'
+						: 'border-transparent text-gray-500 hover:text-white'}"
+				>
+					{tabLabel(tab)}
+				</button>
+			{/each}
+		</div>
 	</div>
 
 	<!-- Tab content -->

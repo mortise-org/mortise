@@ -3614,6 +3614,70 @@ func (r *AppReconciler) ensureWebhookSteady(ctx context.Context, app *mortisev1a
 	if err := r.ensureWebhook(ctx, app, &gp, tokenResult.Token); err != nil {
 		log.Error(err, "webhook verification failed (non-fatal)")
 	}
+	r.reconcileRevisionSteady(ctx, app, &gp, tokenResult.Token)
+}
+
+// reconcileRevisionSteady re-resolves the branch HEAD for a builds-current git
+// app and re-stamps mortise.dev/revision when it is behind — exactly the write
+// the push webhook would have made. GitHub's push delivery is at-least-once in
+// practice, not in guarantee: one dropped event (never generated, per the
+// hook's own delivery log and the repo's public event stream) left an App
+// serving a stale revision indefinitely while reporting Ready, and the
+// rebuild-requested-at lever rebuilt the stale annotation rather than
+// recovering (CAI-1134). Runs on the webhook verify cadence, so a missed push
+// repairs within the hour. An App never stamped by a webhook is left alone:
+// its build identity is the branch name, and stamping a SHA would change the
+// identity rather than repair drift. Failures only log — the webhook stays
+// the trigger, this is its backstop, and the next cadence tick retries.
+func (r *AppReconciler) reconcileRevisionSteady(ctx context.Context, app *mortisev1alpha1.App, gp *mortisev1alpha1.GitProvider, token string) {
+	log := logf.FromContext(ctx)
+	current := app.Annotations["mortise.dev/revision"]
+	// Only a commit-SHA annotation is a webhook stamp that can go stale. A
+	// branch-name annotation means "track the branch": the build resolves it
+	// at clone time, so there is no drift to repair, and re-stamping it to a
+	// SHA would convert a tracking app into a pinned one and change its build
+	// identity. That churned every such app on each reconcile once the
+	// webhook condition was not True (webhookVerificationDue is true then),
+	// which the integration suite caught on the first PR after this shipped.
+	if !looksLikeCommitSHA(current) {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, git.HostTimeout)
+	defer cancel()
+	api, err := r.newGitAPI(gp, token, "")
+	if err != nil {
+		log.Error(err, "revision reconcile: create git API")
+		return
+	}
+	branch := firstNonEmpty(app.Spec.Source.Branch, "main")
+	head, err := api.ResolveBranchHead(ctx, app.Spec.Source.Repo, branch)
+	if err != nil {
+		log.Error(err, "revision reconcile: resolve branch head (non-fatal)", "branch", branch)
+		return
+	}
+	if head == "" || head == current {
+		return
+	}
+	log.Info("revision annotation is behind the branch head, re-stamping (missed push webhook)",
+		"branch", branch, "annotated", current, "head", head)
+	patch := []byte(fmt.Sprintf(`{"metadata":{"annotations":{"mortise.dev/revision":%q}}}`, head))
+	if err := r.Patch(ctx, app, client.RawPatch(types.MergePatchType, patch)); err != nil {
+		log.Error(err, "revision reconcile: patch revision annotation")
+	}
+}
+
+// looksLikeCommitSHA reports whether s is a full 40-hex git commit id, the
+// only form the webhook handler stamps.
+func looksLikeCommitSHA(s string) bool {
+	if len(s) != 40 {
+		return false
+	}
+	for _, c := range s {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // ensureWebhook registers a webhook on the git repo if not already done.
@@ -5672,6 +5736,37 @@ func (r *AppReconciler) appRequestsForBindingCredentialSecret(ctx context.Contex
 	return reqs
 }
 
+// appRequestsForProjectMember maps a ProjectMember to the git-source Apps of
+// its project. Git auth resolves tokens through the members in the App's own
+// (control) namespace, so an App that reconciled before the first member
+// existed latched GitAuthFailed and nothing re-looked: the valid token Secret
+// sat unread until an unrelated touch or the cache resync (CAI-960). Member
+// add, update, and delete all enqueue -- a removed member can also be the one
+// whose cached token an App is serving with.
+func (r *AppReconciler) appRequestsForProjectMember(ctx context.Context, obj client.Object) []reconcile.Request {
+	member, ok := obj.(*mortisev1alpha1.ProjectMember)
+	if !ok || member == nil || member.Namespace == "" {
+		return nil
+	}
+	var apps mortisev1alpha1.AppList
+	if err := r.List(ctx, &apps, client.InNamespace(member.Namespace)); err != nil {
+		logf.FromContext(ctx).Error(err, "listing Apps for a ProjectMember event",
+			"member", member.Namespace+"/"+member.Name)
+		return nil
+	}
+	var reqs []reconcile.Request
+	for i := range apps.Items {
+		if apps.Items[i].Spec.Source.Type != mortisev1alpha1.SourceTypeGit {
+			continue
+		}
+		reqs = append(reqs, reconcile.Request{NamespacedName: types.NamespacedName{
+			Name:      apps.Items[i].Name,
+			Namespace: apps.Items[i].Namespace,
+		}})
+	}
+	return reqs
+}
+
 // appRequestsForWebhookSecret maps a GitProvider's webhook HMAC Secret to
 // every App sourced from that provider. ensureWebhook folds the secret into
 // its registration input hash, so once the App reconciles the hook is
@@ -5816,6 +5911,7 @@ func (r *AppReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(&networkingv1.Ingress{}, enqueueAppFromManagedResource).
 		Watches(&mortisev1alpha1.BuildRun{}, enqueueAppFromBuildRun).
 		Watches(&mortisev1alpha1.PreviewEnvironment{}, enqueueAppsFromPreviewEnvironment).
+		Watches(&mortisev1alpha1.ProjectMember{}, handler.EnqueueRequestsFromMapFunc(r.appRequestsForProjectMember)).
 		Named("app").
 		Complete(r)
 }

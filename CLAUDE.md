@@ -299,7 +299,7 @@ Makefile
 
 ```yaml
 # Project: top-level grouping, cluster-scoped
-apiVersion: mortise.dev/v1alpha1
+apiVersion: mortise.mortise.dev/v1alpha1
 kind: Project
 metadata:
   name: my-saas
@@ -315,7 +315,7 @@ status:
 # App: the user-facing workload resource
 # Apps live in their Project's control namespace: metadata.namespace = pj-{project-name}
 # Workloads fan out into pj-{project-name}-{env-name} per environment.
-apiVersion: mortise.dev/v1alpha1
+apiVersion: mortise.mortise.dev/v1alpha1
 kind: App
 metadata:
   name: my-app
@@ -340,7 +340,7 @@ spec:
 
 ```yaml
 # PlatformConfig: cluster-scoped, one per install
-apiVersion: mortise.dev/v1alpha1
+apiVersion: mortise.mortise.dev/v1alpha1
 kind: PlatformConfig
 metadata: { name: platform }
 spec:
@@ -352,7 +352,7 @@ spec:
 
 ```yaml
 # GitProvider: cluster-scoped, one per git host
-apiVersion: mortise.dev/v1alpha1
+apiVersion: mortise.mortise.dev/v1alpha1
 kind: GitProvider
 metadata: { name: github-main }
 spec:

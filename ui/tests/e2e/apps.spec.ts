@@ -352,6 +352,24 @@ test.describe('app drawer', () => {
 		await expect(page.getByPlaceholder('Filter settings…')).toBeVisible({ timeout: 5_000 });
 	});
 
+	test('tab strip scrolls at narrow viewports — Settings tab reachable at 540px', async ({
+		page
+	}) => {
+		// CAI-570: at a 540px-wide viewport the tab row overflowed the viewport
+		// with no scroll, making the last tabs unreachable.
+		await page.setViewportSize({ width: 540, height: 960 });
+		await injectToken(page, token);
+		await page.goto(`/projects/${project}/apps/${appName}`);
+
+		await expect(page.getByRole('heading', { name: appName })).toBeVisible({ timeout: 10_000 });
+
+		// Click auto-scrolls the strip; without overflow-x this times out
+		// ("element is outside of the viewport").
+		await page.getByRole('button', { name: 'Settings', exact: true }).click({ timeout: 5_000 });
+
+		await expect(page.getByPlaceholder('Filter settings…')).toBeVisible({ timeout: 5_000 });
+	});
+
 	test('phase badge is visible in drawer header', async ({ page }) => {
 		await injectToken(page, token);
 		await page.goto(`/projects/${project}/apps/${appName}`);
