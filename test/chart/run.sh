@@ -231,9 +231,11 @@ spec:
 UPGAPP
         pre_pod_uid=""
         if $app_ok; then
-            # 300s: the chart cluster has no image mirror, so this is a cold
-            # docker.io pull that shares the host with whatever else runs.
-            if ! wait_for_deployment pj-upg-production upg-app 300; then
+            # 600s: the chart cluster has no image mirror, so this is a cold
+            # docker.io pull, and run 7 measured the operator's FIRST App
+            # reconcile landing ~5 minutes after creation while the umbrella's
+            # components were still starting on a loaded box (CAI-1155).
+            if ! wait_for_deployment pj-upg-production upg-app 600; then
                 info "  (upg-app deployment not ready; app phase: $(kubectl get app upg-app -n pj-upg -o jsonpath='{.status.phase}' 2>/dev/null || echo unreadable); pods: $(kubectl get pods -n pj-upg-production --no-headers 2>/dev/null | tr '\n' ';' || true))"
                 info "  --- upg-app object ---"
                 kubectl get app upg-app -n pj-upg -o yaml 2>&1 | tail -30 || true
@@ -330,8 +332,9 @@ spec:
 UPGGIT
         fi
         if $git_ok; then
-            # Cold alpine pull + BuildKit build on a shared box: generous.
-            if wait_for_deployment pj-upg-production upg-git 420; then
+            # Cold alpine pull + BuildKit build + the CAI-1155 first-reconcile
+            # latency on a loaded box: very generous.
+            if wait_for_deployment pj-upg-production upg-git 900; then
                 pass "Upgrade lane — git app built and deployed by ${PREV_VERSION} pre-upgrade"
             else
                 info "  (git app did not build under ${PREV_VERSION}; app phase: $(kubectl get app upg-git -n pj-upg -o jsonpath='{.status.phase}' 2>/dev/null || echo unreadable); post-upgrade rebuild assertion will be skipped)"
