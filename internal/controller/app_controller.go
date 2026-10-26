@@ -5672,6 +5672,37 @@ func (r *AppReconciler) appRequestsForBindingCredentialSecret(ctx context.Contex
 	return reqs
 }
 
+// appRequestsForProjectMember maps a ProjectMember to the git-source Apps of
+// its project. Git auth resolves tokens through the members in the App's own
+// (control) namespace, so an App that reconciled before the first member
+// existed latched GitAuthFailed and nothing re-looked: the valid token Secret
+// sat unread until an unrelated touch or the cache resync (CAI-960). Member
+// add, update, and delete all enqueue -- a removed member can also be the one
+// whose cached token an App is serving with.
+func (r *AppReconciler) appRequestsForProjectMember(ctx context.Context, obj client.Object) []reconcile.Request {
+	member, ok := obj.(*mortisev1alpha1.ProjectMember)
+	if !ok || member == nil || member.Namespace == "" {
+		return nil
+	}
+	var apps mortisev1alpha1.AppList
+	if err := r.List(ctx, &apps, client.InNamespace(member.Namespace)); err != nil {
+		logf.FromContext(ctx).Error(err, "listing Apps for a ProjectMember event",
+			"member", member.Namespace+"/"+member.Name)
+		return nil
+	}
+	var reqs []reconcile.Request
+	for i := range apps.Items {
+		if apps.Items[i].Spec.Source.Type != mortisev1alpha1.SourceTypeGit {
+			continue
+		}
+		reqs = append(reqs, reconcile.Request{NamespacedName: types.NamespacedName{
+			Name:      apps.Items[i].Name,
+			Namespace: apps.Items[i].Namespace,
+		}})
+	}
+	return reqs
+}
+
 // appRequestsForWebhookSecret maps a GitProvider's webhook HMAC Secret to
 // every App sourced from that provider. ensureWebhook folds the secret into
 // its registration input hash, so once the App reconciles the hook is
@@ -5816,6 +5847,7 @@ func (r *AppReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(&networkingv1.Ingress{}, enqueueAppFromManagedResource).
 		Watches(&mortisev1alpha1.BuildRun{}, enqueueAppFromBuildRun).
 		Watches(&mortisev1alpha1.PreviewEnvironment{}, enqueueAppsFromPreviewEnvironment).
+		Watches(&mortisev1alpha1.ProjectMember{}, handler.EnqueueRequestsFromMapFunc(r.appRequestsForProjectMember)).
 		Named("app").
 		Complete(r)
 }
