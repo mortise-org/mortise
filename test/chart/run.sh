@@ -461,12 +461,15 @@ sys.exit(0 if diffs and all(allowed.match(d) for d in diffs) else 1)
             if $git_ok; then
                 kubectl annotate app upg-git -n pj-upg \
                     mortise.dev/rebuild-requested-at="$(date -u +%Y-%m-%dT%H:%M:%SZ)" --overwrite >/dev/null || true
+                # Do not fail on the first ImagePullBackOff sample: the
+                # upgrade rolls the registry and its proxy, and a pull that
+                # lands in that window backs off for minutes before kubelet
+                # retries (run 16 flaked exactly this way). The incident's
+                # signature is a PERSISTENT unpullable ref, so ride out the
+                # whole budget: recovery to Ready passes, persistence fails
+                # into the diagnostics below.
                 rebuild_ok=false
-                for _ in $(seq 1 60); do
-                    pull_errors=$(kubectl get pods -n pj-upg-production -o jsonpath='{range .items[*]}{.status.containerStatuses[0].state.waiting.reason}{"\n"}{end}' 2>/dev/null | grep -cE "ImagePullBackOff|ErrImagePull" || true)
-                    if [ "${pull_errors:-0}" -gt 0 ]; then
-                        break
-                    fi
+                for _ in $(seq 1 90); do
                     gphase=$(kubectl get app upg-git -n pj-upg -o jsonpath='{.status.phase}' 2>/dev/null || true)
                     gready=$(kubectl get deploy upg-git -n pj-upg-production -o jsonpath='{.status.readyReplicas}' 2>/dev/null || true)
                     if [ "$gphase" = "Ready" ] && [ "${gready:-0}" = "1" ]; then
