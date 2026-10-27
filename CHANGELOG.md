@@ -16,6 +16,13 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   upgrade rebuilds each git app into its new path; running pods keep serving
   through it, and nothing deletes the old images. One-time churn,
   proportional to your git-app count.
+- **Every app's pods restart once after this upgrade.** The env and
+  credentials Secret references on workloads are now required instead of
+  optional (a missing Secret fails loud instead of the pod silently starting
+  without its variables), and converging existing Deployments to the new
+  template performs one rolling update per app. Apps with RWO volumes use the
+  Recreate strategy, so their single restart is a brief interruption rather
+  than a zero-downtime roll.
 
 ### Added
 

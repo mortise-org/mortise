@@ -420,6 +420,35 @@ UPGGIT
                 app_phase=$(kubectl get app upg-app -n pj-upg -o jsonpath='{.status.phase}' 2>/dev/null || true)
                 if [ "$post_pod_uid" = "$pre_pod_uid" ] && [ "$post_phase" = "Running" ] && [ "$app_phase" = "Ready" ]; then
                     pass "Upgrade lane — the ${PREV_VERSION}-deployed app kept serving through the upgrade (same pod, App Ready)"
+                elif [ "$post_phase" = "Running" ] && [ "$app_phase" = "Ready" ] \
+                    && kubectl get rs -n pj-upg-production -l app.kubernetes.io/name=upg-app -o json \
+                       | python3 -c '
+# One roll is documented for upgrades from 1.1.0: the envFrom Secret refs
+# became required (CAI-1003), and converging the template restarts the pods
+# once. Tolerate a roll ONLY when the old and new ReplicaSet templates
+# differ in exactly that; any other template drift is still a failure.
+# Self-tightening: once the lane N-1 carries required refs, no roll happens
+# and the same-pod branch above is the only pass.
+import json, re, sys
+items = json.load(sys.stdin)["items"]
+if len(items) != 2:
+    sys.exit(1)
+items.sort(key=lambda r: r["metadata"]["creationTimestamp"])
+old, new = (r["spec"]["template"] for r in items)
+for t in (old, new):
+    t["metadata"]["labels"].pop("pod-template-hash", None)
+def flat(x, p=""):
+    if isinstance(x, dict):
+        return {k2: v2 for k, v in x.items() for k2, v2 in flat(v, p + "." + k).items()}
+    if isinstance(x, list):
+        return {k2: v2 for i, v in enumerate(x) for k2, v2 in flat(v, "%s[%d]" % (p, i)).items()}
+    return {p: x}
+fo, fn = flat(old), flat(new)
+diffs = [k for k in set(fo) | set(fn) if fo.get(k) != fn.get(k)]
+allowed = re.compile(r"^\.spec\.containers\[\d+\]\.envFrom\[\d+\]\.secretRef\.optional$")
+sys.exit(0 if diffs and all(allowed.match(d) for d in diffs) else 1)
+'; then
+                    pass "Upgrade lane — one documented roll (envFrom refs became required), no other template drift, App Ready"
                 else
                     fail "Upgrade lane — workload continuity broken: pod ${pre_pod_uid} -> ${post_pod_uid:-gone}, pod phase ${post_phase:-none}, app phase ${app_phase:-none} (CAI-1141 class)"
                 fi
