@@ -19,6 +19,10 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **`mortise app create --storage`** (#633): persistent volumes from the CLI
+  as `name:mountPath:size[:storageClass]`, repeatable, with the size required
+  so a claim can never silently request zero storage. Contributed by
+  LeonardoFranco28 — their first open source contribution.
 - **A Project with no members says so** (CAI-944): git-source builds use
   membership-based git auth, so a freshly created Project builds nothing
   until a ProjectMember exists — but the only symptom was a per-App
