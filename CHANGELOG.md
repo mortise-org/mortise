@@ -7,6 +7,16 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Upgrade notes
+
+- **Every git-source app rebuilds once after this upgrade.** Image repository
+  paths are project-scoped now ({namespace}/{project}/{app}), because app
+  names are unique only within a project and the old shared path let one
+  project's build adopt another's image. The first reconcile after the
+  upgrade rebuilds each git app into its new path; running pods keep serving
+  through it, and nothing deletes the old images. One-time churn,
+  proportional to your git-app count.
+
 ### Added
 
 - **A Project with no members says so** (CAI-944): git-source builds use
