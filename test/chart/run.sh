@@ -52,7 +52,19 @@ PF_PID=""
 
 wait_for_deployment() {
     local ns="$1" name="$2" timeout="${3:-120}"
-    kubectl -n "$ns" rollout status "deployment/$name" --timeout="${timeout}s" 2>/dev/null
+    # rollout status exits immediately with NotFound when the Deployment
+    # does not exist yet, so a wait aimed at something the operator is
+    # still creating never actually waited: the upgrade-lane cases
+    # "skipped" one second after applying their Apps (CAI-1155). Poll for
+    # existence first, then hand the remaining budget to rollout status.
+    local deadline=$((SECONDS + timeout))
+    until kubectl -n "$ns" get "deployment/$name" >/dev/null 2>&1; do
+        [ "$SECONDS" -ge "$deadline" ] && return 1
+        sleep 3
+    done
+    local remaining=$((deadline - SECONDS))
+    [ "$remaining" -lt 10 ] && remaining=10
+    kubectl -n "$ns" rollout status "deployment/$name" --timeout="${remaining}s" 2>/dev/null
 }
 
 wait_for_pods_ready() {
