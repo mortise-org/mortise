@@ -219,7 +219,7 @@ dev-up: build-ui ## Create k3d dev cluster with build infra, install Mortise, po
 	kubectl --context $(DEV_KUBE_CONTEXT) -n mortise-system rollout restart deployment/mortise
 	kubectl --context $(DEV_KUBE_CONTEXT) -n mortise-system rollout status deployment/mortise --timeout=60s
 	@echo "==> Starting port-forward..."
-	@-pkill -f "[k]ubectl port-forward.*8090" >/dev/null 2>&1
+	@-pkill -f "[k]ubectl --context $(DEV_KUBE_CONTEXT) port-forward" >/dev/null 2>&1
 	@if command -v setsid >/dev/null 2>&1; then \
 		nohup setsid kubectl --context $(DEV_KUBE_CONTEXT) port-forward -n mortise-system svc/mortise 8090:80 >$(DEV_PORT_FORWARD_LOG) 2>&1 </dev/null & \
 	else \
@@ -244,14 +244,14 @@ dev-up: build-ui ## Create k3d dev cluster with build infra, install Mortise, po
 
 .PHONY: dev-down
 dev-down: ## Delete k3d dev cluster and stop port-forward
-	@-pkill -f "[k]ubectl port-forward.*8090" >/dev/null 2>&1
+	@-pkill -f "[k]ubectl --context $(DEV_KUBE_CONTEXT) port-forward" >/dev/null 2>&1
 	k3d cluster delete $(DEV_CLUSTER)
 
 
 .PHONY: dev-reset
 dev-reset: ## Tear down dev cluster completely, rebuild, and start fresh
 	-k3d cluster delete $(DEV_CLUSTER) >/dev/null 2>&1
-	-pkill -f "[k]ubectl port-forward.*8090" >/dev/null 2>&1
+	-pkill -f "[k]ubectl --context $(DEV_KUBE_CONTEXT) port-forward" >/dev/null 2>&1
 	$(MAKE) dev-up
 
 ##@ Integration Tests
@@ -578,7 +578,7 @@ dev-reload: build-ui ## Rebuild image, re-apply CRDs + chart, restart Mortise in
 	# Restart required: PlatformConfig registry/build settings load at boot only.
 	kubectl --context $(DEV_KUBE_CONTEXT) rollout restart deployment/mortise -n mortise-system
 	kubectl --context $(DEV_KUBE_CONTEXT) rollout status deployment/mortise -n mortise-system --timeout 60s
-	@-pkill -f "[k]ubectl port-forward.*8090" >/dev/null 2>&1
+	@-pkill -f "[k]ubectl --context $(DEV_KUBE_CONTEXT) port-forward" >/dev/null 2>&1
 	@if command -v setsid >/dev/null 2>&1; then \
 		nohup setsid kubectl --context $(DEV_KUBE_CONTEXT) port-forward -n mortise-system svc/mortise 8090:80 >$(DEV_PORT_FORWARD_LOG) 2>&1 </dev/null & \
 	else \
