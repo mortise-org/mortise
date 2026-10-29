@@ -102,6 +102,11 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **The install script no longer kills port-forwards it did not create**
+  (CAI-1206): its final port cleanup matched every `kubectl port-forward` of a
+  service named mortise on the machine, so installing while holding a forward
+  to another Mortise cluster silently ended that forward. The cleanup now
+  targets only a previous install run's own forward on the install port.
 - **Tag resolution can no longer mint unpullable image digests** (CAI-1141):
   the registry backend's manifests HEAD sent no Accept header, so a registry
   holding an OCI index could answer with a legacy conversion whose

@@ -338,7 +338,9 @@ wait_and_print_success() {
     fi
 
     local pf_port=8090
-    pkill -f "port-forward.*svc/mortise" >/dev/null 2>&1 || true
+    # Clear only a previous run of THIS forward. A broader pattern kills
+    # port-forwards to other Mortise installs on the same machine (CAI-1206).
+    pkill -f "port-forward.*svc/mortise ${pf_port}:80\$" >/dev/null 2>&1 || true
     kubectl port-forward -n "$MORTISE_NAMESPACE" svc/mortise "${pf_port}:80" >/dev/null 2>&1 &
 
     printf '\n'
