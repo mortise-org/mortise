@@ -7,6 +7,8 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-10-29
+
 ### Upgrade notes
 
 - **Every git-source app rebuilds once after this upgrade.** Image repository
