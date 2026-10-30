@@ -42,6 +42,10 @@ spec:
             {{- end }}
           args:
             - --api-bind-address=:{{ .Values.api.port }}
+            # One acting operator per install: a rolling upgrade briefly runs
+            # the old and new pods together, and without the lease both
+            # reconcile the same objects concurrently (CAI-1242).
+            - --leader-elect
             {{- if dig "enabled" true $metrics }}
             - --metrics-bind-address=:{{ dig "port" 8080 $metrics }}
             # Plain HTTP like the observer: cluster-internal, read-only
