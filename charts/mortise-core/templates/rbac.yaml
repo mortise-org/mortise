@@ -220,6 +220,15 @@ rules:
   - apiGroups: [""]
     resources: ["secrets", "configmaps"]
     verbs: ["create", "update", "patch", "delete"]
+  # Leader-election lease for --leader-elect (CAI-1242). The lock lives in
+  # the operator's own namespace, so it stays out of the cluster-wide role.
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "create", "update"]
+  # The leader elector records acquisition events next to the lease.
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
 ---
 # The binding's name embeds its roleRef target: roleRef is immutable, so a
 # retargeted binding under a stable name makes `helm upgrade` die on the

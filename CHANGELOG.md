@@ -7,6 +7,26 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Upgrade notes
+
+- **Upgrading an install whose apps were deployed by a pre-1.2.0 operator:**
+  some Deployments may be pinned to image digests the registry never stored
+  (the old operator recorded a registry answer produced without a media-type
+  Accept header; CAI-1242). Those apps enter ImagePullBackOff after the
+  upgrade's one-time roll, with RolloutStalled naming the environment. Heal
+  each one by requesting a rebuild:
+  `kubectl annotate app <name> -n pj-<project> mortise.dev/rebuild-requested-at="$(date -u +%FT%TZ)"`
+  The rebuild pushes fresh content and repoints the Deployment.
+
+### Fixed
+
+- **The operator takes a leader-election lease** (CAI-1242): a rolling
+  upgrade briefly runs the old and new operator pods together, and without
+  the lease both reconciled concurrently. During the 1.2.0 rollout the
+  outgoing operator "adopted" a build the incoming one was still running and
+  overwrote its freshly pushed digest with a stale registry answer. With the
+  lease, exactly one operator acts at a time and the handoff is explicit.
+
 ## [1.2.0] - 2026-10-29
 
 ### Upgrade notes
