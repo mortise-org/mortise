@@ -9,6 +9,28 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Upgrade notes
 
+- **Upgrading an install whose apps were deployed by a pre-1.2.0 operator:**
+  some Deployments may be pinned to image digests the registry never stored
+  (the old operator recorded a registry answer produced without a media-type
+  Accept header; CAI-1242). Those apps enter ImagePullBackOff after the
+  upgrade's one-time roll, with RolloutStalled naming the environment. Heal
+  each one by requesting a rebuild:
+  `kubectl annotate app <name> -n pj-<project> mortise.dev/rebuild-requested-at="$(date -u +%FT%TZ)"`
+  The rebuild pushes fresh content and repoints the Deployment.
+
+### Fixed
+
+- **The operator takes a leader-election lease** (CAI-1242): a rolling
+  upgrade briefly runs the old and new operator pods together, and without
+  the lease both reconciled concurrently. During the 1.2.0 rollout the
+  outgoing operator "adopted" a build the incoming one was still running and
+  overwrote its freshly pushed digest with a stale registry answer. With the
+  lease, exactly one operator acts at a time and the handoff is explicit.
+
+## [1.2.0] - 2026-10-29
+
+### Upgrade notes
+
 - **Every git-source app rebuilds once after this upgrade.** Image repository
   paths are project-scoped now ({namespace}/{project}/{app}), because app
   names are unique only within a project and the old shared path let one
@@ -117,6 +139,11 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **The install script no longer kills port-forwards it did not create**
+  (CAI-1206): its final port cleanup matched every `kubectl port-forward` of a
+  service named mortise on the machine, so installing while holding a forward
+  to another Mortise cluster silently ended that forward. The cleanup now
+  targets only a previous install run's own forward on the install port.
 - **Tag resolution can no longer mint unpullable image digests** (CAI-1141):
   the registry backend's manifests HEAD sent no Accept header, so a registry
   holding an OCI index could answer with a legacy conversion whose
