@@ -15,6 +15,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
+	eventsv1 "k8s.io/api/events/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/rest"
@@ -54,6 +55,9 @@ func TestMain(m *testing.M) {
 	}
 	if err := networkingv1.AddToScheme(scheme); err != nil {
 		log.Fatalf("failed to add networkingv1 to scheme: %v", err)
+	}
+	if err := eventsv1.AddToScheme(scheme); err != nil {
+		log.Fatalf("failed to add eventsv1 to scheme: %v", err)
 	}
 	if err := mortisev1alpha1.AddToScheme(scheme); err != nil {
 		log.Fatalf("failed to add mortise scheme: %v", err)

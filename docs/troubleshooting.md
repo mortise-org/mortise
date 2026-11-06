@@ -162,6 +162,38 @@ This only affects BYO Traefik installations where you set
 
 ---
 
+## I scaled a deployment to 0 and it came back
+
+`kubectl scale deploy --all -n <env-namespace> --replicas=0` reports success
+and the pods terminate, but the operator reconciles replicas back to the App
+spec, so they return within minutes. Mortise owns the Deployment; edit the App,
+not the Deployment.
+
+To stop a workload, disable it in that environment:
+
+```bash
+mortise app disable <name> --env <env>
+```
+
+This sets `spec.environments[].enabled: false` on the App. The environment's
+Deployment, Service and Ingress are removed (so the public URL stops
+responding), while its volumes and secrets are kept. To bring it back:
+
+```bash
+mortise app enable <name> --env <env>
+```
+
+Do not delete the environment block from the App spec to re-enable: that also
+re-enables it, but it drops any other per-environment overrides (replicas,
+resources, env vars) in the same block.
+
+When the operator undoes a manual change to replicas it records a Warning
+Event on the Deployment, which names this fix:
+
+```bash
+kubectl get events -n <env-namespace> --field-selector reason=ReplicasReverted
+```
+
 ## Known Limitations
 
 ### supabase/postgres and POSTGRES_USER

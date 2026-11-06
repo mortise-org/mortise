@@ -21,6 +21,8 @@ func newAppCmd() *cobra.Command {
 	cmd.AddCommand(newAppListCmd())
 	cmd.AddCommand(newAppCreateCmd())
 	cmd.AddCommand(newAppUpdateCmd())
+	cmd.AddCommand(newAppToggleCmd("disable", "Stop an app in one environment (keeps its volumes and secrets)"))
+	cmd.AddCommand(newAppToggleCmd("enable", "Resume an app in an environment where it was disabled"))
 	cmd.AddCommand(newAppDeleteCmd())
 	return cmd
 }
@@ -174,6 +176,58 @@ func newAppUpdateCmd() *cobra.Command {
 	cmd.Flags().Int32Var(&replicas, "replicas", 0, "Replica count")
 	cmd.Flags().StringVar(&env, "env", "production", "Environment name (used with --replicas)")
 	return cmd
+}
+
+// newAppToggleCmd builds `app disable` / `app enable`. Scaling a Deployment
+// with kubectl doesn't stick (the operator reverts it); spec.environments[].enabled
+// is the supported way to stop a workload, so the CLI exposes it directly.
+func newAppToggleCmd(verb, short string) *cobra.Command {
+	var project, env string
+	cmd := &cobra.Command{
+		Use:   verb + " <name>",
+		Short: short,
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, err := newClientFromConfig()
+			if err != nil {
+				return err
+			}
+			p := c.ResolveProject(project)
+			app, err := c.GetApp(p, args[0])
+			if err != nil {
+				return fmt.Errorf("fetching app: %w", err)
+			}
+			setEnvEnabled(&app.Spec, env, verb == "enable")
+			if _, err := c.UpdateApp(p, args[0], app.Spec); err != nil {
+				return err
+			}
+			fmt.Printf("App %q %sd in environment %q.\n", args[0], verb, env)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&project, "project", "", "Project (default: current project)")
+	cmd.Flags().StringVar(&env, "env", "production", "Environment name")
+	return cmd
+}
+
+// setEnvEnabled enables by clearing the override instead of writing true: a nil
+// Enabled already means "enabled", and deleting the whole block would also
+// re-enable, so clearing keeps any other per-env overrides intact.
+func setEnvEnabled(spec *mortisev1alpha1.AppSpec, env string, enabled bool) {
+	var override *bool
+	if !enabled {
+		off := false
+		override = &off
+	}
+	for i := range spec.Environments {
+		if spec.Environments[i].Name == env {
+			spec.Environments[i].Enabled = override
+			return
+		}
+	}
+	if !enabled {
+		spec.Environments = append(spec.Environments, mortisev1alpha1.Environment{Name: env, Enabled: override})
+	}
 }
 
 func newAppDeleteCmd() *cobra.Command {

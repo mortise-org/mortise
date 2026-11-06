@@ -424,6 +424,7 @@ func main() {
 		ImageInspector:  &registry.HTTPImageInspector{},
 		IngressProvider: ingressProvider,
 		Builds:          buildLogStore,
+		Recorder:        mgr.GetEventRecorder("mortise-app-controller"),
 	}
 	if err := appReconciler.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "App")

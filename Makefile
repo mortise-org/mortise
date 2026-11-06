@@ -416,6 +416,10 @@ verify-chart-rbac: ## Verify the chart's RBAC covers every resource the generate
 		echo "chart RBAC is missing resources the generated role grants: $$missing" >&2; \
 		echo "sync charts/mortise-core/templates/rbac.yaml with config/rbac/role.yaml" >&2; \
 		exit 1; \
+	fi; \
+	if ! grep -q 'events.k8s.io' "$$rbac_manifest"; then \
+		echo "chart RBAC must grant events in the events.k8s.io group: the client-go events recorder writes there, and without it the API server rejects every Event (#490)" >&2; \
+		exit 1; \
 	fi
 
 .PHONY: test-charts
