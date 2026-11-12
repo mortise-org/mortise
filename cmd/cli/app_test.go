@@ -371,18 +371,41 @@ func TestAppCreate_HasStorageFlag(t *testing.T) {
 	}
 }
 
+type toggleResult struct {
+	put       mortisev1alpha1.AppSpec
+	putCalled bool
+	err       error
+}
+
 // runAppToggle runs `app <verb> web ...` against a fake server holding current
-// and returns the spec the CLI PUT back.
+// and returns the spec the CLI PUT back, failing the test if the command errors.
 func runAppToggle(t *testing.T, verb string, current mortisev1alpha1.AppSpec, args ...string) mortisev1alpha1.AppSpec {
 	t.Helper()
-	var put mortisev1alpha1.AppSpec
+	res := execAppToggle(t, verb, current, args...)
+	if res.err != nil {
+		t.Fatal(res.err)
+	}
+	return res.put
+}
+
+// execAppToggle is runAppToggle without the failure: it returns the outcome so a
+// test can assert that a command errored and never sent an update. The fake
+// project defines production and staging, which is what --env is checked against.
+func execAppToggle(t *testing.T, verb string, current mortisev1alpha1.AppSpec, args ...string) toggleResult {
+	t.Helper()
+	var res toggleResult
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/environments") {
+			_ = json.NewEncoder(w).Encode([]ProjectEnvResponse{{Name: "production"}, {Name: "staging"}})
+			return
+		}
 		switch r.Method {
 		case http.MethodGet:
 			_ = json.NewEncoder(w).Encode(mortisev1alpha1.App{Spec: current})
 		case http.MethodPut:
-			_ = json.NewDecoder(r.Body).Decode(&put)
-			_ = json.NewEncoder(w).Encode(mortisev1alpha1.App{Spec: put})
+			res.putCalled = true
+			_ = json.NewDecoder(r.Body).Decode(&res.put)
+			_ = json.NewEncoder(w).Encode(mortisev1alpha1.App{Spec: res.put})
 		default:
 			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
 		}
@@ -401,10 +424,8 @@ func runAppToggle(t *testing.T, verb string, current mortisev1alpha1.AppSpec, ar
 
 	cmd := newAppToggleCmd(verb, "")
 	cmd.SetArgs(append([]string{"web"}, args...))
-	if err := cmd.Execute(); err != nil {
-		t.Fatal(err)
-	}
-	return put
+	res.err = cmd.Execute()
+	return res
 }
 
 func TestAppDisable_SetsEnabledFalseAndKeepsOtherOverrides(t *testing.T) {
@@ -422,6 +443,23 @@ func TestAppDisable_SetsEnabledFalseAndKeepsOtherOverrides(t *testing.T) {
 	}
 	if e.Replicas == nil || *e.Replicas != 2 {
 		t.Errorf("expected replicas override preserved, got %v", e.Replicas)
+	}
+}
+
+func TestAppToggle_RejectsUnknownEnvironmentWithoutUpdating(t *testing.T) {
+	for _, verb := range []string{"disable", "enable"} {
+		t.Run(verb, func(t *testing.T) {
+			res := execAppToggle(t, verb, mortisev1alpha1.AppSpec{}, "--env", "produccion")
+			if res.err == nil {
+				t.Fatal("want an error for an environment the project does not define")
+			}
+			if !strings.Contains(res.err.Error(), "produccion") {
+				t.Errorf("error should name the environment, got: %v", res.err)
+			}
+			if res.putCalled {
+				t.Error("must not update the App when the environment is unknown")
+			}
+		})
 	}
 }
 

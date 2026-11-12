@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"text/tabwriter"
 
@@ -193,6 +194,14 @@ func newAppToggleCmd(verb, short string) *cobra.Command {
 				return err
 			}
 			p := c.ResolveProject(project)
+			envs, err := c.ListProjectEnvs(p)
+			if err != nil {
+				return fmt.Errorf("listing environments: %w", err)
+			}
+			if !slices.ContainsFunc(envs, func(e ProjectEnvResponse) bool { return e.Name == env }) {
+				return fmt.Errorf("environment %q not found in project %q", env, p)
+			}
+
 			app, err := c.GetApp(p, args[0])
 			if err != nil {
 				return fmt.Errorf("fetching app: %w", err)
