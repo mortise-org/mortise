@@ -48,6 +48,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/client-go/tools/events"
 	"k8s.io/client-go/util/retry"
 	"k8s.io/utils/clock"
 	"k8s.io/utils/ptr"
@@ -171,6 +172,11 @@ type AppReconciler struct {
 	// app's control-namespace/name pair.
 	gitTokenCache sync.Map
 
+	// Recorder surfaces operator decisions the user can't otherwise see, such
+	// as reverting a manual scale. Nil-safe: unit tests build the reconciler
+	// without one and emit nothing.
+	Recorder events.EventRecorder
+
 	GitAPIFactory func(*mortisev1alpha1.GitProvider, string, string) (git.GitAPI, error)
 }
 
@@ -193,6 +199,8 @@ const (
 // +kubebuilder:rbac:groups=mortise.mortise.dev,resources=apps/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=mortise.mortise.dev,resources=apps/finalizers,verbs=update
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
+// +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups=batch,resources=cronjobs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
@@ -1953,10 +1961,14 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 
 	desired := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:        name,
-			Namespace:   envNs,
-			Labels:      appLabels(app, env.Name),
-			Annotations: stampManagedAnnotations(userAnno),
+			Name:      name,
+			Namespace: envNs,
+			Labels:    appLabels(app, env.Name),
+			// Separate map: userAnno backs podAnno, and a replica change must
+			// not roll the pods.
+			Annotations: stampManagedAnnotations(mergeAnnotations(userAnno, map[string]string{
+				appliedReplicasKey: strconv.Itoa(int(replicas)),
+			})),
 		},
 		Spec: appsv1.DeploymentSpec{
 			Replicas: &replicas,
@@ -2013,9 +2025,13 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 	}
 	desiredContainer := desired.Spec.Template.Spec.Containers[0]
 
-	return envstore.UpdateWithConflictRetry(ctx, r.Client, types.NamespacedName{Name: name, Namespace: envNs}, func() *appsv1.Deployment {
+	// Captured inside the retry callback but emitted after it, so a conflict
+	// retry can't emit the same Event twice.
+	var scaledOutside *appsv1.Deployment
+	if err := envstore.UpdateWithConflictRetry(ctx, r.Client, types.NamespacedName{Name: name, Namespace: envNs}, func() *appsv1.Deployment {
 		return &appsv1.Deployment{}
 	}, func(existing *appsv1.Deployment) (bool, error) {
+		scaledOutside = nil
 		if err := conflictIfUnmanaged(existing, "Deployment"); err != nil {
 			return false, err
 		}
@@ -2072,6 +2088,13 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 		}
 		if existing.Spec.Replicas == nil || *existing.Spec.Replicas != *desired.Spec.Replicas {
 			needsUpdate = true
+			// The stamp still equals desired, so the spec did not change:
+			// someone else rescaled the Deployment and this pass undoes it.
+			if applied, ok := existing.Annotations[appliedReplicasKey]; ok &&
+				existing.Spec.Replicas != nil &&
+				applied == strconv.Itoa(int(*desired.Spec.Replicas)) {
+				scaledOutside = existing.DeepCopy()
+			}
 		}
 		// When autoRedeploy is off, freeze the deployed env-hash so an env
 		// change alone doesn't trigger a rolling update; users redeploy
@@ -2131,7 +2154,16 @@ func (r *AppReconciler) reconcileDeployment(ctx context.Context, app *mortisev1a
 		existing.Spec.Template.ObjectMeta.Labels = desired.Spec.Template.ObjectMeta.Labels
 		existing.Annotations = desiredAnnotations
 		return true, nil
-	})
+	}); err != nil {
+		return err
+	}
+
+	if scaledOutside != nil && r.Recorder != nil {
+		r.Recorder.Eventf(scaledOutside, nil, corev1.EventTypeWarning, "ReplicasReverted", "Revert",
+			"Replicas changed outside Mortise from %d back to %d; to stop this workload set spec.environments[].enabled: false on the App (mortise app disable %s --env %s)",
+			*scaledOutside.Spec.Replicas, *desired.Spec.Replicas, app.Name, env.Name)
+	}
+	return nil
 }
 
 func deploymentSelectorMismatch(existing, desired *appsv1.Deployment) bool {
@@ -5028,6 +5060,12 @@ func appProjectName(app *mortisev1alpha1.App) (string, error) {
 // Mortise applied on its last pass, so a later pass can tell "no longer
 // desired, remove it" apart from "someone else's, leave it alone".
 const managedAnnotationsKey = "mortise.dev/managed-annotations"
+
+// appliedReplicasKey records the replica count Mortise last wrote to a
+// Deployment. A live count that differs while this still matches the desired
+// count means someone else changed it (e.g. kubectl scale); a mismatch with
+// desired means the App spec changed, which is a normal rollout.
+const appliedReplicasKey = "mortise.dev/applied-replicas"
 
 // mergeManagedAnnotations returns the annotations a managed resource should
 // carry after Mortise applies desired, touching only the keys Mortise manages.

@@ -186,6 +186,14 @@ rules:
     resources: ["cronjobs"]
     verbs: ["create", "update", "patch", "delete"]
 
+  # events — the App controller warns on the Deployment when it reverts a
+  # manual scale; the Event lands in the env namespace, so it needs a grant here.
+  # The events.k8s.io group is what the client-go events recorder writes to;
+  # the core group is kept for older recorders.
+  - apiGroups: ["", "events.k8s.io"]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+
   # pods/exec — used by the /api/.../exec endpoint for user pods
   - apiGroups: [""]
     resources: ["pods/exec"]

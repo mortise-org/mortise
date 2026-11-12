@@ -39,6 +39,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/events"
 	clocktesting "k8s.io/utils/clock/testing"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -2037,6 +2038,113 @@ func TestReconcileDeploymentRecreatesPreviewDeploymentOnSelectorMismatch(t *test
 	}
 	if _, ok := recreated.Spec.Selector.MatchLabels["mortise.dev/pr-number"]; ok {
 		t.Fatalf("expected recreated deployment selector to drop stale pr-number label, got %+v", recreated.Spec.Selector.MatchLabels)
+	}
+}
+
+// newScaleRevertFixture reconciles a Deployment into existence and returns what
+// a test needs to rescale it behind the operator's back.
+func newScaleRevertFixture(t *testing.T, rec events.EventRecorder) (*AppReconciler, client.Client, *mortisev1alpha1.App, *mortisev1alpha1.Environment, string) {
+	t.Helper()
+	scheme := runtime.NewScheme()
+	for _, add := range []func(*runtime.Scheme) error{mortisev1alpha1.AddToScheme, appsv1.AddToScheme, corev1.AddToScheme} {
+		if err := add(scheme); err != nil {
+			t.Fatalf("add scheme: %v", err)
+		}
+	}
+
+	app := &mortisev1alpha1.App{
+		ObjectMeta: metav1.ObjectMeta{Name: "demo", Namespace: "pj-default-project"},
+		Spec: mortisev1alpha1.AppSpec{
+			Source: mortisev1alpha1.AppSource{
+				Type:  mortisev1alpha1.SourceTypeImage,
+				Image: "registry.example.com/demo:1",
+			},
+		},
+	}
+	env := &mortisev1alpha1.Environment{Name: "production"}
+	envNs := constants.EnvNamespace("default-project", env.Name)
+
+	c := fake.NewClientBuilder().WithScheme(scheme).Build()
+	r := &AppReconciler{Client: c, Scheme: scheme, Recorder: rec}
+	if err := r.reconcileDeployment(context.Background(), app, env, envNs, "registry.example.com/demo:1", "", true); err != nil {
+		t.Fatalf("create deployment: %v", err)
+	}
+	return r, c, app, env, envNs
+}
+
+func getDeploymentReplicas(t *testing.T, c client.Client, app *mortisev1alpha1.App, envNs string) int32 {
+	t.Helper()
+	var dep appsv1.Deployment
+	if err := c.Get(context.Background(), types.NamespacedName{Name: deploymentName(app.Name), Namespace: envNs}, &dep); err != nil {
+		t.Fatalf("get deployment: %v", err)
+	}
+	return *dep.Spec.Replicas
+}
+
+func scaleDeploymentBehindOperator(t *testing.T, c client.Client, app *mortisev1alpha1.App, envNs string, replicas int32) {
+	t.Helper()
+	var dep appsv1.Deployment
+	if err := c.Get(context.Background(), types.NamespacedName{Name: deploymentName(app.Name), Namespace: envNs}, &dep); err != nil {
+		t.Fatalf("get deployment: %v", err)
+	}
+	dep.Spec.Replicas = ptr.To(replicas)
+	if err := c.Update(context.Background(), &dep); err != nil {
+		t.Fatalf("scale deployment: %v", err)
+	}
+}
+
+func TestReconcileDeploymentEmitsEventWhenManualScaleIsReverted(t *testing.T) {
+	rec := events.NewFakeRecorder(10)
+	r, c, app, env, envNs := newScaleRevertFixture(t, rec)
+
+	scaleDeploymentBehindOperator(t, c, app, envNs, 0)
+	if err := r.reconcileDeployment(context.Background(), app, env, envNs, "registry.example.com/demo:1", "", true); err != nil {
+		t.Fatalf("reconcileDeployment: %v", err)
+	}
+
+	if got := getDeploymentReplicas(t, c, app, envNs); got != 1 {
+		t.Fatalf("expected replicas reverted to 1, got %d", got)
+	}
+	select {
+	case ev := <-rec.Events:
+		for _, want := range []string{corev1.EventTypeWarning, "ReplicasReverted", "from 0 back to 1", "enabled: false"} {
+			if !strings.Contains(ev, want) {
+				t.Fatalf("event %q missing %q", ev, want)
+			}
+		}
+	default:
+		t.Fatal("expected a ReplicasReverted event, got none")
+	}
+}
+
+func TestReconcileDeploymentStaysSilentOnSpecReplicaChange(t *testing.T) {
+	rec := events.NewFakeRecorder(10)
+	r, c, app, env, envNs := newScaleRevertFixture(t, rec)
+
+	env.Replicas = ptr.To(int32(3))
+	if err := r.reconcileDeployment(context.Background(), app, env, envNs, "registry.example.com/demo:1", "", true); err != nil {
+		t.Fatalf("reconcileDeployment: %v", err)
+	}
+
+	if got := getDeploymentReplicas(t, c, app, envNs); got != 3 {
+		t.Fatalf("expected replicas rolled to 3, got %d", got)
+	}
+	select {
+	case ev := <-rec.Events:
+		t.Fatalf("a spec change is a normal rollout, got event %q", ev)
+	default:
+	}
+}
+
+func TestReconcileDeploymentRevertsManualScaleWithoutRecorder(t *testing.T) {
+	r, c, app, env, envNs := newScaleRevertFixture(t, nil)
+
+	scaleDeploymentBehindOperator(t, c, app, envNs, 0)
+	if err := r.reconcileDeployment(context.Background(), app, env, envNs, "registry.example.com/demo:1", "", true); err != nil {
+		t.Fatalf("reconcileDeployment: %v", err)
+	}
+	if got := getDeploymentReplicas(t, c, app, envNs); got != 1 {
+		t.Fatalf("expected replicas reverted to 1, got %d", got)
 	}
 }
 

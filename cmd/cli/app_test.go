@@ -286,7 +286,7 @@ func TestAppSubcommands(t *testing.T) {
 	for _, c := range app.Commands() {
 		subs[c.Name()] = true
 	}
-	for _, name := range []string{"list", "create", "update", "delete"} {
+	for _, name := range []string{"list", "create", "update", "disable", "enable", "delete"} {
 		if !subs[name] {
 			t.Errorf("missing app subcommand: %s", name)
 		}
@@ -368,6 +368,128 @@ func TestAppCreate_HasStorageFlag(t *testing.T) {
 		if c.Name() == "create" && c.Flags().Lookup("storage") == nil {
 			t.Error("app create missing --storage flag")
 		}
+	}
+}
+
+type toggleResult struct {
+	put       mortisev1alpha1.AppSpec
+	putCalled bool
+	err       error
+}
+
+// runAppToggle runs `app <verb> web ...` against a fake server holding current
+// and returns the spec the CLI PUT back, failing the test if the command errors.
+func runAppToggle(t *testing.T, verb string, current mortisev1alpha1.AppSpec, args ...string) mortisev1alpha1.AppSpec {
+	t.Helper()
+	res := execAppToggle(t, verb, current, args...)
+	if res.err != nil {
+		t.Fatal(res.err)
+	}
+	return res.put
+}
+
+// execAppToggle is runAppToggle without the failure: it returns the outcome so a
+// test can assert that a command errored and never sent an update. The fake
+// project defines production and staging, which is what --env is checked against.
+func execAppToggle(t *testing.T, verb string, current mortisev1alpha1.AppSpec, args ...string) toggleResult {
+	t.Helper()
+	var res toggleResult
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/environments") {
+			_ = json.NewEncoder(w).Encode([]ProjectEnvResponse{{Name: "production"}, {Name: "staging"}})
+			return
+		}
+		switch r.Method {
+		case http.MethodGet:
+			_ = json.NewEncoder(w).Encode(mortisev1alpha1.App{Spec: current})
+		case http.MethodPut:
+			res.putCalled = true
+			_ = json.NewDecoder(r.Body).Decode(&res.put)
+			_ = json.NewEncoder(w).Encode(mortisev1alpha1.App{Spec: res.put})
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	if err := os.MkdirAll(filepath.Join(tmp, ".config", "mortise"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveConfig(&Config{ServerURL: srv.URL, Token: "t", CurrentProject: "myproject"}); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := newAppToggleCmd(verb, "")
+	cmd.SetArgs(append([]string{"web"}, args...))
+	res.err = cmd.Execute()
+	return res
+}
+
+func TestAppDisable_SetsEnabledFalseAndKeepsOtherOverrides(t *testing.T) {
+	two := int32(2)
+	got := runAppToggle(t, "disable", mortisev1alpha1.AppSpec{
+		Environments: []mortisev1alpha1.Environment{{Name: "production", Replicas: &two}},
+	})
+
+	if len(got.Environments) != 1 {
+		t.Fatalf("expected the existing env block to be reused, got %+v", got.Environments)
+	}
+	e := got.Environments[0]
+	if e.Enabled == nil || *e.Enabled {
+		t.Errorf("expected enabled=false, got %v", e.Enabled)
+	}
+	if e.Replicas == nil || *e.Replicas != 2 {
+		t.Errorf("expected replicas override preserved, got %v", e.Replicas)
+	}
+}
+
+func TestAppToggle_RejectsUnknownEnvironmentWithoutUpdating(t *testing.T) {
+	for _, verb := range []string{"disable", "enable"} {
+		t.Run(verb, func(t *testing.T) {
+			res := execAppToggle(t, verb, mortisev1alpha1.AppSpec{}, "--env", "produccion")
+			if res.err == nil {
+				t.Fatal("want an error for an environment the project does not define")
+			}
+			if !strings.Contains(res.err.Error(), "produccion") {
+				t.Errorf("error should name the environment, got: %v", res.err)
+			}
+			if res.putCalled {
+				t.Error("must not update the App when the environment is unknown")
+			}
+		})
+	}
+}
+
+func TestAppDisable_AddsEnvBlockWhenMissing(t *testing.T) {
+	got := runAppToggle(t, "disable", mortisev1alpha1.AppSpec{}, "--env", "staging")
+
+	if len(got.Environments) != 1 || got.Environments[0].Name != "staging" {
+		t.Fatalf("expected a staging env block, got %+v", got.Environments)
+	}
+	if e := got.Environments[0]; e.Enabled == nil || *e.Enabled {
+		t.Errorf("expected enabled=false, got %v", e.Enabled)
+	}
+}
+
+func TestAppEnable_ClearsOverrideWithoutDroppingTheBlock(t *testing.T) {
+	off := false
+	two := int32(2)
+	got := runAppToggle(t, "enable", mortisev1alpha1.AppSpec{
+		Environments: []mortisev1alpha1.Environment{{Name: "production", Enabled: &off, Replicas: &two}},
+	})
+
+	if len(got.Environments) != 1 {
+		t.Fatalf("expected the env block kept, got %+v", got.Environments)
+	}
+	e := got.Environments[0]
+	if e.Enabled != nil {
+		t.Errorf("expected the enabled override cleared, got %v", *e.Enabled)
+	}
+	if e.Replicas == nil || *e.Replicas != 2 {
+		t.Errorf("expected replicas override preserved, got %v", e.Replicas)
 	}
 }
 

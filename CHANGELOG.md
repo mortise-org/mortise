@@ -48,6 +48,21 @@ Mortise uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Reverting a manual scale is now visible, and `mortise app disable` is the
+  supported way to stop a workload** (#490): `kubectl scale` on a
+  Mortise-managed Deployment never held, because the operator reconciles
+  replicas back to the App spec — and did so silently, so a scale-down meant
+  to free memory during an incident quietly undid itself. The operator now
+  emits a `ReplicasReverted` Warning Event on the Deployment when it undoes a
+  change made outside Mortise, naming `spec.environments[].enabled: false`.
+  A change to the App spec itself is a normal rollout and emits nothing.
+  `mortise app disable <name> --env <env>` sets that field (and `enable`
+  clears it); disabling removes the environment's Deployment, Service and
+  Ingress but keeps its volumes and secrets, so enabling again loses nothing.
+  The chart's per-namespace role gains `create`/`patch` on `events` in the
+  `events.k8s.io` group (and core). Upgrading only the operator image is not
+  enough: without the new role the API server rejects the Event and the
+  failure shows up only in the operator log, so apply the chart too.
 - **`mortise app create --storage`** (#633): persistent volumes from the CLI
   as `name:mountPath:size[:storageClass]`, repeatable, with the size required
   so a claim can never silently request zero storage. Contributed by
